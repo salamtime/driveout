@@ -389,9 +389,9 @@ export default function PublicRentalView() {
                         textTransform: 'uppercase',
                       }}
                     >
-                      <span>← More media</span>
-                      <span>Swipe left or right</span>
-                      <span>More media →</span>
+                      <span>← Previous</span>
+                      <span>Swipe left or right to view all {galleryMedia.length} items</span>
+                      <span>Next →</span>
                     </div>
                   )}
                   <div

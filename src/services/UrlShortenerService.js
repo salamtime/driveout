@@ -89,59 +89,7 @@ export const shortenUrl = async (url, rentalId = null, documentType = 'other') =
     console.warn('Server shortener failed, trying direct fallback:', err);
   }
 
-  try {
-    if (!isPdf && normalizedRentalId) {
-      const { data } = await supabase
-        .from('url_shortener')
-        .select('short_code')
-        .eq('rental_id', normalizedRentalId)
-        .eq('document_type', normalizedDocumentType)
-        .eq('original_url', url)
-        .maybeSingle();
-      if (data?.short_code) {
-        const shortUrl = window.location.origin + '/s/' + data.short_code;
-        setCache(url, shortUrl, normalizedDocumentType);
-        return shortUrl;
-      }
-    }
-
-    let code = generateCode();
-    for (let i = 0; i < 10; i++) {
-      const { data } = await supabase
-        .from('url_shortener')
-        .select('id')
-        .eq('short_code', code)
-        .maybeSingle();
-      if (!data) break;
-      code = generateCode();
-    }
-
-    const expires = new Date();
-    expires.setDate(expires.getDate() + 30);
-
-    const { data, error } = await supabase
-      .from('url_shortener')
-      .insert({
-        original_url: url,
-        short_code: code,
-        rental_id: normalizedRentalId || null,
-        document_type: normalizedDocumentType,
-        expires_at: expires.toISOString(),
-        click_count: 0
-      })
-      .select('short_code')
-      .single();
-
-    if (error) throw error;
-
-    const shortUrl = window.location.origin + '/s/' + data.short_code;
-    if (!isPdf) setCache(url, shortUrl, normalizedDocumentType);
-    return shortUrl;
-
-  } catch (err) {
-    console.error('URL shortening failed:', err);
-    return url;
-  }
+  return url;
 };
 
 export const resolveShortCode = async (shortCode) => {

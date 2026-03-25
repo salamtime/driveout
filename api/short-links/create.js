@@ -1,4 +1,4 @@
-import { authenticateRequest } from '../_lib/auth.js';
+import { createSupabaseClients } from '../_lib/supabase.js';
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
@@ -15,11 +15,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    const auth = await authenticateRequest(req);
-    if (auth.error) {
-      return json(res, auth.error.status, auth.error.body);
-    }
-
     const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
     const originalUrl = String(body.originalUrl || '').trim();
     const rentalId = body.rentalId ? String(body.rentalId) : null;
@@ -29,9 +24,14 @@ export default async function handler(req, res) {
       return json(res, 400, { error: 'Missing originalUrl' });
     }
 
-    const { userClient } = auth;
+    const requestOrigin = req.headers.origin || `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host || ''}`;
+    if (!requestOrigin || !originalUrl.startsWith(requestOrigin)) {
+      return json(res, 400, { error: 'Invalid originalUrl origin' });
+    }
 
-    const existingQuery = userClient
+    const { adminClient } = createSupabaseClients();
+
+    const existingQuery = adminClient
       .from('url_shortener')
       .select('short_code')
       .eq('original_url', originalUrl)
@@ -50,13 +50,13 @@ export default async function handler(req, res) {
     if (existingShortCode) {
       return json(res, 200, {
         shortCode: existingShortCode,
-        shortUrl: `${req.headers.origin || ''}/s/${existingShortCode}`,
+        shortUrl: `${requestOrigin}/s/${existingShortCode}`,
       });
     }
 
     let code = generateCode();
     for (let attempt = 0; attempt < 10; attempt += 1) {
-      const { data: usedRows } = await userClient
+      const { data: usedRows } = await adminClient
         .from('url_shortener')
         .select('id')
         .eq('short_code', code)
@@ -69,7 +69,7 @@ export default async function handler(req, res) {
     const expires = new Date();
     expires.setDate(expires.getDate() + 30);
 
-    const { error: insertError } = await userClient
+    const { error: insertError } = await adminClient
       .from('url_shortener')
       .insert({
         original_url: originalUrl,
@@ -86,7 +86,7 @@ export default async function handler(req, res) {
 
     return json(res, 200, {
       shortCode: code,
-      shortUrl: `${req.headers.origin || ''}/s/${code}`,
+      shortUrl: `${requestOrigin}/s/${code}`,
     });
   } catch (error) {
     return json(res, 500, { error: error.message || 'Failed to create short link' });

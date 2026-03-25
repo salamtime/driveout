@@ -34,7 +34,6 @@ import jsPDF from 'jspdf';
 import InvoiceTemplate from '../../components/InvoiceTemplate';
 import ContractTemplate from '../../components/ContractTemplate';
 import ReceiptTemplate from '../../components/ReceiptTemplate';
-import { encodePublicSharePayload } from '../../utils/publicSharePayload';
 import { processMedia, getMediaType, createThumbnail } from '../../utils/mediaProcessor';
 import TierPricingDisplay from '../../components/TierPricingDisplay';
 import MaintenanceService from '../../services/MaintenanceService';
@@ -1855,14 +1854,12 @@ Click the link above to review and approve the extension.`;
 
     setIsSendingWhatsApp(true);
     try {
-      const contractRaw = `${window.location.origin}/view/rental/${rental.id}?type=contract`;
-      const contractUrl = contractRaw;
-      
-      const message = `Hi ${rental.customer_name}!\n\nYour signed rental contract:\n${contractUrl}\n\nKeep for your records.`;
+      const contractUrl = await getContractWebUrl();
+      const message = `Here is your contract:\n${contractUrl}`;
       const encodedMessage = encodeURIComponent(message);
-      const whatsappUrl = `https://wa.me/${rental.customer_phone.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
+      const whatsappUrl = `https://api.whatsapp.com/send?phone=${rental.customer_phone.replace(/[^0-9]/g, '')}&text=${encodedMessage}`;
       
-      window.location.href = whatsappUrl;
+      window.location.assign(whatsappUrl);
     } catch (error) {
       console.error('Error sending contract:', error);
       toast.error('Failed to send contract. Please try again.');
@@ -1880,19 +1877,13 @@ Click the link above to review and approve the extension.`;
 
     setIsSendingWhatsApp(true);
     try {
-      const receiptRaw = `${window.location.origin}/view/rental/${rental.id}?type=receipt`;
-      const receiptUrl = receiptRaw;
-      
-      const fuelForWhatsApp = fuelChargeEnabled ? (fuelCharge || rental?.fuel_charge || 0) : 0;
-      const totalAmount = getCorrectedBaseAmount() + (rental.overage_charge || 0) + (totalExtensionFees || 0) + fuelForWhatsApp;
-      const status = rental.payment_status === 'paid' ? 'PAID IN FULL' : 'AMOUNT DUE';
-      
-      const message = `Hi ${rental.customer_name}!\n\nYour payment receipt:\n${receiptUrl}\n\nTotal: ${totalAmount.toFixed(2)} MAD\nStatus: ${status}`;
+      const receiptUrl = await getReceiptWebUrl();
+      const message = `Here is your receipt:\n${receiptUrl}`;
       const encodedMessage = encodeURIComponent(message);
-      const whatsappUrl = `https://wa.me/${rental.customer_phone.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
+      const whatsappUrl = `https://api.whatsapp.com/send?phone=${rental.customer_phone.replace(/[^0-9]/g, '')}&text=${encodedMessage}`;
 
       
-      window.location.href = whatsappUrl;
+      window.location.assign(whatsappUrl);
     } catch (error) {
       console.error('Error sending receipt:', error);
       toast.error('Failed to send receipt. Please try again.');
@@ -2034,55 +2025,23 @@ Click the link above to review and approve the extension.`;
 
   // ✅ RADICAL OPTIMIZATION: Use web view URLs instead of PDFs for instant WhatsApp
   const getContractWebUrl = async () => {
-    const payload = await encodePublicSharePayload({
-      rental,
-      settings: {
-        logoUrl: logoUrl || null,
-        stampUrl: stampUrl || null,
-      },
-    });
-    return `${window.location.origin}/view/rental/${rental.id}?type=contract${payload ? `&payload=${payload}` : ''}`;
+    const rawUrl = `${window.location.origin}/view/rental/${rental.id}?type=contract`;
+    return await shortenUrl(rawUrl, 'contract');
   };
 
   const getReceiptWebUrl = async () => {
-    const payload = await encodePublicSharePayload({
-      rental,
-      settings: {
-        logoUrl: logoUrl || null,
-        stampUrl: stampUrl || null,
-      },
-    });
-    return `${window.location.origin}/view/rental/${rental.id}?type=receipt${payload ? `&payload=${payload}` : ''}`;
+    const rawUrl = `${window.location.origin}/view/rental/${rental.id}?type=receipt`;
+    return await shortenUrl(rawUrl, 'receipt');
   };
 
   const getOpeningMediaShareUrl = async () => {
-    const payload = await encodePublicSharePayload({
-      rental: {
-        id: rental?.id,
-        rental_id: rental?.rental_id,
-        customer_name: rental?.customer_name,
-      },
-      settings: {
-        logoUrl: logoUrl || null,
-      },
-      media: openingMedia,
-    });
-    return `${window.location.origin}/view/rental/${rental.id}?type=opening-media${payload ? `&payload=${payload}` : ''}`;
+    const rawUrl = `${window.location.origin}/view/rental/${rental.id}?type=opening-media`;
+    return await shortenUrl(rawUrl, 'opening_video');
   };
 
   const getClosingMediaShareUrl = async () => {
-    const payload = await encodePublicSharePayload({
-      rental: {
-        id: rental?.id,
-        rental_id: rental?.rental_id,
-        customer_name: rental?.customer_name,
-      },
-      settings: {
-        logoUrl: logoUrl || null,
-      },
-      media: closingMedia,
-    });
-    return `${window.location.origin}/view/rental/${rental.id}?type=closing-media${payload ? `&payload=${payload}` : ''}`;
+    const rawUrl = `${window.location.origin}/view/rental/${rental.id}?type=closing-media`;
+    return await shortenUrl(rawUrl, 'closing_video');
   };
 
   const getDocumentsHubShareUrl = async (options = {}) => {
@@ -2127,12 +2086,45 @@ Click the link above to review and approve the extension.`;
         setIsSharing(false);
         return;
       }
+      const selectedItems = [
+        options.contract && rental.signature_url ? 'contract' : null,
+        options.receipt && rental.payment_status === 'paid' ? 'receipt' : null,
+        options.openingVideo && openingMedia.length > 0 ? 'openingMedia' : null,
+        options.closingVideo && closingMedia.length > 0 ? 'closingMedia' : null,
+      ].filter(Boolean);
 
-      const documentsHubUrl = await getDocumentsHubShareUrl(options);
-      const message = [
-        `Rental documents for ${rental.rental_id}:`,
-        documentsHubUrl,
-      ].join('\n');
+      let shareUrl = '';
+      let message = '';
+
+      if (selectedItems.length === 1) {
+        const selectedItem = selectedItems[0];
+        switch (selectedItem) {
+          case 'contract':
+            shareUrl = await getContractWebUrl();
+            message = `Here is your contract:\n${shareUrl}`;
+            break;
+          case 'receipt':
+            shareUrl = await getReceiptWebUrl();
+            message = `Here is your receipt:\n${shareUrl}`;
+            break;
+          case 'openingMedia':
+            shareUrl = await getOpeningMediaShareUrl();
+            message = `Here is the opening media:\n${shareUrl}`;
+            break;
+          case 'closingMedia':
+            shareUrl = await getClosingMediaShareUrl();
+            message = `Here is the closing media:\n${shareUrl}`;
+            break;
+          default:
+            shareUrl = await getDocumentsHubShareUrl(options);
+            message = `Rental documents for ${rental.rental_id}:\n${shareUrl}`;
+            break;
+        }
+      } else {
+        shareUrl = await getDocumentsHubShareUrl(options);
+        message = `Rental documents for ${rental.rental_id}:\n${shareUrl}`;
+      }
+
       const phoneNumber = rental.customer_phone.replace(/[^0-9]/g, '');
       const whatsappUrl = `https://api.whatsapp.com/send?phone=${phoneNumber}&text=${encodeURIComponent(message)}`;
       
