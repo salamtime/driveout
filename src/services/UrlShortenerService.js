@@ -6,6 +6,7 @@ const CACHE_DURATION = 60 * 60 * 1000;
 const DOCUMENT_TYPES = new Set([
   'contract',
   'receipt',
+  'documents',
   'opening_video',
   'closing_video',
   'tour_tracking',
@@ -59,6 +60,33 @@ export const shortenUrl = async (url, rentalId = null, documentType = 'other') =
   if (!isPdf) {
     const cached = getCached(url, normalizedDocumentType);
     if (cached) return cached;
+  }
+
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+
+    const response = await fetch('/api/short-links/create', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify({
+        originalUrl: url,
+        rentalId: normalizedRentalId,
+        documentType: normalizedDocumentType,
+      }),
+    });
+
+    const body = await response.json().catch(() => ({}));
+    if (response.ok && body?.shortUrl) {
+      if (!isPdf) setCache(url, body.shortUrl, normalizedDocumentType);
+      return body.shortUrl;
+    }
+  } catch (err) {
+    console.warn('Server shortener failed, trying direct fallback:', err);
   }
 
   try {

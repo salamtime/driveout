@@ -22,7 +22,6 @@ const extractTourBookingMeta = (value) => {
 };
 
 const VEHICLE_TABLE_CANDIDATES = [
-  'app_b30c02e74da644baad4668e3587d86b1_vehicles',
   'saharax_0u4w4d_vehicles',
   'vehicles',
 ];

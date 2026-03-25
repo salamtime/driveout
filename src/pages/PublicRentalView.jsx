@@ -20,22 +20,27 @@ export default function PublicRentalView() {
   const [stampUrl, setStampUrl] = useState(null);
   const [galleryMedia, setGalleryMedia] = useState([]);
 
+  const mapMediaItem = (item) => ({
+    ...item,
+    url: item.url || item.public_url,
+    isImage: item.isImage ?? item.file_type?.startsWith('image/'),
+    isVideo: item.isVideo ?? item.file_type?.startsWith('video/'),
+  });
+
   useEffect(() => {
     const load = async () => {
       try {
         const decodedPayload = sharedPayload ? await decodePublicSharePayload(sharedPayload) : null;
         if (decodedPayload?.rental) {
-          setRental(decodedPayload.rental);
+          setRental({
+            ...decodedPayload.rental,
+            bundle: decodedPayload.bundle || null,
+          });
           if (decodedPayload.settings?.logoUrl) setLogoUrl(decodedPayload.settings.logoUrl);
           if (decodedPayload.settings?.stampUrl) setStampUrl(decodedPayload.settings.stampUrl);
 
-          if (isMediaGallery) {
-            const mappedMedia = (decodedPayload.media || []).map((item) => ({
-              ...item,
-              url: item.url || item.public_url,
-              isImage: item.isImage ?? item.file_type?.startsWith('image/'),
-              isVideo: item.isVideo ?? item.file_type?.startsWith('video/'),
-            }));
+          if (isMediaGallery || type === 'documents') {
+            const mappedMedia = (decodedPayload.media || []).map(mapMediaItem);
             setGalleryMedia(mappedMedia);
           }
 
@@ -51,17 +56,13 @@ export default function PublicRentalView() {
           if (body.settings?.logo_url) setLogoUrl(body.settings.logo_url);
           if (body.settings?.stamp_url) setStampUrl(body.settings.stamp_url);
 
-          if (isMediaGallery) {
-            const mappedMedia = (body.media || [])
-              .filter((item) => item.phase === mediaPhase)
-              .map((item) => ({
-                ...item,
-                url: item.public_url,
-                isImage: item.file_type?.startsWith('image/'),
-                isVideo: item.file_type?.startsWith('video/'),
-              }));
+          if (isMediaGallery || type === 'documents') {
+            const sourceRows =
+              type === 'documents'
+                ? (body.media || [])
+                : (body.media || []).filter((item) => item.phase === mediaPhase);
 
-            setGalleryMedia(mappedMedia);
+            setGalleryMedia(sourceRows.map(mapMediaItem));
           }
 
           return true;
@@ -128,22 +129,19 @@ export default function PublicRentalView() {
         if (settings?.logo_url) setLogoUrl(settings.logo_url);
         if (settings?.stamp_url) setStampUrl(settings.stamp_url);
 
-        if (isMediaGallery) {
+        if (isMediaGallery || type === 'documents') {
           const { data: mediaRows } = await supabase
             .from('app_2f7bf469b0_rental_media')
             .select('*')
             .eq('rental_id', rentalData.id)
-            .eq('phase', mediaPhase)
             .order('created_at', { ascending: false });
 
-          const mappedMedia = (mediaRows || []).map((item) => ({
-            ...item,
-            url: item.public_url,
-            isImage: item.file_type?.startsWith('image/'),
-            isVideo: item.file_type?.startsWith('video/'),
-          }));
+          const sourceRows =
+            type === 'documents'
+              ? (mediaRows || [])
+              : (mediaRows || []).filter((item) => item.phase === mediaPhase);
 
-          setGalleryMedia(mappedMedia);
+          setGalleryMedia(sourceRows.map(mapMediaItem));
         }
       } catch (e) {
         setError('Failed to load document');
@@ -173,6 +171,144 @@ export default function PublicRentalView() {
       </div>
     </div>
   );
+
+  const buildSharedUrl = (nextType) => {
+    const params = new URLSearchParams();
+    params.set('type', nextType);
+    if (sharedPayload) {
+      params.set('payload', sharedPayload);
+    }
+    return `/view/rental/${encodeURIComponent(id)}?${params.toString()}`;
+  };
+
+  if (type === 'documents') {
+    const decodedBundle =
+      rental?.bundle && typeof rental.bundle === 'object'
+        ? rental.bundle
+        : {};
+
+    const available = {
+      contract: decodedBundle.contract ?? Boolean(rental?.signature_url),
+      receipt: decodedBundle.receipt ?? Boolean(String(rental?.payment_status || '').toLowerCase() === 'paid'),
+      openingMedia: decodedBundle.openingMedia ?? galleryMedia.some((item) => item.phase === 'out'),
+      closingMedia: decodedBundle.closingMedia ?? galleryMedia.some((item) => item.phase === 'in'),
+    };
+
+    const documentCards = [
+      {
+        key: 'contract',
+        title: 'Contract',
+        subtitle: 'Open the signed rental agreement',
+        href: buildSharedUrl('contract'),
+        visible: available.contract,
+      },
+      {
+        key: 'receipt',
+        title: 'Receipt',
+        subtitle: 'View the payment receipt',
+        href: buildSharedUrl('receipt'),
+        visible: available.receipt,
+      },
+      {
+        key: 'opening-media',
+        title: 'Start Media',
+        subtitle: 'Browse opening photos and videos',
+        href: buildSharedUrl('opening-media'),
+        visible: available.openingMedia,
+      },
+      {
+        key: 'closing-media',
+        title: 'End Media',
+        subtitle: 'Browse return photos and videos',
+        href: buildSharedUrl('closing-media'),
+        visible: available.closingMedia,
+      },
+    ].filter((item) => item.visible);
+
+    return (
+      <div style={{ background: '#f3f4f6', minHeight: '100vh', padding: '16px' }}>
+        <div style={{ maxWidth: 980, margin: '0 auto' }}>
+          <div
+            style={{
+              background: 'white',
+              border: '1px solid #e2e8f0',
+              borderRadius: 16,
+              boxShadow: '0 16px 40px rgba(15, 23, 42, 0.06)',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+                padding: '20px 24px',
+                borderBottom: '3px solid #667eea',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0 }}>
+                <img
+                  src={logoUrl || '/assets/logo.jpg'}
+                  alt="Company Logo"
+                  style={{ width: 96, height: 'auto', objectFit: 'contain' }}
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+                <div style={{ minWidth: 0 }}>
+                  <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, color: '#1f2937' }}>
+                    Rental Documents
+                  </h1>
+                  <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 15 }}>
+                    {rental?.rental_id || 'Rental'} • {rental?.customer_name || 'Customer'}
+                  </p>
+                </div>
+              </div>
+              <div style={{ color: '#64748b', fontSize: 14, fontWeight: 600 }}>
+                {documentCards.length} item{documentCards.length === 1 ? '' : 's'}
+              </div>
+            </div>
+
+            <div style={{ padding: 24 }}>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                  gap: 16,
+                }}
+              >
+                {documentCards.map((item) => (
+                  <a
+                    key={item.key}
+                    href={item.href}
+                    style={{
+                      textDecoration: 'none',
+                      background: '#fff',
+                      border: '1px solid #dbeafe',
+                      borderRadius: 16,
+                      padding: '18px 20px',
+                      boxShadow: '0 10px 25px rgba(59, 130, 246, 0.08)',
+                      color: '#0f172a',
+                    }}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6366f1' }}>
+                      Open
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 22, fontWeight: 800 }}>
+                      {item.title}
+                    </div>
+                    <div style={{ marginTop: 10, fontSize: 15, lineHeight: 1.5, color: '#64748b' }}>
+                      {item.subtitle}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (isMediaGallery) {
     return (

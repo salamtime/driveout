@@ -2085,6 +2085,11 @@ Click the link above to review and approve the extension.`;
     return `${window.location.origin}/view/rental/${rental.id}?type=closing-media${payload ? `&payload=${payload}` : ''}`;
   };
 
+  const getDocumentsHubShareUrl = async (options = {}) => {
+    const rawUrl = `${window.location.origin}/view/rental/${rental.id}?type=documents`;
+    return await shortenUrl(rawUrl, 'documents');
+  };
+
   const getContractUrl = async (preferWeb = true) => {
     if (preferWeb) {
       return await getContractWebUrl();
@@ -2110,60 +2115,11 @@ Click the link above to review and approve the extension.`;
     try {
       if (RENTAL_DEBUG) console.log('📱 Starting WhatsApp send with options:', options);
       
-      const lines = [
-        `Hi ${rental.customer_name}!`,
-        '',
-        `Rental Documents for ${rental.rental_id}`,
-        ''
-      ];
-      
-      let hasDocuments = false;
-      
-      // Contract
-      if (options.contract && rental.signature_url) {
-        const contractRaw = await getContractWebUrl();
-        lines.push(`Contract: ${contractRaw}`);
-        hasDocuments = true;
-      }
-      
-      // Receipt
-      if (options.receipt && rental.payment_status === 'paid') {
-        const receiptRaw = await getReceiptWebUrl();
-        lines.push(`Receipt: ${receiptRaw}`);
-        hasDocuments = true;
-      }
-      
-      // Opening Media
-      if (options.openingVideo && openingMedia.length > 0) {
-        if (openingMedia.length > 0) {
-          try {
-            const openingMediaUrl = await getOpeningMediaShareUrl();
-            lines.push(`Start Media: ${openingMediaUrl}`);
-            hasDocuments = true;
-            if (RENTAL_DEBUG) console.log('✅ Opening media gallery URL added directly');
-          } catch (error) {
-            console.error('❌ Failed to prepare opening media gallery URL:', error);
-            lines.push(`Start Media: ${window.location.origin}/view/rental/${rental.id}?type=opening-media`);
-            hasDocuments = true;
-          }
-        }
-      }
-      
-      // Closing Media
-      if (options.closingVideo && closingMedia.length > 0) {
-        if (closingMedia.length > 0) {
-          try {
-            const closingMediaUrl = await getClosingMediaShareUrl();
-            lines.push(`End Media: ${closingMediaUrl}`);
-            hasDocuments = true;
-            if (RENTAL_DEBUG) console.log('✅ Closing media gallery URL added directly');
-          } catch (error) {
-            console.error('❌ Failed to prepare closing media gallery URL:', error);
-            lines.push(`End Media: ${window.location.origin}/view/rental/${rental.id}?type=closing-media`);
-            hasDocuments = true;
-          }
-        }
-      }
+      const hasDocuments =
+        Boolean(options.contract && rental.signature_url) ||
+        Boolean(options.receipt && rental.payment_status === 'paid') ||
+        Boolean(options.openingVideo && openingMedia.length > 0) ||
+        Boolean(options.closingVideo && closingMedia.length > 0);
       
       // If no lines were added (no documents), don't send WhatsApp
       if (!hasDocuments) {
@@ -2171,17 +2127,20 @@ Click the link above to review and approve the extension.`;
         setIsSharing(false);
         return;
       }
-      
-      lines.push('', 'Thank you!');
-      const message = lines.join('\n');
+
+      const documentsHubUrl = await getDocumentsHubShareUrl(options);
+      const message = [
+        `Rental documents for ${rental.rental_id}:`,
+        documentsHubUrl,
+      ].join('\n');
       const phoneNumber = rental.customer_phone.replace(/[^0-9]/g, '');
-      const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
+      const whatsappUrl = `https://api.whatsapp.com/send?phone=${phoneNumber}&text=${encodeURIComponent(message)}`;
       
       if (RENTAL_DEBUG) console.log('📱 Opening WhatsApp with URL:', whatsappUrl);
       
       // Use top-level navigation for WhatsApp so mobile browsers hand off reliably.
       toast.dismiss('wa-prepare');
-      window.location.href = whatsappUrl;
+      window.location.assign(whatsappUrl);
       
     } catch (error) {
       toast.dismiss('wa-prepare');
@@ -4803,13 +4762,11 @@ useEffect(() => {
   };
 
   const shortenUrl = async (url, documentType = 'other') => {
-    // Use self-hosted URL shortener service
     try {
       return await shortenUrlService(url, rental?.id, documentType);
     } catch (error) {
       console.error('URL shortening failed:', error);
-      // Fallback: return truncated URL
-      return url.length > 50 ? url.substring(0, 47) + '...' : url;
+      return url;
     }
   };
   // WhatsApp URL opening helper - uses multiple methods
