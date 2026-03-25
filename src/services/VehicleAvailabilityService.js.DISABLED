@@ -1,0 +1,475 @@
+import { supabase } from '../lib/supabase.js';
+import { TBL } from '../config/tables.js';
+
+/**
+ * Vehicle status constants - exported separately to avoid import issues
+ */
+export const VEHICLE_STATUS = {
+  AVAILABLE: 'available',
+  SCHEDULED: 'scheduled', 
+  RENTED: 'rented',
+  SERVICE: 'service'
+};
+
+/**
+ * VehicleAvailabilityService - Centralized vehicle availability management
+ * Single source of truth for vehicle status: Available, Scheduled, Rented, Service
+ */
+class VehicleAvailabilityService {
+  
+  /**
+   * Vehicle status constants (kept for backward compatibility)
+   */
+  static STATUS = VEHICLE_STATUS;
+
+  /**
+   * Get current or future status of a vehicle
+   * @param {string|number} vehicleId - Vehicle ID
+   * @param {string} date - Date to check (ISO string), defaults to now
+   * @returns {Promise<string>} Vehicle status
+   */
+  async getVehicleStatus(vehicleId, date = new Date().toISOString()) {
+    try {
+      console.log(`🔍 Getting status for vehicle ${vehicleId} at ${date}`);
+      
+      // Get vehicle info
+      const { data: vehicle, error: vehicleError } = await supabase
+        .from(TBL.VEHICLES)
+        .select('id, status, service_status, maintenance_status')
+        .eq('id', vehicleId)
+        .single();
+
+      if (vehicleError || !vehicle) {
+        console.error('❌ Vehicle not found:', vehicleError);
+        return VEHICLE_STATUS.SERVICE;
+      }
+
+      // Check if vehicle is in service/maintenance
+      if (vehicle.service_status === 'maintenance' || 
+          vehicle.service_status === 'out_of_order' ||
+          vehicle.maintenance_status === 'in_service') {
+        return VEHICLE_STATUS.SERVICE;
+      }
+
+      // Get active rentals for this vehicle at the specified date
+      const { data: activeRentals, error: rentalError } = await supabase
+        .from(TBL.RENTALS)
+        .select('id, rental_start_date, rental_end_date, rental_status')
+        .eq('vehicle_id', vehicleId)
+        .lte('rental_start_date', date)
+        .gte('rental_end_date', date)
+        .in('rental_status', ['scheduled', 'confirmed', 'active']);
+
+      if (rentalError) {
+        console.error('❌ Error fetching rentals:', rentalError);
+        return VEHICLE_STATUS.AVAILABLE;
+      }
+
+      // Determine status based on rentals
+      if (activeRentals && activeRentals.length > 0) {
+        const rental = activeRentals[0];
+        const now = new Date();
+        const startDate = new Date(rental.rental_start_date);
+        const endDate = new Date(rental.rental_end_date);
+        
+        if (now >= startDate && now <= endDate) {
+          return VEHICLE_STATUS.RENTED;
+        } else if (now < startDate) {
+          return VEHICLE_STATUS.SCHEDULED;
+        }
+      }
+
+      return VEHICLE_STATUS.AVAILABLE;
+
+    } catch (error) {
+      console.error('❌ Error getting vehicle status:', error);
+      return VEHICLE_STATUS.AVAILABLE;
+    }
+  }
+
+  /**
+   * Get vehicles available in a specific time window
+   * @param {string} startDate - Start date (ISO string)
+   * @param {string} endDate - End date (ISO string)
+   * @param {string} vehicleType - Optional vehicle type filter
+   * @returns {Promise<Array>} Available vehicles
+   */
+  async getAvailableVehicles(startDate, endDate, vehicleType = null) {
+    try {
+      console.log(`🔍 Finding available vehicles from ${startDate} to ${endDate}`);
+      
+      // Get all vehicles (optionally filtered by type)
+      let vehicleQuery = supabase
+        .from(TBL.VEHICLES)
+        .select('id, name, model, plate_number, vehicle_type, status, service_status, maintenance_status');
+      
+      if (vehicleType) {
+        vehicleQuery = vehicleQuery.eq('vehicle_type', vehicleType);
+      }
+
+      const { data: allVehicles, error: vehicleError } = await vehicleQuery;
+
+      if (vehicleError) {
+        console.error('❌ Error fetching vehicles:', vehicleError);
+        return [];
+      }
+
+      // Get conflicting rentals for the date range
+      const { data: conflictingRentals, error: rentalError } = await supabase
+        .from(TBL.RENTALS)
+        .select('vehicle_id, rental_start_date, rental_end_date, rental_status')
+        .or(`and(rental_start_date.lte.${endDate},rental_end_date.gte.${startDate})`)
+        .in('rental_status', ['scheduled', 'confirmed', 'active']);
+
+      if (rentalError) {
+        console.error('❌ Error fetching conflicting rentals:', rentalError);
+      }
+
+      // Create a map of conflicting vehicle IDs
+      const conflictingVehicleIds = new Set(
+        (conflictingRentals || []).map(rental => rental.vehicle_id)
+      );
+
+      // Filter available vehicles
+      const availableVehicles = allVehicles.filter(vehicle => {
+        // Check if vehicle is in service
+        if (vehicle.service_status === 'maintenance' || 
+            vehicle.service_status === 'out_of_order' ||
+            vehicle.maintenance_status === 'in_service') {
+          return false;
+        }
+
+        // Check if vehicle has conflicting rentals
+        if (conflictingVehicleIds.has(vehicle.id)) {
+          return false;
+        }
+
+        return true;
+      });
+
+      console.log(`✅ Found ${availableVehicles.length} available vehicles`);
+      return availableVehicles;
+
+    } catch (error) {
+      console.error('❌ Error getting available vehicles:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Check if a specific vehicle is available in a time window
+   * @param {string|number} vehicleId - Vehicle ID
+   * @param {string} startDate - Start date (ISO string)
+   * @param {string} endDate - End date (ISO string)
+   * @returns {Promise<Object>} Availability result with conflicts
+   */
+  async checkAvailability(vehicleId, startDate, endDate) {
+    try {
+      console.log(`🔍 Checking availability for vehicle ${vehicleId} from ${startDate} to ${endDate}`);
+      
+      // Get vehicle info
+      const { data: vehicle, error: vehicleError } = await supabase
+        .from(TBL.VEHICLES)
+        .select('id, name, model, plate_number, service_status, maintenance_status')
+        .eq('id', vehicleId)
+        .single();
+
+      if (vehicleError || !vehicle) {
+        return {
+          available: false,
+          reason: 'Vehicle not found',
+          conflicts: []
+        };
+      }
+
+      // Check service status
+      if (vehicle.service_status === 'maintenance' || 
+          vehicle.service_status === 'out_of_order' ||
+          vehicle.maintenance_status === 'in_service') {
+        return {
+          available: false,
+          reason: 'Vehicle is in service/maintenance',
+          conflicts: []
+        };
+      }
+
+      // Get conflicting rentals
+      const conflicts = await this.getConflictingRentals(vehicleId, startDate, endDate);
+      
+      return {
+        available: conflicts.length === 0,
+        reason: conflicts.length > 0 ? 'Vehicle has conflicting rentals' : null,
+        conflicts
+      };
+
+    } catch (error) {
+      console.error('❌ Error checking availability:', error);
+      return {
+        available: false,
+        reason: 'Error checking availability',
+        conflicts: []
+      };
+    }
+  }
+
+  /**
+   * Get rentals that conflict with a time window
+   * @param {string|number} vehicleId - Vehicle ID
+   * @param {string} startDate - Start date (ISO string)
+   * @param {string} endDate - End date (ISO string)
+   * @returns {Promise<Array>} Conflicting rentals
+   */
+  async getConflictingRentals(vehicleId, startDate, endDate) {
+    try {
+      const { data: conflicts, error } = await supabase
+        .from(TBL.RENTALS)
+        .select('id, customer_name, rental_start_date, rental_end_date, rental_status')
+        .eq('vehicle_id', vehicleId)
+        .or(`and(rental_start_date.lte.${endDate},rental_end_date.gte.${startDate})`)
+        .in('rental_status', ['scheduled', 'confirmed', 'active']);
+
+      if (error) {
+        console.error('❌ Error fetching conflicting rentals:', error);
+        return [];
+      }
+
+      return conflicts || [];
+
+    } catch (error) {
+      console.error('❌ Error getting conflicting rentals:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Derive vehicle status based on current data
+   * @param {Object} vehicle - Vehicle object
+   * @param {Array} rentals - Array of rentals for this vehicle
+   * @returns {string} Derived status
+   */
+  deriveVehicleStatus(vehicle, rentals = []) {
+    // Check service status first
+    if (vehicle.service_status === 'maintenance' || 
+        vehicle.service_status === 'out_of_order' ||
+        vehicle.maintenance_status === 'in_service') {
+      return VEHICLE_STATUS.SERVICE;
+    }
+
+    const now = new Date();
+    
+    // Find current active rental
+    const activeRental = rentals.find(rental => {
+      const startDate = new Date(rental.rental_start_date);
+      const endDate = new Date(rental.rental_end_date);
+      return now >= startDate && now <= endDate && 
+             ['scheduled', 'confirmed', 'active'].includes(rental.rental_status);
+    });
+
+    if (activeRental) {
+      return VEHICLE_STATUS.RENTED;
+    }
+
+    // Find future scheduled rental
+    const scheduledRental = rentals.find(rental => {
+      const startDate = new Date(rental.rental_start_date);
+      return now < startDate && 
+             ['scheduled', 'confirmed'].includes(rental.rental_status);
+    });
+
+    if (scheduledRental) {
+      return VEHICLE_STATUS.SCHEDULED;
+    }
+
+    return VEHICLE_STATUS.AVAILABLE;
+  }
+
+  /**
+   * Get fleet status summary
+   * @returns {Promise<Object>} Status counts
+   */
+  async getFleetStatusSummary() {
+    try {
+      console.log('🔍 Getting fleet status summary');
+      
+      // Get all vehicles
+      const { data: vehicles, error: vehicleError } = await supabase
+        .from(TBL.VEHICLES)
+        .select('id, name, model, service_status, maintenance_status');
+
+      if (vehicleError) {
+        console.error('❌ Error fetching vehicles:', vehicleError);
+        return { available: 0, scheduled: 0, rented: 0, service: 0 };
+      }
+
+      // Get all active rentals
+      const { data: rentals, error: rentalError } = await supabase
+        .from(TBL.RENTALS)
+        .select('vehicle_id, rental_start_date, rental_end_date, rental_status')
+        .in('rental_status', ['scheduled', 'confirmed', 'active']);
+
+      if (rentalError) {
+        console.error('❌ Error fetching rentals:', rentalError);
+      }
+
+      // Group rentals by vehicle
+      const rentalsByVehicle = {};
+      (rentals || []).forEach(rental => {
+        if (!rentalsByVehicle[rental.vehicle_id]) {
+          rentalsByVehicle[rental.vehicle_id] = [];
+        }
+        rentalsByVehicle[rental.vehicle_id].push(rental);
+      });
+
+      // Calculate status for each vehicle
+      const statusCounts = {
+        available: 0,
+        scheduled: 0,
+        rented: 0,
+        service: 0
+      };
+
+      vehicles.forEach(vehicle => {
+        const vehicleRentals = rentalsByVehicle[vehicle.id] || [];
+        const status = this.deriveVehicleStatus(vehicle, vehicleRentals);
+        statusCounts[status]++;
+      });
+
+      console.log('✅ Fleet status summary:', statusCounts);
+      return statusCounts;
+
+    } catch (error) {
+      console.error('❌ Error getting fleet status summary:', error);
+      return { available: 0, scheduled: 0, rented: 0, service: 0 };
+    }
+  }
+
+  /**
+   * Validate rental dates and check for conflicts before booking
+   * @param {Object} rentalData - Rental data with vehicle_id, start_date, end_date
+   * @returns {Promise<Object>} Validation result
+   */
+  async validateRentalBooking(rentalData) {
+    try {
+      const { vehicle_id, start_date, end_date } = rentalData;
+      
+      console.log(`🔍 Validating rental booking for vehicle ${vehicle_id}`);
+
+      // Basic date validation
+      const startDate = new Date(start_date);
+      const endDate = new Date(end_date);
+      const now = new Date();
+
+      if (startDate >= endDate) {
+        return {
+          valid: false,
+          message: 'End date must be after start date',
+          conflicts: []
+        };
+      }
+
+      if (startDate < now) {
+        return {
+          valid: false,
+          message: 'Start date cannot be in the past',
+          conflicts: []
+        };
+      }
+
+      // Check availability
+      const availability = await this.checkAvailability(vehicle_id, start_date, end_date);
+      
+      if (!availability.available) {
+        let message = 'Vehicle is not available for the selected dates';
+        
+        if (availability.conflicts.length > 0) {
+          const conflictDates = availability.conflicts.map(c => 
+            `${new Date(c.rental_start_date).toLocaleDateString()} - ${new Date(c.rental_end_date).toLocaleDateString()}`
+          ).join(', ');
+          message = `Vehicle is already booked during: ${conflictDates}. Please choose different dates or another vehicle.`;
+        }
+        
+        return {
+          valid: false,
+          message,
+          conflicts: availability.conflicts
+        };
+      }
+
+      return {
+        valid: true,
+        message: 'Vehicle is available for booking',
+        conflicts: []
+      };
+
+    } catch (error) {
+      console.error('❌ Error validating rental booking:', error);
+      return {
+        valid: false,
+        message: 'Error validating booking. Please try again.',
+        conflicts: []
+      };
+    }
+  }
+
+  /**
+   * Get vehicles with their current derived status
+   * @param {string} vehicleType - Optional vehicle type filter
+   * @returns {Promise<Array>} Vehicles with derived status
+   */
+  async getVehiclesWithStatus(vehicleType = null) {
+    try {
+      console.log('🔍 Getting vehicles with derived status');
+      
+      // Get vehicles
+      let vehicleQuery = supabase
+        .from(TBL.VEHICLES)
+        .select('id, name, model, plate_number, vehicle_type, service_status, maintenance_status');
+      
+      if (vehicleType) {
+        vehicleQuery = vehicleQuery.eq('vehicle_type', vehicleType);
+      }
+
+      const { data: vehicles, error: vehicleError } = await vehicleQuery;
+
+      if (vehicleError) {
+        console.error('❌ Error fetching vehicles:', vehicleError);
+        return [];
+      }
+
+      // Get all rentals
+      const { data: rentals, error: rentalError } = await supabase
+        .from(TBL.RENTALS)
+        .select('vehicle_id, rental_start_date, rental_end_date, rental_status')
+        .in('rental_status', ['scheduled', 'confirmed', 'active']);
+
+      if (rentalError) {
+        console.error('❌ Error fetching rentals:', rentalError);
+      }
+
+      // Group rentals by vehicle
+      const rentalsByVehicle = {};
+      (rentals || []).forEach(rental => {
+        if (!rentalsByVehicle[rental.vehicle_id]) {
+          rentalsByVehicle[rental.vehicle_id] = [];
+        }
+        rentalsByVehicle[rental.vehicle_id].push(rental);
+      });
+
+      // Add derived status to each vehicle
+      const vehiclesWithStatus = vehicles.map(vehicle => ({
+        ...vehicle,
+        derived_status: this.deriveVehicleStatus(vehicle, rentalsByVehicle[vehicle.id] || []),
+        active_rentals: rentalsByVehicle[vehicle.id] || []
+      }));
+
+      console.log(`✅ Retrieved ${vehiclesWithStatus.length} vehicles with status`);
+      return vehiclesWithStatus;
+
+    } catch (error) {
+      console.error('❌ Error getting vehicles with status:', error);
+      return [];
+    }
+  }
+}
+
+export default new VehicleAvailabilityService();

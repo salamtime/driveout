@@ -1,0 +1,157 @@
+{
+  "common": {
+    "appName": "SaharaX",
+    "loading": "Chargement",
+    "error": "Erreur",
+    "success": "Succès",
+    "cancel": "Annuler",
+    "save": "Enregistrer",
+    "edit": "Modifier",
+    "delete": "Supprimer",
+    "confirm": "Confirmer",
+    "close": "Fermer",
+    "back": "Retour",
+    "next": "Suivant",
+    "previous": "Précédent",
+    "search": "Rechercher",
+    "filter": "Filtrer",
+    "sort": "Trier",
+    "actions": "Actions",
+    "status": "Statut",
+    "date": "Date",
+    "time": "Heure",
+    "name": "Nom",
+    "email": "Email",
+    "phone": "Téléphone",
+    "address": "Adresse",
+    "city": "Ville",
+    "country": "Pays",
+    "price": "Prix",
+    "total": "Total",
+    "subtotal": "Sous-total",
+    "tax": "Taxe",
+    "discount": "Remise",
+    "quantity": "Quantité",
+    "description": "Description",
+    "notes": "Notes",
+    "comments": "Commentaires",
+    "rating": "Évaluation",
+    "reviews": "Avis",
+    "availability": "Disponibilité",
+    "available": "Disponible",
+    "unavailable": "Indisponible",
+    "booked": "Réservé",
+    "pending": "En attente",
+    "confirmed": "Confirmé",
+    "cancelled": "Annulé",
+    "completed": "Terminé",
+    "active": "Actif",
+    "inactive": "Inactif",
+    "enabled": "Activé",
+    "disabled": "Désactivé",
+    "yes": "Oui",
+    "no": "Non",
+    "login": "Connexion",
+    "logout": "Déconnexion",
+    "profile": "Profil",
+    "dashboard": "Tableau de bord",
+    "myBookings": "Mes Réservations"
+  },
+  "navigation": {
+    "home": "Accueil",
+    "atv": "Location Quad",
+    "tours": "Excursions",
+    "about": "À propos",
+    "contact": "Contact"
+  },
+  "landing": {
+    "hero": {
+      "title": "L'Aventure vous attend dans le Sahara",
+      "subtitle": "Découvrez la magie du désert marocain avec nos locations de quad premium et nos excursions guidées",
+      "bookNow": "Réserver maintenant",
+      "exploreTours": "Explorer les excursions"
+    },
+    "services": {
+      "title": "Nos Services",
+      "rentalTitle": "Location de Quad",
+      "rentalDescription": "Quads de haute qualité pour votre aventure dans le désert",
+      "toursTitle": "Excursions Guidées",
+      "toursDescription": "Excursions menées par des experts à travers des paysages époustouflants",
+      "deliveryTitle": "Service de Livraison",
+      "deliveryDescription": "Nous apportons l'aventure à votre emplacement",
+      "groupTitle": "Forfaits Groupe",
+      "groupDescription": "Tarifs spéciaux pour les groupes et événements"
+    },
+    "vehicles": {
+      "title": "Notre Flotte",
+      "viewAll": "Voir tous les véhicules"
+    },
+    "testimonials": {
+      "title": "Ce que disent nos clients"
+    },
+    "locations": {
+      "title": "Nos Emplacements",
+      "subtitle": "Trouvez-nous dans les plus belles destinations du Maroc"
+    },
+    "cta": {
+      "title": "Prêt pour votre aventure?",
+      "subtitle": "Réservez votre location de quad ou excursion aujourd'hui et créez des souvenirs inoubliables"
+    }
+  },
+  "auth": {
+    "login": {
+      "title": "Se connecter",
+      "subtitle": "Bienvenue sur SaharaX",
+      "email": "Email",
+      "password": "Mot de passe",
+      "rememberMe": "Se souvenir de moi",
+      "forgotPassword": "Mot de passe oublié?",
+      "signIn": "Se connecter",
+      "noAccount": "Vous n'avez pas de compte?",
+      "signUp": "Inscrivez-vous ici",
+      "orContinueWith": "Ou continuer avec",
+      "google": "Google",
+      "facebook": "Facebook"
+    }
+  },
+  "footer": {
+    "company": {
+      "title": "SaharaX",
+      "description": "Votre destination de choix pour les aventures dans le désert au Maroc. Vivez le frisson de la conduite de quad à travers des paysages époustouflants."
+    },
+    "quickLinks": {
+      "title": "Liens Rapides",
+      "home": "Accueil",
+      "rentals": "Location Quad",
+      "tours": "Excursions",
+      "about": "À propos",
+      "contact": "Contact"
+    },
+    "services": {
+      "title": "Services",
+      "atvRentals": "Location de Quad",
+      "guidedTours": "Excursions Guidées",
+      "groupPackages": "Forfaits Groupe",
+      "delivery": "Service de Livraison"
+    },
+    "contact": {
+      "title": "Informations de Contact",
+      "address": "123 Route du Désert, Marrakech, Maroc",
+      "phone": "+212 123 456 789",
+      "email": "info@saharax.com"
+    },
+    "social": {
+      "title": "Suivez-nous",
+      "facebook": "Facebook",
+      "instagram": "Instagram",
+      "twitter": "Twitter",
+      "youtube": "YouTube"
+    },
+    "legal": {
+      "copyright": "© 2023 SaharaX. Tous droits réservés.",
+      "privacy": "Politique de Confidentialité",
+      "terms": "Conditions d'Utilisation",
+      "cookies": "Politique des Cookies"
+    }
+  }
+}

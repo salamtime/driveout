@@ -1,0 +1,150 @@
+// PackageService.js
+import { supabase } from '../lib/supabase';
+
+const PackageService = {
+  async createPackage(packageData) {
+    try {
+      console.log('📦 PackageService.createPackage called with:', packageData);
+      
+      // Ensure all required fields are present and not null
+      const dataToInsert = {
+        name: packageData.name,
+        description: packageData.description || '',
+        vehicle_model_id: packageData.vehicle_model_id,
+        rate_type_id: packageData.rate_type_id,
+        included_kilometers: packageData.included_kilometers,
+        extra_km_rate: packageData.extra_km_rate,
+        fixed_amount: packageData.fixed_amount,
+        is_active: packageData.is_active !== undefined ? packageData.is_active : true
+      };
+
+      // Validate all three fields are present
+      if (!dataToInsert.fixed_amount || !dataToInsert.included_kilometers || !dataToInsert.extra_km_rate) {
+        throw new Error('Fixed amount, included kilometers, and overage rate are all required');
+      }
+
+      console.log('📦 Inserting data:', dataToInsert);
+
+      const { data, error } = await supabase
+        .from('app_4c3a7a6153_rental_km_packages')
+        .insert([dataToInsert])
+        .select();
+
+      if (error) {
+        console.error('❌ Supabase error:', error);
+        throw error;
+      }
+
+      console.log('✅ Package created successfully:', data);
+      return data;
+    } catch (error) {
+      console.error('❌ Error in createPackage:', error);
+      throw error;
+    }
+  },
+
+  async updatePackage(id, packageData) {
+    try {
+      console.log('📦 PackageService.updatePackage called with ID:', id, 'data:', packageData);
+      
+      const dataToUpdate = {
+        name: packageData.name,
+        description: packageData.description || '',
+        vehicle_model_id: packageData.vehicle_model_id,
+        rate_type_id: packageData.rate_type_id,
+        included_kilometers: packageData.included_kilometers,
+        extra_km_rate: packageData.extra_km_rate,
+        fixed_amount: packageData.fixed_amount,
+        is_active: packageData.is_active,
+        updated_at: new Date().toISOString()
+      };
+
+      // Validate all three fields are present
+      if (!dataToUpdate.fixed_amount || !dataToUpdate.included_kilometers || !dataToUpdate.extra_km_rate) {
+        throw new Error('Fixed amount, included kilometers, and overage rate are all required');
+      }
+
+      const { data, error } = await supabase
+        .from('app_4c3a7a6153_rental_km_packages')
+        .update(dataToUpdate)
+        .eq('id', id)
+        .select();
+
+      if (error) {
+        console.error('❌ Supabase error:', error);
+        throw error;
+      }
+
+      console.log('✅ Package updated successfully:', data);
+      return data;
+    } catch (error) {
+      console.error('❌ Error in updatePackage:', error);
+      throw error;
+    }
+  },
+
+  async getPackages() {
+    try {
+      const { data, error } = await supabase
+        .from('app_4c3a7a6153_rental_km_packages')
+        .select(`
+          *,
+          vehicle_model:saharax_0u4w4d_vehicle_models(*)
+        `)
+        .order('id');
+
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('Error fetching packages:', error);
+      throw error;
+    }
+  },
+
+  async getRateTypes() {
+    try {
+      const { data, error } = await supabase
+        .from('rate_types')
+        .select('*')
+        .order('id');
+
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('Error fetching rate types:', error);
+      throw error;
+    }
+  },
+
+  async getVehicleModels() {
+    try {
+      const { data, error } = await supabase
+        .from('saharax_0u4w4d_vehicle_models')
+        .select('*')
+        .order('name');
+
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('Error fetching vehicle models:', error);
+      throw error;
+    }
+  },
+
+  async deletePackage(id) {
+    try {
+      const { error } = await supabase
+        .from('app_4c3a7a6153_rental_km_packages')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      return true;
+    } catch (error) {
+      console.error('Error deleting package:', error);
+      throw error;
+    }
+  }
+};
+
+export default PackageService;

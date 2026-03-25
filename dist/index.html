@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="SaharaX - Modern ATV rental and off-road tour platform in Morocco. Book ATVs for hourly, daily, weekly or monthly use, or join guided adventure tours." />
+  <meta name="keywords" content="ATV rental, Morocco tours, off-road adventures, quad bikes, desert tours" />
+  
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Scheherazade+New:wght@400;700&display=swap" rel="stylesheet">
+  
+  <!-- Open Graph / Social Media Meta Tags -->
+  <meta property="og:title" content="SaharaX - ATV Rentals & Desert Tours in Morocco" />
+  <meta property="og:description" content="Rent ATVs by the hour, day, week, or month. Join guided desert tours for an unforgettable adventure in Morocco." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://saharax.com" />
+  <meta property="og:image" content="/images/Adventure.jpg" />
+  
+  <title>SaharaX - ATV Rentals & Tours in Morocco</title>
+  
+  <!-- Prevent extension conflicts -->
+  <script>
+    (function() {
+      'use strict';
+      const originalDefineProperty = Object.defineProperty;
+      Object.defineProperty = function(obj, prop, descriptor) {
+        try {
+          if (prop === 'ethereum' && obj === window) return obj;
+          return originalDefineProperty.call(this, obj, prop, descriptor);
+        } catch (error) {
+          console.warn('Property definition intercepted to prevent extension conflict:', error.message);
+          return obj;
+        }
+      };
+      setTimeout(() => { Object.defineProperty = originalDefineProperty; }, 2000);
+    })();
+  </script>
+  <script type="module" crossorigin src="/assets/main-Fu1C8QdV.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/main-Ck2KBoIe.css">
+</head>
+
+<body>
+  <div id="root"></div>
+  
+  <script>
+    window.vehicleStore = {
+      data: {},
+      init: function() {
+        try { const stored = localStorage.getItem('vehicleDataCache'); if (stored) this.data = JSON.parse(stored); } catch (e) { this.data = {}; }
+      },
+      save: function() { try { localStorage.setItem('vehicleDataCache', JSON.stringify(this.data)); } catch (e) { console.error('Error saving vehicle cache', e); } },
+      getVehicle: function(id) { return this.data[id] || null; },
+      updateVehicle: function(id, data) { this.data[id] = {...(this.data[id] || {}), ...data, updated_at: new Date().toISOString()}; this.save(); return this.data[id]; },
+      listVehicles: function() { return Object.values(this.data); }
+    };
+    window.vehicleStore.init();
+  </script>
+  
+</body>
+
+</html>

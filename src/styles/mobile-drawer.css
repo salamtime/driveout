@@ -1,0 +1,125 @@
+/* Overlay must swallow ALL background scroll events */
+.rm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+}
+
+/* Drawer layout - CRITICAL: proper flex structure for scrolling */
+.rm-drawer {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: min(88vw, 360px);
+  height: 100vh; /* Full viewport height */
+  max-height: 100vh; /* Constrain height */
+  background: #fff;
+  z-index: 1001;
+  display: flex;
+  flex-direction: column; /* CRITICAL: column layout */
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+/* Header - Static, no scrolling */
+.rm-drawer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #eee;
+  flex: 0 0 auto; /* CRITICAL: don't grow/shrink */
+}
+
+.rm-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rm-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #e8f0ff;
+  color: #1e3a8a;
+  font-weight: 700;
+}
+
+.rm-title {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.rm-close {
+  background: transparent;
+  border: 0;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Body - ONLY scrollable container with CRITICAL constraints */
+.rm-drawer__body {
+  flex: 1 1 auto; /* CRITICAL: grow to fill space */
+  min-height: 0; /* CRITICAL: allows flex child to shrink below content size */
+  overflow-y: auto; /* Enable scrolling */
+  padding: 8px;
+  
+  /* iOS momentum scrolling */
+  -webkit-overflow-scrolling: touch;
+  
+  /* Prevent scroll chaining to parent */
+  overscroll-behavior: contain;
+  
+  /* Ensure proper scrolling context */
+  position: relative;
+}
+
+.rm-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  color: #111;
+  text-decoration: none;
+}
+
+.rm-item:hover {
+  background: #f3f4f6;
+}
+
+.rm-icon {
+  width: 22px;
+  text-align: center;
+}
+
+.rm-label {
+  font-size: 15px;
+}
+
+.rm-divider {
+  border: none;
+  border-top: 1px solid #eee;
+  margin: 8px 0;
+}
+
+/* Footer - Static with iOS safe area support */
+.rm-drawer__footer {
+  flex: 0 0 auto; /* CRITICAL: don't grow/shrink */
+  border-top: 1px solid #eee;
+  padding: 12px 16px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom)); /* iOS safe area */
+  background: #fff;
+}
+
+/* Ensure mobile viewport units work correctly */
+@supports (height: 100dvh) {
+  .rm-drawer {
+    height: 100dvh;
+    max-height: 100dvh;
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "common": {
+    "buttons": {
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "delete": "Supprimer",
+      "edit": "Modifier",
+      "view": "Voir",
+      "add": "Ajouter",
+      "back": "Retour",
+      "next": "Suivant",
+      "previous": "Précédent",
+      "submit": "Soumettre",
+      "confirm": "Confirmer",
+      "close": "Fermer",
+      "search": "Rechercher",
+      "filter": "Filtrer",
+      "export": "Exporter",
+      "import": "Importer",
+      "refresh": "Actualiser",
+      "print": "Imprimer",
+      "download": "Télécharger",
+      "upload": "Téléverser"
+    },
+    "status": {
+      "loading": "Chargement...",
+      "saving": "Enregistrement...",
+      "processing": "Traitement...",
+      "success": "Succès",
+      "error": "Erreur",
+      "warning": "Avertissement",
+      "info": "Information",
+      "noData": "Aucune donnée trouvée",
+      "noResults": "Aucun résultat trouvé"
+    },
+    "actions": {
+      "viewDetails": "Voir les détails",
+      "editDetails": "Modifier les détails",
+      "deleteItem": "Supprimer l'élément",
+      "confirmDelete": "Êtes-vous sûr de vouloir supprimer cet élément ?",
+      "actionSuccess": "Action effectuée avec succès",
+      "actionFailed": "L'action a échoué. Veuillez réessayer."
+    },
+    "validation": {
+      "required": "Ce champ est obligatoire",
+      "invalidEmail": "Adresse e-mail invalide",
+      "invalidPhone": "Numéro de téléphone invalide",
+      "minLength": "La longueur minimale est de {{min}} caractères",
+      "maxLength": "La longueur maximale est de {{max}} caractères",
+      "passwordMismatch": "Les mots de passe ne correspondent pas"
+    }
+  },
+  "navigation": {
+    "dashboard": "Tableau de bord",
+    "rentals": "Locations",
+    "vehicles": "Véhicules",
+    "customers": "Clients",
+    "settings": "Paramètres",
+    "profile": "Profil",
+    "logout": "Déconnexion",
+    "backToRentals": "Retour aux locations"
+  },
+  "rental": {
+    "status": {
+      "scheduled": "Planifié",
+      "active": "Actif",
+      "completed": "Terminé",
+      "cancelled": "Annulé"
+    },
+    "payment": {
+      "paid": "Payé",
+      "unpaid": "Non payé",
+      "pending": "En attente",
+      "overdue": "En retard",
+      "deposit": "Dépôt",
+      "balance": "Solde",
+      "total": "Total",
+      "depositAmount": "Montant du dépôt",
+      "balanceDue": "Solde dû",
+      "damageDeposit": "Caution",
+      "paymentStatus": "Statut du paiement",
+      "markAsPaid": "Marquer comme payé"
+    },
+    "details": {
+      "rentalId": "ID de location",
+      "customerDetails": "Détails du client",
+      "vehicleDetails": "Détails du véhicule",
+      "rentalPeriod": "Période de location",
+      "startDate": "Date de début",
+      "endDate": "Date de fin",
+      "pickupLocation": "Lieu de prise en charge",
+      "returnLocation": "Lieu de retour",
+      "rentalType": "Type de location",
+      "daily": "Journalier",
+      "weekly": "Hebdomadaire",
+      "monthly": "Mensuel",
+      "hourly": "Horaire"
+    },
+    "actions": {
+      "startRental": "Démarrer la location",
+      "endRental": "Terminer la location",
+      "completeRental": "Compléter la location",
+      "cancelRental": "Annuler la location",
+      "signContract": "Signer le contrat",
+      "viewContract": "Voir le contrat",
+      "printInvoice": "Imprimer la facture",
+      "sendWhatsApp": "Envoyer via WhatsApp"
+    },
+    "vehicle": {
+      "openingVideo": "Vidéo d'ouverture",
+      "closingVideo": "Vidéo de fermeture",
+      "vehicleInspection": "Inspection du véhicule",
+      "recordVideo": "Enregistrer une vidéo",
+      "uploadVideo": "Téléverser une vidéo",
+      "startOdometer": "Kilométrage de départ",
+      "endOdometer": "Kilométrage de fin",
+      "totalDistance": "Distance totale",
+      "fuelLevel": "Niveau de carburant",
+      "startFuel": "Carburant de départ",
+      "endFuel": "Carburant de fin"
+    }
+  },
+  "customer": {
+    "fullName": "Nom complet",
+    "firstName": "Prénom",
+    "lastName": "Nom de famille",
+    "email": "Adresse e-mail",
+    "phone": "Numéro de téléphone",
+    "license": "Numéro de permis",
+    "idNumber": "Numéro d'identité",
+    "address": "Adresse",
+    "city": "Ville",
+    "country": "Pays",
+    "viewDetails": "Voir les détails du client"
+  },
+  "vehicle": {
+    "name": "Nom du véhicule",
+    "model": "Modèle",
+    "plate": "Plaque d'immatriculation",
+    "type": "Type de véhicule",
+    "status": {
+      "available": "Disponible",
+      "rented": "Loué",
+      "maintenance": "En maintenance",
+      "unavailable": "Indisponible"
+    },
+    "dailyRate": "Tarif journalier",
+    "weeklyRate": "Tarif hebdomadaire",
+    "monthlyRate": "Tarif mensuel"
+  },
+  "language": {
+    "switchLanguage": "Changer de langue",
+    "english": "English",
+    "french": "Français"
+  }
+}

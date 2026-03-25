@@ -1,0 +1,383 @@
+[
+  {
+    "id": "m001",
+    "vehicleId": "v001",
+    "date": "2023-05-15",
+    "type": "routine",
+    "status": "completed",
+    "description": "Oil change and filter replacement",
+    "details": "Used 10W-40 synthetic oil and K&N filter",
+    "technician": "Ahmed Hassan",
+    "technicianId": "u004",
+    "cost": 120,
+    "parts": [
+      {
+        "partId": "p001",
+        "name": "Synthetic Oil 10W-40",
+        "quantity": 3,
+        "unitCost": 15,
+        "totalCost": 45
+      },
+      {
+        "partId": "p002",
+        "name": "K&N Oil Filter",
+        "quantity": 1,
+        "unitCost": 25,
+        "totalCost": 25
+      }
+    ],
+    "labor": {
+      "hours": 1,
+      "rate": 50,
+      "cost": 50
+    },
+    "odometerReading": 1200,
+    "nextService": "2023-11-15",
+    "invoiceNumber": "MAINT-001",
+    "notes": "All systems running smoothly after service",
+    "images": [
+      "/assets/images/maintenance/maint-001-before.jpg",
+      "/assets/images/maintenance/maint-001-after.jpg"
+    ],
+    "createdAt": "2023-05-15T13:30:00",
+    "updatedAt": "2023-05-15T14:45:00"
+  },
+  {
+    "id": "m002",
+    "vehicleId": "v001",
+    "date": "2023-06-22",
+    "type": "repair",
+    "status": "completed",
+    "description": "Front brake pad replacement",
+    "details": "Replaced worn brake pads with high-performance ceramic pads",
+    "technician": "Mohammed Ali",
+    "technicianId": "u005",
+    "cost": 85,
+    "parts": [
+      {
+        "partId": "p003",
+        "name": "Ceramic Front Brake Pads",
+        "quantity": 2,
+        "unitCost": 30,
+        "totalCost": 60
+      }
+    ],
+    "labor": {
+      "hours": 0.5,
+      "rate": 50,
+      "cost": 25
+    },
+    "odometerReading": 1400,
+    "invoiceNumber": "MAINT-002",
+    "notes": "Brake performance significantly improved",
+    "images": [
+      "/assets/images/maintenance/maint-002-before.jpg",
+      "/assets/images/maintenance/maint-002-after.jpg"
+    ],
+    "createdAt": "2023-06-22T09:15:00",
+    "updatedAt": "2023-06-22T10:00:00"
+  },
+  {
+    "id": "m003",
+    "vehicleId": "v002",
+    "date": "2023-04-18",
+    "type": "routine",
+    "status": "completed",
+    "description": "Full service and inspection",
+    "details": "Complete maintenance including oil change, filter replacement, belt inspection, and chassis lubrication",
+    "technician": "Mohammed Ali",
+    "technicianId": "u005",
+    "cost": 175,
+    "parts": [
+      {
+        "partId": "p001",
+        "name": "Synthetic Oil 10W-40",
+        "quantity": 4,
+        "unitCost": 15,
+        "totalCost": 60
+      },
+      {
+        "partId": "p004",
+        "name": "Oil Filter",
+        "quantity": 1,
+        "unitCost": 15,
+        "totalCost": 15
+      },
+      {
+        "partId": "p005",
+        "name": "Air Filter",
+        "quantity": 1,
+        "unitCost": 25,
+        "totalCost": 25
+      }
+    ],
+    "labor": {
+      "hours": 1.5,
+      "rate": 50,
+      "cost": 75
+    },
+    "odometerReading": 3050,
+    "nextService": "2023-10-18",
+    "invoiceNumber": "MAINT-003",
+    "notes": "Vehicle in good condition, no issues found",
+    "images": [
+      "/assets/images/maintenance/maint-003.jpg"
+    ],
+    "createdAt": "2023-04-18T10:30:00",
+    "updatedAt": "2023-04-18T12:30:00"
+  },
+  {
+    "id": "m004",
+    "vehicleId": "v002",
+    "date": "2023-06-28",
+    "type": "repair",
+    "status": "in-progress",
+    "description": "Drive belt replacement",
+    "details": "Replacing worn drive belt with OEM replacement",
+    "technician": "Ahmed Hassan",
+    "technicianId": "u004",
+    "estimatedCost": 210,
+    "parts": [
+      {
+        "partId": "p006",
+        "name": "OEM Drive Belt",
+        "quantity": 1,
+        "unitCost": 120,
+        "totalCost": 120
+      },
+      {
+        "partId": "p007",
+        "name": "Belt Tensioner",
+        "quantity": 1,
+        "unitCost": 40,
+        "totalCost": 40
+      }
+    ],
+    "labor": {
+      "hours": 1,
+      "rate": 50,
+      "estimatedCost": 50
+    },
+    "odometerReading": 3285,
+    "estimatedCompletion": "2023-06-30",
+    "notes": "Belt showed signs of wear and cracking during inspection",
+    "images": [
+      "/assets/images/maintenance/maint-004.jpg"
+    ],
+    "createdAt": "2023-06-28T09:00:00",
+    "updatedAt": "2023-06-28T11:30:00"
+  },
+  {
+    "id": "m005",
+    "vehicleId": "v003",
+    "date": "2023-05-20",
+    "type": "routine",
+    "status": "completed",
+    "description": "Oil and filter change",
+    "details": "Standard oil and filter change with synthetic oil",
+    "technician": "Ahmed Hassan",
+    "technicianId": "u004",
+    "cost": 180,
+    "parts": [
+      {
+        "partId": "p008",
+        "name": "Full Synthetic Oil 5W-30",
+        "quantity": 5,
+        "unitCost": 18,
+        "totalCost": 90
+      },
+      {
+        "partId": "p009",
+        "name": "Premium Oil Filter",
+        "quantity": 1,
+        "unitCost": 30,
+        "totalCost": 30
+      }
+    ],
+    "labor": {
+      "hours": 1.2,
+      "rate": 50,
+      "cost": 60
+    },
+    "odometerReading": 800,
+    "nextService": "2023-10-20",
+    "invoiceNumber": "MAINT-005",
+    "notes": "Vehicle in excellent condition",
+    "images": [
+      "/assets/images/maintenance/maint-005.jpg"
+    ],
+    "createdAt": "2023-05-20T14:00:00",
+    "updatedAt": "2023-05-20T15:30:00"
+  },
+  {
+    "id": "m006",
+    "vehicleId": "v004",
+    "date": "2023-06-10",
+    "type": "routine",
+    "status": "completed",
+    "description": "General maintenance and safety check",
+    "details": "Oil change, brake inspection, tire pressure check, and general safety inspection",
+    "technician": "Mohammed Ali",
+    "technicianId": "u005",
+    "cost": 95,
+    "parts": [
+      {
+        "partId": "p010",
+        "name": "Standard Oil 10W-30",
+        "quantity": 2,
+        "unitCost": 12,
+        "totalCost": 24
+      },
+      {
+        "partId": "p011",
+        "name": "Standard Oil Filter",
+        "quantity": 1,
+        "unitCost": 11,
+        "totalCost": 11
+      }
+    ],
+    "labor": {
+      "hours": 1.2,
+      "rate": 50,
+      "cost": 60
+    },
+    "odometerReading": 620,
+    "nextService": "2023-12-10",
+    "invoiceNumber": "MAINT-006",
+    "notes": "All systems in good working order, recommended future throttle adjustment",
+    "images": [
+      "/assets/images/maintenance/maint-006.jpg"
+    ],
+    "createdAt": "2023-06-10T11:00:00",
+    "updatedAt": "2023-06-10T12:30:00"
+  },
+  {
+    "id": "m007",
+    "vehicleId": "v005",
+    "date": "2023-06-05",
+    "type": "routine",
+    "status": "completed",
+    "description": "Oil change and air filter replacement",
+    "details": "Changed oil with high-performance synthetic and replaced air filter",
+    "technician": "Ahmed Hassan",
+    "technicianId": "u004",
+    "cost": 110,
+    "parts": [
+      {
+        "partId": "p012",
+        "name": "High-Performance Synthetic 5W-40",
+        "quantity": 3,
+        "unitCost": 20,
+        "totalCost": 60
+      },
+      {
+        "partId": "p013",
+        "name": "Premium Air Filter",
+        "quantity": 1,
+        "unitCost": 25,
+        "totalCost": 25
+      }
+    ],
+    "labor": {
+      "hours": 0.5,
+      "rate": 50,
+      "cost": 25
+    },
+    "odometerReading": 750,
+    "nextService": "2023-11-05",
+    "invoiceNumber": "MAINT-007",
+    "notes": "Recommended carburetor adjustment at next service",
+    "images": [
+      "/assets/images/maintenance/maint-007.jpg"
+    ],
+    "createdAt": "2023-06-05T10:00:00",
+    "updatedAt": "2023-06-05T10:45:00"
+  },
+  {
+    "id": "m008",
+    "vehicleId": "v003",
+    "date": "2023-06-25",
+    "type": "repair",
+    "status": "completed",
+    "description": "Replace broken tail light",
+    "details": "Replaced broken tail light assembly with OEM part",
+    "technician": "Mohammed Ali",
+    "technicianId": "u005",
+    "cost": 95,
+    "parts": [
+      {
+        "partId": "p014",
+        "name": "OEM Tail Light Assembly",
+        "quantity": 1,
+        "unitCost": 70,
+        "totalCost": 70
+      }
+    ],
+    "labor": {
+      "hours": 0.5,
+      "rate": 50,
+      "cost": 25
+    },
+    "odometerReading": 1120,
+    "invoiceNumber": "MAINT-008",
+    "notes": "Customer reported damage after last tour",
+    "images": [
+      "/assets/images/maintenance/maint-008-before.jpg",
+      "/assets/images/maintenance/maint-008-after.jpg"
+    ],
+    "createdAt": "2023-06-25T15:00:00",
+    "updatedAt": "2023-06-25T15:45:00"
+  },
+  {
+    "id": "m009",
+    "vehicleId": "v001",
+    "date": "2023-07-05",
+    "type": "scheduled",
+    "status": "pending",
+    "description": "Quarterly maintenance check",
+    "details": "Scheduled full maintenance including oil change, filter replacements, and full inspection",
+    "technician": "Ahmed Hassan",
+    "technicianId": "u004",
+    "estimatedCost": 150,
+    "parts": [],
+    "labor": {
+      "hours": 2,
+      "rate": 50,
+      "estimatedCost": 100
+    },
+    "odometerReading": null,
+    "notes": "Regular quarterly maintenance",
+    "createdAt": "2023-06-15T09:00:00",
+    "updatedAt": "2023-06-15T09:00:00"
+  },
+  {
+    "id": "m010",
+    "vehicleId": "v004",
+    "date": "2023-07-12",
+    "type": "scheduled",
+    "status": "pending",
+    "description": "Suspension adjustment",
+    "details": "Adjust suspension for optimal performance and replace fork seals",
+    "technician": "Mohammed Ali",
+    "technicianId": "u005",
+    "estimatedCost": 120,
+    "parts": [
+      {
+        "partId": "p015",
+        "name": "Fork Seal Kit",
+        "quantity": 1,
+        "unitCost": 40,
+        "totalCost": 40
+      }
+    ],
+    "labor": {
+      "hours": 1.6,
+      "rate": 50,
+      "estimatedCost": 80
+    },
+    "odometerReading": null,
+    "notes": "Customer reported stiff front suspension",
+    "createdAt": "2023-06-20T14:15:00",
+    "updatedAt": "2023-06-20T14:15:00"
+  }
+]

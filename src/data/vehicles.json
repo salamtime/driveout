@@ -1,0 +1,310 @@
+[
+  {
+    "id": "v001",
+    "type": "performance",
+    "name": "SX Raptor 700",
+    "model": "Yamaha Raptor 700R",
+    "year": 2023,
+    "category": "Sport ATV",
+    "description": "High-performance sport ATV with powerful engine and responsive handling",
+    "image": "/assets/images/quads/raptor700.jpg",
+    "price": {
+      "hourly": 85,
+      "daily": 350,
+      "weekly": 1200
+    },
+    "capacity": 1,
+    "status": "available",
+    "specifications": {
+      "engine": "686cc liquid-cooled SOHC 4-stroke",
+      "transmission": "5-speed manual with reverse",
+      "suspension": "Independent double wishbone front, Swingarm rear",
+      "power": "55 HP",
+      "weight": "422 lbs",
+      "fuelCapacity": "10.8 L",
+      "topSpeed": "75 mph"
+    },
+    "features": [
+      "Electric Start",
+      "Digital Dashboard",
+      "Adjustable Suspension",
+      "Front & Rear Disc Brakes"
+    ],
+    "maintenanceHistory": [
+      {
+        "id": "m001",
+        "date": "2023-05-15",
+        "type": "routine",
+        "description": "Oil change and filter replacement",
+        "technician": "Ahmed Hassan",
+        "cost": 120
+      },
+      {
+        "id": "m002",
+        "date": "2023-06-22",
+        "type": "repair",
+        "description": "Front brake pad replacement",
+        "technician": "Mohammed Ali",
+        "cost": 85
+      }
+    ],
+    "fuelRecords": [
+      {
+        "id": "f001",
+        "date": "2023-06-01",
+        "liters": 9.5,
+        "cost": 38,
+        "odometerReading": 1250
+      },
+      {
+        "id": "f002",
+        "date": "2023-06-10",
+        "liters": 8.2,
+        "cost": 32.8,
+        "odometerReading": 1380
+      }
+    ],
+    "location": "Marrakech",
+    "rentalHistory": [
+      "r002",
+      "r005",
+      "r008"
+    ]
+  },
+  {
+    "id": "v002",
+    "type": "utility",
+    "name": "SX Outback 570",
+    "model": "Polaris Sportsman 570",
+    "year": 2022,
+    "category": "Utility ATV",
+    "description": "Versatile utility quad for both work and recreation with excellent off-road capability",
+    "image": "/assets/images/quads/sportsman570.jpg",
+    "price": {
+      "hourly": 75,
+      "daily": 320,
+      "weekly": 1100
+    },
+    "capacity": 1,
+    "status": "maintenance",
+    "specifications": {
+      "engine": "567cc 4-stroke single cylinder",
+      "transmission": "Automatic PVT",
+      "suspension": "Independent with anti-roll bar",
+      "power": "44 HP",
+      "weight": "745 lbs",
+      "fuelCapacity": "21 L",
+      "topSpeed": "65 mph"
+    },
+    "features": [
+      "On-Demand AWD",
+      "Digital Display",
+      "Front Storage",
+      "Towing Capacity: 1,500 lbs"
+    ],
+    "maintenanceHistory": [
+      {
+        "id": "m003",
+        "date": "2023-04-18",
+        "type": "routine",
+        "description": "Full service and inspection",
+        "technician": "Mohammed Ali",
+        "cost": 175
+      },
+      {
+        "id": "m004",
+        "date": "2023-06-28",
+        "type": "repair",
+        "description": "Drive belt replacement",
+        "technician": "Ahmed Hassan",
+        "cost": 210,
+        "inProgress": true
+      }
+    ],
+    "fuelRecords": [
+      {
+        "id": "f003",
+        "date": "2023-05-12",
+        "liters": 18.5,
+        "cost": 74,
+        "odometerReading": 3120
+      }
+    ],
+    "location": "Marrakech",
+    "rentalHistory": [
+      "r001",
+      "r006"
+    ]
+  },
+  {
+    "id": "v003",
+    "type": "sideBySide",
+    "name": "SX Dune Cruiser",
+    "model": "Can-Am Maverick X3",
+    "year": 2023,
+    "category": "Side-by-Side UTV",
+    "description": "High-performance side-by-side for desert adventures with premium features and comfort",
+    "image": "/assets/images/quads/maverick-x3.jpg",
+    "price": {
+      "hourly": 110,
+      "daily": 450,
+      "weekly": 1800
+    },
+    "capacity": 2,
+    "status": "available",
+    "specifications": {
+      "engine": "900cc Rotax ACE Turbocharged Triple-cylinder",
+      "transmission": "Quick Response System X CVT",
+      "suspension": "Trophy Truck Inspired with 20\" travel",
+      "power": "195 HP",
+      "weight": "1,585 lbs",
+      "fuelCapacity": "40 L",
+      "topSpeed": "85 mph"
+    },
+    "features": [
+      "Turbo RR Engine",
+      "Smart-Lok Differential",
+      "Fox Racing Suspension",
+      "Roof and Half-Windshield"
+    ],
+    "maintenanceHistory": [
+      {
+        "id": "m005",
+        "date": "2023-05-20",
+        "type": "routine",
+        "description": "Oil and filter change",
+        "technician": "Ahmed Hassan",
+        "cost": 180
+      }
+    ],
+    "fuelRecords": [
+      {
+        "id": "f004",
+        "date": "2023-06-05",
+        "liters": 30.5,
+        "cost": 122,
+        "odometerReading": 850
+      },
+      {
+        "id": "f005",
+        "date": "2023-06-18",
+        "liters": 35.2,
+        "cost": 140.8,
+        "odometerReading": 1050
+      }
+    ],
+    "location": "Merzouga",
+    "rentalHistory": [
+      "r003",
+      "r007"
+    ]
+  },
+  {
+    "id": "v004",
+    "type": "youth",
+    "name": "SX Junior 90",
+    "model": "Honda TRX90X",
+    "year": 2022,
+    "category": "Youth ATV",
+    "description": "Beginner-friendly youth quad for young riders ages 10 and up",
+    "image": "/assets/images/quads/trx90x.jpg",
+    "price": {
+      "hourly": 50,
+      "daily": 200,
+      "weekly": 700
+    },
+    "capacity": 1,
+    "status": "available",
+    "specifications": {
+      "engine": "86cc air-cooled 4-stroke",
+      "transmission": "4-speed with automatic clutch",
+      "suspension": "Independent front, Swingarm rear",
+      "power": "6.5 HP",
+      "weight": "262 lbs",
+      "fuelCapacity": "6.3 L",
+      "topSpeed": "25 mph"
+    },
+    "features": [
+      "Push-Button Electric Start",
+      "Adjustable Throttle Limiter",
+      "Full Floorboards"
+    ],
+    "maintenanceHistory": [
+      {
+        "id": "m006",
+        "date": "2023-06-10",
+        "type": "routine",
+        "description": "General maintenance and safety check",
+        "technician": "Mohammed Ali",
+        "cost": 95
+      }
+    ],
+    "fuelRecords": [
+      {
+        "id": "f006",
+        "date": "2023-06-15",
+        "liters": 4.5,
+        "cost": 18,
+        "odometerReading": 650
+      }
+    ],
+    "location": "Agafay",
+    "rentalHistory": [
+      "r004"
+    ]
+  },
+  {
+    "id": "v005",
+    "type": "performance",
+    "name": "SX Blitz 450",
+    "model": "Suzuki QuadSport LT-R450",
+    "year": 2023,
+    "category": "Sport ATV",
+    "description": "Racing-inspired sport quad with exceptional acceleration and handling",
+    "image": "/assets/images/quads/suzuki-450.jpg",
+    "price": {
+      "hourly": 80,
+      "daily": 330,
+      "weekly": 1150
+    },
+    "capacity": 1,
+    "status": "available",
+    "specifications": {
+      "engine": "450cc liquid-cooled 4-stroke DOHC",
+      "transmission": "5-speed manual with reverse",
+      "suspension": "Independent double A-arm front, Swingarm rear",
+      "power": "48 HP",
+      "weight": "392 lbs",
+      "fuelCapacity": "9.5 L",
+      "topSpeed": "72 mph"
+    },
+    "features": [
+      "Fuel Injection",
+      "Advanced Suspension",
+      "Race-Ready Design"
+    ],
+    "maintenanceHistory": [
+      {
+        "id": "m007",
+        "date": "2023-06-05",
+        "type": "routine",
+        "description": "Oil change and air filter replacement",
+        "technician": "Ahmed Hassan",
+        "cost": 110
+      }
+    ],
+    "fuelRecords": [
+      {
+        "id": "f007",
+        "date": "2023-06-08",
+        "liters": 8.0,
+        "cost": 32,
+        "odometerReading": 780
+      }
+    ],
+    "location": "Marrakech",
+    "rentalHistory": [
+      "r009"
+    ]
+  }
+]
