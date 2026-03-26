@@ -1,6 +1,7 @@
 import { createSupabaseClients } from '../_lib/supabase.js';
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+const SHORT_LINKS_TABLE = process.env.SHORT_LINKS_TABLE || 'short_links';
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -32,7 +33,7 @@ export default async function handler(req, res) {
     const { adminClient } = createSupabaseClients();
 
     const existingQuery = adminClient
-      .from('url_shortener')
+      .from(SHORT_LINKS_TABLE)
       .select('short_code')
       .eq('original_url', originalUrl)
       .eq('document_type', documentType)
@@ -57,7 +58,7 @@ export default async function handler(req, res) {
     let code = generateCode();
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const { data: usedRows } = await adminClient
-        .from('url_shortener')
+        .from(SHORT_LINKS_TABLE)
         .select('id')
         .eq('short_code', code)
         .limit(1);
@@ -70,7 +71,7 @@ export default async function handler(req, res) {
     expires.setDate(expires.getDate() + 30);
 
     const { error: insertError } = await adminClient
-      .from('url_shortener')
+      .from(SHORT_LINKS_TABLE)
       .insert({
         original_url: originalUrl,
         short_code: code,

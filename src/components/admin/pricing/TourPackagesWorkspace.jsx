@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Package2, Plus, Route, Settings2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../../contexts/AuthContext';
+import { canManageTourPackages as canManageTourPackagesPermission } from '../../../utils/permissionHelpers';
 import {
   createTourPackage,
   deleteTourPackage,
@@ -153,8 +154,7 @@ const getLegacyPackagePricingBadge = (pkg) => {
 
 const TourPackagesWorkspace = () => {
   const { userProfile } = useAuth();
-  const userRole = String(userProfile?.role || '').toLowerCase();
-  const canManagePackages = ['admin', 'owner'].includes(userRole);
+  const canManagePackages = canManageTourPackagesPermission(userProfile);
 
   const [packages, setPackages] = useState([]);
   const [packagesLoading, setPackagesLoading] = useState(true);

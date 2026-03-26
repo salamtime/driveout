@@ -12,22 +12,13 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { ArrowLeft, Loader2, ShieldAlert, Pencil, Users, Mail, Smartphone, Shield, MessageSquare, Eye, EyeOff } from 'lucide-react';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
-
-// STANDARDIZED MODULE NAMES - Source of Truth
-const modules = [
-  'Dashboard', 'Calendar', 'Tours & Bookings', 'Rental Management', 'Customer Management', 
-  'Fleet Management', 'Pricing Management', 'Choose Tour Guide', 'Change Rental Price', 'Change Extension Price',
-  'Quad Maintenance', 'Fuel Logs', 'Inventory', 'Finance Management', 'Alerts',
-  'User & Role Management', 'System Settings', 'Project Export', 'WhatsApp Alerts'
-];
-
-const specialPermissionKeys = ['Choose Tour Guide', 'Change Rental Price', 'Change Extension Price'];
+import { ALL_PERMISSION_KEYS, PERMISSION_GROUPS, SPECIAL_PERMISSION_KEYS } from '../../utils/permissionCatalog';
 
 const buildPermissionState = (defaultValue = false) =>
-  modules.reduce((acc, permissionKey) => ({ ...acc, [permissionKey]: defaultValue }), {});
+  ALL_PERMISSION_KEYS.reduce((acc, permissionKey) => ({ ...acc, [permissionKey]: defaultValue }), {});
 
 const buildPermissionsForRole = (role) =>
-  modules.reduce((acc, permissionKey) => {
+  ALL_PERMISSION_KEYS.reduce((acc, permissionKey) => {
     const isOwner = role === 'owner';
     if (isOwner) {
       acc[permissionKey] = true;
@@ -37,7 +28,7 @@ const buildPermissionsForRole = (role) =>
     const isRestricted =
       permissionKey === 'User & Role Management' ||
       permissionKey === 'System Settings' ||
-      specialPermissionKeys.includes(permissionKey);
+      SPECIAL_PERMISSION_KEYS.includes(permissionKey);
 
     acc[permissionKey] = !isRestricted;
     return acc;
@@ -77,6 +68,22 @@ const UserManagement = () => {
   const [selectedUserForPermissions, setSelectedUserForPermissions] = useState(null);
   const [editPermissions, setEditPermissions] = useState({});
   const [isLoadingPermissions, setIsLoadingPermissions] = useState(false);
+
+  const setGroupedPermissionValue = (setter, permissionKey, checked) => {
+    setter((prev) => ({ ...prev, [permissionKey]: checked === true }));
+  };
+
+  const handleModuleToggle = (setter, moduleKey, extras, checked) => {
+    setter((prev) => {
+      const next = { ...prev, [moduleKey]: checked === true };
+      if (!checked) {
+        extras.forEach((permissionKey) => {
+          next[permissionKey] = false;
+        });
+      }
+      return next;
+    });
+  };
 
   const userRouteMatch = useMemo(
     () => location.pathname.match(/\/admin\/users\/([^/]+)\/(edit|permissions)$/),
@@ -234,7 +241,7 @@ const UserManagement = () => {
 
         // Insert user data into app_users table with phone and WhatsApp preferences
         const completePermissions = {};
-        modules.forEach(permissionKey => {
+        ALL_PERMISSION_KEYS.forEach(permissionKey => {
           completePermissions[permissionKey] = newUserPermissions[permissionKey] === true;
         });
 
@@ -507,7 +514,7 @@ const UserManagement = () => {
       // Missing keys are treated as false, not true
       const dbPermissions = data?.permissions || {};
       const merged = {};
-      modules.forEach(m => {
+      ALL_PERMISSION_KEYS.forEach(m => {
         merged[m] = dbPermissions[m] === true; // Explicitly check for true
       });
       
@@ -542,7 +549,7 @@ const UserManagement = () => {
       // DATA SAFETY: Ensure permissions are saved as JSON Object (not array)
       // Explicit False Values: Ensure all modules are included with explicit true/false
       const completePermissions = {};
-        modules.forEach(permissionKey => {
+        ALL_PERMISSION_KEYS.forEach(permissionKey => {
           completePermissions[permissionKey] = editPermissions[permissionKey] === true;
         });
       
@@ -836,17 +843,52 @@ const UserManagement = () => {
             ) : (
               <div className="space-y-4">
                 <Label className="text-sm font-medium text-slate-900">Permissions</Label>
-                <div className="mt-2 grid grid-cols-1 gap-4 rounded-xl border border-violet-100 bg-slate-50/70 p-4 md:grid-cols-2">
-                  {modules.map((permissionKey) => (
-                    <div key={permissionKey} className="flex items-center space-x-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                      <Checkbox
-                        id={`page-edit-perm-${permissionKey}`}
-                        checked={editPermissions[permissionKey] === true}
-                        onCheckedChange={(checked) => handleEditPermissionChange(permissionKey, checked)}
-                      />
-                      <Label htmlFor={`page-edit-perm-${permissionKey}`} className="text-sm font-normal text-slate-700">{permissionKey}</Label>
-                    </div>
-                  ))}
+                <div className="mt-2 space-y-4 rounded-xl border border-violet-100 bg-slate-50/70 p-4">
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    {PERMISSION_GROUPS.map(({ module, extras }) => {
+                      const moduleEnabled = editPermissions[module] === true;
+                      return (
+                        <div key={module} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">{module}</p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {extras.length > 0 ? 'Module access with extra action controls' : 'Module access'}
+                              </p>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <Checkbox
+                                id={`page-edit-module-${module}`}
+                                checked={moduleEnabled}
+                                onCheckedChange={(checked) => handleModuleToggle(setEditPermissions, module, extras, checked)}
+                              />
+                              <Label htmlFor={`page-edit-module-${module}`} className="text-sm font-medium text-slate-700">
+                                Access
+                              </Label>
+                            </div>
+                          </div>
+                          {extras.length > 0 ? (
+                            <div className="mt-4 space-y-2 border-t border-slate-100 pt-4">
+                              {extras.map((permissionKey) => (
+                                <div key={permissionKey} className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
+                                  <div>
+                                    <p className="text-sm font-medium text-slate-800">{permissionKey}</p>
+                                    <p className="text-xs text-slate-500">Visible only when module access is enabled</p>
+                                  </div>
+                                  <Checkbox
+                                    id={`page-edit-perm-${permissionKey}`}
+                                    checked={editPermissions[permissionKey] === true}
+                                    disabled={!moduleEnabled}
+                                    onCheckedChange={(checked) => setGroupedPermissionValue(setEditPermissions, permissionKey, checked)}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
@@ -1058,17 +1100,50 @@ const UserManagement = () => {
              <div>
                 <Label className="text-sm font-medium">Permissions</Label>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded-md border p-4 mt-2">
-                    {modules.map((permissionKey) => (
-                        <div key={permissionKey} className="flex items-center space-x-2">
-                            <Checkbox
-                                id={`perm-${permissionKey}`}
-                                checked={newUserPermissions[permissionKey]}
-                                onCheckedChange={(checked) => handlePermissionChange(permissionKey, checked)}
+                    <div className="col-span-full rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                      Turn on module access first, then enable the extra actions inside that module only when needed.
+                    </div>
+                    {PERMISSION_GROUPS.map(({ module, extras }) => {
+                      const moduleEnabled = newUserPermissions[module] === true;
+                      return (
+                        <div key={module} className="rounded-xl border border-slate-200 bg-white p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">{module}</p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {extras.length > 0 ? 'Access plus optional advanced actions' : 'Module access'}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Checkbox
+                                id={`perm-${module}`}
+                                checked={moduleEnabled}
+                                onCheckedChange={(checked) => handleModuleToggle(setNewUserPermissions, module, extras, checked)}
                                 disabled={newUser.role === 'owner'}
-                            />
-                            <Label htmlFor={`perm-${permissionKey}`} className="text-sm font-normal">{permissionKey}</Label>
+                              />
+                              <Label htmlFor={`perm-${module}`} className="text-sm font-medium">Access</Label>
+                            </div>
+                          </div>
+                          {extras.length > 0 ? (
+                            <div className="mt-4 space-y-2 border-t border-slate-100 pt-4">
+                              {extras.map((permissionKey) => (
+                                <div key={permissionKey} className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
+                                  <Label htmlFor={`perm-${permissionKey}`} className="text-sm font-normal text-slate-700">
+                                    {permissionKey}
+                                  </Label>
+                                  <Checkbox
+                                    id={`perm-${permissionKey}`}
+                                    checked={newUserPermissions[permissionKey] === true}
+                                    onCheckedChange={(checked) => setGroupedPermissionValue(setNewUserPermissions, permissionKey, checked)}
+                                    disabled={newUser.role === 'owner' || !moduleEnabled}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
-                    ))}
+                      );
+                    })}
                 </div>
             </div>
           </div>

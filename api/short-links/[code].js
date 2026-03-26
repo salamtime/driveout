@@ -1,6 +1,7 @@
 import { createSupabaseClients } from '../_lib/supabase.js';
 
 const json = (res, status, body) => res.status(status).json(body);
+const SHORT_LINKS_TABLE = process.env.SHORT_LINKS_TABLE || 'short_links';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
@@ -17,7 +18,7 @@ export default async function handler(req, res) {
   try {
     const { adminClient } = createSupabaseClients();
     const { data, error } = await adminClient
-      .from('url_shortener')
+      .from(SHORT_LINKS_TABLE)
       .select('original_url, expires_at, click_count')
       .eq('short_code', code)
       .maybeSingle();
@@ -36,7 +37,7 @@ export default async function handler(req, res) {
     }
 
     adminClient
-      .from('url_shortener')
+      .from(SHORT_LINKS_TABLE)
       .update({
         click_count: Number(data.click_count || 0) + 1,
         last_accessed_at: new Date().toISOString(),

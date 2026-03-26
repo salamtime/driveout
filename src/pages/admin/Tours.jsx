@@ -35,7 +35,7 @@ import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { TABLE_NAMES } from '../../config/tableNames';
 import EnhancedUnifiedIDScanModal from '../../components/customers/EnhancedUnifiedIDScanModal';
-import { canChooseTourGuide } from '../../utils/permissionHelpers';
+import { canChooseTourGuide, canManageTourPackages as canManageTourPackagesPermission } from '../../utils/permissionHelpers';
 import { fetchVehicles } from '../../store/slices/vehiclesSlice';
 import FuelTransactionService from '../../services/FuelTransactionService';
 import {
@@ -67,6 +67,12 @@ const TOUR_BOOKING_MARKER = '[tour_booking]';
 const localToday = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const getLocalDateKey = (value) => {
+  const date = new Date(value || '');
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 };
 
 const defaultPackageRules = {
@@ -602,10 +608,8 @@ const ToursPage = () => {
   const dispatch = useDispatch();
   const { userProfile } = useAuth();
   const vehicles = useSelector((state) => state.vehicles?.vehicles || []);
-  const userRole = String(userProfile?.role || '').toLowerCase();
   const canSelectTourGuide = canChooseTourGuide(userProfile);
-  const canManageTourPackages = ['owner', 'admin'].includes(String(userProfile?.role || '').toLowerCase());
-  const canManagePackages = ['admin', 'owner'].includes(userRole);
+  const canManageTourPackages = canManageTourPackagesPermission(userProfile);
   const currentUserDisplayName =
     userProfile?.full_name ||
     userProfile?.fullName ||
@@ -1247,9 +1251,6 @@ const ToursPage = () => {
     }
   }, [activeDriverQuadIndex, bookingForm.quadCount]);
 
-  const today = localToday();
-  const upcomingTours = groupedTours.filter((tour) => new Date(tour.scheduledStartAt).getTime() >= Date.now());
-  const todayTours = groupedTours.filter((tour) => String(tour.scheduledStartAt || '').startsWith(today));
   const activeTours = useMemo(
     () => groupedTours
       .filter((tour) => tour.status === 'active')
@@ -1275,10 +1276,21 @@ const ToursPage = () => {
 
   const scheduledTours = useMemo(
     () => groupedTours
-      .filter((tour) => tour.status === 'scheduled')
+      .filter((tour) => {
+        if (tour.status !== 'scheduled') return false;
+        const startTimestamp = new Date(tour.scheduledStartAt || '').getTime();
+        return Number.isFinite(startTimestamp) && startTimestamp >= Date.now();
+      })
       .sort((a, b) => new Date(a.scheduledStartAt).getTime() - new Date(b.scheduledStartAt).getTime()),
     [groupedTours]
   );
+  const today = localToday();
+  const upcomingTours = useMemo(() => scheduledTours, [scheduledTours]);
+  const todayTours = useMemo(() => {
+    const activeToday = activeTours.filter((tour) => getLocalDateKey(tour.startedAt || tour.scheduledStartAt) === today);
+    const scheduledToday = scheduledTours.filter((tour) => getLocalDateKey(tour.scheduledStartAt) === today);
+    return [...activeToday, ...scheduledToday];
+  }, [activeTours, scheduledTours, today]);
   const completedTours = useMemo(
     () => groupedTours
       .filter((tour) => tour.status === 'completed')
@@ -2381,7 +2393,7 @@ const ToursPage = () => {
                 </button>
 
 
-                {activeTab === 'packages' && canManagePackages && (
+                {activeTab === 'packages' && canManageTourPackages && (
                   <button
                     type="button"
                     onClick={() => handleOpenPackageEditor()}

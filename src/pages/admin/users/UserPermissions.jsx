@@ -7,14 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { Loader2, ArrowLeft, Shield, CheckSquare, Square } from 'lucide-react';
-
-// STANDARDIZED MODULE NAMES - Source of Truth
-const modules = [
-  'Dashboard', 'Calendar', 'Tours & Bookings', 'Rental Management', 'Customer Management',
-  'Fleet Management', 'Pricing Management', 'Quad Maintenance', 'Fuel Logs', 'Inventory',
-  'Finance Management', 'Alerts', 'User & Role Management', 'System Settings', 'Project Export',
-  'WhatsApp Alerts'
-];
+import { ALL_PERMISSION_KEYS, MODULE_PERMISSION_KEYS, PERMISSION_GROUPS } from '../../../utils/permissionCatalog';
 
 const UserPermissions = () => {
   const { id } = useParams();
@@ -42,14 +35,14 @@ const UserPermissions = () => {
 
         const dbPermissions = data?.permissions || {};
         const merged = {};
-        modules.forEach(m => {
+        ALL_PERMISSION_KEYS.forEach(m => {
           merged[m] = dbPermissions[m] === true;
         });
         setPermissions(merged);
       } catch (err) {
         toast.error(`Failed to load permissions: ${err.message}`);
         const defaultPerms = {};
-        modules.forEach(m => { defaultPerms[m] = false; });
+        ALL_PERMISSION_KEYS.forEach(m => { defaultPerms[m] = false; });
         setPermissions(defaultPerms);
       } finally {
         setIsLoading(false);
@@ -80,7 +73,7 @@ const UserPermissions = () => {
 
           const dbPermissions = data.permissions || {};
           const merged = {};
-          modules.forEach(m => {
+          ALL_PERMISSION_KEYS.forEach(m => {
             merged[m] = dbPermissions[m] === true;
           });
           setPermissions(merged);
@@ -95,10 +88,33 @@ const UserPermissions = () => {
     }
   }, [id, location.state, navigate]);
 
+  const setPermissionValue = (permissionKey, checked) => {
+    setPermissions((prev) => ({ ...prev, [permissionKey]: checked === true }));
+  };
+
+  const handleModuleToggle = (moduleKey, extras, checked) => {
+    setPermissions((prev) => {
+      const next = { ...prev, [moduleKey]: checked === true };
+      if (!checked) {
+        extras.forEach((permissionKey) => {
+          next[permissionKey] = false;
+        });
+      }
+      return next;
+    });
+  };
+
   const handleSelectAll = () => {
-    const allSelected = modules.every(m => permissions[m]);
+    const allSelected = MODULE_PERMISSION_KEYS.every(m => permissions[m]);
     const updated = {};
-    modules.forEach(m => { updated[m] = !allSelected; });
+    ALL_PERMISSION_KEYS.forEach(m => {
+      updated[m] = !allSelected;
+    });
+    if (allSelected) {
+      ALL_PERMISSION_KEYS.forEach((m) => {
+        updated[m] = false;
+      });
+    }
     setPermissions(updated);
   };
 
@@ -108,7 +124,7 @@ const UserPermissions = () => {
     setIsSubmitting(true);
     try {
       const completePermissions = {};
-      modules.forEach(module => {
+      ALL_PERMISSION_KEYS.forEach(module => {
         completePermissions[module] = permissions[module] === true;
       });
 
@@ -154,8 +170,8 @@ const UserPermissions = () => {
     );
   }
 
-  const allSelected = modules.every(m => permissions[m]);
-  const enabledCount = modules.filter(m => permissions[m]).length;
+  const allSelected = MODULE_PERMISSION_KEYS.every(m => permissions[m]);
+  const enabledCount = ALL_PERMISSION_KEYS.filter(m => permissions[m]).length;
 
   return (
     <div className="container mx-auto p-4 max-w-2xl">
@@ -181,7 +197,7 @@ const UserPermissions = () => {
         {/* Summary + select all */}
         <div className="flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            <span className="font-semibold text-foreground">{enabledCount}</span> of {modules.length} modules enabled
+            <span className="font-semibold text-foreground">{enabledCount}</span> of {ALL_PERMISSION_KEYS.length} permissions enabled
           </p>
           <Button variant="outline" size="sm" onClick={handleSelectAll}>
             {allSelected ? (
@@ -192,22 +208,55 @@ const UserPermissions = () => {
           </Button>
         </div>
 
-        {/* Module grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-md border p-4">
-          {modules.map((module) => (
-            <div key={module} className="flex items-center space-x-2">
-              <Checkbox
-                id={`perm-${module}`}
-                checked={permissions[module] === true}
-                onCheckedChange={(checked) =>
-                  setPermissions(prev => ({ ...prev, [module]: checked }))
-                }
-              />
-              <Label htmlFor={`perm-${module}`} className="text-sm font-normal cursor-pointer">
-                {module}
-              </Label>
-            </div>
-          ))}
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+          Module access opens the page. Extra actions control which sensitive buttons appear inside that module.
+        </div>
+
+        {/* Grouped permission cards */}
+        <div className="grid grid-cols-1 gap-4">
+          {PERMISSION_GROUPS.map(({ module, extras }) => {
+            const moduleEnabled = permissions[module] === true;
+            return (
+              <div key={module} className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">{module}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {extras.length > 0 ? 'Module access with extra action controls' : 'Module access'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id={`perm-${module}`}
+                      checked={moduleEnabled}
+                      onCheckedChange={(checked) => handleModuleToggle(module, extras, checked)}
+                    />
+                    <Label htmlFor={`perm-${module}`} className="text-sm font-medium cursor-pointer">
+                      Access
+                    </Label>
+                  </div>
+                </div>
+                {extras.length > 0 ? (
+                  <div className="mt-4 space-y-2 border-t border-slate-100 pt-4">
+                    {extras.map((permissionKey) => (
+                      <div key={permissionKey} className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
+                        <div>
+                          <p className="text-sm font-medium text-slate-800">{permissionKey}</p>
+                          <p className="text-xs text-slate-500">Enable this action only if the user should see the button</p>
+                        </div>
+                        <Checkbox
+                          id={`perm-${permissionKey}`}
+                          checked={permissions[permissionKey] === true}
+                          disabled={!moduleEnabled}
+                          onCheckedChange={(checked) => setPermissionValue(permissionKey, checked)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
 
         {/* Actions */}

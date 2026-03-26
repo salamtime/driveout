@@ -169,6 +169,26 @@ export const canChooseTourGuide = (user) => {
   return hasPermission('Choose Tour Guide', userProfile);
 };
 
+export const canManageTourPackages = (user) => {
+  const userProfile = user || getCurrentUser();
+
+  if (String(userProfile?.role || '').toLowerCase() === 'owner') {
+    return true;
+  }
+
+  return hasPermission('Manage Tour Packages', userProfile);
+};
+
+export const canAdjustVehicleFuelLevel = (user) => {
+  const userProfile = user || getCurrentUser();
+
+  if (String(userProfile?.role || '').toLowerCase() === 'owner') {
+    return true;
+  }
+
+  return hasPermission('Adjust Vehicle Fuel Level', userProfile);
+};
+
 // Alternative: Case-insensitive comparison
 export const hasPermissionCaseInsensitive = (moduleName) => {
   const userProfile = getCurrentUser();

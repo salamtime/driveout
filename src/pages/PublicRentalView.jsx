@@ -199,6 +199,7 @@ export default function PublicRentalView() {
         key: 'contract',
         title: 'Contract',
         subtitle: 'Open the signed rental agreement',
+        icon: '📄',
         href: buildSharedUrl('contract'),
         visible: available.contract,
       },
@@ -206,6 +207,7 @@ export default function PublicRentalView() {
         key: 'receipt',
         title: 'Receipt',
         subtitle: 'View the payment receipt',
+        icon: '🧾',
         href: buildSharedUrl('receipt'),
         visible: available.receipt,
       },
@@ -213,6 +215,7 @@ export default function PublicRentalView() {
         key: 'opening-media',
         title: 'Start Media',
         subtitle: 'Browse opening photos and videos',
+        icon: '📸',
         href: buildSharedUrl('opening-media'),
         visible: available.openingMedia,
       },
@@ -220,6 +223,7 @@ export default function PublicRentalView() {
         key: 'closing-media',
         title: 'End Media',
         subtitle: 'Browse return photos and videos',
+        icon: '🎥',
         href: buildSharedUrl('closing-media'),
         visible: available.closingMedia,
       },
@@ -289,8 +293,23 @@ export default function PublicRentalView() {
                       padding: '18px 20px',
                       boxShadow: '0 10px 25px rgba(59, 130, 246, 0.08)',
                       color: '#0f172a',
+                      display: 'block',
                     }}
                   >
+                    <div
+                      style={{
+                        width: 44,
+                        height: 44,
+                        borderRadius: 14,
+                        background: 'linear-gradient(135deg, rgba(99,102,241,0.12), rgba(59,130,246,0.08))',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 24,
+                      }}
+                    >
+                      <span aria-hidden="true">{item.icon}</span>
+                    </div>
                     <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6366f1' }}>
                       Open
                     </div>

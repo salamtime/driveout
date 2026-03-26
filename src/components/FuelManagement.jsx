@@ -22,6 +22,7 @@ import AddFuelTransactionModal from './fuel/AddFuelTransactionModal';
 import TransactionDetailsModal from './fuel/TransactionDetailsModal';
 import FuelTransactionService from '../services/FuelTransactionService';
 import { roundTo } from '../utils/fuelMath';
+import { formatLiters } from '../utils/formatters';
 import { formatVehicleLabel, formatVehicleNameWithModel } from '../utils/vehicleLabels';
 import { getFuelTransactionVisual } from '../utils/fuelVisuals';
 import { useAuth } from '../contexts/AuthContext';
@@ -174,6 +175,8 @@ const FuelManagement = () => {
     return Math.min((currentVolume / fuelData.tank.capacity) * 100, 100);
   };
 
+  const getFormattedTankLiters = (amount) => formatLiters(roundTo(Number(amount) || 0, 2));
+
   const getTankColor = () => {
     const percentage = getTankPercentage();
     if (percentage <= 15) return 'text-red-600';
@@ -221,7 +224,7 @@ const FuelManagement = () => {
               <div>
                 <p className="text-sm font-medium text-slate-600">Current Volume</p>
                 <p className={`mt-2 text-3xl font-bold ${getTankColor()}`}>
-                  {getCurrentVolume()}L
+                  {getFormattedTankLiters(getCurrentVolume())}
                 </p>
                 <p className="mt-1 text-sm text-slate-500">{getTankPercentage().toFixed(1)}% full</p>
               </div>
@@ -241,12 +244,12 @@ const FuelManagement = () => {
               <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
                 <div className="rounded-2xl bg-white px-4 py-3">
                   <p className="text-slate-500">Available</p>
-                  <p className="mt-1 text-lg font-semibold text-slate-900">{getCurrentVolume()}L</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-900">{getFormattedTankLiters(getCurrentVolume())}</p>
                 </div>
                 <div className="rounded-2xl bg-white px-4 py-3">
                   <p className="text-slate-500">Remaining</p>
                   <p className="mt-1 text-lg font-semibold text-slate-900">
-                    {Math.max((fuelData.tank?.capacity || 500) - getCurrentVolume(), 0)}L
+                    {getFormattedTankLiters(Math.max((fuelData.tank?.capacity || 500) - getCurrentVolume(), 0))}
                   </p>
                 </div>
                 <div className="rounded-2xl bg-white px-4 py-3">

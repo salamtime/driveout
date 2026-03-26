@@ -2092,6 +2092,74 @@ class FuelTransactionService {
     };
   }
 
+  async adjustVehicleFuelLevel({
+    vehicleId,
+    fuelLines = null,
+    fuelLiters = null,
+    actor = null,
+    reason = '',
+    notes = '',
+    tankCapacityLiters = null,
+  }) {
+    if (!vehicleId) {
+      return { success: false, error: 'Vehicle is required' };
+    }
+
+    const currentState = await this.getVehicleFuelState(vehicleId);
+    const resolvedTankCapacity = resolveTankCapacityLiters(
+      tankCapacityLiters,
+      currentState?.tank_capacity_liters,
+      DEFAULT_VEHICLE_TANK_LITERS,
+    );
+    const normalized = normalizeFuelState({
+      lines: fuelLines,
+      liters: fuelLiters,
+      tankCapacityLiters: resolvedTankCapacity,
+    });
+
+    const syncResult = await this.syncVehicleFuelState({
+      vehicleId,
+      lines: normalized.lines,
+      liters: normalized.liters,
+      source: 'manual_adjustment',
+      tankCapacityLiters: resolvedTankCapacity,
+    });
+
+    if (!syncResult.success) {
+      return syncResult;
+    }
+
+    const composedNotes = [reason, notes]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(' • ');
+
+    const logResult = await this.logFuelOperation({
+      transaction_type: 'manual_adjustment',
+      source: 'manual_adjustment',
+      vehicle_id: vehicleId,
+      liters_before: currentState.current_fuel_liters,
+      liters_after: normalized.liters,
+      fuel_lines_before: currentState.current_fuel_lines,
+      fuel_lines_after: normalized.lines,
+      actor,
+      notes: composedNotes || 'Manual fuel adjustment',
+      is_financial_expense: false,
+    });
+
+    if (!logResult.success) {
+      return logResult;
+    }
+
+    await this.getVehicleFuelUsageSummary(vehicleId, { persist: true });
+
+    return {
+      success: true,
+      state: syncResult.state || normalized,
+      log: logResult.log || null,
+    };
+  }
+
   subscribeToChanges(callback) {
     const channels = [];
     const tables = [

@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase.js';
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const CACHE_PREFIX = 'url_short_';
 const CACHE_DURATION = 60 * 60 * 1000;
+const SHORT_LINKS_TABLE = import.meta.env.VITE_SHORT_LINKS_TABLE || 'short_links';
 const DOCUMENT_TYPES = new Set([
   'contract',
   'receipt',
@@ -95,12 +96,12 @@ export const shortenUrl = async (url, rentalId = null, documentType = 'other') =
 export const resolveShortCode = async (shortCode) => {
   try {
     const { data, error } = await supabase
-      .from('url_shortener')
+      .from(SHORT_LINKS_TABLE)
       .select('original_url, expires_at')
       .eq('short_code', shortCode)
       .maybeSingle();
     if (error || !data) return null;
-    supabase.from('url_shortener')
+    supabase.from(SHORT_LINKS_TABLE)
       .update({ last_accessed_at: new Date().toISOString() })
       .eq('short_code', shortCode)
       .then(() => {});
@@ -113,7 +114,7 @@ export const resolveShortCode = async (shortCode) => {
 export const cleanupExpiredUrls = async () => {
   try {
     const { data } = await supabase
-      .from('url_shortener')
+      .from(SHORT_LINKS_TABLE)
       .delete()
       .lt('expires_at', new Date().toISOString())
       .select('id');

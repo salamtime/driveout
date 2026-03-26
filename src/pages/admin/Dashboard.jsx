@@ -135,6 +135,24 @@ const localToday = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+const getLocalDateKey = (value) => {
+  const date = new Date(value || '');
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
+const formatDashboardDateTime = (value) => {
+  const date = new Date(value || '');
+  if (Number.isNaN(date.getTime())) return 'Not scheduled';
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+};
+
 const getTourEndTimestamp = (tour) => {
   const start = new Date((tour?.status === 'active' && tour?.startedAt) || tour?.scheduledStartAt || '');
   if (Number.isNaN(start.getTime())) return Number.NaN;
@@ -758,6 +776,8 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
   );
 };
 
+const DASHBOARD_UPCOMING_LIMIT = 4;
+
 const UpcomingTours = ({ tours, loading }) => {
   if (loading) {
     return (
@@ -773,26 +793,11 @@ const UpcomingTours = ({ tours, loading }) => {
   }
 
   if (!tours || tours.length === 0) {
-    return (
-      <div className="rounded-xl border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-700">Tours & Departures</h3>
-          <span className="text-sm text-slate-500 font-medium">No tours queued</span>
-        </div>
-        <div className="text-center py-8">
-          <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-          <p className="text-gray-500">No tours are out or scheduled right now</p>
-          <Link
-            to="/admin/tours?tab=bookings"
-            className="mt-4 inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01]"
-          >
-            <Plus className="w-4 h-4" />
-            Book Tour
-          </Link>
-        </div>
-      </div>
-    );
+    return null;
   }
+
+  const visibleTours = tours.slice(0, DASHBOARD_UPCOMING_LIMIT);
+  const hiddenToursCount = Math.max(0, tours.length - visibleTours.length);
 
   return (
     <div className="rounded-xl border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
@@ -810,7 +815,7 @@ const UpcomingTours = ({ tours, loading }) => {
         </div>
       </div>
       <div className="space-y-3">
-        {tours.map((tour) => {
+        {visibleTours.map((tour) => {
           const expiredTour = isDashboardTourExpired(tour);
           const destination = tour.status === 'active' ? '/admin/live-map' : '/admin/tours?tab=bookings';
 
@@ -867,6 +872,98 @@ const UpcomingTours = ({ tours, loading }) => {
           );
         })}
       </div>
+      {hiddenToursCount > 0 ? (
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <Link
+            to="/admin/tours"
+            className="inline-flex items-center gap-2 text-sm font-semibold text-violet-700 transition-colors hover:text-violet-900"
+          >
+            +{hiddenToursCount} more tours
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+const UpcomingRentals = ({ rentals, loading }) => {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(76,29,149,0.08)] animate-pulse">
+        <div className="h-6 w-1/3 rounded bg-gray-200 mb-6" />
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div key={index} className="h-24 rounded-xl bg-gray-100" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (!rentals || rentals.length === 0) {
+    return null;
+  }
+
+  const visibleRentals = rentals.slice(0, DASHBOARD_UPCOMING_LIMIT);
+  const hiddenRentalsCount = Math.max(0, rentals.length - visibleRentals.length);
+
+  return (
+    <div className="rounded-xl border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold text-slate-700">Upcoming Rentals</h3>
+        <div className="flex items-center gap-3">
+          <Link
+            to="/admin/rentals"
+            className="inline-flex items-center gap-2 rounded-2xl border border-violet-100 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700 transition-colors hover:bg-violet-100"
+          >
+            <Car className="w-4 h-4" />
+            Open Rentals
+          </Link>
+          <span className="text-sm text-blue-600 font-medium">{rentals.length} upcoming</span>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {visibleRentals.map((rental) => (
+          <Link
+            key={rental.id}
+            to={`/admin/rentals/${rental.id}`}
+            className="block rounded-xl border border-slate-200 bg-slate-50 p-4 transition-colors hover:bg-slate-100"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="font-semibold text-slate-900">{rental.customerName}</p>
+                  <span className="rounded-full bg-orange-100 px-2 py-1 text-xs font-semibold text-orange-700">
+                    Scheduled
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-600">
+                  {rental.vehicleName} {rental.plateNumber ? `• ${rental.plateNumber}` : ''}
+                </p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {rental.rentalTypeLabel} {rental.pickupLocation ? `• ${rental.pickupLocation}` : ''}
+                </p>
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="text-sm font-semibold text-slate-900">{formatDashboardDateTime(rental.startAt)}</p>
+                <p className="mt-1 text-xs text-slate-500">Tap to open rental</p>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+      {hiddenRentalsCount > 0 ? (
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <Link
+            to="/admin/rentals"
+            className="inline-flex items-center gap-2 text-sm font-semibold text-violet-700 transition-colors hover:text-violet-900"
+          >
+            +{hiddenRentalsCount} more rentals
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -1318,6 +1415,7 @@ const AdminDashboard = () => {
   const [utilizationData, setUtilizationData] = useState([]);
   const [recentBookings, setRecentBookings] = useState([]);
   const [upcomingTours, setUpcomingTours] = useState([]);
+  const [upcomingRentals, setUpcomingRentals] = useState([]);
   const [urgentRentals, setUrgentRentals] = useState([]);
   const [urgentStats, setUrgentStats] = useState({ overdue: 0, expiringSoon: 0 });
   const [fleetSnapshot, setFleetSnapshot] = useState({ available: 0, rented: 0, tour: 0, maintenance: 0, outOfService: 0, total: 0 });
@@ -1327,6 +1425,8 @@ const AdminDashboard = () => {
   const [loading, setLoading] = useState(true);
   const { user, session } = useAuth();
   const navigate = useNavigate();
+  const hasUpcomingRentals = upcomingRentals.length > 0;
+  const hasUpcomingTours = upcomingTours.length > 0;
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
@@ -1529,20 +1629,25 @@ const AdminDashboard = () => {
       const scheduledTours = toursWithGuidePhones.filter((tour) => tour.status === 'scheduled');
       const scheduledUpcomingTours = scheduledTours.filter((tour) => {
         const timestamp = new Date(tour.scheduledStartAt || '').getTime();
-        return Number.isFinite(timestamp) ? timestamp >= Date.now() : true;
+        return Number.isFinite(timestamp) ? timestamp >= Date.now() : false;
       });
+      const activeTodayTours = activeTours.filter((tour) => {
+        const reference = tour.startedAt || tour.scheduledStartAt;
+        return getLocalDateKey(reference) === todayString;
+      });
+      const scheduledTodayTours = scheduledUpcomingTours.filter((tour) => getLocalDateKey(tour.scheduledStartAt) === todayString);
       const dashboardTours = [...activeTours, ...scheduledUpcomingTours]
         .sort((a, b) => {
           const aDate = new Date((a.status === 'active' && a.startedAt) || a.scheduledStartAt).getTime();
           const bDate = new Date((b.status === 'active' && b.startedAt) || b.scheduledStartAt).getTime();
           return aDate - bDate;
         });
-      const todayTours = toursWithGuidePhones.filter((tour) => String(tour.scheduledStartAt || '').startsWith(todayString));
+      const todayTours = [...activeTodayTours, ...scheduledTodayTours];
 
       setUpcomingTours(dashboardTours.slice(0, 5));
       setTourSnapshot({
         active: activeTours.length,
-        scheduled: scheduledTours.length,
+        scheduled: scheduledUpcomingTours.length,
         today: todayTours.length,
       });
       setStats((prev) => ({
@@ -1620,6 +1725,41 @@ const AdminDashboard = () => {
         vehicle: bookingVehicleMap.get(booking.vehicle_id) || null,
       }));
       setRecentBookings(bookings);
+
+      const { data: rentalScheduleRaw, error: rentalScheduleError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .select('id, customer_name, rental_start_date, rental_end_date, rental_status, rental_type, pickup_location, vehicle_id, vehicle_plate_number')
+        .order('rental_start_date', { ascending: true })
+        .limit(25);
+
+      if (rentalScheduleError) {
+        console.error('❌ Error fetching upcoming rentals', rentalScheduleError);
+        setUpcomingRentals([]);
+      } else {
+        const upcomingRentalRows = (rentalScheduleRaw || []).filter((rental) => {
+          const status = String(rental.rental_status || '').toLowerCase();
+          const startTime = new Date(rental.rental_start_date || '').getTime();
+          return Number.isFinite(startTime) && startTime >= Date.now() && !['active', 'completed', 'cancelled'].includes(status);
+        });
+        const rentalVehicleMap = await fetchVehiclesByIds(upcomingRentalRows.map((rental) => rental.vehicle_id));
+        const normalizedUpcomingRentals = upcomingRentalRows
+          .map((rental) => {
+            const vehicle = rentalVehicleMap.get(rental.vehicle_id) || null;
+            return {
+              id: rental.id,
+              customerName: rental.customer_name || 'Guest',
+              startAt: rental.rental_start_date,
+              endAt: rental.rental_end_date,
+              vehicleName: vehicle?.model || vehicle?.name || 'Vehicle',
+              plateNumber: rental.vehicle_plate_number || vehicle?.plate_number || '',
+              rentalTypeLabel: rental.rental_type ? `${String(rental.rental_type).charAt(0).toUpperCase()}${String(rental.rental_type).slice(1)}` : 'Rental',
+              pickupLocation: rental.pickup_location || '',
+            };
+          })
+          .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
+          .slice(0, 5);
+        setUpcomingRentals(normalizedUpcomingRentals);
+      }
 
       // --- Fetch and process data for Revenue Trend Chart ---
       const sevenDaysAgo = new Date();
@@ -1960,9 +2100,19 @@ const AdminDashboard = () => {
           <OperationsOverview cards={operationsCards} loading={loading} />
         </section>
 
-        <section className="grid grid-cols-1 gap-5 sm:gap-6 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)]">
+        {(loading || hasUpcomingRentals || hasUpcomingTours) ? (
+          <section className={`grid grid-cols-1 gap-5 sm:gap-6 ${hasUpcomingRentals && hasUpcomingTours ? 'xl:grid-cols-2' : ''}`}>
+            {hasUpcomingRentals || loading ? <UpcomingRentals rentals={upcomingRentals} loading={loading} /> : null}
+            {hasUpcomingTours || loading ? <UpcomingTours tours={upcomingTours} loading={loading} /> : null}
+          </section>
+        ) : null}
+
+        <section className="space-y-3 sm:space-y-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">Attention Needed</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">Urgent rentals and follow-up actions</h2>
+          </div>
           <UrgentActionsBoard items={urgentActionItems} loading={loading} />
-          <UpcomingTours tours={upcomingTours} loading={loading} />
         </section>
 
         <section className="space-y-3 sm:space-y-4">

@@ -15,6 +15,8 @@ import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
 import { getFleetAlertsForVehicle } from '../../utils/fleetAlerts';
 import { normalizeVehicleImageUrl } from '../../utils/vehicleImage';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
+import { useAuth } from '../../contexts/AuthContext';
+import { canAdjustVehicleFuelLevel } from '../../utils/permissionHelpers';
 
 const formatDate = (value) => {
   if (!value) return 'Not set';
@@ -142,6 +144,7 @@ const HistoryEmptyState = ({ title, description }) => (
 const VehicleProfile = () => {
   const { vehicleId } = useParams();
   const navigate = useNavigate();
+  const { userProfile } = useAuth();
   const [vehicle, setVehicle] = useState(null);
   const [maintenanceHistory, setMaintenanceHistory] = useState([]);
   const [fuelHistory, setFuelHistory] = useState([]);
@@ -187,6 +190,14 @@ const VehicleProfile = () => {
     buyer_name: '',
     notes: '',
   });
+  const [fuelAdjustOpen, setFuelAdjustOpen] = useState(false);
+  const [fuelAdjustSaving, setFuelAdjustSaving] = useState(false);
+  const [fuelAdjustForm, setFuelAdjustForm] = useState({
+    fuel_lines: 0,
+    reason: 'Manual correction',
+    notes: '',
+  });
+  const canEditVehicleFuel = canAdjustVehicleFuelLevel(userProfile);
 
   const syncFormData = (vehicleData) => {
     setVehicleImageUrl(normalizeVehicleImageUrl(vehicleData?.image_url || ''));
@@ -387,6 +398,90 @@ const VehicleProfile = () => {
     loadVehicleProfile();
   }, [vehicleId]);
 
+  useEffect(() => {
+    setFuelAdjustForm((current) => ({
+      ...current,
+      fuel_lines: Number(vehicleFuelState?.current_fuel_lines ?? 0),
+    }));
+  }, [vehicleFuelState?.current_fuel_lines]);
+
+  const refreshFuelPanel = async () => {
+    if (!vehicleId) return;
+
+    const [fuelResult, fuelSummaryResult, rentalRows] = await Promise.all([
+      FuelTransactionService.getAllTransactions({ limit: 1000, offset: 0 }),
+      FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: true }),
+      supabase
+        .from('app_4c3a7a6153_rentals')
+        .select('id, rental_id, customer_name, vehicle_id, rental_start_date, rental_end_date, started_at, updated_at, completed_at, start_fuel_level, end_fuel_level, rental_status')
+        .eq('vehicle_id', vehicleId)
+        .order('created_at', { ascending: false }),
+    ]);
+
+    const rentalData = Array.isArray(rentalRows?.data) ? rentalRows.data : [];
+    const existingFuelTransactions = (fuelResult?.transactions || []).filter(
+      (transaction) => String(transaction.vehicle_id) === String(vehicleId)
+    );
+    const existingFuelKeys = new Set(
+      existingFuelTransactions
+        .filter((transaction) => transaction.rental_id && transaction.transaction_type)
+        .map((transaction) => `${transaction.rental_id}-${transaction.transaction_type}`)
+    );
+
+    const rentalFuelSnapshots = rentalData.flatMap((rentalRecord) => {
+      const snapshots = [];
+
+      if (rentalRecord.start_fuel_level !== null && rentalRecord.start_fuel_level !== undefined) {
+        const key = `${rentalRecord.id}-rental_opening_level`;
+        if (!existingFuelKeys.has(key)) {
+          snapshots.push({
+            id: `rental-open-${rentalRecord.id}`,
+            transaction_type: 'rental_opening_level',
+            source: 'rental_opening_level',
+            vehicle_id: rentalRecord.vehicle_id,
+            rental_id: rentalRecord.id,
+            rental_reference: rentalRecord.rental_id,
+            customer_name: rentalRecord.customer_name,
+            transaction_date: rentalRecord.started_at || rentalRecord.rental_start_date,
+            fuel_lines_after: rentalRecord.start_fuel_level,
+            liters_after: FuelTransactionService.linesToLiters(rentalRecord.start_fuel_level),
+            notes: 'Captured at rental departure',
+            performed_by_name: 'Rental workflow',
+          });
+        }
+      }
+
+      if (rentalRecord.end_fuel_level !== null && rentalRecord.end_fuel_level !== undefined) {
+        const key = `${rentalRecord.id}-rental_closing_level`;
+        if (!existingFuelKeys.has(key)) {
+          snapshots.push({
+            id: `rental-close-${rentalRecord.id}`,
+            transaction_type: 'rental_closing_level',
+            source: 'rental_closing_level',
+            vehicle_id: rentalRecord.vehicle_id,
+            rental_id: rentalRecord.id,
+            rental_reference: rentalRecord.rental_id,
+            customer_name: rentalRecord.customer_name,
+            transaction_date: rentalRecord.completed_at || rentalRecord.updated_at || rentalRecord.rental_end_date,
+            fuel_lines_after: rentalRecord.end_fuel_level,
+            liters_after: FuelTransactionService.linesToLiters(rentalRecord.end_fuel_level),
+            notes: 'Captured at rental return',
+            performed_by_name: 'Rental workflow',
+          });
+        }
+      }
+
+      return snapshots;
+    });
+
+    const vehicleFuelHistory = [...existingFuelTransactions, ...rentalFuelSnapshots]
+      .sort((a, b) => new Date(b.transaction_date || b.created_at || 0) - new Date(a.transaction_date || a.created_at || 0));
+
+    setFuelHistory(vehicleFuelHistory);
+    setVehicleFuelState(await FuelTransactionService.getVehicleFuelState(vehicleId));
+    setVehicleFuelSummary(fuelSummaryResult?.summary || null);
+  };
+
   const handleChange = (field, value) => {
     setFormData((current) => ({
       ...current,
@@ -526,6 +621,56 @@ const VehicleProfile = () => {
     }
   };
 
+  const handleFuelAdjustChange = (field, value) => {
+    setFuelAdjustForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+  };
+
+  const handleOpenFuelAdjust = () => {
+    setFuelAdjustForm({
+      fuel_lines: Number(vehicleFuelState?.current_fuel_lines ?? 0),
+      reason: 'Manual correction',
+      notes: '',
+    });
+    setFuelAdjustOpen(true);
+  };
+
+  const handleSaveFuelAdjust = async () => {
+    if (!vehicleId) return;
+
+    const nextLines = Number(fuelAdjustForm.fuel_lines);
+    if (!Number.isFinite(nextLines) || nextLines < 0 || nextLines > 8) {
+      window.alert('Fuel level must be between 0 and 8 lines.');
+      return;
+    }
+
+    setFuelAdjustSaving(true);
+    try {
+      const result = await FuelTransactionService.adjustVehicleFuelLevel({
+        vehicleId,
+        fuelLines: nextLines,
+        actor: userProfile,
+        reason: fuelAdjustForm.reason,
+        notes: fuelAdjustForm.notes,
+        tankCapacityLiters: vehicleFuelState?.tank_capacity_liters || null,
+      });
+
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to adjust fuel level');
+      }
+
+      await refreshFuelPanel();
+      setFuelAdjustOpen(false);
+    } catch (fuelAdjustError) {
+      console.error('Failed to adjust vehicle fuel level:', fuelAdjustError);
+      window.alert(`Failed to adjust fuel level: ${fuelAdjustError.message || 'Unknown error'}`);
+    } finally {
+      setFuelAdjustSaving(false);
+    }
+  };
+
   const vehicleReportOverview = useMemo(() => {
     const overviewMap = new Map();
 
@@ -616,6 +761,7 @@ const VehicleProfile = () => {
           record.rental_reference ? formatRentalReference(record.rental_reference) : null,
           record.customer_name || null,
           record.cost ? formatMoney(record.cost || 0) : null,
+          record.notes || null,
         ].filter(Boolean).join(' • '),
       })),
       ...vehicleReports.map((report) => ({
@@ -1093,19 +1239,31 @@ const VehicleProfile = () => {
             description="Current fuel, usage, and cost for this vehicle."
             icon={Gauge}
             action={(
-              <button
-                type="button"
-                onClick={() => navigate('/admin/fuel', {
-                  state: {
-                    activeTab: 'transactions',
-                    fuelFilters: { vehicleId: String(vehicle.id) },
-                  },
-                })}
-                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-              >
-                <Fuel className="w-4 h-4" />
-                Open Fuel Logs
-              </button>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {canEditVehicleFuel ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenFuelAdjust}
+                    className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+                  >
+                    <Edit className="w-4 h-4" />
+                    Adjust Fuel
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => navigate('/admin/fuel', {
+                    state: {
+                      activeTab: 'transactions',
+                      fuelFilters: { vehicleId: String(vehicle.id) },
+                    },
+                  })}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  <Fuel className="w-4 h-4" />
+                  Open Fuel Logs
+                </button>
+              </div>
             )}
           >
             <div className="space-y-4">
@@ -1175,6 +1333,113 @@ const VehicleProfile = () => {
               </div>
             </div>
           </SectionCard>
+
+          {fuelAdjustOpen ? (
+            <section className="rounded-xl border border-emerald-100 bg-white p-5 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">Adjust Fuel</p>
+                  <h3 className="mt-2 text-xl font-bold text-slate-900">Set vehicle fuel level</h3>
+                  <p className="mt-1 text-sm text-slate-500">This updates the Fleet fuel source of truth for this vehicle.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setFuelAdjustOpen(false)}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Current fuel</p>
+                  <p className="mt-2 text-3xl font-black tracking-tight text-slate-900">
+                    {vehicleFuelState?.current_fuel_lines ?? 0}/8
+                  </p>
+                  <p className="mt-1 text-sm font-medium text-slate-600">
+                    {Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">New fuel level</p>
+                  <div className="mt-3">
+                    <label className="text-sm font-medium text-slate-700">Fuel lines</label>
+                    <div className="mt-2 grid grid-cols-4 gap-2 lg:flex lg:flex-wrap">
+                      {Array.from({ length: 8 }, (_, index) => {
+                        const lineValue = index + 1;
+                        const selected = Number(fuelAdjustForm.fuel_lines) === lineValue;
+                        return (
+                          <button
+                            key={lineValue}
+                            type="button"
+                            onClick={() => handleFuelAdjustChange('fuel_lines', lineValue)}
+                            className={`rounded-2xl border px-3 py-3 text-center text-sm font-bold transition-all lg:min-w-[72px] lg:flex-none ${
+                              selected
+                                ? 'border-emerald-500 bg-emerald-500 text-white shadow-[0_10px_24px_rgba(16,185,129,0.24)]'
+                                : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50'
+                            }`}
+                          >
+                            {lineValue}/8
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-2 text-sm text-slate-500">
+                      {Number.isFinite(Number(fuelAdjustForm.fuel_lines))
+                        ? `${FuelTransactionService.linesToLiters(Number(fuelAdjustForm.fuel_lines), vehicleFuelState?.tank_capacity_liters || undefined).toFixed(1)} L after adjustment`
+                        : 'Enter the corrected fuel level'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <div>
+                  <label className="text-sm font-medium text-slate-700">Reason</label>
+                  <select
+                    value={fuelAdjustForm.reason}
+                    onChange={(event) => handleFuelAdjustChange('reason', event.target.value)}
+                    className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none focus:border-emerald-400"
+                  >
+                    <option value="Manual correction">Manual correction</option>
+                    <option value="Inspection update">Inspection update</option>
+                    <option value="After external fuel use">After external fuel use</option>
+                    <option value="Staff correction">Staff correction</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-700">Note</label>
+                  <input
+                    type="text"
+                    value={fuelAdjustForm.notes}
+                    onChange={(event) => handleFuelAdjustChange('notes', event.target.value)}
+                    placeholder="Optional note"
+                    className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none focus:border-emerald-400"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFuelAdjustOpen(false)}
+                  disabled={fuelAdjustSaving}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveFuelAdjust}
+                  disabled={fuelAdjustSaving}
+                  className="rounded-2xl bg-gradient-to-r from-emerald-600 to-green-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(22,163,74,0.22)] hover:from-emerald-700 hover:to-green-800 disabled:opacity-60"
+                >
+                  {fuelAdjustSaving ? 'Saving...' : 'Set Fuel Level'}
+                </button>
+              </div>
+            </section>
+          ) : null}
 
           <SectionCard
             title="Activity Log"

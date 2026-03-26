@@ -9,6 +9,7 @@ export const AVAILABLE_MODULES = [
   'Rental Management',
   'Customer Management',
   'Fleet Management',
+  'Manage Tour Packages',
   'Quad Maintenance',
   'Fuel Logs',
   'Inventory',
