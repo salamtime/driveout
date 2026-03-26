@@ -166,6 +166,62 @@ const isDashboardTourExpired = (tour) => {
   return Date.now() > endTimestamp;
 };
 
+const formatDashboardDuration = (durationMs) => {
+  const safeMs = Math.max(0, Number(durationMs) || 0);
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
+const getDashboardTourElapsedTone = (tour, currentTime = Date.now()) => {
+  const startedAtTime = new Date(tour?.startedAt || tour?.scheduledStartAt || '').getTime();
+  const durationMs = Number(tour?.durationHours || 1) * 60 * 60 * 1000;
+
+  if (!Number.isFinite(startedAtTime) || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return {
+      badgeClass: 'border border-slate-200 bg-slate-50 text-slate-700',
+      labelClass: 'text-slate-500',
+      expired: false,
+    };
+  }
+
+  const elapsedMs = Math.max(0, currentTime - startedAtTime);
+  const progress = elapsedMs / durationMs;
+
+  if (progress >= 1) {
+    return {
+      badgeClass: 'border border-red-200 bg-red-50 text-red-700',
+      labelClass: 'text-red-500',
+      expired: true,
+    };
+  }
+
+  if (progress >= 0.75) {
+    return {
+      badgeClass: 'border border-red-200 bg-red-50 text-red-700',
+      labelClass: 'text-red-500',
+      expired: false,
+    };
+  }
+
+  if (progress >= 0.45) {
+    return {
+      badgeClass: 'border border-amber-200 bg-amber-50 text-amber-700',
+      labelClass: 'text-amber-500',
+      expired: false,
+    };
+  }
+
+  return {
+    badgeClass: 'border border-emerald-200 bg-emerald-50 text-emerald-700',
+    labelClass: 'text-emerald-500',
+    expired: false,
+  };
+};
+
 const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
   if (rental?.rental_status !== 'active') {
     return {
@@ -779,6 +835,16 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
 const DASHBOARD_UPCOMING_LIMIT = 4;
 
 const UpcomingTours = ({ tours, loading }) => {
+  const [currentTime, setCurrentTime] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
   if (loading) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 animate-pulse">
@@ -817,7 +883,11 @@ const UpcomingTours = ({ tours, loading }) => {
       <div className="space-y-3">
         {visibleTours.map((tour) => {
           const expiredTour = isDashboardTourExpired(tour);
-          const destination = tour.status === 'active' ? '/admin/live-map' : '/admin/tours?tab=bookings';
+          const destination = '/admin/tours?tab=bookings';
+          const activeStartedAt = new Date(tour.startedAt || '').getTime();
+          const hasActiveTimer = tour.status === 'active' && Number.isFinite(activeStartedAt);
+          const elapsedText = hasActiveTimer ? formatDashboardDuration(currentTime - activeStartedAt) : null;
+          const elapsedTone = hasActiveTimer ? getDashboardTourElapsedTone(tour, currentTime) : null;
 
           return (
             <div
@@ -851,8 +921,20 @@ const UpcomingTours = ({ tours, loading }) => {
                       hour12: true,
                     })}
                   </p>
+                  {hasActiveTimer ? (
+                    <div className="mt-1 flex flex-col items-end">
+                      <p className={`inline-flex items-center justify-center rounded-full px-3 py-1 text-xs font-bold ${elapsedTone.badgeClass}`}>
+                        {elapsedText}
+                      </p>
+                      {elapsedTone.expired ? (
+                        <p className={`mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${elapsedTone.labelClass}`}>
+                          Expired
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <p className="mt-1 text-xs text-slate-500">
-                    {expiredTour ? 'Need location now' : tour.status === 'active' ? 'Tap to track live route' : 'Tap to continue booking'}
+                    {expiredTour ? 'Need location now' : tour.status === 'active' ? 'Tap to open tour schedule' : 'Tap to continue booking'}
                   </p>
                 </div>
               </div>

@@ -18,6 +18,7 @@ const MAX_BASE_JUMP_METERS = 35;
 const MIN_HEADING_SPEED_MPS = 1.5;
 
 let mapboxLoaderPromise = null;
+let leafletLoaderPromise = null;
 
 const toFiniteNumber = (value, fallback = null) => {
   const numeric = Number(value);
@@ -246,12 +247,40 @@ const loadMapbox = () => {
   return mapboxLoaderPromise;
 };
 
+const loadLeaflet = () => {
+  if (typeof window === 'undefined') return Promise.resolve(null);
+  if (window.L) return Promise.resolve(window.L);
+  if (leafletLoaderPromise) return leafletLoaderPromise;
+
+  leafletLoaderPromise = new Promise((resolve, reject) => {
+    const existingCss = document.querySelector('link[data-leaflet]');
+    if (!existingCss) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      link.dataset.leaflet = 'true';
+      document.head.appendChild(link);
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.async = true;
+    script.onload = () => resolve(window.L);
+    script.onerror = () => reject(new Error('Unable to load Leaflet'));
+    document.body.appendChild(script);
+  });
+
+  return leafletLoaderPromise;
+};
+
 const LiveMap = () => {
   const location = useLocation();
   const { userProfile } = useAuth();
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const markerRef = useRef(null);
+  const routeLayerRef = useRef(null);
+  const mapEngineRef = useRef(null);
   const realtimeReloadTimerRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -414,9 +443,83 @@ const LiveMap = () => {
       if (!mapContainerRef.current || !latestPoint || !selectedTour) return;
 
       try {
+        const useLeaflet = !MAPBOX_TOKEN;
+
+        if (useLeaflet) {
+          const L = await loadLeaflet();
+          if (!L || cancelled) return;
+
+          if (mapEngineRef.current !== 'leaflet' && mapRef.current?.remove) {
+            mapRef.current.remove();
+            mapRef.current = null;
+            markerRef.current = null;
+            routeLayerRef.current = null;
+          }
+
+          mapEngineRef.current = 'leaflet';
+
+          if (!mapRef.current) {
+            mapRef.current = L.map(mapContainerRef.current, {
+              zoomControl: true,
+              attributionControl: true,
+            }).setView([latestPoint.latitude, latestPoint.longitude], 15);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+              maxZoom: 19,
+              attribution: '&copy; OpenStreetMap contributors',
+            }).addTo(mapRef.current);
+          }
+
+          const latLngs = stableSelectedPoints
+            .map((point) => [point.latitude, point.longitude])
+            .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng));
+
+          if (routeLayerRef.current) {
+            routeLayerRef.current.setLatLngs(latLngs);
+          } else {
+            routeLayerRef.current = L.polyline(latLngs, {
+              color: '#7c3aed',
+              weight: 5,
+              opacity: 0.9,
+            }).addTo(mapRef.current);
+          }
+
+          if (!markerRef.current) {
+            markerRef.current = L.circleMarker([latestPoint.latitude, latestPoint.longitude], {
+              radius: 9,
+              color: '#ffffff',
+              weight: 3,
+              fillColor: '#10b981',
+              fillOpacity: 1,
+            }).addTo(mapRef.current);
+          } else {
+            markerRef.current.setLatLng([latestPoint.latitude, latestPoint.longitude]);
+          }
+
+          if (latLngs.length > 1) {
+            mapRef.current.fitBounds(latLngs, { padding: [32, 32], maxZoom: 16 });
+          } else {
+            mapRef.current.setView([latestPoint.latitude, latestPoint.longitude], Math.max(mapRef.current.getZoom(), 15));
+          }
+
+          setTimeout(() => {
+            mapRef.current?.invalidateSize?.();
+          }, 50);
+
+          return;
+        }
+
         const mapboxgl = await loadMapbox();
         if (!mapboxgl || cancelled) return;
 
+        if (mapEngineRef.current !== 'mapbox' && mapRef.current?.remove) {
+          mapRef.current.remove();
+          mapRef.current = null;
+          markerRef.current = null;
+          routeLayerRef.current = null;
+        }
+
+        mapEngineRef.current = 'mapbox';
         mapboxgl.accessToken = MAPBOX_TOKEN;
 
         if (!mapRef.current) {
@@ -622,7 +725,8 @@ const LiveMap = () => {
 
   useEffect(() => {
     const handleResize = () => {
-      mapRef.current?.resize();
+      mapRef.current?.resize?.();
+      mapRef.current?.invalidateSize?.();
     };
 
     window.addEventListener('resize', handleResize);
@@ -639,6 +743,9 @@ const LiveMap = () => {
   useEffect(() => () => {
     if (markerRef.current?.__markerInstance) {
       markerRef.current.__markerInstance.remove();
+    }
+    if (routeLayerRef.current?.remove) {
+      routeLayerRef.current.remove();
     }
     if (mapRef.current) {
       mapRef.current.remove();

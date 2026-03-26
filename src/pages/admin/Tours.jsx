@@ -359,6 +359,79 @@ const formatDuration = (milliseconds) => {
   return `${minutes}m ${seconds}s`;
 };
 
+const getTourElapsedTone = ({ startedAt, durationHours, currentTime = Date.now() }) => {
+  const startedAtTime = new Date(startedAt || '').getTime();
+  const durationMs = Number(durationHours || 1) * 60 * 60 * 1000;
+
+  if (!Number.isFinite(startedAtTime) || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return {
+      elapsedCardClass: 'border-slate-200 bg-slate-50',
+      elapsedTextClass: 'text-slate-600',
+      labelClass: 'text-slate-500',
+      expired: false,
+    };
+  }
+
+  const elapsedMs = Math.max(0, currentTime - startedAtTime);
+  const progress = elapsedMs / durationMs;
+
+  if (progress >= 1) {
+    return {
+      elapsedCardClass: 'border-red-200 bg-red-50',
+      elapsedTextClass: 'text-red-600',
+      labelClass: 'text-red-500',
+      expired: true,
+    };
+  }
+
+  if (progress >= 0.75) {
+    return {
+      elapsedCardClass: 'border-red-200 bg-red-50',
+      elapsedTextClass: 'text-red-600',
+      labelClass: 'text-red-500',
+      expired: false,
+    };
+  }
+
+  if (progress >= 0.45) {
+    return {
+      elapsedCardClass: 'border-amber-200 bg-amber-50',
+      elapsedTextClass: 'text-amber-600',
+      labelClass: 'text-amber-500',
+      expired: false,
+    };
+  }
+
+  return {
+    elapsedCardClass: 'border-emerald-200 bg-emerald-50',
+    elapsedTextClass: 'text-emerald-600',
+    labelClass: 'text-emerald-500',
+    expired: false,
+  };
+};
+
+const getTourTimingSummary = (tour, referenceTime = Date.now()) => {
+  const startedAtTime = new Date(tour?.startedAt || '').getTime();
+  if (!Number.isFinite(startedAtTime)) {
+    return {
+      actualDurationLabel: 'Not started',
+      overrunLabel: 'On time',
+      isOverrun: false,
+    };
+  }
+
+  const scheduledDurationMs = Number(tour?.durationHours || 1) * 60 * 60 * 1000;
+  const finishedAtTime = new Date(tour?.completedAt || referenceTime).getTime();
+  const actualDurationMs = Math.max(0, finishedAtTime - startedAtTime);
+  const overrunMs = Math.max(0, actualDurationMs - scheduledDurationMs);
+
+  return {
+    actualDurationLabel: formatDuration(actualDurationMs),
+    overrunLabel: overrunMs > 0 ? `+${formatDuration(overrunMs)}` : 'On time',
+    isOverrun: overrunMs > 0,
+  };
+};
+
 const formatCurrencyMAD = (value) =>
   new Intl.NumberFormat('en-US', {
     minimumFractionDigits: 0,
@@ -572,6 +645,7 @@ const TourLiveTimer = ({ startedAt, durationHours }) => {
   const elapsedMs = currentTime - startedAtTime;
   const remainingMs = endTime - currentTime;
   const isLate = remainingMs < 0;
+  const tone = getTourElapsedTone({ startedAt, durationHours, currentTime });
 
   return (
     <div className="w-full rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -583,11 +657,16 @@ const TourLiveTimer = ({ startedAt, durationHours }) => {
         </span>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-center shadow-sm">
+        <div className={`rounded-xl border px-3 py-3 text-center shadow-sm ${tone.elapsedCardClass}`}>
           <p className="text-xs sm:text-sm text-gray-600 font-medium">Time Elapsed</p>
-          <p className="mt-1 text-2xl sm:text-3xl font-bold break-all text-emerald-600">
+          <p className={`mt-1 text-2xl sm:text-3xl font-bold break-all ${tone.elapsedTextClass}`}>
             {formatDuration(elapsedMs)}
           </p>
+          {tone.expired && (
+            <p className={`mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${tone.labelClass}`}>
+              Expired
+            </p>
+          )}
         </div>
         <div className={`rounded-xl border px-3 py-3 text-center shadow-sm ${isLate ? 'border-red-200 bg-red-50' : 'border-blue-200 bg-blue-50'}`}>
           {isLate && (
@@ -3541,11 +3620,11 @@ const ToursPage = () => {
                         {/* Action buttons */}
                         {tour.status !== 'completed' && (
                           <div className="border-t border-slate-100 px-5 py-4">
-                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
                               <button
                                 type="button"
                                 onClick={() => openTourDetails(tour)}
-                                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+                                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
                               >
                                 <PanelRightOpen className="h-3.5 w-3.5" />
                                 Details
@@ -3554,27 +3633,26 @@ const ToursPage = () => {
                                 <button
                                   type="button"
                                   onClick={() => window.open(tour.trackingUrl || buildTourTrackingUrl(tour.groupId), '_blank', 'noopener,noreferrer')}
-                                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:from-violet-700 hover:to-indigo-800"
+                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:from-violet-700 hover:to-indigo-800"
                                 >
                                   <MapPinned className="h-3.5 w-3.5" />
                                   Share Location
                                 </button>
-                              ) : showLiveMapLink ? (
+                              ) : null}
+                              {showLiveMapLink ? (
                                 <Link
                                   to="/admin/live-map"
-                                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5 text-xs font-semibold text-blue-700 shadow-sm hover:bg-blue-100"
+                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5 text-xs font-semibold text-blue-700 shadow-sm hover:bg-blue-100"
                                 >
                                   <MapPinned className="h-3.5 w-3.5" />
                                   Live Map
                                 </Link>
-                              ) : (
-                                <div />
-                              )}
+                              ) : null}
                               {tour.status === 'scheduled' ? (
                                 <button
                                   type="button"
                                   onClick={() => handleUpdateTourStatus(tour, 'active')}
-                                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
+                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
                                 >
                                   <Route className="h-3.5 w-3.5" />
                                   {tour.assignedVehicles.length === 0 ? 'Start + Assign' : 'Start'}
@@ -3584,7 +3662,7 @@ const ToursPage = () => {
                                 <button
                                   type="button"
                                   onClick={() => handleWhatsAppLocateGuide(tour)}
-                                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs font-semibold text-emerald-700 shadow-sm hover:bg-emerald-100"
+                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs font-semibold text-emerald-700 shadow-sm hover:bg-emerald-100"
                                 >
                                   <Share2 className="h-3.5 w-3.5" />
                                   Locate Me
@@ -3593,7 +3671,7 @@ const ToursPage = () => {
                               <button
                                 type="button"
                                 onClick={() => handleOpenTourReturnModal(tour)}
-                                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-slate-700 to-slate-900 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:from-slate-800 hover:to-black"
+                                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-slate-700 to-slate-900 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:from-slate-800 hover:to-black"
                               >
                                 <CheckCircle2 className="h-3.5 w-3.5" />
                                 Complete
@@ -3601,7 +3679,7 @@ const ToursPage = () => {
                               <button
                                 type="button"
                                 onClick={() => handleUpdateTourStatus(tour, 'cancelled')}
-                                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-semibold text-rose-700 shadow-sm hover:bg-rose-100"
+                                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-semibold text-rose-700 shadow-sm hover:bg-rose-100"
                               >
                                 <X className="h-3.5 w-3.5" />
                                 Cancel
@@ -3610,7 +3688,7 @@ const ToursPage = () => {
                                 <button
                                   type="button"
                                   onClick={() => window.open(tour.trackingUrl || buildTourTrackingUrl(tour.groupId), '_blank', 'noopener,noreferrer')}
-                                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-600 shadow-sm hover:bg-slate-100"
+                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-600 shadow-sm hover:bg-slate-100"
                                 >
                                   <TimerReset className="h-3.5 w-3.5" />
                                   Share Again
@@ -3683,7 +3761,10 @@ const ToursPage = () => {
               ) : (
                 <>
                   <div className="grid gap-4 xl:grid-cols-2">
-                    {paginatedCompletedTours.map((tour) => (
+                    {paginatedCompletedTours.map((tour) => {
+                      const timing = getTourTimingSummary(tour);
+
+                      return (
                       <article key={tour.groupId} className={`rounded-xl overflow-hidden ${getScheduleCardClasses(tour.status)}`}>
                         {/* Card header */}
                         <div className="px-5 pt-4 pb-3">
@@ -3719,6 +3800,16 @@ const ToursPage = () => {
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
                             <span className="text-slate-500">Quads · Riders</span>
                             <span className="font-semibold text-slate-900 text-left break-words">{tour.quadCount} · {tour.ridersCount}</span>
+                          </div>
+                          <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
+                            <span className="text-slate-500">Duration</span>
+                            <span className="font-semibold text-slate-900 text-left break-words">{timing.actualDurationLabel}</span>
+                          </div>
+                          <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
+                            <span className="text-slate-500">Overrun</span>
+                            <span className={`font-semibold text-left break-words ${timing.isOverrun ? 'text-red-600' : 'text-emerald-600'}`}>
+                              {timing.overrunLabel}
+                            </span>
                           </div>
                           {tour.returnEntries?.length > 0 && (
                             <div className="border-t border-dashed border-slate-100 pt-2 space-y-1.5">
@@ -3766,7 +3857,8 @@ const ToursPage = () => {
                           </div>
                         </div>
                       </article>
-                    ))}
+                    );
+                    })}
                   </div>
                   {completedPageCount > 1 && (
                     <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -4026,6 +4118,8 @@ const ToursPage = () => {
                       ['Expected End', formatDateTime(selectedTourDetails.scheduledEndAt)],
                       ['Started', selectedTourDetails.startedAt ? formatDateTime(selectedTourDetails.startedAt) : 'Not started yet'],
                       ['Completed', selectedTourDetails.completedAt ? formatDateTime(selectedTourDetails.completedAt) : 'Not completed yet'],
+                      ['Actual Duration', getTourTimingSummary(selectedTourDetails).actualDurationLabel],
+                      ['Overrun', getTourTimingSummary(selectedTourDetails).overrunLabel],
                       ['Guide', selectedTourDetails.guideName],
                       ['Booked By', selectedTourDetails.bookedByName],
                     ].map(([label, value], rowIndex) => (

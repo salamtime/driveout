@@ -71,6 +71,48 @@ const getEffectiveFuelChargeAmount = ({ rental, endFuelLevel, fuelCharge, fuelCh
   return parseFloat(fuelCharge || rental?.fuel_charge || 0) || 0;
 };
 
+const DEFAULT_RENTAL_TIMING_SETTINGS = {
+  graceMinutes: 60,
+  softLockMinutes: 45,
+};
+
+const formatRentalScheduleDateTime = (value) => {
+  const date = new Date(value || '');
+  if (Number.isNaN(date.getTime())) return 'Not scheduled';
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const getScheduledRentalTimingState = (scheduledStartValue, timingSettings, nowValue = new Date()) => {
+  const scheduledStart = new Date(scheduledStartValue || '');
+  if (Number.isNaN(scheduledStart.getTime())) {
+    return null;
+  }
+
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  const graceMinutes = Number(timingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes);
+  const softLockMinutes = Number(timingSettings?.softLockMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.softLockMinutes);
+  const minutesLate = Math.floor((now.getTime() - scheduledStart.getTime()) / 60000);
+  const expiredAt = new Date(scheduledStart.getTime() + graceMinutes * 60000);
+
+  return {
+    now,
+    scheduledStart,
+    expiredAt,
+    graceMinutes,
+    softLockMinutes,
+    minutesLate,
+    isExpired: minutesLate > graceMinutes,
+    isSoftLocked: minutesLate >= softLockMinutes,
+    startsInMinutes: minutesLate < 0 ? Math.abs(minutesLate) : 0,
+    minutesPastGrace: minutesLate > graceMinutes ? minutesLate - graceMinutes : 0,
+  };
+};
+
 const VEHICLE_REPORT_AREAS = [
   { id: 'front', label: 'Front', position: 'left-[50%] top-2 -translate-x-1/2' },
   { id: 'rear', label: 'Rear', position: 'left-[50%] bottom-2 -translate-x-1/2' },
@@ -157,6 +199,7 @@ export default function RentalDetails() {
   const [elapsedTime, setElapsedTime] = useState('');
   const [currentUser, setCurrentUser] = useState(null);
   const [actionLoading, setActionLoading] = useState({});
+  const [rentalTimingSettings, setRentalTimingSettings] = useState(DEFAULT_RENTAL_TIMING_SETTINGS);
   
   const [openingModalOpen, setOpeningModalOpen] = useState(false);
   const [closingModalOpen, setClosingModalOpen] = useState(false);
@@ -455,6 +498,37 @@ useEffect(() => {
     setFuelChargeEnabled(rental.fuel_charge_enabled ?? true);
   }
 }, [rental?.id, rental?.fuel_charge_enabled]);
+
+useEffect(() => {
+  let cancelled = false;
+
+  const loadRentalTimingSettings = async () => {
+    try {
+      const { data } = await supabase
+        .from('app_settings')
+        .select('rental_grace_period_minutes, rental_soft_lock_minutes')
+        .eq('id', 1)
+        .maybeSingle();
+
+      if (cancelled || !data) return;
+
+      setRentalTimingSettings({
+        graceMinutes: Number(data.rental_grace_period_minutes || DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes),
+        softLockMinutes: Number(data.rental_soft_lock_minutes || DEFAULT_RENTAL_TIMING_SETTINGS.softLockMinutes),
+      });
+    } catch (_error) {
+      if (!cancelled) {
+        setRentalTimingSettings(DEFAULT_RENTAL_TIMING_SETTINGS);
+      }
+    }
+  };
+
+  loadRentalTimingSettings();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
 
 const contractRef = useRef();
 const invoiceRef = useRef();
@@ -1265,8 +1339,8 @@ const calculateTierPricingBreakdown = async () => {
       // Auto-expire check before setting state
       let finalRentalData = { ...rentalData };
       if (rentalData.rental_status === 'scheduled' && rentalData.rental_start_date) {
-        const minsLate = Math.floor((Date.now() - new Date(rentalData.rental_start_date).getTime()) / 60000);
-        if (minsLate > 60) {
+        const timingState = getScheduledRentalTimingState(rentalData.rental_start_date, rentalTimingSettings, new Date());
+        if (timingState?.isExpired) {
           finalRentalData.rental_status = 'expired';
           supabase.from('app_4c3a7a6153_rentals').update({ rental_status: 'expired' }).eq('id', rentalData.id).then(() => {});
           if (rentalData.vehicle_id) supabase.from('saharax_0u4w4d_vehicles').update({ status: 'available' }).eq('id', rentalData.vehicle_id).then(() => {});
@@ -5114,31 +5188,25 @@ useEffect(() => {
         ? (rental.quantity_hours ?? rental.quantity_days ?? 1)
         : (rental.quantity_days ?? 1);
 
-      let EXPIRY_MINUTES = 60, SOFT_LOCK_MINUTES = 45;
-      try {
-        const { data: s } = await supabase.from('app_settings')
-          .select('rental_grace_period_minutes,rental_soft_lock_minutes').eq('id',1).single();
-        if (s?.rental_grace_period_minutes) EXPIRY_MINUTES = s.rental_grace_period_minutes;
-        if (s?.rental_soft_lock_minutes) SOFT_LOCK_MINUTES = s.rental_soft_lock_minutes;
-      } catch(e) {}
+      const timingState = getScheduledRentalTimingState(rental.rental_start_date, rentalTimingSettings, now);
+      const EXPIRY_MINUTES = timingState?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes;
+      const SOFT_LOCK_MINUTES = timingState?.softLockMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.softLockMinutes;
+      const minutesLate = timingState?.minutesLate ?? Math.floor((now - scheduledStart) / 60000);
 
-      const minutesLate = Math.floor((now - scheduledStart) / 60000);
-
-      if (minutesLate > EXPIRY_MINUTES) {
+      if (timingState?.isExpired) {
         await supabase.from('app_4c3a7a6153_rentals').update({ rental_status: 'expired' }).eq('id', rental.id);
         if (rental.vehicle_id) await supabase.from('saharax_0u4w4d_vehicles').update({ status: 'available' }).eq('id', rental.vehicle_id);
         await loadRentalData(true);
-        const expiredAt = new Date(scheduledStart.getTime() + EXPIRY_MINUTES * 60000);
         window.alert(
           `RENTAL EXPIRED\n\nCustomer: ${rental.customer_name}\nRental: ${rental.rental_id}\n\n` +
-          `Scheduled: ${scheduledStart.toLocaleTimeString()}\nGrace: ${EXPIRY_MINUTES} min\n` +
-          `Expired at: ${expiredAt.toLocaleTimeString()}\nNow: ${now.toLocaleTimeString()} (${minutesLate - EXPIRY_MINUTES} min past)\n\n` +
+          `Scheduled: ${formatRentalScheduleDateTime(timingState.scheduledStart)}\nGrace: ${EXPIRY_MINUTES} min\n` +
+          `Expired at: ${formatRentalScheduleDateTime(timingState.expiredAt)}\nNow: ${formatRentalScheduleDateTime(now)} (${timingState.minutesPastGrace} min past)\n\n` +
           `Vehicle has been freed.`
         );
         return;
       }
 
-      if (minutesLate >= SOFT_LOCK_MINUTES) {
+      if (timingState?.isSoftLocked) {
         const confirmed = window.confirm(
           `⚠️ LATE WARNING\n\nCustomer is ${minutesLate} min late.\nAuto-expires in ${EXPIRY_MINUTES - minutesLate} min.\n\nStart now and adjust end time?`
         );
@@ -6212,43 +6280,49 @@ useEffect(() => {
               <div className="text-center py-6 sm:py-8">
                 {/* Late/Expiry Status Banner */}
                 {rental.rental_start_date && (() => {
-                  const now = new Date();
-                  const sch = new Date(rental.rental_start_date);
-                  const m = Math.floor((now - sch) / 60000);
-                  if (m > 60) return (
+                  const timingState = getScheduledRentalTimingState(rental.rental_start_date, rentalTimingSettings, new Date());
+                  if (!timingState) return null;
+
+                  const { now, scheduledStart, expiredAt, minutesLate, minutesPastGrace, graceMinutes, isExpired, isSoftLocked, startsInMinutes } = timingState;
+
+                  if (isExpired) return (
                     <div className="mb-4 text-left bg-red-50 border-2 border-red-300 rounded-lg p-4">
                       <p className="text-sm font-bold text-red-800 mb-1">❌ Rental Expired</p>
                       <div className="text-xs text-red-700 space-y-1">
-                        <p>📅 Scheduled: <strong>{sch.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</strong></p>
-                        <p>🔴 Expired at: <strong>{new Date(sch.getTime()+3600000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</strong></p>
-                        <p>🕐 Now: <strong>{now.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</strong> ({m-60} min past)</p>
+                        <p>📅 Scheduled: <strong>{formatRentalScheduleDateTime(scheduledStart)}</strong></p>
+                        <p>🔴 Expired at: <strong>{formatRentalScheduleDateTime(expiredAt)}</strong></p>
+                        <p>🕐 Now: <strong>{formatRentalScheduleDateTime(now)}</strong> ({minutesPastGrace} min past)</p>
                         <p className="mt-1">Clicking Start will expire this rental and free the vehicle.</p>
                       </div>
                     </div>
                   );
-                  if (m >= 45) return (
+                  if (isSoftLocked) return (
                     <div className="mb-4 text-left bg-orange-50 border-2 border-orange-300 rounded-lg p-3">
-                      <p className="text-sm font-bold text-orange-800">⚠️ Auto-cancel in {60-m} min</p>
-                      <p className="text-xs text-orange-700">{m} min late — start now to adjust end time.</p>
+                      <p className="text-sm font-bold text-orange-800">⚠️ Auto-cancel in {graceMinutes - minutesLate} min</p>
+                      <p className="text-xs text-orange-700">
+                        Scheduled for {formatRentalScheduleDateTime(scheduledStart)} · {minutesLate} min late.
+                      </p>
                     </div>
                   );
-                  if (m > 0) return (
+                  if (minutesLate > 0) return (
                     <div className="mb-4 text-left bg-yellow-50 border border-yellow-300 rounded-lg p-3 flex gap-2">
                       <span>⏰</span>
                       <div>
-                        <p className="text-sm font-semibold text-yellow-800">{m} min late</p>
-                        <p className="text-xs text-yellow-700">{60-m} min before auto-expire</p>
+                        <p className="text-sm font-semibold text-yellow-800">{minutesLate} min late</p>
+                        <p className="text-xs text-yellow-700">
+                          Scheduled for {formatRentalScheduleDateTime(scheduledStart)} · {graceMinutes - minutesLate} min before auto-expire
+                        </p>
                       </div>
                     </div>
                   );
-                  if (m < 0) return (
+                  if (minutesLate < 0) return (
                     <div className="mb-4 text-left bg-blue-50 border border-blue-200 rounded-lg p-3 flex gap-2">
-                      <span>🕐</span><p className="text-sm font-semibold text-blue-800">Starts in {Math.abs(m)} min</p>
+                      <span>🕐</span><p className="text-sm font-semibold text-blue-800">Starts in {startsInMinutes} min · {formatRentalScheduleDateTime(scheduledStart)}</p>
                     </div>
                   );
                   return (
                     <div className="mb-4 text-left bg-green-50 border border-green-200 rounded-lg p-3 flex gap-2">
-                      <span>✅</span><p className="text-sm font-semibold text-green-800">On time — ready to start</p>
+                      <span>✅</span><p className="text-sm font-semibold text-green-800">On time — ready to start at {formatRentalScheduleDateTime(scheduledStart)}</p>
                     </div>
                   );
                 })()}
