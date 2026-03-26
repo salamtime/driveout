@@ -14,6 +14,8 @@ const TRANSACTION_TYPE_OPTIONS = [
 
 const QUICK_LITER_PRESETS = [5, 10, 15, 20];
 
+const normalizeDecimalInput = (value = '') => value.replace(',', '.');
+
 const AddFuelTransactionModal = ({
   isOpen,
   onClose,
@@ -187,6 +189,28 @@ const AddFuelTransactionModal = ({
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
+
+    if (name === 'unit_price') {
+      const normalizedValue = normalizeDecimalInput(value);
+      setFormData(prev => {
+        const amount = parseFloat(prev.amount) || 0;
+        const unitPrice = parseFloat(normalizedValue) || 0;
+        return {
+          ...prev,
+          unit_price: normalizedValue,
+          cost: amount > 0 && unitPrice > 0 ? (amount * unitPrice).toFixed(2) : ''
+        };
+      });
+
+      if (errors[name]) {
+        setErrors(prev => ({
+          ...prev,
+          [name]: ''
+        }));
+      }
+      return;
+    }
+
     setFormData(prev => ({
       ...prev,
       [name]: value
@@ -199,7 +223,9 @@ const AddFuelTransactionModal = ({
     // Calculate total cost when amount or unit price changes
     if (name === 'amount' || name === 'unit_price') {
       const amount = name === 'amount' ? parseFloat(value) || 0 : parseFloat(formData.amount) || 0;
-      const unitPrice = name === 'unit_price' ? parseFloat(value) || 0 : parseFloat(formData.unit_price) || 0;
+      const unitPrice = name === 'unit_price'
+        ? parseFloat(normalizeDecimalInput(value)) || 0
+        : parseFloat(normalizeDecimalInput(formData.unit_price)) || 0;
       
       if (amount > 0 && unitPrice > 0) {
         setFormData(prev => ({
@@ -396,7 +422,7 @@ const AddFuelTransactionModal = ({
 
     if (
       (formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') &&
-      (!formData.unit_price || parseFloat(formData.unit_price) <= 0)
+      (!formData.unit_price || parseFloat(normalizeDecimalInput(formData.unit_price)) <= 0)
     ) {
       newErrors.unit_price = 'Price per liter must be greater than 0';
     }
@@ -696,17 +722,33 @@ const AddFuelTransactionModal = ({
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Vehicle *
               </label>
+              {selectedVehicle?.plate_number && (
+                <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    Selected vehicle
+                  </p>
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-mono text-2xl font-black tracking-[0.22em] text-slate-950">
+                        {selectedVehicle.plate_number}
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-slate-700">
+                        {selectedVehicle.name}
+                        {selectedVehicle.model ? ` • ${selectedVehicle.model}` : ''}
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-white px-3 py-1 text-xs font-bold uppercase tracking-[0.14em] text-blue-700 shadow-sm">
+                      {formData.transaction_type === 'vehicle_refill' ? 'Direct Fill' : 'Transfer'}
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className={`rounded-xl border p-3 ${errors.vehicle_id ? 'border-red-300 bg-red-50' : 'border-gray-200 bg-gray-50'}`}>
                 <div className="mb-2 flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-900">
                       {formData.transaction_type === 'vehicle_refill' ? 'Select vehicle' : 'Select destination vehicle'}
                     </p>
-                    {selectedVehicle?.plate_number && (
-                      <p className="mt-0.5 text-xs font-bold uppercase tracking-[0.16em] text-slate-950">
-                        {selectedVehicle.plate_number}
-                      </p>
-                    )}
                   </div>
                   <p className="text-xs text-gray-500">{safeVehicles.length} vehicles</p>
                 </div>
@@ -968,13 +1010,12 @@ const AddFuelTransactionModal = ({
                   Price per Liter (MAD) *
                 </label>
                 <input
-                  type="number"
+                  type="text"
                   name="unit_price"
-                  value={formData.unit_price || unitPrice}
+                  value={formData.unit_price}
                   onChange={handleInputChange}
-                  step="0.01"
-                  min="0"
-                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  inputMode="decimal"
+                  className={`w-full rounded-xl border px-4 py-4 text-lg font-semibold [appearance:textfield] focus:outline-none focus:ring-2 focus:ring-blue-500 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${
                     errors.unit_price ? 'border-red-300' : 'border-gray-300'
                   }`}
                   placeholder="0.00"
@@ -990,16 +1031,15 @@ const AddFuelTransactionModal = ({
                   Total Cost (MAD)
                 </label>
                 <input
-                  type="number"
+                  type="text"
                   name="cost"
                   value={formData.cost}
-                  onChange={handleInputChange}
-                  step="0.01"
-                  min="0"
-                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  inputMode="decimal"
+                  className={`w-full rounded-xl border px-4 py-4 text-lg font-semibold [appearance:textfield] focus:outline-none focus:ring-2 focus:ring-blue-500 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${
                     errors.cost ? 'border-red-300' : 'border-gray-300'
                   }`}
                   placeholder="0.00 MAD"
+                  readOnly
                 />
                 {errors.cost && (
                   <p className="text-red-500 text-sm mt-1">{errors.cost}</p>
