@@ -60,7 +60,7 @@ class FuelTransactionService {
 
     const probePromise = (async () => {
       try {
-        const { error } = await supabase.from(tableName).select('id').limit(1);
+        const { error } = await supabase.from(tableName).select('*').limit(1);
         const exists = !error;
         this.tableAvailabilityCache.set(tableName, exists);
         if (typeof window !== 'undefined') {
@@ -80,6 +80,20 @@ class FuelTransactionService {
 
     this.tableAvailabilityPromiseCache.set(tableName, probePromise);
     return probePromise;
+  }
+
+  clearTableExistsCache(tableName) {
+    this.tableAvailabilityCache.delete(tableName);
+    this.tableAvailabilityPromiseCache.delete(tableName);
+
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.removeItem(`fuel-table-exists:${tableName}`);
+    }
+  }
+
+  async refreshTableExists(tableName) {
+    this.clearTableExistsCache(tableName);
+    return this.tableExists(tableName);
   }
 
   getMockVehicles() {
@@ -2105,6 +2119,25 @@ class FuelTransactionService {
       return { success: false, error: 'Vehicle is required' };
     }
 
+    const [hasFuelStateTable, hasFuelLogTable] = await Promise.all([
+      this.refreshTableExists(this.vehicleFuelStateTable),
+      this.refreshTableExists(this.fuelOperationLogsTable),
+    ]);
+
+    if (!hasFuelStateTable) {
+      return {
+        success: false,
+        error: 'Vehicle fuel state table is not available. Please finish the SQL setup and refresh the page.',
+      };
+    }
+
+    if (!hasFuelLogTable) {
+      return {
+        success: false,
+        error: 'Fuel operation logs table is not available. Please finish the SQL setup and refresh the page.',
+      };
+    }
+
     const currentState = await this.getVehicleFuelState(vehicleId);
     const resolvedTankCapacity = resolveTankCapacityLiters(
       tankCapacityLiters,
@@ -2129,6 +2162,13 @@ class FuelTransactionService {
       return syncResult;
     }
 
+    if (syncResult.skipped) {
+      return {
+        success: false,
+        error: 'Vehicle fuel state was not written. Please refresh and try again.',
+      };
+    }
+
     const composedNotes = [reason, notes]
       .map((value) => String(value || '').trim())
       .filter(Boolean)
@@ -2149,6 +2189,13 @@ class FuelTransactionService {
 
     if (!logResult.success) {
       return logResult;
+    }
+
+    if (logResult.skipped) {
+      return {
+        success: false,
+        error: 'Fuel activity log was not written. Please refresh and try again.',
+      };
     }
 
     await this.getVehicleFuelUsageSummary(vehicleId, { persist: true });
