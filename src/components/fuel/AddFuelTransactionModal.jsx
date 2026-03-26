@@ -394,7 +394,18 @@ const AddFuelTransactionModal = ({
       newErrors.amount = `Max ${currentTankLiters}L available`;
     }
 
-    if (formData.transaction_type !== 'withdrawal' && formData.cost && parseFloat(formData.cost) <= 0) {
+    if (
+      (formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') &&
+      (!formData.unit_price || parseFloat(formData.unit_price) <= 0)
+    ) {
+      newErrors.unit_price = 'Price per liter must be greater than 0';
+    }
+
+    if (
+      (formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') &&
+      formData.cost &&
+      parseFloat(formData.cost) <= 0
+    ) {
       newErrors.cost = 'Cost must be greater than 0';
     }
 
@@ -943,7 +954,7 @@ const AddFuelTransactionModal = ({
           </div>
 
           {/* Cost fields */}
-          {formData.transaction_type === 'tank_refill' && (
+          {(formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') && (
             <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -956,9 +967,15 @@ const AddFuelTransactionModal = ({
                   onChange={handleInputChange}
                   step="0.01"
                   min="0"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    errors.unit_price ? 'border-red-300' : 'border-gray-300'
+                  }`}
                   placeholder="0.00"
+                  required
                 />
+                {errors.unit_price && (
+                  <p className="text-red-500 text-sm mt-1">{errors.unit_price}</p>
+                )}
               </div>
 
               <div>
@@ -1144,42 +1161,6 @@ const AddFuelTransactionModal = ({
                       />
                     </div>
 
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Price per Liter (MAD)
-                      </label>
-                      <input
-                        type="number"
-                        name="unit_price"
-                        value={formData.unit_price || unitPrice}
-                        onChange={handleInputChange}
-                        step="0.01"
-                        min="0"
-                        className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Optional"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Total Cost (MAD)
-                      </label>
-                      <input
-                        type="number"
-                        name="cost"
-                        value={formData.cost}
-                        onChange={handleInputChange}
-                        step="0.01"
-                        min="0"
-                        className={`w-full rounded-md border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                          errors.cost ? 'border-red-300' : 'border-gray-300'
-                        }`}
-                        placeholder="Optional"
-                      />
-                      {errors.cost && (
-                        <p className="text-red-500 text-sm mt-1">{errors.cost}</p>
-                      )}
-                    </div>
                   </>
                 )}
 
