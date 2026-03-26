@@ -698,9 +698,16 @@ const AddFuelTransactionModal = ({
               </label>
               <div className={`rounded-xl border p-3 ${errors.vehicle_id ? 'border-red-300 bg-red-50' : 'border-gray-200 bg-gray-50'}`}>
                 <div className="mb-2 flex items-center justify-between">
-                  <p className="text-sm font-medium text-gray-900">
-                    {formData.transaction_type === 'vehicle_refill' ? 'Select vehicle' : 'Select destination vehicle'}
-                  </p>
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">
+                      {formData.transaction_type === 'vehicle_refill' ? 'Select vehicle' : 'Select destination vehicle'}
+                    </p>
+                    {selectedVehicle?.plate_number && (
+                      <p className="mt-0.5 text-xs font-bold uppercase tracking-[0.16em] text-slate-950">
+                        {selectedVehicle.plate_number}
+                      </p>
+                    )}
+                  </div>
                   <p className="text-xs text-gray-500">{safeVehicles.length} vehicles</p>
                 </div>
                 <div className="flex gap-2 overflow-x-auto pb-1">

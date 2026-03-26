@@ -36,6 +36,7 @@ class FuelTransactionService {
     };
 
     this.tableAvailabilityCache = new Map();
+    this.tableAvailabilityPromiseCache = new Map();
   }
 
   async tableExists(tableName) {
@@ -43,15 +44,42 @@ class FuelTransactionService {
       return this.tableAvailabilityCache.get(tableName);
     }
 
-    try {
-      const { error } = await supabase.from(tableName).select('id').limit(1);
-      const exists = !error;
-      this.tableAvailabilityCache.set(tableName, exists);
-      return exists;
-    } catch (_error) {
-      this.tableAvailabilityCache.set(tableName, false);
-      return false;
+    const storageKey = `fuel-table-exists:${tableName}`;
+    if (typeof window !== 'undefined') {
+      const cachedValue = window.sessionStorage.getItem(storageKey);
+      if (cachedValue === 'true' || cachedValue === 'false') {
+        const exists = cachedValue === 'true';
+        this.tableAvailabilityCache.set(tableName, exists);
+        return exists;
+      }
     }
+
+    if (this.tableAvailabilityPromiseCache.has(tableName)) {
+      return this.tableAvailabilityPromiseCache.get(tableName);
+    }
+
+    const probePromise = (async () => {
+      try {
+        const { error } = await supabase.from(tableName).select('id').limit(1);
+        const exists = !error;
+        this.tableAvailabilityCache.set(tableName, exists);
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.setItem(storageKey, exists ? 'true' : 'false');
+        }
+        return exists;
+      } catch (_error) {
+        this.tableAvailabilityCache.set(tableName, false);
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.setItem(storageKey, 'false');
+        }
+        return false;
+      } finally {
+        this.tableAvailabilityPromiseCache.delete(tableName);
+      }
+    })();
+
+    this.tableAvailabilityPromiseCache.set(tableName, probePromise);
+    return probePromise;
   }
 
   getMockVehicles() {
@@ -1470,25 +1498,6 @@ class FuelTransactionService {
     }
 
     if (transactionType === 'vehicle_refill') {
-      let previousVehicleRefill = null;
-      if (await this.tableExists(this.vehicleFuelRefillsTable)) {
-        const { data } = await supabase
-          .from(this.vehicleFuelRefillsTable)
-          .select('id, vehicle_id')
-          .eq('id', id)
-          .maybeSingle();
-        previousVehicleRefill = data || null;
-      }
-
-      if (!previousVehicleRefill) {
-        const { data } = await supabase
-          .from(this.fuelRefillsTable)
-          .select('id, vehicle_id')
-          .eq('id', id)
-          .maybeSingle();
-        previousVehicleRefill = data || null;
-      }
-
       const payload = {
         vehicle_id: transactionData.vehicle_id,
         liters_added: amount,
