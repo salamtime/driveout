@@ -14,10 +14,16 @@ import { formatRentalReference } from '../../utils/rentalReference';
 import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
 import { getFleetAlertsForVehicle } from '../../utils/fleetAlerts';
 import { normalizeVehicleImageUrl } from '../../utils/vehicleImage';
+import AdminModuleHero from '../../components/admin/AdminModuleHero';
 
 const formatDate = (value) => {
   if (!value) return 'Not set';
   return new Date(value).toLocaleDateString();
+};
+
+const formatDateTime = (value) => {
+  if (!value) return 'Not set';
+  return new Date(value).toLocaleString();
 };
 
 const formatMoney = (value) => {
@@ -93,31 +99,31 @@ const statusClasses = {
 };
 
 const InfoRow = ({ label, value }) => (
-  <div className="flex items-start justify-between gap-4 py-3 border-b border-gray-100 last:border-b-0">
-    <dt className="text-sm font-medium text-gray-500">{label}</dt>
-    <dd className="text-sm text-gray-900 text-right">{value || 'Not set'}</dd>
+  <div className="flex items-start justify-between gap-4 border-b border-slate-100 py-3 last:border-b-0">
+    <dt className="text-sm font-medium text-slate-500">{label}</dt>
+    <dd className="text-right text-sm text-slate-900">{value || 'Not set'}</dd>
   </div>
 );
 
 const EditableRow = ({ label, editing, viewValue, children }) => (
-  <div className="flex items-start justify-between gap-4 py-3 border-b border-gray-100 last:border-b-0">
-    <dt className="text-sm font-medium text-gray-500 pt-2">{label}</dt>
-    <dd className="text-sm text-gray-900 text-right flex-1">
+  <div className="flex items-start justify-between gap-4 border-b border-slate-100 py-3 last:border-b-0">
+    <dt className="pt-2 text-sm font-medium text-slate-500">{label}</dt>
+    <dd className="flex-1 text-right text-sm text-slate-900">
       {editing ? children : (viewValue || 'Not set')}
     </dd>
   </div>
 );
 
 const SectionCard = ({ title, description, icon: Icon, children, action }) => (
-  <section className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-    <div className="px-6 py-5 border-b border-gray-100 flex items-start justify-between gap-4">
+  <section className="overflow-hidden rounded-xl border border-violet-100 bg-white shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+    <div className="flex items-start justify-between gap-4 border-b border-violet-100 px-6 py-5">
       <div className="flex items-start gap-3">
-        <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
+        <div className="rounded-xl bg-violet-100 p-2 text-violet-700">
           <Icon className="w-5 h-5" />
         </div>
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
-          {description ? <p className="mt-1 text-sm text-gray-500">{description}</p> : null}
+          <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+          {description ? <p className="mt-1 text-sm text-slate-500">{description}</p> : null}
         </div>
       </div>
       {action}
@@ -127,9 +133,9 @@ const SectionCard = ({ title, description, icon: Icon, children, action }) => (
 );
 
 const HistoryEmptyState = ({ title, description }) => (
-  <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-5 py-8 text-center">
-    <p className="text-sm font-medium text-gray-700">{title}</p>
-    <p className="mt-1 text-sm text-gray-500">{description}</p>
+  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center">
+    <p className="text-sm font-medium text-slate-700">{title}</p>
+    <p className="mt-1 text-sm text-slate-500">{description}</p>
   </div>
 );
 
@@ -141,6 +147,7 @@ const VehicleProfile = () => {
   const [fuelHistory, setFuelHistory] = useState([]);
   const [vehicleFuelState, setVehicleFuelState] = useState(null);
   const [vehicleReports, setVehicleReports] = useState([]);
+  const [vehicleFuelSummary, setVehicleFuelSummary] = useState(null);
   const [vehicleImageUrl, setVehicleImageUrl] = useState('');
   const [vehicleDocuments, setVehicleDocuments] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
@@ -239,9 +246,10 @@ const VehicleProfile = () => {
 
         syncDispositionForm(VehicleDispositionService.getVehicleDisposition(vehicleId));
 
-        const [allMaintenanceRecords, fuelResult, reportRows, rentalRows] = await Promise.all([
+        const [allMaintenanceRecords, fuelResult, fuelSummaryResult, reportRows, rentalRows] = await Promise.all([
           MaintenanceTrackingService.getAllMaintenanceRecords(),
           FuelTransactionService.getAllTransactions({ limit: 1000, offset: 0 }),
+          FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: true }),
           VehicleReportService.getReportsForVehicle(vehicleId),
           supabase
             .from('app_4c3a7a6153_rentals')
@@ -366,6 +374,7 @@ const VehicleProfile = () => {
         setMaintenanceHistory(normalizedMaintenanceHistory);
         setFuelHistory(vehicleFuelHistory);
         setVehicleFuelState(await FuelTransactionService.getVehicleFuelState(vehicleId));
+        setVehicleFuelSummary(fuelSummaryResult?.summary || null);
         setVehicleReports(hydratedReports.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)));
       } catch (loadError) {
         console.error('Failed to load vehicle profile:', loadError);
@@ -588,13 +597,6 @@ const VehicleProfile = () => {
         timestamp: vehicle.created_at,
         detail: vehicle.purchase_supplier ? `Supplier: ${vehicle.purchase_supplier}` : 'Vehicle record created',
       },
-      {
-        id: `vehicle-updated-${vehicle.id}`,
-        type: 'vehicle',
-        title: 'Vehicle profile updated',
-        timestamp: vehicle.updated_at,
-        detail: `Current status: ${formatStatus(operationalVehicleStatus)}`,
-      },
       ...maintenanceHistory.map((record) => ({
         id: `maintenance-${record.id}`,
         type: 'maintenance',
@@ -689,32 +691,49 @@ const VehicleProfile = () => {
   }
 
   return (
-    <div className="p-4 lg:p-6 space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="flex items-start gap-4">
-          <button
-            type="button"
-            onClick={() => navigate('/admin/fleet')}
-            className="mt-1 inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
-            title="Back to fleet"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <div>
-            <p className="text-sm font-medium text-blue-600">Fleet Management</p>
-            <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">{vehicle.name}</h1>
-            <p className="mt-1 text-sm text-gray-500">
-              Full vehicle profile with legal, operational, and history details.
-            </p>
+    <div className="min-h-screen bg-slate-50">
+      <AdminModuleHero
+        icon={<Car className="h-8 w-8 text-white" />}
+        eyebrow="Fleet Management"
+        title={vehicle.name}
+        description={vehicle.plate_number ? `${vehicle.plate_number} • ${vehicle.model || 'Vehicle Profile'}` : 'Vehicle profile'}
+      />
+
+      <div className="mx-auto max-w-7xl space-y-6 p-4 lg:p-6">
+      <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_18px_45px_rgba(76,29,149,0.08)] sm:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex items-start gap-4">
+            <button
+              type="button"
+              onClick={() => navigate('/admin/fleet')}
+              className="mt-1 inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
+              title="Back to fleet"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <p className="text-sm font-medium text-violet-700">Vehicle Profile</p>
+              <h1 className="text-2xl font-bold text-slate-900 lg:text-3xl">{vehicle.name}</h1>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold tracking-[0.2em] text-blue-900">
+                  {vehicle.plate_number || 'NO PLATE'}
+                </span>
+                <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusClasses[operationalVehicleStatus] || 'bg-slate-100 text-slate-800'}`}>
+                  {formatStatus(operationalVehicleStatus)}
+                </span>
+                <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                  {vehicle.model || 'Model not set'}
+                </span>
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
           {isEditing ? (
             <>
               <button
                 type="button"
                 onClick={handleCancelEdit}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-gray-700 hover:bg-gray-50 transition-colors"
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100"
               >
                 <X className="w-4 h-4" />
                 Cancel
@@ -723,7 +742,7 @@ const VehicleProfile = () => {
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01] disabled:opacity-60"
               >
                 <Check className="w-4 h-4" />
                 {saving ? 'Saving...' : 'Save Changes'}
@@ -733,13 +752,14 @@ const VehicleProfile = () => {
             <button
               type="button"
               onClick={() => setIsEditing(true)}
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-white hover:bg-blue-700 transition-colors"
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01]"
             >
               <Edit className="w-4 h-4" />
               Edit Vehicle
             </button>
           )}
         </div>
+      </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -750,11 +770,11 @@ const VehicleProfile = () => {
             icon={Car}
           >
             <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-6">
-              <div className="aspect-square rounded-2xl overflow-hidden border border-gray-200 bg-gray-50">
+              <div className="aspect-square overflow-hidden rounded-2xl border border-violet-100 bg-slate-50">
                 {vehicleImageUrl ? (
                   <img src={vehicleImageUrl} alt={vehicle.name} className="h-full w-full object-cover" />
                 ) : (
-                  <div className="h-full w-full flex items-center justify-center text-gray-400">
+                  <div className="flex h-full w-full items-center justify-center text-slate-400">
                     <Car className="w-16 h-16" />
                   </div>
                 )}
@@ -762,7 +782,7 @@ const VehicleProfile = () => {
               <div className="space-y-4">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.28em] text-gray-400">Plate Number</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">Plate Number</p>
                     <div className="mt-2 inline-flex items-center rounded-3xl border border-blue-300 bg-gradient-to-r from-blue-50 to-sky-100 px-5 py-3 text-2xl font-black tracking-[0.3em] text-blue-950 shadow-sm ring-1 ring-blue-100">
                       {vehicle.plate_number || 'NOT SET'}
                     </div>
@@ -776,39 +796,39 @@ const VehicleProfile = () => {
                     </span>
                   </div>
                 </div>
-                <div className="rounded-2xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-                  <p className="text-lg font-bold text-gray-900">{vehicle.name || 'Vehicle'}</p>
+                <div className="rounded-2xl border border-violet-100 bg-white px-4 py-3 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+                  <p className="text-lg font-bold text-slate-900">{vehicle.name || 'Vehicle'}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700">
                       {vehicle.model || 'Model not set'}
                     </span>
-                    <span className="text-sm font-medium text-gray-500">
+                    <span className="text-sm font-medium text-slate-500">
                       {vehicle.vehicle_type || 'Vehicle'}
                     </span>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="rounded-xl border border-gray-200 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Model</p>
-                    <p className="mt-2 text-base font-semibold text-gray-900">{vehicle.model || 'Not set'}</p>
+                  <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Model</p>
+                    <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.model || 'Not set'}</p>
                   </div>
-                  <div className="rounded-xl border border-gray-200 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Current Odometer</p>
-                    <p className="mt-2 text-base font-semibold text-gray-900">{vehicle.current_odometer ? `${vehicle.current_odometer} km` : 'Not set'}</p>
+                  <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Current Odometer</p>
+                    <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.current_odometer ? `${vehicle.current_odometer} km` : 'Not set'}</p>
                   </div>
-                  <div className="rounded-xl border border-gray-200 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Engine Hours</p>
-                    <p className="mt-2 text-base font-semibold text-gray-900">{vehicle.engine_hours ? `${vehicle.engine_hours} h` : 'Not set'}</p>
+                  <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Engine Hours</p>
+                    <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.engine_hours ? `${vehicle.engine_hours} h` : 'Not set'}</p>
                   </div>
-                  <div className="rounded-xl border border-gray-200 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Document Count</p>
-                    <p className="mt-2 text-base font-semibold text-gray-900">{liveDocumentCount}</p>
+                  <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Document Count</p>
+                    <p className="mt-2 text-base font-semibold text-slate-900">{liveDocumentCount}</p>
                   </div>
                 </div>
-                <div className="rounded-xl border border-gray-200 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Fleet Alerts</p>
+                <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fleet Alerts</p>
                   {fleetAlerts.length === 0 ? (
-                    <p className="mt-2 text-sm text-gray-500">No active oil change or document expiry alerts.</p>
+                    <p className="mt-2 text-sm text-slate-500">No active oil change or document expiry alerts.</p>
                   ) : (
                     <div className="mt-3 space-y-3">
                       <div className="flex flex-wrap gap-2">
@@ -821,7 +841,7 @@ const VehicleProfile = () => {
                       </div>
                       <div className="space-y-1">
                         {fleetAlerts.map((alert) => (
-                          <p key={`${alert.id}-detail`} className="text-xs text-gray-600">
+                          <p key={`${alert.id}-detail`} className="text-xs text-slate-600">
                             {alert.detail}
                           </p>
                         ))}
@@ -959,8 +979,8 @@ const VehicleProfile = () => {
 
           <SectionCard title="Notes" description="Operational notes and internal system notes for the team." icon={StickyNote}>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="rounded-xl border border-gray-200 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Additional Notes</p>
+              <div className="rounded-xl border border-violet-100 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Additional Notes</p>
                 {isEditing ? (
                   <textarea
                     value={formData.general_notes}
@@ -969,11 +989,11 @@ const VehicleProfile = () => {
                     className="mt-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                   />
                 ) : (
-                  <p className="mt-3 text-sm text-gray-700 whitespace-pre-wrap">{vehicle.general_notes || 'No additional notes yet.'}</p>
+                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{vehicle.general_notes || 'No additional notes yet.'}</p>
                 )}
               </div>
-              <div className="rounded-xl border border-gray-200 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">System Notes</p>
+              <div className="rounded-xl border border-violet-100 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">System Notes</p>
                 {isEditing ? (
                   <textarea
                     value={formData.notes}
@@ -982,7 +1002,7 @@ const VehicleProfile = () => {
                     className="mt-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                   />
                 ) : (
-                  <p className="mt-3 text-sm text-gray-700 whitespace-pre-wrap">{vehicle.notes || 'No system notes yet.'}</p>
+                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{vehicle.notes || 'No system notes yet.'}</p>
                 )}
               </div>
             </div>
@@ -1070,7 +1090,7 @@ const VehicleProfile = () => {
 
           <SectionCard
             title="Fuel Status"
-            description="Current fuel level for this vehicle with a direct link back to the fuel module."
+            description="Current fuel, usage, and cost for this vehicle."
             icon={Gauge}
             action={(
               <button
@@ -1081,7 +1101,7 @@ const VehicleProfile = () => {
                     fuelFilters: { vehicleId: String(vehicle.id) },
                   },
                 })}
-                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
               >
                 <Fuel className="w-4 h-4" />
                 Open Fuel Logs
@@ -1089,14 +1109,14 @@ const VehicleProfile = () => {
             )}
           >
             <div className="space-y-4">
-              <div className="rounded-xl border border-gray-200 p-4 bg-gradient-to-br from-emerald-50 to-white">
+              <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-emerald-600">Current Vehicle Fuel</p>
-                    <p className="mt-2 text-2xl font-bold text-gray-900">
+                    <p className="mt-2 text-4xl font-black tracking-tight text-slate-900">
                       {vehicleFuelState?.current_fuel_lines ?? 0}/8
                     </p>
-                    <p className="mt-1 text-sm text-gray-600">
+                    <p className="mt-1 text-base font-medium text-slate-600">
                       {Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L in tank
                     </p>
                   </div>
@@ -1104,34 +1124,77 @@ const VehicleProfile = () => {
                     {formatStatus(vehicleFuelState?.last_source || 'unknown')}
                   </span>
                 </div>
-                <div className="mt-4 h-3 w-full overflow-hidden rounded-full bg-gray-200">
+                <div className="mt-5 h-3 w-full overflow-hidden rounded-full bg-slate-200">
                   <div
                     className="h-full rounded-full bg-emerald-500 transition-all"
                     style={{ width: `${Math.min(100, ((vehicleFuelState?.current_fuel_lines || 0) / 8) * 100)}%` }}
                   />
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
-                  <div className="rounded-lg border border-emerald-100 bg-white/80 p-3">
-                    <p className="text-gray-400">Last source</p>
-                    <p className="mt-1 font-medium text-gray-700">{formatStatus(vehicleFuelState?.last_source || 'unknown')}</p>
+                  <div className="rounded-xl border border-emerald-100 bg-white/90 p-3">
+                    <p className="text-slate-400">Last source</p>
+                    <p className="mt-1 font-medium text-slate-700">{formatStatus(vehicleFuelState?.last_source || 'unknown')}</p>
                   </div>
-                  <div className="rounded-lg border border-emerald-100 bg-white/80 p-3">
-                    <p className="text-gray-400">Recent fuel events</p>
-                    <p className="mt-1 font-medium text-gray-700">{fuelHistory.length}</p>
+                  <div className="rounded-xl border border-emerald-100 bg-white/90 p-3">
+                    <p className="text-slate-400">Recent fuel events</p>
+                    <p className="mt-1 font-medium text-slate-700">{fuelHistory.length}</p>
                   </div>
                 </div>
               </div>
-              <p className="text-xs text-gray-500">
-                Rental departure/return fuel levels and direct fuel transactions are tracked in the fuel logs for this vehicle.
-              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="min-w-0 rounded-xl border border-sky-100 bg-sky-50/80 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-600">Fuel Supplied</p>
+                  <p className="mt-2 text-2xl font-bold text-slate-900">
+                    {Number(vehicleFuelSummary?.totalFuelSuppliedLiters || vehicle?.total_fuel_supplied_liters || 0).toFixed(1)}L
+                  </p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-amber-100 bg-amber-50/80 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-600">Fuel Used</p>
+                  <p className="mt-2 text-2xl font-bold text-slate-900">
+                    {Number(vehicleFuelSummary?.totalFuelUsedLiters || vehicle?.total_fuel_used_liters || 0).toFixed(1)}L
+                  </p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-violet-100 bg-violet-50/80 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">Fuel Cost</p>
+                  <p className="mt-2 text-2xl font-bold text-slate-900">
+                    {formatMoney(vehicleFuelSummary?.totalFuelCostMad || vehicle?.total_fuel_cost_mad || 0)}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Avg {Number(vehicleFuelSummary?.averageFuelCostPerLiterMad || vehicle?.average_fuel_cost_per_liter_mad || 0).toFixed(2)} MAD/L
+                  </p>
+                </div>
+                <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50/90 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Last Activity</p>
+                  <p className="mt-2 text-sm font-semibold leading-5 text-slate-900 break-words">
+                    {formatDateTime(vehicleFuelSummary?.lastFuelActivityAt || vehicle?.last_fuel_activity_at)}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {vehicleFuelSummary?.fuelEventCount || fuelHistory.length} logged fuel events
+                  </p>
+                </div>
+              </div>
             </div>
           </SectionCard>
 
-          <SectionCard title="Activity Log" description="A combined timeline of profile, maintenance, and fuel activity." icon={Clock3}>
+          <SectionCard
+            title="Activity Log"
+            description="A combined timeline of profile, maintenance, and fuel activity."
+            icon={Clock3}
+            action={(
+              <button
+                type="button"
+                onClick={() => navigate(`/admin/fleet/${vehicle.id}/activity`)}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                View all
+              </button>
+            )}
+          >
             {activityLog.length === 0 ? (
               <HistoryEmptyState title="No activity yet" description="As the vehicle is used, its operational timeline will appear here." />
             ) : (
-              <div className="space-y-4 max-h-[420px] overflow-y-auto pr-2">
+              <div className="max-h-[420px] overflow-y-scroll pr-2">
+                <div className="space-y-4">
                 {activityLog.slice(0, 8).map((entry) => (
                   <div key={entry.id} className="flex gap-3">
                     <div className="mt-1 h-2.5 w-2.5 rounded-full bg-blue-500 flex-shrink-0" />
@@ -1142,6 +1205,7 @@ const VehicleProfile = () => {
                     </div>
                   </div>
                 ))}
+                </div>
               </div>
             )}
           </SectionCard>
@@ -1375,6 +1439,7 @@ const VehicleProfile = () => {
             )}
           </SectionCard>
         </div>
+      </div>
       </div>
     </div>
   );

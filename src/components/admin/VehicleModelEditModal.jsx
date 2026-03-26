@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, AlertCircle } from 'lucide-react';
 import VehicleModelService from '../../services/VehicleModelService';
+import { resolveTankCapacityLiters } from '../../utils/vehicleModelSpecs';
 
 const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError }) => {
   const [formData, setFormData] = useState({
@@ -12,6 +13,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
     power_cc_max: 0,
     capacity_min: 1,
     capacity_max: 1,
+    tank_capacity_liters: '',
     features: [],
     is_active: true
   });
@@ -29,6 +31,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
         power_cc_max: vehicleModel.power_cc_max || 0,
         capacity_min: vehicleModel.capacity_min || 1,
         capacity_max: vehicleModel.capacity_max || 1,
+        tank_capacity_liters: resolveTankCapacityLiters(vehicleModel.tank_capacity_liters, vehicleModel.model, vehicleModel.name)?.toString() || '',
         features: vehicleModel.features || [],
         is_active: vehicleModel.is_active !== undefined ? vehicleModel.is_active : true
       });
@@ -150,6 +153,20 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
                 required
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Fuel Tank Capacity (L)</label>
+            <input
+              type="number"
+              value={formData.tank_capacity_liters}
+              onChange={(e) => setFormData({...formData, tank_capacity_liters: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              min="1"
+              step="0.1"
+              placeholder="e.g., 19"
+            />
+            <p className="mt-1 text-xs text-gray-500">Shared fuel capacity used across fuel, rentals, and tours.</p>
           </div>
 
           {/* Vehicle Type and Status */}

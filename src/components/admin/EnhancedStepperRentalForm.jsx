@@ -987,8 +987,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
   const calculateFinancials = () => {
   const subtotal = (formData.quantity_days || 0) * (formData.unit_price || 0);
-  const fuelCharge = fuelChargeEnabled ? fuelChargeAmount : 0;
-  const total = subtotal + (formData.transport_fee || 0) + fuelCharge;
+  const total = subtotal + (formData.transport_fee || 0);
   const remaining = total - (formData.deposit_amount || 0);
 
   setFormData(prev => ({
@@ -1957,7 +1956,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         customer_issue_date: submissionReadyFormData.customer_issue_date || null,
         customer_id_image: submissionReadyFormData.customer_id_image || null,
         fuel_charge_enabled: fuelChargeEnabled,
-        fuel_charge: fuelChargeAmount,
+        fuel_charge: 0,
         // ✅ CRITICAL FIX: Add package_id to the submission data
         package_id: submissionReadyFormData.selected_package_id || null,
         package_name: submissionReadyFormData.selected_package_name || null,
@@ -3198,7 +3197,23 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   
-  const filteredVehicles = vehicles.filter(vehicle => {
+  const normalizedVehicles = [...vehicles].sort((a, b) => {
+    const aOdometer = Number(a?.current_odometer);
+    const bOdometer = Number(b?.current_odometer);
+    const aValid = Number.isFinite(aOdometer);
+    const bValid = Number.isFinite(bOdometer);
+
+    if (aValid && bValid && aOdometer !== bOdometer) {
+      return aOdometer - bOdometer;
+    }
+
+    if (aValid && !bValid) return -1;
+    if (!aValid && bValid) return 1;
+
+    return String(a?.plate_number || a?.name || '').localeCompare(String(b?.plate_number || b?.name || ''));
+  });
+
+  const filteredVehicles = normalizedVehicles.filter(vehicle => {
     if (!searchQuery.trim()) return true;
     const query = searchQuery.toLowerCase();
     return (
@@ -3209,6 +3224,48 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
   });
   
   const displayedVehicles = isMobile ? filteredVehicles.slice(0, 6) : filteredVehicles;
+  const recommendedVehicleId = filteredVehicles[0]?.id || normalizedVehicles[0]?.id || null;
+
+  const getMileagePriority = (vehicle) => {
+    const source = filteredVehicles.length > 0 ? filteredVehicles : normalizedVehicles;
+    const ranked = source.filter((item) => Number.isFinite(Number(item?.current_odometer)));
+    if (!ranked.length) {
+      return {
+        label: 'Mileage unknown',
+        className: 'bg-slate-100 text-slate-600',
+      };
+    }
+
+    const index = ranked.findIndex((item) => String(item.id) === String(vehicle.id));
+    if (index === -1) {
+      return {
+        label: 'Mileage unknown',
+        className: 'bg-slate-100 text-slate-600',
+      };
+    }
+
+    const lowCutoff = Math.ceil(ranked.length / 3);
+    const highCutoff = Math.ceil((ranked.length * 2) / 3);
+
+    if (index < lowCutoff) {
+      return {
+        label: 'Low mileage',
+        className: 'bg-emerald-100 text-emerald-700',
+      };
+    }
+
+    if (index < highCutoff) {
+      return {
+        label: 'Balanced',
+        className: 'bg-blue-100 text-blue-700',
+      };
+    }
+
+    return {
+      label: 'High mileage',
+      className: 'bg-amber-100 text-amber-700',
+    };
+  };
   
   return (
     <div className="w-full">
@@ -3245,6 +3302,8 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
       <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
         {displayedVehicles.map((vehicle) => {
           const isSelected = selectedId === vehicle.id || selectedId == vehicle.id;
+          const isRecommended = String(recommendedVehicleId) === String(vehicle.id);
+          const mileagePriority = getMileagePriority(vehicle);
           
           return (
             <div
@@ -3253,7 +3312,9 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
               className={`relative cursor-pointer transition-all rounded-xl border-2 p-4 ${
                 isSelected
                   ? 'border-green-500 bg-green-50 ring-2 ring-green-200 shadow-md'
-                  : 'border-gray-200 hover:border-gray-300 bg-white hover:shadow-sm'
+                  : isRecommended
+                    ? 'border-blue-300 bg-blue-50/50 shadow-sm hover:border-blue-400'
+                    : 'border-gray-200 hover:border-gray-300 bg-white hover:shadow-sm'
               } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               {/* Header with Plate and Status */}
@@ -3270,6 +3331,11 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  {isRecommended && !isSelected && (
+                    <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-1 text-[11px] font-semibold text-blue-700">
+                      Lowest mileage
+                    </span>
+                  )}
                   <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
                     vehicle.status === 'available'
                       ? 'bg-green-100 text-green-800'
@@ -3295,6 +3361,16 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
                 </div>
                 <h4 className="font-semibold text-gray-900">{vehicle.name}</h4>
                 <p className="text-sm text-gray-600">{vehicle.model}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <p className="text-[11px] font-medium text-gray-500">
+                    {vehicle.current_odometer !== null && vehicle.current_odometer !== undefined && vehicle.current_odometer !== ''
+                      ? `${vehicle.current_odometer} km`
+                      : 'Odometer not set'}
+                  </p>
+                  <span className={`inline-flex items-center rounded-full px-2 py-1 text-[11px] font-semibold ${mileagePriority.className}`}>
+                    {mileagePriority.label}
+                  </span>
+                </div>
               </div>
 
               {/* Price Preview */}
@@ -5711,6 +5787,36 @@ const SimplifiedRentalWizard = ({
   }, [activeModelFilter]);
 
   useEffect(() => {
+    const sourceVehicles = filteredVehicles.length > 0
+      ? filteredVehicles
+      : (availableVehicles || []);
+
+    if (!sourceVehicles.length) return;
+    if (formData.vehicle_id) return;
+
+    const sortedByMileage = [...sourceVehicles].sort((a, b) => {
+      const aOdometer = Number(a?.current_odometer);
+      const bOdometer = Number(b?.current_odometer);
+      const aValid = Number.isFinite(aOdometer);
+      const bValid = Number.isFinite(bOdometer);
+
+      if (aValid && bValid && aOdometer !== bOdometer) {
+        return aOdometer - bOdometer;
+      }
+
+      if (aValid && !bValid) return -1;
+      if (!aValid && bValid) return 1;
+
+      return String(a?.plate_number || a?.name || '').localeCompare(String(b?.plate_number || b?.name || ''));
+    });
+
+    const suggestedVehicle = sortedByMileage[0];
+    if (suggestedVehicle?.id) {
+      handleInputChange('vehicle_id', suggestedVehicle.id);
+    }
+  }, [filteredVehicles, availableVehicles, formData.vehicle_id]);
+
+  useEffect(() => {
     const validateTiers = async () => {
       // Pricing tiers validation
     };
@@ -6945,8 +7051,15 @@ const SimplifiedRentalWizard = ({
             handleCustomerSaved(savedCustomer, image);
             setShowIDScanModal(false);
           }}
+          onImageSaved={(savedData, imageFile) => {
+            handleIDScanComplete(savedData, imageFile);
+            setShowIDScanModal(false);
+          }}
           customerId={formData.customer_id}
           title="Scan ID Document"
+          autoProcessOnSelect={false}
+          allowSaveWithoutOcr
+          saveWithoutOcrLabel="Save image only"
         />
       )}
 

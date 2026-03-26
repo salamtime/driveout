@@ -32,6 +32,7 @@ import ToursPage from './pages/admin/Tours';
 import LiveMapPage from './pages/admin/LiveMap';
 import FleetPage from './pages/admin/Fleet';
 import VehicleProfilePage from './pages/admin/VehicleProfile';
+import VehicleActivityPage from './pages/admin/VehicleActivity';
 import PricingPage from './pages/admin/Pricing';
 import MaintenancePage from './pages/admin/Maintenance';
 import MaintenanceDetail from './pages/admin/MaintenanceDetail';
@@ -254,6 +255,7 @@ function App() {
                   <Route path="customers" element={<ErrorBoundary name="Customer-Management-Dashboard"><CustomerManagementDashboard /></ErrorBoundary>} />
                   <Route path="fleet" element={<ErrorBoundary name="Fleet-Page"><FleetPage /></ErrorBoundary>} />
                   <Route path="fleet/:vehicleId" element={<ErrorBoundary name="Vehicle-Profile-Page"><VehicleProfilePage /></ErrorBoundary>} />
+                  <Route path="fleet/:vehicleId/activity" element={<ErrorBoundary name="Vehicle-Activity-Page"><VehicleActivityPage /></ErrorBoundary>} />
                   <Route path="pricing/*" element={<ErrorBoundary name="Pricing-Page"><PricingPage /></ErrorBoundary>} />
                   <Route path="maintenance/:id" element={<ErrorBoundary name="Maintenance-Detail"><MaintenanceDetail /></ErrorBoundary>} />
                   <Route path="maintenance/*" element={<ErrorBoundary name="Maintenance-Page"><MaintenancePage /></ErrorBoundary>} />

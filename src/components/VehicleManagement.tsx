@@ -11,12 +11,14 @@ import DocumentUpload from './DocumentUpload';
 import VehicleDocuments from './VehicleDocuments';
 import VehicleModelEditModal from './admin/VehicleModelEditModal';
 import MaintenanceTrackingService from '../services/MaintenanceTrackingService';
+import FuelTransactionService from '../services/FuelTransactionService';
 import alertService from '../services/AlertService';
 import GridSkeleton from './ui/GridSkeleton';
 import { TBL } from '../config/tables';
 import VehicleGridView from './VehicleGridView';
 import VehicleListView from './VehicleListView';
 import AdminModuleHero from './admin/AdminModuleHero';
+import { resolveTankCapacityLiters } from '../utils/vehicleModelSpecs';
 
 interface Vehicle {
   id: number;
@@ -79,6 +81,7 @@ interface VehicleModel {
   description: string;
   image_url: string | null;
   features: string[];
+  tank_capacity_liters?: number | null;
   is_active: boolean;
   vehicles?: { count: number }[];
 }
@@ -105,6 +108,7 @@ const VehicleManagement: React.FC = () => {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [vehicleModels, setVehicleModels] = useState<VehicleModel[]>([]);
   const [maintenanceRecords, setMaintenanceRecords] = useState<MaintenanceRecord[]>([]);
+  const [vehicleFuelStateMap, setVehicleFuelStateMap] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -121,7 +125,8 @@ const VehicleManagement: React.FC = () => {
     name: '',
     model: '',
     vehicle_type: 'quad',
-    description: ''
+    description: '',
+    tank_capacity_liters: '',
   });
   const [modelFormError, setModelFormError] = useState('');
   const [showMigration, setShowMigration] = useState(false);
@@ -396,6 +401,19 @@ const VehicleManagement: React.FC = () => {
       // Load document counts for vehicles
       const vehiclesWithCounts = vehiclesData ? await loadVehicleDocumentCounts(vehiclesData) : [];
       setVehicles(vehiclesWithCounts);
+
+      const fuelStates = await FuelTransactionService.getVehicleFuelStates().catch((fuelError) => {
+        console.error('❌ Fuel state fetch failed:', fuelError);
+        return [];
+      });
+      const nextFuelStateMap: Record<string, any> = {};
+      (fuelStates || []).forEach((state: any) => {
+        const stateKey = String(state?.vehicle_id || state?.id || '');
+        if (stateKey) {
+          nextFuelStateMap[stateKey] = state;
+        }
+      });
+      setVehicleFuelStateMap(nextFuelStateMap);
       
       if (vehiclesData) {
         alertService.updateAllOilChangeAlerts(vehiclesData);
@@ -422,6 +440,7 @@ const VehicleManagement: React.FC = () => {
             power_cc_max: parseInt(model.power_cc_max) || 0,
             capacity_min: parseInt(model.capacity_min) || 0,
             capacity_max: parseInt(model.capacity_max) || 0,
+            tank_capacity_liters: resolveTankCapacityLiters(model.tank_capacity_liters, model.model, model.name),
             // Get vehicle count for each model
             vehicles: [{ 
               count: vehiclesWithCounts.filter(v => v.vehicle_model_id === model.id).length 
@@ -436,7 +455,8 @@ const VehicleManagement: React.FC = () => {
             power_cc_min: m.power_cc_min,
             power_cc_max: m.power_cc_max,
             capacity_min: m.capacity_min,
-            capacity_max: m.capacity_max
+            capacity_max: m.capacity_max,
+            tank_capacity_liters: m.tank_capacity_liters,
           })));
         } else {
           console.warn('⚠️ No vehicle models found in database');
@@ -814,14 +834,16 @@ const VehicleManagement: React.FC = () => {
         power_cc_max: 0,
         capacity_min: 1,
         capacity_max: 1,
-        features: []
+        features: [],
+        tank_capacity_liters: resolveTankCapacityLiters(modelFormData.tank_capacity_liters, modelFormData.model, modelFormData.name),
       });
 
       setModelFormData({
         name: '',
         model: '',
         vehicle_type: 'quad',
-        description: ''
+        description: '',
+        tank_capacity_liters: '',
       });
       setShowAddModelForm(false);
       await fetchData();
@@ -1204,6 +1226,7 @@ const VehicleManagement: React.FC = () => {
           {viewMode === 'grid' ? (
             <VehicleGridView
               vehicles={filteredVehicles}
+              vehicleFuelStateMap={vehicleFuelStateMap}
               onView={handleView}
               onEdit={handleEdit}
               onDelete={handleDelete}
@@ -1417,6 +1440,7 @@ const VehicleManagement: React.FC = () => {
               const powerMax = parseInt(model.power_cc_max as any) || 0;
               const capacityMin = parseInt(model.capacity_min as any) || 0;
               const capacityMax = parseInt(model.capacity_max as any) || 0;
+              const tankCapacityLiters = resolveTankCapacityLiters(model.tank_capacity_liters, model.model, model.name);
               
               return (
                 <div key={model.id} className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
@@ -1464,6 +1488,7 @@ const VehicleManagement: React.FC = () => {
                         ? 'N/A'
                         : `${capacityMin}-${capacityMax}`
                     }</div>
+                    <div>Fuel Tank: {tankCapacityLiters ? `${tankCapacityLiters}L` : 'N/A'}</div>
                     <div>Active Vehicles: {model.vehicles?.[0]?.count || 0}</div>
                     <div>Status: {model.is_active ? 'Active' : 'Inactive'}</div>
                   </div>
@@ -2082,6 +2107,20 @@ const VehicleManagement: React.FC = () => {
                     placeholder="Optional description of the vehicle model"
                   />
                 </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Fuel Tank Capacity (L)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="0.1"
+                    value={modelFormData.tank_capacity_liters}
+                    onChange={(e) => setModelFormData({...modelFormData, tank_capacity_liters: e.target.value})}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="e.g., 19"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Used by Fuel Management and rentals to calculate the real tank fill state.</p>
+                </div>
                 
                 <div className="flex justify-end gap-3 pt-4">
                   <button
@@ -2093,7 +2132,8 @@ const VehicleManagement: React.FC = () => {
                         name: '',
                         model: '',
                         vehicle_type: 'quad',
-                        description: ''
+                        description: '',
+                        tank_capacity_liters: '',
                       });
                     }}
                     className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"

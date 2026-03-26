@@ -1,6 +1,7 @@
 import React from 'react';
 import { Car, Edit, Trash2, FileText, Calendar, AlertTriangle, File } from 'lucide-react';
 import { normalizeVehicleImageUrl } from '../utils/vehicleImage';
+import { roundTo } from '../utils/fuelMath';
 
 interface Vehicle {
   id: number;
@@ -22,6 +23,7 @@ interface Vehicle {
 
 interface VehicleGridViewProps {
   vehicles: Vehicle[];
+  vehicleFuelStateMap: Record<string, any>;
   onView: (vehicle: Vehicle) => void;
   onEdit: (vehicle: Vehicle) => void;
   onDelete: (id: number) => void;
@@ -33,6 +35,7 @@ interface VehicleGridViewProps {
 
 const VehicleGridView: React.FC<VehicleGridViewProps> = ({
   vehicles,
+  vehicleFuelStateMap,
   onView,
   onEdit,
   onDelete,
@@ -42,6 +45,33 @@ const VehicleGridView: React.FC<VehicleGridViewProps> = ({
   isOilChangeDue: isOilChangeDueProp
 }) => {
   const getVehicleDocumentCount = (vehicle: Vehicle) => Number(vehicle.document_count || 0);
+  const renderFuelProgressBar = (vehicle: Vehicle) => {
+    const fuelState = vehicleFuelStateMap[String(vehicle.id)];
+    if (!fuelState) return null;
+
+    const lines = Number(fuelState.current_fuel_lines || 0);
+    const liters = Number(fuelState.current_fuel_liters || 0);
+    const tankCapacity = Number(fuelState.tank_capacity_liters || 0);
+    const percentage = Math.max(0, Math.min(100, (lines / 8) * 100));
+
+    return (
+      <div className="mt-2">
+        <div className="mb-1 flex justify-between text-xs text-gray-500">
+          <span>Fuel</span>
+          <span>
+            {lines}/8
+            {tankCapacity > 0 ? ` · ${roundTo(liters, 1)}/${tankCapacity}L` : ` · ${roundTo(liters, 1)}L`}
+          </span>
+        </div>
+        <div className="w-full overflow-hidden rounded-full bg-emerald-100 h-2">
+          <div
+            className="h-2 rounded-full bg-gradient-to-r from-emerald-500 to-lime-400"
+            style={{ width: `${percentage}%` }}
+          />
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -140,8 +170,6 @@ const VehicleGridView: React.FC<VehicleGridViewProps> = ({
             </div>
             
             <div className="grid grid-cols-2 gap-2 text-xs text-gray-500">
-              <div>Power: {vehicle.power_cc}cc</div>
-              <div>Capacity: {vehicle.capacity}</div>
               {vehicle.current_odometer && (
                 <div>Odometer: {vehicle.current_odometer}km</div>
               )}
@@ -149,6 +177,8 @@ const VehicleGridView: React.FC<VehicleGridViewProps> = ({
                 <div>Hours: {vehicle.engine_hours}h</div>
               )}
             </div>
+
+            {renderFuelProgressBar(vehicle)}
             
             {vehicle.current_odometer && vehicle.next_oil_change_odometer && (
               <div className="mt-2">

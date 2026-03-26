@@ -58,7 +58,7 @@ const FuelTransactions = () => {
     try {
       const { data, error } = await supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('id, name, plate_number')
+        .select('id, name, plate_number, model, vehicle_type, current_odometer')
         .eq('status', 'active')
         .order('name');
 
@@ -194,6 +194,14 @@ const FuelTransactions = () => {
             </button>
 
             <button
+              onClick={() => handleAddTransaction('tank_out')}
+              className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors"
+            >
+              <Minus className="w-4 h-4" />
+              Tank Out
+            </button>
+
+            <button
               onClick={() => handleAddTransaction('vehicle_refill')}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
@@ -228,6 +236,7 @@ const FuelTransactions = () => {
           transactionType={transactionType}
           editTransaction={editTransaction}
           vehicles={vehicles}
+          vehicleStates={[]}
           onSuccess={handleTransactionSuccess}
         />
       )}

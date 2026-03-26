@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { resolveTankCapacityLiters } from '../utils/vehicleModelSpecs';
 
 /**
  * VehicleModelService - FIXED: Enhanced error handling and connection diagnostics
@@ -237,18 +238,32 @@ class VehicleModelService {
   static async createModel(modelData) {
     try {
       console.log('🚀 VehicleModelService: Creating model with enhanced error handling:', modelData);
-      
-      const insertPromise = supabase
+
+      const payload = {
+        ...modelData,
+        tank_capacity_liters: resolveTankCapacityLiters(
+          modelData.tank_capacity_liters,
+          modelData.model,
+          modelData.name
+        ),
+        is_active: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const buildInsertPromise = (includeTankCapacity = true) => supabase
         .from('saharax_0u4w4d_vehicle_models')
-        .insert([{
-          ...modelData,
-          is_active: true,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }])
+        .insert([includeTankCapacity ? payload : { ...payload, tank_capacity_liters: undefined }])
         .select('id, name, model, vehicle_type, is_active');
 
-      const { data, error } = await this.executeWithTimeout(insertPromise, 'createModel');
+      let { data, error } = await this.executeWithTimeout(buildInsertPromise(true), 'createModel');
+
+      if (
+        error &&
+        `${error.message || ''} ${error.details || ''}`.toLowerCase().includes('tank_capacity_liters')
+      ) {
+        ({ data, error } = await this.executeWithTimeout(buildInsertPromise(false), 'createModel'));
+      }
 
       if (error) {
         console.error('❌ VehicleModelService: Error creating model:', error);
@@ -279,17 +294,31 @@ class VehicleModelService {
   static async updateModel(modelId, modelData) {
     try {
       console.log('🚀 VehicleModelService: Updating model with enhanced error handling:', modelId);
-      
-      const updatePromise = supabase
+
+      const payload = {
+        ...modelData,
+        tank_capacity_liters: resolveTankCapacityLiters(
+          modelData.tank_capacity_liters,
+          modelData.model,
+          modelData.name
+        ),
+        updated_at: new Date().toISOString()
+      };
+
+      const buildUpdatePromise = (includeTankCapacity = true) => supabase
         .from('saharax_0u4w4d_vehicle_models')
-        .update({
-          ...modelData,
-          updated_at: new Date().toISOString()
-        })
+        .update(includeTankCapacity ? payload : { ...payload, tank_capacity_liters: undefined })
         .eq('id', modelId)
         .select('id, name, model, vehicle_type, is_active');
 
-      const { data, error } = await this.executeWithTimeout(updatePromise, 'updateModel');
+      let { data, error } = await this.executeWithTimeout(buildUpdatePromise(true), 'updateModel');
+
+      if (
+        error &&
+        `${error.message || ''} ${error.details || ''}`.toLowerCase().includes('tank_capacity_liters')
+      ) {
+        ({ data, error } = await this.executeWithTimeout(buildUpdatePromise(false), 'updateModel'));
+      }
 
       if (error) {
         console.error('❌ VehicleModelService: Error updating model:', error);
@@ -467,10 +496,10 @@ class VehicleModelService {
   static getFallbackModels() {
     console.log('🔄 VehicleModelService: Using fallback models data');
     return [
-      { id: '1', name: 'SEGWAY', model: 'AT5', vehicle_type: 'ATV', is_active: true },
-      { id: '2', name: 'SEGWAY', model: 'AT6', vehicle_type: 'ATV', is_active: true },
-      { id: '3', name: 'SEGWAY', model: 'AT5', vehicle_type: 'Quad', is_active: true },
-      { id: '4', name: 'SEGWAY', model: 'AT6', vehicle_type: 'Quad', is_active: true },
+      { id: '1', name: 'SEGWAY', model: 'AT5', vehicle_type: 'ATV', is_active: true, tank_capacity_liters: 19 },
+      { id: '2', name: 'SEGWAY', model: 'AT6', vehicle_type: 'ATV', is_active: true, tank_capacity_liters: 23 },
+      { id: '3', name: 'SEGWAY', model: 'AT5', vehicle_type: 'Quad', is_active: true, tank_capacity_liters: 19 },
+      { id: '4', name: 'SEGWAY', model: 'AT6', vehicle_type: 'Quad', is_active: true, tank_capacity_liters: 23 },
       { id: '5', name: 'YAMAHA', model: 'YFZ450R', vehicle_type: 'ATV', is_active: true },
       { id: '6', name: 'HONDA', model: 'TRX450R', vehicle_type: 'ATV', is_active: true },
       { id: '7', name: 'KAWASAKI', model: 'KFX450R', vehicle_type: 'ATV', is_active: true },

@@ -57,6 +57,20 @@ const getRentalKilometerPackage = (rental, packageDetails) => {
   return hasLinkedPackage && hasKmConfig ? pkg : null;
 };
 
+const hasRecordedReturnFuel = (rental, endFuelLevel) => {
+  return endFuelLevel !== null && endFuelLevel !== undefined ||
+    rental?.end_fuel_level !== null && rental?.end_fuel_level !== undefined ||
+    String(rental?.rental_status || '').toLowerCase() === 'completed';
+};
+
+const getEffectiveFuelChargeAmount = ({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled }) => {
+  if (!fuelChargeEnabled || !hasRecordedReturnFuel(rental, endFuelLevel)) {
+    return 0;
+  }
+
+  return parseFloat(fuelCharge || rental?.fuel_charge || 0) || 0;
+};
+
 const VEHICLE_REPORT_AREAS = [
   { id: 'front', label: 'Front', position: 'left-[50%] top-2 -translate-x-1/2' },
   { id: 'rear', label: 'Rear', position: 'left-[50%] bottom-2 -translate-x-1/2' },
@@ -2353,7 +2367,7 @@ Click the link above to review and approve the extension.`;
       : (rental.quantity_days ?? 1);
     const baseAmount = rate * duration;
     const overageCharge = pkg ? parseFloat(rental.overage_charge || 0) : 0;
-    const fuelChargeAmount = fuelChargeEnabled ? (fuelCharge || rental?.fuel_charge || 0) : 0;
+    const fuelChargeAmount = getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
     const extensionFees = parseFloat(totalExtensionFees || 0);
     const maintenanceRepairAmount = getLinkedMaintenanceRepairAmount();
     const maintenanceStayAmount = getLinkedMaintenanceStayAmount();
@@ -2641,7 +2655,7 @@ if (rental?.rental_type === 'hourly') {
 
 const overageCharge = parseFloat(rental?.overage_charge || 0);
 const extensionFees = parseFloat(totalExtensionFees || 0);
-const fuelChargeAmount = fuelChargeEnabled ? (fuelCharge || rental?.fuel_charge || 0) : 0;
+const fuelChargeAmount = getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
 
 // This is the GRAND TOTAL for the RENTAL ONLY
 const rentalGrandTotal = baseAmount + overageCharge + extensionFees + fuelChargeAmount;
@@ -3486,7 +3500,7 @@ const loadFuelChargeSettings = async () => {
         ? (rental.quantity_hours ?? rental.quantity_days ?? 1) * (rental.unit_price || 0)
         : rental.unit_price ? rental.unit_price * (rental.quantity_days ?? 1) : (rental.total_amount || 0);
       const extensionFees = totalExtensionFees || 0;
-      const fuelChargeAmount = fuelChargeEnabled ? (fuelCharge || rental?.fuel_charge || 0) : 0;
+      const fuelChargeAmount = getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
       const maintenanceChargeAmount = getLinkedMaintenanceChargeAmount();
       const finalTotal = originalPrice + overageCharge + extensionFees + fuelChargeAmount + maintenanceChargeAmount;
 
@@ -5646,6 +5660,8 @@ useEffect(() => {
   const isPendingApproval = rental.approval_status === 'pending';
   const isAdmin = canApprovePriceOverrides(currentUser);
   const canEditRentalPriceOverride = canEditRentalPrice(currentUser);
+  const canManageScheduledRental = isScheduled && ['owner', 'admin', 'employee'].includes(currentUser?.role);
+  const canDeleteScheduledRental = isScheduled && ['owner', 'admin'].includes(currentUser?.role);
   
   const canSignContract = hasOpeningVideo && hasOdometerReading && isPaymentSufficient() && (rental?.rental_type !== 'daily' || startFuelLevel !== null) && !rental.contract_signed && !rental.signature_url;
   const canSendWhatsApp = rental.contract_signed || !!rental.signature_url;
@@ -5664,89 +5680,157 @@ useEffect(() => {
     end_date: rental.actual_end_date ? new Date(rental.actual_end_date).toLocaleString() : (rental.rental_end_date ? new Date(rental.rental_end_date).toLocaleString() : 'N/A'),
   };
 
+  const handleOpenRentalEdit = () => {
+    navigate('/admin/rentals', {
+      state: {
+        openForm: true,
+        editingRental: rental,
+      },
+    });
+  };
+
 // ✅ Calculate extension totals before rendering
   return (
-    <div className="container mx-auto px-4 py-8 max-w-4xl pb-20 sm:pb-8">
-      <div className="flex justify-between items-center mb-6">
-        <Button onClick={() => navigate('/admin/rentals')} variant="outline">
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back to Rentals
-        </Button>
-        <div className="hidden sm:flex gap-2">
-          {!rental.contract_signed && !rental.signature_url && rental.rental_status !== 'completed' && (
-              <Button
-                onClick={() => setIsSigning(true)}
-                title={
-                  !hasOpeningVideo ? "Please upload opening video before signing" :
-                  !hasOdometerReading ? "Please enter starting odometer before signing" :
-                  !isPaymentSufficient() ? "Payment must be completed before signing" :
-                  "Sign contract"
-                }
-              >
-                  <FileSignature className="w-4 h-4 mr-2" />
-                  Sign Contract
-              </Button>
-            )}
-            {rental?.customer_phone && (
-              <>
-              <Button
-  onClick={() => setContractPreviewModal(true)}
-  className="bg-blue-600 text-white hover:bg-blue-700 flex items-center gap-2"
->
-  <FileText className="h-4 w-4" />
-  Contract
-</Button>
-              <Button
-  onClick={async () => {
-    if (isMobileDevice()) {
-      await forceMobileRender();
-      await new Promise(resolve => setTimeout(resolve, 300));
-    }
-    setReceiptPreviewModal(true);
-  }}
-  className="bg-purple-600 text-white hover:bg-purple-700 flex items-center gap-2"
->
-  <Receipt className="h-4 w-4" />
-  Receipt
-</Button>
-              <Button
-                onClick={handleWhatsAppClick}
-                onMouseEnter={ensurePDFsReady}
-                disabled={isSharing}
-                className="bg-green-600 text-white hover:bg-green-700 flex items-center gap-2"
-                title={!rental?.signature_url ? "Contract not signed yet" : 
-                       rental?.payment_status !== 'paid' ? "Payment not completed" : 
-                       "Send documents via WhatsApp"}
-              >
-                {isSharing ? (
-                  <Loader className="w-4 h-4 animate-spin" />
-                ) : (
-                  <FaWhatsapp size={18} />
-                )}
-                {isSharing ? 'Preparing...' : 'WhatsApp'}
-              </Button>
-                          </>
-            )}
-        </div>
-      </div>
+    <div className="min-h-screen bg-slate-50">
+      <div className="container mx-auto max-w-5xl px-4 py-6 sm:py-8 pb-20 sm:pb-8">
+        <Card className="mb-6 overflow-hidden rounded-xl border border-slate-200/90 bg-white shadow-sm">
+          <CardHeader className="border-b border-slate-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/50 pb-5">
+            <CardTitle className="flex flex-col gap-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <div className="mb-2 flex items-center gap-2 flex-wrap">
+                    <span className="text-2xl font-bold tracking-tight text-slate-900">
+                      {rental.vehicle?.name} - {rental.vehicle?.model}
+                    </span>
+                    {rental.vehicle?.plate_number && (
+                      <span className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-800 shadow-sm">
+                        {rental.vehicle.plate_number}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+                    <span>Rental ID: {rental.rental_id}</span>
+                    <span className="text-slate-300">•</span>
+                    <span>{rental.customer_name}</span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge className={`${getStatusColor(rental.rental_status)} border px-3 py-1 text-xs font-semibold tracking-wide`}>
+                    {rental.rental_status?.toUpperCase()}
+                  </Badge>
+                  {(() => {
+                    let statusText = 'UNPAID';
+                    let statusClass = 'bg-red-100 text-red-800';
 
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="flex flex-col sm:flex-row sm:justify-between sm:items-center text-lg sm:text-xl">
-            <div className="flex flex-col mb-2 sm:mb-0">
-              <span><div className="flex items-center gap-2 flex-wrap">
-            <span>{rental.vehicle?.name} - {rental.vehicle?.model}</span>
-            {rental.vehicle?.plate_number && (
-              <span className="bg-blue-100 text-blue-800 px-3 py-1.5 rounded-md text-sm font-semibold border border-blue-200 shadow-sm">
-                {rental.vehicle.plate_number}
-              </span>
-            )}
-          </div></span>
-              <span className="text-sm font-normal text-gray-500 mt-1">Rental ID: {rental.rental_id}</span>
-            </div>
-            <Badge className={`${getStatusColor(rental.rental_status)} self-start sm:self-center`}>{rental.rental_status?.toUpperCase()}</Badge>
-          </CardTitle>
-        </CardHeader>
+                    if (rentalBillingSummary.grandTotal > 0) {
+                      if (rentalBillingSummary.depositPaid >= rentalBillingSummary.grandTotal) {
+                        statusText = 'PAID';
+                        statusClass = 'bg-green-100 text-green-800';
+                      } else if (rentalBillingSummary.depositPaid > 0) {
+                        statusText = 'PARTIAL';
+                        statusClass = 'bg-yellow-100 text-yellow-800';
+                      }
+                    }
+
+                    return (
+                      <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${statusClass}`}>
+                        {statusText}
+                      </span>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button onClick={() => navigate('/admin/rentals')} variant="outline" className="border-slate-200 bg-white">
+                    <ArrowLeft className="mr-2 h-4 w-4" />
+                    Back to Rentals
+                  </Button>
+
+                  {canManageScheduledRental && (
+                    <Button onClick={handleOpenRentalEdit} className="bg-violet-600 text-white hover:bg-violet-700">
+                      <Edit className="mr-2 h-4 w-4" />
+                      Edit
+                    </Button>
+                  )}
+
+                  {canDeleteScheduledRental && (
+                    <Button onClick={cancelRental} variant="destructive">
+                      <XCircle className="mr-2 h-4 w-4" />
+                      Delete
+                    </Button>
+                  )}
+
+                  {isActive && (
+                    <Button onClick={cancelRental} variant="destructive">
+                      <XCircle className="mr-2 h-4 w-4" />
+                      Cancel
+                    </Button>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {!rental.contract_signed && !rental.signature_url && rental.rental_status !== 'completed' && (
+                    <Button
+                      onClick={() => setIsSigning(true)}
+                      title={
+                        !hasOpeningVideo ? "Please upload opening video before signing" :
+                        !hasOdometerReading ? "Please enter starting odometer before signing" :
+                        !isPaymentSufficient() ? "Payment must be completed before signing" :
+                        "Sign contract"
+                      }
+                      className="bg-slate-900 text-white hover:bg-slate-800"
+                    >
+                      <FileSignature className="mr-2 h-4 w-4" />
+                      Sign Contract
+                    </Button>
+                  )}
+
+                  {rental?.customer_phone && (
+                    <>
+                      <Button
+                        onClick={() => setContractPreviewModal(true)}
+                        className="bg-blue-600 text-white hover:bg-blue-700"
+                      >
+                        <FileText className="mr-2 h-4 w-4" />
+                        Contract
+                      </Button>
+                      <Button
+                        onClick={async () => {
+                          if (isMobileDevice()) {
+                            await forceMobileRender();
+                            await new Promise(resolve => setTimeout(resolve, 300));
+                          }
+                          setReceiptPreviewModal(true);
+                        }}
+                        className="bg-purple-600 text-white hover:bg-purple-700"
+                      >
+                        <Receipt className="mr-2 h-4 w-4" />
+                        Receipt
+                      </Button>
+                      <Button
+                        onClick={handleWhatsAppClick}
+                        onMouseEnter={ensurePDFsReady}
+                        disabled={isSharing}
+                        className="bg-green-600 text-white hover:bg-green-700"
+                        title={!rental?.signature_url ? "Contract not signed yet" :
+                          rental?.payment_status !== 'paid' ? "Payment not completed" :
+                          "Send documents via WhatsApp"}
+                      >
+                        {isSharing ? (
+                          <Loader className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <FaWhatsapp className="mr-2" size={18} />
+                        )}
+                        {isSharing ? 'Preparing...' : 'WhatsApp'}
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </CardTitle>
+          </CardHeader>
         <CardContent>
           {/* SCHEDULED Rental - Show Workflow Steps */}
           {isScheduled && !rental.contract_signed && !rental.signature_url && (
@@ -7162,13 +7246,20 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         </div>
       )}
 
-      <Card className="mb-6">
-        <CardHeader><CardTitle className="text-xl">Rental Information</CardTitle></CardHeader>
-        <CardContent className="space-y-6">
+      <Card className="mb-6 overflow-hidden rounded-xl border border-slate-200/90 bg-white shadow-sm">
+        <CardHeader className="border-b border-slate-100 bg-slate-50/80 pb-4">
+          <CardTitle className="text-xl text-slate-900">Rental Information</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6 p-5 sm:p-6">
           <div>
-            <h3 className="font-semibold mb-3 text-lg">Customer Details</h3>
-             <Button onClick={() => handleViewCustomerDetails(rental.customer_id)} size="sm" className="bg-blue-100 text-blue-800 hover:bg-blue-200"><User className="w-4 h-4 mr-2" />View Details</Button>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 mt-2 text-sm sm:text-base">
+            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <h3 className="text-lg font-semibold text-slate-900">Customer Details</h3>
+              <Button onClick={() => handleViewCustomerDetails(rental.customer_id)} size="sm" className="bg-blue-100 text-blue-800 hover:bg-blue-200">
+                <User className="mr-2 h-4 w-4" />
+                View Details
+              </Button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 mt-2 text-sm sm:text-base text-slate-700">
               <p><strong>Full Name:</strong> {rental.customer_name}</p>
               <p><strong>Email:</strong> {rental.customer_email}</p>
               <p><strong>Phone:</strong> {rental.customer_phone}</p>
@@ -7199,10 +7290,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
             </>
           )}
-          <Separator />
+          <Separator className="bg-slate-100" />
           <div>
-            <h3 className="font-semibold mb-3 text-lg">Vehicle Details</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm sm:text-base">
+            <h3 className="mb-3 text-lg font-semibold text-slate-900">Vehicle Details</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm sm:text-base text-slate-700">
               <p><strong>Vehicle:</strong> {rental.vehicle?.name}</p>
               <p><strong>Model:</strong> {rental.vehicle?.model}</p>
               <p><strong>Plate:</strong> {rental.vehicle?.plate_number}</p>
@@ -7475,12 +7566,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
             )}
           </div>
-          <Separator />
+          <Separator className="bg-slate-100" />
           <div>
             {(rental.created_by_name || rental.started_by_name || rental.contract_signed_by_name) && (
-              <div className="mb-4 pb-3 border-b border-gray-100">
+              <div className="mb-4 pb-3 border-b border-slate-100">
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-semibold text-base">👤 Staff</h3>
+                  <h3 className="font-semibold text-base text-slate-900">👤 Staff</h3>
                   <button
                     onClick={async () => {
                       if (!showHistory) await loadRentalHistory(rental.id);
@@ -7518,8 +7609,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 )}
               </div>
             )}
-            <h3 className="font-semibold mb-3 text-lg">Rental Period</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm sm:text-base">
+            <h3 className="mb-3 text-lg font-semibold text-slate-900">Rental Period</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm sm:text-base text-slate-700">
               <p><strong>Start:</strong> {new Date(rental.started_at || rental.rental_start_date).toLocaleString()}
    {rental.started_at && <span className="text-green-600 text-xs ml-2">(Actual)</span>}</p>
               <p><strong>End:</strong> {
@@ -7560,18 +7651,18 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
             </div>
           </div>
-           <Separator />
+           <Separator className="bg-slate-100" />
           <div>
-            <h3 className="font-semibold mb-3 text-lg">Inclusions & Add-ons</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 text-sm sm:text-base">
+            <h3 className="mb-3 text-lg font-semibold text-slate-900">Inclusions & Add-ons</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-2 text-sm sm:text-base text-slate-700">
                 <p><strong>Insurance:</strong> {rental.insurance_included ? 'Yes' : 'No'}</p>
                 <p><strong>Helmet:</strong> {rental.helmet_included ? 'Yes' : 'No'}</p>
                 <p><strong>Gear:</strong> {rental.gear_included ? 'Yes' : 'No'}</p>
             </div>
           </div>
-          <Separator />
+          <Separator className="bg-slate-100" />
           <div>
-            <h3 className="font-semibold mb-3 text-lg">Financial Information</h3>
+            <h3 className="mb-3 text-lg font-semibold text-slate-900">Financial Information</h3>
   
   {isPendingApproval && (
     <Alert className="mb-4 bg-yellow-50 border-yellow-200">
@@ -8408,21 +8499,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </div>
 </CardContent>
 </Card>
-      <div className="hidden sm:flex justify-end gap-4">
-        {isScheduled && (
-          <Button onClick={cancelRental} variant="destructive">
-            <XCircle className="w-5 h-5 mr-2" />
-            Cancel Booking
-          </Button>
-        )}
-        {isActive && (
-          <Button onClick={cancelRental} variant="destructive">
-            <XCircle className="w-5 h-5 mr-2" />
-            Cancel
-          </Button>
-        )}
-      </div>
-      
+
       <Dialog open={openingModalOpen} onOpenChange={(open) => {
   setOpeningModalOpen(open);
   if (!open) {
@@ -9656,7 +9733,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <ReceiptTemplate 
             rental={{
               ...rental,
-              fuel_charge: fuelCharge || rental?.fuel_charge || 0,
+              fuel_charge: getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled }),
               start_fuel_level: rental?.start_fuel_level,
               end_fuel_level: rental?.end_fuel_level,
               vehicle: {
@@ -9697,7 +9774,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         <ReceiptTemplate
           rental={{
             ...rental,
-            fuel_charge: fuelCharge || rental?.fuel_charge || 0,
+            fuel_charge: getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled }),
             start_fuel_level: rental?.start_fuel_level,
             end_fuel_level: rental?.end_fuel_level,
             vehicle: {
@@ -9944,7 +10021,7 @@ Breakdown:
         <ReceiptTemplate 
           rental={{
             ...rental,
-            fuel_charge: fuelCharge || rental?.fuel_charge || 0,
+            fuel_charge: getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled }),
             start_fuel_level: rental?.start_fuel_level,
             end_fuel_level: rental?.end_fuel_level,
             vehicle: {
@@ -10005,6 +10082,7 @@ Breakdown:
         }
       `}</style>
 
+    </div>
     </div>
   );
 }

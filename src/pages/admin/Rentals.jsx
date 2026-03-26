@@ -6,7 +6,9 @@ import VideoContractModal from '../../components/VideoContractModal';
 import VehicleAvailabilityService from '../../services/VehicleAvailabilityService';
 import ViewCustomerDetailsDrawer from '../../components/admin/ViewCustomerDetailsDrawer';
 import VehicleReportService from '../../services/VehicleReportService';
+import FuelTransactionService from '../../services/FuelTransactionService';
 import { getPaymentStatusStyle } from '../../config/statusColors';
+import { roundTo } from '../../utils/fuelMath';
 import { Plus, Clock, List, Grid, LayoutGrid, CheckCircle, XCircle, Calendar } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
@@ -29,7 +31,18 @@ const getRentalTypeBadge = (rentalType) => {
 };
 
 const getRentalFinancialSnapshot = (rental) => {
-  const grandTotal = parseFloat(rental?.total_amount) || 0;
+  const hasReturnFuel =
+    rental?.end_fuel_level !== null &&
+    rental?.end_fuel_level !== undefined;
+  const quantity = rental?.rental_type === 'hourly'
+    ? (Number(rental?.quantity_hours) || Number(rental?.quantity_days) || 1)
+    : (Number(rental?.quantity_days) || 1);
+  const baseTotal = (Number(rental?.unit_price) || 0) * quantity;
+  const storedTotal = parseFloat(rental?.total_amount) || 0;
+  const fuelCharge = parseFloat(rental?.fuel_charge || 0) || 0;
+  const grandTotal = hasReturnFuel || String(rental?.rental_status || '').toLowerCase() === 'completed'
+    ? storedTotal
+    : Math.max(0, storedTotal - fuelCharge) || baseTotal;
   const amountPaid = Math.max(0, parseFloat(rental?.deposit_amount) || 0);
   const balanceDue = Math.max(0, grandTotal - amountPaid);
 
@@ -330,6 +343,7 @@ const [rentals, setRentals] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
   const [availabilityData, setAvailabilityData] = useState([]);
+  const [vehicleFuelStateMap, setVehicleFuelStateMap] = useState({});
   const [rentalOverviewSnapshot, setRentalOverviewSnapshot] = useState({
     activeVehicleIds: [],
     scheduledVehicleIds: [],
@@ -671,6 +685,22 @@ const [rentals, setRentals] = useState([]);
     }
   };
 
+  const fetchVehicleFuelStates = async () => {
+    try {
+      const states = await FuelTransactionService.getVehicleFuelStates();
+      const nextMap = {};
+      (states || []).forEach((state) => {
+        const stateKey = String(state?.vehicle_id || state?.id || '');
+        if (stateKey) {
+          nextMap[stateKey] = state;
+        }
+      });
+      setVehicleFuelStateMap(nextMap);
+    } catch (err) {
+      console.error('❌ Error fetching vehicle fuel states:', err);
+    }
+  };
+
   const fetchRentalOverviewSnapshot = async () => {
     try {
       const { data, error } = await supabase
@@ -773,6 +803,7 @@ const [rentals, setRentals] = useState([]);
   useEffect(() => {
     fetchVehicles();
     fetchAvailabilityData();
+    fetchVehicleFuelStates();
     fetchRentalOverviewSnapshot();
 
     console.log('Setting up real-time subscriptions...');
@@ -800,6 +831,7 @@ const [rentals, setRentals] = useState([]);
           // Refresh the current page
           fetchRentals(statusFilter, paymentStatusFilter, currentPage, itemsPerPage);
           fetchAvailabilityData();
+          fetchVehicleFuelStates();
           fetchRentalOverviewSnapshot();
         }
       )
@@ -817,6 +849,7 @@ const [rentals, setRentals] = useState([]);
           console.log('Vehicle change detected:', payload);
           fetchVehicles();
           fetchAvailabilityData();
+          fetchVehicleFuelStates();
           fetchRentalOverviewSnapshot();
         }
       )
@@ -833,6 +866,9 @@ const [rentals, setRentals] = useState([]);
   useEffect(() => {
     if (location.state?.openForm) {
       console.log('🔵 Opening form from navigation state');
+      if (location.state?.editingRental) {
+        setEditingRental(location.state.editingRental);
+      }
       setShowStepperForm(true);
       // Clear the state to prevent reopening on refresh
       window.history.replaceState({}, document.title);
@@ -846,6 +882,7 @@ const [rentals, setRentals] = useState([]);
     setEditingRental(null);
     fetchRentals(statusFilter, paymentStatusFilter);
     fetchAvailabilityData();
+    fetchVehicleFuelStates();
     fetchRentalOverviewSnapshot();
   };
 
@@ -1098,6 +1135,79 @@ const [rentals, setRentals] = useState([]);
   const formatPlateNumber = (plateNumber) => {
     if (!plateNumber) return 'N/A';
     return plateNumber.toUpperCase();
+  };
+
+  const renderFuelProgressBar = (rental, compact = false) => {
+    const vehicleKey = String(rental?.vehicle_id || rental?.vehicle?.id || '');
+    const fuelState = vehicleFuelStateMap[vehicleKey];
+    const tankCapacity = Number(fuelState?.tank_capacity_liters || 0);
+    const startFuelLines = Number(rental?.start_fuel_level ?? 0);
+    const endFuelLines = Number(rental?.end_fuel_level ?? 0);
+    const isCompletedHourlyConsumption =
+      rental?.rental_status === 'completed' &&
+      rental?.rental_type === 'hourly' &&
+      startFuelLines > 0 &&
+      endFuelLines >= 0;
+
+    if (!fuelState && !isCompletedHourlyConsumption) return null;
+
+    if (isCompletedHourlyConsumption) {
+      const safeStartLines = Math.max(0, Math.min(8, startFuelLines));
+      const safeEndLines = Math.max(0, Math.min(safeStartLines, endFuelLines));
+      const consumedLines = Math.max(0, safeStartLines - safeEndLines);
+      const startPercent = Math.max(0, Math.min(100, (safeStartLines / 8) * 100));
+      const remainingPercent = Math.max(0, Math.min(100, (safeEndLines / 8) * 100));
+      const consumedPercent = Math.max(0, startPercent - remainingPercent);
+      const consumedLiters = tankCapacity > 0 ? roundTo((consumedLines / 8) * tankCapacity, 1) : null;
+
+      return (
+        <div className={`rounded-lg border border-emerald-100 bg-emerald-50/70 ${compact ? 'px-2.5 py-2' : 'px-3 py-2.5'}`}>
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className={`font-semibold uppercase tracking-[0.18em] text-emerald-700 ${compact ? 'text-[9px]' : 'text-[10px]'}`}>
+              Fuel Used
+            </span>
+            <span className={`font-semibold text-slate-800 ${compact ? 'text-[10px]' : 'text-xs'}`}>
+              {safeStartLines}/8 → {safeEndLines}/8
+              {consumedLiters !== null ? ` · ${consumedLiters}L used` : ''}
+            </span>
+          </div>
+          <div className="relative h-2 overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-emerald-500 transition-all"
+              style={{ width: `${startPercent}%` }}
+            />
+            <div
+              className="absolute inset-y-0 rounded-full bg-rose-500/90 transition-all"
+              style={{ left: `${remainingPercent}%`, width: `${consumedPercent}%` }}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    const lines = Number(fuelState.current_fuel_lines || 0);
+    const liters = Number(fuelState.current_fuel_liters || 0);
+    const percentage = Math.max(0, Math.min(100, (lines / 8) * 100));
+
+    return (
+      <div className={`rounded-lg border border-emerald-100 bg-emerald-50/70 ${compact ? 'px-2.5 py-2' : 'px-3 py-2.5'}`}>
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <span className={`font-semibold uppercase tracking-[0.18em] text-emerald-700 ${compact ? 'text-[9px]' : 'text-[10px]'}`}>
+            Fuel
+          </span>
+          <span className={`font-semibold text-emerald-800 ${compact ? 'text-[10px]' : 'text-xs'}`}>
+            {lines}/8
+            {tankCapacity > 0 ? ` · ${liters.toFixed(1)}/${tankCapacity.toFixed(tankCapacity % 1 === 0 ? 0 : 1)}L` : ` · ${liters.toFixed(1)}L`}
+          </span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-emerald-100">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-lime-400 transition-all"
+            style={{ width: `${percentage}%` }}
+          />
+        </div>
+      </div>
+    );
   };
   
 
@@ -1674,6 +1784,9 @@ const [rentals, setRentals] = useState([]);
                             <div className="text-sm text-gray-500">
                               ID: {rental.vehicle_id}
                             </div>
+                            <div className="mt-2 max-w-[240px]">
+                              {renderFuelProgressBar(rental)}
+                            </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="text-sm font-mono font-bold tracking-wide text-slate-900 bg-slate-100 border border-slate-200 px-2.5 py-1.5 rounded-lg inline-block">
@@ -1960,7 +2073,7 @@ const [rentals, setRentals] = useState([]);
                       className="cursor-pointer"
                       onClick={() => handleViewRental(rental)}
                     >
-                      <div className={`min-h-[280px] flex flex-col rounded-xl border bg-white p-4 transition-all hover:-translate-y-0.5 ${
+                      <div className={`min-h-[250px] flex flex-col rounded-xl border bg-white p-3.5 transition-all hover:-translate-y-0.5 ${
                           rental.rental_status === 'active'
                             ? 'border-emerald-200 shadow-[0_18px_45px_rgba(16,185,129,0.12)] hover:border-emerald-300 hover:shadow-[0_20px_50px_rgba(16,185,129,0.16)]'
                             : rental.rental_status === 'scheduled'
@@ -1974,7 +2087,7 @@ const [rentals, setRentals] = useState([]);
                                   : 'border-amber-200 shadow-[0_18px_45px_rgba(245,158,11,0.10)] hover:border-amber-300 hover:shadow-[0_20px_50px_rgba(245,158,11,0.14)]'
                         }`}>
                         {/* Compact Header */}
-                        <div className={`mb-3 flex items-start justify-between gap-3 border-b pb-3 ${
+                        <div className={`mb-2.5 flex items-start justify-between gap-3 border-b pb-2.5 ${
                           rental.rental_status === 'active' ? 'border-emerald-100' :
                           rental.rental_status === 'scheduled' ? 'border-blue-100' :
                           rental.rental_status === 'completed' ? 'border-slate-100' :
@@ -2008,13 +2121,13 @@ const [rentals, setRentals] = useState([]);
                         </div>
                         
                         {/* Rental Type and Duration Badges */}
-                        <div className="mb-3 flex items-center gap-1 sm:gap-2">
+                        <div className="mb-2.5 flex items-center gap-1.5 sm:gap-2">
                           {getRentalTypeBadge(rental.rental_type)}
                           {getDurationBadge(rental)}
                         </div>
 
                         {/* Compact Info Grid */}
-                        <div className="space-y-2.5 text-xs">
+                        <div className="space-y-2 text-xs">
                           {/* Customer */}
                           <div className="flex items-start gap-2">
                             <span className="text-gray-500 font-semibold min-w-[50px]">👤</span>
@@ -2042,18 +2155,13 @@ const [rentals, setRentals] = useState([]);
                                 </span>
                               </div>
                               <div className="mt-1 truncate text-sm font-semibold text-slate-900">{formatVehicleName(rental.vehicle)}</div>
-                              <div className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                                {rental.vehicle?.vehicle_type || 'Vehicle'}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Vehicle Model Support */}
-                          <div className="flex items-start gap-2">
-                            <span className="text-gray-500 font-semibold min-w-[50px]">🏷️</span>
-                            <div className="flex-1 min-w-0">
-                              <div className="truncate text-xs font-medium text-slate-700">
-                                {rental.vehicle?.model || rental.vehicle?.name || 'N/A'}
+                              <div className="mt-1 flex flex-wrap items-center gap-2">
+                                <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                                  {rental.vehicle?.model || 'N/A'}
+                                </span>
+                                <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                                  {rental.vehicle?.vehicle_type || 'Vehicle'}
+                                </span>
                               </div>
                             </div>
                           </div>
@@ -2069,28 +2177,27 @@ const [rentals, setRentals] = useState([]);
                                 <div className={`mt-1 inline-flex items-center px-2 py-1 rounded text-[10px] font-medium ${rentalAttention.className}`}>
                                   {rentalAttention.text}
                                 </div>
-                              ) : null}
+                              ) : (() => {
+                                const timeRemaining = calculateSmartTimeRemaining(rental);
+                                if (timeRemaining.text) {
+                                  return (
+                                    <div className={`mt-1 inline-flex items-center gap-1.5 rounded-lg border border-white/70 px-2.5 py-1.5 ${timeRemaining.bgColor}`}>
+                                      <Clock className={`h-3.5 w-3.5 ${timeRemaining.color}`} />
+                                      <span className={`text-xs font-extrabold ${timeRemaining.color} tracking-tight`}>
+                                        {timeRemaining.text}
+                                      </span>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              })()}
                             </div>
                           </div>
 
-                          {/* Time Remaining for Active Rentals - Enhanced */}
-                          {!rentalAttention && (() => {
-                            const timeRemaining = calculateSmartTimeRemaining(rental);
-                            if (timeRemaining.text) {
-                              return (
-                                <div className={`mt-2 flex items-center justify-center gap-2 rounded-lg border border-white/70 px-3 py-2 ${timeRemaining.bgColor}`}>
-                                  <Clock className={`h-4 w-4 ${timeRemaining.color}`} />
-                                  <span className={`text-sm font-extrabold ${timeRemaining.color} tracking-tight`}>
-                                    {timeRemaining.text}
-                                  </span>
-                                </div>
-                              );
-                            }
-                            return null;
-                          })()}
+                          {renderFuelProgressBar(rental, true)}
 
                           {/* Payment Info */}
-<div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+<div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
   <div className="flex items-center gap-1">
     {(() => {
       const paymentSnapshot = getRentalFinancialSnapshot(rental);
@@ -2128,31 +2235,7 @@ const [rentals, setRentals] = useState([]);
                         </div>
 
                         {/* Compact Actions */}
-                        <div className="flex flex-wrap gap-2 mt-auto pt-3 border-t border-gray-100">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleViewRental(rental);
-                            }}
-                            className="flex-1 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-[10px] font-semibold text-violet-700 transition-colors hover:bg-violet-100"
-                          >
-                            View
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditingRental(rental);
-                              setShowStepperForm(true);
-                            }}
-                            className={`flex-1 rounded-lg px-2.5 py-1.5 text-[10px] font-semibold border transition-colors ${
-                              isImmutable 
-                                ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400' 
-                                : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
-                            }`}
-                            disabled={isImmutable}
-                          >
-                            Edit
-                          </button>
+                        <div className="flex flex-wrap gap-2 mt-auto pt-2.5 border-t border-gray-100">
                           
                           {/* Admin Approval Button for Pending Price Overrides */}
 {rental.rental_status === 'scheduled' && rental.approval_status === 'pending' && rental.pending_total_request && user?.role === 'owner' && (
@@ -2278,18 +2361,13 @@ const [rentals, setRentals] = useState([]);
                               </button>
                   )}
                           
-                          {canDelete() && (
+                          {canDelete() && !isImmutable && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 handleDeleteRental(rental.id);
                               }}
-                              className={`flex-1 px-2 py-1 text-[10px] font-medium border rounded transition-colors ${
-                                isImmutable 
-                                  ? 'text-gray-400 border-gray-300 cursor-not-allowed' 
-                                  : 'text-red-600 hover:text-white hover:bg-red-600 border-red-600'
-                              }`}
-                              disabled={isImmutable}
+                              className="flex-1 px-2 py-1 text-[10px] font-medium border rounded transition-colors text-red-600 hover:text-white hover:bg-red-600 border-red-600"
                             >
                               Delete
                             </button>
