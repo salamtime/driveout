@@ -1,6 +1,7 @@
 import React from 'react';
 import { Badge } from './ui/badge';
 import i18n from '../i18n';
+import { deriveEffectiveRentalStatus } from '../utils/rentalLifecycle';
 
 const RentalStatusBadge = ({ rental, className = '' }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
@@ -19,22 +20,16 @@ const RentalStatusBadge = ({ rental, className = '' }) => {
       };
     }
 
-    const status = rental.rental_status || rental.status;
-    const hasHistoricalImpoundStatus = Boolean(
-      String(status || '').toLowerCase() === 'impounded' ||
-      rental?.is_impounded ||
-      rental?.impounded_at ||
-      rental?.released_from_impound_at
-    );
+    const status = deriveEffectiveRentalStatus(rental);
     const now = getCasablancaTime();
     const startTime = new Date(rental.rental_start_date || rental.start_date);
     const endTime = new Date(rental.rental_end_date || rental.end_date);
 
     // Determine actual status based on time and current status
-    let actualStatus = hasHistoricalImpoundStatus ? 'impounded' : status;
+    let actualStatus = status;
     let isOverdue = false;
 
-    if (hasHistoricalImpoundStatus) {
+    if (status === 'impounded') {
       actualStatus = 'impounded';
     } else if (now < startTime) {
       // Before start time

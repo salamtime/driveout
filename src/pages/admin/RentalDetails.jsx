@@ -2378,12 +2378,22 @@ const calculateTierPricingBreakdown = async () => {
           }
         }
       }
+      // Set rental state early so secondary fetch failures do not blank the page.
+      setRental(finalRentalData);
+
       // ✅ DYNAMIC: Always load package details if package_id exists
-      if (rentalData.package_id) {
-        if (RENTAL_DEBUG) console.log('📦 Package ID found:', rentalData.package_id);
-        await loadPackageDetails(rentalData.package_id);
-      } else {
-        if (RENTAL_DEBUG) console.log('⚠️ No package_id found in rental');
+      try {
+        if (rentalData.package_id) {
+          if (RENTAL_DEBUG) console.log('📦 Package ID found:', rentalData.package_id);
+          await loadPackageDetails(rentalData.package_id);
+        } else {
+          if (RENTAL_DEBUG) console.log('⚠️ No package_id found in rental');
+          setPackageDetails(null);
+          setIncludedKilometers(null);
+          setExtraKmRate(null);
+        }
+      } catch (packageLoadError) {
+        console.error('❌ Non-critical package load failure:', packageLoadError);
         setPackageDetails(null);
         setIncludedKilometers(null);
         setExtraKmRate(null);
@@ -2405,14 +2415,15 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
       
       // ✅ FIXED: Fetch second drivers separately to ensure they're loaded
       if (rentalData.id) {
-        const secondDrivers = await fetchSecondDriversSeparately(rentalData.id);
-        if (RENTAL_DEBUG) console.log('🔄 Rental loaded with second drivers:', {
-          rentalId: rentalData.id,
-          secondDrivers: secondDrivers,
-          secondDriversCount: secondDrivers?.length || 0,
-          rentalStatus: rentalData.rental_status
-        });
-        // DEBUG: Check what dates are actually in the database
+        try {
+          const secondDrivers = await fetchSecondDriversSeparately(rentalData.id);
+          if (RENTAL_DEBUG) console.log('🔄 Rental loaded with second drivers:', {
+            rentalId: rentalData.id,
+            secondDrivers: secondDrivers,
+            secondDriversCount: secondDrivers?.length || 0,
+            rentalStatus: rentalData.rental_status
+          });
+          // DEBUG: Check what dates are actually in the database
 if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
   rental_id: rentalData.rental_id,
   rental_end_date_in_db: rentalData.rental_end_date,
@@ -2425,13 +2436,14 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
         .toISOString()
     : 'N/A'
 });
-        if (secondDrivers.length > 0) {
-          finalRentalData.second_drivers = secondDrivers;
+          if (secondDrivers.length > 0) {
+            finalRentalData.second_drivers = secondDrivers;
+            setRental((prev) => prev ? ({ ...prev, second_drivers: secondDrivers }) : prev);
+          }
+        } catch (secondDriverLoadError) {
+          console.error('❌ Non-critical second driver load failure:', secondDriverLoadError);
         }
       }
-
-      // Set rental state ONCE with all data merged
-      setRental(finalRentalData);
 
       // Load fuel pricing for the vehicle model
       if (rentalData?.vehicle?.vehicle_model?.id) {
@@ -2525,7 +2537,11 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
       const nextDisplayedStartingOdometer = resolveDisplayedStartingOdometer(rentalData);
       setStartOdometer(nextDisplayedStartingOdometer > 0 ? nextDisplayedStartingOdometer.toString() : '');
       
-      await loadRentalMedia(rentalData.id);
+      try {
+        await loadRentalMedia(rentalData.id);
+      } catch (mediaLoadError) {
+        console.error('❌ Non-critical rental media load failure:', mediaLoadError);
+      }
 
       try {
         const latestVehicleReport = await VehicleReportService.getLatestReportForRental(rentalData.id);
@@ -2553,7 +2569,13 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
       }
       
     } catch (err) {
-      console.error('❌ Error loading rental:', err);
+      console.error('❌ Error loading rental:', {
+        message: err?.message,
+        code: err?.code,
+        details: err?.details,
+        hint: err?.hint,
+        raw: err,
+      });
       const errorMsg = err?.message?.includes('429')
         ? 'Too many requests. Please wait a moment and try again.'
         : 'Failed to load rental details';

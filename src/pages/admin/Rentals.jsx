@@ -10,6 +10,7 @@ import EnhancedTransactionalRentalService from '../../services/EnhancedTransacti
 import PricingRulesService from '../../services/PricingRulesService';
 import appWarmupService from '../../services/AppWarmupService';
 import rentalSummaryService from '../../services/RentalSummaryService';
+import { deriveEffectiveRentalStatus, normalizeRentalLifecycle } from '../../utils/rentalLifecycle';
 import { getPaymentStatusStyle } from '../../config/statusColors';
 import { roundTo } from '../../utils/fuelMath';
 import { Plus, Clock, ClipboardList, List, Grid, LayoutGrid, CheckCircle, XCircle, Calendar, MessageCircle, RectangleHorizontal } from 'lucide-react';
@@ -424,34 +425,7 @@ const Rentals = () => {
     return phone;
   };
 
-  const getEffectiveRentalStatus = useCallback((rental) => {
-    const rawStatus = String(rental?.rental_status || '').toLowerCase();
-    const vehicleStatus = String(rental?.vehicle?.status || '').toLowerCase();
-    const hasHistoricalImpoundStatus = Boolean(
-      rawStatus === 'impounded' ||
-      rental?.is_impounded ||
-      rental?.impounded_at ||
-      rental?.released_from_impound_at
-    );
-
-    if (hasHistoricalImpoundStatus) {
-      return 'impounded';
-    }
-
-    if (vehicleStatus === 'impounded') {
-      return 'impounded';
-    }
-
-    if (['completed', 'cancelled', 'expired'].includes(rawStatus)) {
-      return rawStatus;
-    }
-
-    if (rental?.started_at) {
-      return 'active';
-    }
-
-    return rawStatus || 'scheduled';
-  }, []);
+  const getEffectiveRentalStatus = useCallback((rental) => deriveEffectiveRentalStatus(rental), []);
 
   const handleSendReminder = (rental, event) => {
     event?.stopPropagation?.();
@@ -588,7 +562,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
 
   const applyRentalSummarySnapshot = useCallback((snapshot) => {
     if (!snapshot) return;
-    setRentals(snapshot.rentals || []);
+    setRentals((snapshot.rentals || []).map(normalizeRentalLifecycle));
     setRentalReportMap(snapshot.rentalReportMap || {});
     setTotalCount(snapshot.totalCount || 0);
     setTotalPages(snapshot.totalPages || 0);
@@ -617,6 +591,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
         // Calculate range for pagination
         const from = (page - 1) * limit;
         const to = from + limit - 1;
+        const shouldFilterClientSide = normalizedStatusFilter && normalizedStatusFilter !== 'all';
 
         // Now fetch paginated data
         let query = supabase
@@ -636,8 +611,10 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
             rental_end_time,
             actual_end_date,
             started_at,
+            completed_at,
             created_at,
             vehicle_id,
+            status,
             payment_status,
             approval_status,
             pending_total_request,
@@ -675,15 +652,10 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
             )
           `, { count: 'planned' });
 
-        if (!isImpoundedStatusFilter) {
+        if (!shouldFilterClientSide) {
           query = query.range(from, to);
         }
 
-        if (currentStatusFilter && currentStatusFilter !== 'all') {
-          if (!isImpoundedStatusFilter) {
-            query = query.eq('rental_status', currentStatusFilter);
-          }
-        }
         if (currentPaymentStatusFilter && currentPaymentStatusFilter !== 'all') {
           query = query.eq('payment_status', currentPaymentStatusFilter);
         }
@@ -697,13 +669,13 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
           throw error;
         }
 
-        let nextRentals = data || [];
+        let nextRentals = (data || []).map(normalizeRentalLifecycle);
         let nextTotalCount = count || 0;
 
-        if (isImpoundedStatusFilter) {
-          const impoundedRentals = nextRentals.filter((rental) => getEffectiveRentalStatus(rental) === 'impounded');
-          nextTotalCount = impoundedRentals.length;
-          nextRentals = impoundedRentals.slice(from, to + 1);
+        if (shouldFilterClientSide) {
+          const filteredRentals = nextRentals.filter((rental) => getEffectiveRentalStatus(rental) === normalizedStatusFilter);
+          nextTotalCount = filteredRentals.length;
+          nextRentals = filteredRentals.slice(from, to + 1);
         }
 
         setTotalCount(nextTotalCount);
@@ -901,20 +873,18 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
           .select(`
             id,
             rental_status,
+            status,
+            started_at,
+            completed_at,
             is_impounded,
+            impounded_at,
             released_from_impound_at,
             vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
               status
             )
-          `, { count: 'exact', head: !isImpoundedStatusFilter })
+          `, { count: 'exact', head: !normalizedStatusFilter || normalizedStatusFilter === 'all' })
           .gte('rental_start_date', fromDate.toISOString())
           .lt('rental_start_date', toDate.toISOString());
-
-        if (currentStatusFilter && currentStatusFilter !== 'all') {
-          if (!isImpoundedStatusFilter) {
-            query = query.eq('rental_status', currentStatusFilter);
-          }
-        }
 
         if (currentPaymentStatusFilter && currentPaymentStatusFilter !== 'all') {
           query = query.eq('payment_status', currentPaymentStatusFilter);
@@ -935,13 +905,19 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
       if (weekError) throw weekError;
 
       const normalizedStatusFilter = String(currentStatusFilter || '').toLowerCase();
-      const isImpoundedStatusFilter = normalizedStatusFilter === 'impounded';
-      const resolvedDayCount = isImpoundedStatusFilter
-        ? (dayData || []).filter((rental) => getEffectiveRentalStatus(rental) === 'impounded').length
-        : (dayCount || 0);
-      const resolvedWeekCount = isImpoundedStatusFilter
-        ? (weekData || []).filter((rental) => getEffectiveRentalStatus(rental) === 'impounded').length
-        : (weekCount || 0);
+      const resolveCount = (rawCount, rawRows) => {
+        if (!normalizedStatusFilter || normalizedStatusFilter === 'all') {
+          return rawCount || 0;
+        }
+
+        return (rawRows || [])
+          .map(normalizeRentalLifecycle)
+          .filter((rental) => getEffectiveRentalStatus(rental) === normalizedStatusFilter)
+          .length;
+      };
+
+      const resolvedDayCount = resolveCount(dayCount, dayData);
+      const resolvedWeekCount = resolveCount(weekCount, weekData);
 
       setDateFocusCounts({
         day: resolvedDayCount,
@@ -1148,13 +1124,14 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                 ...prev[existingIndex],
                 ...changedRental,
               };
+              const normalizedMergedRental = normalizeRentalLifecycle(mergedRental);
 
-              if (!doesRentalMatchFilters(mergedRental)) {
+              if (!doesRentalMatchFilters(normalizedMergedRental)) {
                 return prev.filter((item) => item.id !== changedRental.id);
               }
 
               const next = [...prev];
-              next[existingIndex] = mergedRental;
+              next[existingIndex] = normalizedMergedRental;
               return next;
             });
           }
@@ -1195,17 +1172,19 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
             const mergedRental = {
               ...prev[existingIndex],
               rental_status: payload?.rental_status || prev[existingIndex].rental_status,
+              status: payload?.status || prev[existingIndex].status,
               started_at: payload?.started_at ?? prev[existingIndex].started_at,
               completed_at: payload?.completed_at ?? prev[existingIndex].completed_at,
               updated_at: payload?.updated_at ?? prev[existingIndex].updated_at,
             };
+            const normalizedMergedRental = normalizeRentalLifecycle(mergedRental);
 
-            if (!doesRentalMatchFilters(mergedRental)) {
+            if (!doesRentalMatchFilters(normalizedMergedRental)) {
               return prev.filter((item) => item.id !== rentalId);
             }
 
             const next = [...prev];
-            next[existingIndex] = mergedRental;
+            next[existingIndex] = normalizedMergedRental;
             return next;
           });
 
@@ -2162,7 +2141,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
             
             <div className="hidden items-center gap-2 overflow-x-auto pb-1 sm:flex">
               {[
-                { key: 'day', label: isFrench ? 'Jour' : 'Day', count: dateFocusCounts.day },
+              { key: 'day', label: isFrench ? 'Jour' : 'Day', count: dateFocusCounts.day },
                 { key: 'week', label: isFrench ? 'Semaine' : 'Week', count: dateFocusCounts.week },
               ].map(({ key, label, count }) => {
                 const active = dateFocusFilter === key;
@@ -3148,31 +3127,31 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
           </div>
           <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
             <div className="text-2xl font-bold text-emerald-600 sm:text-3xl">
-              {rentals.filter(r => r.rental_status === 'active').length}
+              {rentals.filter(r => getEffectiveRentalStatus(r) === 'active').length}
             </div>
             <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Locations actives' : 'Active Rentals'}</div>
           </div>
           <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
             <div className="text-2xl font-bold text-amber-600 sm:text-3xl">
-              {rentals.filter(r => r.rental_status === 'scheduled').length}
+              {rentals.filter(r => getEffectiveRentalStatus(r) === 'scheduled').length}
             </div>
             <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Locations planifiées' : 'Scheduled Rentals'}</div>
           </div>
           <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
             <div className="text-2xl font-bold text-violet-600 sm:text-3xl">
-              {rentals.filter(r => r.rental_status === 'completed').length}
+              {rentals.filter(r => getEffectiveRentalStatus(r) === 'completed').length}
             </div>
             <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Locations terminées' : 'Completed Rentals'}</div>
           </div>
           <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
             <div className="text-2xl font-bold text-orange-500 sm:text-3xl">
-              {rentals.filter(r => r.rental_status === 'expired').length}
+              {rentals.filter(r => getEffectiveRentalStatus(r) === 'expired').length}
             </div>
             <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Locations expirées' : 'Expired Rentals'}</div>
           </div>
           <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
             <div className="text-2xl font-bold text-indigo-600 sm:text-3xl">
-              {rentals.filter(r => r.rental_status === 'completed').reduce((sum, r) => sum + (parseFloat(r.total_amount) || 0), 0).toFixed(2)}
+              {rentals.filter(r => getEffectiveRentalStatus(r) === 'completed').reduce((sum, r) => sum + (parseFloat(r.total_amount) || 0), 0).toFixed(2)}
             </div>
             <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Revenu total (MAD)' : 'Total Revenue (MAD)'}</div>
           </div>
