@@ -17,15 +17,26 @@ import { normalizeVehicleImageUrl } from '../../utils/vehicleImage';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import { useAuth } from '../../contexts/AuthContext';
 import { canAdjustVehicleFuelLevel } from '../../utils/permissionHelpers';
+import i18n from '../../i18n';
+
+const scheduleBackgroundTask = (callback) => {
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    return window.requestIdleCallback(callback, { timeout: 800 });
+  }
+
+  return window.setTimeout(callback, 0);
+};
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 const formatDate = (value) => {
-  if (!value) return 'Not set';
-  return new Date(value).toLocaleDateString();
+  if (!value) return tr('Not set', 'Non défini');
+  return new Date(value).toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US');
 };
 
 const formatDateTime = (value) => {
-  if (!value) return 'Not set';
-  return new Date(value).toLocaleString();
+  if (!value) return tr('Not set', 'Non défini');
+  return new Date(value).toLocaleString(isFrenchLocale() ? 'fr-FR' : 'en-US');
 };
 
 const formatMoney = (value) => {
@@ -34,26 +45,39 @@ const formatMoney = (value) => {
 };
 
 const formatStatus = (value) => {
-  return String(value || 'unknown').replace(/_/g, ' ');
+  const normalized = String(value || 'unknown').replace(/_/g, ' ');
+  const map = {
+    unknown: tr('unknown', 'inconnu'),
+    available: tr('available', 'disponible'),
+    rented: tr('rented', 'loué'),
+    impounded: tr('impounded', 'mis en fourrière'),
+    maintenance: tr('maintenance', 'maintenance'),
+    tour: tr('tour', 'tour'),
+    out_of_service: tr('out of service', 'hors service'),
+    scheduled: tr('scheduled', 'planifié'),
+    sold: tr('sold', 'vendu'),
+    disposed: tr('disposed', 'mis au rebut'),
+  };
+  return map[normalized] || normalized;
 };
 
 const formatFuelEventLabel = (record) => {
   const type = String(record?.transaction_type || '').toLowerCase();
-  if (type === 'rental_opening_level') return 'Rental fuel at departure';
-  if (type === 'rental_closing_level') return 'Rental fuel at return';
-  if (type === 'vehicle_refill') return 'Direct refill';
-  if (type === 'tank_refill') return 'Tank refill';
-  if (type === 'withdrawal') return 'Tank transfer';
-  if (type === 'manual_adjustment') return 'Manual fuel adjustment';
-  return formatStatus(record?.transaction_type || 'fuel event');
+  if (type === 'rental_opening_level') return tr('Rental fuel at departure', 'Carburant location au départ');
+  if (type === 'rental_closing_level') return tr('Rental fuel at return', 'Carburant location au retour');
+  if (type === 'vehicle_refill') return tr('Direct refill', 'Remplissage direct');
+  if (type === 'tank_refill') return tr('Tank refill', 'Remplissage cuve');
+  if (type === 'withdrawal') return tr('Tank transfer', 'Transfert cuve');
+  if (type === 'manual_adjustment') return tr('Manual fuel adjustment', 'Ajustement manuel carburant');
+  return formatStatus(record?.transaction_type || tr('fuel event', 'événement carburant'));
 };
 
 const formatReportLabel = (report) => {
   const type = String(report?.report_type || '').toLowerCase();
-  if (type === 'damage') return 'Damage report';
-  if (type === 'accident') return 'Accident report';
-  if (type === 'mechanical_issue' || type === 'mechanical') return 'Mechanical report';
-  return formatStatus(report?.report_type || 'report');
+  if (type === 'damage') return tr('Damage report', 'Rapport de dommage');
+  if (type === 'accident') return tr('Accident report', 'Rapport d’accident');
+  if (type === 'mechanical_issue' || type === 'mechanical') return tr('Mechanical report', 'Rapport mécanique');
+  return formatStatus(report?.report_type || tr('report', 'rapport'));
 };
 
 const formatMaintenanceSummary = (record) => {
@@ -68,15 +92,18 @@ const formatMaintenanceSummary = (record) => {
     const rentalReference = record.linked_report.rental_id || record.linked_report.rental_reference;
 
     if (inspectionNote) {
-      summaryBits.push(`Inspection note: ${inspectionNote}`);
+      summaryBits.push(tr(`Inspection note: ${inspectionNote}`, `Note d'inspection : ${inspectionNote}`));
     }
 
     if (affectedAreas.length > 0) {
-      summaryBits.push(`Affected areas: ${affectedAreas.map((area) => String(area).replace(/_/g, ' ')).join(', ')}`);
+      summaryBits.push(tr(
+        `Affected areas: ${affectedAreas.map((area) => String(area).replace(/_/g, ' ')).join(', ')}`,
+        `Zones concernées : ${affectedAreas.map((area) => String(area).replace(/_/g, ' ')).join(', ')}`
+      ));
     }
 
     if (rentalReference) {
-      summaryBits.push(`Rental ${formatRentalReference(rentalReference)}`);
+      summaryBits.push(tr(`Rental ${formatRentalReference(rentalReference)}`, `Location ${formatRentalReference(rentalReference)}`));
     }
 
     return summaryBits.join(' • ');
@@ -84,7 +111,7 @@ const formatMaintenanceSummary = (record) => {
 
   return String(record.description || '')
     .replace(/Vehicle report ID:\s*[^\n|]+/gi, '')
-    .replace(/Rental reference:\s*([a-f0-9-]{8,})/gi, (_, rentalId) => `Rental ${formatRentalReference(rentalId)}`)
+    .replace(/Rental reference:\s*([a-f0-9-]{8,})/gi, (_, rentalId) => `Location ${formatRentalReference(rentalId)}`)
     .replace(/\n+/g, ' • ')
     .replace(/\s*\|\s*/g, ' • ')
     .replace(/\s{2,}/g, ' ')
@@ -95,6 +122,7 @@ const formatMaintenanceSummary = (record) => {
 const statusClasses = {
   available: 'bg-green-100 text-green-800',
   rented: 'bg-blue-100 text-blue-800',
+  impounded: 'bg-amber-100 text-amber-800',
   maintenance: 'bg-yellow-100 text-yellow-800',
   tour: 'bg-violet-100 text-violet-800',
   out_of_service: 'bg-red-100 text-red-800',
@@ -103,7 +131,7 @@ const statusClasses = {
 const InfoRow = ({ label, value }) => (
   <div className="flex items-start justify-between gap-4 border-b border-slate-100 py-3 last:border-b-0">
     <dt className="text-sm font-medium text-slate-500">{label}</dt>
-    <dd className="text-right text-sm text-slate-900">{value || 'Not set'}</dd>
+    <dd className="text-right text-sm text-slate-900">{value || tr('Not set', 'Non défini')}</dd>
   </div>
 );
 
@@ -111,7 +139,7 @@ const EditableRow = ({ label, editing, viewValue, children }) => (
   <div className="flex items-start justify-between gap-4 border-b border-slate-100 py-3 last:border-b-0">
     <dt className="pt-2 text-sm font-medium text-slate-500">{label}</dt>
     <dd className="flex-1 text-right text-sm text-slate-900">
-      {editing ? children : (viewValue || 'Not set')}
+      {editing ? children : (viewValue || tr('Not set', 'Non défini'))}
     </dd>
   </div>
 );
@@ -141,6 +169,67 @@ const HistoryEmptyState = ({ title, description }) => (
   </div>
 );
 
+const buildVehicleFuelHistory = (fuelTransactions, rentalData, vehicleId) => {
+  const existingFuelTransactions = (fuelTransactions || []).filter(
+    (transaction) => String(transaction.vehicle_id) === String(vehicleId)
+  );
+  const existingFuelKeys = new Set(
+    existingFuelTransactions
+      .filter((transaction) => transaction.rental_id && transaction.transaction_type)
+      .map((transaction) => `${transaction.rental_id}-${transaction.transaction_type}`)
+  );
+
+  const rentalFuelSnapshots = (rentalData || []).flatMap((rentalRecord) => {
+    const snapshots = [];
+
+    if (rentalRecord.start_fuel_level !== null && rentalRecord.start_fuel_level !== undefined) {
+      const key = `${rentalRecord.id}-rental_opening_level`;
+      if (!existingFuelKeys.has(key)) {
+        snapshots.push({
+          id: `rental-open-${rentalRecord.id}`,
+          transaction_type: 'rental_opening_level',
+          source: 'rental_opening_level',
+          vehicle_id: rentalRecord.vehicle_id,
+          rental_id: rentalRecord.id,
+          rental_reference: rentalRecord.rental_id,
+          customer_name: rentalRecord.customer_name,
+          transaction_date: rentalRecord.started_at || rentalRecord.rental_start_date,
+          fuel_lines_after: rentalRecord.start_fuel_level,
+          liters_after: FuelTransactionService.linesToLiters(rentalRecord.start_fuel_level),
+          notes: 'Captured at rental departure',
+          performed_by_name: 'Rental workflow',
+        });
+      }
+    }
+
+    if (rentalRecord.end_fuel_level !== null && rentalRecord.end_fuel_level !== undefined) {
+      const key = `${rentalRecord.id}-rental_closing_level`;
+      if (!existingFuelKeys.has(key)) {
+        snapshots.push({
+          id: `rental-close-${rentalRecord.id}`,
+          transaction_type: 'rental_closing_level',
+          source: 'rental_closing_level',
+          vehicle_id: rentalRecord.vehicle_id,
+          rental_id: rentalRecord.id,
+          rental_reference: rentalRecord.rental_id,
+          customer_name: rentalRecord.customer_name,
+          transaction_date: rentalRecord.completed_at || rentalRecord.updated_at || rentalRecord.rental_end_date,
+          fuel_lines_after: rentalRecord.end_fuel_level,
+          liters_after: FuelTransactionService.linesToLiters(rentalRecord.end_fuel_level),
+          notes: 'Captured at rental return',
+          performed_by_name: 'Rental workflow',
+        });
+      }
+    }
+
+    return snapshots;
+  });
+
+  return [...existingFuelTransactions, ...rentalFuelSnapshots].sort(
+    (a, b) => new Date(b.transaction_date || b.created_at || 0) - new Date(a.transaction_date || a.created_at || 0)
+  );
+};
+
 const VehicleProfile = () => {
   const { vehicleId } = useParams();
   const navigate = useNavigate();
@@ -150,6 +239,7 @@ const VehicleProfile = () => {
   const [fuelHistory, setFuelHistory] = useState([]);
   const [vehicleFuelState, setVehicleFuelState] = useState(null);
   const [vehicleReports, setVehicleReports] = useState([]);
+  const [rentalHistory, setRentalHistory] = useState([]);
   const [vehicleFuelSummary, setVehicleFuelSummary] = useState(null);
   const [vehicleImageUrl, setVehicleImageUrl] = useState('');
   const [vehicleDocuments, setVehicleDocuments] = useState([]);
@@ -255,138 +345,138 @@ const VehicleProfile = () => {
           throw vehicleError;
         }
 
-        syncDispositionForm(VehicleDispositionService.getVehicleDisposition(vehicleId));
-
-        const [allMaintenanceRecords, fuelResult, fuelSummaryResult, reportRows, rentalRows] = await Promise.all([
-          MaintenanceTrackingService.getAllMaintenanceRecords(),
-          FuelTransactionService.getAllTransactions({ limit: 1000, offset: 0 }),
-          FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: true }),
-          VehicleReportService.getReportsForVehicle(vehicleId),
-          supabase
-            .from('app_4c3a7a6153_rentals')
-            .select('id, rental_id, customer_name, vehicle_id, rental_start_date, rental_end_date, started_at, updated_at, completed_at, start_fuel_level, end_fuel_level, rental_status')
-            .eq('vehicle_id', vehicleId)
-            .order('created_at', { ascending: false }),
-        ]);
-
-        const parsedVehicleId = parseInt(vehicleId, 10);
-        const maintenanceRecords = (allMaintenanceRecords || []).filter(
-          (record) => String(record?.vehicle_id) === String(parsedVehicleId)
-        );
-        const rentalData = Array.isArray(rentalRows?.data) ? rentalRows.data : [];
-        const maintenanceIds = maintenanceRecords.map((record) => record.id).filter(Boolean);
-        const reportsFromMaintenanceMap = await VehicleReportService.getReportsByMaintenanceIds(maintenanceIds);
-        const maintenanceLinkedReports = (
-          await Promise.all(
-            maintenanceIds.map((maintenanceId) => VehicleReportService.getReportByMaintenanceId(maintenanceId))
-          )
-        ).filter(Boolean);
-        const reportsByRentalId = await VehicleReportService.getLatestReportsForRentals(
-          rentalData.map((rentalRecord) => rentalRecord?.id).filter(Boolean)
-        );
-        const existingFuelTransactions = (fuelResult?.transactions || []).filter(
-          (transaction) => String(transaction.vehicle_id) === String(vehicleId)
-        );
-        const existingFuelKeys = new Set(
-          existingFuelTransactions
-            .filter((transaction) => transaction.rental_id && transaction.transaction_type)
-            .map((transaction) => `${transaction.rental_id}-${transaction.transaction_type}`)
-        );
-
-        const rentalFuelSnapshots = rentalData.flatMap((rentalRecord) => {
-          const snapshots = [];
-
-          if (rentalRecord.start_fuel_level !== null && rentalRecord.start_fuel_level !== undefined) {
-            const key = `${rentalRecord.id}-rental_opening_level`;
-            if (!existingFuelKeys.has(key)) {
-              snapshots.push({
-                id: `rental-open-${rentalRecord.id}`,
-                transaction_type: 'rental_opening_level',
-                source: 'rental_opening_level',
-                vehicle_id: rentalRecord.vehicle_id,
-                rental_id: rentalRecord.id,
-                rental_reference: rentalRecord.rental_id,
-                customer_name: rentalRecord.customer_name,
-                transaction_date: rentalRecord.started_at || rentalRecord.rental_start_date,
-                fuel_lines_after: rentalRecord.start_fuel_level,
-                liters_after: FuelTransactionService.linesToLiters(rentalRecord.start_fuel_level),
-                notes: 'Captured at rental departure',
-                performed_by_name: 'Rental workflow',
-              });
-            }
-          }
-
-          if (rentalRecord.end_fuel_level !== null && rentalRecord.end_fuel_level !== undefined) {
-            const key = `${rentalRecord.id}-rental_closing_level`;
-            if (!existingFuelKeys.has(key)) {
-              snapshots.push({
-                id: `rental-close-${rentalRecord.id}`,
-                transaction_type: 'rental_closing_level',
-                source: 'rental_closing_level',
-                vehicle_id: rentalRecord.vehicle_id,
-                rental_id: rentalRecord.id,
-                rental_reference: rentalRecord.rental_id,
-                customer_name: rentalRecord.customer_name,
-                transaction_date: rentalRecord.completed_at || rentalRecord.updated_at || rentalRecord.rental_end_date,
-                fuel_lines_after: rentalRecord.end_fuel_level,
-                liters_after: FuelTransactionService.linesToLiters(rentalRecord.end_fuel_level),
-                notes: 'Captured at rental return',
-                performed_by_name: 'Rental workflow',
-              });
-            }
-          }
-
-          return snapshots;
-        });
-
-        const vehicleFuelHistory = [...existingFuelTransactions, ...rentalFuelSnapshots]
-          .sort((a, b) => new Date(b.transaction_date || b.created_at || 0) - new Date(a.transaction_date || a.created_at || 0));
-
-        const mergedRawReports = [
-          ...(Array.isArray(reportRows) ? reportRows : []),
-          ...Object.values(reportsFromMaintenanceMap || {}),
-          ...maintenanceLinkedReports,
-          ...Object.values(reportsByRentalId || {}),
-        ].filter(Boolean);
-
-        const uniqueRawReports = mergedRawReports.filter((report, index, list) => {
-          const reportKey = String(report.id || report.maintenance_id || index);
-          return list.findIndex((candidate) => String(candidate.id || candidate.maintenance_id || -1) === reportKey) === index;
-        });
-
-        const hydratedReports = await Promise.all(
-          uniqueRawReports.map(async (report) => {
-            const hydrated = await VehicleReportService.hydrateReportWithMaintenance(report);
-            const rentalContext = rentalData.find((rentalRecord) => String(rentalRecord.id) === String(hydrated.rental_id));
-            return {
-              ...hydrated,
-              rental_reference: rentalContext?.rental_id || hydrated.rental_id,
-              customer_name: rentalContext?.customer_name || hydrated.customer_name,
-            };
-          })
-        );
-
-        const reportsByMaintenanceId = new Map(
-          hydratedReports
-            .filter((report) => report?.maintenance_id)
-            .map((report) => [String(report.maintenance_id), report])
-        );
-
-        const normalizedMaintenanceHistory = maintenanceRecords
-          .map((record) => ({
-            ...record,
-            linked_report: reportsByMaintenanceId.get(String(record.id)) || null,
-          }))
-          .sort((a, b) => new Date(b.updated_at || b.service_date || b.created_at || 0) - new Date(a.updated_at || a.service_date || a.created_at || 0));
-
         setVehicle(vehicleData);
         syncFormData(vehicleData);
         setVehicleDocuments(vehicleData?.documents || []);
-        setMaintenanceHistory(normalizedMaintenanceHistory);
-        setFuelHistory(vehicleFuelHistory);
-        setVehicleFuelState(await FuelTransactionService.getVehicleFuelState(vehicleId));
-        setVehicleFuelSummary(fuelSummaryResult?.summary || null);
-        setVehicleReports(hydratedReports.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)));
+        syncDispositionForm(VehicleDispositionService.getVehicleDisposition(vehicleId));
+        setLoading(false);
+
+        scheduleBackgroundTask(async () => {
+          try {
+            const { data: earlyRentalRows } = await supabase
+              .from('app_4c3a7a6153_rentals')
+              .select('id, rental_id, customer_name, vehicle_id, rental_start_date, rental_end_date, started_at, updated_at, completed_at, start_fuel_level, end_fuel_level, rental_status, is_impounded, impounded_at, released_from_impound_at, total_amount')
+              .eq('vehicle_id', vehicleId)
+              .order('created_at', { ascending: false });
+
+            const earlyRentalData = Array.isArray(earlyRentalRows) ? earlyRentalRows : Array.isArray(earlyRentalRows?.data) ? earlyRentalRows.data : [];
+            if (earlyRentalData.length > 0) {
+              setRentalHistory(earlyRentalData);
+            } else {
+              setRentalHistory([]);
+            }
+
+            const hasEarlyActiveImpoundRental = earlyRentalData.some((record) =>
+              (
+                Boolean(record?.is_impounded) ||
+                String(record?.rental_status || '').toLowerCase() === 'impounded'
+              ) &&
+              !record?.released_from_impound_at
+            );
+
+            if (hasEarlyActiveImpoundRental) {
+              setVehicle((current) => (current ? { ...current, status: 'impounded' } : current));
+            }
+
+            const [
+              maintenanceResult,
+              fuelResult,
+              fuelSummaryResult,
+              reportRowsResult,
+              rentalRowsResult,
+              vehicleFuelStateResult,
+            ] = await Promise.allSettled([
+              supabase
+                .from(MaintenanceTrackingService.MAINTENANCE_RECORDS_TABLE)
+                .select('id, vehicle_id, status, maintenance_type, service_date, description, labor_rate_mad, parts_cost_mad, tax_mad, cost, created_at, updated_at')
+                .eq('vehicle_id', vehicleId)
+                .order('updated_at', { ascending: false }),
+              FuelTransactionService.getAllTransactions({ limit: 200, offset: 0, vehicleId }),
+              FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: true }),
+              VehicleReportService.getReportsForVehicle(vehicleId),
+              supabase
+                .from('app_4c3a7a6153_rentals')
+                .select('id, rental_id, customer_name, vehicle_id, rental_start_date, rental_end_date, started_at, updated_at, completed_at, start_fuel_level, end_fuel_level, rental_status, is_impounded, impounded_at, released_from_impound_at, total_amount')
+                .eq('vehicle_id', vehicleId)
+                .order('created_at', { ascending: false }),
+              FuelTransactionService.getVehicleFuelState(vehicleId),
+            ]);
+
+            const maintenanceRecords = Array.isArray(maintenanceResult.value?.data)
+              ? maintenanceResult.value.data
+              : Array.isArray(maintenanceResult.value)
+                ? maintenanceResult.value
+                : [];
+            const rentalData = Array.isArray(rentalRowsResult.value?.data) ? rentalRowsResult.value.data : earlyRentalData;
+            const hasActiveImpoundRental = rentalData.some((record) =>
+              (
+                Boolean(record?.is_impounded) ||
+                String(record?.rental_status || '').toLowerCase() === 'impounded'
+              ) &&
+              !record?.released_from_impound_at
+            );
+
+            setRentalHistory(rentalData);
+            if (hasActiveImpoundRental) {
+              setVehicle((current) => (current ? { ...current, status: 'impounded' } : current));
+            }
+
+            const maintenanceIds = maintenanceRecords.map((record) => record.id).filter(Boolean);
+            const reportsFromMaintenanceMap = await VehicleReportService.getReportsByMaintenanceIds(maintenanceIds);
+            const reportsByRentalId = await VehicleReportService.getLatestReportsForRentals(
+              rentalData.map((rentalRecord) => rentalRecord?.id).filter(Boolean)
+            );
+            const vehicleFuelHistory = buildVehicleFuelHistory(
+              fuelResult.value?.transactions || [],
+              rentalData,
+              vehicleId
+            );
+
+            const mergedRawReports = [
+              ...(Array.isArray(reportRowsResult.value) ? reportRowsResult.value : []),
+              ...Object.values(reportsFromMaintenanceMap || {}),
+              ...Object.values(reportsByRentalId || {}),
+            ].filter(Boolean);
+
+            const uniqueRawReports = mergedRawReports.filter((report, index, list) => {
+              const reportKey = String(report.id || report.maintenance_id || index);
+              return list.findIndex((candidate) => String(candidate.id || candidate.maintenance_id || -1) === reportKey) === index;
+            });
+
+            const hydratedReports = await Promise.all(
+              uniqueRawReports.map(async (report) => {
+                const hydrated = await VehicleReportService.hydrateReportWithMaintenance(report);
+                const rentalContext = rentalData.find((rentalRecord) => String(rentalRecord.id) === String(hydrated.rental_id));
+                return {
+                  ...hydrated,
+                  rental_reference: rentalContext?.rental_id || hydrated.rental_id,
+                  customer_name: rentalContext?.customer_name || hydrated.customer_name,
+                };
+              })
+            );
+
+            const reportsByMaintenanceId = new Map(
+              hydratedReports
+                .filter((report) => report?.maintenance_id)
+                .map((report) => [String(report.maintenance_id), report])
+            );
+
+            const normalizedMaintenanceHistory = maintenanceRecords
+              .map((record) => ({
+                ...record,
+                linked_report: reportsByMaintenanceId.get(String(record.id)) || null,
+              }))
+              .sort((a, b) => new Date(b.updated_at || b.service_date || b.created_at || 0) - new Date(a.updated_at || a.service_date || a.created_at || 0));
+
+            setMaintenanceHistory(normalizedMaintenanceHistory);
+            setFuelHistory(vehicleFuelHistory);
+            setVehicleFuelState(vehicleFuelStateResult.status === 'fulfilled' ? vehicleFuelStateResult.value : null);
+            setVehicleFuelSummary(fuelSummaryResult.status === 'fulfilled' ? fuelSummaryResult.value?.summary || null : null);
+            setVehicleReports(hydratedReports.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)));
+          } catch (backgroundError) {
+            console.error('Failed to hydrate vehicle profile history panels:', backgroundError);
+          }
+        });
       } catch (loadError) {
         console.error('Failed to load vehicle profile:', loadError);
         setError(loadError.message || 'Failed to load vehicle profile');
@@ -409,7 +499,7 @@ const VehicleProfile = () => {
     if (!vehicleId) return;
 
     const [fuelResult, fuelSummaryResult, rentalRows] = await Promise.all([
-      FuelTransactionService.getAllTransactions({ limit: 1000, offset: 0 }),
+      FuelTransactionService.getAllTransactions({ limit: 200, offset: 0, vehicleId }),
       FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: true }),
       supabase
         .from('app_4c3a7a6153_rentals')
@@ -419,65 +509,7 @@ const VehicleProfile = () => {
     ]);
 
     const rentalData = Array.isArray(rentalRows?.data) ? rentalRows.data : [];
-    const existingFuelTransactions = (fuelResult?.transactions || []).filter(
-      (transaction) => String(transaction.vehicle_id) === String(vehicleId)
-    );
-    const existingFuelKeys = new Set(
-      existingFuelTransactions
-        .filter((transaction) => transaction.rental_id && transaction.transaction_type)
-        .map((transaction) => `${transaction.rental_id}-${transaction.transaction_type}`)
-    );
-
-    const rentalFuelSnapshots = rentalData.flatMap((rentalRecord) => {
-      const snapshots = [];
-
-      if (rentalRecord.start_fuel_level !== null && rentalRecord.start_fuel_level !== undefined) {
-        const key = `${rentalRecord.id}-rental_opening_level`;
-        if (!existingFuelKeys.has(key)) {
-          snapshots.push({
-            id: `rental-open-${rentalRecord.id}`,
-            transaction_type: 'rental_opening_level',
-            source: 'rental_opening_level',
-            vehicle_id: rentalRecord.vehicle_id,
-            rental_id: rentalRecord.id,
-            rental_reference: rentalRecord.rental_id,
-            customer_name: rentalRecord.customer_name,
-            transaction_date: rentalRecord.started_at || rentalRecord.rental_start_date,
-            fuel_lines_after: rentalRecord.start_fuel_level,
-            liters_after: FuelTransactionService.linesToLiters(rentalRecord.start_fuel_level),
-            notes: 'Captured at rental departure',
-            performed_by_name: 'Rental workflow',
-          });
-        }
-      }
-
-      if (rentalRecord.end_fuel_level !== null && rentalRecord.end_fuel_level !== undefined) {
-        const key = `${rentalRecord.id}-rental_closing_level`;
-        if (!existingFuelKeys.has(key)) {
-          snapshots.push({
-            id: `rental-close-${rentalRecord.id}`,
-            transaction_type: 'rental_closing_level',
-            source: 'rental_closing_level',
-            vehicle_id: rentalRecord.vehicle_id,
-            rental_id: rentalRecord.id,
-            rental_reference: rentalRecord.rental_id,
-            customer_name: rentalRecord.customer_name,
-            transaction_date: rentalRecord.completed_at || rentalRecord.updated_at || rentalRecord.rental_end_date,
-            fuel_lines_after: rentalRecord.end_fuel_level,
-            liters_after: FuelTransactionService.linesToLiters(rentalRecord.end_fuel_level),
-            notes: 'Captured at rental return',
-            performed_by_name: 'Rental workflow',
-          });
-        }
-      }
-
-      return snapshots;
-    });
-
-    const vehicleFuelHistory = [...existingFuelTransactions, ...rentalFuelSnapshots]
-      .sort((a, b) => new Date(b.transaction_date || b.created_at || 0) - new Date(a.transaction_date || a.created_at || 0));
-
-    setFuelHistory(vehicleFuelHistory);
+    setFuelHistory(buildVehicleFuelHistory(fuelResult?.transactions || [], rentalData, vehicleId));
     setVehicleFuelState(await FuelTransactionService.getVehicleFuelState(vehicleId));
     setVehicleFuelSummary(fuelSummaryResult?.summary || null);
   };
@@ -714,6 +746,22 @@ const VehicleProfile = () => {
   }, [maintenanceHistory, vehicleReports]);
 
   const operationalVehicleStatus = useMemo(() => {
+    const hasActiveImpound = (rentalHistory || []).some((record) =>
+      (
+        Boolean(record?.is_impounded) ||
+        String(record?.rental_status || '').toLowerCase() === 'impounded'
+      ) &&
+      !record?.released_from_impound_at
+    );
+
+    if (hasActiveImpound) {
+      return 'impounded';
+    }
+
+    if (vehicle?.status === 'impounded') {
+      return 'impounded';
+    }
+
     if (vehicle?.status === 'out_of_service') {
       return 'out_of_service';
     }
@@ -727,7 +775,7 @@ const VehicleProfile = () => {
     }
 
     return vehicle?.status || 'available';
-  }, [maintenanceHistory, vehicle?.status]);
+  }, [maintenanceHistory, rentalHistory, vehicle?.status]);
 
   const fleetAlerts = useMemo(() => getFleetAlertsForVehicle(vehicle), [vehicle]);
 
@@ -738,14 +786,14 @@ const VehicleProfile = () => {
       {
         id: `vehicle-created-${vehicle.id}`,
         type: 'vehicle',
-        title: 'Vehicle added to fleet',
+        title: tr('Vehicle added to fleet', 'Véhicule ajouté à la flotte'),
         timestamp: vehicle.created_at,
-        detail: vehicle.purchase_supplier ? `Supplier: ${vehicle.purchase_supplier}` : 'Vehicle record created',
+        detail: vehicle.purchase_supplier ? tr(`Supplier: ${vehicle.purchase_supplier}`, `Fournisseur : ${vehicle.purchase_supplier}`) : tr('Vehicle record created', 'Fiche véhicule créée'),
       },
       ...maintenanceHistory.map((record) => ({
         id: `maintenance-${record.id}`,
         type: 'maintenance',
-        title: `${formatStatus(record.maintenance_type)} maintenance`,
+        title: tr(`${formatStatus(record.maintenance_type)} maintenance`, `Maintenance ${formatStatus(record.maintenance_type)}`),
         timestamp: record.updated_at || record.service_date || record.created_at,
         detail: `${formatStatus(record.status)} • ${formatMoney(record.cost || 0)}${record.linked_report?.rental_reference ? ` • ${formatRentalReference(record.linked_report.rental_reference)}` : ''}`,
       })),
@@ -756,7 +804,7 @@ const VehicleProfile = () => {
         timestamp: record.transaction_date || record.created_at,
         detail: [
           record.fuel_lines_after !== null && record.fuel_lines_after !== undefined
-            ? `${record.fuel_lines_after}/8 lines`
+            ? tr(`${record.fuel_lines_after}/8 lines`, `${record.fuel_lines_after}/8 lignes`)
             : `${record.amount || record.liters_after || 0}L`,
           record.rental_reference ? formatRentalReference(record.rental_reference) : null,
           record.customer_name || null,
@@ -767,12 +815,12 @@ const VehicleProfile = () => {
       ...vehicleReports.map((report) => ({
         id: `report-${report.id}`,
         type: 'report',
-        title: `${formatReportLabel(report)} created`,
+        title: tr(`${formatReportLabel(report)} created`, `${formatReportLabel(report)} créé`),
         timestamp: report.created_at,
         detail: [
           formatStatus(report.severity),
           report.rental_reference ? formatRentalReference(report.rental_reference) : null,
-          report.maintenance ? `${formatStatus(report.maintenance.status)} maintenance` : (report.send_to_maintenance ? 'maintenance pending' : 'no maintenance link'),
+          report.maintenance ? tr(`${formatStatus(report.maintenance.status)} maintenance`, `Maintenance ${formatStatus(report.maintenance.status)}`) : (report.send_to_maintenance ? tr('maintenance pending', 'maintenance en attente') : tr('no maintenance link', 'aucun lien maintenance')),
         ].filter(Boolean).join(' • '),
       })),
     ];
@@ -819,8 +867,8 @@ const VehicleProfile = () => {
           <div className="flex items-center gap-3 text-red-700">
             <AlertTriangle className="w-6 h-6" />
             <div>
-              <h1 className="text-lg font-semibold">Unable to load vehicle profile</h1>
-              <p className="mt-1 text-sm">{error || 'Vehicle not found'}</p>
+              <h1 className="text-lg font-semibold">{tr('Unable to load vehicle profile', 'Impossible de charger le profil véhicule')}</h1>
+              <p className="mt-1 text-sm">{error || tr('Vehicle not found', 'Véhicule introuvable')}</p>
             </div>
           </div>
           <button
@@ -829,7 +877,7 @@ const VehicleProfile = () => {
             className="mt-4 inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-white hover:bg-red-700 transition-colors"
           >
             <ArrowLeft className="w-4 h-4" />
-            Back to Fleet
+            {tr('Back to Fleet', 'Retour à la flotte')}
           </button>
         </div>
       </div>
@@ -840,9 +888,9 @@ const VehicleProfile = () => {
     <div className="min-h-screen bg-slate-50">
       <AdminModuleHero
         icon={<Car className="h-8 w-8 text-white" />}
-        eyebrow="Fleet Management"
+        eyebrow={tr('Fleet Management', 'Gestion de flotte')}
         title={vehicle.name}
-        description={vehicle.plate_number ? `${vehicle.plate_number} • ${vehicle.model || 'Vehicle Profile'}` : 'Vehicle profile'}
+        description={vehicle.plate_number ? `${vehicle.plate_number} • ${vehicle.model || tr('Vehicle Profile', 'Profil véhicule')}` : tr('Vehicle profile', 'Profil véhicule')}
       />
 
       <div className="mx-auto max-w-7xl space-y-6 p-4 lg:p-6">
@@ -853,22 +901,22 @@ const VehicleProfile = () => {
               type="button"
               onClick={() => navigate('/admin/fleet')}
               className="mt-1 inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
-              title="Back to fleet"
+              title={tr('Back to fleet', 'Retour à la flotte')}
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
             <div>
-              <p className="text-sm font-medium text-violet-700">Vehicle Profile</p>
+              <p className="text-sm font-medium text-violet-700">{tr('Vehicle Profile', 'Profil véhicule')}</p>
               <h1 className="text-2xl font-bold text-slate-900 lg:text-3xl">{vehicle.name}</h1>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold tracking-[0.2em] text-blue-900">
-                  {vehicle.plate_number || 'NO PLATE'}
+                  {vehicle.plate_number || tr('NO PLATE', 'SANS PLAQUE')}
                 </span>
                 <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusClasses[operationalVehicleStatus] || 'bg-slate-100 text-slate-800'}`}>
                   {formatStatus(operationalVehicleStatus)}
                 </span>
                 <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                  {vehicle.model || 'Model not set'}
+                      {vehicle.model || tr('Model not set', 'Modèle non défini')}
                 </span>
               </div>
             </div>
@@ -882,7 +930,7 @@ const VehicleProfile = () => {
                 className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100"
               >
                 <X className="w-4 h-4" />
-                Cancel
+                {tr('Cancel', 'Annuler')}
               </button>
               <button
                 type="button"
@@ -891,7 +939,7 @@ const VehicleProfile = () => {
                 className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01] disabled:opacity-60"
               >
                 <Check className="w-4 h-4" />
-                {saving ? 'Saving...' : 'Save Changes'}
+                {saving ? 'Enregistrement...' : 'Enregistrer les modifications'}
               </button>
             </>
           ) : (
@@ -901,7 +949,7 @@ const VehicleProfile = () => {
               className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01]"
             >
               <Edit className="w-4 h-4" />
-              Edit Vehicle
+              {tr('Edit Vehicle', 'Modifier le véhicule')}
             </button>
           )}
         </div>
@@ -911,8 +959,8 @@ const VehicleProfile = () => {
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 space-y-6">
           <SectionCard
-            title="Overview"
-            description="A quick operational snapshot for this vehicle."
+            title={tr('Overview', "Vue d'ensemble")}
+            description={tr('A quick operational snapshot for this vehicle.', 'Un aperçu opérationnel rapide de ce véhicule.')}
             icon={Car}
           >
             <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-6">
@@ -928,9 +976,9 @@ const VehicleProfile = () => {
               <div className="space-y-4">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">Plate Number</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">{tr('Plate Number', "Numéro d'immatriculation")}</p>
                     <div className="mt-2 inline-flex items-center rounded-3xl border border-blue-300 bg-gradient-to-r from-blue-50 to-sky-100 px-5 py-3 text-2xl font-black tracking-[0.3em] text-blue-950 shadow-sm ring-1 ring-blue-100">
-                      {vehicle.plate_number || 'NOT SET'}
+                      {vehicle.plate_number || tr('NOT SET', 'NON DÉFINI')}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-3">
@@ -938,43 +986,43 @@ const VehicleProfile = () => {
                       {formatStatus(operationalVehicleStatus)}
                     </span>
                     <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold bg-gray-100 text-gray-700">
-                      {vehicle.vehicle_type || 'Vehicle'}
+                      {vehicle.vehicle_type || tr('Vehicle', 'Véhicule')}
                     </span>
                   </div>
                 </div>
                 <div className="rounded-2xl border border-violet-100 bg-white px-4 py-3 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
-                  <p className="text-lg font-bold text-slate-900">{vehicle.name || 'Vehicle'}</p>
+                  <p className="text-lg font-bold text-slate-900">{vehicle.name || tr('Vehicle', 'Véhicule')}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700">
-                      {vehicle.model || 'Model not set'}
+                      {vehicle.model || tr('Model not set', 'Modèle non défini')}
                     </span>
                     <span className="text-sm font-medium text-slate-500">
-                      {vehicle.vehicle_type || 'Vehicle'}
+                      {vehicle.vehicle_type || tr('Vehicle', 'Véhicule')}
                     </span>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Model</p>
-                    <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.model || 'Not set'}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Model', 'Modèle')}</p>
+                    <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.model || tr('Not set', 'Non défini')}</p>
                   </div>
                   <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Current Odometer</p>
-                    <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.current_odometer ? `${vehicle.current_odometer} km` : 'Not set'}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Current Odometer', 'Kilométrage actuel')}</p>
+                    <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.current_odometer ? `${vehicle.current_odometer} km` : tr('Not set', 'Non défini')}</p>
                   </div>
                   <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Engine Hours</p>
-                    <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.engine_hours ? `${vehicle.engine_hours} h` : 'Not set'}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Engine Hours', 'Heures moteur')}</p>
+                    <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.engine_hours ? `${vehicle.engine_hours} h` : tr('Not set', 'Non défini')}</p>
                   </div>
                   <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Document Count</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Document Count', 'Nombre de documents')}</p>
                     <p className="mt-2 text-base font-semibold text-slate-900">{liveDocumentCount}</p>
                   </div>
                 </div>
                 <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Fleet Alerts</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Fleet Alerts', 'Alertes flotte')}</p>
                   {fleetAlerts.length === 0 ? (
-                    <p className="mt-2 text-sm text-slate-500">No active oil change or document expiry alerts.</p>
+                    <p className="mt-2 text-sm text-slate-500">{tr('No active oil change or document expiry alerts.', 'Aucune alerte active de vidange ou d’expiration de document.')}</p>
                   ) : (
                     <div className="mt-3 space-y-3">
                       <div className="flex flex-wrap gap-2">
@@ -999,98 +1047,99 @@ const VehicleProfile = () => {
             </div>
           </SectionCard>
 
-          <SectionCard title="Basic Information" description="Core vehicle details used in rentals and fleet operations." icon={FileText}>
+          <SectionCard title={tr('Basic Information', 'Informations de base')} description={tr('Core vehicle details used in rentals and fleet operations.', 'Informations principales du véhicule utilisées dans les locations et opérations de flotte.')} icon={FileText}>
             <dl>
-              <EditableRow label="Vehicle Name" editing={isEditing} viewValue={vehicle.name}>
+              <EditableRow label={tr('Vehicle Name', 'Nom du véhicule')} editing={isEditing} viewValue={vehicle.name}>
                 <input value={formData.name} onChange={(e) => handleChange('name', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Model" editing={isEditing} viewValue={vehicle.model}>
+              <EditableRow label={tr('Model', 'Modèle')} editing={isEditing} viewValue={vehicle.model}>
                 <input value={formData.model} onChange={(e) => handleChange('model', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Vehicle Type" editing={isEditing} viewValue={vehicle.vehicle_type}>
+              <EditableRow label={tr('Vehicle Type', 'Type de véhicule')} editing={isEditing} viewValue={vehicle.vehicle_type}>
                 <select value={formData.vehicle_type} onChange={(e) => handleChange('vehicle_type', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2">
-                  <option value="quad">quad</option>
+                  <option value="quad">{tr('quad', 'quad')}</option>
                   <option value="ATV">ATV</option>
-                  <option value="motorcycle">motorcycle</option>
+                  <option value="motorcycle">{tr('motorcycle', 'moto')}</option>
                 </select>
               </EditableRow>
-              <EditableRow label="Power" editing={isEditing} viewValue={vehicle.power_cc ? `${vehicle.power_cc} cc` : 'Not set'}>
+              <EditableRow label={tr('Power', 'Puissance')} editing={isEditing} viewValue={vehicle.power_cc ? `${vehicle.power_cc} cc` : tr('Not set', 'Non défini')}>
                 <input type="number" value={formData.power_cc} onChange={(e) => handleChange('power_cc', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Capacity" editing={isEditing} viewValue={vehicle.capacity || 'Not set'}>
+              <EditableRow label={tr('Capacity', 'Capacité')} editing={isEditing} viewValue={vehicle.capacity || tr('Not set', 'Non défini')}>
                 <input type="number" value={formData.capacity} onChange={(e) => handleChange('capacity', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Color" editing={isEditing} viewValue={vehicle.color}>
+              <EditableRow label={tr('Color', 'Couleur')} editing={isEditing} viewValue={vehicle.color}>
                 <input value={formData.color} onChange={(e) => handleChange('color', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Plate Number" editing={isEditing} viewValue={vehicle.plate_number}>
+              <EditableRow label={tr('Plate Number', 'Numéro de plaque')} editing={isEditing} viewValue={vehicle.plate_number}>
                 <input value={formData.plate_number} onChange={(e) => handleChange('plate_number', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Status" editing={isEditing} viewValue={formatStatus(operationalVehicleStatus)}>
+              <EditableRow label={tr('Status', 'Statut')} editing={isEditing} viewValue={formatStatus(operationalVehicleStatus)}>
                 <select value={formData.status} onChange={(e) => handleChange('status', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2">
-                  <option value="available">available</option>
-                  <option value="rented">rented</option>
-                  <option value="tour">tour</option>
-                  <option value="maintenance">maintenance</option>
-                  <option value="out_of_service">out of service</option>
+                  <option value="available">{tr('available', 'disponible')}</option>
+                  <option value="rented">{tr('rented', 'loué')}</option>
+                  <option value="impounded">{tr('impounded', 'mis en fourrière')}</option>
+                  <option value="tour">{tr('tour', 'tour')}</option>
+                  <option value="maintenance">{tr('maintenance', 'maintenance')}</option>
+                  <option value="out_of_service">{tr('out of service', 'hors service')}</option>
                 </select>
               </EditableRow>
-              <EditableRow label="Current Odometer" editing={isEditing} viewValue={vehicle.current_odometer ? `${vehicle.current_odometer} km` : 'Not set'}>
+              <EditableRow label={tr('Current Odometer', 'Kilométrage actuel')} editing={isEditing} viewValue={vehicle.current_odometer ? `${vehicle.current_odometer} km` : tr('Not set', 'Non défini')}>
                 <input type="number" value={formData.current_odometer} onChange={(e) => handleChange('current_odometer', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Engine Hours" editing={isEditing} viewValue={vehicle.engine_hours ? `${vehicle.engine_hours} h` : 'Not set'}>
+              <EditableRow label={tr('Engine Hours', 'Heures moteur')} editing={isEditing} viewValue={vehicle.engine_hours ? `${vehicle.engine_hours} h` : tr('Not set', 'Non défini')}>
                 <input type="number" value={formData.engine_hours} onChange={(e) => handleChange('engine_hours', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
             </dl>
           </SectionCard>
 
-          <SectionCard title="Acquisition" description="Purchase and sourcing information for this vehicle." icon={DollarSign}>
+          <SectionCard title={tr('Acquisition', 'Acquisition')} description={tr('Purchase and sourcing information for this vehicle.', 'Informations d’achat et d’approvisionnement pour ce véhicule.')} icon={DollarSign}>
             <dl>
-              <EditableRow label="Purchase Cost" editing={isEditing} viewValue={vehicle.purchase_cost_mad ? formatMoney(vehicle.purchase_cost_mad) : 'Not set'}>
+              <EditableRow label={tr('Purchase Cost', 'Coût d’achat')} editing={isEditing} viewValue={vehicle.purchase_cost_mad ? formatMoney(vehicle.purchase_cost_mad) : tr('Not set', 'Non défini')}>
                 <input type="number" value={formData.purchase_cost_mad} onChange={(e) => handleChange('purchase_cost_mad', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Purchase Date" editing={isEditing} viewValue={formatDate(vehicle.purchase_date)}>
+              <EditableRow label={tr('Purchase Date', 'Date d’achat')} editing={isEditing} viewValue={formatDate(vehicle.purchase_date)}>
                 <input type="date" value={formData.purchase_date} onChange={(e) => handleChange('purchase_date', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Supplier" editing={isEditing} viewValue={vehicle.purchase_supplier}>
+              <EditableRow label={tr('Supplier', 'Fournisseur')} editing={isEditing} viewValue={vehicle.purchase_supplier}>
                 <input value={formData.purchase_supplier} onChange={(e) => handleChange('purchase_supplier', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
               <EditableRow
-                label="Purchase Invoice"
+                label={tr('Purchase Invoice', 'Facture d’achat')}
                 editing={isEditing}
-                viewValue={vehicle.purchase_invoice_url ? <a href={vehicle.purchase_invoice_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-700 underline">Open invoice</a> : 'Not uploaded'}
+                viewValue={vehicle.purchase_invoice_url ? <a href={vehicle.purchase_invoice_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-700 underline">{tr('Open invoice', 'Ouvrir la facture')}</a> : tr('Not uploaded', 'Non téléversée')}
               >
                 <input value={formData.purchase_invoice_url} onChange={(e) => handleChange('purchase_invoice_url', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" placeholder="https://..." />
               </EditableRow>
             </dl>
           </SectionCard>
 
-          <SectionCard title="Legal & Administrative" description="Registration and insurance information." icon={Shield}>
+          <SectionCard title={tr('Legal & Administrative', 'Juridique et administratif')} description={tr('Registration and insurance information.', 'Informations d’immatriculation et d’assurance.')} icon={Shield}>
             <dl>
-              <EditableRow label="Registration Number" editing={isEditing} viewValue={vehicle.registration_number}>
+              <EditableRow label={tr('Registration Number', "Numéro d'immatriculation administratif")} editing={isEditing} viewValue={vehicle.registration_number}>
                 <input value={formData.registration_number} onChange={(e) => handleChange('registration_number', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Registration Expiry" editing={isEditing} viewValue={formatDate(vehicle.registration_expiry_date)}>
+              <EditableRow label={tr('Registration Expiry', "Expiration de l'immatriculation")} editing={isEditing} viewValue={formatDate(vehicle.registration_expiry_date)}>
                 <input type="date" value={formData.registration_expiry_date} onChange={(e) => handleChange('registration_expiry_date', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Insurance Policy" editing={isEditing} viewValue={vehicle.insurance_policy_number}>
+              <EditableRow label={tr('Insurance Policy', "Police d'assurance")} editing={isEditing} viewValue={vehicle.insurance_policy_number}>
                 <input value={formData.insurance_policy_number} onChange={(e) => handleChange('insurance_policy_number', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Insurance Provider" editing={isEditing} viewValue={vehicle.insurance_provider}>
+              <EditableRow label={tr('Insurance Provider', "Assureur")} editing={isEditing} viewValue={vehicle.insurance_provider}>
                 <input value={formData.insurance_provider} onChange={(e) => handleChange('insurance_provider', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
-              <EditableRow label="Insurance Expiry" editing={isEditing} viewValue={formatDate(vehicle.insurance_expiry_date)}>
+              <EditableRow label={tr('Insurance Expiry', "Expiration de l'assurance")} editing={isEditing} viewValue={formatDate(vehicle.insurance_expiry_date)}>
                 <input type="date" value={formData.insurance_expiry_date} onChange={(e) => handleChange('insurance_expiry_date', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
             </dl>
           </SectionCard>
 
-          <SectionCard title="Documents & Media" description="Vehicle image, legal files, and uploaded documents." icon={FileText}>
+          <SectionCard title={tr('Documents & Media', 'Documents et médias')} description={tr('Vehicle image, legal files, and uploaded documents.', 'Photo du véhicule, documents légaux et fichiers téléversés.')} icon={FileText}>
             {isEditing ? (
               <div className="space-y-6">
                 <div className="rounded-xl border border-gray-200 p-4">
-                  <h3 className="text-sm font-semibold text-gray-900">Vehicle Image</h3>
-                  <p className="mt-1 text-sm text-gray-500">Upload or replace the main vehicle photo directly from this profile.</p>
+                  <h3 className="text-sm font-semibold text-gray-900">{tr('Vehicle Image', 'Image du véhicule')}</h3>
+                  <p className="mt-1 text-sm text-gray-500">{tr('Upload or replace the main vehicle photo directly from this profile.', 'Téléversez ou remplacez la photo principale du véhicule directement depuis cette fiche.')}</p>
                   <VehicleImageUpload
                     vehicleId={vehicle.id?.toString()}
                     currentImageUrl={vehicleImageUrl}
@@ -1101,8 +1150,8 @@ const VehicleProfile = () => {
                 </div>
 
                 <div className="rounded-xl border border-gray-200 p-4">
-                  <h3 className="text-sm font-semibold text-gray-900">Legal & Administrative Documents</h3>
-                  <p className="mt-1 text-sm text-gray-500">Click or drag files here to upload registration, insurance, and other vehicle documents.</p>
+                  <h3 className="text-sm font-semibold text-gray-900">{tr('Legal & Administrative Documents', 'Documents légaux et administratifs')}</h3>
+                  <p className="mt-1 text-sm text-gray-500">{tr('Click or drag files here to upload registration, insurance, and other vehicle documents.', "Cliquez ou glissez des fichiers ici pour téléverser l'immatriculation, l'assurance et les autres documents du véhicule.")}</p>
                   <DocumentUpload
                     vehicleId={vehicle.id?.toString()}
                     documents={vehicleDocuments}
@@ -1123,10 +1172,10 @@ const VehicleProfile = () => {
             />
           </SectionCard>
 
-          <SectionCard title="Notes" description="Operational notes and internal system notes for the team." icon={StickyNote}>
+          <SectionCard title={tr('Notes', 'Notes')} description={tr('Operational notes and internal system notes for the team.', "Notes opérationnelles et notes internes de l'équipe.")} icon={StickyNote}>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="rounded-xl border border-violet-100 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Additional Notes</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Additional Notes', 'Notes supplémentaires')}</p>
                 {isEditing ? (
                   <textarea
                     value={formData.general_notes}
@@ -1135,11 +1184,11 @@ const VehicleProfile = () => {
                     className="mt-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                   />
                 ) : (
-                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{vehicle.general_notes || 'No additional notes yet.'}</p>
+                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{vehicle.general_notes || tr('No additional notes yet.', 'Aucune note supplémentaire pour le moment.')}</p>
                 )}
               </div>
               <div className="rounded-xl border border-violet-100 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">System Notes</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('System Notes', 'Notes système')}</p>
                 {isEditing ? (
                   <textarea
                     value={formData.notes}
@@ -1148,7 +1197,7 @@ const VehicleProfile = () => {
                     className="mt-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                   />
                 ) : (
-                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{vehicle.notes || 'No system notes yet.'}</p>
+                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{vehicle.notes || tr('No system notes yet.', 'Aucune note système pour le moment.')}</p>
                 )}
               </div>
             </div>
@@ -1156,9 +1205,9 @@ const VehicleProfile = () => {
         </div>
 
         <div className="space-y-6">
-          <SectionCard title="Maintenance History" description="Recent work logged against this vehicle." icon={Wrench}>
+          <SectionCard title={tr('Maintenance History', 'Historique maintenance')} description={tr('Recent work logged against this vehicle.', 'Travaux récents enregistrés sur ce véhicule.')} icon={Wrench}>
             {maintenanceHistory.length === 0 ? (
-              <HistoryEmptyState title="No maintenance records yet" description="Maintenance history will appear here as records are added." />
+              <HistoryEmptyState title={tr('No maintenance records yet', 'Aucun entretien enregistré pour le moment')} description={tr('Maintenance history will appear here as records are added.', "L'historique de maintenance apparaîtra ici au fur et à mesure des enregistrements.")} />
             ) : (
               <div className="space-y-3 max-h-[420px] overflow-y-auto pr-2">
                 {maintenanceHistory.slice(0, 6).map((record) => (
@@ -1183,28 +1232,28 @@ const VehicleProfile = () => {
                         {formatStatus(record.status)}
                       </span>
                     </div>
-                    <p className="mt-3 text-sm text-gray-600">{formatMaintenanceSummary(record) || 'No description provided.'}</p>
+                    <p className="mt-3 text-sm text-gray-600">{formatMaintenanceSummary(record) || tr('No description provided.', 'Aucune description fournie.')}</p>
                     <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-gray-500">
                       <div className="rounded-lg bg-gray-50 border border-gray-100 p-3">
-                        <p className="text-[11px] text-gray-400">Technician</p>
-                        <p className="mt-1 font-medium text-gray-700">{record.technician_name || 'Technician not set'}</p>
+                        <p className="text-[11px] text-gray-400">{tr('Technician', 'Technicien')}</p>
+                        <p className="mt-1 font-medium text-gray-700">{record.technician_name || tr('Technician not set', 'Technicien non défini')}</p>
                       </div>
                       <div className="rounded-lg bg-gray-50 border border-gray-100 p-3">
-                        <p className="text-[11px] text-gray-400">Total Price</p>
+                        <p className="text-[11px] text-gray-400">{tr('Total Price', 'Prix total')}</p>
                         <p className="mt-1 font-medium text-gray-900">{formatMoney(record.cost || 0)}</p>
                       </div>
                     </div>
                     <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                       <div className="rounded-lg bg-blue-50 border border-blue-100 p-2">
-                        <p className="text-[11px] text-blue-600">Labor</p>
+                        <p className="text-[11px] text-blue-600">{tr('Labor', "Main-d'oeuvre")}</p>
                         <p className="mt-1 font-semibold text-blue-900">{formatMoney(record.labor_rate_mad || record.labor_cost_mad || 0)}</p>
                       </div>
                       <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-2">
-                        <p className="text-[11px] text-indigo-600">Parts</p>
+                        <p className="text-[11px] text-indigo-600">{tr('Parts', 'Pièces')}</p>
                         <p className="mt-1 font-semibold text-indigo-900">{formatMoney(record.parts_cost_mad || 0)}</p>
                       </div>
                       <div className="rounded-lg bg-amber-50 border border-amber-100 p-2">
-                        <p className="text-[11px] text-amber-600">Tax</p>
+                        <p className="text-[11px] text-amber-600">{tr('Tax', 'Taxe')}</p>
                         <p className="mt-1 font-semibold text-amber-900">{formatMoney(record.tax_mad || 0)}</p>
                       </div>
                     </div>
@@ -1215,7 +1264,7 @@ const VehicleProfile = () => {
                         className="inline-flex items-center gap-1 rounded-lg border border-orange-200 bg-orange-50 px-3 py-1.5 text-xs font-medium text-orange-800 hover:bg-orange-100"
                       >
                         <Wrench className="w-3.5 h-3.5" />
-                        Open in Quad Maintenance
+                        {tr('Open in Quad Maintenance', 'Ouvrir en maintenance quad')}
                       </button>
                       {record.linked_report?.rental_id && (
                         <button
@@ -1224,7 +1273,7 @@ const VehicleProfile = () => {
                           className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-800 hover:bg-blue-100"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
-                          Open Linked Rental
+                          {tr('Open Linked Rental', 'Ouvrir la location liée')}
                         </button>
                       )}
                     </div>
@@ -1235,8 +1284,57 @@ const VehicleProfile = () => {
           </SectionCard>
 
           <SectionCard
-            title="Fuel Status"
-            description="Current fuel, usage, and cost for this vehicle."
+            title={tr('Rental History', 'Historique locations')}
+            description={tr('Open linked rentals for this vehicle.', 'Ouvrez les locations liées à ce véhicule.')}
+            icon={Calendar}
+          >
+            {rentalHistory.length === 0 ? (
+              <HistoryEmptyState
+                title={tr('No rentals for this vehicle yet', 'Aucune location pour ce véhicule pour le moment')}
+                description={tr('Rental history links will appear here as bookings are created.', "Les liens d'historique des locations apparaîtront ici au fur et à mesure des réservations.")}
+              />
+            ) : (
+              <div className="space-y-3 max-h-[360px] overflow-y-auto pr-2">
+                {rentalHistory.map((record) => {
+                  const rentalStatus = record?.is_impounded ? 'impounded' : (record?.rental_status || 'scheduled');
+                  return (
+                    <button
+                      key={record.id}
+                      type="button"
+                      onClick={() => navigate(`/admin/rentals/${record.id}`)}
+                      className="w-full rounded-xl border border-slate-200 bg-white p-4 text-left transition hover:border-violet-200 hover:bg-violet-50/40"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-violet-700">
+                            {formatRentalReference(record.rental_id || record.id)}
+                          </p>
+                          <p className="mt-1 text-sm font-medium text-slate-900">
+                            {record.customer_name || tr('Unknown customer', 'Client inconnu')}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {formatDateTime(record.started_at || record.rental_start_date)}
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${statusClasses[rentalStatus] || 'bg-slate-100 text-slate-800'}`}>
+                            {formatStatus(rentalStatus)}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-700">
+                            {formatMoney(record.total_amount || 0)}
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </SectionCard>
+
+          <SectionCard
+            title={tr('Fuel Status', 'État du carburant')}
+            description={tr('Current fuel, usage, and cost for this vehicle.', "Carburant actuel, consommation et coût pour ce véhicule.")}
             icon={Gauge}
             action={(
               <div className="flex flex-wrap items-center justify-end gap-2">
@@ -1247,7 +1345,7 @@ const VehicleProfile = () => {
                     className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
                   >
                     <Edit className="w-4 h-4" />
-                    Adjust Fuel
+                    {tr('Adjust Fuel', 'Ajuster le carburant')}
                   </button>
                 ) : null}
                 <button
@@ -1261,7 +1359,7 @@ const VehicleProfile = () => {
                   className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                 >
                   <Fuel className="w-4 h-4" />
-                  Open Fuel Logs
+                  {tr('Open Fuel Logs', 'Ouvrir les journaux carburant')}
                 </button>
               </div>
             )}
@@ -1270,12 +1368,12 @@ const VehicleProfile = () => {
               <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-600">Current Vehicle Fuel</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-600">{tr('Current Vehicle Fuel', 'Carburant actuel du véhicule')}</p>
                     <p className="mt-2 text-4xl font-black tracking-tight text-slate-900">
                       {vehicleFuelState?.current_fuel_lines ?? 0}/8
                     </p>
                     <p className="mt-1 text-base font-medium text-slate-600">
-                      {Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L in tank
+                      {isFrenchLocale() ? `${Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L dans le réservoir` : `${Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L in tank`}
                     </p>
                   </div>
                   <span className="inline-flex rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
@@ -1290,44 +1388,44 @@ const VehicleProfile = () => {
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
                   <div className="rounded-xl border border-emerald-100 bg-white/90 p-3">
-                    <p className="text-slate-400">Last source</p>
+                    <p className="text-slate-400">{tr('Last source', 'Dernière source')}</p>
                     <p className="mt-1 font-medium text-slate-700">{formatStatus(vehicleFuelState?.last_source || 'unknown')}</p>
                   </div>
                   <div className="rounded-xl border border-emerald-100 bg-white/90 p-3">
-                    <p className="text-slate-400">Recent fuel events</p>
+                    <p className="text-slate-400">{tr('Recent fuel events', 'Événements carburant récents')}</p>
                     <p className="mt-1 font-medium text-slate-700">{fuelHistory.length}</p>
                   </div>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="min-w-0 rounded-xl border border-sky-100 bg-sky-50/80 p-4">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-600">Fuel Supplied</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-600">{tr('Fuel Supplied', 'Carburant fourni')}</p>
                   <p className="mt-2 text-2xl font-bold text-slate-900">
                     {Number(vehicleFuelSummary?.totalFuelSuppliedLiters || vehicle?.total_fuel_supplied_liters || 0).toFixed(1)}L
                   </p>
                 </div>
                 <div className="min-w-0 rounded-xl border border-amber-100 bg-amber-50/80 p-4">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-600">Fuel Used</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-600">{tr('Fuel Used', 'Carburant consommé')}</p>
                   <p className="mt-2 text-2xl font-bold text-slate-900">
                     {Number(vehicleFuelSummary?.totalFuelUsedLiters || vehicle?.total_fuel_used_liters || 0).toFixed(1)}L
                   </p>
                 </div>
                 <div className="min-w-0 rounded-xl border border-violet-100 bg-violet-50/80 p-4">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">Fuel Cost</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">{tr('Fuel Cost', 'Coût carburant')}</p>
                   <p className="mt-2 text-2xl font-bold text-slate-900">
                     {formatMoney(vehicleFuelSummary?.totalFuelCostMad || vehicle?.total_fuel_cost_mad || 0)}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    Avg {Number(vehicleFuelSummary?.averageFuelCostPerLiterMad || vehicle?.average_fuel_cost_per_liter_mad || 0).toFixed(2)} MAD/L
+                    {isFrenchLocale() ? `Moy. ${Number(vehicleFuelSummary?.averageFuelCostPerLiterMad || vehicle?.average_fuel_cost_per_liter_mad || 0).toFixed(2)} MAD/L` : `Avg ${Number(vehicleFuelSummary?.averageFuelCostPerLiterMad || vehicle?.average_fuel_cost_per_liter_mad || 0).toFixed(2)} MAD/L`}
                   </p>
                 </div>
                 <div className="min-w-0 rounded-xl border border-slate-200 bg-slate-50/90 p-4">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Last Activity</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{tr('Last Activity', 'Dernière activité')}</p>
                   <p className="mt-2 text-sm font-semibold leading-5 text-slate-900 break-words">
                     {formatDateTime(vehicleFuelSummary?.lastFuelActivityAt || vehicle?.last_fuel_activity_at)}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    {vehicleFuelSummary?.fuelEventCount || fuelHistory.length} logged fuel events
+                    {isFrenchLocale() ? `${vehicleFuelSummary?.fuelEventCount || fuelHistory.length} événements carburant enregistrés` : `${vehicleFuelSummary?.fuelEventCount || fuelHistory.length} logged fuel events`}
                   </p>
                 </div>
               </div>
@@ -1338,9 +1436,9 @@ const VehicleProfile = () => {
             <section className="rounded-xl border border-emerald-100 bg-white p-5 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">Adjust Fuel</p>
-                  <h3 className="mt-2 text-xl font-bold text-slate-900">Set vehicle fuel level</h3>
-                  <p className="mt-1 text-sm text-slate-500">This updates the Fleet fuel source of truth for this vehicle.</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">{tr('Adjust Fuel', 'Ajuster le carburant')}</p>
+                  <h3 className="mt-2 text-xl font-bold text-slate-900">{tr('Set vehicle fuel level', 'Définir le niveau de carburant du véhicule')}</h3>
+                  <p className="mt-1 text-sm text-slate-500">{tr('This updates the Fleet fuel source of truth for this vehicle.', 'Cela met à jour la source de vérité carburant de la flotte pour ce véhicule.')}</p>
                 </div>
                 <button
                   type="button"
@@ -1353,7 +1451,7 @@ const VehicleProfile = () => {
 
               <div className="mt-5 grid gap-4 lg:grid-cols-2">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Current fuel</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Current fuel', 'Carburant actuel')}</p>
                   <p className="mt-2 text-3xl font-black tracking-tight text-slate-900">
                     {vehicleFuelState?.current_fuel_lines ?? 0}/8
                   </p>
@@ -1362,9 +1460,9 @@ const VehicleProfile = () => {
                   </p>
                 </div>
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">New fuel level</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">{tr('New fuel level', 'Nouveau niveau de carburant')}</p>
                   <div className="mt-3">
-                    <label className="text-sm font-medium text-slate-700">Fuel lines</label>
+                    <label className="text-sm font-medium text-slate-700">{tr('Fuel lines', 'Barres de carburant')}</label>
                     <div className="mt-2 grid grid-cols-4 gap-2 lg:flex lg:flex-wrap">
                       {Array.from({ length: 8 }, (_, index) => {
                         const lineValue = index + 1;
@@ -1388,7 +1486,7 @@ const VehicleProfile = () => {
                     <p className="mt-2 text-sm text-slate-500">
                       {Number.isFinite(Number(fuelAdjustForm.fuel_lines))
                         ? `${FuelTransactionService.linesToLiters(Number(fuelAdjustForm.fuel_lines), vehicleFuelState?.tank_capacity_liters || undefined).toFixed(1)} L after adjustment`
-                        : 'Enter the corrected fuel level'}
+                        : tr('Enter the corrected fuel level', 'Entrez le niveau corrigé de carburant')}
                     </p>
                   </div>
                 </div>
@@ -1396,25 +1494,25 @@ const VehicleProfile = () => {
 
               <div className="mt-4 grid gap-4 lg:grid-cols-2">
                 <div>
-                  <label className="text-sm font-medium text-slate-700">Reason</label>
+                  <label className="text-sm font-medium text-slate-700">{tr('Reason', 'Raison')}</label>
                   <select
                     value={fuelAdjustForm.reason}
                     onChange={(event) => handleFuelAdjustChange('reason', event.target.value)}
                     className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none focus:border-emerald-400"
                   >
-                    <option value="Manual correction">Manual correction</option>
-                    <option value="Inspection update">Inspection update</option>
-                    <option value="After external fuel use">After external fuel use</option>
-                    <option value="Staff correction">Staff correction</option>
+                    <option value="Manual correction">{tr('Manual correction', 'Correction manuelle')}</option>
+                    <option value="Inspection update">{tr('Inspection update', "Mise à jour d'inspection")}</option>
+                    <option value="After external fuel use">{tr('After external fuel use', 'Après utilisation externe du carburant')}</option>
+                    <option value="Staff correction">{tr('Staff correction', "Correction de l'équipe")}</option>
                   </select>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-slate-700">Note</label>
+                  <label className="text-sm font-medium text-slate-700">{tr('Note', 'Note')}</label>
                   <input
                     type="text"
                     value={fuelAdjustForm.notes}
                     onChange={(event) => handleFuelAdjustChange('notes', event.target.value)}
-                    placeholder="Optional note"
+                    placeholder={tr('Optional note', 'Note facultative')}
                     className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none focus:border-emerald-400"
                   />
                 </div>
@@ -1427,7 +1525,7 @@ const VehicleProfile = () => {
                   disabled={fuelAdjustSaving}
                   className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
                 >
-                  Cancel
+                  {tr('Cancel', 'Annuler')}
                 </button>
                 <button
                   type="button"
@@ -1435,15 +1533,15 @@ const VehicleProfile = () => {
                   disabled={fuelAdjustSaving}
                   className="rounded-2xl bg-gradient-to-r from-emerald-600 to-green-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(22,163,74,0.22)] hover:from-emerald-700 hover:to-green-800 disabled:opacity-60"
                 >
-                  {fuelAdjustSaving ? 'Saving...' : 'Set Fuel Level'}
+                  {fuelAdjustSaving ? tr('Saving...', 'Enregistrement...') : tr('Set Fuel Level', 'Définir le niveau')}
                 </button>
               </div>
             </section>
           ) : null}
 
           <SectionCard
-            title="Activity Log"
-            description="A combined timeline of profile, maintenance, and fuel activity."
+            title={tr('Activity Log', "Journal d'activité")}
+            description={tr('A combined timeline of profile, maintenance, and fuel activity.', "Chronologie combinée du profil, de la maintenance et du carburant.")}
             icon={Clock3}
             action={(
               <button
@@ -1451,12 +1549,12 @@ const VehicleProfile = () => {
                 onClick={() => navigate(`/admin/fleet/${vehicle.id}/activity`)}
                 className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
               >
-                View all
+                {tr('View all', 'Voir tout')}
               </button>
             )}
           >
             {activityLog.length === 0 ? (
-              <HistoryEmptyState title="No activity yet" description="As the vehicle is used, its operational timeline will appear here." />
+              <HistoryEmptyState title={tr('No activity yet', 'Aucune activité pour le moment')} description={tr('As the vehicle is used, its operational timeline will appear here.', "La chronologie opérationnelle du véhicule apparaîtra ici au fur et à mesure de son utilisation.")} />
             ) : (
               <div className="max-h-[420px] overflow-y-scroll pr-2">
                 <div className="space-y-4">
@@ -1475,9 +1573,9 @@ const VehicleProfile = () => {
             )}
           </SectionCard>
 
-          <SectionCard title="Vehicle Report" description="Inspection reports captured from rental return workflow." icon={FileText}>
+          <SectionCard title={tr('Vehicle Report', 'Rapports véhicule')} description={tr('Inspection reports captured from rental return workflow.', "Rapports d'inspection enregistrés pendant le retour de location.")} icon={FileText}>
             {vehicleReportOverview.length === 0 ? (
-              <HistoryEmptyState title="No vehicle reports yet" description="Damage, accident, and issue reports will appear here when staff log them during rental inspection." />
+              <HistoryEmptyState title={tr('No vehicle reports yet', 'Aucun rapport véhicule pour le moment')} description={tr('Damage, accident, and issue reports will appear here when staff log them during rental inspection.', "Les rapports de dommages, d'accident et d'incident apparaîtront ici lorsque l'équipe les enregistrera pendant l'inspection de retour.")} />
             ) : (
               <div className="space-y-3 max-h-[420px] overflow-y-auto pr-2">
                 {vehicleReportOverview.slice(0, 6).map((report) => (
@@ -1493,11 +1591,11 @@ const VehicleProfile = () => {
                     </div>
                     {report.rental_reference && (
                       <div className="mt-3 inline-flex items-center rounded-full bg-orange-100 px-2.5 py-1 text-[11px] font-medium text-orange-800">
-                        Linked rental • {formatRentalReference(report.rental_reference)}
+                        {tr('Linked rental', 'Location liée')} • {formatRentalReference(report.rental_reference)}
                         {report.customer_name ? ` • ${report.customer_name}` : ''}
                       </div>
                     )}
-                    <p className="mt-3 text-sm text-gray-600 whitespace-pre-wrap">{report.description || 'No description provided.'}</p>
+                    <p className="mt-3 text-sm text-gray-600 whitespace-pre-wrap">{report.description || tr('No description provided.', 'Aucune description fournie.')}</p>
                     {Array.isArray(report.affected_areas) && report.affected_areas.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-2">
                         {report.affected_areas.map((area) => (
@@ -1509,16 +1607,16 @@ const VehicleProfile = () => {
                     )}
                     <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-gray-500">
                       <div className="flex items-center justify-between">
-                        <span>Linked media</span>
-                        <span>{report.photos?.length || 0} item(s)</span>
+                        <span>{tr('Linked media', 'Médias liés')}</span>
+                        <span>{isFrenchLocale() ? `${report.photos?.length || 0} élément(s)` : `${report.photos?.length || 0} item(s)`}</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span>Maintenance</span>
-                        <span>{report.maintenance ? `${formatStatus(report.maintenance.status)} • ${formatMoney(report.maintenance.cost || 0)}` : (report.maintenance_id ? 'Created' : (report.send_to_maintenance ? 'Pending link' : 'Not requested'))}</span>
+                        <span>{tr('Maintenance', 'Maintenance')}</span>
+                        <span>{report.maintenance ? `${formatStatus(report.maintenance.status)} • ${formatMoney(report.maintenance.cost || 0)}` : (report.maintenance_id ? tr('Created', 'Créée') : (report.send_to_maintenance ? tr('Pending link', 'Lien en attente') : tr('Not requested', 'Non demandée')))}</span>
                       </div>
                       {report.customer_chargeable && (
                         <div className="flex items-center justify-between">
-                          <span>Customer charge</span>
+                          <span>{tr('Customer charge', 'Facturation client')}</span>
                           <span>{formatMoney(report.customer_charge_amount || report.maintenance_cost_total || 0)}</span>
                         </div>
                       )}
@@ -1531,7 +1629,7 @@ const VehicleProfile = () => {
                           className="inline-flex items-center gap-1 rounded-lg border border-orange-200 bg-orange-50 px-3 py-1.5 text-xs font-medium text-orange-800 hover:bg-orange-100"
                         >
                           <Wrench className="w-3.5 h-3.5" />
-                          Open Linked Maintenance
+                          {tr('Open Linked Maintenance', 'Ouvrir la maintenance liée')}
                         </button>
                       )}
                       {report.rental_id && (
@@ -1541,7 +1639,7 @@ const VehicleProfile = () => {
                           className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-800 hover:bg-blue-100"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
-                          Open Linked Rental
+                          {tr('Open Linked Rental', 'Ouvrir la location liée')}
                         </button>
                       )}
                     </div>
@@ -1552,8 +1650,8 @@ const VehicleProfile = () => {
           </SectionCard>
 
           <SectionCard
-            title="Sold History"
-            description="Track sale or disposal events so finance can include resale and write-off lifecycle data."
+            title={tr('Sold History', 'Historique de vente')}
+            description={tr('Track sale or disposal events so finance can include resale and write-off lifecycle data.', 'Suivez les ventes et mises au rebut afin que la finance intègre le cycle de revente et de sortie d’actif.')}
             icon={Calendar}
             action={(
               <div className="flex items-center gap-2">
@@ -1564,7 +1662,7 @@ const VehicleProfile = () => {
                     className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-100"
                   >
                     <Edit className="w-3.5 h-3.5" />
-                    Edit
+                    {tr('Edit', 'Modifier')}
                   </button>
                 )}
                 {!dispositionEditing && !dispositionRecord && (
@@ -1577,7 +1675,7 @@ const VehicleProfile = () => {
                     className="inline-flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-medium text-green-700 hover:bg-green-100"
                   >
                     <DollarSign className="w-3.5 h-3.5" />
-                    Add Sale / Disposal
+                    {tr('Add Sale / Disposal', 'Ajouter vente / mise au rebut')}
                   </button>
                 )}
               </div>
@@ -1587,18 +1685,18 @@ const VehicleProfile = () => {
               <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div className="grid gap-4 md:grid-cols-2">
                   <label className="space-y-2 text-sm text-slate-600">
-                    <span className="font-medium text-slate-900">Event Type</span>
+                    <span className="font-medium text-slate-900">{tr('Event Type', "Type d'événement")}</span>
                     <select
                       value={dispositionForm.event_type}
                       onChange={(e) => handleDispositionChange('event_type', e.target.value)}
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
                     >
-                      <option value="sold">Sold</option>
-                      <option value="disposed">Disposed</option>
+                      <option value="sold">{tr('Sold', 'Vendu')}</option>
+                      <option value="disposed">{tr('Disposed', 'Mis au rebut')}</option>
                     </select>
                   </label>
                   <label className="space-y-2 text-sm text-slate-600">
-                    <span className="font-medium text-slate-900">Event Date</span>
+                    <span className="font-medium text-slate-900">{tr('Event Date', "Date de l'événement")}</span>
                     <input
                       type="date"
                       value={dispositionForm.event_date}
@@ -1607,7 +1705,7 @@ const VehicleProfile = () => {
                     />
                   </label>
                   <label className="space-y-2 text-sm text-slate-600">
-                    <span className="font-medium text-slate-900">{dispositionForm.event_type === 'sold' ? 'Sale Price' : 'Disposal Value'} (MAD)</span>
+                    <span className="font-medium text-slate-900">{dispositionForm.event_type === 'sold' ? tr('Sale Price', 'Prix de vente') : tr('Disposal Value', 'Valeur de sortie')} (MAD)</span>
                     <input
                       type="number"
                       value={dispositionForm.sale_price_mad}
@@ -1616,7 +1714,7 @@ const VehicleProfile = () => {
                     />
                   </label>
                   <label className="space-y-2 text-sm text-slate-600">
-                    <span className="font-medium text-slate-900">{dispositionForm.event_type === 'sold' ? 'Buyer' : 'Handled By / Destination'}</span>
+                    <span className="font-medium text-slate-900">{dispositionForm.event_type === 'sold' ? tr('Buyer', 'Acheteur') : tr('Handled By / Destination', 'Pris en charge par / destination')}</span>
                     <input
                       type="text"
                       value={dispositionForm.buyer_name}
@@ -1626,7 +1724,7 @@ const VehicleProfile = () => {
                   </label>
                 </div>
                 <label className="block space-y-2 text-sm text-slate-600">
-                  <span className="font-medium text-slate-900">Notes</span>
+                  <span className="font-medium text-slate-900">{tr('Notes', 'Notes')}</span>
                   <textarea
                     rows={3}
                     value={dispositionForm.notes}
@@ -1642,7 +1740,7 @@ const VehicleProfile = () => {
                     className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
                   >
                     <Check className="w-4 h-4" />
-                    {dispositionSaving ? 'Saving...' : 'Save Record'}
+                    {dispositionSaving ? 'Enregistrement...' : 'Enregistrer la fiche'}
                   </button>
                   <button
                     type="button"
@@ -1653,7 +1751,7 @@ const VehicleProfile = () => {
                     className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
                   >
                     <X className="w-4 h-4" />
-                    Cancel
+                    {tr('Cancel', 'Annuler')}
                   </button>
                   {dispositionRecord && (
                     <button
@@ -1661,7 +1759,7 @@ const VehicleProfile = () => {
                       onClick={handleDeleteDisposition}
                       className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-100"
                     >
-                      Delete Record
+                      {tr('Delete Record', "Supprimer l'enregistrement")}
                     </button>
                   )}
                 </div>
@@ -1676,12 +1774,12 @@ const VehicleProfile = () => {
                 </div>
                 <div className="grid gap-4 md:grid-cols-3">
                   <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Value</p>
+                    <p className="text-xs uppercase tracking-wide text-slate-500">{tr('Value', 'Valeur')}</p>
                     <p className="mt-1 text-lg font-semibold text-slate-900">{formatMoney(dispositionRecord.sale_price_mad || 0)}</p>
                   </div>
                   {dispositionRecord.buyer_name && (
                     <div>
-                      <p className="text-xs uppercase tracking-wide text-slate-500">{dispositionRecord.event_type === 'sold' ? 'Buyer' : 'Handled By'}</p>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">{dispositionRecord.event_type === 'sold' ? tr('Buyer', 'Acheteur') : tr('Handled By', 'Pris en charge par')}</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">{dispositionRecord.buyer_name}</p>
                     </div>
                   )}

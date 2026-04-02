@@ -1,11 +1,22 @@
 import React, { useState, useRef } from 'react';
+import i18n from '../i18n';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Button } from './ui/button';
 import SignatureCanvas from 'react-signature-canvas';
 import { supabase } from '../lib/supabase';
 import { v4 as uuidv4 } from 'uuid';
 
-const SignaturePadModal = ({ isOpen, onClose, onSave, rentalId }) => {
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+
+const SignaturePadModal = ({
+  isOpen,
+  onClose,
+  onSave,
+  rentalId,
+  title,
+  description,
+}) => {
   const sigPad = useRef(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -27,7 +38,7 @@ const SignaturePadModal = ({ isOpen, onClose, onSave, rentalId }) => {
 
   const handleSave = async () => {
     if (sigPad.current.isEmpty()) {
-      alert('Please provide a signature first.');
+      alert(tr('Please provide a signature first.', 'Veuillez d’abord fournir une signature.'));
       return;
     }
 
@@ -54,7 +65,7 @@ const SignaturePadModal = ({ isOpen, onClose, onSave, rentalId }) => {
       onClose();
     } catch (error) {
       console.error('Error saving signature:', error);
-      alert('Failed to save signature. Please try again.');
+      alert(tr('Failed to save signature. Please try again.', "Impossible d'enregistrer la signature. Veuillez réessayer."));
     } finally {
       setIsSaving(false);
     }
@@ -64,7 +75,8 @@ const SignaturePadModal = ({ isOpen, onClose, onSave, rentalId }) => {
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>Customer Signature</DialogTitle>
+          <DialogTitle>{title || tr('Customer Signature', 'Signature du client')}</DialogTitle>
+          {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
         </DialogHeader>
         <div className="py-4">
           <div className="border border-gray-300 rounded-lg">
@@ -79,10 +91,10 @@ const SignaturePadModal = ({ isOpen, onClose, onSave, rentalId }) => {
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={handleClear} disabled={isSaving}>
-            Clear
+            {tr('Clear', 'Effacer')}
           </Button>
           <Button onClick={handleSave} disabled={isSaving}>
-            {isSaving ? 'Saving...' : 'Save Signature'}
+            {isSaving ? tr('Saving...', 'Enregistrement...') : tr('Save Signature', 'Enregistrer la signature')}
           </Button>
         </DialogFooter>
       </DialogContent>
