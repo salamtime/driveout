@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import PublicInstantBooking from './pages/PublicInstantBooking';
 import PublicBookingRequest from './pages/PublicBookingRequest';
+import PublicTours from './pages/Tours';
 import { buildHostUrl, getHostContext } from './utils/hostContext';
 import { configureMasterSupabaseClient, configureSupabaseClient } from './lib/supabase';
 
@@ -234,7 +235,6 @@ const Landing = lazy(() => import('./pages/Landing'));
 const PublicCatalog = lazy(() => import('./pages/PublicCatalog'));
 const PublicMarketplaceDetail = lazy(() => import('./pages/PublicMarketplaceDetail'));
 const PublicRentRedirect = lazy(() => import('./pages/PublicRentRedirect'));
-const PublicTours = lazy(() => import('./pages/Tours'));
 const RentalBooking = lazy(() => import('./pages/RentalBooking'));
 const Rentals = lazy(() => import('./pages/admin/Rentals'));
 const RentalDetails = lazy(() => import('./pages/admin/RentalDetails'));
