@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Image as ImageIcon, MapPin, Route, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Image as ImageIcon, MapPin, Route, X, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import PublicSiteChrome from '../components/public/PublicSiteChrome';
 import { fetchTourPackages } from '../services/tourPackageService';
 
 const GLOBAL_TOUR_PRICING_KEY = '__global_tour_pricing__';
 const DEFAULT_CITY = 'Tangier';
+const MAX_PUBLIC_TOUR_MEDIA_ITEMS = 9;
+const STACKED_MEDIA_PREVIEW_ITEMS = 3;
 
 const formatDuration = (hours) => {
   const numeric = Number(hours || 0);
@@ -17,6 +19,16 @@ const formatDuration = (hours) => {
 };
 
 const formatMoney = (value) => `${Number(value || 0).toLocaleString('en-MA')} MAD`;
+
+const formatDisplayText = (value, fallback = '') => {
+  const text = String(value || fallback || '').trim();
+  if (!text) return fallback;
+
+  const isAllLowercase = text === text.toLowerCase();
+  if (!isAllLowercase) return text;
+
+  return text.replace(/\b\w/g, (match) => match.toUpperCase());
+};
 
 const stripLegacyTourRules = (value) => {
   const text = String(value || '');
@@ -38,25 +50,68 @@ const modelLabel = (model) => {
 
 const getPackagePriceRows = ({ rows = [], packageId, durationHours }) => {
   const duration = normalizeDuration(durationHours);
-  const exact = rows.filter(
+  const activeRows = rows.filter((row) => row?.is_active !== false && Number(row?.price_mad || 0) > 0);
+
+  const exact = activeRows.filter(
     (row) =>
       String(row.package_id) === String(packageId) &&
-      normalizeDuration(row.duration_hours) === duration &&
-      Number(row.price_mad || 0) > 0
+      normalizeDuration(row.duration_hours) === duration
   );
 
   if (exact.length > 0) return exact;
 
-  return rows.filter(
+  return activeRows.filter(
     (row) =>
       String(row.package_id) === GLOBAL_TOUR_PRICING_KEY &&
-      normalizeDuration(row.duration_hours) === duration &&
-      Number(row.price_mad || 0) > 0
+      normalizeDuration(row.duration_hours) === duration
   );
 };
 
+const getTourStartingPrice = ({ rows = [], packageId, durationHours, pkg }) => {
+  const duration = normalizeDuration(durationHours);
+  const activeRows = rows.filter((row) => row?.is_active !== false && Number(row?.price_mad || 0) > 0);
+
+  const exactPackageRows = activeRows.filter(
+    (row) => String(row.package_id) === String(packageId) && normalizeDuration(row.duration_hours) === duration
+  );
+  if (exactPackageRows.length > 0) {
+    return Math.min(...exactPackageRows.map((row) => Number(row.price_mad || 0)).filter((price) => price > 0));
+  }
+
+  const exactGlobalRows = activeRows.filter(
+    (row) => String(row.package_id) === GLOBAL_TOUR_PRICING_KEY && normalizeDuration(row.duration_hours) === duration
+  );
+  if (exactGlobalRows.length > 0) {
+    return Math.min(...exactGlobalRows.map((row) => Number(row.price_mad || 0)).filter((price) => price > 0));
+  }
+
+  const anyPackageRows = activeRows.filter((row) => String(row.package_id) === String(packageId));
+  if (anyPackageRows.length > 0) {
+    return Math.min(...anyPackageRows.map((row) => Number(row.price_mad || 0)).filter((price) => price > 0));
+  }
+
+  const anyGlobalRows = activeRows.filter((row) => String(row.package_id) === GLOBAL_TOUR_PRICING_KEY);
+  if (anyGlobalRows.length > 0) {
+    return Math.min(...anyGlobalRows.map((row) => Number(row.price_mad || 0)).filter((price) => price > 0));
+  }
+
+  const packageDefaults = [
+    Number(pkg?.default_rate_1h || 0),
+    Number(pkg?.default_rate_2h || 0),
+    Number(pkg?.vip_rate_1h || 0),
+    Number(pkg?.vip_rate_2h || 0),
+  ].filter((price) => price > 0);
+
+  if (packageDefaults.length > 0) {
+    return Math.min(...packageDefaults);
+  }
+
+  return 0;
+};
+
 const buildPublicTour = (pkg, pricingRows, vehicleModels) => {
-  const routeStops = Array.isArray(pkg.routeStops) && pkg.routeStops.length > 0
+  const hasCustomRouteStops = Array.isArray(pkg.routeStops) && pkg.routeStops.length > 0;
+  const routeStops = hasCustomRouteStops
     ? pkg.routeStops
     : [
         { type: 'start', title: pkg.location || 'Base departure', note: 'Safety check', duration_minutes: 0 },
@@ -90,15 +145,17 @@ const buildPublicTour = (pkg, pricingRows, vehicleModels) => {
     ...(Array.isArray(pkg.mediaGallery) ? pkg.mediaGallery : []),
   ]
     .filter((item) => item?.url)
-    .slice(0, 3);
+    .slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS);
 
   return {
     ...pkg,
-    title: stripLegacyTourRules(pkg.publicTitle) || stripLegacyTourRules(pkg.name),
+    title: formatDisplayText(stripLegacyTourRules(pkg.publicTitle) || stripLegacyTourRules(pkg.name), 'Tour Package'),
     summary: stripLegacyTourRules(pkg.publicSummary) || stripLegacyTourRules(pkg.description),
-    routeLabel: stripLegacyTourRules(pkg.routeLabel) || stripLegacyTourRules(pkg.routeType) || 'Guided route',
+    routeLabel: formatDisplayText(stripLegacyTourRules(pkg.routeLabel) || stripLegacyTourRules(pkg.routeType), 'Guided route'),
+    routeType: formatDisplayText(pkg.routeType, 'Route'),
     durationLabel: pkg.durationDisplay || formatDuration(pkg.duration),
     routeStops: orderedRouteStops,
+    hasCustomRouteStops,
     media,
     highlights: Array.isArray(pkg.publicHighlights)
       ? pkg.publicHighlights.map((highlight) => highlight?.label || highlight).filter(Boolean).slice(0, 4)
@@ -106,7 +163,12 @@ const buildPublicTour = (pkg, pricingRows, vehicleModels) => {
     stopCount: Number(pkg.stopCount || orderedRouteStops.length || 0),
     difficultyLabel: pkg.difficultyLabel || '',
     modelOptions,
-    startingPrice: modelOptions[0]?.price || Number(pkg.default_rate_1h || pkg.default_rate_2h || 0),
+    startingPrice: getTourStartingPrice({
+      rows: pricingRows,
+      packageId: pkg.id,
+      durationHours: pkg.duration,
+      pkg,
+    }),
   };
 };
 
@@ -135,6 +197,66 @@ const RouteRoadmap = ({ stops = [] }) => (
     </div>
   </div>
 );
+
+const MediaPreviewStack = ({ media = [], title, expanded = false, onOpenPreview }) => {
+  const previewItems = media.slice(0, STACKED_MEDIA_PREVIEW_ITEMS);
+  if (previewItems.length === 0) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpenPreview?.();
+      }}
+      className={`group relative overflow-visible rounded-[28px] border border-violet-100 bg-white/90 p-4 text-left shadow-[0_18px_45px_rgba(79,70,229,0.07)] transition hover:-translate-y-0.5 hover:shadow-[0_22px_58px_rgba(79,70,229,0.14)] ${
+        expanded ? 'w-full' : 'w-full max-w-[280px]'
+      }`}
+      aria-label={`Open media preview for ${title}`}
+    >
+      <div className="relative h-40">
+        {previewItems.map((item, index) => {
+          const isVideo = item.type === 'video';
+          const rotation = index === 0 ? '-rotate-6' : index === 1 ? 'rotate-0' : 'rotate-6';
+          const topOffset = index === 0 ? 'top-5' : index === 1 ? 'top-2' : 'top-0';
+          const leftOffset = index === 0 ? 'left-0' : index === 1 ? 'left-6' : 'left-12';
+          return (
+            <div
+              key={`${item.url}-${index}`}
+              className={`absolute ${topOffset} ${leftOffset} h-28 w-40 overflow-hidden rounded-[22px] border border-white bg-slate-100 shadow-[0_14px_40px_rgba(15,23,42,0.16)] transition duration-150 ${rotation} group-hover:scale-[1.02]`}
+            >
+              {isVideo ? (
+                <video src={item.url} muted playsInline className="h-full w-full object-cover" />
+              ) : (
+                <img src={item.url} alt={item.caption || title} className="h-full w-full object-cover" />
+              )}
+              {isVideo ? (
+                <span className="absolute bottom-2 right-2 rounded-full bg-slate-950/70 px-2 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-white">
+                  Video
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-600">
+            Preview media
+          </p>
+          <p className="mt-1 text-sm font-bold text-slate-700">
+            Tap to open
+          </p>
+        </div>
+        <span className="inline-flex items-center gap-2 rounded-full bg-violet-50 px-3 py-2 text-xs font-black text-violet-700">
+          <ImageIcon className="h-3.5 w-3.5" />
+          {previewItems.length} item{previewItems.length === 1 ? '' : 's'}
+        </span>
+      </div>
+    </button>
+  );
+};
 
 const LoadingTours = () => (
   <div className="space-y-5">
@@ -407,16 +529,39 @@ const Tours = () => {
           <div className="space-y-5">
             {tours.map((tour) => {
               const selected = String(selectedPackageId) === String(tour.id);
-              const available = tour.modelOptions.length > 0;
+              const hasBookableModelPricing = tour.modelOptions.length > 0;
+              const hasVisiblePrice = Number(tour.startingPrice || 0) > 0;
+              const routePreview = (tour.hasCustomRouteStops ? tour.routeStops : [])
+                .filter((stop) => stop?.title)
+                .slice(0, 3)
+                .map((stop) => formatDisplayText(stop.title));
 
               return (
                 <article
                   key={tour.id}
-                  onClick={() => toggleTourSelection(tour)}
-                  className={`cursor-pointer rounded-[32px] border bg-white p-6 shadow-[0_18px_45px_rgba(79,70,229,0.07)] transition duration-150 hover:scale-[1.005] hover:shadow-[0_22px_58px_rgba(79,70,229,0.12)] ${
+                  onClick={() => {
+                    if (!selected) {
+                      toggleTourSelection(tour);
+                    }
+                  }}
+                  className={`relative cursor-pointer rounded-[32px] border bg-white p-6 shadow-[0_18px_45px_rgba(79,70,229,0.07)] transition duration-150 hover:scale-[1.005] hover:shadow-[0_22px_58px_rgba(79,70,229,0.12)] ${
                     selected ? 'border-violet-400 ring-4 ring-violet-100' : 'border-violet-100'
                   }`}
                 >
+                  {selected ? (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleTourSelection(tour);
+                      }}
+                      className="absolute right-5 top-5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-full border border-violet-200 bg-white text-violet-700 shadow-sm transition hover:bg-violet-50"
+                      aria-label={`Close ${tour.title}`}
+                      title="Close"
+                    >
+                      <XCircle className="h-5 w-5" />
+                    </button>
+                  ) : null}
                   <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0">
                       <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-600">{tour.routeLabel}</p>
@@ -434,28 +579,48 @@ const Tours = () => {
 
                     <div className="shrink-0 text-left lg:text-right">
                       <p className="text-xs font-black uppercase tracking-[0.22em] text-slate-400">From</p>
-                      <p className="mt-2 text-3xl font-black text-slate-950">{available ? formatMoney(tour.startingPrice) : 'Pricing pending'}</p>
-                      {tour.media.length > 0 && (
-                        <div className="mt-4 flex flex-wrap gap-2 lg:justify-end">
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setMediaTour(tour);
-                            }}
-                            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 transition hover:bg-slate-50"
-                          >
-                            <ImageIcon className="h-4 w-4" />
-                            View media
-                          </button>
+                      <p className={`mt-2 text-3xl font-black ${hasVisiblePrice ? 'text-slate-950' : 'text-slate-400'}`}>
+                        {hasVisiblePrice ? formatMoney(tour.startingPrice) : 'Price on request'}
+                      </p>
+                      {tour.media.length > 0 ? (
+                        <div className="mt-4 lg:ml-auto">
+                          <MediaPreviewStack
+                            media={tour.media}
+                            title={tour.title}
+                            onOpenPreview={() => setMediaTour(tour)}
+                          />
                         </div>
-                      )}
+                      ) : null}
                     </div>
                   </div>
 
+                  {routePreview.length > 0 ? (
+                    <div className="mt-5 flex flex-wrap gap-2">
+                      {routePreview.map((stopTitle, index) => (
+                        <span
+                          key={`${tour.id}-preview-stop-${index}`}
+                          className="rounded-full border border-violet-100 bg-violet-50/70 px-3 py-1.5 text-xs font-black text-violet-700"
+                        >
+                          {stopTitle}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
                   {selected && (
-                    <div className="mt-6 grid gap-5 border-t border-violet-100 pt-6 lg:grid-cols-[1fr_420px]">
+                    <div
+                      className="mt-6 grid gap-5 border-t border-violet-100 pt-6 lg:grid-cols-[1fr_420px]"
+                      onClick={(event) => event.stopPropagation()}
+                    >
                       <div className="space-y-4">
+                        {tour.media.length > 0 ? (
+                          <MediaPreviewStack
+                            media={tour.media}
+                            title={tour.title}
+                            expanded
+                            onOpenPreview={() => setMediaTour(tour)}
+                          />
+                        ) : null}
                         <RouteRoadmap stops={tour.routeStops} />
                         {tour.highlights.length > 0 && (
                           <div className="flex flex-wrap gap-2">
@@ -471,7 +636,7 @@ const Tours = () => {
                       <div className="rounded-[28px] border border-violet-100 bg-violet-50/60 p-5">
                         <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-600">Book now</p>
                         <div className="mt-4 space-y-3">
-                          {available ? (
+                          {hasBookableModelPricing ? (
                             <select
                               value={selectedModelId}
                               onChange={(event) => setSelectedModelId(event.target.value)}
@@ -485,7 +650,7 @@ const Tours = () => {
                             </select>
                           ) : (
                             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">
-                              Pricing is not ready for this package yet.
+                              Final model pricing is not configured yet for booking.
                             </div>
                           )}
                           <div className="grid grid-cols-2 gap-3">
@@ -509,7 +674,7 @@ const Tours = () => {
                         <button
                           type="button"
                           onClick={handleSubmit}
-                          disabled={!available || submitting}
+                          disabled={!hasBookableModelPricing || submitting}
                           className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-violet-700 px-5 py-4 text-sm font-black text-white shadow-[0_18px_35px_rgba(124,58,237,0.22)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                         >
                           {submitting ? 'Sending...' : 'Book now'}

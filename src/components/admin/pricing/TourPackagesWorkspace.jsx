@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Package2, Plus, Route, Settings2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ImageIcon, Package2, Plus, Route, Settings2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../../contexts/AuthContext';
 import { canManageTourPackages as canManageTourPackagesPermission } from '../../../utils/permissionHelpers';
@@ -17,6 +17,7 @@ import {
 } from '../../../services/tourPackagePricingService';
 import TourPackagePricingManager from './TourPackagePricingManager';
 import VehicleModelPricingService from '../../../services/VehicleModelPricingService';
+import { uploadFile } from '../../../utils/storageUpload';
 
 const TOUR_PACKAGE_RULES_MARKER = '[tour_package_rules]';
 
@@ -75,9 +76,10 @@ const PACKAGE_DURATION_OPTIONS = [1, 1.5, 2];
 const PACKAGE_CAPACITY_OPTIONS = [1, 2, 3, 4, 5, 6];
 const DEFAULT_CUSTOM_PACKAGE_DURATION = '3';
 const DEFAULT_CUSTOM_PACKAGE_CAPACITY = '7';
+const MAX_PUBLIC_TOUR_MEDIA_ITEMS = 9;
 const EDITOR_TABS = [
   { id: 'details', label: 'Details', icon: Package2 },
-  { id: 'website', label: 'Website', icon: Route },
+  { id: 'website', label: 'Website & media', icon: ImageIcon },
   { id: 'pricing', label: 'Pricing', icon: Route },
   { id: 'advanced', label: 'Advanced', icon: Settings2 },
 ];
@@ -184,6 +186,39 @@ const createMediaItem = (index = 0) => ({
   sort_order: index + 1,
 });
 
+const getPreviewMediaItems = (pkg = {}, limit = 3) => {
+  const media = [
+    ...(pkg.coverImageUrl ? [{ url: pkg.coverImageUrl, type: 'image', caption: pkg.publicTitle || pkg.name }] : []),
+    ...(Array.isArray(pkg.mediaGallery) ? pkg.mediaGallery : []),
+  ]
+    .filter((item) => item?.url)
+    .slice(0, limit);
+
+  return media;
+};
+
+const slugifyUploadSegment = (value = 'tour-package') => {
+  const segment = String(value || 'tour-package')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+
+  return segment || 'tour-package';
+};
+
+const getMediaTypeFromFile = (file) => {
+  if (file?.type?.startsWith('video/')) return 'video';
+  return 'image';
+};
+
+const getUploadCaption = (file) =>
+  String(file?.name || '')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+
 const createHighlight = (index = 0) => ({
   id: presentationId('highlight', index),
   label: '',
@@ -269,7 +304,7 @@ const buildPackagePayload = (formData) => {
       publicSummary: String(formData.publicSummary || '').trim(),
       routeLabel: String(formData.routeLabel || '').trim(),
       routeStops: normalizeRouteStops(formData.routeStops),
-      mediaGallery: normalizeMediaGallery(formData.mediaGallery).slice(0, 3),
+      mediaGallery: normalizeMediaGallery(formData.mediaGallery).slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS),
       publicHighlights: normalizeHighlights(formData.publicHighlights).slice(0, 6),
       displayOrder: Number(formData.displayOrder) || 0,
       coverImageUrl: String(formData.coverImageUrl || '').trim(),
@@ -299,7 +334,7 @@ const buildPackagePayload = (formData) => {
     publicSummary: String(formData.publicSummary || '').trim(),
     routeLabel: String(formData.routeLabel || '').trim(),
     routeStops: normalizeRouteStops(formData.routeStops),
-    mediaGallery: normalizeMediaGallery(formData.mediaGallery).slice(0, 3),
+    mediaGallery: normalizeMediaGallery(formData.mediaGallery).slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS),
     publicHighlights: normalizeHighlights(formData.publicHighlights).slice(0, 6),
     displayOrder: Number(formData.displayOrder) || 0,
     coverImageUrl: String(formData.coverImageUrl || '').trim(),
@@ -346,6 +381,9 @@ const TourPackagesWorkspace = () => {
   const [customPackageCapacity, setCustomPackageCapacity] = useState(DEFAULT_CUSTOM_PACKAGE_CAPACITY);
   const [packageExtraDurations, setPackageExtraDurations] = useState([]);
   const [editorTab, setEditorTab] = useState('details');
+  const mediaInputRef = useRef(null);
+  const [mediaUploading, setMediaUploading] = useState(false);
+  const [mediaDragActive, setMediaDragActive] = useState(false);
 
   const loadPackages = async () => {
     setPackagesLoading(true);
@@ -589,6 +627,143 @@ const TourPackagesWorkspace = () => {
     await loadPackages();
   };
 
+  const persistPackageForm = async (nextForm, successMessage = 'Package updated') => {
+    if (!editingPackageId) return null;
+
+    const payload = buildPackagePayload(nextForm);
+    const result = await updateTourPackage(editingPackageId, payload);
+    if (result.error) {
+      throw result.error;
+    }
+
+    const savedPackage = result?.data ? normalizePackage(result.data) : null;
+    if (savedPackage) {
+      setPackages((prev) => {
+        const withoutCurrent = prev.filter((pkg) => String(pkg.id) !== String(savedPackage.id));
+        return [savedPackage, ...withoutCurrent].sort((a, b) =>
+          String(a.name || '').localeCompare(String(b.name || ''))
+        );
+      });
+      setEditingPackageId(savedPackage.id);
+      setPackageForm({
+        ...packageToForm(savedPackage),
+        duration: normalizeFlexibleDuration(savedPackage.duration) || 1,
+      });
+      toast.success(successMessage);
+    }
+
+    return savedPackage;
+  };
+
+  const handleMediaFiles = async (fileList = []) => {
+    if (mediaUploading) return;
+
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (files.length === 0) return;
+
+    const supportedFiles = files.filter((file) =>
+      file?.type?.startsWith('image/') || file?.type?.startsWith('video/')
+    );
+
+    if (supportedFiles.length === 0) {
+      toast.error('Import image or video files only');
+      return;
+    }
+
+    const currentMediaCount = packageForm.mediaGallery?.length || 0;
+    const availableSlots = Math.max(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS - currentMediaCount);
+
+    if (availableSlots === 0) {
+      toast.error(`Public website media supports up to ${MAX_PUBLIC_TOUR_MEDIA_ITEMS} items`);
+      return;
+    }
+
+    const filesToUpload = supportedFiles.slice(0, availableSlots);
+    if (supportedFiles.length > filesToUpload.length) {
+      toast(`Only the first ${MAX_PUBLIC_TOUR_MEDIA_ITEMS} media items are kept for this package`);
+    }
+
+    setMediaUploading(true);
+    try {
+      const packageSegment = editingPackageId
+        ? String(editingPackageId)
+        : slugifyUploadSegment(packageForm.name || packageForm.publicTitle || 'draft-package');
+      const uploadedItems = [];
+
+      for (const file of filesToUpload) {
+        const mediaType = getMediaTypeFromFile(file);
+        const result = await uploadFile(file, {
+          bucket: 'vehicle-images',
+          pathPrefix: `tour-packages/${packageSegment}`,
+          optimizationProfile: mediaType === 'image' ? 'photo' : null,
+        });
+
+        if (!result?.success || !result?.url) {
+          throw new Error(result?.error || `Could not upload ${file.name || 'media file'}`);
+        }
+
+        const itemIndex = currentMediaCount + uploadedItems.length;
+        uploadedItems.push({
+          ...createMediaItem(itemIndex),
+          type: mediaType,
+          url: result.url,
+          caption: getUploadCaption(file),
+          sort_order: itemIndex + 1,
+        });
+      }
+
+      const nextForm = (() => {
+        const firstUploadedImage = uploadedItems.find((item) => item.type === 'image');
+        return {
+          ...packageForm,
+          coverImageUrl: packageForm.coverImageUrl || firstUploadedImage?.url || packageForm.coverImageUrl,
+          mediaGallery: [...(packageForm.mediaGallery || []), ...uploadedItems].slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS),
+        };
+      })();
+
+      setPackageForm(nextForm);
+
+      if (editingPackageId) {
+        await persistPackageForm(
+          nextForm,
+          `${uploadedItems.length} media item${uploadedItems.length === 1 ? '' : 's'} imported`
+        );
+      } else {
+        toast.success(`${uploadedItems.length} media item${uploadedItems.length === 1 ? '' : 's'} imported`);
+      }
+    } catch (error) {
+      console.error('Tour package media upload failed:', error);
+      toast.error(error.message || 'Could not import media');
+    } finally {
+      setMediaUploading(false);
+      setMediaDragActive(false);
+      if (mediaInputRef.current) {
+        mediaInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleMediaDrop = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setMediaDragActive(false);
+    handleMediaFiles(event.dataTransfer?.files || []);
+  };
+
+  const handleMediaDragOver = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!mediaUploading) {
+      setMediaDragActive(true);
+    }
+  };
+
+  const handleMediaDragLeave = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setMediaDragActive(false);
+  };
+
   const handleDeletePackage = async (pkgId) => {
     if (!canManagePackages) {
       toast.error('Only admin or owner can delete tour packages');
@@ -610,9 +785,10 @@ const TourPackagesWorkspace = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="space-y-6 rounded-[2rem] bg-slate-200/70 p-5 shadow-inner shadow-slate-300/30 sm:p-7">
+      <div className={`grid gap-6 ${packageEditorOpen ? 'xl:grid-cols-1' : 'xl:grid-cols-[340px_minmax(0,1fr)]'}`}>
+        {!packageEditorOpen && (
+        <section className="rounded-[1.75rem] border border-white bg-white p-4 shadow-[0_16px_40px_rgba(15,23,42,0.08)] sm:p-5">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Packages</p>
@@ -624,7 +800,7 @@ const TourPackagesWorkspace = () => {
               <button
                 type="button"
                 onClick={() => handleOpenPackageEditor()}
-                className="inline-flex items-center gap-2 rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50 to-indigo-50 px-4 py-3 text-sm font-medium text-violet-700 transition hover:from-violet-100 hover:to-indigo-100"
+                className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-sm shadow-violet-100 transition hover:bg-violet-700"
               >
                 <Plus className="h-4 w-4" />
                 Add Package
@@ -634,15 +810,16 @@ const TourPackagesWorkspace = () => {
 
           <div className="mt-5 space-y-3">
             {packagesLoading ? (
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-slate-500">Loading packages...</div>
+              <div className="rounded-3xl border border-slate-100 bg-slate-50/70 p-6 text-sm font-semibold text-slate-500">Loading packages...</div>
             ) : packages.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-slate-500">
+              <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50/70 p-6 text-sm font-semibold text-slate-500">
                 No package yet. Add your first city or mountain offer here.
               </div>
             ) : (
               packages.map((pkg) => {
                 const readiness = getPackageReadiness(pkg);
                 const modelPriceHighlights = getPackageModelPriceHighlights(pkg);
+                const previewMedia = getPreviewMediaItems(pkg, 3);
                 const readinessClasses = readiness.tone === 'ready'
                   ? 'bg-emerald-100 text-emerald-700'
                   : readiness.tone === 'partial'
@@ -652,33 +829,42 @@ const TourPackagesWorkspace = () => {
                 return (
                   <article
                     key={pkg.id}
-                    className={`rounded-2xl border p-4 shadow-sm transition ${
+                    className={`relative overflow-hidden rounded-3xl border p-4 transition ${
                       String(editingPackageId) === String(pkg.id)
-                        ? 'border-violet-300 bg-violet-50/60'
-                        : 'border-violet-200/60 bg-gradient-to-br from-white via-white to-violet-50/30'
+                        ? 'border-violet-200 bg-white shadow-sm shadow-violet-100/70'
+                        : 'border-slate-300/70 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)] hover:border-violet-200 hover:shadow-violet-100/70'
                     }`}
                   >
+                    {String(editingPackageId) === String(pkg.id) ? (
+                      <span className="absolute inset-y-4 left-0 w-1 rounded-r-full bg-violet-300" />
+                    ) : null}
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="truncate text-lg font-semibold text-slate-900">{pkg.name}</h3>
-                          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${pkg.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                          <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${pkg.is_active ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
                             {pkg.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                          <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${pkg.websiteVisible ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                            {pkg.websiteVisible ? 'Public' : 'Internal'}
                           </span>
                         </div>
                         <div className="mt-3 flex flex-wrap gap-2">
-                          <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
+                          <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-bold text-violet-800">
                             {formatDurationLabel(pkg.duration)}
                           </span>
-                          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold capitalize text-slate-700">
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold capitalize text-slate-700">
                             {pkg.routeType}
                           </span>
-                          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700">
                             {getPackagePricingBadge(pkg)}
+                          </span>
+                          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-500">
+                            {pkg.mediaGallery?.length || 0} media
                           </span>
                         </div>
                       </div>
-                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${readinessClasses}`}>
+                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${readinessClasses}`}>
                         {readiness.label}
                       </span>
                     </div>
@@ -688,8 +874,37 @@ const TourPackagesWorkspace = () => {
                       <span className="truncate text-right">{readiness.note}</span>
                     </div>
 
+                    {previewMedia.length > 0 ? (
+                      <div className="mt-4 flex items-center gap-3 rounded-2xl border border-violet-100 bg-violet-50/40 p-3">
+                        <div className="relative h-16 w-[122px] shrink-0">
+                          {previewMedia.map((item, index) => {
+                            const rotateClass = index === 0 ? '-rotate-6' : index === 1 ? 'rotate-0' : 'rotate-6';
+                            const offsetClass = index === 0 ? 'left-0 top-2' : index === 1 ? 'left-5 top-1' : 'left-10 top-0';
+                            return (
+                              <div
+                                key={`${pkg.id}-preview-${item.url}-${index}`}
+                                className={`absolute ${offsetClass} h-12 w-16 overflow-hidden rounded-2xl border border-white bg-slate-100 shadow-[0_8px_20px_rgba(15,23,42,0.16)] ${rotateClass}`}
+                              >
+                                {item.type === 'video' ? (
+                                  <video src={item.url} muted playsInline className="h-full w-full object-cover" />
+                                ) : (
+                                  <img src={item.url} alt={item.caption || pkg.name} className="h-full w-full object-cover" />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-violet-600">Website media</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-700">
+                            {previewMedia.length} preview item{previewMedia.length === 1 ? '' : 's'}
+                          </p>
+                        </div>
+                      </div>
+                    ) : null}
+
                     {modelPriceHighlights.length > 0 ? (
-                      <div className="mt-4 rounded-xl border border-violet-100 bg-white/80 p-3">
+                      <div className="mt-4 rounded-2xl border border-violet-100 bg-violet-50/40 p-3">
                         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
                           Vehicle pricing
                         </p>
@@ -697,7 +912,7 @@ const TourPackagesWorkspace = () => {
                           {modelPriceHighlights.map((item) => (
                             <span
                               key={`${pkg.id}-${item.modelId}`}
-                              className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700"
+                              className="rounded-full border border-violet-100 bg-white px-3 py-1 text-xs font-bold text-violet-700"
                             >
                               {item.label} • {item.price.toLocaleString('en-MA')} MAD
                             </span>
@@ -710,7 +925,7 @@ const TourPackagesWorkspace = () => {
                       <button
                         type="button"
                         onClick={() => handleOpenPackageEditor(pkg)}
-                        className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                        className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
                       >
                         Open
                       </button>
@@ -722,14 +937,14 @@ const TourPackagesWorkspace = () => {
                               handleOpenPackageEditor(pkg);
                               setEditorTab('details');
                             }}
-                            className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-medium text-violet-700 transition hover:bg-violet-100"
+                            className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
                           >
                             Edit
                           </button>
                           <button
                             type="button"
                             onClick={() => handleDeletePackage(pkg.id)}
-                            className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-medium text-rose-700 transition hover:bg-rose-100"
+                            className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-bold text-rose-700 transition hover:bg-rose-100"
                           >
                             Delete
                           </button>
@@ -742,8 +957,9 @@ const TourPackagesWorkspace = () => {
             )}
           </div>
         </section>
+        )}
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="rounded-[1.75rem] border border-white bg-white p-4 shadow-[0_18px_48px_rgba(15,23,42,0.09)] sm:p-5">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">
@@ -759,9 +975,9 @@ const TourPackagesWorkspace = () => {
               <button
                 type="button"
                 onClick={resetEditor}
-                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                className="rounded-2xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-sm shadow-violet-100 transition hover:bg-violet-700"
               >
-                Close
+                Back to packages
               </button>
             )}
           </div>
@@ -776,7 +992,7 @@ const TourPackagesWorkspace = () => {
             </div>
           ) : (
             <div className="mt-6 space-y-5">
-              <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+              <div className="rounded-[1.5rem] border border-violet-100 bg-violet-50/70 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.03)]">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -806,7 +1022,36 @@ const TourPackagesWorkspace = () => {
                       </div>
                     ) : null}
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-4">
+                    <button
+                      type="button"
+                      onClick={() => setEditorTab('website')}
+                      className="rounded-2xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300 hover:bg-violet-50"
+                    >
+                      <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-violet-500">Website</p>
+                      <p className="mt-2 text-sm font-black text-slate-900">{packageForm.websiteVisible ? 'Public' : 'Internal'}</p>
+                      <p className="mt-1 text-xs font-semibold text-slate-500">{packageForm.mediaGallery.length} media item{packageForm.mediaGallery.length === 1 ? '' : 's'}</p>
+                      {getPreviewMediaItems(packageForm, 3).length > 0 ? (
+                        <div className="relative mt-3 h-14 w-[110px]">
+                          {getPreviewMediaItems(packageForm, 3).map((item, index) => {
+                            const rotateClass = index === 0 ? '-rotate-6' : index === 1 ? 'rotate-0' : 'rotate-6';
+                            const offsetClass = index === 0 ? 'left-0 top-2' : index === 1 ? 'left-4 top-1' : 'left-8 top-0';
+                            return (
+                              <div
+                                key={`editor-preview-${item.url}-${index}`}
+                                className={`absolute ${offsetClass} h-11 w-14 overflow-hidden rounded-xl border border-white bg-slate-100 shadow-[0_8px_20px_rgba(15,23,42,0.16)] ${rotateClass}`}
+                              >
+                                {item.type === 'video' ? (
+                                  <video src={item.url} muted playsInline className="h-full w-full object-cover" />
+                                ) : (
+                                  <img src={item.url} alt={item.caption || packageForm.name} className="h-full w-full object-cover" />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </button>
                     <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
                       <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Price from</p>
                       <p className="mt-2 text-lg font-semibold text-slate-900">
@@ -825,7 +1070,7 @@ const TourPackagesWorkspace = () => {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2">
+              <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-200/70">
                 <div className="grid gap-2 md:grid-cols-4">
                   {EDITOR_TABS.map((tab) => {
                     const Icon = tab.icon;
@@ -836,7 +1081,7 @@ const TourPackagesWorkspace = () => {
                         type="button"
                         onClick={() => setEditorTab(tab.id)}
                         className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition ${
-                          active ? 'bg-violet-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100'
+                          active ? 'bg-violet-600 text-white shadow-sm shadow-violet-100' : 'border border-slate-200 bg-slate-50 text-slate-600 hover:bg-white hover:text-violet-700'
                         }`}
                       >
                         <Icon className="h-4 w-4" />
@@ -847,12 +1092,13 @@ const TourPackagesWorkspace = () => {
                 </div>
               </div>
 
+              <div className="rounded-[1.75rem] border border-slate-200 bg-slate-100/80 p-4 shadow-inner shadow-slate-300/60 sm:p-5">
               {editorTab === 'details' && (
                 <div className="space-y-5">
-                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+                  <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
                     <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Basics</p>
                     <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
                         <label className="text-sm font-semibold text-slate-700">Package Name</label>
                         <input
                           type="text"
@@ -862,7 +1108,7 @@ const TourPackagesWorkspace = () => {
                           placeholder="City Tour - 1 Hour"
                         />
                       </div>
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
                         <label className="text-sm font-semibold text-slate-700">Location</label>
                         <input
                           type="text"
@@ -873,7 +1119,7 @@ const TourPackagesWorkspace = () => {
                         />
                       </div>
                     </div>
-                    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-5">
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
                       <label className="text-sm font-semibold text-slate-700">Description</label>
                       <textarea
                         value={packageForm.description}
@@ -885,10 +1131,10 @@ const TourPackagesWorkspace = () => {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+                  <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
                     <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Route Setup</p>
                     <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
                         <label className="text-sm font-semibold text-slate-700">Duration</label>
                         <div className="mt-4 grid grid-cols-2 gap-3">
                           {packageDurationChoices.map((hours) => (
@@ -941,7 +1187,7 @@ const TourPackagesWorkspace = () => {
                       </div>
 
                       <div className="space-y-4">
-                        <div className="rounded-xl border border-slate-200 bg-white p-5">
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
                           <label className="text-sm font-semibold text-slate-700">License Rule</label>
                           <div className="mt-4 grid grid-cols-2 gap-3">
                             <button
@@ -969,7 +1215,7 @@ const TourPackagesWorkspace = () => {
                           </div>
                         </div>
 
-                        <div className="rounded-xl border border-slate-200 bg-white p-5">
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
                           <label className="text-sm font-semibold text-slate-700">Route Type</label>
                           <div className="mt-4 grid grid-cols-2 gap-3">
                             {['city', 'mountain', 'road', 'mixed'].map((routeType) => (
@@ -989,7 +1235,7 @@ const TourPackagesWorkspace = () => {
                           </div>
                         </div>
 
-                        <div className="rounded-xl border border-slate-200 bg-white p-5">
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
                           <label className="text-sm font-semibold text-slate-700">Maximum Quads</label>
                           <div className="mt-4 grid grid-cols-2 gap-3 xl:grid-cols-3">
                             {PACKAGE_CAPACITY_OPTIONS.map((count) => (
@@ -1040,112 +1286,185 @@ const TourPackagesWorkspace = () => {
 
               {editorTab === 'website' && (
                 <div className="space-y-5">
-                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
-                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Basic package info</p>
+                  <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Website preview</p>
+                        <h3 className="mt-2 text-xl font-black text-slate-950">Public package content</h3>
+                      </div>
+                      <label className="flex items-center justify-between gap-4 rounded-2xl border border-violet-100 bg-violet-50/70 px-4 py-3">
+                        <span>
+                          <span className="block text-xs font-black uppercase tracking-[0.14em] text-violet-500">Visibility</span>
+                          <span className="mt-1 block text-sm font-bold text-slate-900">{packageForm.websiteVisible ? 'Visible on website' : 'Internal only'}</span>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={packageForm.websiteVisible}
+                          onChange={(event) => setPackageForm((prev) => ({ ...prev, websiteVisible: event.target.checked }))}
+                          className="h-5 w-5 rounded border-slate-300 text-violet-700 focus:ring-violet-500"
+                        />
+                      </label>
+                    </div>
                     <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                         <label className="text-sm font-semibold text-slate-700">Public title</label>
                         <input
                           type="text"
                           value={packageForm.publicTitle}
                           onChange={(event) => setPackageForm((prev) => ({ ...prev, publicTitle: event.target.value }))}
-                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
                           placeholder="Premium Tangier Route"
                         />
                       </div>
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                         <label className="text-sm font-semibold text-slate-700">Route type</label>
                         <input
                           type="text"
                           value={packageForm.routeLabel}
                           onChange={(event) => setPackageForm((prev) => ({ ...prev, routeLabel: event.target.value }))}
-                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
                           placeholder="Coastal circuit"
                         />
                       </div>
                     </div>
                     <div className="mt-4 grid gap-4 md:grid-cols-3">
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                         <label className="text-sm font-semibold text-slate-700">Duration display</label>
                         <input
                           type="text"
                           value={packageForm.durationDisplay}
                           onChange={(event) => setPackageForm((prev) => ({ ...prev, durationDisplay: event.target.value }))}
-                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
+                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
                           placeholder="1 hour"
                         />
                       </div>
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                         <label className="text-sm font-semibold text-slate-700">Display order</label>
                         <input
                           type="number"
                           value={packageForm.displayOrder}
                           onChange={(event) => setPackageForm((prev) => ({ ...prev, displayOrder: event.target.value }))}
-                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
+                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
                         />
                       </div>
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                         <label className="text-sm font-semibold text-slate-700">Difficulty label</label>
                         <input
                           type="text"
                           value={packageForm.difficultyLabel}
                           onChange={(event) => setPackageForm((prev) => ({ ...prev, difficultyLabel: event.target.value }))}
-                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
+                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
                           placeholder="Easy"
                         />
                       </div>
                     </div>
-                    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-5">
+                    <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                       <label className="text-sm font-semibold text-slate-700">Short public summary</label>
                       <textarea
                         value={packageForm.publicSummary}
                         onChange={(event) => setPackageForm((prev) => ({ ...prev, publicSummary: event.target.value }))}
                         rows={3}
                         maxLength={360}
-                        className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
+                        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
                         placeholder="A clean one-line description for the public website."
                       />
                     </div>
-                    <label className="mt-4 flex items-center justify-between rounded-xl border border-slate-200 bg-white p-5">
-                      <span>
-                        <span className="block text-sm font-semibold text-slate-700">Website visible</span>
-                        <span className="mt-1 block text-xs font-medium text-slate-500">Show this package on the public Tours website.</span>
-                      </span>
-                      <input
-                        type="checkbox"
-                        checked={packageForm.websiteVisible}
-                        onChange={(event) => setPackageForm((prev) => ({ ...prev, websiteVisible: event.target.checked }))}
-                        className="h-5 w-5 rounded border-slate-300 text-violet-700 focus:ring-violet-500"
-                      />
-                    </label>
                   </div>
 
-                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
-                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Cover and media</p>
-                    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-5">
+                  <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Cover and preview media</p>
+                        <h3 className="mt-2 text-xl font-black text-slate-950">What guests see first</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => mediaInputRef.current?.click()}
+                        disabled={mediaUploading}
+                        className="rounded-2xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-sm shadow-violet-100 transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-300"
+                      >
+                        {mediaUploading ? 'Importing...' : 'Import media'}
+                      </button>
+                    </div>
+                    <input
+                      ref={mediaInputRef}
+                      type="file"
+                      accept="image/*,video/*"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => handleMediaFiles(event.target.files)}
+                    />
+                    <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                       <label className="text-sm font-semibold text-slate-700">Cover image URL</label>
                       <input
                         type="url"
                         value={packageForm.coverImageUrl}
                         onChange={(event) => setPackageForm((prev) => ({ ...prev, coverImageUrl: event.target.value }))}
-                        className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
+                        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
                         placeholder="https://..."
                       />
                     </div>
-                    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-5">
+                    <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-slate-700">Preview media</p>
-                          <p className="mt-1 text-xs font-medium text-slate-500">Keep public preview tight: 2-3 items work best.</p>
+                          <p className="mt-1 text-xs font-medium text-slate-500">Add up to 9 website media items. The card keeps a compact stacked preview.</p>
                         </div>
                         <button
                           type="button"
-                          onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: [...prev.mediaGallery, createMediaItem(prev.mediaGallery.length)] }))}
-                          className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+                          onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: [...prev.mediaGallery, createMediaItem(prev.mediaGallery.length)].slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS) }))}
+                          disabled={packageForm.mediaGallery.length >= MAX_PUBLIC_TOUR_MEDIA_ITEMS}
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Add media
+                          Add URL
                         </button>
                       </div>
+                      {getPreviewMediaItems(packageForm, MAX_PUBLIC_TOUR_MEDIA_ITEMS).length > 0 ? (
+                        <div className="mt-4 overflow-x-auto pb-1">
+                          <div className="flex min-w-max gap-3">
+                            {getPreviewMediaItems(packageForm, MAX_PUBLIC_TOUR_MEDIA_ITEMS).map((item, index) => (
+                              <div
+                                key={`website-media-inline-${item.url}-${index}`}
+                                className="group relative h-24 w-24 overflow-hidden rounded-2xl border border-violet-100 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
+                              >
+                                {item.type === 'video' ? (
+                                  <video src={item.url} muted playsInline className="h-full w-full object-cover" />
+                                ) : (
+                                  <img src={item.url} alt={item.caption || packageForm.name || 'Tour media'} className="h-full w-full object-cover" />
+                                )}
+                                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/70 to-transparent px-2 pb-2 pt-6">
+                                  <p className="truncate text-[10px] font-bold text-white">
+                                    {item.caption || (item.type === 'video' ? 'Video preview' : `Media ${index + 1}`)}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => mediaInputRef.current?.click()}
+                        onDrop={handleMediaDrop}
+                        onDragOver={handleMediaDragOver}
+                        onDragLeave={handleMediaDragLeave}
+                        disabled={mediaUploading || packageForm.mediaGallery.length >= MAX_PUBLIC_TOUR_MEDIA_ITEMS}
+                        className={`mt-4 flex w-full flex-col items-center justify-center rounded-2xl border border-dashed px-5 py-7 text-center transition ${
+                          mediaDragActive
+                            ? 'border-violet-400 bg-violet-100/80 shadow-inner shadow-violet-200/50'
+                            : 'border-violet-200 bg-white hover:border-violet-300 hover:bg-violet-50/70'
+                        } disabled:cursor-not-allowed disabled:opacity-60`}
+                      >
+                        <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-100 text-violet-700">
+                          <ImageIcon size={20} />
+                        </span>
+                        <span className="mt-3 text-sm font-black text-slate-900">
+                          {mediaUploading ? 'Importing media...' : 'Drop media here or click to import'}
+                        </span>
+                        <span className="mt-1 max-w-md text-xs font-medium text-slate-500">
+                          Upload images or videos for the public preview. The first imported image becomes the cover if no cover is set.
+                        </span>
+                      </button>
                       <div className="mt-4 space-y-3">
                         {packageForm.mediaGallery.length === 0 ? (
                           <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm font-medium text-slate-500">No media preview items yet.</div>
@@ -1186,16 +1505,16 @@ const TourPackagesWorkspace = () => {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+                  <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Route roadmap</p>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Route roadmap</p>
                         <p className="mt-2 text-xs font-medium text-slate-500">Simple public timeline nodes. Keep it short and operational.</p>
                       </div>
                       <button
                         type="button"
                         onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: [...prev.routeStops, createRouteStop(prev.routeStops.length)] }))}
-                        className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+                        className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
                       >
                         Add stop
                       </button>
@@ -1250,16 +1569,16 @@ const TourPackagesWorkspace = () => {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+                  <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Public highlights</p>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Public highlights</p>
                         <p className="mt-2 text-xs font-medium text-slate-500">Short labels only. These become compact chips on the public tour page.</p>
                       </div>
                       <button
                         type="button"
                         onClick={() => setPackageForm((prev) => ({ ...prev, publicHighlights: [...prev.publicHighlights, createHighlight(prev.publicHighlights.length)] }))}
-                        className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+                        className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
                       >
                         Add highlight
                       </button>
@@ -1286,22 +1605,25 @@ const TourPackagesWorkspace = () => {
               )}
 
               {editorTab === 'pricing' && (
-                <TourPackagePricingManager
-                  embedded
-                  showPackagePicker={false}
-                  selectedPackageId={editingPackageId || GLOBAL_TOUR_PRICING_KEY}
-                  selectedPackage={selectedPackagePreview}
-                  allowedDurations={[packageForm.duration]}
-                />
+                <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.07)] sm:p-5">
+                  <TourPackagePricingManager
+                    embedded
+                    showPackagePicker={false}
+                    selectedPackageId={editingPackageId || GLOBAL_TOUR_PRICING_KEY}
+                    selectedPackage={selectedPackagePreview}
+                    allowedDurations={[packageForm.duration]}
+                  />
+                </div>
               )}
 
               {editorTab === 'advanced' && (
                 <div className="grid gap-5 xl:grid-cols-2">
-                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
-                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Buffers</p>
+                  <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Schedule buffers</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-500">These rules block time before and after a tour so operations do not overlap.</p>
                     <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
-                        <label className="text-sm font-semibold text-slate-700">Buffer Before</label>
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+                        <label className="text-sm font-semibold text-slate-700">Buffer before departure</label>
                         <input
                           type="number"
                           min="0"
@@ -1312,9 +1634,10 @@ const TourPackagesWorkspace = () => {
                           }
                           className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
                         />
+                        <p className="mt-2 text-xs font-semibold text-slate-500">Minutes before start time.</p>
                       </div>
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
-                        <label className="text-sm font-semibold text-slate-700">Buffer After</label>
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+                        <label className="text-sm font-semibold text-slate-700">Buffer after return</label>
                         <input
                           type="number"
                           min="0"
@@ -1325,14 +1648,16 @@ const TourPackagesWorkspace = () => {
                           }
                           className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
                         />
+                        <p className="mt-2 text-xs font-semibold text-slate-500">Minutes after scheduled end.</p>
                       </div>
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
-                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Visibility</p>
+                  <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Availability controls</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-500">Active controls operations. Website visible controls public discovery.</p>
                     <div className="mt-4 grid gap-4">
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                         <label className="text-sm font-semibold text-slate-700">Package status</label>
                         <div className="mt-4 grid grid-cols-2 gap-3">
                           <button
@@ -1359,7 +1684,7 @@ const TourPackagesWorkspace = () => {
                           </button>
                         </div>
                       </div>
-                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
                         <label className="text-sm font-semibold text-slate-700">Website visibility</label>
                         <div className="mt-4 grid grid-cols-2 gap-3">
                           <button
@@ -1390,6 +1715,7 @@ const TourPackagesWorkspace = () => {
                   </div>
                 </div>
               )}
+              </div>
 
               <div className="sticky bottom-4 z-10 rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-lg backdrop-blur">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">

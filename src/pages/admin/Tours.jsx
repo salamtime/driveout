@@ -3182,7 +3182,7 @@ const ToursPage = () => {
 
       {activeTab === 'bookings' && (
         <div className="space-y-6 pb-32 sm:pb-24">
-          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <section className="rounded-[1.75rem] border border-white bg-white p-5 shadow-[0_18px_48px_rgba(15,23,42,0.09)] sm:p-6">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Book Tour', 'Réserver un tour')}</p>
@@ -3190,23 +3190,24 @@ const ToursPage = () => {
                   {canSelectTourGuide ? tr('Fast booking', 'Réservation rapide') : tr('Tour booking', 'Réservation de tour')}
                 </h1>
               </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="rounded-lg bg-gradient-to-br from-slate-100 to-white px-4 py-3 text-center ring-1 ring-slate-200/80">
+              <div className="grid grid-cols-3 gap-3 rounded-[1.4rem] border border-slate-200 bg-slate-50/90 p-2 shadow-inner shadow-slate-200/60">
+                <div className="rounded-xl bg-white px-4 py-3 text-center ring-1 ring-slate-200/80 shadow-sm">
                   <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500 whitespace-nowrap">{tr('Free Now', 'Libre maintenant')}</p>
                   <p className="mt-1 text-2xl font-semibold text-slate-900">{fleetStats.freeNow}</p>
                 </div>
-                <div className="rounded-lg bg-violet-50 px-4 py-3 text-center ring-1 ring-violet-200/80">
+                <div className="rounded-xl bg-white px-4 py-3 text-center ring-1 ring-violet-200/80 shadow-sm">
                   <p className="text-[11px] font-medium uppercase tracking-wide text-violet-600 whitespace-nowrap">{tr('Capacity', 'Capacité')}</p>
                   <p className="mt-1 text-2xl font-semibold text-violet-900">{fleetStats.total}</p>
                 </div>
-                <div className="rounded-lg bg-indigo-50 px-4 py-3 text-center ring-1 ring-indigo-200/80">
+                <div className="rounded-xl bg-white px-4 py-3 text-center ring-1 ring-indigo-200/80 shadow-sm">
                   <p className="text-[11px] font-medium uppercase tracking-wide text-indigo-600 whitespace-nowrap">{tr('Reserved', 'Réservé')}</p>
                   <p className="mt-1 text-2xl font-semibold text-indigo-900">{fleetStats.reserved}</p>
                 </div>
               </div>
             </div>
 
-            <div className="mt-5 grid grid-cols-3 gap-2">
+            <div className="mt-5 rounded-[1.5rem] border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-200/70">
+            <div className="grid grid-cols-3 gap-2">
               {[
                 { id: 1, label: tr('Package & Time', 'Forfait & heure'), icon: Route },
                 { id: 2, label: tr('Guest & Guide', 'Client & guide'), icon: Users },
@@ -3224,10 +3225,10 @@ const ToursPage = () => {
                     }}
                     className={`rounded-lg px-4 py-3 text-left transition-colors ${
                       active
-                        ? 'bg-violet-100 text-violet-900'
+                        ? 'bg-white text-violet-900 ring-1 ring-violet-200 shadow-sm'
                         : done
                           ? 'bg-violet-50 text-violet-700 ring-1 ring-violet-200'
-                          : 'bg-slate-100 text-slate-500'
+                          : 'bg-white text-slate-500 ring-1 ring-slate-200'
                     }`}
                   >
                     <div className="flex items-center gap-2">
@@ -3239,12 +3240,14 @@ const ToursPage = () => {
                 );
               })}
             </div>
+            </div>
           </section>
 
+          <div className="rounded-[1.85rem] border border-slate-200 bg-slate-100/80 p-4 shadow-inner shadow-slate-300/60 sm:p-5">
           <div className="space-y-6">
 
             {bookingStep === 1 && (
-              <section className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <section className="space-y-6 rounded-[1.6rem] border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Step 1', 'Étape 1')}</p>
@@ -3268,7 +3271,7 @@ const ToursPage = () => {
 
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {packagesLoading ? (
-                    <div className="col-span-full rounded-xl border border-slate-200 bg-slate-50 p-6 text-slate-500">{tr('Loading packages...', 'Chargement des forfaits...')}</div>
+                    <div className="col-span-full rounded-2xl border border-slate-200 bg-slate-50/80 p-6 text-slate-500">{tr('Loading packages...', 'Chargement des forfaits...')}</div>
                   ) : (
                     packages.map((pkg) => {
                       const selected = String(pkg.id) === String(bookingForm.packageId);
@@ -3281,10 +3284,10 @@ const ToursPage = () => {
                             updateBookingForm('packageId', pkg.id);
                             updateBookingForm('quadCount', Math.min(Number(bookingForm.quadCount || 1), Number(pkg.maxQuads || 5)));
                           }}
-                          className={`rounded-xl border-2 p-5 text-left transition-all ${
+                          className={`rounded-[1.6rem] border-2 p-5 text-left transition-all ${
                             selected
-                              ? 'border-violet-500 bg-violet-50/60 shadow-md'
-                              : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/20'
+                              ? 'border-violet-400 bg-white shadow-[0_18px_40px_rgba(79,70,229,0.14)] ring-4 ring-violet-100'
+                              : 'border-slate-200 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.05)] hover:border-violet-200 hover:bg-violet-50/20'
                           }`}
                         >
                           <div className="flex items-start justify-between gap-3">
@@ -3344,7 +3347,7 @@ const ToursPage = () => {
                 </div>
 
                 <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-                  <div className="rounded-xl bg-slate-50 p-5">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                     <label className="text-sm font-semibold text-slate-700">{tr('Tour Date', 'Date du tour')}</label>
                     <input
                       type="date"
@@ -3355,7 +3358,7 @@ const ToursPage = () => {
                     />
                   </div>
 
-                  <div className="rounded-xl bg-slate-50 p-5">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                     <div className="flex items-center justify-between gap-3">
                       <label className="text-sm font-semibold text-slate-700">{tr('Departure Time', 'Heure de départ')}</label>
                       <span className="rounded-full bg-white px-3 py-1 text-xs font-medium uppercase tracking-[0.12em] text-slate-600">
@@ -3408,7 +3411,7 @@ const ToursPage = () => {
                   </div>
                 </div>
 
-                <div className="rounded-xl bg-slate-50 p-5">
+                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                   <label className="text-sm font-semibold text-slate-700">{tr('How many quads?', 'Combien de quads ?')}</label>
                   <div className="mt-3 grid grid-cols-5 gap-3">
                     {Array.from({ length: Number(currentPackage?.maxQuads || 5) }, (_, index) => index + 1).map((count) => (
@@ -3426,7 +3429,7 @@ const ToursPage = () => {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
+                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div>
                       <label className="text-sm font-semibold text-slate-700">{tr('Choose quad models', 'Choisir les modèles de quad')}</label>
@@ -3462,7 +3465,7 @@ const ToursPage = () => {
                         return (
                           <div
                             key={group.modelId}
-                            className="rounded-lg border border-slate-200 bg-white p-4"
+                            className="rounded-xl border border-slate-200 bg-slate-50/70 p-4"
                             onClick={() => {
                               if (!departureTimeSelected) {
                                 toast('Choose a departure time first.', { icon: '🕒' });
@@ -3550,7 +3553,7 @@ const ToursPage = () => {
                   )}
 
                   <div className="mt-4 grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
-                    <div className="rounded-lg bg-white p-4">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
                       {bookingPricingLines.length > 0 ? (
                         <div className="mt-3 space-y-2">
                           {bookingPricingLines.map((line) => (
@@ -3604,13 +3607,13 @@ const ToursPage = () => {
             )}
 
             {bookingStep === 2 && (
-              <section className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <section className="space-y-6 rounded-[1.6rem] border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
                 <div>
                   <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Step 2', 'Étape 2')}</p>
                   <h3 className="mt-2 text-xl font-semibold text-slate-900">{tr('Drivers and guide details', 'Détails des conducteurs et du guide')}</h3>
                 </div>
 
-                <div className="rounded-xl bg-slate-50 p-5">
+                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                   <label className="text-sm font-semibold text-slate-700">{tr('Total Riders', 'Total passagers')}</label>
                   <div className="mt-3 grid grid-cols-5 gap-3">
                     {Array.from({ length: Math.max(Number(bookingForm.quadCount || 1) * 2, 2) }, (_, index) => index + 1).map((count) => (
@@ -3630,7 +3633,7 @@ const ToursPage = () => {
                 </div>
 
                 {canSelectTourGuide ? (
-                  <div className="rounded-xl bg-slate-50 p-5">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                     <label className="text-sm font-semibold text-slate-700">{tr('Choose Tour Guide', 'Choisir un guide de tour')}</label>
                     <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       {guidesLoading ? (
@@ -3655,7 +3658,7 @@ const ToursPage = () => {
                     </div>
                   </div>
                 ) : (
-                  <div className="rounded-xl bg-slate-50 p-5">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                     <p className="text-sm font-semibold text-slate-700">Booking Account</p>
                     <div className="mt-3 rounded-lg border border-slate-200 bg-white px-4 py-4">
                       <p className="font-semibold text-slate-900">{currentUserDisplayName}</p>
@@ -3666,7 +3669,7 @@ const ToursPage = () => {
                   </div>
                 )}
 
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
+                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                   <div className="flex items-start gap-3">
                     <Users className="mt-1 h-5 w-5 text-slate-700" />
                     <div className="flex-1">
@@ -3702,7 +3705,7 @@ const ToursPage = () => {
                       })}
                     </div>
 
-                    <section className="rounded-xl border border-violet-100 bg-white p-5">
+                    <section className="rounded-[1.45rem] border border-violet-100 bg-slate-50/70 p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                         <div>
                           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-400">Quad {activeDriverQuadIndex + 1}</p>
@@ -3714,7 +3717,7 @@ const ToursPage = () => {
                       </div>
 
                       <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-                        <div className="rounded-lg bg-slate-50 p-4">
+                        <div className="rounded-xl border border-slate-200 bg-white p-4">
                           <label className="text-sm font-semibold text-slate-700">Driver Name</label>
                           <input
                             type="text"
@@ -3784,7 +3787,7 @@ const ToursPage = () => {
                             </p>
                           )}
                         </div>
-                        <div className="rounded-lg bg-slate-50 p-4">
+                        <div className="rounded-xl border border-slate-200 bg-white p-4">
                           <PhoneInputWithCountryCode
                             value={activePrimaryDriver.whatsapp || ''}
                             onChange={(value) => updatePrimaryDriver(activeDriverQuadIndex, 'whatsapp', value)}
@@ -3797,7 +3800,7 @@ const ToursPage = () => {
                             </p>
                           ) : null}
                         </div>
-                        <div className="rounded-lg bg-slate-50 p-4">
+                        <div className="rounded-xl border border-slate-200 bg-white p-4">
                           <label className="text-sm font-semibold text-slate-700">{tr('Email', 'E-mail')}</label>
                           <input
                             type="email"
@@ -3810,7 +3813,7 @@ const ToursPage = () => {
                             {tr('Optional if WhatsApp is entered.', "Optionnel si WhatsApp est renseigné.")}
                           </p>
                         </div>
-                        <div className="rounded-lg bg-slate-50 p-4">
+                        <div className="rounded-xl border border-slate-200 bg-white p-4">
                           <label className="text-sm font-semibold text-slate-700">{tr('Driver License', 'Permis conducteur')}</label>
                           <input
                             type="text"
@@ -3820,7 +3823,7 @@ const ToursPage = () => {
                             placeholder={currentPackage?.requiresLicense ? tr('Required for this route', 'Requis pour cet itinéraire') : tr('Optional', 'Optionnel')}
                           />
                         </div>
-                        <div className="rounded-lg bg-slate-50 p-4">
+                        <div className="rounded-xl border border-slate-200 bg-white p-4">
                           <label className="text-sm font-semibold text-slate-700">{tr('ID Number', "Numéro d'identité")}</label>
                           <input
                             type="text"
@@ -3832,7 +3835,7 @@ const ToursPage = () => {
                         </div>
                       </div>
 
-                      <div className="mt-4 rounded-lg bg-slate-50 p-4">
+                      <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
                         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                           <div>
                             <p className="text-sm font-semibold text-slate-700">{tr('Main Driver Scan', 'Scan du conducteur principal')}</p>
@@ -3861,7 +3864,7 @@ const ToursPage = () => {
                         )}
                       </div>
 
-                      <div className="mt-5 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4">
+                      <div className="mt-5 rounded-xl border border-dashed border-slate-200 bg-slate-50/80 p-4">
                         <button
                           type="button"
                           onClick={() =>
@@ -3889,7 +3892,7 @@ const ToursPage = () => {
                         {secondDriverOpen && (
                           <>
                             <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-                              <div className="rounded-lg bg-white p-4">
+                              <div className="rounded-xl border border-slate-200 bg-white p-4">
                                 <label className="text-sm font-semibold text-slate-700">{tr('Second Driver Name', 'Nom du second conducteur')}</label>
                                 <input
                                   type="text"
@@ -3899,7 +3902,7 @@ const ToursPage = () => {
                                   placeholder={tr('Optional', 'Optionnel')}
                                 />
                               </div>
-                              <div className="rounded-lg bg-white p-4">
+                              <div className="rounded-xl border border-slate-200 bg-white p-4">
                                 <PhoneInputWithCountryCode
                                   value={activeSecondaryDriver.whatsapp || ''}
                                   onChange={(value) => updateSecondaryDriver(activeDriverQuadIndex, 'whatsapp', value)}
@@ -3912,7 +3915,7 @@ const ToursPage = () => {
                                   </p>
                                 ) : null}
                               </div>
-                              <div className="rounded-lg bg-white p-4">
+                              <div className="rounded-xl border border-slate-200 bg-white p-4">
                                 <label className="text-sm font-semibold text-slate-700">{tr('Email', 'E-mail')}</label>
                                 <input
                                   type="email"
@@ -3925,7 +3928,7 @@ const ToursPage = () => {
                                   {tr('Optional if WhatsApp is entered.', "Optionnel si WhatsApp est renseigné.")}
                                 </p>
                               </div>
-                              <div className="rounded-lg bg-white p-4">
+                              <div className="rounded-xl border border-slate-200 bg-white p-4">
                                 <label className="text-sm font-semibold text-slate-700">{tr('Second Driver License', 'Permis du second conducteur')}</label>
                                 <input
                                   type="text"
@@ -3935,7 +3938,7 @@ const ToursPage = () => {
                                   placeholder={currentPackage?.requiresLicense ? tr('Required if second driver is added', 'Requis si un second conducteur est ajouté') : tr('Optional', 'Optionnel')}
                                 />
                               </div>
-                              <div className="rounded-lg bg-white p-4">
+                              <div className="rounded-xl border border-slate-200 bg-white p-4">
                                 <label className="text-sm font-semibold text-slate-700">{tr('ID Number', "Numéro d'identité")}</label>
                                 <input
                                   type="text"
@@ -3947,7 +3950,7 @@ const ToursPage = () => {
                               </div>
                             </div>
 
-                            <div className="mt-4 rounded-lg bg-white p-4">
+                            <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
                               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                                 <div>
                                   <p className="text-sm font-semibold text-slate-700">Second Driver Scan</p>
@@ -3983,7 +3986,7 @@ const ToursPage = () => {
                 </div>
 
 
-                <div className="rounded-xl bg-slate-50 p-5">
+                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                   <label className="text-sm font-semibold text-slate-700">Staff Notes</label>
                   <textarea
                     value={bookingForm.notes}
@@ -3994,7 +3997,7 @@ const ToursPage = () => {
                   />
                 </div>
 
-                <div className="rounded-xl bg-slate-50 p-5">
+                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                   <label className="text-sm font-semibold text-slate-700">Optional Contract</label>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <button
@@ -4035,14 +4038,14 @@ const ToursPage = () => {
             )}
 
             {bookingStep === 3 && (
-              <section className="space-y-4 rounded-xl border border-violet-100 bg-white p-5 shadow-sm">
+              <section className="space-y-4 rounded-[1.6rem] border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
                 <div>
                   <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-400">Step 3</p>
                   <h3 className="mt-2 text-xl font-semibold text-slate-900">Review and book the tour</h3>
                 </div>
 
                 <div className="grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                     <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Package</p>
                     <p className="mt-1.5 text-base font-bold text-slate-900">{currentPackage?.name || 'No package selected'}</p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -4052,7 +4055,7 @@ const ToursPage = () => {
                     </div>
                   </div>
 
-                  <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                     <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Schedule</p>
                     <p className="mt-1.5 text-base font-bold text-violet-800">{bookingForm.date} · {bookingForm.time}</p>
                     <p className="mt-1 text-sm text-slate-500">
@@ -4064,12 +4067,12 @@ const ToursPage = () => {
                 </div>
 
                 <div className="grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                     <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Model Mix</p>
                     <div className="mt-2 space-y-2">
                       {bookingPricingLines.length > 0 ? (
                         bookingPricingLines.map((line) => (
-                          <div key={line.modelId} className="flex items-center justify-between gap-3 rounded-lg bg-white border border-slate-100 px-3 py-2.5">
+                          <div key={line.modelId} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5">
                             <div>
                               <p className="text-sm font-semibold text-slate-900">{line.label}</p>
                               <p className="text-xs text-slate-500">{line.count} quad(s) × {line.unitPrice.toLocaleString('en-MA')} MAD</p>
@@ -4078,14 +4081,14 @@ const ToursPage = () => {
                           </div>
                         ))
                       ) : (
-                        <div className="rounded-lg bg-white border border-slate-100 px-3 py-3 text-sm text-slate-500">
+                        <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-3 text-sm text-slate-500">
                           No model mix selected yet.
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                     <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Pricing</p>
                     <p className="mt-1.5 text-2xl font-black text-violet-900">{calculatedTourTotal.toLocaleString('en-MA')} MAD</p>
                     <p className="mt-1 text-sm text-slate-500">Based on package duration and quad model mix.</p>
@@ -4098,7 +4101,7 @@ const ToursPage = () => {
                 </div>
 
                 <div className="grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                     <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Booking Contact</p>
                     <p className="mt-1.5 text-base font-bold text-slate-900">{primaryDrivers[0]?.fullName || 'Quad 1 main driver'}</p>
                     <p className="mt-1 text-sm text-slate-500">{primaryDrivers[0]?.whatsapp || tr('No WhatsApp', 'Aucun WhatsApp')}</p>
@@ -4116,13 +4119,13 @@ const ToursPage = () => {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
                   <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Drivers by Quad</p>
                   <div className="mt-3 grid gap-3 lg:grid-cols-2">
                     {primaryDrivers.map((driver, index) => {
                       const secondDriver = secondaryDrivers[index];
                       return (
-                        <div key={`review-driver-${index}`} className="rounded-lg border border-violet-100 bg-white p-3">
+                        <div key={`review-driver-${index}`} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
                           <p className="text-sm font-bold text-violet-700">Quad {index + 1}</p>
                           <div className="mt-2 space-y-1">
                             <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
@@ -4161,7 +4164,7 @@ const ToursPage = () => {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 p-4 shadow-[0_8px_24px_rgba(16,185,129,0.10)]">
                   <div className="flex items-start gap-3">
                     <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
                     <div className="flex-1">
@@ -4176,14 +4179,14 @@ const ToursPage = () => {
                   {shouldAssignVehiclesNow ? (
                     <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                       {assignedVehiclesPreview.map((vehicle) => (
-                        <div key={vehicle.id} className="rounded-lg border border-emerald-100 bg-white p-3">
+                        <div key={vehicle.id} className="rounded-xl border border-emerald-100 bg-white p-3">
                           <p className="font-bold text-slate-900">{vehicle.plate_number || vehicle.name || 'Vehicle'}</p>
                           <p className="mt-0.5 text-sm text-slate-500">{vehicle.name || 'SEGWAY'} {vehicle.model || ''}</p>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div className="mt-3 rounded-lg border border-emerald-100 bg-white p-3 text-sm font-medium text-slate-600">
+                    <div className="mt-3 rounded-xl border border-emerald-100 bg-white p-3 text-sm font-medium text-slate-600">
                       Random available quads will be assigned at departure time.
                     </div>
                   )}
@@ -4209,6 +4212,7 @@ const ToursPage = () => {
                 </div>
               </section>
             )}
+          </div>
           </div>
         </div>
       )}
