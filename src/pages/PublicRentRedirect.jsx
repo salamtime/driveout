@@ -45,12 +45,14 @@ const PublicRentRedirect = () => {
     };
   }, [navigate, searchParams]);
 
+  if (!error) {
+    return null;
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#fcfbff_0%,#f6f4ff_32%,#ffffff_100%)] px-6">
       <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white px-6 py-8 text-center shadow-sm">
-        <p className="text-base font-semibold text-slate-900">
-          {error || 'Opening rentals...'}
-        </p>
+        <p className="text-base font-semibold text-slate-900">{error}</p>
       </div>
     </div>
   );

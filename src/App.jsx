@@ -85,10 +85,36 @@ const WorkspaceUnavailableState = ({
   </div>
 );
 
+const isFirstPartyStorefrontRoute = (host, pathname) => {
+  if (host.kind !== 'tenant' || host.tenantSlug !== 'saharax') {
+    return false;
+  }
+
+  return (
+    pathname === '/' ||
+    pathname === '/website' ||
+    pathname === '/rent' ||
+    pathname === '/rentals' ||
+    pathname === '/marketplace' ||
+    pathname === '/tours' ||
+    pathname === '/tour-booking' ||
+    pathname === '/rental-booking' ||
+    pathname === '/camera-test' ||
+    pathname.startsWith('/rent/') ||
+    pathname.startsWith('/marketplace/') ||
+    pathname.startsWith('/s/') ||
+    pathname.startsWith('/d/') ||
+    pathname.startsWith('/view/') ||
+    pathname.startsWith('/share/')
+  );
+};
+
 const TenantWorkspaceBoot = ({ children }) => {
   const host = getHostContext();
+  const location = useLocation();
+  const shouldUsePublicStorefront = isFirstPartyStorefrontRoute(host, location.pathname);
   const [state, setState] = useState(() => ({
-    status: host.kind === 'tenant' ? 'loading' : 'ready',
+    status: host.kind === 'tenant' && !shouldUsePublicStorefront ? 'loading' : 'ready',
     error: '',
     detail: '',
   }));
@@ -96,7 +122,7 @@ const TenantWorkspaceBoot = ({ children }) => {
   useEffect(() => {
     let cancelled = false;
 
-    if (host.kind !== 'tenant') {
+    if (host.kind !== 'tenant' || shouldUsePublicStorefront) {
       configureMasterSupabaseClient();
       setState({ status: 'ready', error: '', detail: '' });
       return () => {
@@ -147,7 +173,7 @@ const TenantWorkspaceBoot = ({ children }) => {
     return () => {
       cancelled = true;
     };
-  }, [host.hostname, host.isLocal, host.kind, host.tenantSlug]);
+  }, [host.hostname, host.isLocal, host.kind, host.tenantSlug, shouldUsePublicStorefront]);
 
   if (state.status === 'loading') {
     return <WorkspaceUnavailableState title="Opening workspace" message="Preparing your isolated tenant workspace..." />;

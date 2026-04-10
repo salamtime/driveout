@@ -2303,7 +2303,7 @@ const AdminDashboard = () => {
         <AdminModuleHero
           icon={<Smartphone className="h-8 w-8 text-white" />}
           eyebrow={tr('Dashboard', 'Tableau de bord')}
-          title={tr('Operations Dashboard', 'Tableau de bord des opérations')}
+          title={tr('Dashboard Operations', 'Opérations du tableau de bord')}
           description={tr('Preparing the dashboard workspace...', 'Préparation de l’espace tableau de bord...')}
         />
         <div className="max-w-7xl mx-auto p-6">
@@ -2324,7 +2324,7 @@ const AdminDashboard = () => {
       <AdminModuleHero
         icon={<Smartphone className="h-8 w-8 text-white" />}
       eyebrow={tr('Dashboard', 'Tableau de bord')}
-      title={tr('Operations Dashboard', 'Tableau de bord des opérations')}
+      title={tr('Dashboard Operations', 'Opérations du tableau de bord')}
       description={tr(`Welcome back${user?.email ? `, ${user.email}` : ''}.`, `Bon retour${user?.email ? `, ${user.email}` : ''}.`)}
         actions={
           <>
