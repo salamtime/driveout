@@ -81,6 +81,16 @@ const normalizeJsonArray = (value) => {
   return [];
 };
 
+const isInstagramUrl = (value) => /instagram\.com/i.test(String(value || ''));
+
+const INSTAGRAM_REQUEST_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  Accept: 'application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'x-ig-app-id': '936619743392459',
+};
+
+const clampInstagramPreviewCount = 3;
+
 const makePresentationId = (prefix, index) => `${prefix}_${index + 1}`;
 
 const normalizeRouteStops = (value) => {
@@ -108,7 +118,7 @@ const normalizeRouteStops = (value) => {
 };
 
 const normalizeMediaGallery = (value) => {
-  const allowedTypes = new Set(['image', 'video']);
+  const allowedTypes = new Set(['image', 'video', 'instagram']);
   return normalizeJsonArray(value)
     .slice(0, 12)
     .map((media, index) => {
@@ -122,12 +132,202 @@ const normalizeMediaGallery = (value) => {
         id: clampText(item.id, 64) || makePresentationId('media', index),
         type: allowedTypes.has(type) ? type : 'image',
         url,
+        external_url: clampText(item.external_url || item.externalUrl || item.instagram_url || item.instagramUrl, 900),
+        thumbnail_url: clampText(item.thumbnail_url || item.thumbnailUrl || item.preview_url || item.previewUrl || '', 900),
         caption: clampText(item.caption, 120),
+        duration: Math.max(0, toSafeInteger(item.duration, 0)),
         sort_order: toSafeInteger(item.sort_order, index + 1),
       };
     })
     .filter(Boolean)
     .sort((left, right) => left.sort_order - right.sort_order);
+};
+
+const extractInstagramUsername = (value) => {
+  const source = String(value || '').trim();
+  if (!source) return '';
+
+  try {
+    const normalized = source.startsWith('http') ? source : `https://${source.replace(/^\/+/, '')}`;
+    const url = new URL(normalized);
+    if (!/instagram\.com$/i.test(url.hostname.replace(/^www\./i, ''))) return '';
+    const [username] = url.pathname.split('/').filter(Boolean);
+    if (!username || ['p', 'reel', 'reels', 'tv', 'stories'].includes(username.toLowerCase())) return '';
+    return username.replace(/^@/, '');
+  } catch {
+    return '';
+  }
+};
+
+const instagramCaptionFromNode = (node = {}) => {
+  const edges = node?.edge_media_to_caption?.edges;
+  return clampText(edges?.[0]?.node?.text || node?.accessibility_caption || '', 120);
+};
+
+const mapInstagramNodeToMedia = (node = {}, index = 0) => {
+  const shortcode = String(node?.shortcode || '').trim();
+  const externalUrl = shortcode ? `https://www.instagram.com/p/${shortcode}/` : '';
+  const thumbnailUrl = clampText(
+    node?.thumbnail_src ||
+      node?.display_url ||
+      node?.display_src ||
+      node?.thumbnail_url ||
+      node?.image_versions2?.candidates?.[0]?.url ||
+      '',
+    900
+  );
+
+  if (!externalUrl && !thumbnailUrl) return null;
+
+  return {
+    id: clampText(`instagram_${shortcode || index + 1}`, 64),
+    type: 'instagram',
+    url: externalUrl || thumbnailUrl,
+    external_url: externalUrl || thumbnailUrl,
+    thumbnail_url: thumbnailUrl,
+    caption: instagramCaptionFromNode(node) || `Instagram preview ${index + 1}`,
+    duration: 0,
+    sort_order: index + 1,
+  };
+};
+
+const fetchInstagramProfilePreviewItems = async (instagramUrl) => {
+  const username = extractInstagramUsername(instagramUrl);
+  if (!username) return [];
+
+  const response = await fetch(
+    `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
+    { headers: INSTAGRAM_REQUEST_HEADERS }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Instagram profile lookup failed (${response.status})`);
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  const user =
+    payload?.data?.user ||
+    payload?.user ||
+    payload?.graphql?.user ||
+    payload?.profile ||
+    null;
+
+  if (!user) return [];
+
+  const pinnedEdges =
+    user?.edge_pinned_for_users_to_timeline_media?.edges ||
+    user?.xdt_api__v1__feed__user_timeline_graphql_connection?.edges ||
+    [];
+  const timelineEdges =
+    user?.edge_owner_to_timeline_media?.edges ||
+    user?.edge_felix_video_timeline?.edges ||
+    [];
+
+  const combinedNodes = [...pinnedEdges, ...timelineEdges]
+    .map((entry) => entry?.node || entry)
+    .filter(Boolean);
+
+  const uniqueNodes = combinedNodes.filter((node, index, items) => {
+    const currentKey = String(node?.id || node?.shortcode || index);
+    return items.findIndex((candidate) => String(candidate?.id || candidate?.shortcode || index) === currentKey) === index;
+  });
+
+  return uniqueNodes
+    .slice(0, clampInstagramPreviewCount)
+    .map((node, index) => mapInstagramNodeToMedia(node, index))
+    .filter(Boolean);
+};
+
+const fetchInstagramEmbedPreviewItem = async (instagramUrl) => {
+  const response = await fetch(instagramUrl, { headers: INSTAGRAM_REQUEST_HEADERS });
+  if (!response.ok) {
+    throw new Error(`Instagram page lookup failed (${response.status})`);
+  }
+
+  const html = await response.text();
+  const imageMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+  const titleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i);
+  const externalUrl = clampText(instagramUrl, 900);
+  const thumbnailUrl = clampText(imageMatch?.[1] || '', 900);
+
+  if (!thumbnailUrl && !externalUrl) return [];
+
+  return [{
+    id: clampText(`instagram_embed_${Date.now()}`, 64),
+    type: 'instagram',
+    url: externalUrl,
+    external_url: externalUrl,
+    thumbnail_url: thumbnailUrl,
+    caption: clampText(titleMatch?.[1] || 'Instagram preview', 120),
+    duration: 0,
+    sort_order: 1,
+  }];
+};
+
+const resolveInstagramPreviewItems = async (instagramUrl) => {
+  const source = String(instagramUrl || '').trim();
+  if (!isInstagramUrl(source)) return [];
+
+  const isProfileUrl = Boolean(extractInstagramUsername(source));
+  try {
+    if (isProfileUrl) {
+      const profileItems = await fetchInstagramProfilePreviewItems(source);
+      if (profileItems.length > 0) return profileItems;
+    }
+  } catch (error) {
+    console.warn('Instagram profile preview lookup failed:', error?.message || error);
+  }
+
+  try {
+    return await fetchInstagramEmbedPreviewItem(source);
+  } catch (error) {
+    console.warn('Instagram embed preview lookup failed:', error?.message || error);
+    return [{
+      id: clampText(`instagram_fallback_${Date.now()}`, 64),
+      type: 'instagram',
+      url: source,
+      external_url: source,
+      thumbnail_url: '',
+      caption: 'Instagram preview',
+      duration: 0,
+      sort_order: 1,
+    }];
+  }
+};
+
+const enrichInstagramMediaGallery = async (mediaGallery = []) => {
+  const items = Array.isArray(mediaGallery) ? mediaGallery : [];
+  const resolved = [];
+
+  for (const item of items) {
+    if (String(item?.type || '').toLowerCase() !== 'instagram') {
+      resolved.push(item);
+      continue;
+    }
+
+    const previewItems = await resolveInstagramPreviewItems(item.url || item.external_url || item.externalUrl);
+    if (previewItems.length === 0) {
+      resolved.push(item);
+      continue;
+    }
+
+    previewItems.forEach((previewItem, previewIndex) => {
+      resolved.push({
+        ...previewItem,
+        sort_order: toSafeInteger(item.sort_order, resolved.length + 1) + previewIndex,
+      });
+    });
+  }
+
+  return normalizeMediaGallery(resolved).slice(0, 12);
+};
+
+const enrichPackageInstagramMedia = async (pkg = {}) => {
+  const mediaGallery = await enrichInstagramMediaGallery(pkg.mediaGallery || []);
+  return {
+    ...pkg,
+    mediaGallery,
+  };
 };
 
 const normalizeHighlights = (value) => normalizeJsonArray(value)
@@ -196,8 +396,17 @@ export const normalizePackage = (pkg = {}) => {
   };
 };
 
-export const toPackageTableRow = (pkg = {}) => {
+export const toPackageTableRow = async (pkg = {}) => {
   const normalized = normalizePackage(pkg);
+  const resolvedMediaGallery = await enrichInstagramMediaGallery(normalized.mediaGallery);
+  const resolvedCoverImageUrl =
+    normalized.coverImageUrl ||
+    resolvedMediaGallery.find((item) => item.type === 'image')?.url ||
+    resolvedMediaGallery.find((item) => item.type === 'instagram')?.thumbnail_url ||
+    resolvedMediaGallery.find((item) => item.thumbnail_url)?.thumbnail_url ||
+    resolvedMediaGallery[0]?.url ||
+    '';
+
   return {
     id: normalized.id,
     name: normalized.name,
@@ -213,10 +422,10 @@ export const toPackageTableRow = (pkg = {}) => {
         publicSummary: normalized.publicSummary,
         routeLabel: normalized.routeLabel,
         routeStops: normalized.routeStops,
-        mediaGallery: normalized.mediaGallery,
+        mediaGallery: resolvedMediaGallery,
         publicHighlights: normalized.publicHighlights,
         displayOrder: normalized.displayOrder,
-        coverImageUrl: normalized.coverImageUrl,
+        coverImageUrl: resolvedCoverImageUrl,
         durationDisplay: normalized.durationDisplay,
         stopCount: normalized.stopCount,
         difficultyLabel: normalized.difficultyLabel,
@@ -235,17 +444,6 @@ export const toPackageTableRow = (pkg = {}) => {
     buffer_before_minutes: normalized.bufferBeforeMinutes,
     buffer_after_minutes: normalized.bufferAfterMinutes,
     website_visible: normalized.websiteVisible,
-    public_title: normalized.publicTitle,
-    public_summary: normalized.publicSummary,
-    route_label: normalized.routeLabel,
-    route_stops_json: normalized.routeStops,
-    media_gallery_json: normalized.mediaGallery,
-    public_highlights_json: normalized.publicHighlights,
-    display_order: normalized.displayOrder,
-    cover_image_url: normalized.coverImageUrl,
-    duration_display: normalized.durationDisplay,
-    stop_count: normalized.stopCount,
-    difficulty_label: normalized.difficultyLabel,
     created_at: normalized.created_at,
     updated_at: normalized.updated_at,
   };
@@ -258,11 +456,17 @@ export const readPackagesFromTable = async (adminClient) => {
   const { data, error } = await adminClient
     .from(TOUR_PACKAGES_TABLE)
     .select('*')
-    .order('display_order', { ascending: true })
     .order('name', { ascending: true });
 
   if (error) throw error;
-  return Array.isArray(data) ? data.map(normalizePackage) : [];
+  const normalizedPackages = Array.isArray(data) ? data.map(normalizePackage) : [];
+  normalizedPackages.sort((left, right) => {
+    const leftOrder = toSafeInteger(left.displayOrder, 0);
+    const rightOrder = toSafeInteger(right.displayOrder, 0);
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return String(left.name || '').localeCompare(String(right.name || ''));
+  });
+  return Promise.all(normalizedPackages.map((pkg) => enrichPackageInstagramMedia(pkg)));
 };
 
 const normalizePricingRow = (row = {}) => ({
@@ -305,26 +509,28 @@ export const readTourPackagePricingContext = async (adminClient) => {
 };
 
 export const createPackageInTable = async (adminClient, pkg) => {
+  const tableRow = await toPackageTableRow(pkg);
   const { data, error } = await adminClient
     .from(TOUR_PACKAGES_TABLE)
-    .insert([toPackageTableRow(pkg)])
+    .insert([tableRow])
     .select('*')
     .single();
 
   if (error) throw error;
-  return normalizePackage(data);
+  return enrichPackageInstagramMedia(normalizePackage(data));
 };
 
 export const updatePackageInTable = async (adminClient, pkg) => {
+  const tableRow = await toPackageTableRow(pkg);
   const { data, error } = await adminClient
     .from(TOUR_PACKAGES_TABLE)
-    .update(toPackageTableRow(pkg))
+    .update(tableRow)
     .eq('id', pkg.id)
     .select('*')
     .single();
 
   if (error) throw error;
-  return normalizePackage(data);
+  return enrichPackageInstagramMedia(normalizePackage(data));
 };
 
 export const deactivatePackageInTable = async (adminClient, packageId) => {

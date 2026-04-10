@@ -360,7 +360,7 @@ const TourPackagePricingManager = ({
 
   if (loading) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className={`rounded-2xl border p-6 ${embedded ? 'border-slate-200 bg-slate-50/80 shadow-inner shadow-slate-200/70' : 'border-slate-200 bg-white shadow-sm'}`}>
         <div className="flex items-center gap-3 text-slate-600">
           <RefreshCw className="h-4 w-4 animate-spin" />
           Loading tour pricing...
@@ -371,7 +371,7 @@ const TourPackagePricingManager = ({
 
   return (
     <div className="space-y-6">
-      <section className="overflow-hidden rounded-2xl border border-violet-200/70 bg-white shadow-sm">
+      <section className={`overflow-hidden rounded-[1.5rem] border ${embedded ? 'border-slate-200 bg-slate-50/80 shadow-inner shadow-slate-200/70' : 'border-violet-200/70 bg-white shadow-sm'}`}>
         <div className={`${embedded ? 'px-0 py-0' : 'p-6'}`}>
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
@@ -405,7 +405,7 @@ const TourPackagePricingManager = ({
           </div>
         )}
         </div>
-        <div className="p-6">
+        <div className={embedded ? 'space-y-5 p-0' : 'p-6'}>
           {!effectivePackageId ? (
             <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
               Save the package first, then this pricing matrix will unlock for that package.
@@ -414,7 +414,7 @@ const TourPackagePricingManager = ({
             <>
 
           <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-          <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+          <div className={`rounded-2xl border p-5 ${embedded ? 'border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)]' : 'border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80'}`}>
             <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">
               {embedded ? 'Timing Prices' : 'Package'}
             </p>
@@ -456,7 +456,7 @@ const TourPackagePricingManager = ({
             )}
           </div>
 
-          <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+          <div className={`rounded-2xl border p-5 ${embedded ? 'border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)]' : 'border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80'}`}>
             <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Durations</p>
             <div className="mt-3 flex flex-wrap gap-2">
               {durations.map((duration) => (
@@ -519,7 +519,8 @@ const TourPackagePricingManager = ({
           </div>
         )}
 
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+        <div className={`rounded-2xl border p-5 ${embedded ? 'border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)]' : 'border-transparent bg-transparent p-0 shadow-none'}`}>
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Pricing Matrix</p>
             <h3 className="mt-2 text-xl font-semibold text-slate-900">Price each model by duration</h3>
@@ -547,6 +548,7 @@ const TourPackagePricingManager = ({
               Add vehicle model
             </button>
           </div>
+          </div>
         </div>
 
           {!embedded && (
@@ -565,7 +567,7 @@ const TourPackagePricingManager = ({
               const rowKey = String(model.id);
               const rowDraft = draftRows[rowKey] || { vehicle_model_id: rowKey, prices: {} };
               return (
-                <div key={rowKey} className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                <div key={rowKey} className={`rounded-2xl border p-5 ${embedded ? 'border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)]' : 'border-slate-200 bg-slate-50'}`}>
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                     <div>
                       <p className="text-lg font-black text-slate-900">{modelLabel(model)}</p>

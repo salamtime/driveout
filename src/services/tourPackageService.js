@@ -9,6 +9,22 @@ const sanitizePackagePayload = (tourPackage = {}) => {
     ...tourPackage,
   };
 
+  [
+    'public_title',
+    'public_summary',
+    'route_label',
+    'route_stops_json',
+    'media_gallery_json',
+    'public_highlights_json',
+    'display_order',
+    'cover_image_url',
+    'duration_display',
+    'stop_count',
+    'difficulty_label',
+  ].forEach((legacyKey) => {
+    delete payload[legacyKey];
+  });
+
   Object.keys(payload).forEach((key) => {
     if (payload[key] === undefined) {
       delete payload[key];

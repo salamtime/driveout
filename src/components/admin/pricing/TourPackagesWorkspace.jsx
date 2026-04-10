@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ImageIcon, Package2, Plus, Route, Settings2 } from 'lucide-react';
+import { ImageIcon, Instagram, Package2, Plus, Route, Settings2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../../contexts/AuthContext';
 import { canManageTourPackages as canManageTourPackagesPermission } from '../../../utils/permissionHelpers';
@@ -148,9 +148,12 @@ const normalizeMediaGallery = (items = []) => (Array.isArray(items) ? items : []
     if (!url) return null;
     return {
       id: clampText(item.id, 64) || `media_${index + 1}`,
-      type: ['image', 'video'].includes(String(item.type || '').toLowerCase()) ? String(item.type).toLowerCase() : 'image',
+      type: ['image', 'video', 'instagram'].includes(String(item.type || '').toLowerCase()) ? String(item.type).toLowerCase() : 'image',
       url,
+      externalUrl: clampText(item.externalUrl || item.external_url || item.instagramUrl || item.instagram_url, 900),
+      thumbnailUrl: clampText(item.thumbnailUrl || item.thumbnail_url || item.previewUrl || item.preview_url, 900),
       caption: clampText(item.caption, 120),
+      duration: Math.max(0, safeInteger(item.duration, 0)),
       sort_order: safeInteger(item.sort_order, index + 1),
     };
   })
@@ -178,20 +181,30 @@ const createRouteStop = (index = 0) => ({
   sort_order: index + 1,
 });
 
-const createMediaItem = (index = 0) => ({
+const createMediaItem = (index = 0, type = 'image') => ({
   id: presentationId('media', index),
-  type: 'image',
+  type,
   url: '',
+  externalUrl: '',
+  thumbnailUrl: '',
   caption: '',
+  duration: 0,
   sort_order: index + 1,
 });
 
 const getPreviewMediaItems = (pkg = {}, limit = 3) => {
   const media = [
-    ...(pkg.coverImageUrl ? [{ url: pkg.coverImageUrl, type: 'image', caption: pkg.publicTitle || pkg.name }] : []),
+    ...(pkg.coverImageUrl ? [{ url: pkg.coverImageUrl, thumbnailUrl: pkg.coverImageUrl, type: 'image', caption: pkg.publicTitle || pkg.name }] : []),
     ...(Array.isArray(pkg.mediaGallery) ? pkg.mediaGallery : []),
   ]
-    .filter((item) => item?.url)
+    .map((item) => ({
+      ...item,
+      previewUrl:
+        item?.type === 'instagram'
+          ? item?.thumbnailUrl || item?.url || ''
+          : item?.thumbnailUrl || item?.url || '',
+    }))
+    .filter((item) => item?.previewUrl)
     .slice(0, limit);
 
   return media;
@@ -384,6 +397,8 @@ const TourPackagesWorkspace = () => {
   const mediaInputRef = useRef(null);
   const [mediaUploading, setMediaUploading] = useState(false);
   const [mediaDragActive, setMediaDragActive] = useState(false);
+  const [activeMediaEditorIndex, setActiveMediaEditorIndex] = useState(null);
+  const [mediaResolving, setMediaResolving] = useState(false);
 
   const loadPackages = async () => {
     setPackagesLoading(true);
@@ -549,6 +564,7 @@ const TourPackagesWorkspace = () => {
     setCustomPackageCapacity(DEFAULT_CUSTOM_PACKAGE_CAPACITY);
     setPackageExtraDurations([]);
     setEditorTab('details');
+    setActiveMediaEditorIndex(null);
   };
 
   const handleOpenPackageEditor = (pkg = null) => {
@@ -573,6 +589,7 @@ const TourPackagesWorkspace = () => {
     }
 
     setEditorTab('details');
+    setActiveMediaEditorIndex(null);
     setPackageEditorOpen(true);
   };
 
@@ -655,6 +672,43 @@ const TourPackagesWorkspace = () => {
     return savedPackage;
   };
 
+  const handleCompleteMediaEditor = async () => {
+    if (activeMediaEditorIndex === null) return;
+
+    const currentItem = packageForm.mediaGallery?.[activeMediaEditorIndex];
+    if (!currentItem) {
+      setActiveMediaEditorIndex(null);
+      return;
+    }
+
+    if (!String(currentItem.url || '').trim()) {
+      toast.error(currentItem.type === 'instagram' ? 'Instagram link is required' : 'Media URL is required');
+      return;
+    }
+
+    if (currentItem.type === 'instagram' && editingPackageId) {
+      setMediaResolving(true);
+      try {
+        const savedPackage = await persistPackageForm(packageForm, 'Instagram preview parsed');
+        if (savedPackage) {
+          const resolvedMedia = Array.isArray(savedPackage.mediaGallery) ? savedPackage.mediaGallery : [];
+          const resolvedIndex = resolvedMedia.findIndex((item) => String(item.id) === String(currentItem.id));
+          setActiveMediaEditorIndex(resolvedIndex >= 0 ? resolvedIndex : null);
+        } else {
+          setActiveMediaEditorIndex(null);
+        }
+      } catch (error) {
+        console.error('Failed to resolve Instagram preview:', error);
+        toast.error(error.message || 'Could not parse Instagram preview');
+        return;
+      } finally {
+        setMediaResolving(false);
+      }
+    } else {
+      setActiveMediaEditorIndex(null);
+    }
+  };
+
   const handleMediaFiles = async (fileList = []) => {
     if (mediaUploading) return;
 
@@ -722,6 +776,7 @@ const TourPackagesWorkspace = () => {
       })();
 
       setPackageForm(nextForm);
+      setActiveMediaEditorIndex(null);
 
       if (editingPackageId) {
         await persistPackageForm(
@@ -960,12 +1015,12 @@ const TourPackagesWorkspace = () => {
         )}
 
         <section className="rounded-[1.75rem] border border-white bg-white p-4 shadow-[0_18px_48px_rgba(15,23,42,0.09)] sm:p-5">
-          <div className="flex items-center justify-between gap-3">
-            <div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
               <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">
                 {canManagePackages ? (editingPackageId ? 'Selected Package' : 'New Package') : 'Read Only'}
               </p>
-              <h2 className="mt-2 text-[1.65rem] font-semibold text-slate-900">
+              <h2 className="mt-2 break-words text-[1.65rem] font-semibold text-slate-900">
                 {canManagePackages
                   ? (packageEditorOpen ? (packageForm.name || 'Package editor') : 'Open a package to edit')
                   : 'Packages are managed by admin or owner'}
@@ -975,7 +1030,7 @@ const TourPackagesWorkspace = () => {
               <button
                 type="button"
                 onClick={resetEditor}
-                className="rounded-2xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-sm shadow-violet-100 transition hover:bg-violet-700"
+                className="w-full rounded-2xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-sm shadow-violet-100 transition hover:bg-violet-700 sm:w-auto"
               >
                 Back to packages
               </button>
@@ -992,9 +1047,9 @@ const TourPackagesWorkspace = () => {
             </div>
           ) : (
             <div className="mt-6 space-y-5">
-              <div className="rounded-[1.5rem] border border-violet-100 bg-violet-50/70 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.03)]">
+              <div className="overflow-hidden rounded-[1.5rem] border border-violet-100 bg-violet-50/70 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.03)]">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className={`rounded-full px-3 py-1 text-xs font-semibold ${packageForm.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
                         {packageForm.is_active ? 'Active' : 'Inactive'}
@@ -1022,24 +1077,24 @@ const TourPackagesWorkspace = () => {
                       </div>
                     ) : null}
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-4">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                     <button
                       type="button"
                       onClick={() => setEditorTab('website')}
-                      className="rounded-2xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300 hover:bg-violet-50"
+                      className="min-w-0 overflow-hidden rounded-2xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300 hover:bg-violet-50"
                     >
                       <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-violet-500">Website</p>
                       <p className="mt-2 text-sm font-black text-slate-900">{packageForm.websiteVisible ? 'Public' : 'Internal'}</p>
                       <p className="mt-1 text-xs font-semibold text-slate-500">{packageForm.mediaGallery.length} media item{packageForm.mediaGallery.length === 1 ? '' : 's'}</p>
                       {getPreviewMediaItems(packageForm, 3).length > 0 ? (
-                        <div className="relative mt-3 h-14 w-[110px]">
+                        <div className="relative mt-3 h-14 w-[92px] sm:w-[110px]">
                           {getPreviewMediaItems(packageForm, 3).map((item, index) => {
                             const rotateClass = index === 0 ? '-rotate-6' : index === 1 ? 'rotate-0' : 'rotate-6';
-                            const offsetClass = index === 0 ? 'left-0 top-2' : index === 1 ? 'left-4 top-1' : 'left-8 top-0';
+                            const offsetClass = index === 0 ? 'left-0 top-2' : index === 1 ? 'left-3 top-1 sm:left-4' : 'left-6 top-0 sm:left-8';
                             return (
                               <div
                                 key={`editor-preview-${item.url}-${index}`}
-                                className={`absolute ${offsetClass} h-11 w-14 overflow-hidden rounded-xl border border-white bg-slate-100 shadow-[0_8px_20px_rgba(15,23,42,0.16)] ${rotateClass}`}
+                                className={`absolute ${offsetClass} h-11 w-12 overflow-hidden rounded-xl border border-white bg-slate-100 shadow-[0_8px_20px_rgba(15,23,42,0.16)] sm:w-14 ${rotateClass}`}
                               >
                                 {item.type === 'video' ? (
                                   <video src={item.url} muted playsInline className="h-full w-full object-cover" />
@@ -1052,17 +1107,17 @@ const TourPackagesWorkspace = () => {
                         </div>
                       ) : null}
                     </button>
-                    <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
+                    <div className="min-w-0 rounded-xl border border-violet-200 bg-white px-4 py-3">
                       <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Price from</p>
                       <p className="mt-2 text-lg font-semibold text-slate-900">
                         {selectedPackagePreview ? getPackagePricingBadge(selectedPackagePreview) : 'Set pricing'}
                       </p>
                     </div>
-                    <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
+                    <div className="min-w-0 rounded-xl border border-violet-200 bg-white px-4 py-3">
                       <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Route</p>
                       <p className="mt-2 text-lg font-semibold capitalize text-slate-900">{packageForm.routeType}</p>
                     </div>
-                    <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">
+                    <div className="min-w-0 rounded-xl border border-violet-200 bg-white px-4 py-3">
                       <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Capacity</p>
                       <p className="mt-2 text-lg font-semibold text-slate-900">{packageForm.maxQuads} quads</p>
                     </div>
@@ -1071,7 +1126,7 @@ const TourPackagesWorkspace = () => {
               </div>
 
               <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-200/70">
-                <div className="grid gap-2 md:grid-cols-4">
+                <div className="grid gap-2 grid-cols-2 xl:grid-cols-4">
                   {EDITOR_TABS.map((tab) => {
                     const Icon = tab.icon;
                     const active = editorTab === tab.id;
@@ -1080,19 +1135,19 @@ const TourPackagesWorkspace = () => {
                         key={tab.id}
                         type="button"
                         onClick={() => setEditorTab(tab.id)}
-                        className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition ${
+                        className={`min-w-0 inline-flex items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition ${
                           active ? 'bg-violet-600 text-white shadow-sm shadow-violet-100' : 'border border-slate-200 bg-slate-50 text-slate-600 hover:bg-white hover:text-violet-700'
                         }`}
                       >
                         <Icon className="h-4 w-4" />
-                        {tab.label}
+                        <span className="truncate text-xs sm:text-sm">{tab.label}</span>
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              <div className="rounded-[1.75rem] border border-slate-200 bg-slate-100/80 p-4 shadow-inner shadow-slate-300/60 sm:p-5">
+              <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-slate-100/80 p-4 shadow-inner shadow-slate-300/60 sm:p-5">
               {editorTab === 'details' && (
                 <div className="space-y-5">
                   <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
@@ -1131,10 +1186,27 @@ const TourPackagesWorkspace = () => {
                     </div>
                   </div>
 
-                  <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
-                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Route Setup</p>
-                    <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
+                  <div className="rounded-3xl border border-violet-100 bg-[linear-gradient(180deg,rgba(245,243,255,0.94)_0%,rgba(255,255,255,0.98)_100%)] p-5 shadow-[0_18px_42px_rgba(79,70,229,0.08)]">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Route setup</p>
+                        <h3 className="mt-2 text-lg font-black text-slate-950">Timing, route type, and operating rules</h3>
+                        <p className="mt-2 text-sm font-medium text-slate-500">Keep the route structure and booking rules together so the package reads as one coherent setup.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-bold text-violet-700">
+                          {formatDurationLabel(packageForm.duration)}
+                        </span>
+                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold capitalize text-slate-700">
+                          {packageForm.routeType}
+                        </span>
+                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-700">
+                          {packageForm.maxQuads} quads
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-5 grid gap-4 xl:grid-cols-2">
+                      <div className="rounded-[1.4rem] border border-white bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
                         <label className="text-sm font-semibold text-slate-700">Duration</label>
                         <div className="mt-4 grid grid-cols-2 gap-3">
                           {packageDurationChoices.map((hours) => (
@@ -1144,7 +1216,7 @@ const TourPackagesWorkspace = () => {
                               onClick={() => setPackageForm((prev) => ({ ...prev, duration: hours }))}
                               className={`rounded-xl px-4 py-4 text-sm font-medium transition ${
                                 Number(packageForm.duration) === hours
-                                  ? 'border border-blue-300 bg-blue-600 text-white shadow-sm'
+                                  ? 'border border-violet-300 bg-violet-600 text-white shadow-sm shadow-violet-200'
                                   : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
                               }`}
                             >
@@ -1187,7 +1259,7 @@ const TourPackagesWorkspace = () => {
                       </div>
 
                       <div className="space-y-4">
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
+                        <div className="rounded-[1.4rem] border border-white bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
                           <label className="text-sm font-semibold text-slate-700">License Rule</label>
                           <div className="mt-4 grid grid-cols-2 gap-3">
                             <button
@@ -1215,7 +1287,7 @@ const TourPackagesWorkspace = () => {
                           </div>
                         </div>
 
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
+                        <div className="rounded-[1.4rem] border border-white bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
                           <label className="text-sm font-semibold text-slate-700">Route Type</label>
                           <div className="mt-4 grid grid-cols-2 gap-3">
                             {['city', 'mountain', 'road', 'mixed'].map((routeType) => (
@@ -1225,7 +1297,7 @@ const TourPackagesWorkspace = () => {
                                 onClick={() => setPackageForm((prev) => ({ ...prev, routeType }))}
                                 className={`rounded-xl px-4 py-4 text-sm font-semibold capitalize transition ${
                                   packageForm.routeType === routeType
-                                    ? 'border border-blue-300 bg-blue-600 text-white shadow-sm'
+                                    ? 'border border-violet-300 bg-violet-600 text-white shadow-sm shadow-violet-200'
                                     : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
                                 }`}
                               >
@@ -1235,7 +1307,7 @@ const TourPackagesWorkspace = () => {
                           </div>
                         </div>
 
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
+                        <div className="rounded-[1.4rem] border border-white bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
                           <label className="text-sm font-semibold text-slate-700">Maximum Quads</label>
                           <div className="mt-4 grid grid-cols-2 gap-3 xl:grid-cols-3">
                             {PACKAGE_CAPACITY_OPTIONS.map((count) => (
@@ -1245,7 +1317,7 @@ const TourPackagesWorkspace = () => {
                                 onClick={() => setPackageForm((prev) => ({ ...prev, maxQuads: count }))}
                                 className={`rounded-xl px-4 py-4 text-sm font-semibold transition ${
                                   Number(packageForm.maxQuads) === count
-                                    ? 'border border-blue-300 bg-blue-600 text-white shadow-sm'
+                                    ? 'border border-violet-300 bg-violet-600 text-white shadow-sm shadow-violet-200'
                                     : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
                                 }`}
                               >
@@ -1371,9 +1443,9 @@ const TourPackagesWorkspace = () => {
                     </div>
                   </div>
 
-                  <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
+                  <div className="min-w-0 rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Cover and preview media</p>
                         <h3 className="mt-2 text-xl font-black text-slate-950">What guests see first</h3>
                       </div>
@@ -1404,37 +1476,66 @@ const TourPackagesWorkspace = () => {
                         placeholder="https://..."
                       />
                     </div>
-                    <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
+                    <div className="mt-4 overflow-hidden rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
                           <p className="text-sm font-semibold text-slate-700">Preview media</p>
                           <p className="mt-1 text-xs font-medium text-slate-500">Add up to 9 website media items. The card keeps a compact stacked preview.</p>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: [...prev.mediaGallery, createMediaItem(prev.mediaGallery.length)].slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS) }))}
-                          disabled={packageForm.mediaGallery.length >= MAX_PUBLIC_TOUR_MEDIA_ITEMS}
-                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          Add URL
-                        </button>
+                        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPackageForm((prev) => {
+                                const nextMediaGallery = [...prev.mediaGallery, createMediaItem(prev.mediaGallery.length, 'image')].slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS);
+                                setActiveMediaEditorIndex(nextMediaGallery.length - 1);
+                                return { ...prev, mediaGallery: nextMediaGallery };
+                              })
+                            }
+                            disabled={packageForm.mediaGallery.length >= MAX_PUBLIC_TOUR_MEDIA_ITEMS}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Add URL
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPackageForm((prev) => {
+                                const nextMediaGallery = [...prev.mediaGallery, createMediaItem(prev.mediaGallery.length, 'instagram')].slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS);
+                                setActiveMediaEditorIndex(nextMediaGallery.length - 1);
+                                return { ...prev, mediaGallery: nextMediaGallery };
+                              })
+                            }
+                            disabled={packageForm.mediaGallery.length >= MAX_PUBLIC_TOUR_MEDIA_ITEMS}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-fuchsia-200 bg-fuchsia-50 px-3 py-2 text-xs font-bold text-fuchsia-700 transition hover:bg-fuchsia-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Instagram className="h-3.5 w-3.5" />
+                            Add Instagram
+                          </button>
+                        </div>
                       </div>
                       {getPreviewMediaItems(packageForm, MAX_PUBLIC_TOUR_MEDIA_ITEMS).length > 0 ? (
-                        <div className="mt-4 overflow-x-auto pb-1">
-                          <div className="flex min-w-max gap-3">
+                        <div className="mt-4">
+                          <div className="flex flex-wrap gap-3">
                             {getPreviewMediaItems(packageForm, MAX_PUBLIC_TOUR_MEDIA_ITEMS).map((item, index) => (
                               <div
-                                key={`website-media-inline-${item.url}-${index}`}
+                                key={`website-media-inline-${item.previewUrl || item.url}-${index}`}
                                 className="group relative h-24 w-24 overflow-hidden rounded-2xl border border-violet-100 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
                               >
                                 {item.type === 'video' ? (
                                   <video src={item.url} muted playsInline className="h-full w-full object-cover" />
+                                ) : item.type === 'instagram' && item.thumbnailUrl ? (
+                                  <img src={item.thumbnailUrl} alt={item.caption || 'Instagram preview'} className="h-full w-full object-cover" />
+                                ) : item.type === 'instagram' ? (
+                                  <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(180deg,#fde7ff_0%,#ede9fe_100%)]">
+                                    <Instagram className="h-5 w-5 text-fuchsia-700" />
+                                  </div>
                                 ) : (
-                                  <img src={item.url} alt={item.caption || packageForm.name || 'Tour media'} className="h-full w-full object-cover" />
+                                  <img src={item.previewUrl || item.url} alt={item.caption || packageForm.name || 'Tour media'} className="h-full w-full object-cover" />
                                 )}
                                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/70 to-transparent px-2 pb-2 pt-6">
                                   <p className="truncate text-[10px] font-bold text-white">
-                                    {item.caption || (item.type === 'video' ? 'Video preview' : `Media ${index + 1}`)}
+                                    {item.caption || (item.type === 'video' ? 'Video preview' : item.type === 'instagram' ? 'Instagram preview' : `Media ${index + 1}`)}
                                   </p>
                                 </div>
                               </div>
@@ -1468,39 +1569,242 @@ const TourPackagesWorkspace = () => {
                       <div className="mt-4 space-y-3">
                         {packageForm.mediaGallery.length === 0 ? (
                           <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm font-medium text-slate-500">No media preview items yet.</div>
-                        ) : packageForm.mediaGallery.map((media, index) => (
-                          <div key={media.id || index} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                            <div className="grid gap-3 md:grid-cols-[120px_1fr_1fr_auto]">
+                        ) : activeMediaEditorIndex !== null && packageForm.mediaGallery[activeMediaEditorIndex] ? (
+                          <div className="min-w-0 overflow-hidden rounded-2xl border border-violet-200 bg-white p-4 shadow-[0_12px_32px_rgba(79,70,229,0.08)]">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                              <div className="min-w-0">
+                                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">
+                                  {packageForm.mediaGallery[activeMediaEditorIndex]?.type === 'instagram' ? 'Instagram entry' : 'Media entry'}
+                                </p>
+                                <h4 className="mt-2 text-lg font-black text-slate-950">
+                                  {packageForm.mediaGallery[activeMediaEditorIndex]?.type === 'instagram' ? 'Add Instagram preview' : 'Add preview media'}
+                                </h4>
+                                <p className="mt-1 text-xs font-medium text-slate-500">
+                                  Finish this entry first, then the rest of your media previews come back.
+                                </p>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setPackageForm((prev) => ({
+                                      ...prev,
+                                      coverImageUrl:
+                                        prev.mediaGallery[activeMediaEditorIndex]?.thumbnailUrl ||
+                                        prev.mediaGallery[activeMediaEditorIndex]?.url ||
+                                        prev.coverImageUrl,
+                                    }))
+                                  }
+                                  className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100"
+                                >
+                                  Main preview
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleCompleteMediaEditor}
+                                  disabled={mediaResolving}
+                                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {mediaResolving
+                                    ? 'Parsing...'
+                                    : packageForm.mediaGallery[activeMediaEditorIndex]?.type === 'instagram' && editingPackageId
+                                      ? 'Save & parse'
+                                      : 'Done'}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="mt-4 grid gap-3 xl:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)]">
                               <select
-                                value={media.type || 'image'}
-                                onChange={(event) => setPackageForm((prev) => ({ ...prev, mediaGallery: prev.mediaGallery.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value } : item) }))}
-                                className="rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-900"
+                                value={packageForm.mediaGallery[activeMediaEditorIndex]?.type || 'image'}
+                                onChange={(event) =>
+                                  setPackageForm((prev) => ({
+                                    ...prev,
+                                    mediaGallery: prev.mediaGallery.map((item, itemIndex) =>
+                                      itemIndex === activeMediaEditorIndex ? { ...item, type: event.target.value } : item
+                                    ),
+                                  }))
+                                }
+                                className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-900"
                               >
                                 <option value="image">Image</option>
                                 <option value="video">Video</option>
+                                <option value="instagram">Instagram</option>
                               </select>
                               <input
                                 type="url"
-                                value={media.url || ''}
-                                onChange={(event) => setPackageForm((prev) => ({ ...prev, mediaGallery: prev.mediaGallery.map((item, itemIndex) => itemIndex === index ? { ...item, url: event.target.value } : item) }))}
-                                className="rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900"
-                                placeholder="https://..."
+                                value={packageForm.mediaGallery[activeMediaEditorIndex]?.url || ''}
+                                onChange={(event) =>
+                                  setPackageForm((prev) => ({
+                                    ...prev,
+                                    mediaGallery: prev.mediaGallery.map((item, itemIndex) =>
+                                      itemIndex === activeMediaEditorIndex ? { ...item, url: event.target.value } : item
+                                    ),
+                                  }))
+                                }
+                                className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900"
+                                placeholder={packageForm.mediaGallery[activeMediaEditorIndex]?.type === 'instagram' ? 'https://instagram.com/...' : 'https://...'}
                               />
                               <input
                                 type="text"
-                                value={media.caption || ''}
-                                onChange={(event) => setPackageForm((prev) => ({ ...prev, mediaGallery: prev.mediaGallery.map((item, itemIndex) => itemIndex === index ? { ...item, caption: event.target.value } : item) }))}
-                                className="rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900"
-                                placeholder="Caption"
+                                value={packageForm.mediaGallery[activeMediaEditorIndex]?.caption || ''}
+                                onChange={(event) =>
+                                  setPackageForm((prev) => ({
+                                    ...prev,
+                                    mediaGallery: prev.mediaGallery.map((item, itemIndex) =>
+                                      itemIndex === activeMediaEditorIndex ? { ...item, caption: event.target.value } : item
+                                    ),
+                                  }))
+                                }
+                                className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900"
+                                placeholder={packageForm.mediaGallery[activeMediaEditorIndex]?.type === 'instagram' ? 'Instagram label' : 'Caption'}
                               />
-                              <div className="flex items-center gap-2">
-                                <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, index, -1) }))} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">Up</button>
-                                <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, index, 1) }))} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">Down</button>
-                                <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: prev.mediaGallery.filter((_, itemIndex) => itemIndex !== index) }))} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600">Remove</button>
+                            </div>
+
+                            {packageForm.mediaGallery[activeMediaEditorIndex]?.type === 'instagram' ? (
+                              <div className="mt-4 rounded-2xl border border-fuchsia-100 bg-[linear-gradient(180deg,#fff6ff_0%,#f5f3ff_100%)] p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-fuchsia-600/80">Instagram preview</p>
+                                    <p className="mt-1 text-xs font-medium text-slate-500">
+                                      {mediaResolving
+                                        ? 'Fetching preview thumbnail from Instagram...'
+                                        : packageForm.mediaGallery[activeMediaEditorIndex]?.thumbnailUrl
+                                          ? 'Preview ready for the website card and media modal.'
+                                          : 'Save and parse this link to keep a preview thumbnail for the website.'}
+                                    </p>
+                                  </div>
+                                  <Instagram className="h-5 w-5 shrink-0 text-fuchsia-600" />
+                                </div>
+                                <div className="mt-3 overflow-hidden rounded-2xl border border-white/80 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.06)]">
+                                  {packageForm.mediaGallery[activeMediaEditorIndex]?.thumbnailUrl ? (
+                                    <img
+                                      src={packageForm.mediaGallery[activeMediaEditorIndex]?.thumbnailUrl}
+                                      alt={packageForm.mediaGallery[activeMediaEditorIndex]?.caption || 'Instagram preview'}
+                                      className="aspect-[4/3] w-full object-cover"
+                                    />
+                                  ) : (
+                                    <div className="flex aspect-[4/3] w-full items-center justify-center bg-[linear-gradient(180deg,#fde7ff_0%,#ede9fe_100%)]">
+                                      <Instagram className="h-8 w-8 text-fuchsia-700" />
+                                    </div>
+                                  )}
+                                  <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-bold text-slate-900">
+                                        {packageForm.mediaGallery[activeMediaEditorIndex]?.caption || 'Instagram preview'}
+                                      </p>
+                                      <p className="truncate text-xs font-medium text-slate-500">
+                                        {packageForm.mediaGallery[activeMediaEditorIndex]?.externalUrl || packageForm.mediaGallery[activeMediaEditorIndex]?.url}
+                                      </p>
+                                    </div>
+                                    <span className="rounded-full border border-fuchsia-200 bg-fuchsia-50 px-3 py-1 text-[11px] font-bold text-fuchsia-700">
+                                      Reel / post
+                                    </span>
+                                  </div>
+                                </div>
                               </div>
+                            ) : null}
+
+                            <div className="mt-4 grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPackageForm((prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, activeMediaEditorIndex, -1) }))
+                                }
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600"
+                              >
+                                Up
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPackageForm((prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, activeMediaEditorIndex, 1) }))
+                                }
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600"
+                              >
+                                Down
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPackageForm((prev) => ({
+                                    ...prev,
+                                    mediaGallery: prev.mediaGallery.filter((_, itemIndex) => itemIndex !== activeMediaEditorIndex),
+                                  }));
+                                  setActiveMediaEditorIndex(null);
+                                }}
+                                className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600"
+                              >
+                                Remove
+                              </button>
                             </div>
                           </div>
-                        ))}
+                        ) : (
+                          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                            {packageForm.mediaGallery.map((media, index) => (
+                              <div
+                                key={media.id || index}
+                                onClick={() => setActiveMediaEditorIndex(index)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    setActiveMediaEditorIndex(index);
+                                  }
+                                }}
+                                role="button"
+                                tabIndex={0}
+                                className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 text-left shadow-[0_8px_24px_rgba(15,23,42,0.05)] transition hover:border-violet-200 hover:shadow-[0_12px_28px_rgba(79,70,229,0.08)]"
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div className="h-16 w-16 shrink-0 overflow-hidden rounded-2xl border border-slate-100 bg-slate-100">
+                                    {media.type === 'video' ? (
+                                      <video src={media.url} muted playsInline className="h-full w-full object-cover" />
+                                    ) : media.type === 'instagram' && media.thumbnailUrl ? (
+                                      <img src={media.thumbnailUrl} alt={media.caption || 'Instagram preview'} className="h-full w-full object-cover" />
+                                    ) : media.type === 'instagram' ? (
+                                      <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(180deg,#fde7ff_0%,#ede9fe_100%)]">
+                                        <Instagram className="h-5 w-5 text-fuchsia-700" />
+                                      </div>
+                                    ) : (
+                                      <img src={media.url} alt={media.caption || packageForm.name || 'Tour media'} className="h-full w-full object-cover" />
+                                    )}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-sm font-black text-slate-900">
+                                      {media.caption || (media.type === 'instagram' ? 'Instagram preview' : `Media ${index + 1}`)}
+                                    </p>
+                                    <p className="mt-1 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                                      {media.type === 'instagram' ? 'Instagram' : media.type === 'video' ? 'Video' : 'Image'}
+                                    </p>
+                                    <p className="mt-2 truncate text-xs font-medium text-slate-500">
+                                      {media.type === 'instagram'
+                                        ? media.externalUrl || media.url || 'Add Instagram URL'
+                                        : media.url || 'Add URL'}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-bold text-slate-600">
+                                    Edit
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setPackageForm((prev) => ({
+                                        ...prev,
+                                        coverImageUrl: media.thumbnailUrl || media.url || prev.coverImageUrl,
+                                      }));
+                                    }}
+                                    className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-bold text-violet-700"
+                                  >
+                                    Main preview
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1617,7 +1921,28 @@ const TourPackagesWorkspace = () => {
               )}
 
               {editorTab === 'advanced' && (
-                <div className="grid gap-5 xl:grid-cols-2">
+                <div className="space-y-5">
+                  <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Advanced controls</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-500">Operational rules and visibility settings for this package.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-700">
+                          {packageForm.bufferBeforeMinutes} min before
+                        </span>
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-700">
+                          {packageForm.bufferAfterMinutes} min after
+                        </span>
+                        <span className={`rounded-full border px-3 py-1 text-xs font-bold ${packageForm.websiteVisible ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                          {packageForm.websiteVisible ? 'Visible on website' : 'Internal only'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-5 xl:grid-cols-2">
                   <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
                     <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Schedule buffers</p>
                     <p className="mt-2 text-sm font-semibold text-slate-500">These rules block time before and after a tour so operations do not overlap.</p>
@@ -1713,14 +2038,16 @@ const TourPackagesWorkspace = () => {
                       </div>
                     </div>
                   </div>
+                  </div>
                 </div>
               )}
               </div>
 
-              <div className="sticky bottom-4 z-10 rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-lg backdrop-blur">
+              <div className="sticky bottom-4 z-10 overflow-hidden rounded-[1.6rem] border border-violet-100 bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(245,243,255,0.94)_100%)] p-4 shadow-[0_18px_48px_rgba(79,70,229,0.12)] backdrop-blur">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                   <div>
-                    <p className="text-sm font-semibold text-slate-900">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Package actions</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-900">
                       {editingPackageId ? 'Save updates to this package' : 'Create the package to continue using it in bookings'}
                     </p>
                     <p className="mt-1 text-sm text-slate-500">
@@ -1733,14 +2060,14 @@ const TourPackagesWorkspace = () => {
                     <button
                       type="button"
                       onClick={resetEditor}
-                      className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                      className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
                     >
                       Cancel
                     </button>
                     <button
                       type="button"
                       onClick={handleSavePackage}
-                      className="rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:from-sky-600 hover:to-blue-700"
+                      className="rounded-2xl bg-violet-600 px-5 py-3 text-sm font-bold text-white shadow-[0_16px_34px_rgba(124,58,237,0.22)] transition hover:bg-violet-700"
                     >
                       {editingPackageId ? 'Save Package' : 'Create Package'}
                     </button>
