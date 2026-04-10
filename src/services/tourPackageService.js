@@ -42,7 +42,12 @@ export const fetchTourPackages = async () => {
     }
 
     const packages = Array.isArray(payload?.packages) ? payload.packages : [];
-    return { data: packages, error: null };
+    return {
+      data: packages,
+      pricingRows: Array.isArray(payload?.pricingRows) ? payload.pricingRows : [],
+      vehicleModels: Array.isArray(payload?.vehicleModels) ? payload.vehicleModels : [],
+      error: null,
+    };
   } catch (apiError) {
     console.warn('Tour packages request failed:', apiError.message);
     return { data: null, error: apiError };

@@ -27,6 +27,19 @@ const defaultPackageRules = {
   bufferBeforeMinutes: 15,
   bufferAfterMinutes: 30,
   websiteVisible: false,
+  publicPresentation: {
+    publicTitle: '',
+    publicSummary: '',
+    routeLabel: '',
+    routeStops: [],
+    mediaGallery: [],
+    publicHighlights: [],
+    displayOrder: 0,
+    coverImageUrl: '',
+    durationDisplay: '',
+    stopCount: 0,
+    difficultyLabel: '',
+  },
 };
 
 const initialPackageForm = {
@@ -45,6 +58,17 @@ const initialPackageForm = {
   bufferBeforeMinutes: 15,
   bufferAfterMinutes: 30,
   websiteVisible: false,
+  publicTitle: '',
+  publicSummary: '',
+  routeLabel: '',
+  routeStops: [],
+  mediaGallery: [],
+  publicHighlights: [],
+  displayOrder: 0,
+  coverImageUrl: '',
+  durationDisplay: '',
+  stopCount: 0,
+  difficultyLabel: '',
 };
 
 const PACKAGE_DURATION_OPTIONS = [1, 1.5, 2];
@@ -53,6 +77,7 @@ const DEFAULT_CUSTOM_PACKAGE_DURATION = '3';
 const DEFAULT_CUSTOM_PACKAGE_CAPACITY = '7';
 const EDITOR_TABS = [
   { id: 'details', label: 'Details', icon: Package2 },
+  { id: 'website', label: 'Website', icon: Route },
   { id: 'pricing', label: 'Pricing', icon: Route },
   { id: 'advanced', label: 'Advanced', icon: Settings2 },
 ];
@@ -85,6 +110,93 @@ const appendMarkedJson = (text, marker, payload) => {
   return cleanedText ? `${cleanedText}\n\n${serialized}` : serialized;
 };
 
+const clampText = (value, maxLength = 240) => String(value || '').trim().slice(0, maxLength);
+
+const safeInteger = (value, fallback = 0) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
+};
+
+const presentationId = (prefix, index) => `${prefix}_${Date.now()}_${index}`;
+
+const normalizeRouteStops = (stops = []) => (Array.isArray(stops) ? stops : [])
+  .map((stop, index) => {
+    const item = typeof stop === 'object' && stop !== null ? stop : {};
+    const title = clampText(item.title, 90);
+    const note = clampText(item.note, 180);
+    if (!title && !note) return null;
+    return {
+      id: clampText(item.id, 64) || `stop_${index + 1}`,
+      kind: ['start', 'drive', 'stop', 'end', 'note'].includes(String(item.kind || item.type || '').toLowerCase())
+        ? String(item.kind || item.type).toLowerCase()
+        : 'stop',
+      title,
+      duration_minutes: Math.max(0, safeInteger(item.duration_minutes, 0)),
+      note,
+      sort_order: safeInteger(item.sort_order, index + 1),
+    };
+  })
+  .filter(Boolean)
+  .sort((left, right) => left.sort_order - right.sort_order);
+
+const normalizeMediaGallery = (items = []) => (Array.isArray(items) ? items : [])
+  .map((media, index) => {
+    const item = typeof media === 'object' && media !== null ? media : {};
+    const url = clampText(item.url, 900);
+    if (!url) return null;
+    return {
+      id: clampText(item.id, 64) || `media_${index + 1}`,
+      type: ['image', 'video'].includes(String(item.type || '').toLowerCase()) ? String(item.type).toLowerCase() : 'image',
+      url,
+      caption: clampText(item.caption, 120),
+      sort_order: safeInteger(item.sort_order, index + 1),
+    };
+  })
+  .filter(Boolean)
+  .sort((left, right) => left.sort_order - right.sort_order);
+
+const normalizeHighlights = (items = []) => (Array.isArray(items) ? items : [])
+  .map((highlight, index) => {
+    const item = typeof highlight === 'object' && highlight !== null ? highlight : { label: highlight };
+    const label = clampText(item.label, 60);
+    if (!label) return null;
+    return {
+      id: clampText(item.id, 64) || `highlight_${index + 1}`,
+      label,
+    };
+  })
+  .filter(Boolean);
+
+const createRouteStop = (index = 0) => ({
+  id: presentationId('stop', index),
+  kind: 'stop',
+  title: '',
+  duration_minutes: 0,
+  note: '',
+  sort_order: index + 1,
+});
+
+const createMediaItem = (index = 0) => ({
+  id: presentationId('media', index),
+  type: 'image',
+  url: '',
+  caption: '',
+  sort_order: index + 1,
+});
+
+const createHighlight = (index = 0) => ({
+  id: presentationId('highlight', index),
+  label: '',
+});
+
+const moveItem = (items = [], index, direction) => {
+  const next = [...items];
+  const targetIndex = index + direction;
+  if (targetIndex < 0 || targetIndex >= next.length) return next;
+  [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+  return next.map((item, itemIndex) => ({ ...item, sort_order: itemIndex + 1 }));
+};
+
 const formatDurationLabel = (value) => {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric) || numeric <= 0) return '0h';
@@ -115,6 +227,10 @@ const normalizePackage = (pkg) => {
     ...defaultPackageRules,
     ...(extractMarkedJson(pkg.description, TOUR_PACKAGE_RULES_MARKER) || {}),
   };
+  const publicPresentation = {
+    ...defaultPackageRules.publicPresentation,
+    ...(rules.publicPresentation || {}),
+  };
   const cleanDescription = stripMarkedJson(pkg.description, TOUR_PACKAGE_RULES_MARKER);
 
   return {
@@ -126,6 +242,17 @@ const normalizePackage = (pkg) => {
     bufferBeforeMinutes: Number(pkg.bufferBeforeMinutes || pkg.buffer_before_minutes || rules.bufferBeforeMinutes) || 15,
     bufferAfterMinutes: Number(pkg.bufferAfterMinutes || pkg.buffer_after_minutes || rules.bufferAfterMinutes) || 30,
     websiteVisible: Boolean(pkg.websiteVisible ?? pkg.website_visible ?? rules.websiteVisible),
+    publicTitle: String(pkg.publicTitle || pkg.public_title || publicPresentation.publicTitle || '').trim(),
+    publicSummary: String(pkg.publicSummary || pkg.public_summary || publicPresentation.publicSummary || '').trim(),
+    routeLabel: String(pkg.routeLabel || pkg.route_label || publicPresentation.routeLabel || '').trim(),
+    routeStops: normalizeRouteStops(Array.isArray(pkg.routeStops || pkg.route_stops_json) ? (pkg.routeStops || pkg.route_stops_json) : (publicPresentation.routeStops || [])),
+    mediaGallery: normalizeMediaGallery(Array.isArray(pkg.mediaGallery || pkg.media_gallery_json) ? (pkg.mediaGallery || pkg.media_gallery_json) : (publicPresentation.mediaGallery || [])),
+    publicHighlights: normalizeHighlights(Array.isArray(pkg.publicHighlights || pkg.public_highlights_json) ? (pkg.publicHighlights || pkg.public_highlights_json) : (publicPresentation.publicHighlights || [])),
+    displayOrder: Number(pkg.displayOrder || pkg.display_order || publicPresentation.displayOrder || 0),
+    coverImageUrl: String(pkg.coverImageUrl || pkg.cover_image_url || publicPresentation.coverImageUrl || '').trim(),
+    durationDisplay: String(pkg.durationDisplay || pkg.duration_display || publicPresentation.durationDisplay || '').trim(),
+    stopCount: Number(pkg.stopCount ?? pkg.stop_count ?? publicPresentation.stopCount ?? 0) || 0,
+    difficultyLabel: String(pkg.difficultyLabel || pkg.difficulty_label || publicPresentation.difficultyLabel || '').trim(),
   };
 };
 
@@ -137,6 +264,19 @@ const buildPackagePayload = (formData) => {
     bufferBeforeMinutes: Number(formData.bufferBeforeMinutes) || 15,
     bufferAfterMinutes: Number(formData.bufferAfterMinutes) || 30,
     websiteVisible: formData.websiteVisible,
+    publicPresentation: {
+      publicTitle: String(formData.publicTitle || '').trim(),
+      publicSummary: String(formData.publicSummary || '').trim(),
+      routeLabel: String(formData.routeLabel || '').trim(),
+      routeStops: normalizeRouteStops(formData.routeStops),
+      mediaGallery: normalizeMediaGallery(formData.mediaGallery).slice(0, 3),
+      publicHighlights: normalizeHighlights(formData.publicHighlights).slice(0, 6),
+      displayOrder: Number(formData.displayOrder) || 0,
+      coverImageUrl: String(formData.coverImageUrl || '').trim(),
+      durationDisplay: String(formData.durationDisplay || '').trim(),
+      stopCount: Number(formData.stopCount) || normalizeRouteStops(formData.routeStops).length,
+      difficultyLabel: String(formData.difficultyLabel || '').trim(),
+    },
   };
 
   return {
@@ -155,6 +295,17 @@ const buildPackagePayload = (formData) => {
     bufferBeforeMinutes: Number(formData.bufferBeforeMinutes) || 15,
     bufferAfterMinutes: Number(formData.bufferAfterMinutes) || 30,
     websiteVisible: Boolean(formData.websiteVisible),
+    publicTitle: String(formData.publicTitle || '').trim(),
+    publicSummary: String(formData.publicSummary || '').trim(),
+    routeLabel: String(formData.routeLabel || '').trim(),
+    routeStops: normalizeRouteStops(formData.routeStops),
+    mediaGallery: normalizeMediaGallery(formData.mediaGallery).slice(0, 3),
+    publicHighlights: normalizeHighlights(formData.publicHighlights).slice(0, 6),
+    displayOrder: Number(formData.displayOrder) || 0,
+    coverImageUrl: String(formData.coverImageUrl || '').trim(),
+    durationDisplay: String(formData.durationDisplay || '').trim(),
+    stopCount: Number(formData.stopCount) || normalizeRouteStops(formData.routeStops).length,
+    difficultyLabel: String(formData.difficultyLabel || '').trim(),
   };
 };
 
@@ -162,6 +313,23 @@ const getLegacyPackagePricingBadge = (pkg) => {
   const fallbackPrice = Number(pkg?.default_rate_1h || pkg?.default_rate_2h || 0);
   return fallbackPrice > 0 ? `From ${fallbackPrice} MAD` : 'Set pricing';
 };
+
+const packageToForm = (pkg) => ({
+  ...initialPackageForm,
+  ...pkg,
+  duration: normalizeFlexibleDuration(pkg.duration) || 1,
+  publicTitle: pkg.publicTitle || '',
+  publicSummary: pkg.publicSummary || '',
+  routeLabel: pkg.routeLabel || '',
+  routeStops: normalizeRouteStops(pkg.routeStops),
+  mediaGallery: normalizeMediaGallery(pkg.mediaGallery),
+  publicHighlights: normalizeHighlights(pkg.publicHighlights),
+  displayOrder: Number(pkg.displayOrder || 0),
+  coverImageUrl: pkg.coverImageUrl || '',
+  durationDisplay: pkg.durationDisplay || '',
+  stopCount: Number(pkg.stopCount || 0),
+  difficultyLabel: pkg.difficultyLabel || '',
+});
 
 const TourPackagesWorkspace = () => {
   const { userProfile } = useAuth();
@@ -353,11 +521,7 @@ const TourPackagesWorkspace = () => {
 
     if (pkg) {
       const normalizedDuration = normalizeFlexibleDuration(pkg.duration) || 1;
-      setPackageForm({
-        ...initialPackageForm,
-        ...pkg,
-        duration: normalizedDuration,
-      });
+      setPackageForm(packageToForm({ ...pkg, duration: normalizedDuration }));
       setCustomPackageDuration(String(normalizedDuration || DEFAULT_CUSTOM_PACKAGE_DURATION));
       setCustomPackageCapacity(String(Number(pkg.maxQuads || 5)));
       setPackageExtraDurations(PACKAGE_DURATION_OPTIONS.includes(normalizedDuration) ? [] : [normalizedDuration]);
@@ -405,8 +569,7 @@ const TourPackagesWorkspace = () => {
       });
       setEditingPackageId(savedPackage.id);
       setPackageForm({
-        ...initialPackageForm,
-        ...savedPackage,
+        ...packageToForm(savedPackage),
         duration: normalizeFlexibleDuration(savedPackage.duration) || 1,
       });
       setCustomPackageDuration(String(normalizeFlexibleDuration(savedPackage.duration) || DEFAULT_CUSTOM_PACKAGE_DURATION));
@@ -663,7 +826,7 @@ const TourPackagesWorkspace = () => {
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2">
-                <div className="grid gap-2 md:grid-cols-3">
+                <div className="grid gap-2 md:grid-cols-4">
                   {EDITOR_TABS.map((tab) => {
                     const Icon = tab.icon;
                     const active = editorTab === tab.id;
@@ -870,6 +1033,253 @@ const TourPackagesWorkspace = () => {
                           </div>
                         </div>
                       </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {editorTab === 'website' && (
+                <div className="space-y-5">
+                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Basic package info</p>
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                        <label className="text-sm font-semibold text-slate-700">Public title</label>
+                        <input
+                          type="text"
+                          value={packageForm.publicTitle}
+                          onChange={(event) => setPackageForm((prev) => ({ ...prev, publicTitle: event.target.value }))}
+                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                          placeholder="Premium Tangier Route"
+                        />
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                        <label className="text-sm font-semibold text-slate-700">Route type</label>
+                        <input
+                          type="text"
+                          value={packageForm.routeLabel}
+                          onChange={(event) => setPackageForm((prev) => ({ ...prev, routeLabel: event.target.value }))}
+                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                          placeholder="Coastal circuit"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                        <label className="text-sm font-semibold text-slate-700">Duration display</label>
+                        <input
+                          type="text"
+                          value={packageForm.durationDisplay}
+                          onChange={(event) => setPackageForm((prev) => ({ ...prev, durationDisplay: event.target.value }))}
+                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
+                          placeholder="1 hour"
+                        />
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                        <label className="text-sm font-semibold text-slate-700">Display order</label>
+                        <input
+                          type="number"
+                          value={packageForm.displayOrder}
+                          onChange={(event) => setPackageForm((prev) => ({ ...prev, displayOrder: event.target.value }))}
+                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
+                        />
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-white p-5">
+                        <label className="text-sm font-semibold text-slate-700">Difficulty label</label>
+                        <input
+                          type="text"
+                          value={packageForm.difficultyLabel}
+                          onChange={(event) => setPackageForm((prev) => ({ ...prev, difficultyLabel: event.target.value }))}
+                          className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
+                          placeholder="Easy"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-5">
+                      <label className="text-sm font-semibold text-slate-700">Short public summary</label>
+                      <textarea
+                        value={packageForm.publicSummary}
+                        onChange={(event) => setPackageForm((prev) => ({ ...prev, publicSummary: event.target.value }))}
+                        rows={3}
+                        maxLength={360}
+                        className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
+                        placeholder="A clean one-line description for the public website."
+                      />
+                    </div>
+                    <label className="mt-4 flex items-center justify-between rounded-xl border border-slate-200 bg-white p-5">
+                      <span>
+                        <span className="block text-sm font-semibold text-slate-700">Website visible</span>
+                        <span className="mt-1 block text-xs font-medium text-slate-500">Show this package on the public Tours website.</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={packageForm.websiteVisible}
+                        onChange={(event) => setPackageForm((prev) => ({ ...prev, websiteVisible: event.target.checked }))}
+                        className="h-5 w-5 rounded border-slate-300 text-violet-700 focus:ring-violet-500"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Cover and media</p>
+                    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-5">
+                      <label className="text-sm font-semibold text-slate-700">Cover image URL</label>
+                      <input
+                        type="url"
+                        value={packageForm.coverImageUrl}
+                        onChange={(event) => setPackageForm((prev) => ({ ...prev, coverImageUrl: event.target.value }))}
+                        className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
+                        placeholder="https://..."
+                      />
+                    </div>
+                    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-700">Preview media</p>
+                          <p className="mt-1 text-xs font-medium text-slate-500">Keep public preview tight: 2-3 items work best.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: [...prev.mediaGallery, createMediaItem(prev.mediaGallery.length)] }))}
+                          className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+                        >
+                          Add media
+                        </button>
+                      </div>
+                      <div className="mt-4 space-y-3">
+                        {packageForm.mediaGallery.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm font-medium text-slate-500">No media preview items yet.</div>
+                        ) : packageForm.mediaGallery.map((media, index) => (
+                          <div key={media.id || index} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="grid gap-3 md:grid-cols-[120px_1fr_1fr_auto]">
+                              <select
+                                value={media.type || 'image'}
+                                onChange={(event) => setPackageForm((prev) => ({ ...prev, mediaGallery: prev.mediaGallery.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value } : item) }))}
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-900"
+                              >
+                                <option value="image">Image</option>
+                                <option value="video">Video</option>
+                              </select>
+                              <input
+                                type="url"
+                                value={media.url || ''}
+                                onChange={(event) => setPackageForm((prev) => ({ ...prev, mediaGallery: prev.mediaGallery.map((item, itemIndex) => itemIndex === index ? { ...item, url: event.target.value } : item) }))}
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900"
+                                placeholder="https://..."
+                              />
+                              <input
+                                type="text"
+                                value={media.caption || ''}
+                                onChange={(event) => setPackageForm((prev) => ({ ...prev, mediaGallery: prev.mediaGallery.map((item, itemIndex) => itemIndex === index ? { ...item, caption: event.target.value } : item) }))}
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900"
+                                placeholder="Caption"
+                              />
+                              <div className="flex items-center gap-2">
+                                <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, index, -1) }))} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">Up</button>
+                                <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, index, 1) }))} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">Down</button>
+                                <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, mediaGallery: prev.mediaGallery.filter((_, itemIndex) => itemIndex !== index) }))} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600">Remove</button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Route roadmap</p>
+                        <p className="mt-2 text-xs font-medium text-slate-500">Simple public timeline nodes. Keep it short and operational.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: [...prev.routeStops, createRouteStop(prev.routeStops.length)] }))}
+                        className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+                      >
+                        Add stop
+                      </button>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {packageForm.routeStops.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm font-medium text-slate-500">No roadmap stops yet.</div>
+                      ) : packageForm.routeStops.map((stop, index) => (
+                        <div key={stop.id || index} className="rounded-xl border border-slate-200 bg-white p-4">
+                          <div className="grid gap-3 xl:grid-cols-[130px_1fr_120px_1.2fr_auto]">
+                            <select
+                              value={stop.kind || 'stop'}
+                              onChange={(event) => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.map((item, itemIndex) => itemIndex === index ? { ...item, kind: event.target.value } : item) }))}
+                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-semibold text-slate-900"
+                            >
+                              <option value="start">Start</option>
+                              <option value="drive">Drive</option>
+                              <option value="stop">Stop</option>
+                              <option value="end">End</option>
+                              <option value="note">Note</option>
+                            </select>
+                            <input
+                              type="text"
+                              value={stop.title || ''}
+                              onChange={(event) => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item) }))}
+                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-900"
+                              placeholder="Stop title"
+                            />
+                            <input
+                              type="number"
+                              min="0"
+                              value={stop.duration_minutes || 0}
+                              onChange={(event) => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.map((item, itemIndex) => itemIndex === index ? { ...item, duration_minutes: event.target.value } : item) }))}
+                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-900"
+                              placeholder="Minutes"
+                            />
+                            <input
+                              type="text"
+                              value={stop.note || ''}
+                              onChange={(event) => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.map((item, itemIndex) => itemIndex === index ? { ...item, note: event.target.value } : item) }))}
+                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-900"
+                              placeholder="Short note"
+                            />
+                            <div className="flex items-center gap-2">
+                              <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: moveItem(prev.routeStops, index, -1) }))} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">Up</button>
+                              <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: moveItem(prev.routeStops, index, 1) }))} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">Down</button>
+                              <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.filter((_, itemIndex) => itemIndex !== index) }))} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600">Remove</button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Public highlights</p>
+                        <p className="mt-2 text-xs font-medium text-slate-500">Short labels only. These become compact chips on the public tour page.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPackageForm((prev) => ({ ...prev, publicHighlights: [...prev.publicHighlights, createHighlight(prev.publicHighlights.length)] }))}
+                        className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+                      >
+                        Add highlight
+                      </button>
+                    </div>
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      {packageForm.publicHighlights.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm font-medium text-slate-500">No public highlights yet.</div>
+                      ) : packageForm.publicHighlights.map((highlight, index) => (
+                        <div key={highlight.id || index} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3">
+                          <input
+                            type="text"
+                            value={highlight.label || ''}
+                            maxLength={60}
+                            onChange={(event) => setPackageForm((prev) => ({ ...prev, publicHighlights: prev.publicHighlights.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) }))}
+                            className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-semibold text-slate-900"
+                            placeholder="Guide included"
+                          />
+                          <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, publicHighlights: prev.publicHighlights.filter((_, itemIndex) => itemIndex !== index) }))} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600">Remove</button>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>

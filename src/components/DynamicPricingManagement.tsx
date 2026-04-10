@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Plus, Edit, Trash2, Search, Filter, DollarSign, CheckCircle, AlertCircle, RefreshCw, X, Save, Loader, Truck, Settings, TrendingUp, Clock, Calculator, Package, Info, Shield, Lock, Fuel, Route } from 'lucide-react';
 import { calculateTieredPrice, getPricingOptions, formatPriceSource } from '../utils/pricingCalculations';
@@ -159,12 +160,40 @@ const PRICING_TAB_ITEMS = [
   { id: 'fuel', labelEn: 'Fuel Pricing', labelFr: 'Tarification carburant', icon: Fuel },
 ] as const;
 
+type PricingTabId = typeof PRICING_TAB_ITEMS[number]['id'];
+
+const isPricingTabId = (tab: string | null): tab is PricingTabId => (
+  PRICING_TAB_ITEMS.some((item) => item.id === tab)
+);
+
 const DynamicPricingManagement: React.FC = () => {
   const isFrench = isFrenchLocale();
   console.log('PRICING_MANAGEMENT: Loading with TIERED PRICING and FUEL PRICING support');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
 
   // Tab state - UPDATED to include 'deposits' and 'fuel'
-  const [activeTab, setActiveTab] = useState<'base' | 'tiers' | 'extensions' | 'transport' | 'packages' | 'tour-pricing' | 'deposits' | 'fuel'>('base');
+  const [activeTab, setActiveTab] = useState<PricingTabId>(() => (
+    isPricingTabId(tabParam) ? tabParam : 'base'
+  ));
+
+  useEffect(() => {
+    if (isPricingTabId(tabParam) && tabParam !== activeTab) {
+      setActiveTab(tabParam);
+    }
+  }, [activeTab, tabParam]);
+
+  const handleTabChange = (tab: PricingTabId) => {
+    setActiveTab(tab);
+
+    const nextParams = new URLSearchParams(searchParams);
+    if (tab === 'base') {
+      nextParams.delete('tab');
+    } else {
+      nextParams.set('tab', tab);
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
 
   // State for Base Prices
   const [basePrices, setBasePrices] = useState<BasePrice[]>([]);
@@ -1461,7 +1490,7 @@ const DynamicPricingManagement: React.FC = () => {
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => setActiveTab(item.id)}
+                    onClick={() => handleTabChange(item.id)}
                     className={`group relative flex items-center whitespace-nowrap rounded-xl px-4 py-3 text-sm font-medium transition-all duration-200 ${
                       active
                         ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-lg'

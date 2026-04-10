@@ -3257,7 +3257,7 @@ const ToursPage = () => {
                   )}
                   {canManageTourPackages && (
                     <Link
-                      to="/admin/pricing"
+                      to="/admin/pricing?tab=tour-pricing"
                       className="inline-flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-medium text-violet-700 transition hover:bg-violet-100"
                     >
                       <Package2 className="h-4 w-4" />

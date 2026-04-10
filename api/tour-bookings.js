@@ -1,9 +1,13 @@
 import { authenticateRequest } from './_lib/auth.js';
+import { createSupabaseClients } from './_lib/supabase.js';
 import { handleTourPackages } from './_lib/tourPackagesShared.js';
 import { handleTourTracking } from './_lib/tourTrackingShared.js';
 
 const TOUR_BOOKINGS_TABLE = 'app_687f658e98_tour_bookings';
+const TOUR_PACKAGES_TABLE = 'app_687f658e98_tour_packages';
+const TOUR_PACKAGE_MODEL_PRICES_TABLE = 'app_687f658e98_tour_package_model_prices';
 const TOUR_BOOKING_MARKER = '[tour_booking]';
+const GLOBAL_TOUR_PRICING_KEY = '__global_tour_pricing__';
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -45,6 +49,11 @@ const normalizeTimestamp = (value, fallback = null) => {
 const normalizeDate = (value, fallback = null) => {
   const iso = normalizeTimestamp(value);
   return iso ? iso.slice(0, 10) : fallback;
+};
+
+const normalizeDuration = (value) => {
+  const duration = Number(value || 0);
+  return Number.isFinite(duration) && duration > 0 ? Number(duration.toFixed(1)) : 1;
 };
 
 const normalizeBookingRow = (row = {}) => ({
@@ -170,6 +179,154 @@ const insertBookings = async (adminClient, rows = []) => {
   return Array.isArray(data) ? data.map(fromTableRow) : [];
 };
 
+const getPublicTourPrice = async (adminClient, { packageId, vehicleModelId, durationHours }) => {
+  const normalizedDuration = normalizeDuration(durationHours);
+
+  const { data: exactRows, error: exactError } = await adminClient
+    .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
+    .select('price_mad')
+    .eq('package_id', packageId)
+    .eq('vehicle_model_id', vehicleModelId)
+    .eq('duration_hours', normalizedDuration)
+    .eq('is_active', true)
+    .limit(1);
+
+  if (exactError) throw exactError;
+  const exactPrice = Number(exactRows?.[0]?.price_mad || 0);
+  if (exactPrice > 0) return exactPrice;
+
+  const { data: globalRows, error: globalError } = await adminClient
+    .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
+    .select('price_mad')
+    .eq('package_id', GLOBAL_TOUR_PRICING_KEY)
+    .eq('vehicle_model_id', vehicleModelId)
+    .eq('duration_hours', normalizedDuration)
+    .eq('is_active', true)
+    .limit(1);
+
+  if (globalError) throw globalError;
+  return Number(globalRows?.[0]?.price_mad || 0);
+};
+
+const createPublicTourBooking = async (body = {}) => {
+  const packageId = String(body.packageId || body.package_id || '').trim();
+  const vehicleModelId = String(body.vehicleModelId || body.vehicle_model_id || '').trim();
+  const date = String(body.date || '').trim();
+  const time = String(body.time || '').trim();
+  const customerName = String(body.customerName || body.customer_name || '').trim();
+  const customerPhone = String(body.customerPhone || body.customer_phone || body.phone || '').trim();
+  const customerEmail = String(body.customerEmail || body.customer_email || '').trim();
+  const quadCount = Math.max(1, Math.min(12, Number(body.quadCount || body.quad_count || 1) || 1));
+  const ridersCount = Math.max(quadCount, Number(body.ridersCount || body.riders_count || quadCount) || quadCount);
+
+  if (!packageId || !vehicleModelId || !date || !time || !customerName || !customerPhone) {
+    return { status: 400, body: { error: 'Package, model, date, time, name, and phone are required' } };
+  }
+
+  const scheduledStart = new Date(`${date}T${time}:00`);
+  if (Number.isNaN(scheduledStart.getTime())) {
+    return { status: 400, body: { error: 'Invalid tour date or time' } };
+  }
+
+  const { adminClient } = createSupabaseClients();
+  const { data: packageRow, error: packageError } = await adminClient
+    .from(TOUR_PACKAGES_TABLE)
+    .select('*')
+    .eq('id', packageId)
+    .eq('is_active', true)
+    .maybeSingle();
+
+  if (packageError) throw packageError;
+  if (!packageRow) {
+    return { status: 404, body: { error: 'Tour package is not available' } };
+  }
+
+  const durationHours = normalizeDuration(packageRow.duration || body.durationHours || body.duration_hours || 1);
+  const unitPrice = await getPublicTourPrice(adminClient, {
+    packageId,
+    vehicleModelId,
+    durationHours,
+  });
+
+  if (!(unitPrice > 0)) {
+    return { status: 409, body: { error: 'Tour pricing is not configured for this model and package' } };
+  }
+
+  const scheduledEnd = new Date(scheduledStart.getTime() + durationHours * 60 * 60 * 1000);
+  const bufferBeforeMinutes = Number(packageRow.buffer_before_minutes || 15);
+  const bufferAfterMinutes = Number(packageRow.buffer_after_minutes || 30);
+  const blockingStart = new Date(scheduledStart.getTime() - bufferBeforeMinutes * 60 * 1000);
+  const blockingEnd = new Date(scheduledEnd.getTime() + bufferAfterMinutes * 60 * 1000);
+  const groupId = `WEB-TOUR-${Date.now().toString(36).toUpperCase()}`;
+  const totalAmount = unitPrice * quadCount;
+  const now = new Date().toISOString();
+
+  const metadata = {
+    kind: 'tour_booking',
+    source: 'public_website',
+    groupId,
+    packageId,
+    packageName: packageRow.name,
+    durationHours,
+    routeType: packageRow.route_type || '',
+    requiresLicense: Boolean(packageRow.requires_license),
+    scheduledStartAt: scheduledStart.toISOString(),
+    scheduledEndAt: scheduledEnd.toISOString(),
+    blockingStartAt: blockingStart.toISOString(),
+    blockingEndAt: blockingEnd.toISOString(),
+    quadCount,
+    ridersCount,
+    customerName,
+    customerPhone,
+    customerEmail,
+    packageLocation: packageRow.location || '',
+    assignmentMode: 'assign_on_arrival',
+    selectedModelMix: [{
+      modelId: vehicleModelId,
+      label: String(body.vehicleModelLabel || body.vehicle_model_label || 'Selected model'),
+      count: quadCount,
+      unitPrice,
+      lineTotal: totalAmount,
+    }],
+    publicNotes: String(body.notes || '').trim(),
+    createdAt: now,
+  };
+
+  const notes = `${String(body.notes || '').trim()}\n\n${TOUR_BOOKING_MARKER}${JSON.stringify(metadata)}`.trim();
+  const rows = Array.from({ length: quadCount }, () => ({
+    customer_name: customerName,
+    customer_email: customerEmail,
+    phone: customerPhone,
+    vehicle_id: null,
+    rental_start_date: blockingStart.toISOString(),
+    rental_end_date: blockingEnd.toISOString(),
+    rental_status: 'scheduled',
+    payment_status: 'unpaid',
+    total_amount: unitPrice,
+    remaining_amount: unitPrice,
+    package_id: packageId,
+    package_name: packageRow.name,
+    scheduled_for: scheduledStart.toISOString(),
+    scheduled_end_at: scheduledEnd.toISOString(),
+    scheduled_date: date,
+    scheduled_time: time,
+    notes,
+    created_at: now,
+    updated_at: now,
+  }));
+
+  const createdRows = await insertBookings(adminClient, rows);
+  return {
+    status: 200,
+    body: {
+      success: true,
+      groupId,
+      totalAmount,
+      rows: createdRows,
+    },
+  };
+};
+
 const updateBookingRows = async (adminClient, updates = []) => {
   const changedRows = [];
 
@@ -222,6 +379,17 @@ export default async function handler(req, res) {
     return json(res, 405, { error: 'Method not allowed' });
   }
 
+  const body = parseBody(req.body);
+
+  if (req.method === 'POST' && body?.publicBooking === true) {
+    try {
+      const result = await createPublicTourBooking(body);
+      return json(res, result.status, result.body);
+    } catch (error) {
+      return json(res, 500, { error: error.message || 'Unknown error' });
+    }
+  }
+
   const auth = await authenticateRequest(req);
   if (auth.error) {
     return json(res, auth.error.status, auth.error.body);
@@ -234,8 +402,6 @@ export default async function handler(req, res) {
       const rows = await readBookingsFromTable(adminClient);
       return json(res, 200, { success: true, rows });
     }
-
-    const body = parseBody(req.body);
 
     if (req.method === 'POST') {
       const rows = Array.isArray(body?.rows) ? body.rows : [];

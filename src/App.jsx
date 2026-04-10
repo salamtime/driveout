@@ -235,7 +235,6 @@ const PublicCatalog = lazy(() => import('./pages/PublicCatalog'));
 const PublicMarketplaceDetail = lazy(() => import('./pages/PublicMarketplaceDetail'));
 const PublicRentRedirect = lazy(() => import('./pages/PublicRentRedirect'));
 const PublicTours = lazy(() => import('./pages/Tours'));
-const TourBooking = lazy(() => import('./pages/TourBooking'));
 const RentalBooking = lazy(() => import('./pages/RentalBooking'));
 const Rentals = lazy(() => import('./pages/admin/Rentals'));
 const RentalDetails = lazy(() => import('./pages/admin/RentalDetails'));
@@ -633,7 +632,7 @@ function App() {
                 <Route path="/rent/:listingId/request" element={<PublicHostRoute><PublicBookingRequest /></PublicHostRoute>} />
                 <Route path="/rentals" element={<PublicHostRoute><Navigate to="/rent" replace /></PublicHostRoute>} />
                 <Route path="/tours" element={<PublicHostRoute><PublicTours /></PublicHostRoute>} />
-                <Route path="/tour-booking" element={<PublicHostRoute><TourBooking /></PublicHostRoute>} />
+                <Route path="/tour-booking" element={<PublicHostRoute><Navigate to="/tours" replace /></PublicHostRoute>} />
                 <Route path="/rental-booking" element={<PublicHostRoute><RentalBooking /></PublicHostRoute>} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />

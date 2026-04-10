@@ -2,6 +2,40 @@ import { APP_USERS_TABLE, createSupabaseClients } from './supabase.js';
 import { authenticateRequest } from './auth.js';
 
 export const TOUR_PACKAGES_TABLE = 'app_687f658e98_tour_packages';
+export const TOUR_PACKAGE_MODEL_PRICES_TABLE = 'app_687f658e98_tour_package_model_prices';
+export const VEHICLE_MODELS_TABLE = 'saharax_0u4w4d_vehicle_models';
+const TOUR_PACKAGE_RULES_MARKER = '[tour_package_rules]';
+
+const safeJsonParse = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const extractMarkedJson = (value, marker) => {
+  const text = typeof value === 'string' ? value : '';
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex === -1) return null;
+  return safeJsonParse(text.slice(markerIndex + marker.length).trim());
+};
+
+const stripMarkedJson = (value, marker) => {
+  const text = typeof value === 'string' ? value : '';
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex === -1) return text.trim();
+  return text.slice(0, markerIndex).trim();
+};
+
+const cleanPresentationText = (value, maxLength = 240) =>
+  clampText(stripMarkedJson(value, TOUR_PACKAGE_RULES_MARKER), maxLength);
+
+const appendMarkedJson = (text, marker, payload) => {
+  const cleanedText = stripMarkedJson(text, marker);
+  const serialized = `${marker}${JSON.stringify(payload)}`;
+  return cleanedText ? `${cleanedText}\n\n${serialized}` : serialized;
+};
 
 export const errorToMessage = (error) => {
   if (!error) return 'Unknown error';
@@ -26,6 +60,89 @@ export const parseBody = (body) => {
   return typeof body === 'object' ? body : {};
 };
 
+const clampText = (value, maxLength = 240) => String(value || '').trim().slice(0, maxLength);
+
+const toSafeInteger = (value, fallback = 0) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.trunc(numeric) : fallback;
+};
+
+const toSafeNumber = (value, fallback = 0) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+};
+
+const normalizeJsonArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = safeJsonParse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  }
+  return [];
+};
+
+const makePresentationId = (prefix, index) => `${prefix}_${index + 1}`;
+
+const normalizeRouteStops = (value) => {
+  const allowedKinds = new Set(['start', 'drive', 'stop', 'end', 'note']);
+  return normalizeJsonArray(value)
+    .slice(0, 24)
+    .map((stop, index) => {
+      const item = typeof stop === 'object' && stop !== null ? stop : { title: stop };
+      const kind = clampText(item.kind || item.type || 'stop', 24).toLowerCase();
+      const title = clampText(item.title, 90);
+      const note = clampText(item.note, 180);
+      if (!title && !note) return null;
+
+      return {
+        id: clampText(item.id, 64) || makePresentationId('stop', index),
+        kind: allowedKinds.has(kind) ? kind : 'stop',
+        title,
+        duration_minutes: Math.max(0, toSafeInteger(item.duration_minutes, 0)),
+        note,
+        sort_order: toSafeInteger(item.sort_order, index + 1),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.sort_order - right.sort_order);
+};
+
+const normalizeMediaGallery = (value) => {
+  const allowedTypes = new Set(['image', 'video']);
+  return normalizeJsonArray(value)
+    .slice(0, 12)
+    .map((media, index) => {
+      const item = typeof media === 'object' && media !== null ? media : { url: media };
+      const url = clampText(item.url, 900);
+      const isSafeUrl = /^https?:\/\//i.test(url) || url.startsWith('/');
+      if (!isSafeUrl) return null;
+      const type = clampText(item.type || 'image', 24).toLowerCase();
+
+      return {
+        id: clampText(item.id, 64) || makePresentationId('media', index),
+        type: allowedTypes.has(type) ? type : 'image',
+        url,
+        caption: clampText(item.caption, 120),
+        sort_order: toSafeInteger(item.sort_order, index + 1),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.sort_order - right.sort_order);
+};
+
+const normalizeHighlights = (value) => normalizeJsonArray(value)
+  .slice(0, 12)
+  .map((highlight, index) => {
+    const item = typeof highlight === 'object' && highlight !== null ? highlight : { label: highlight };
+    const label = clampText(item.label, 60);
+    if (!label) return null;
+    return {
+      id: clampText(item.id, 64) || makePresentationId('highlight', index),
+      label,
+    };
+  })
+  .filter(Boolean);
+
 export const isMissingTableError = (error) => {
   const message = String(error?.message || error?.details || '').toLowerCase();
   const code = String(error?.code || '').toLowerCase();
@@ -38,33 +155,73 @@ export const isMissingTableError = (error) => {
   );
 };
 
-export const normalizePackage = (pkg = {}) => ({
-  id: String(pkg.id || ''),
-  name: String(pkg.name || '').trim(),
-  description: String(pkg.description || ''),
-  location: String(pkg.location || 'Main Base'),
-  duration: Number(pkg.duration || 1),
-  default_rate_1h: Number(pkg.default_rate_1h || 0),
-  default_rate_2h: Number(pkg.default_rate_2h || 0),
-  vip_rate_1h: Number(pkg.vip_rate_1h || 0),
-  vip_rate_2h: Number(pkg.vip_rate_2h || 0),
-  is_active: pkg.is_active !== false,
-  routeType: String(pkg.routeType || pkg.route_type || 'mountain'),
-  requiresLicense: Boolean(pkg.requiresLicense ?? pkg.requires_license),
-  maxQuads: Number(pkg.maxQuads || pkg.max_quads || 5),
-  bufferBeforeMinutes: Number(pkg.bufferBeforeMinutes || pkg.buffer_before_minutes || 15),
-  bufferAfterMinutes: Number(pkg.bufferAfterMinutes || pkg.buffer_after_minutes || 30),
-  websiteVisible: Boolean(pkg.websiteVisible ?? pkg.website_visible),
-  created_at: pkg.created_at || new Date().toISOString(),
-  updated_at: pkg.updated_at || new Date().toISOString(),
-});
+export const normalizePackage = (pkg = {}) => {
+  const rules = extractMarkedJson(pkg.description, TOUR_PACKAGE_RULES_MARKER) || {};
+  const publicPresentation = rules.publicPresentation || {};
+  const routeStops = normalizeRouteStops(pkg.routeStops || pkg.route_stops_json || publicPresentation.routeStops);
+  const mediaGallery = normalizeMediaGallery(pkg.mediaGallery || pkg.media_gallery_json || publicPresentation.mediaGallery);
+  const publicHighlights = normalizeHighlights(pkg.publicHighlights || pkg.public_highlights_json || publicPresentation.publicHighlights);
+  const stopCount = toSafeInteger(pkg.stopCount ?? pkg.stop_count ?? publicPresentation.stopCount ?? routeStops.length, routeStops.length);
+
+  return {
+    id: String(pkg.id || ''),
+    name: clampText(pkg.name, 140),
+    description: cleanPresentationText(pkg.description || '', 500),
+    location: cleanPresentationText(pkg.location || 'Main Base', 140),
+    duration: toSafeNumber(pkg.duration, 1),
+    default_rate_1h: toSafeNumber(pkg.default_rate_1h, 0),
+    default_rate_2h: toSafeNumber(pkg.default_rate_2h, 0),
+    vip_rate_1h: toSafeNumber(pkg.vip_rate_1h, 0),
+    vip_rate_2h: toSafeNumber(pkg.vip_rate_2h, 0),
+    is_active: pkg.is_active !== false,
+    routeType: clampText(pkg.routeType || pkg.route_type || rules.routeType || 'mountain', 80),
+    requiresLicense: Boolean(pkg.requiresLicense ?? pkg.requires_license ?? rules.requiresLicense),
+    maxQuads: Math.max(1, toSafeInteger(pkg.maxQuads || pkg.max_quads || rules.maxQuads, 5)),
+    bufferBeforeMinutes: Math.max(0, toSafeInteger(pkg.bufferBeforeMinutes || pkg.buffer_before_minutes || rules.bufferBeforeMinutes, 15)),
+    bufferAfterMinutes: Math.max(0, toSafeInteger(pkg.bufferAfterMinutes || pkg.buffer_after_minutes || rules.bufferAfterMinutes, 30)),
+    websiteVisible: Boolean(pkg.websiteVisible ?? pkg.website_visible ?? rules.websiteVisible),
+    publicTitle: cleanPresentationText(pkg.publicTitle || pkg.public_title || publicPresentation.publicTitle, 140),
+    publicSummary: cleanPresentationText(pkg.publicSummary || pkg.public_summary || publicPresentation.publicSummary, 360),
+    routeLabel: cleanPresentationText(pkg.routeLabel || pkg.route_label || publicPresentation.routeLabel, 100),
+    routeStops,
+    mediaGallery,
+    publicHighlights,
+    displayOrder: toSafeInteger(pkg.displayOrder ?? pkg.display_order ?? publicPresentation.displayOrder, 0),
+    coverImageUrl: clampText(pkg.coverImageUrl || pkg.cover_image_url || publicPresentation.coverImageUrl, 900),
+    durationDisplay: clampText(pkg.durationDisplay || pkg.duration_display || publicPresentation.durationDisplay, 60),
+    stopCount: Math.max(0, stopCount),
+    difficultyLabel: clampText(pkg.difficultyLabel || pkg.difficulty_label || publicPresentation.difficultyLabel, 60),
+    created_at: pkg.created_at || new Date().toISOString(),
+    updated_at: pkg.updated_at || new Date().toISOString(),
+  };
+};
 
 export const toPackageTableRow = (pkg = {}) => {
   const normalized = normalizePackage(pkg);
   return {
     id: normalized.id,
     name: normalized.name,
-    description: normalized.description,
+    description: appendMarkedJson(normalized.description, TOUR_PACKAGE_RULES_MARKER, {
+      routeType: normalized.routeType,
+      requiresLicense: normalized.requiresLicense,
+      maxQuads: normalized.maxQuads,
+      bufferBeforeMinutes: normalized.bufferBeforeMinutes,
+      bufferAfterMinutes: normalized.bufferAfterMinutes,
+      websiteVisible: normalized.websiteVisible,
+      publicPresentation: {
+        publicTitle: normalized.publicTitle,
+        publicSummary: normalized.publicSummary,
+        routeLabel: normalized.routeLabel,
+        routeStops: normalized.routeStops,
+        mediaGallery: normalized.mediaGallery,
+        publicHighlights: normalized.publicHighlights,
+        displayOrder: normalized.displayOrder,
+        coverImageUrl: normalized.coverImageUrl,
+        durationDisplay: normalized.durationDisplay,
+        stopCount: normalized.stopCount,
+        difficultyLabel: normalized.difficultyLabel,
+      },
+    }),
     location: normalized.location,
     duration: normalized.duration,
     default_rate_1h: normalized.default_rate_1h,
@@ -78,6 +235,17 @@ export const toPackageTableRow = (pkg = {}) => {
     buffer_before_minutes: normalized.bufferBeforeMinutes,
     buffer_after_minutes: normalized.bufferAfterMinutes,
     website_visible: normalized.websiteVisible,
+    public_title: normalized.publicTitle,
+    public_summary: normalized.publicSummary,
+    route_label: normalized.routeLabel,
+    route_stops_json: normalized.routeStops,
+    media_gallery_json: normalized.mediaGallery,
+    public_highlights_json: normalized.publicHighlights,
+    display_order: normalized.displayOrder,
+    cover_image_url: normalized.coverImageUrl,
+    duration_display: normalized.durationDisplay,
+    stop_count: normalized.stopCount,
+    difficulty_label: normalized.difficultyLabel,
     created_at: normalized.created_at,
     updated_at: normalized.updated_at,
   };
@@ -90,10 +258,50 @@ export const readPackagesFromTable = async (adminClient) => {
   const { data, error } = await adminClient
     .from(TOUR_PACKAGES_TABLE)
     .select('*')
+    .order('display_order', { ascending: true })
     .order('name', { ascending: true });
 
   if (error) throw error;
   return Array.isArray(data) ? data.map(normalizePackage) : [];
+};
+
+const normalizePricingRow = (row = {}) => ({
+  id: String(row.id || ''),
+  package_id: String(row.package_id || ''),
+  vehicle_model_id: String(row.vehicle_model_id || ''),
+  duration_hours: Number(row.duration_hours || 0),
+  price_mad: Number(row.price_mad || 0),
+  is_active: row.is_active !== false,
+});
+
+const normalizeVehicleModel = (model = {}) => ({
+  id: String(model.id || ''),
+  name: String(model.name || '').trim(),
+  model: String(model.model || '').trim(),
+  vehicle_type: String(model.vehicle_type || '').trim(),
+});
+
+export const readTourPackagePricingContext = async (adminClient) => {
+  const [pricingResult, modelResult] = await Promise.all([
+    adminClient
+      .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
+      .select('id,package_id,vehicle_model_id,duration_hours,price_mad,is_active')
+      .eq('is_active', true)
+      .order('package_id', { ascending: true })
+      .order('vehicle_model_id', { ascending: true })
+      .order('duration_hours', { ascending: true }),
+    adminClient
+      .from(VEHICLE_MODELS_TABLE)
+      .select('id,name,model,vehicle_type')
+      .order('name', { ascending: true }),
+  ]);
+
+  if (pricingResult.error) throw pricingResult.error;
+
+  return {
+    pricingRows: Array.isArray(pricingResult.data) ? pricingResult.data.map(normalizePricingRow) : [],
+    vehicleModels: modelResult.error ? [] : (Array.isArray(modelResult.data) ? modelResult.data.map(normalizeVehicleModel) : []),
+  };
 };
 
 export const createPackageInTable = async (adminClient, pkg) => {
@@ -157,10 +365,18 @@ export const handleTourPackages = async (req, res, json) => {
   if (req.method === 'GET') {
     try {
       const { adminClient } = createSupabaseClients();
-      const packages = await readPackagesFromTable(adminClient);
+      const [packages, pricingContext] = await Promise.all([
+        readPackagesFromTable(adminClient),
+        readTourPackagePricingContext(adminClient).catch((pricingError) => {
+          console.warn('tour-packages pricing context unavailable:', pricingError);
+          return { pricingRows: [], vehicleModels: [] };
+        }),
+      ]);
       return json(res, 200, {
         success: true,
         packages: packages.filter((pkg) => pkg.is_active !== false),
+        pricingRows: pricingContext.pricingRows,
+        vehicleModels: pricingContext.vehicleModels,
       });
     } catch (error) {
       console.error('tour-packages GET failed:', error);
