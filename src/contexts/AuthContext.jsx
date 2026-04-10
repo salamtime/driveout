@@ -59,12 +59,6 @@ const buildPreferredOAuthUrl = (oauthUrl, redirectTo) => {
 
   try {
     const preferredUrl = new URL(oauthUrl);
-    const currentHost = String(window.location.hostname || '').toLowerCase();
-    const isLocalHost = currentHost === 'localhost' || currentHost === '127.0.0.1';
-
-    if (!isLocalHost) {
-      return preferredUrl.toString();
-    }
 
     const normalizedRedirectTo = redirectTo.trim();
     const currentRedirectTo = preferredUrl.searchParams.get('redirect_to');
