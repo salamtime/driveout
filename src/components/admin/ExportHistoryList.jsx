@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Download, Trash2, Clock, FileArchive, RefreshCw } from 'lucide-react';
+import i18n from '../../i18n';
 
 const ExportHistoryList = ({ 
   exports, 
@@ -11,13 +12,15 @@ const ExportHistoryList = ({
   onDelete, 
   onRefresh 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const getStatusBadge = (status) => {
     const statusConfig = {
-      pending: { variant: 'secondary', label: 'Pending' },
-      processing: { variant: 'default', label: 'Processing' },
-      completed: { variant: 'success', label: 'Completed' },
-      failed: { variant: 'destructive', label: 'Failed' },
-      expired: { variant: 'outline', label: 'Expired' }
+      pending: { variant: 'secondary', label: tr('Pending', 'En attente') },
+      processing: { variant: 'default', label: tr('Processing', 'En cours') },
+      completed: { variant: 'success', label: tr('Completed', 'Terminé') },
+      failed: { variant: 'destructive', label: tr('Failed', 'Échoué') },
+      expired: { variant: 'outline', label: tr('Expired', 'Expiré') }
     };
 
     const config = statusConfig[status] || statusConfig.pending;
@@ -25,31 +28,31 @@ const ExportHistoryList = ({
   };
 
   const formatFileSize = (bytes) => {
-    if (!bytes) return 'Unknown';
+    if (!bytes) return tr('Unknown', 'Inconnu');
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(1024));
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   };
 
   const formatDate = (dateString) => {
-    if (!dateString) return 'Unknown';
+    if (!dateString) return tr('Unknown', 'Inconnu');
     return new Date(dateString).toLocaleString();
   };
 
   const getTimeAgo = (dateString) => {
-    if (!dateString) return 'Unknown';
+    if (!dateString) return tr('Unknown', 'Inconnu');
     const now = new Date();
     const date = new Date(dateString);
     const diffInMinutes = Math.floor((now - date) / (1000 * 60));
     
-    if (diffInMinutes < 1) return 'Just now';
-    if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
+    if (diffInMinutes < 1) return tr('Just now', "À l'instant");
+    if (diffInMinutes < 60) return isFrench ? `il y a ${diffInMinutes} min` : `${diffInMinutes}m ago`;
     
     const diffInHours = Math.floor(diffInMinutes / 60);
-    if (diffInHours < 24) return `${diffInHours}h ago`;
+    if (diffInHours < 24) return isFrench ? `il y a ${diffInHours} h` : `${diffInHours}h ago`;
     
     const diffInDays = Math.floor(diffInHours / 24);
-    if (diffInDays < 7) return `${diffInDays}d ago`;
+    if (diffInDays < 7) return isFrench ? `il y a ${diffInDays} j` : `${diffInDays}d ago`;
     
     return formatDate(dateString);
   };
@@ -60,14 +63,14 @@ const ExportHistoryList = ({
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Clock className="h-5 w-5" />
-            Export History
+            {tr('Export History', "Historique des exports")}
           </CardTitle>
-          <CardDescription>Manage your previous project exports</CardDescription>
+          <CardDescription>{tr('Manage your previous project exports', 'Gérez vos exports précédents du projet')}</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-center py-8">
             <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground mr-2" />
-            <span className="text-muted-foreground">Loading export history...</span>
+            <span className="text-muted-foreground">{tr('Loading export history...', "Chargement de l'historique des exports...")}</span>
           </div>
         </CardContent>
       </Card>
@@ -79,13 +82,13 @@ const ExportHistoryList = ({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Clock className="h-5 w-5" />
-          Export History
+          {tr('Export History', "Historique des exports")}
           <Badge variant="outline" className="ml-auto">
-            {exports?.length || 0} total
+            {exports?.length || 0} {tr('total', 'au total')}
           </Badge>
         </CardTitle>
         <CardDescription>
-          Manage your previous project exports (kept for 30 days)
+          {tr('Manage your previous project exports (kept for 30 days)', 'Gérez vos exports précédents du projet (conservés 30 jours)')}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -93,10 +96,10 @@ const ExportHistoryList = ({
           <div className="text-center py-8">
             <FileArchive className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
             <h3 className="text-lg font-medium text-muted-foreground mb-2">
-              No exports yet
+              {tr('No exports yet', "Aucun export pour l'instant")}
             </h3>
             <p className="text-sm text-muted-foreground">
-              Generate your first project export to see it here
+              {tr('Generate your first project export to see it here', 'Générez votre premier export du projet pour le voir ici')}
             </p>
           </div>
         ) : (
@@ -116,12 +119,12 @@ const ExportHistoryList = ({
                   </div>
                   
                   <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                    <span>Created: {getTimeAgo(exportJob.created_at)}</span>
+                    <span>Créé : {getTimeAgo(exportJob.created_at)}</span>
                     {exportJob.file_size && (
-                      <span>Size: {formatFileSize(exportJob.file_size)}</span>
+                      <span>Taille : {formatFileSize(exportJob.file_size)}</span>
                     )}
                     {exportJob.download_count > 0 && (
-                      <span>Downloaded: {exportJob.download_count}x</span>
+                      <span>Téléchargé : {exportJob.download_count}x</span>
                     )}
                   </div>
 
@@ -136,7 +139,7 @@ const ExportHistoryList = ({
                   {exportJob.status === 'failed' && exportJob.error_message && (
                     <div className="mt-2">
                       <p className="text-xs text-red-600 truncate">
-                        Error: {exportJob.error_message}
+                        {tr('Error:', 'Erreur :')} {exportJob.error_message}
                       </p>
                     </div>
                   )}
@@ -150,7 +153,7 @@ const ExportHistoryList = ({
                       variant="outline"
                     >
                       <Download className="h-4 w-4 mr-1" />
-                      Download
+                      Télécharger
                     </Button>
                   )}
                   

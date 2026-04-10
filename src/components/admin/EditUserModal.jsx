@@ -11,20 +11,22 @@ import { AlertCircle, Copy, Eye, EyeOff, RefreshCw, Shield, CheckCircle } from '
 import toast from 'react-hot-toast';
 import { updateUser } from '../../store/slices/usersSlice';
 import { supabase } from '../../utils/supabaseClient';
+import i18n from '../../i18n';
 
 const MODULES = [
-  { id: 'dashboard', name: 'Dashboard', description: 'Main dashboard overview' },
-  { id: 'calendar', name: 'Calendar', description: 'Calendar and scheduling' },
-  { id: 'tours_booking', name: 'Tours & Booking', description: 'Tour booking interface' },
-  { id: 'booking_management', name: 'Booking Management', description: 'Manage all bookings' },
-  { id: 'rental_management', name: 'Rental Management', description: 'Rental operations' },
-  { id: 'fleet_management', name: 'Fleet Management', description: 'Vehicle fleet management' },
-  { id: 'quad_maintenance', name: 'Quad Maintenance', description: 'Maintenance tracking' },
-  { id: 'fuel_logs', name: 'Fuel Logs', description: 'Fuel usage tracking' },
-  { id: 'inventory', name: 'Inventory', description: 'Inventory management' },
-  { id: 'finance_management', name: 'Finance Management', description: 'Financial operations' },
-  { id: 'user_role_management', name: 'User & Role Management', description: 'User administration' },
-  { id: 'system_settings', name: 'System Settings', description: 'System configuration' }
+  { id: 'dashboard', name: 'Tableau de bord', description: 'Vue d’ensemble principale du tableau de bord' },
+  { id: 'calendar', name: 'Calendrier', description: 'Calendrier et planification' },
+  { id: 'tours_booking', name: 'Tours et réservations', description: 'Interface de réservation des tours' },
+  { id: 'team_tasks', name: 'Tâches équipe', description: 'Tâches partagées, assignation et suivi' },
+  { id: 'booking_management', name: 'Gestion des réservations', description: 'Gérer toutes les réservations' },
+  { id: 'rental_management', name: 'Gestion des locations', description: 'Opérations de location' },
+  { id: 'fleet_management', name: 'Gestion de flotte', description: 'Gestion de la flotte de véhicules' },
+  { id: 'quad_maintenance', name: 'Maintenance des quads', description: 'Suivi de la maintenance' },
+  { id: 'fuel_logs', name: 'Journaux carburant', description: 'Suivi de la consommation de carburant' },
+  { id: 'inventory', name: 'Inventaire', description: "Gestion de l'inventaire" },
+  { id: 'finance_management', name: 'Gestion financière', description: 'Opérations financières' },
+  { id: 'user_role_management', name: 'Utilisateurs et rôles', description: 'Administration des utilisateurs' },
+  { id: 'system_settings', name: 'Paramètres système', description: 'Configuration du système' }
 ];
 
 const ROLES = ['customer', 'guide', 'employee', 'admin', 'owner'];
@@ -55,6 +57,8 @@ const getPasswordStrength = (password) => {
 };
 
 const EditUserModal = ({ user, isOpen, onClose }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const dispatch = useDispatch();
   const { user: currentUser } = useSelector(state => state.auth);
   const { loading } = useSelector(state => state.users);
@@ -158,7 +162,7 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
       console.error('Permission update failed:', error);
       // Revert on error
       setPermissions(permissions);
-      toast.error('Failed to update permissions');
+      toast.error(tr('Failed to update permissions', 'Impossible de mettre à jour les autorisations'));
     }
   };
 
@@ -305,7 +309,7 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Shield className="h-5 w-5" />
-            Edit User: {user.full_name || user.email}
+            {tr('Edit User:', "Modifier l'utilisateur :")} {user.full_name || user.email}
           </DialogTitle>
         </DialogHeader>
 
@@ -313,17 +317,17 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
           {/* Basic Information */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="full_name">Full Name</Label>
+              <Label htmlFor="full_name">{tr('Full Name', 'Nom complet')}</Label>
               <Input
                 id="full_name"
                 value={formData.full_name}
                 onChange={(e) => handleInputChange('full_name', e.target.value)}
-                placeholder="Enter full name"
+                placeholder={tr('Enter full name', 'Entrez le nom complet')}
               />
             </div>
             
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="email">{tr('Email', 'E-mail')}</Label>
               <Input
                 id="email"
                 type="email"
@@ -331,11 +335,11 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
                 disabled
                 className="bg-gray-50"
               />
-              <p className="text-xs text-gray-500">Email cannot be changed</p>
+              <p className="text-xs text-gray-500">{tr('Email cannot be changed', "L'e-mail ne peut pas être modifié")}</p>
             </div>
             
             <div className="space-y-2">
-              <Label htmlFor="role">Role</Label>
+              <Label htmlFor="role">{tr('Role', 'Rôle')}</Label>
               <select
                 value={formData.role}
                 onChange={(e) => handleInputChange('role', e.target.value)}
@@ -348,28 +352,37 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
                     value={role}
                     disabled={role === 'owner' && currentUser?.role !== 'owner'}
                   >
-                    {role.charAt(0).toUpperCase() + role.slice(1)}
+                    {tr(
+                      role.charAt(0).toUpperCase() + role.slice(1),
+                      ({
+                        customer: 'Client',
+                        guide: 'Guide',
+                        employee: 'Employé',
+                        admin: 'Admin',
+                        owner: 'Propriétaire',
+                      }[role] || role)
+                    )}
                   </option>
                 ))}
               </select>
             </div>
             
             <div className="space-y-2">
-              <Label htmlFor="status">Status</Label>
+              <Label htmlFor="status">{tr('Status', 'Statut')}</Label>
               <select
                 value={formData.status}
                 onChange={(e) => handleInputChange('status', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
+                <option value="active">{tr('Active', 'Actif')}</option>
+                <option value="inactive">{tr('Inactive', 'Inactif')}</option>
               </select>
             </div>
           </div>
 
           {/* User Details */}
           <div className="p-4 bg-gray-50 rounded-lg">
-            <h3 className="font-medium mb-2">User Details</h3>
+            <h3 className="font-medium mb-2">{tr('User Details', "Détails de l'utilisateur")}</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
               <div>
                 <span className="text-gray-500">ID:</span>
@@ -385,15 +398,15 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
                 </Button>
               </div>
               <div>
-                <span className="text-gray-500">Created:</span>
+                <span className="text-gray-500">{tr('Created:', 'Créé :')}</span>
                 <span className="ml-2">{new Date(user.created_at).toLocaleDateString()}</span>
               </div>
               <div>
-                <span className="text-gray-500">Last Login:</span>
+                <span className="text-gray-500">{tr('Last Login:', 'Dernière connexion :')}</span>
                 <span className="ml-2">
                   {user.last_sign_in_at 
                     ? new Date(user.last_sign_in_at).toLocaleDateString()
-                    : 'Never'
+                    : tr('Never', 'Jamais')
                   }
                 </span>
               </div>
@@ -403,13 +416,13 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
           {/* Password Reset Section */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <Label className="text-base font-medium">Password Reset</Label>
+              <Label className="text-base font-medium">{tr('Password Reset', 'Réinitialisation du mot de passe')}</Label>
               <Button
                 type="button"
                 variant="outline"
                 onClick={() => setShowPasswordSection(!showPasswordSection)}
               >
-                {showPasswordSection ? 'Cancel Reset' : 'Reset Password'}
+                {showPasswordSection ? tr('Cancel Reset', 'Annuler la réinitialisation') : tr('Reset Password', 'Réinitialiser le mot de passe')}
               </Button>
             </div>
             
@@ -417,14 +430,14 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
               <div className="space-y-4 p-4 border rounded-lg">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="password">New Password</Label>
+                    <Label htmlFor="password">{tr('New Password', 'Nouveau mot de passe')}</Label>
                     <div className="relative">
                       <Input
                         id="password"
                         type={passwordData.showPassword ? "text" : "password"}
                         value={passwordData.password}
                         onChange={(e) => handlePasswordChange('password', e.target.value)}
-                        placeholder="Enter new password"
+                        placeholder={tr('Enter new password', 'Entrez le nouveau mot de passe')}
                       />
                       <Button
                         type="button"
@@ -459,16 +472,16 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
                   </div>
                   
                   <div className="space-y-2">
-                    <Label htmlFor="confirmPassword">Confirm Password</Label>
+                    <Label htmlFor="confirmPassword">Confirmer le mot de passe</Label>
                     <Input
                       id="confirmPassword"
                       type="password"
                       value={passwordData.confirmPassword}
                       onChange={(e) => handlePasswordChange('confirmPassword', e.target.value)}
-                      placeholder="Confirm new password"
+                      placeholder="Confirmer le nouveau mot de passe"
                     />
                     {passwordData.confirmPassword && passwordData.password !== passwordData.confirmPassword && (
-                      <p className="text-xs text-red-500">Passwords do not match</p>
+                      <p className="text-xs text-red-500">Les mots de passe ne correspondent pas</p>
                     )}
                   </div>
                 </div>
@@ -480,7 +493,7 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
                     onClick={generatePassword}
                   >
                     <RefreshCw className="h-4 w-4 mr-2" />
-                    Generate Secure Password
+                    Générer un mot de passe sécurisé
                   </Button>
                   
                   {passwordData.password && (
@@ -490,7 +503,7 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
                       onClick={() => copyToClipboard(passwordData.password, 'Password')}
                     >
                       <Copy className="h-4 w-4 mr-2" />
-                      Copy Password
+                      Copier le mot de passe
                     </Button>
                   )}
                 </div>
@@ -500,7 +513,7 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
 
           {/* Module Permissions */}
           <div className="space-y-4">
-            <Label className="text-base font-medium">Module Permissions</Label>
+            <Label className="text-base font-medium">{tr('Module Permissions', 'Autorisations des modules')}</Label>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {MODULES.map(module => (
                 <div key={module.id} className="flex items-center justify-between p-3 border rounded-lg">
@@ -521,18 +534,18 @@ const EditUserModal = ({ user, isOpen, onClose }) => {
           {/* Action Buttons */}
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="outline" onClick={onClose}>
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </Button>
             <Button type="submit" disabled={isUpdating || loading}>
               {isUpdating ? (
                 <>
                   <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  Updating...
+                  {tr('Updating...', 'Mise à jour...')}
                 </>
               ) : (
                 <>
                   <CheckCircle className="h-4 w-4 mr-2" />
-                  Save Changes
+                  {tr('Save Changes', 'Enregistrer les modifications')}
                 </>
               )}
             </Button>

@@ -26,9 +26,12 @@ import {
   Image as ImageIcon
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
 import DocumentService from '../../services/DocumentService';
 import VehicleImageService from '../../services/VehicleImageService';
+import VehicleDocumentsCard from '../verification/VehicleDocumentsCard';
 import toast from 'react-hot-toast';
+import i18n from '../../i18n';
 
 const VehicleFormModal = ({ 
   vehicle = null, 
@@ -37,7 +40,10 @@ const VehicleFormModal = ({
   onSuccess,
   mode = 'add' // 'add' | 'edit'
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const isEditing = mode === 'edit' && !!vehicle;
+  const { user, userProfile } = useAuth();
   
   const [formData, setFormData] = useState({
     name: '',
@@ -136,7 +142,7 @@ const VehicleFormModal = ({
       
     } catch (error) {
       console.error('❌ Error loading vehicle assets:', error);
-      toast.error('Failed to load vehicle images and documents');
+      toast.error('Impossible de charger les images et documents du véhicule');
     }
   };
 
@@ -154,7 +160,7 @@ const VehicleFormModal = ({
   // Validate plate number uniqueness
   const validatePlateNumber = async (plateNumber) => {
     if (!plateNumber.trim()) {
-      setPlateError('Plate number is required.');
+      setPlateError('Le numéro de plaque est requis.');
       return false;
     }
 
@@ -176,7 +182,7 @@ const VehicleFormModal = ({
       }
 
       if (data && data.length > 0) {
-        setPlateError('This plate number is already assigned to another vehicle.');
+        setPlateError('Ce numéro de plaque est déjà attribué à un autre véhicule.');
         return false;
       }
 
@@ -236,18 +242,18 @@ const VehicleFormModal = ({
       const vehicleId = vehicle?.id || `temp_${Date.now()}`;
       const uploadPromises = files.map(file => VehicleImageService.uploadVehicleImage(file, vehicleId));
       
-      toast.loading(`Uploading ${files.length} image(s)...`);
+      toast.loading(`Téléversement de ${files.length} image(s)...`);
       
       const results = await Promise.all(uploadPromises);
       
       setVehicleImages(prev => [...prev, ...results]);
       
       toast.dismiss();
-      toast.success(`${results.length} vehicle image(s) uploaded successfully`);
+      toast.success(`${results.length} image(s) du véhicule téléversée(s) avec succès`);
       
     } catch (error) {
       toast.dismiss();
-      toast.error(`Failed to upload images: ${error.message}`);
+      toast.error(`Impossible de téléverser les images : ${error.message}`);
     } finally {
       setImageUploading(false);
     }
@@ -260,7 +266,7 @@ const VehicleFormModal = ({
     setImageUploading(true);
     
     try {
-      toast.loading('Uploading vehicle image...');
+      toast.loading("Téléversement de l'image du véhicule...");
 
       const vehicleId = vehicle?.id || `temp_${Date.now()}`;
       
@@ -270,11 +276,11 @@ const VehicleFormModal = ({
       setVehicleImages(prev => [...prev, imageObject]);
       
       toast.dismiss();
-      toast.success('Vehicle image uploaded successfully');
+      toast.success("Image du véhicule téléversée avec succès");
       
     } catch (error) {
       toast.dismiss();
-      toast.error(`Failed to upload image: ${error.message}`);
+      toast.error(`Impossible de téléverser l'image : ${error.message}`);
     } finally {
       setImageUploading(false);
     }
@@ -291,10 +297,10 @@ const VehicleFormModal = ({
       }
       
       setVehicleImages(prev => prev.filter((_, i) => i !== index));
-      toast.success('Vehicle image removed');
+      toast.success("Image du véhicule supprimée");
     } catch (error) {
       console.error('Failed to delete image:', error);
-      toast.error('Failed to delete image');
+      toast.error("Impossible de supprimer l'image");
     }
   };
 
@@ -310,12 +316,12 @@ const VehicleFormModal = ({
       
       if (results && results.length > 0) {
         setUploadedFiles(prev => [...prev, ...results]);
-        toast.success(`${results.length} document(s) uploaded successfully`);
+        toast.success(`${results.length} document(s) téléversé(s) avec succès`);
       } else {
-        toast.error('Failed to upload documents');
+        toast.error('Impossible de téléverser les documents');
       }
     } catch (error) {
-      toast.error(`Failed to upload documents: ${error.message}`);
+      toast.error(`Impossible de téléverser les documents : ${error.message}`);
     }
   };
 
@@ -323,7 +329,7 @@ const VehicleFormModal = ({
     e.preventDefault();
     
     if (!formData.name || !formData.model || !formData.plate_number) {
-      toast.error('Please fill in all required fields: Vehicle Name, Model, and Plate Number');
+      toast.error("Veuillez remplir tous les champs obligatoires : nom du véhicule, modèle et numéro d'immatriculation");
       return;
     }
 
@@ -425,7 +431,11 @@ const VehicleFormModal = ({
       }
       setPlateError('');
     } catch (error) {
-      toast.error(`Failed to ${isEditing ? 'update' : 'create'} vehicle: ${error.message}`);
+      toast.error(
+        isEditing
+          ? `Impossible de mettre à jour le véhicule : ${error.message}`
+          : `Impossible de créer le véhicule : ${error.message}`
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -437,10 +447,10 @@ const VehicleFormModal = ({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {isEditing ? <Edit className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
-            {isEditing ? `Edit Vehicle: ${vehicle?.name}` : 'Add New Vehicle'}
+            {isEditing ? `Modifier le véhicule : ${vehicle?.name}` : 'Ajouter un nouveau véhicule'}
           </DialogTitle>
           <p className="text-sm text-gray-600">
-            {isEditing ? 'Update vehicle information and manage assets' : 'Create a new vehicle with comprehensive fleet management'}
+            {isEditing ? 'Mettez à jour les informations du véhicule et gérez ses éléments.' : 'Créez un nouveau véhicule avec une gestion de flotte complète.'}
           </p>
         </DialogHeader>
 
@@ -450,35 +460,35 @@ const VehicleFormModal = ({
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Car className="h-5 w-5" />
-                Basic Information
+                Informations de base
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="name">Vehicle Name *</Label>
+                  <Label htmlFor="name">Nom du véhicule *</Label>
                   <Input
                     id="name"
                     value={formData.name}
                     onChange={(e) => handleInputChange('name', e.target.value)}
-                    placeholder="e.g., ATV-001, Raptor-Blue"
+                    placeholder="ex. ATV-001, Raptor-Bleu"
                     required
                   />
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="model">Model *</Label>
+                  <Label htmlFor="model">Modèle *</Label>
                   <Input
                     id="model"
                     value={formData.model}
                     onChange={(e) => handleInputChange('model', e.target.value)}
-                    placeholder="e.g., Yamaha Raptor 700, Honda TRX450R"
+                    placeholder="ex. Yamaha Raptor 700, Honda TRX450R"
                     required
                   />
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="vehicle_type">Vehicle Type *</Label>
+                  <Label htmlFor="vehicle_type">Type de véhicule *</Label>
                   <select
                     id="vehicle_type"
                     value={formData.vehicle_type}
@@ -489,13 +499,21 @@ const VehicleFormModal = ({
                     <option value="Quad">Quad</option>
                     <option value="ATV">ATV</option>
                     <option value="UTV">UTV</option>
+                    <option value="Buggy">Buggy</option>
+                    <option value="Car">Car</option>
+                    <option value="Motorhome">Motorhome</option>
+                    <option value="Jet Ski">Jet Ski</option>
+                    <option value="Electric Bike">Electric Bike</option>
+                    <option value="Electric Motorbike">Electric Motorbike</option>
+                    <option value="Electric Motorcycle">Electric Motorcycle</option>
                     <option value="Motorcycle">Motorcycle</option>
-                    <option value="Other">Other</option>
+                    <option value="Scooter">Scooter</option>
+                    <option value="Other">Autre</option>
                   </select>
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="engine_power_cc">Engine Power (CC)</Label>
+                  <Label htmlFor="engine_power_cc">Puissance moteur (CC)</Label>
                   <Input
                     id="engine_power_cc"
                     type="number"
@@ -506,7 +524,7 @@ const VehicleFormModal = ({
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="seating_capacity">Seating Capacity</Label>
+                  <Label htmlFor="seating_capacity">Capacité de places</Label>
                   <Input
                     id="seating_capacity"
                     type="number"
@@ -517,22 +535,22 @@ const VehicleFormModal = ({
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="color">Color</Label>
+                  <Label htmlFor="color">Couleur</Label>
                   <Input
                     id="color"
                     value={formData.color}
                     onChange={(e) => handleInputChange('color', e.target.value)}
-                    placeholder="e.g., Red, Blue, Black, Camo"
+                    placeholder="ex. Rouge, Bleu, Noir, Camo"
                   />
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="plate_number">Plate Number *</Label>
+                  <Label htmlFor="plate_number">Numéro d'immatriculation *</Label>
                   <Input
                     id="plate_number"
                     value={formData.plate_number}
                     onChange={(e) => handleInputChange('plate_number', e.target.value)}
-                    placeholder="e.g., ABC-123, XYZ-456"
+                    placeholder="ex. ABC-123, XYZ-456"
                     required
                     className={plateError ? 'border-red-500' : ''}
                   />
@@ -545,22 +563,22 @@ const VehicleFormModal = ({
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="status">Status</Label>
+                  <Label htmlFor="status">Statut</Label>
                   <select
                     id="status"
                     value={formData.status}
                     onChange={(e) => handleInputChange('status', e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
-                    <option value="available">Available</option>
-                    <option value="scheduled">Scheduled</option>
-                    <option value="rented">Rented</option>
+                    <option value="available">Disponible</option>
+                    <option value="scheduled">Planifié</option>
+                    <option value="rented">Loué</option>
                     <option value="tour">Tour</option>
                     <option value="maintenance">Maintenance</option>
-                    <option value="out_of_service">Out of Service</option>
+                    <option value="out_of_service">Hors service</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
-                    <strong>Scheduled:</strong> Vehicle has upcoming reservations
+                    <strong>Planifié :</strong> Le véhicule a des réservations à venir
                   </p>
                 </div>
               </div>
@@ -572,13 +590,13 @@ const VehicleFormModal = ({
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <DollarSign className="h-5 w-5" />
-                Acquisition & Purchase Information
+                Informations d'acquisition et d'achat
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="purchase_cost_mad">Purchase Cost (MAD)</Label>
+                  <Label htmlFor="purchase_cost_mad">Coût d'achat (MAD)</Label>
                   <Input
                     id="purchase_cost_mad"
                     type="number"
@@ -586,12 +604,12 @@ const VehicleFormModal = ({
                     step="0.01"
                     value={formData.purchase_cost_mad}
                     onChange={(e) => handleInputChange('purchase_cost_mad', e.target.value)}
-                    placeholder="e.g., 45000.00"
+                    placeholder="ex. 45000.00"
                   />
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="purchase_date">Purchase Date</Label>
+                  <Label htmlFor="purchase_date">Date d'achat</Label>
                   <Input
                     id="purchase_date"
                     type="date"
@@ -601,17 +619,17 @@ const VehicleFormModal = ({
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="supplier">Supplier / Seller</Label>
+                  <Label htmlFor="supplier">Fournisseur / vendeur</Label>
                   <Input
                     id="supplier"
                     value={formData.supplier}
                     onChange={(e) => handleInputChange('supplier', e.target.value)}
-                    placeholder="e.g., Yamaha Morocco, Local Dealer"
+                    placeholder="ex. Yamaha Maroc, concessionnaire local"
                   />
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="invoice_url">Invoice/Receipt URL</Label>
+                  <Label htmlFor="invoice_url">URL de la facture / du reçu</Label>
                   <Input
                     id="invoice_url"
                     type="url"
@@ -629,14 +647,14 @@ const VehicleFormModal = ({
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Wrench className="h-5 w-5" />
-                Maintenance & Odometer
+                Maintenance et odomètre
               </CardTitle>
-              <p className="text-sm text-gray-600">For New Vehicle</p>
+              <p className="text-sm text-gray-600">Pour un nouveau véhicule</p>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="current_odometer_km">Current Odometer (km)</Label>
+                  <Label htmlFor="current_odometer_km">Odomètre actuel (km)</Label>
                   <Input
                     id="current_odometer_km"
                     type="number"
@@ -647,7 +665,7 @@ const VehicleFormModal = ({
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="engine_hours">Engine Hours</Label>
+                  <Label htmlFor="engine_hours">Heures moteur</Label>
                   <Input
                     id="engine_hours"
                     type="number"
@@ -658,7 +676,7 @@ const VehicleFormModal = ({
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="last_oil_change_date">Last Oil Change Date</Label>
+                  <Label htmlFor="last_oil_change_date">Date du dernier changement d'huile</Label>
                   <Input
                     id="last_oil_change_date"
                     type="date"
@@ -668,7 +686,7 @@ const VehicleFormModal = ({
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="last_oil_change_odometer_km">Last Oil Change Odometer (km)</Label>
+                  <Label htmlFor="last_oil_change_odometer_km">Odomètre au dernier changement d'huile (km)</Label>
                   <Input
                     id="last_oil_change_odometer_km"
                     type="number"
@@ -683,12 +701,12 @@ const VehicleFormModal = ({
                 <div className="flex items-start gap-2">
                   <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5" />
                   <div>
-                    <h4 className="font-medium text-blue-900">Maintenance Setup</h4>
+                    <h4 className="font-medium text-blue-900">Configuration de la maintenance</h4>
                     <p className="text-sm text-blue-700 mt-1">
-                      Set initial maintenance information for this vehicle. You can add detailed maintenance records after the vehicle is created.
+                      Définissez les informations initiales de maintenance pour ce véhicule. Vous pourrez ajouter des enregistrements détaillés après la création du véhicule.
                     </p>
                     <p className="text-xs text-blue-600 mt-2">
-                      💡 Tip: After creating the vehicle, you can access the full maintenance panel by editing the vehicle to add detailed maintenance records, schedule services, and track maintenance history with odometer-based oil change tracking.
+                      💡 Astuce : après la création du véhicule, vous pourrez accéder au panneau complet de maintenance en modifiant le véhicule pour ajouter des enregistrements détaillés, planifier des services et suivre l'historique avec le suivi des vidanges basé sur l'odomètre.
                     </p>
                   </div>
                 </div>
@@ -701,13 +719,13 @@ const VehicleFormModal = ({
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <ImageIcon className="h-5 w-5" />
-                Vehicle Images
+                Images du véhicule
                 <span className="text-xs text-blue-600 ml-2">
                   ({vehicleImages.length} images)
                 </span>
               </CardTitle>
               <p className="text-sm text-gray-600">
-                Drag and drop images or click to upload vehicle photos
+                Glissez-déposez des images ou cliquez pour téléverser des photos du véhicule
               </p>
             </CardHeader>
             <CardContent>
@@ -750,14 +768,14 @@ const VehicleFormModal = ({
                     <h3 className={`text-lg font-medium ${
                       isDragOver ? 'text-blue-700' : 'text-gray-700'
                     }`}>
-                      {isDragOver ? 'Drop images here!' : 'Drag & drop vehicle images'}
+                      {isDragOver ? tr('Drop images here!', 'Déposez les images ici !') : tr('Drag & drop vehicle images', 'Glissez-déposez les images du véhicule')}
                     </h3>
                     <p className={`text-sm ${
                       isDragOver ? 'text-blue-600' : 'text-gray-500'
                     }`}>
                       {isDragOver 
-                        ? 'Release to upload your images' 
-                        : 'or click the button below to browse files'
+                        ? tr('Release to upload your images', 'Relâchez pour téléverser vos images') 
+                        : tr('or click the button below to browse files', 'ou cliquez sur le bouton ci-dessous pour parcourir les fichiers')
                       }
                     </p>
                   </div>
@@ -777,18 +795,18 @@ const VehicleFormModal = ({
                     {imageUploading ? (
                       <>
                         <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                        Uploading...
+                        {tr('Uploading...', 'Téléversement...')}
                       </>
                     ) : (
                       <>
                         <Upload className="h-4 w-4 mr-2" />
-                        Choose Images
+                        {tr('Choose Images', 'Choisir les images')}
                       </>
                     )}
                   </Button>
                   
                   <p className="text-xs text-gray-500">
-                    JPG, PNG, GIF, WebP up to 5MB each • Multiple files supported
+                    {tr('JPG, PNG, GIF, WebP up to 5MB each • Multiple files supported', 'JPG, PNG, GIF, WebP jusqu’à 5 Mo chacun • Plusieurs fichiers pris en charge')}
                   </p>
                 </div>
                 
@@ -797,7 +815,7 @@ const VehicleFormModal = ({
                   <div className="absolute inset-0 bg-blue-500 bg-opacity-20 rounded-lg flex items-center justify-center">
                     <div className="bg-white rounded-lg p-4 shadow-lg">
                       <CloudUpload className="h-8 w-8 text-blue-500 mx-auto mb-2" />
-                      <p className="text-blue-700 font-medium">Drop to upload</p>
+                      <p className="text-blue-700 font-medium">{tr('Drop to upload', 'Déposez pour téléverser')}</p>
                     </div>
                   </div>
                 )}
@@ -808,7 +826,7 @@ const VehicleFormModal = ({
                 <div className="mt-6">
                   <h4 className="font-medium text-gray-900 mb-4 flex items-center gap-2">
                     <ImageIcon className="h-4 w-4" />
-                    Uploaded Images ({vehicleImages.length})
+                    {tr('Uploaded Images', 'Images téléversées')} ({vehicleImages.length})
                   </h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {vehicleImages.map((file, index) => (
@@ -827,7 +845,7 @@ const VehicleFormModal = ({
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <Badge variant="secondary" className="text-xs">
-                              Image
+                              {tr('Image', 'Image')}
                             </Badge>
                             <Badge variant="outline" className="text-xs">
                               VIS
@@ -889,7 +907,7 @@ const VehicleFormModal = ({
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <FileText className="h-5 w-5" />
-                Documents (Legal & Administrative)
+                {tr('Documents (Legal & Administrative)', 'Documents (juridiques et administratifs)')}
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -913,7 +931,7 @@ const VehicleFormModal = ({
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
                           <Badge variant="secondary" className="text-xs">
-                            {file.category || 'Document'}
+                            {file.category || tr('Document', 'Document')}
                           </Badge>
                           <Badge variant="outline" className="text-xs">
                             DS
@@ -969,7 +987,7 @@ const VehicleFormModal = ({
               ) : (
                 <div className="text-center py-8 text-gray-500">
                   <FileText className="h-12 w-12 mx-auto mb-4 text-gray-400" />
-                  <p>No documents uploaded yet.</p>
+                  <p>{tr('No documents uploaded yet.', "Aucun document n'a encore été téléversé.")}</p>
                 </div>
               )}
               
@@ -996,50 +1014,56 @@ const VehicleFormModal = ({
                     if (input) input.click();
                   }}
                 >
-                  Click to upload documents
+                  {tr('Click to upload documents', 'Cliquez pour téléverser des documents')}
                 </Button>
                 <p className="text-xs text-gray-500 mt-2">
-                  PDF, DOC, DOCX, TXT, JPG, PNG up to 10MB each
+                  {tr('PDF, DOC, DOCX, TXT, JPG, PNG up to 10MB each', 'PDF, DOC, DOCX, TXT, JPG, PNG jusqu’à 10 Mo chacun')}
                 </p>
               </div>
               
               <div className="mt-4 bg-gray-50 rounded-lg p-4">
-                <h4 className="font-medium text-gray-900 mb-2">Document Upload Tips</h4>
+                <h4 className="font-medium text-gray-900 mb-2">{tr('Document Upload Tips', 'Conseils de téléversement de documents')}</h4>
                 <ul className="text-sm text-gray-600 space-y-1">
-                  <li>• Upload registration, insurance, and maintenance documents</li>
-                  <li>• Supported formats: PDF, DOC, DOCX, TXT, JPG, PNG</li>
-                  <li>• Maximum file size: 10MB per file</li>
-                  <li>• Multiple files can be uploaded at once</li>
-                  <li>• Files are stored in vehicle-specific folders for organization</li>
+                  <li>• {tr('Upload registration, insurance, and maintenance documents', "Téléversez les documents d'immatriculation, d'assurance et de maintenance")}</li>
+                  <li>• {tr('Supported formats: PDF, DOC, DOCX, TXT, JPG, PNG', 'Formats pris en charge : PDF, DOC, DOCX, TXT, JPG, PNG')}</li>
+                  <li>• {tr('Maximum file size: 10MB per file', 'Taille maximale : 10 Mo par fichier')}</li>
+                  <li>• {tr('Multiple files can be uploaded at once', 'Plusieurs fichiers peuvent être téléversés en une seule fois')}</li>
+                  <li>• {tr('Files are stored in vehicle-specific folders for organization', 'Les fichiers sont stockés dans des dossiers propres à chaque véhicule pour une meilleure organisation')}</li>
                 </ul>
               </div>
             </CardContent>
           </Card>
 
+          <VehicleDocumentsCard
+            vehicle={vehicle}
+            ownerUserId={vehicle?.owner_user_id || userProfile?.id || user?.id}
+            disabled={isSubmitting}
+          />
+
           {/* Additional Notes */}
           <Card>
             <CardHeader>
-              <CardTitle>Additional Notes</CardTitle>
+              <CardTitle>{tr('Additional Notes', 'Notes supplémentaires')}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="general_notes">General Notes</Label>
+                <Label htmlFor="general_notes">{tr('General Notes', 'Notes générales')}</Label>
                 <Textarea
                   id="general_notes"
                   value={formData.general_notes}
                   onChange={(e) => handleInputChange('general_notes', e.target.value)}
-                  placeholder="Any additional notes about this vehicle, special instructions, known issues, modifications, etc..."
+                  placeholder={tr('Any additional notes about this vehicle, special instructions, known issues, modifications, etc...', 'Toutes notes supplémentaires sur ce véhicule, instructions spéciales, problèmes connus, modifications, etc...')}
                   rows={3}
                 />
               </div>
               
               <div className="space-y-2">
-                <Label htmlFor="system_notes">System Notes</Label>
+                <Label htmlFor="system_notes">{tr('System Notes', 'Notes système')}</Label>
                 <Textarea
                   id="system_notes"
                   value={formData.system_notes}
                   onChange={(e) => handleInputChange('system_notes', e.target.value)}
-                  placeholder="Internal notes for staff, booking system notes, etc..."
+                  placeholder={tr('Internal notes for staff, booking system notes, etc...', "Notes internes pour l'équipe, notes du système de réservation, etc...")}
                   rows={3}
                 />
               </div>
@@ -1049,7 +1073,7 @@ const VehicleFormModal = ({
           {/* Action Buttons */}
           <div className="flex justify-end gap-2 pt-4 border-t">
             <Button type="button" variant="outline" onClick={onClose}>
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </Button>
             <Button 
               type="submit" 
@@ -1058,12 +1082,12 @@ const VehicleFormModal = ({
               {isSubmitting ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                  {isEditing ? 'Updating...' : 'Creating...'}
+                  {isEditing ? tr('Updating...', 'Mise à jour...') : tr('Creating...', 'Création...')}
                 </>
               ) : (
                 <>
                   {isEditing ? <Edit className="h-4 w-4 mr-2" /> : <Plus className="h-4 w-4 mr-2" />}
-                  {isEditing ? 'Update Vehicle' : 'Create Vehicle'}
+                  {isEditing ? tr('Update Vehicle', 'Mettre à jour le véhicule') : tr('Create Vehicle', 'Créer le véhicule')}
                 </>
               )}
             </Button>

@@ -6,6 +6,7 @@
     "success": "Success",
     "cancel": "Cancel",
     "save": "Save",
+    "saving": "Saving...",
     "edit": "Edit",
     "delete": "Delete",
     "confirm": "Confirm",
@@ -63,6 +64,8 @@
     "featured": "Featured",
     "popular": "Popular",
     "new": "New",
+    "never": "Never",
+    "comingSoon": "Coming soon",
     "updated": "Updated",
     "created": "Created",
     "modified": "Modified",
@@ -2826,6 +2829,108 @@
       "privacy": "Privacy Policy",
       "terms": "Terms of Service",
       "cookies": "Cookie Policy"
+    }
+  },
+  "profile": {
+    "title": "My Profile",
+    "notAuthenticated": "You are not signed in",
+    "pleaseLogin": "Please log in to view your profile.",
+    "changePassword": "Change Password",
+    "personalInformation": "Personal Information",
+    "contactDetails": "Contact details",
+    "roleBasedAccess": "Role-based access",
+    "lastUpdated": "Last updated",
+    "updateSuccess": "Profile updated successfully.",
+    "rolePermissions": "Profile permissions",
+    "yourRole": "Your role",
+    "availableFields": "Available fields",
+    "fieldsCount": "fields",
+    "idFile": "ID file",
+    "idFiles": "ID files",
+    "saveHint": "Review your details before saving.",
+    "fullAccess": "You can edit all profile fields for this role.",
+    "limitedAccess": "Some profile fields are limited by your role.",
+    "tabs": {
+      "profile": "Profile",
+      "security": "Security",
+      "preferences": "Preferences",
+      "activity": "Activity"
+    },
+    "fields": {
+      "username": "Username",
+      "firstName": "First name",
+      "lastName": "Last name",
+      "phone": "Phone",
+      "address": "Address",
+      "dateOfBirth": "Date of birth",
+      "emergencyContact": "Emergency contact",
+      "emergencyPhone": "Emergency phone"
+    },
+    "placeholders": {
+      "username": "Choose a username",
+      "firstName": "Enter first name",
+      "lastName": "Enter last name",
+      "phone": "Enter phone number",
+      "address": "Enter address",
+      "emergencyContact": "Enter emergency contact",
+      "emergencyPhone": "Enter emergency phone"
+    },
+    "errors": {
+      "loadFailed": "Unable to load profile",
+      "updateFailed": "Unable to update profile"
+    },
+    "password": {
+      "updatedDescription": "Password updated successfully.",
+      "updateFailed": "Failed to update password",
+      "new": "New password",
+      "newPlaceholder": "Enter your new password",
+      "confirm": "Confirm password",
+      "confirmPlaceholder": "Confirm your new password",
+      "requirements": "Password requirements",
+      "required": "Enter a new password",
+      "confirmRequired": "Confirm your new password",
+      "mismatch": "Passwords do not match",
+      "minLength": "At least 8 characters",
+      "lowercase": "One lowercase letter",
+      "uppercase": "One uppercase letter",
+      "number": "One number",
+      "special": "One special character (@$!%*?&)",
+      "strength": {
+        "veryWeak": "Very weak",
+        "weak": "Weak",
+        "fair": "Fair",
+        "good": "Good",
+        "strong": "Strong",
+        "veryStrong": "Very strong"
+      }
+    },
+    "security": {
+      "title": "Security",
+      "password": "Password",
+      "passwordDescription": "Update your account password.",
+      "twoFactor": "Two-factor authentication",
+      "twoFactorDescription": "Add an extra layer of protection to your account."
+    },
+    "preferences": {
+      "title": "Preferences",
+      "notifications": "Notifications",
+      "notificationsDescription": "Choose how you want to receive account updates."
+    },
+    "activity": {
+      "title": "Activity",
+      "noActivity": "No activity recorded yet."
+    },
+    "picture": {
+      "alt": "Profile picture",
+      "change": "Change picture",
+      "delete": "Delete picture",
+      "instructions": "Tap to upload a profile picture.",
+      "formats": "Accepted formats: JPG, PNG, GIF, WEBP up to 5MB.",
+      "invalidType": "Please choose a supported image format.",
+      "tooLarge": "The selected image is too large.",
+      "uploadError": "Unable to upload the profile picture.",
+      "deleteError": "Unable to delete the profile picture.",
+      "userFallback": "User"
     }
   }
 }

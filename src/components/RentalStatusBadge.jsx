@@ -78,6 +78,12 @@ const RentalStatusBadge = ({ rental, className = '' }) => {
           variant: 'destructive',
           className: 'bg-red-100 text-red-800 hover:bg-red-200'
         };
+      case 'no_show_review':
+        return {
+          label: tr('No-show review', 'Contrôle absence'),
+          variant: 'outline',
+          className: 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+        };
       case 'overdue':
         return {
           label: tr('Overdue', 'En retard'),

@@ -23,8 +23,11 @@ import {
   Grid3X3,
   LayoutList
 } from 'lucide-react';
+import i18n from '../i18n';
 
 const RentalVideos = ({ rental, onUpdate }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [media, setMedia] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -324,7 +327,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
     return new Date(timestamp).toLocaleString();
   };
 
-  const getPhaseLabel = (phase) => phase === 'out' ? 'Opening' : 'Closing';
+  const getPhaseLabel = (phase) => phase === 'out' ? tr('Opening', 'Départ') : tr('Closing', 'Retour');
   const getPhaseColor = (phase) => phase === 'out' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800';
 
   // Compact thumbnail component for grid view
@@ -340,12 +343,12 @@ const RentalVideos = ({ rental, onUpdate }) => {
         onKeyDown={(event) => handleMediaKeyDown(event, item)}
         role="button"
         tabIndex={0}
-        aria-label={`${item.isImage ? 'View' : 'Play'} ${getPhaseLabel(item.phase)} ${item.isImage ? 'image' : 'video'}: ${item.original_filename}`}
+        aria-label={`${item.isImage ? tr('View', 'Voir') : tr('Play', 'Lire')} ${getPhaseLabel(item.phase)} ${item.isImage ? tr('image', 'image') : tr('video', 'vidéo')}: ${item.original_filename}`}
       >
         {item.isImage ? (
           <img
             src={item.url}
-            alt={`${getPhaseLabel(item.phase)} condition`}
+            alt={`${getPhaseLabel(item.phase)} ${tr('condition', 'état')}`}
             className="w-full h-full object-cover transition-transform group-hover:scale-105"
             onError={(e) => {
               e.target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100"%3E%3Crect fill="%23f3f4f6" width="100" height="100"/%3E%3Ctext x="50%" y="50%" text-anchor="middle" dy=".3em" fill="%239ca3af"%3ENo Image%3C/text%3E%3C/svg%3E';
@@ -354,7 +357,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
         ) : thumbnailSrc && !isGenerating && !hasError ? (
           <img
             src={thumbnailSrc}
-            alt={`${getPhaseLabel(item.phase)} video thumbnail`}
+            alt={`${getPhaseLabel(item.phase)} ${tr('video thumbnail', 'aperçu vidéo')}`}
             className="w-full h-full object-cover transition-transform group-hover:scale-105"
             onError={(e) => {
               e.target.style.display = 'none';
@@ -460,7 +463,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
               {getPhaseLabel(item.phase)}
             </Badge>
             <span className="text-xs text-gray-500">
-              {item.isImage ? 'Photo' : 'Video'}
+              {item.isImage ? tr('Photo', 'Photo') : tr('Video', 'Vidéo')}
             </span>
           </div>
           <p className="text-sm text-gray-700 truncate">{item.original_filename}</p>
@@ -510,17 +513,17 @@ const RentalVideos = ({ rental, onUpdate }) => {
 
   if (loading) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Camera className="w-5 h-5" />
-            Vehicle Condition Media
+      <Card className="overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+        <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60">
+          <CardTitle className="flex items-center gap-2 text-slate-900">
+            <Camera className="w-5 h-5 text-violet-700" />
+            {tr('Vehicle Condition Media', "Médias d'état du véhicule")}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-center py-8">
             <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-            <span className="ml-2 text-gray-600">Loading media...</span>
+            <span className="ml-2 text-gray-600">{tr('Loading media...', 'Chargement des médias...')}</span>
           </div>
         </CardContent>
       </Card>
@@ -529,23 +532,23 @@ const RentalVideos = ({ rental, onUpdate }) => {
 
   if (error) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Camera className="w-5 h-5" />
-            Vehicle Condition Media
+      <Card className="overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+        <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60">
+          <CardTitle className="flex items-center gap-2 text-slate-900">
+            <Camera className="w-5 h-5 text-violet-700" />
+            {tr('Vehicle Condition Media', "Médias d'état du véhicule")}
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <div className="rounded-2xl border border-red-200 bg-red-50/80 p-4 shadow-[0_12px_30px_rgba(239,68,68,0.08)]">
             <div className="flex items-center gap-2 mb-2">
               <AlertTriangle className="w-5 h-5 text-red-600" />
-              <span className="font-medium text-red-800">Error</span>
+              <span className="font-medium text-red-800">{tr('Error', 'Erreur')}</span>
             </div>
             <p className="text-red-700 text-sm mb-3">{error}</p>
             <Button onClick={handleRetry} variant="outline" size="sm">
               <RefreshCw className="w-4 h-4 mr-2" />
-              Retry
+              {tr('Retry', 'Réessayer')}
             </Button>
           </div>
         </CardContent>
@@ -555,14 +558,14 @@ const RentalVideos = ({ rental, onUpdate }) => {
 
   return (
     <>
-      <Card>
-        <CardHeader className="pb-3">
+      <Card className="overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+        <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 pb-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Camera className="w-5 h-5" />
-              Vehicle Condition Media
+            <CardTitle className="flex items-center gap-2 text-base text-slate-900">
+              <Camera className="w-5 h-5 text-violet-700" />
+              {tr('Vehicle Condition Media', "Médias d'état du véhicule")}
               {media.length > 0 && (
-                <Badge variant="secondary" className="ml-1">
+                <Badge variant="secondary" className="ml-1 border border-violet-100 bg-violet-50 text-violet-700">
                   {media.length}
                 </Badge>
               )}
@@ -571,20 +574,20 @@ const RentalVideos = ({ rental, onUpdate }) => {
             {media.length > 0 && (
               <div className="flex items-center gap-2 flex-wrap">
                 {/* View mode toggle */}
-                <div className="flex border rounded-md overflow-hidden">
+                <div className="flex overflow-hidden rounded-xl border border-violet-100 bg-white shadow-sm">
                   <button
                     type="button"
-                    className={`p-1.5 ${viewMode === 'grid' ? 'bg-blue-100 text-blue-700' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+                    className={`p-1.5 ${viewMode === 'grid' ? 'bg-violet-100 text-violet-700' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
                     onClick={() => setViewMode('grid')}
-                    title="Grid view"
+                    title={tr('Grid view', 'Vue grille')}
                   >
                     <Grid3X3 className="w-4 h-4" />
                   </button>
                   <button
                     type="button"
-                    className={`p-1.5 ${viewMode === 'list' ? 'bg-blue-100 text-blue-700' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+                    className={`p-1.5 ${viewMode === 'list' ? 'bg-violet-100 text-violet-700' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
                     onClick={() => setViewMode('list')}
-                    title="List view"
+                    title={tr('List view', 'Vue liste')}
                   >
                     <LayoutList className="w-4 h-4" />
                   </button>
@@ -596,16 +599,16 @@ const RentalVideos = ({ rental, onUpdate }) => {
                     variant={filterType === 'all' ? 'default' : 'outline'}
                     size="sm"
                     onClick={() => setFilterType('all')}
-                    className="text-xs h-7 px-2"
+                    className={`text-xs h-7 px-2 ${filterType === 'all' ? 'bg-violet-700 text-white hover:bg-violet-800 hover:text-white' : 'border-violet-100 text-slate-600 hover:bg-violet-50'}`}
                   >
-                    All ({media.length})
+                    {tr('All', 'Tous')} ({media.length})
                   </Button>
                   {imageCount > 0 && (
                     <Button
                       variant={filterType === 'images' ? 'default' : 'outline'}
                       size="sm"
                       onClick={() => setFilterType('images')}
-                      className="text-xs h-7 px-2"
+                      className={`text-xs h-7 px-2 ${filterType === 'images' ? 'bg-violet-700 text-white hover:bg-violet-800 hover:text-white' : 'border-violet-100 text-slate-600 hover:bg-violet-50'}`}
                     >
                       <ImageIcon className="w-3 h-3 mr-1" />
                       {imageCount}
@@ -616,7 +619,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
                       variant={filterType === 'videos' ? 'default' : 'outline'}
                       size="sm"
                       onClick={() => setFilterType('videos')}
-                      className="text-xs h-7 px-2"
+                      className={`text-xs h-7 px-2 ${filterType === 'videos' ? 'bg-violet-700 text-white hover:bg-violet-800 hover:text-white' : 'border-violet-100 text-slate-600 hover:bg-violet-50'}`}
                     >
                       <Video className="w-3 h-3 mr-1" />
                       {videoCount}
@@ -627,17 +630,17 @@ const RentalVideos = ({ rental, onUpdate }) => {
             )}
           </div>
         </CardHeader>
-        <CardContent className="pt-0">
+        <CardContent className="pt-4">
           {media.length === 0 ? (
-            <div className="text-center py-6 text-gray-500">
-              <Camera className="w-10 h-10 mx-auto mb-3 text-gray-400" />
-              <p className="font-medium">No media recorded yet</p>
-              <p className="text-sm">Photos and videos will appear here</p>
+            <div className="rounded-2xl border border-violet-100 bg-slate-50/70 py-8 text-center text-gray-500">
+              <Camera className="mx-auto mb-3 h-10 w-10 text-violet-300" />
+              <p className="font-medium">{tr('No media recorded yet', 'Aucun média enregistré pour le moment')}</p>
+              <p className="text-sm">{tr('Photos and videos will appear here', 'Les photos et vidéos apparaîtront ici')}</p>
             </div>
           ) : filteredMedia.length === 0 ? (
-            <div className="text-center py-6 text-gray-500">
-              <Filter className="w-10 h-10 mx-auto mb-3 text-gray-400" />
-              <p className="font-medium">No {filterType} found</p>
+            <div className="rounded-2xl border border-violet-100 bg-slate-50/70 py-8 text-center text-gray-500">
+              <Filter className="mx-auto mb-3 h-10 w-10 text-violet-300" />
+              <p className="font-medium">{tr('No matching media found', 'Aucun média correspondant trouvé')}</p>
             </div>
           ) : viewMode === 'grid' ? (
             <div className={`grid ${getGridClass()} gap-2 mx-auto`}>
@@ -670,7 +673,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
                 </Button>
               </div>
               <DialogDescription>
-                {getPhaseLabel(playingVideo.phase)} vehicle condition recording
+                {getPhaseLabel(playingVideo.phase)} {tr('vehicle condition recording', "enregistrement de l'état du véhicule")}
               </DialogDescription>
             </DialogHeader>
 
@@ -715,7 +718,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
                   ) : (
                     <Download className="w-4 h-4 mr-2" />
                   )}
-                  Download
+                  {tr('Download', 'Télécharger')}
                 </Button>
               </div>
             </div>
@@ -738,7 +741,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
                 </Button>
               </div>
               <DialogDescription className="sr-only">
-                {getPhaseLabel(viewingImage.phase)} vehicle condition image
+                {getPhaseLabel(viewingImage.phase)} {tr('vehicle condition image', "image de l'état du véhicule")}
               </DialogDescription>
             </DialogHeader>
 
@@ -765,7 +768,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
 
               <img
                 src={viewingImage.url}
-                alt={`${getPhaseLabel(viewingImage.phase)} condition`}
+                alt={`${getPhaseLabel(viewingImage.phase)} ${tr('condition', 'état')}`}
                 className="max-w-full max-h-[80vh] object-contain rounded"
               />
             </div>
@@ -791,7 +794,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
                   ) : (
                     <Download className="w-4 h-4 mr-2" />
                   )}
-                  Download
+                  {tr('Download', 'Télécharger')}
                 </Button>
               </div>
             </div>

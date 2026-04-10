@@ -2,6 +2,7 @@ import { supabase } from '../lib/supabase';
 import MaintenanceService from './MaintenanceService';
 
 const APP_ID = '4c3a7a6153';
+const RENTALS_TABLE = `app_${APP_ID}_rentals`;
 
 class VehicleReportService {
   constructor() {
@@ -44,10 +45,69 @@ class VehicleReportService {
   }
 
   calculateStayCharge(config = {}) {
+    const enabled = config.maintenance_daily_enabled !== false;
+    if (!enabled) return 0;
     const days = Math.max(0, parseInt(config.maintenance_daily_days || 0, 10) || 0);
     const dailyRate = Math.max(0, Number(config.maintenance_daily_rate || 0));
     const discount = Math.max(0, Number(config.maintenance_daily_discount || 0));
     return Math.max(0, (days * dailyRate) - discount);
+  }
+
+  buildRentalMaintenanceSnapshot(report = {}) {
+    const maintenanceDailyEnabled = report.maintenance_daily_enabled !== false;
+    const maintenanceDailyDays = Math.max(0, parseInt(report.maintenance_daily_days || 0, 10) || 0);
+    const maintenanceDailyRate = Math.max(0, Number(report.maintenance_daily_rate || 0));
+    const maintenanceDailyDiscount = Math.max(0, Number(report.maintenance_daily_discount || 0));
+    const maintenanceDailyTotal = Math.max(
+      0,
+      Number(report.maintenance_daily_total || this.calculateStayCharge({
+        maintenance_daily_enabled: maintenanceDailyEnabled,
+        maintenance_daily_days: maintenanceDailyDays,
+        maintenance_daily_rate: maintenanceDailyRate,
+        maintenance_daily_discount: maintenanceDailyDiscount,
+      }))
+    );
+    const maintenanceCostTotal = Math.max(0, Number(report.maintenance_cost_total || 0));
+    const customerChargeTotal = Boolean(report.customer_chargeable)
+      ? Math.max(0, Number(report.customer_charge_amount || (maintenanceCostTotal + maintenanceDailyTotal)))
+      : 0;
+
+    return {
+      linked_maintenance_id: report.maintenance_id || null,
+      linked_maintenance_status: report.status || null,
+      linked_maintenance_cost_total: maintenanceCostTotal,
+      linked_maintenance_customer_charge_total: customerChargeTotal,
+      linked_maintenance_daily_enabled: maintenanceDailyEnabled,
+      linked_maintenance_daily_days: maintenanceDailyDays,
+      linked_maintenance_daily_rate: maintenanceDailyRate,
+      linked_maintenance_daily_discount: maintenanceDailyDiscount,
+      linked_maintenance_daily_total: maintenanceDailyTotal,
+      linked_maintenance_synced_at: new Date().toISOString(),
+    };
+  }
+
+  async syncRentalMaintenanceSnapshot(report = {}) {
+    if (!report?.rental_id) {
+      return { success: true, skipped: true };
+    }
+
+    const payload = this.buildRentalMaintenanceSnapshot(report);
+
+    try {
+      const { error } = await supabase
+        .from(RENTALS_TABLE)
+        .update(payload)
+        .eq('id', report.rental_id);
+
+      if (error) {
+        throw error;
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.warn('Unable to sync rental maintenance snapshot:', error);
+      return { success: false, error: error.message };
+    }
   }
 
   async saveChargeConfig(reportId, config = {}) {
@@ -57,6 +117,7 @@ class VehicleReportService {
 
     const report = await this.getReportById(reportId);
     const sanitizedConfig = {
+      maintenance_daily_enabled: config.maintenance_daily_enabled !== false,
       maintenance_daily_days: Math.max(0, parseInt(config.maintenance_daily_days || 0, 10) || 0),
       maintenance_daily_rate: Math.max(0, Number(config.maintenance_daily_rate || 0)),
       maintenance_daily_discount: Math.max(0, Number(config.maintenance_daily_discount || 0)),
@@ -74,14 +135,33 @@ class VehicleReportService {
 
       try {
         await this.updateReport(reportId, {
+          maintenance_daily_enabled: sanitizedConfig.maintenance_daily_enabled,
+          maintenance_daily_days: sanitizedConfig.maintenance_daily_days,
+          maintenance_daily_rate: sanitizedConfig.maintenance_daily_rate,
+          maintenance_daily_discount: sanitizedConfig.maintenance_daily_discount,
+          maintenance_daily_total: sanitizedConfig.maintenance_daily_total,
           customer_charge_amount: totalCustomerCharge,
         });
       } catch (error) {
         console.warn('Unable to persist total customer charge to vehicle report row:', error);
       }
+    } else {
+      try {
+        await this.updateReport(reportId, {
+          maintenance_daily_enabled: sanitizedConfig.maintenance_daily_enabled,
+          maintenance_daily_days: sanitizedConfig.maintenance_daily_days,
+          maintenance_daily_rate: sanitizedConfig.maintenance_daily_rate,
+          maintenance_daily_discount: sanitizedConfig.maintenance_daily_discount,
+          maintenance_daily_total: sanitizedConfig.maintenance_daily_total,
+        });
+      } catch (error) {
+        console.warn('Unable to persist maintenance stay charge config to vehicle report row:', error);
+      }
     }
 
-    return this.getReportById(reportId);
+    const nextReport = await this.getReportById(reportId);
+    await this.syncRentalMaintenanceSnapshot(nextReport);
+    return nextReport;
   }
 
   async isTableAvailable() {
@@ -113,6 +193,10 @@ class VehicleReportService {
       chargeConfig.maintenance_daily_days ?? row.maintenance_daily_days ?? 0,
       10
     ) || 0);
+    const maintenanceDailyEnabled =
+      chargeConfig.maintenance_daily_enabled !== undefined
+        ? chargeConfig.maintenance_daily_enabled !== false
+        : maintenanceDailyDays > 0;
     const maintenanceDailyRate = Math.max(0, Number(
       chargeConfig.maintenance_daily_rate ?? row.maintenance_daily_rate ?? 0
     ));
@@ -120,6 +204,7 @@ class VehicleReportService {
       chargeConfig.maintenance_daily_discount ?? row.maintenance_daily_discount ?? 0
     ));
     const maintenanceDailyTotal = this.calculateStayCharge({
+      maintenance_daily_enabled: maintenanceDailyEnabled,
       maintenance_daily_days: maintenanceDailyDays,
       maintenance_daily_rate: maintenanceDailyRate,
       maintenance_daily_discount: maintenanceDailyDiscount,
@@ -135,6 +220,7 @@ class VehicleReportService {
       photos: Array.isArray(row.photos) ? row.photos : [],
       affected_areas: Array.isArray(row.affected_areas) ? row.affected_areas : [],
       maintenance_cost_total: maintenanceRepairTotal,
+      maintenance_daily_enabled: maintenanceDailyEnabled,
       maintenance_daily_days: maintenanceDailyDays,
       maintenance_daily_rate: maintenanceDailyRate,
       maintenance_daily_discount: maintenanceDailyDiscount,
@@ -227,7 +313,9 @@ class VehicleReportService {
       throw error;
     }
 
-    return this.normalizeReport(data);
+    const normalized = this.normalizeReport(data);
+    await this.syncRentalMaintenanceSnapshot(normalized);
+    return normalized;
   }
 
   async getReportByMaintenanceId(maintenanceId) {
@@ -244,7 +332,9 @@ class VehicleReportService {
       throw error;
     }
 
-    return this.normalizeReport(data);
+    const normalized = this.normalizeReport(data);
+    await this.syncRentalMaintenanceSnapshot(normalized);
+    return normalized;
   }
 
   async getReportsByMaintenanceIds(maintenanceIds = []) {

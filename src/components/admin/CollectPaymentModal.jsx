@@ -40,12 +40,12 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
     const paymentAmount = parseFloat(paymentData.payment_amount);
     
     if (paymentAmount <= 0) {
-      toast.error('Payment amount must be greater than 0');
+      toast.error(t('admin.rentals.paymentAmountPositive', 'Le montant du paiement doit etre superieur a 0'));
       return;
     }
     
     if (paymentAmount > remainingAmount) {
-      toast.error('Payment amount cannot exceed remaining balance');
+      toast.error(t('admin.rentals.paymentAmountExceeds', 'Le montant du paiement ne peut pas depasser le solde restant'));
       return;
     }
 
@@ -74,7 +74,7 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
 
       await onSave(updatedRental);
       
-      toast.success(`Payment of $${paymentAmount.toFixed(2)} collected successfully!`);
+      toast.success(t('admin.rentals.paymentCollected', `Paiement de $${paymentAmount.toFixed(2)} encaisse avec succes !`));
       
       // Reset form
       setPaymentData({
@@ -86,7 +86,7 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
       onCancel(); // Close modal
     } catch (error) {
       console.error('Payment collection failed:', error);
-      toast.error('Failed to process payment. Please try again.');
+      toast.error(t('admin.rentals.paymentFailed', 'Impossible de traiter le paiement. Veuillez reessayer.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -118,27 +118,27 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
               <div className="font-medium text-gray-900">{rental.customer_name}</div>
               <div className="text-gray-500">{rental.customer_email}</div>
               <div className="text-xs text-gray-400 mt-1">
-                {rental.rental_start_date ? new Date(rental.rental_start_date).toLocaleDateString() : 'N/A'}
+                {rental.rental_start_date ? new Date(rental.rental_start_date).toLocaleDateString() : t('common.notAvailable', 'N/D')}
                 {' - '}
-                {rental.rental_end_date ? new Date(rental.rental_end_date).toLocaleDateString() : 'N/A'}
+                {rental.rental_end_date ? new Date(rental.rental_end_date).toLocaleDateString() : t('common.notAvailable', 'N/D')}
               </div>
             </div>
           </div>
 
           {/* Financial Breakdown */}
           <div className="bg-blue-50 p-4 rounded-lg mb-4">
-            <h4 className="font-medium text-gray-900 mb-2">Financial Summary</h4>
+            <h4 className="font-medium text-gray-900 mb-2">{t('admin.rentals.financialSummary', 'Resume financier')}</h4>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <span className="text-gray-600">Total Amount:</span>
+                <span className="text-gray-600">{t('admin.rentals.totalAmount', 'Montant total')}:</span>
                 <span className="font-semibold">${totalAmount.toFixed(2)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-600">Deposit Paid:</span>
+                <span className="text-gray-600">{t('admin.rentals.depositPaid', 'Depot paye')}:</span>
                 <span className="text-green-600">${currentDeposit.toFixed(2)}</span>
               </div>
               <div className="flex justify-between border-t pt-2">
-                <span className="font-medium text-gray-700">Remaining Balance:</span>
+                <span className="font-medium text-gray-700">{t('admin.rentals.remainingBalance', 'Solde restant')}:</span>
                 <span className="font-bold text-red-600">${remainingAmount.toFixed(2)}</span>
               </div>
             </div>
@@ -148,7 +148,7 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
             {/* Payment Amount */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Payment Amount *
+                {t('admin.rentals.paymentAmount', 'Montant du paiement')} *
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -163,7 +163,7 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
                   value={paymentData.payment_amount}
                   onChange={handleInputChange}
                   className="block w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="0.00"
+                  placeholder={t('admin.rentals.amountPlaceholder', '0.00')}
                   required
                 />
               </div>
@@ -172,7 +172,7 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
             {/* Payment Method */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Payment Method
+                {t('admin.rentals.paymentMethod', 'Methode de paiement')}
               </label>
               <select
                 name="payment_method"
@@ -180,18 +180,18 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
                 onChange={handleInputChange}
                 className="block w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               >
-                <option value="cash">Cash</option>
-                <option value="card">Credit/Debit Card</option>
-                <option value="bank_transfer">Bank Transfer</option>
-                <option value="check">Check</option>
-                <option value="other">Other</option>
+                <option value="cash">{t('admin.rentals.cash', 'Especes')}</option>
+                <option value="card">{t('admin.rentals.card', 'Carte bancaire')}</option>
+                <option value="bank_transfer">{t('admin.rentals.bankTransfer', 'Virement bancaire')}</option>
+                <option value="check">{t('admin.rentals.check', 'Cheque')}</option>
+                <option value="other">{t('admin.rentals.other', 'Autre')}</option>
               </select>
             </div>
 
             {/* Payment Notes */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Payment Notes (Optional)
+                {t('admin.rentals.paymentNotesOptional', 'Notes de paiement (optionnel)')}
               </label>
               <textarea
                 name="payment_notes"
@@ -199,7 +199,7 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
                 onChange={handleInputChange}
                 rows="2"
                 className="block w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Additional payment details..."
+                placeholder={t('admin.rentals.paymentNotesPlaceholder', 'Informations supplementaires sur le paiement...')}
               />
             </div>
 
@@ -211,7 +211,7 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
                 className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
                 disabled={isSubmitting}
               >
-                Cancel
+                {t('common.cancel', 'Annuler')}
               </button>
               <button
                 type="submit"
@@ -225,10 +225,10 @@ const CollectPaymentModal = ({ rental, isOpen, onSave, onCancel }) => {
                 {isSubmitting ? (
                   <div className="flex items-center">
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                    Processing...
+                    {t('common.processing', 'Traitement...')}
                   </div>
                 ) : (
-                  `Collect $${parseFloat(paymentData.payment_amount || 0).toFixed(2)}`
+                  t('admin.rentals.collectAmount', `Encaisser $${parseFloat(paymentData.payment_amount || 0).toFixed(2)}`)
                 )}
               </button>
             </div>

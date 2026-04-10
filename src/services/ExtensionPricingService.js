@@ -1,6 +1,32 @@
 import { supabase } from '../lib/supabase';
 
 export class ExtensionPricingService {
+  static async getApprovedExtensionSummary(rentalId) {
+    const { data, error } = await supabase
+      .from('rental_extensions')
+      .select('id, extension_hours, extension_price, status, created_at, approved_at')
+      .eq('rental_id', rentalId)
+      .eq('status', 'approved')
+      .order('approved_at', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    const approvedExtensions = data || [];
+
+    return {
+      extensionCount: approvedExtensions.length,
+      totalExtendedHours: approvedExtensions.reduce(
+        (sum, extension) => sum + (parseFloat(extension.extension_hours) || 0),
+        0
+      ),
+      totalExtensionPrice: approvedExtensions.reduce(
+        (sum, extension) => sum + (parseFloat(extension.extension_price) || 0),
+        0
+      ),
+      currentExtensionId: approvedExtensions[0]?.id || null,
+    };
+  }
   
   /**
    * Get dynamic hourly rate for a rental
@@ -23,21 +49,26 @@ export class ExtensionPricingService {
       }
     }
     
-    // 2. Fallback to vehicle's hourly_rate (dynamic from vehicle record)
+    // 2. Fallback to vehicle model's hourly price
+    if (hourlyRate === 0 && rental.vehicle?.vehicle_model?.hourly_price) {
+      hourlyRate = parseFloat(rental.vehicle.vehicle_model.hourly_price);
+    }
+
+    // 3. Fallback to vehicle's hourly_rate (dynamic from vehicle record)
     if (hourlyRate === 0 && rental.vehicle?.hourly_rate) {
       hourlyRate = parseFloat(rental.vehicle.hourly_rate);
     }
     
-    // 3. Ultimate fallback based on vehicle type
-    if (hourlyRate === 0 && rental.vehicle?.name) {
-      const vehicleName = rental.vehicle.name.toUpperCase();
+    // 4. Ultimate fallback based on vehicle type
+    if (hourlyRate === 0) {
+      const vehicleName = String(rental.vehicle?.name || rental.vehicle?.vehicle_model?.model || '').toUpperCase();
       
-      if (vehicleName.includes('AT6') || vehicleName.includes('SEGWAY')) {
-        hourlyRate = 600;
+      if (vehicleName.includes('AT6')) {
+        hourlyRate = 599;
       } else if (vehicleName.includes('AT5')) {
-        hourlyRate = 400;
+        hourlyRate = 399;
       } else if (vehicleName.includes('AT10')) {
-        hourlyRate = 1000;
+        hourlyRate = 999;
       } else {
         hourlyRate = 400; // Default
       }
@@ -837,6 +868,8 @@ export class ExtensionPricingService {
       newQuantityHours = newQuantityDays * 24;
     }
 
+    const extensionSummary = await this.getApprovedExtensionSummary(rentalId);
+
     const updateData = {
       rental_end_date: newEndDate.toISOString(),
       actual_end_date: newEndDate.toISOString(),
@@ -844,6 +877,10 @@ export class ExtensionPricingService {
       remaining_amount: Math.max(newRemainingAmount, 0),
       quantity_hours: newQuantityHours,
       quantity_days: newQuantityDays,
+      extension_count: extensionSummary.extensionCount,
+      total_extended_hours: extensionSummary.totalExtendedHours,
+      total_extension_price: extensionSummary.totalExtensionPrice,
+      current_extension_id: extensionSummary.currentExtensionId,
       updated_at: new Date().toISOString()
     };
     

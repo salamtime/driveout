@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Upload, X, AlertCircle, CheckCircle, Image as ImageIcon, Eye, Download } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { normalizeVehicleImageUrl } from '../utils/vehicleImage';
+import i18n from '../i18n';
 
 const VehicleImageUpload = ({ 
   vehicleId, 
@@ -10,6 +11,8 @@ const VehicleImageUpload = ({
   disabled = false, 
   className = "" 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
   const [error, setError] = useState(null);
@@ -27,14 +30,14 @@ const VehicleImageUpload = ({
 
   const uploadFiles = async (files) => {
     if (!vehicleId) {
-      setError('Vehicle ID is required for image upload');
+      setError(tr('Vehicle ID is required for image upload', "L'identifiant du vehicule est requis pour televerser une image"));
       return;
     }
 
     // Validate image files only
     const imageFiles = files.filter(file => file.type.startsWith('image/'));
     if (imageFiles.length === 0) {
-      setError('Please select only image files (JPG, PNG)');
+      setError(tr('Please select only image files (JPG, PNG)', 'Veuillez selectionner uniquement des images (JPG, PNG)'));
       return;
     }
 
@@ -42,12 +45,12 @@ const VehicleImageUpload = ({
 
     // File validation
     if (file.size > 10 * 1024 * 1024) {
-      setError('Image file size must be less than 10MB');
+      setError(tr('Image file size must be less than 10MB', "La taille de l'image doit etre inferieure a 10 Mo"));
       return;
     }
 
     if (!['image/jpeg', 'image/jpg', 'image/png'].includes(file.type)) {
-      setError('Only JPG and PNG image files are supported');
+      setError(tr('Only JPG and PNG image files are supported', 'Seuls les fichiers JPG et PNG sont pris en charge'));
       return;
     }
 
@@ -103,7 +106,7 @@ const VehicleImageUpload = ({
       }, 3000);
 
     } catch (error) {
-      setError(`Upload failed: ${error.message}`);
+      setError(`${tr('Upload failed:', 'Échec du téléversement :')} ${error.message}`);
       setUploadProgress({
         [fileId]: { progress: 0, status: 'error', error: error.message }
       });
@@ -154,7 +157,7 @@ const VehicleImageUpload = ({
       
       if (error) {
         console.error('Bucket access error:', error);
-        setError(`Bucket access error: ${error.message}`);
+        setError(`${tr('Bucket access error', "Erreur d'accès au compartiment")} : ${error.message}`);
       } else {
         console.log('Bucket accessible, contains:', data?.length || 0, 'files');
       }
@@ -180,7 +183,7 @@ const VehicleImageUpload = ({
       document.body.removeChild(a);
     } catch (error) {
       console.error('Download failed:', error);
-      setError('Failed to download image');
+      setError(tr('Failed to download image', "Impossible de télécharger l'image"));
     }
   };
 
@@ -201,7 +204,7 @@ const VehicleImageUpload = ({
             <div className="relative h-48 flex items-center justify-center">
               <img
                 src={displayImageUrl}
-                alt="Vehicle"
+                alt={tr('Vehicle', 'Véhicule')}
                 className="max-w-full max-h-full object-contain"
                 onLoad={() => console.log('Image loaded successfully from:', displayImageUrl)}
               />
@@ -219,7 +222,7 @@ const VehicleImageUpload = ({
                     target="_blank"
                     rel="noopener noreferrer"
                     className="p-2 bg-white/20 hover:bg-white/30 rounded-full transition-colors"
-                    title="Open in new tab"
+                    title={tr('Open in new tab', 'Ouvrir dans un nouvel onglet')}
                   >
                     <Eye className="w-4 h-4 text-white" />
                   </a>
@@ -227,7 +230,7 @@ const VehicleImageUpload = ({
                     type="button"
                     onClick={handleDownloadImage}
                     className="p-2 bg-white/20 hover:bg-white/30 rounded-full transition-colors"
-                    title="Download"
+                    title={tr('Download', 'Télécharger')}
                   >
                     <Download className="w-4 h-4 text-white" />
                   </button>
@@ -236,7 +239,7 @@ const VehicleImageUpload = ({
                       type="button"
                       onClick={handleRemoveImage}
                       className="p-2 bg-red-500/80 hover:bg-red-600 rounded-full transition-colors"
-                      title="Remove"
+                      title={tr('Remove', 'Supprimer')}
                     >
                       <X className="w-4 h-4 text-white" />
                     </button>
@@ -273,10 +276,10 @@ const VehicleImageUpload = ({
             <Upload className={`w-8 h-8 ${uploading ? 'text-gray-400' : 'text-gray-500'}`} />
             <div>
               <p className={`text-sm font-medium ${uploading ? 'text-gray-400' : 'text-gray-700'}`}>
-                {uploading ? 'Uploading image...' : 'Click to upload vehicle image'}
+                {uploading ? tr('Uploading image...', "Téléversement de l'image...") : tr('Click to upload vehicle image', "Cliquez pour téléverser l'image du véhicule")}
               </p>
               <p className={`text-xs ${uploading ? 'text-gray-300' : 'text-gray-500'}`}>
-                or drag and drop image here
+                {tr('or drag and drop image here', "ou glissez-déposez l'image ici")}
               </p>
             </div>
             <p className={`text-xs ${uploading ? 'text-gray-300' : 'text-gray-400'}`}>
@@ -291,7 +294,7 @@ const VehicleImageUpload = ({
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
           <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
           <div className="text-sm">
-            <p className="text-red-800 font-medium">Upload Error</p>
+            <p className="text-red-800 font-medium">{tr('Upload Error', 'Erreur de televersement')}</p>
             <p className="text-red-700">{error}</p>
           </div>
         </div>
@@ -300,11 +303,11 @@ const VehicleImageUpload = ({
       {/* Upload Progress */}
       {progressEntries.length > 0 && (
         <div className="space-y-2">
-          <h4 className="text-sm font-medium text-gray-700">Upload Progress</h4>
+          <h4 className="text-sm font-medium text-gray-700">{tr('Upload Progress', 'Progression du televersement')}</h4>
           {progressEntries.map(([fileId, progress]) => (
             <div key={fileId} className="bg-gray-50 rounded-lg p-3">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-700">Vehicle Image</span>
+                <span className="text-sm text-gray-700">{tr('Vehicle Image', 'Image du vehicule')}</span>
                 <div className="flex items-center gap-1">
                   {progress.status === 'completed' && (
                     <CheckCircle className="w-4 h-4 text-green-600" />
@@ -317,8 +320,8 @@ const VehicleImageUpload = ({
                     progress.status === 'error' ? 'text-red-600' :
                     'text-blue-600'
                   }`}>
-                    {progress.status === 'completed' ? 'Completed' :
-                     progress.status === 'error' ? 'Failed' :
+                    {progress.status === 'completed' ? tr('Completed', 'Termine') :
+                     progress.status === 'error' ? tr('Failed', 'Echec') :
                      `${progress.progress}%`}
                   </span>
                 </div>
@@ -349,13 +352,13 @@ const VehicleImageUpload = ({
           <div className="flex items-start gap-2">
             <ImageIcon className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
             <div className="text-sm">
-              <p className="text-blue-800 font-medium">Vehicle Image Upload Tips</p>
+              <p className="text-blue-800 font-medium">{tr('Vehicle Image Upload Tips', "Conseils de televersement de l'image vehicule")}</p>
               <ul className="text-blue-700 mt-1 space-y-1 text-xs">
-                <li>• Upload a clear photo of the vehicle</li>
-                <li>• Supported formats: JPG, PNG</li>
-                <li>• Maximum file size: 10MB</li>
-                <li>• One image per vehicle (replaces existing image)</li>
-                <li>• Images are stored in vehicle-specific folders</li>
+                <li>• {tr('Upload a clear photo of the vehicle', 'Televersez une photo nette du vehicule')}</li>
+                <li>• {tr('Supported formats: JPG, PNG', 'Formats pris en charge : JPG, PNG')}</li>
+                <li>• {tr('Maximum file size: 10MB', 'Taille maximale : 10 Mo')}</li>
+                <li>• {tr('One image per vehicle (replaces existing image)', 'Une image par vehicule (remplace l image existante)')}</li>
+                <li>• {tr('Images are stored in vehicle-specific folders', 'Les images sont stockees dans des dossiers propres a chaque vehicule')}</li>
               </ul>
             </div>
           </div>
@@ -366,7 +369,7 @@ const VehicleImageUpload = ({
       {disabled && !currentImageUrl && (
         <div className="border-2 border-dashed border-gray-200 rounded-lg p-6 text-center">
           <ImageIcon className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-400">No vehicle image uploaded</p>
+          <p className="text-sm text-gray-400">{tr('No vehicle image uploaded', 'Aucune image vehicule televersee')}</p>
         </div>
       )}
     </div>

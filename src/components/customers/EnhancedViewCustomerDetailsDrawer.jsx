@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, User, Phone, Mail, Calendar, CreditCard, Eye, FileImage, Trash2, Download, MapPin, Car, Clock } from 'lucide-react';
 import unifiedCustomerService from '../../services/UnifiedCustomerService.js';
 import enhancedUnifiedCustomerService from '../../services/EnhancedUnifiedCustomerService.js';
+import i18n from '../../i18n';
 
 /**
  * Enhanced View Customer Details Drawer - Displays All ID Scans + Secondary Data
@@ -13,6 +14,8 @@ const EnhancedViewCustomerDetailsDrawer = ({
   rental = null,
   customerId = null
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [customer, setCustomer] = useState(null);
   const [customerScans, setCustomerScans] = useState([]);
   const [rentalHistory, setRentalHistory] = useState([]);
@@ -66,12 +69,12 @@ const EnhancedViewCustomerDetailsDrawer = ({
             await loadCustomerScans(currentTargetId);
         }
       } else {
-        setError('Customer information not available');
+        setError('Informations client indisponibles');
         setCustomer(null);
       }
     } catch (err) {
       console.error('❌ Error loading customer data:', err);
-      setError('Failed to load customer information: ' + err.message);
+      setError('Impossible de charger les informations client : ' + err.message);
     } finally {
       setLoading(false);
     }
@@ -141,7 +144,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
   };
 
   const handleDeleteScan = async (scanId) => {
-    if (!confirm('Are you sure you want to delete this scan?')) {
+    if (!confirm('Êtes-vous sûr de vouloir supprimer ce scan ?')) {
       return;
     }
 
@@ -153,11 +156,11 @@ const EnhancedViewCustomerDetailsDrawer = ({
         console.log('✅ Scan deleted. Refreshing all customer data...');
         await loadCustomerData(); // Reload all data to ensure consistency
       } else {
-        alert('Failed to delete scan: ' + result.error);
+        alert(`${tr('Échec de la suppression du scan :', 'Échec de la suppression du scan :')} ${result.error}`);
       }
     } catch (err) {
       console.error('❌ Error deleting scan:', err);
-      alert('Failed to delete scan: ' + err.message);
+      alert(`${tr('Échec de la suppression du scan :', 'Échec de la suppression du scan :')} ${err.message}`);
     }
   };
 
@@ -173,7 +176,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
   };
   
   const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
+    if (!dateString) return 'N/D';
     try {
       const date = new Date(dateString);
       const year = date.getFullYear();
@@ -181,7 +184,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
       const day = date.getDate().toString().padStart(2, '0');
       return `${year}-${month}-${day}`;
     } catch {
-      return 'Invalid Date';
+      return tr('Date invalide', 'Date invalide');
     }
   };
 
@@ -196,7 +199,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
         </button>
         <img
           src={imageUrl}
-          alt="ID Document - Full Size"
+          alt={tr("Document d'identité - taille réelle", "Document d'identité - taille réelle")}
           className="max-w-full max-h-full object-contain rounded-lg"
           onError={(e) => {
             console.error('❌ Failed to load image:', imageUrl);
@@ -216,10 +219,10 @@ const EnhancedViewCustomerDetailsDrawer = ({
           <div className="flex items-center justify-between p-6 border-b border-gray-200">
             <div>
               <h2 className="text-xl font-semibold text-gray-900">
-                Enhanced Customer Details with Secondary Data
+                {tr('Enhanced Customer Details with Secondary Data', 'Détails client enrichis avec données secondaires')}
               </h2>
               <p className="text-sm text-gray-600 mt-1">
-                View comprehensive customer information including primary and secondary scan data
+                {tr('View complete customer information including primary and secondary scan data', 'Voir les informations client complètes incluant les données de scan principal et secondaire')}
               </p>
             </div>
             <button
@@ -234,7 +237,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
             {loading && (
               <div className="flex items-center justify-center py-8">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                <span className="ml-3 text-gray-600">Loading customer information...</span>
+                <span className="ml-3 text-gray-600">{tr('Loading customer information...', 'Chargement des informations client...')}</span>
               </div>
             )}
 
@@ -242,7 +245,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
               <div className="bg-red-50 border border-red-200 rounded-md p-4">
                 <div className="flex">
                   <div className="ml-3">
-                    <h3 className="text-sm font-medium text-red-800">Error</h3>
+                    <h3 className="text-sm font-medium text-red-800">Erreur</h3>
                     <p className="text-sm text-red-700 mt-1">{error}</p>
                   </div>
                 </div>
@@ -265,8 +268,8 @@ const EnhancedViewCustomerDetailsDrawer = ({
                         customer._isRealCustomer ? 'text-green-800' : 'text-yellow-800'
                       }`}>
                         {customer._isRealCustomer 
-                          ? '✅ Complete Customer Profile with Secondary Data'
-                          : '⚠️ Limited Information Available'
+                          ? tr('✅ Complete Customer Profile with Secondary Data', '✅ Profil client complet avec données secondaires')
+                          : tr('⚠️ Limited Information Available', '⚠️ Informations limitées disponibles')
                         }
                       </span>
                     </div>
@@ -277,13 +280,13 @@ const EnhancedViewCustomerDetailsDrawer = ({
                       <div className="flex items-center mb-2">
                         <FileImage className="h-5 w-5 text-blue-600" />
                         <span className="ml-2 text-sm font-medium text-blue-800">
-                          ID Document Scans
+                          {tr("Scans du document d'identité", "Scans du document d'identité")}
                         </span>
                       </div>
                       <div className="text-sm text-blue-700">
-                        <p>Total: {scanStats.total} | Completed: {scanStats.completed} | Failed: {scanStats.failed}</p>
+                        <p>Total : {scanStats.total} | Terminés : {scanStats.completed} | Échoués : {scanStats.failed}</p>
                         {scanStats.averageConfidence > 0 && (
-                          <p>Avg. Confidence: {Math.round(scanStats.averageConfidence * 100)}%</p>
+                          <p>{tr('Confiance moyenne', 'Confiance moyenne')} : {Math.round(scanStats.averageConfidence * 100)}%</p>
                         )}
                       </div>
                     </div>
@@ -294,35 +297,35 @@ const EnhancedViewCustomerDetailsDrawer = ({
                   <div className="space-y-4">
                     <h3 className="text-lg font-medium text-gray-900 flex items-center">
                       <User className="h-5 w-5 mr-2" />
-                      Primary Information
+                      {tr('Primary Information', 'Informations principales')}
                     </h3>
                     
                     <div className="space-y-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Full Name</label>
+                        <label className="block text-sm font-medium text-gray-700">Nom complet</label>
                         <p className="mt-1 text-sm text-gray-900 bg-gray-50 p-2 rounded border">
                           {customer.full_name || 'N/A'}
                         </p>
                       </div>
                       
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Date of Birth</label>
+                        <label className="block text-sm font-medium text-gray-700">{tr('Date of Birth', 'Date de naissance')}</label>
                         <p className="mt-1 text-sm text-gray-900 bg-gray-50 p-2 rounded border">
-                          {customer.date_of_birth || 'N/A'}
+                          {customer.date_of_birth || 'N/D'}
                         </p>
                       </div>
                       
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Nationality</label>
+                        <label className="block text-sm font-medium text-gray-700">{tr('Nationality', 'Nationalité')}</label>
                         <p className="mt-1 text-sm text-gray-900 bg-gray-50 p-2 rounded border">
-                          {customer.nationality || 'N/A'}
+                          {customer.nationality || 'N/D'}
                         </p>
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">License</label>
+                        <label className="block text-sm font-medium text-gray-700">{tr('License', 'Permis')}</label>
                         <p className="mt-1 text-sm text-gray-900 bg-gray-50 p-2 rounded border">
-                          {customer.licence_number || 'N/A'}
+                          {customer.licence_number || 'N/D'}
                         </p>
                       </div>
                     </div>
@@ -331,71 +334,71 @@ const EnhancedViewCustomerDetailsDrawer = ({
                   <div className="space-y-4">
                     <h3 className="text-lg font-medium text-gray-900 flex items-center">
                       <MapPin className="h-5 w-5 mr-2" />
-                      Secondary Scan Data
+                      {tr('Secondary Scan Data', 'Données du scan secondaire')}
                       <span className="ml-2 text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
-                        Protected Storage
+                        {tr('Protected Storage', 'Stockage protégé')}
                       </span>
                     </h3>
                     
                     <div className="space-y-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Secondary Address</label>
+                        <label className="block text-sm font-medium text-gray-700">{tr('Secondary Address', 'Adresse secondaire')}</label>
                         <p className={`mt-1 text-sm p-2 rounded border ${
                           customer.secondary_address 
                             ? 'text-gray-900 bg-green-50 border-green-200' 
                             : 'text-gray-500 bg-gray-50'
                         }`}>
-                          {customer.secondary_address || 'Not available from secondary scan'}
+                          {customer.secondary_address || tr('Not available from secondary scan', 'Non disponible depuis le scan secondaire')}
                         </p>
                       </div>
                       
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">License Class</label>
+                        <label className="block text-sm font-medium text-gray-700">{tr('License Class', 'Catégorie de permis')}</label>
                         <p className={`mt-1 text-sm p-2 rounded border ${
                           customer.license_class 
                             ? 'text-gray-900 bg-green-50 border-green-200' 
                             : 'text-gray-500 bg-gray-50'
                         }`}>
-                          {customer.license_class || 'Not available from secondary scan'}
+                          {customer.license_class || tr('Not available from secondary scan', 'Non disponible depuis le scan secondaire')}
                         </p>
                       </div>
                       
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Secondary ID Number</label>
+                        <label className="block text-sm font-medium text-gray-700">{tr('Secondary ID Number', 'Numéro d’identité secondaire')}</label>
                         <p className={`mt-1 text-sm p-2 rounded border ${
                           customer.secondary_id_number 
                             ? 'text-gray-900 bg-green-50 border-green-200' 
                             : 'text-gray-500 bg-gray-50'
                         }`}>
-                          {customer.secondary_id_number || 'Not available from secondary scan'}
+                          {customer.secondary_id_number || tr('Not available from secondary scan', 'Non disponible depuis le scan secondaire')}
                         </p>
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Secondary Document Image</label>
+                        <label className="block text-sm font-medium text-gray-700">{tr('Secondary Document Image', 'Image du document secondaire')}</label>
                         {customer.secondaryImageUrl ? (
                           <div className="mt-1">
                             <img
                               src={customer.secondaryImageUrl}
-                              alt="Secondary ID Document"
+                              alt={tr('Secondary ID document', 'Document d’identité secondaire')}
                               className="w-full h-32 object-cover border-2 border-green-200 rounded cursor-pointer hover:shadow-md transition-shadow bg-green-50"
-                              onClick={() => handleImageClick(customer.secondaryImageUrl, { displayName: 'Secondary Document' })}
+                              onClick={() => handleImageClick(customer.secondaryImageUrl, { displayName: tr('Secondary document', 'Document secondaire') })}
                               onError={(e) => {
                                 console.error('❌ Failed to load secondary image:', customer.secondaryImageUrl);
                                 e.target.style.display = 'none';
                               }}
                             />
                             <button
-                              onClick={() => handleImageClick(customer.secondaryImageUrl, { displayName: 'Secondary Document' })}
+                              onClick={() => handleImageClick(customer.secondaryImageUrl, { displayName: tr('Secondary document', 'Document secondaire') })}
                               className="text-sm text-green-600 hover:text-green-800 flex items-center mt-1"
                             >
                               <Eye className="h-4 w-4 mr-1" />
-                              View Secondary Document Full Size
+                              {tr('View full-size secondary document', 'Voir le document secondaire en taille réelle')}
                             </button>
                           </div>
                         ) : (
                           <div className="mt-1 p-4 bg-gray-50 border border-gray-200 rounded text-center text-gray-500 text-sm">
-                            No secondary document image available
+                            {tr('No secondary document image available', 'Aucune image de document secondaire disponible')}
                           </div>
                         )}
                       </div>
@@ -407,21 +410,21 @@ const EnhancedViewCustomerDetailsDrawer = ({
                   <div className="space-y-4">
                     <h3 className="text-lg font-medium text-gray-900 flex items-center">
                       <Phone className="h-5 w-5 mr-2" />
-                      Contact Information
+                      {tr('Contact Information', 'Informations de contact')}
                     </h3>
                     
                     <div className="space-y-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Phone</label>
+                        <label className="block text-sm font-medium text-gray-700">Téléphone</label>
                         <p className="mt-1 text-sm text-gray-900 bg-gray-50 p-2 rounded border">
-                          {customer.phone || 'N/A'}
+                          {customer.phone || 'N/D'}
                         </p>
                       </div>
                       
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Email</label>
+                        <label className="block text-sm font-medium text-gray-700">E-mail</label>
                         <p className="mt-1 text-sm text-gray-900 bg-gray-50 p-2 rounded border">
-                          {customer.email || 'N/A'}
+                          {customer.email || 'N/D'}
                         </p>
                       </div>
                     </div>
@@ -430,21 +433,21 @@ const EnhancedViewCustomerDetailsDrawer = ({
                   <div className="space-y-4">
                     <h3 className="text-lg font-medium text-gray-900 flex items-center">
                       <CreditCard className="h-5 w-5 mr-2" />
-                      Document Information
+                      {tr('Document Information', 'Informations du document')}
                     </h3>
                     
                     <div className="space-y-3">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Primary ID Number</label>
+                        <label className="block text-sm font-medium text-gray-700">{tr('Primary ID Number', 'Numéro d’identité principal')}</label>
                         <p className="mt-1 text-sm text-gray-900 bg-gray-50 p-2 rounded border">
-                          {customer.id_number || 'N/A'}
+                          {customer.id_number || 'N/D'}
                         </p>
                       </div>
                       
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">License Number</label>
+                        <label className="block text-sm font-medium text-gray-700">{tr('License Number', 'Numéro de permis')}</label>
                         <p className="mt-1 text-sm text-gray-900 bg-gray-50 p-2 rounded border">
-                          {customer.licence_number || 'N/A'}
+                          {customer.licence_number || 'N/D'}
                         </p>
                       </div>
                     </div>
@@ -454,7 +457,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
                 <div className="space-y-4">
                   <h3 className="text-lg font-medium text-gray-900 flex items-center">
                     <Clock className="h-5 w-5 mr-2" />
-                    Rental History ({rentalHistory.length})
+                    Historique des locations ({rentalHistory.length})
                   </h3>
                   <div className="border border-gray-200 rounded-lg max-h-64 overflow-y-auto">
                     {rentalHistory.length > 0 ? (
@@ -462,16 +465,16 @@ const EnhancedViewCustomerDetailsDrawer = ({
                         <thead className="text-xs text-gray-700 uppercase bg-gray-50 sticky top-0">
                           <tr>
                             <th scope="col" className="px-4 py-3">Date</th>
-                            <th scope="col" className="px-4 py-3">Vehicle</th>
-                            <th scope="col" className="px-4 py-3">Amount / Status</th>
+                            <th scope="col" className="px-4 py-3">{tr('Vehicle', 'Véhicule')}</th>
+                            <th scope="col" className="px-4 py-3">{tr('Amount / Status', 'Montant / Statut')}</th>
                           </tr>
                         </thead>
                         <tbody>
                           {rentalHistory.map(r => {
                             // Accessing the specific join object from your database schema
                             const vehicle = r.saharax_0u4w4d_vehicles; 
-                            const vehicleName = vehicle ? `${vehicle.brand} ${vehicle.model}` : 'Unknown Vehicle';
-                            const vehiclePlate = vehicle ? vehicle.plate_number : 'N/A';
+                            const vehicleName = vehicle ? `${vehicle.brand} ${vehicle.model}` : tr('Unknown vehicle', 'Véhicule inconnu');
+                            const vehiclePlate = vehicle ? vehicle.plate_number : tr('N/A', 'N/D');
 
                             return (
                               <tr key={r.id} className="bg-white border-b hover:bg-gray-50">
@@ -480,7 +483,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
                                 </td>
                                 <td 
                                   className="px-4 py-2 text-gray-900 font-medium"
-                                  title={`Plate: ${vehiclePlate}`}
+                                  title={`${tr('Plate', 'Plaque')} : ${vehiclePlate}`}
                                 >
                                   <div className="flex flex-col">
                                     <span>{vehicleName}</span>
@@ -498,13 +501,13 @@ const EnhancedViewCustomerDetailsDrawer = ({
                                         r.rental_status === 'active' ? 'bg-green-100 text-green-800' :
                                         'bg-gray-100 text-gray-800'
                                       }`}>
-                                        {r.rental_status || 'unknown'}
+                                        {r.rental_status || 'inconnu'}
                                       </span>
                                       <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase font-semibold ${
                                         r.payment_status === 'paid' ? 'bg-green-100 text-green-800' :
                                         'bg-red-100 text-red-800'
                                       }`}>
-                                        {r.payment_status || 'unpaid'}
+                                        {r.payment_status || 'impayé'}
                                       </span>
                                     </div>
                                   </div>
@@ -518,7 +521,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
                       <div className="flex items-center justify-center h-32 bg-gray-50">
                         <div className="text-center text-gray-500">
                           <Clock className="h-12 w-12 mx-auto mb-2" />
-                          <p className="text-sm">No rental history found.</p>
+                          <p className="text-sm">Aucun historique de location trouvé.</p>
                         </div>
                       </div>
                     )}
@@ -528,7 +531,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
                 <div className="space-y-4">
                   <h3 className="text-lg font-medium text-gray-900 flex items-center">
                     <FileImage className="h-5 w-5 mr-2" />
-                    All ID Document Scans ({customerScans.length})
+                    Tous les scans de documents d’identité ({customerScans.length})
                   </h3>
                   
                   <div className="border border-gray-200 rounded-lg p-4">
@@ -538,8 +541,8 @@ const EnhancedViewCustomerDetailsDrawer = ({
                           <FileImage className="h-12 w-12 mx-auto mb-2" />
                           <p className="text-sm">
                             {customer._isRealCustomer 
-                              ? 'No ID document scans available'
-                              : 'ID scans not available for rental-based customer data'
+                              ? 'Aucun scan de document d’identité disponible'
+                              : 'Scans indisponibles pour les données client basées sur la location'
                             }
                           </p>
                         </div>
@@ -557,7 +560,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
                                   <button
                                     onClick={() => handleImageClick(scan.publicUrl, scan)}
                                     className="p-1 text-blue-600 hover:text-blue-800"
-                                    title="View full size"
+                                    title="Voir en taille réelle"
                                   >
                                     <Eye className="h-4 w-4" />
                                   </button>
@@ -565,7 +568,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
                                 <button
                                   onClick={() => handleDeleteScan(scan.id)}
                                   className="p-1 text-red-600 hover:text-red-800"
-                                  title="Delete scan"
+                                    title="Supprimer le scan"
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </button>
@@ -573,10 +576,10 @@ const EnhancedViewCustomerDetailsDrawer = ({
                             </div>
                             
                             <div className="text-xs text-gray-600 mb-2">
-                              <p>Uploaded: {scan.uploadDate} at {scan.uploadTime}</p>
-                              <p>Status: {scan.processing_status}</p>
+                              <p>Téléversé : {scan.uploadDate} à {scan.uploadTime}</p>
+                              <p>Statut : {scan.processing_status}</p>
                               {scan.ocr_confidence && (
-                                <p>Confidence: {Math.round(scan.ocr_confidence * 100)}%</p>
+                                <p>Confiance : {Math.round(scan.ocr_confidence * 100)}%</p>
                               )}
                             </div>
 
@@ -594,14 +597,14 @@ const EnhancedViewCustomerDetailsDrawer = ({
                               />
                             ) : (
                               <div className="w-full h-24 bg-gray-100 border border-gray-200 rounded flex items-center justify-center">
-                                <span className="text-xs text-gray-500">Image not available</span>
+                                <span className="text-xs text-gray-500">Image indisponible</span>
                               </div>
                             )}
                             
                             <div className="hidden flex items-center justify-center h-24 bg-red-50 border border-red-200 rounded">
                               <div className="text-center text-red-500">
                                 <FileImage className="h-8 w-8 mx-auto mb-1" />
-                                <p className="text-xs">Failed to load</p>
+                                <p className="text-xs">Échec du chargement</p>
                               </div>
                             </div>
                           </div>
@@ -635,7 +638,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
                           className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
                         >
                           <Eye className="h-4 w-4 mr-1" />
-                          View Full Size
+                          Voir en taille réelle
                         </button>
                       </div>
                     </div>
@@ -650,7 +653,7 @@ const EnhancedViewCustomerDetailsDrawer = ({
               onClick={handleClose}
               className="px-4 py-2 text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
             >
-              Close
+              Fermer
             </button>
           </div>
         </div>

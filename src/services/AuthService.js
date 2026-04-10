@@ -127,7 +127,7 @@ export class AuthService {
       '/admin': ['owner', 'admin'],
       '/admin/dashboard': ['owner', 'admin'],
       '/admin/users': ['owner', 'admin'],
-      '/admin/vehicles': ['owner', 'admin', 'employee'],
+      '/admin/fleet': ['owner', 'admin', 'employee'],
       '/admin/rentals': ['owner', 'admin', 'employee'],
       '/admin/tours': ['owner', 'admin', 'employee', 'guide'],
       '/admin/finance': ['owner', 'admin'],

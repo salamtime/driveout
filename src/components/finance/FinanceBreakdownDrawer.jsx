@@ -1,12 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { X, ExternalLink, Calendar, Receipt, Wrench, Fuel, Package, Car, AlertCircle } from 'lucide-react';
 import { financeApiV2 } from '../../services/financeApiV2';
+import i18n from '../../i18n';
+
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 const sourceIcons = {
   maintenance: Wrench,
   damage_recovery: Receipt,
   inventory: Package,
+  parts_consumed: Package,
   parts_margin: Package,
+  fuel: Fuel,
   tank_in: Fuel,
   direct_fill: Fuel,
   transfer: Fuel,
@@ -31,7 +37,7 @@ const FinanceBreakdownDrawer = ({ isOpen, onClose, breakdownType, filters, onOpe
         setData(result);
       } catch (err) {
         console.error('Failed to load finance breakdown:', err);
-        setError(err.message || 'Failed to load breakdown');
+        setError(err.message || tr('Failed to load breakdown', 'Impossible de charger le détail'));
       } finally {
         setLoading(false);
       }
@@ -43,80 +49,86 @@ const FinanceBreakdownDrawer = ({ isOpen, onClose, breakdownType, filters, onOpe
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-end" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/40 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="bg-white w-full max-w-2xl h-full overflow-y-auto shadow-xl"
+        className="h-full w-full max-w-2xl overflow-y-auto border-l border-slate-200 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.18)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="sticky top-0 z-10 flex items-center justify-between p-6 border-b border-gray-200 bg-gray-50">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">{data?.title || 'Finance Breakdown'}</h2>
-            <p className="text-sm text-gray-600 mt-1">{data?.period || `${filters.startDate} – ${filters.endDate}`}</p>
+        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-6 py-5 backdrop-blur">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+                {tr('Finance Breakdown', 'Détail finance')}
+              </p>
+              <h2 className="mt-2 truncate text-xl font-semibold text-slate-900">{data?.title || tr('Finance Breakdown', 'Détail finance')}</h2>
+              <p className="mt-1 text-sm text-slate-500">{data?.period || `${filters.startDate} – ${filters.endDate}`}</p>
+            </div>
+
+            <div className="flex shrink-0 items-start gap-3">
+              {data && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-right">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Total', 'Total')}</p>
+                  <p className="mt-1 text-lg font-bold text-slate-900">
+                    {financeApiV2.formatCompactDisplay(data.total)} MAD
+                  </p>
+                </div>
+              )}
+              <button onClick={onClose} className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
-            <X className="h-5 w-5 text-gray-500" />
-          </button>
         </div>
 
         <div className="p-6 space-y-6">
           {loading && (
-            <div className="space-y-3">
-              {[1, 2, 3, 4].map((item) => (
-                <div key={item} className="animate-pulse rounded-xl border border-gray-200 p-4">
-                  <div className="h-4 w-40 bg-gray-200 rounded mb-3" />
-                  <div className="h-3 w-56 bg-gray-100 rounded mb-2" />
-                  <div className="h-3 w-24 bg-gray-100 rounded" />
-                </div>
-              ))}
+            <div className="rounded-[1.75rem] border border-slate-200 bg-white px-6 py-14 text-center shadow-sm">
+              <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+                <div className="text-5xl leading-none animate-pulse">⏳</div>
+                <h3 className="text-lg font-semibold text-slate-900">
+                  {tr('Loading finance breakdown...', 'Chargement du détail finance...')}
+                </h3>
+              </div>
             </div>
           )}
 
           {!loading && error && (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">
+            <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-4 text-rose-700">
               {error}
             </div>
           )}
 
           {!loading && !error && data && (
             <>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="rounded-xl border border-gray-200 bg-white p-4">
-                  <p className="text-xs uppercase tracking-wide text-gray-500">Total</p>
-                  <p className="mt-1 text-2xl font-bold text-gray-900">
-                    {financeApiV2.formatCompactDisplay(data.total)} MAD
-                  </p>
-                </div>
-                <div className="rounded-xl border border-gray-200 bg-white p-4">
-                  <p className="text-xs uppercase tracking-wide text-gray-500">Rows</p>
-                  <p className="mt-1 text-2xl font-bold text-gray-900">{data.rows.length}</p>
-                </div>
-                <div className="rounded-xl border border-gray-200 bg-white p-4">
-                  <p className="text-xs uppercase tracking-wide text-gray-500">Period</p>
-                  <p className="mt-1 text-sm font-semibold text-gray-900">{data.period}</p>
-                </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.25rem] border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-sm font-semibold text-slate-700">
+                  {data.rows.length} {tr(data.rows.length === 1 ? 'entry' : 'entries', data.rows.length === 1 ? 'ligne' : 'lignes')}
+                </p>
+                <p className="text-sm text-slate-500">{data.period}</p>
               </div>
 
               {data.rows.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-8 text-center text-gray-600">
-                  No items found for this period.
+                <div className="rounded-[1.5rem] border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">
+                  {tr('No items found for this period.', 'Aucun élément trouvé pour cette période.')}
                 </div>
               ) : (
                 <div className="space-y-3">
                   {data.rows.map((row) => {
                     const Icon = sourceIcons[row.sourceType] || Receipt;
+                    const incoming = row.direction === 'incoming' || ['damage_recovery', 'parts_margin', 'sold'].includes(row.sourceType);
                     return (
-                      <div key={row.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                      <div key={row.id} className="rounded-[1.25rem] border border-slate-200 bg-white p-4 shadow-sm">
                         <div className="flex items-start justify-between gap-4">
                           <div className="flex items-start gap-3 min-w-0">
-                            <div className="p-2 rounded-lg bg-blue-50 text-blue-600 mt-0.5">
+                            <div className="mt-0.5 rounded-2xl bg-slate-50 p-2 text-slate-600">
                               <Icon className="h-4 w-4" />
                             </div>
                             <div className="min-w-0">
-                              <p className="font-semibold text-gray-900 break-words">{row.title}</p>
+                              <p className="break-words font-semibold text-slate-900">{row.title}</p>
                               {row.subtitle && (
-                                <p className="text-sm text-gray-600 mt-1 break-words">{row.subtitle}</p>
+                                <p className="mt-1 break-words text-sm text-slate-500">{row.subtitle}</p>
                               )}
-                              <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-gray-500">
+                              <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-500">
                                 {row.date && (
                                   <span className="inline-flex items-center gap-1">
                                     <Calendar className="h-3.5 w-3.5" />
@@ -124,7 +136,7 @@ const FinanceBreakdownDrawer = ({ isOpen, onClose, breakdownType, filters, onOpe
                                   </span>
                                 )}
                                 {row.status && (
-                                  <span className="rounded-full bg-gray-100 px-2 py-1 text-gray-600">
+                                  <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-600">
                                     {row.status}
                                   </span>
                                 )}
@@ -136,15 +148,15 @@ const FinanceBreakdownDrawer = ({ isOpen, onClose, breakdownType, filters, onOpe
                           </div>
 
                           <div className="text-right shrink-0">
-                            <p className="text-lg font-bold text-gray-900">
+                            <p className={`text-lg font-bold ${incoming ? 'text-emerald-700' : 'text-rose-700'}`}>
                               {financeApiV2.formatCompactDisplay(row.amount)} MAD
                             </p>
                             {row.href && (
                               <button
                                 onClick={() => onOpenSource?.(row)}
-                                className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700"
+                                className="mt-2 inline-flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-emerald-700"
                               >
-                                Open
+                                {tr('Open', 'Ouvrir')}
                                 <ExternalLink className="h-3.5 w-3.5" />
                               </button>
                             )}
@@ -157,11 +169,11 @@ const FinanceBreakdownDrawer = ({ isOpen, onClose, breakdownType, filters, onOpe
                               .filter(([, value]) => value !== null && value !== undefined && value !== '' && value !== 0)
                               .slice(0, 4)
                               .map(([key, value]) => (
-                                <div key={key} className="rounded-lg bg-gray-50 px-3 py-2">
-                                  <p className="text-[11px] uppercase tracking-wide text-gray-500">
+                                <div key={key} className="rounded-xl bg-slate-50 px-3 py-2">
+                                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
                                     {key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ')}
                                   </p>
-                                  <p className="text-sm font-medium text-gray-900 break-words">{String(value)}</p>
+                                  <p className="break-words text-sm font-medium text-slate-900">{String(value)}</p>
                                 </div>
                               ))}
                           </div>

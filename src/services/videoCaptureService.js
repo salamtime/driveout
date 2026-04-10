@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { getCompressedVideoRecorderOptions } from '../utils/videoRecording';
 
 /**
  * Video Capture Service - Handles video recording and upload functionality
@@ -47,15 +48,8 @@ class VideoCaptureService {
 
     try {
       this.recordedChunks = [];
-      
-      const options = {
-        mimeType: 'video/webm;codecs=vp9'
-      };
 
-      // Fallback to vp8 if vp9 is not supported
-      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-        options.mimeType = 'video/webm;codecs=vp8';
-      }
+      const options = getCompressedVideoRecorderOptions();
 
       this.mediaRecorder = new MediaRecorder(this.stream, options);
 

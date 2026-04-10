@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { X, Car, Gauge, Calendar, User, FileText, Loader } from 'lucide-react';
 import fuelService from '../services/FuelService';
+import i18n from '../i18n';
 
 const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [formData, setFormData] = useState({
     vehicle_id: '',
     liters_taken: '',
@@ -53,12 +56,12 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
         console.log('⚠️ MODAL: No vehicles received or empty array');
         setVehicles([]);
         if (!vehicleData || vehicleData.length === 0) {
-          setError('No vehicles found in database. Please add vehicles first.');
+          setError(tr("No vehicles were found in the database. Please add vehicles first.", "Aucun véhicule trouvé dans la base de données. Veuillez d'abord ajouter des véhicules."));
         }
       }
     } catch (err) {
       console.error('❌ MODAL: Error loading vehicles:', err);
-      setError(`Failed to load vehicles: ${err.message}`);
+      setError(`${tr('Failed to load vehicles:', 'Échec du chargement des véhicules :')} ${err.message}`);
       setVehicles([]);
     } finally {
       setVehiclesLoading(false);
@@ -74,17 +77,17 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
     try {
       // Validate required fields
       if (!formData.vehicle_id || !formData.liters_taken || !formData.filled_by) {
-        throw new Error('Please fill in all required fields');
+        throw new Error(tr('Please complete all required fields', 'Veuillez remplir tous les champs obligatoires'));
       }
 
       // Validate fuel amount
       const litersRequested = parseFloat(formData.liters_taken);
       if (isNaN(litersRequested) || litersRequested <= 0) {
-        throw new Error('Please enter a valid fuel amount');
+        throw new Error(tr('Please enter a valid fuel quantity', 'Veuillez saisir une quantité de carburant valide'));
       }
 
       if (tankData && litersRequested > tankData.current_volume) {
-        throw new Error(`Not enough fuel in tank. Available: ${tankData.current_volume}L`);
+        throw new Error(`${tr('Not enough fuel in the tank. Available:', 'Pas assez de carburant dans le réservoir. Disponible :')} ${tankData.current_volume}L`);
       }
 
       const result = await fuelService.addWithdrawal(formData);
@@ -92,7 +95,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
       if (result.success) {
         onComplete();
       } else {
-        throw new Error(result.error || 'Failed to record withdrawal');
+        throw new Error(result.error || tr('Failed to save the withdrawal', "Échec de l'enregistrement du retrait"));
       }
     } catch (err) {
       setError(err.message);
@@ -152,7 +155,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
               <Car className="w-5 h-5 text-blue-600" />
-              Vehicle Fuel Withdrawal
+              {tr('Vehicle Fuel Withdrawal', 'Retrait de carburant véhicule')}
             </h3>
             <button
               onClick={onClose}
@@ -174,7 +177,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
             {/* Vehicle Selection */}
             <div className="md:col-span-2">
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Select Vehicle <span className="text-red-500">*</span>
+                {tr('Select a vehicle', 'Sélectionner un véhicule')} <span className="text-red-500">*</span>
               </label>
               <div className="relative">
                 <select
@@ -185,10 +188,10 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
                   disabled={vehiclesLoading}
                 >
                   <option value="">
-                    {vehiclesLoading ? 'Loading available vehicles...' : 'Choose a vehicle...'}
+                    {vehiclesLoading ? tr('Loading available vehicles...', 'Chargement des véhicules disponibles...') : tr('Choose a vehicle...', 'Choisissez un véhicule...')}
                   </option>
                   {!vehiclesLoading && safeVehicles.length === 0 && (
-                    <option value="" disabled>No vehicles available</option>
+                    <option value="" disabled>{tr('No vehicles available', 'Aucun véhicule disponible')}</option>
                   )}
                   {!vehiclesLoading && safeVehicles.map((vehicle) => (
                     <option key={vehicle.id} value={vehicle.id}>
@@ -208,12 +211,12 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
                     const selectedVehicle = safeVehicles.find(v => v.id.toString() === formData.vehicle_id);
                     return selectedVehicle ? (
                       <div className="flex items-center gap-4">
-                        <span>Model: {selectedVehicle.model}</span>
+                        <span>{tr('Model', 'Modèle')} : {selectedVehicle.model}</span>
                         <span className={getVehicleStatusColor(selectedVehicle.status)}>
-                          Status: {selectedVehicle.status.replace('_', ' ')}
+                          {tr('Status', 'Statut')} : {selectedVehicle.status.replace('_', ' ')}
                         </span>
                         {selectedVehicle.current_odometer && (
-                          <span>Odometer: {selectedVehicle.current_odometer}km</span>
+                          <span>{tr('Odometer', 'Compteur')} : {selectedVehicle.current_odometer}km</span>
                         )}
                       </div>
                     ) : null;
@@ -225,7 +228,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
             {/* Fuel Amount */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Fuel Amount (Liters) <span className="text-red-500">*</span>
+                {tr('Fuel quantity (liters)', 'Quantité de carburant (litres)')} <span className="text-red-500">*</span>
               </label>
               <div className="relative">
                 <input
@@ -243,7 +246,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
               </div>
               {tankData && (
                 <p className="text-xs text-gray-500 mt-1">
-                  Available in tank: {tankData.current_volume}L
+                  {tr('Available in tank', 'Disponible dans le réservoir')} : {tankData.current_volume}L
                 </p>
               )}
             </div>
@@ -251,7 +254,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
             {/* Withdrawal Date */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Withdrawal Date <span className="text-red-500">*</span>
+                {tr('Withdrawal date', 'Date du retrait')} <span className="text-red-500">*</span>
               </label>
               <div className="relative">
                 <input
@@ -268,7 +271,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
             {/* Filled By */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Filled By <span className="text-red-500">*</span>
+                {tr('Filled by', 'Rempli par')} <span className="text-red-500">*</span>
               </label>
               <div className="relative">
                 <input
@@ -276,7 +279,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
                   value={formData.filled_by}
                   onChange={(e) => setFormData({...formData, filled_by: e.target.value})}
                   className="w-full px-3 py-2 pr-8 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Enter operator name"
+                  placeholder={tr("Enter the operator's name", "Entrez le nom de l'opérateur")}
                   required
                 />
                 <User className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
@@ -286,7 +289,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
             {/* Odometer Reading */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Odometer Reading (km)
+                {tr('Odometer reading (km)', 'Relevé du compteur (km)')}
               </label>
               <div className="relative">
                 <input
@@ -295,7 +298,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
                   value={formData.odometer_reading}
                   onChange={(e) => setFormData({...formData, odometer_reading: e.target.value})}
                   className="w-full px-3 py-2 pr-8 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Current odometer reading"
+                  placeholder={tr('Current odometer reading', 'Relevé actuel du compteur')}
                 />
                 <Gauge className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
               </div>
@@ -305,7 +308,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
           {/* Notes */}
           <div className="mb-6">
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Notes
+              {tr('Notes', 'Notes')}
             </label>
             <div className="relative">
               <textarea
@@ -313,7 +316,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
                 onChange={(e) => setFormData({...formData, notes: e.target.value})}
                 rows={3}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Additional notes or comments..."
+                placeholder={tr('Additional notes or comments...', 'Notes ou commentaires supplémentaires...')}
               />
               <FileText className="absolute right-3 top-3 text-gray-400 w-4 h-4 pointer-events-none" />
             </div>
@@ -322,14 +325,14 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
           {/* Tank Status Info */}
           {tankData && (
             <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-              <h4 className="text-sm font-medium text-blue-800 mb-2">Current Tank Status</h4>
+              <h4 className="text-sm font-medium text-blue-800 mb-2">{tr('Current tank status', 'État actuel du réservoir')}</h4>
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="text-blue-600">Available Fuel:</span>
+                  <span className="text-blue-600">{tr('Available fuel', 'Carburant disponible')} :</span>
                   <span className="ml-2 font-medium text-blue-800">{tankData.current_volume}L</span>
                 </div>
                 <div>
-                  <span className="text-blue-600">Tank Capacity:</span>
+                  <span className="text-blue-600">{tr('Tank capacity', 'Capacité du réservoir')} :</span>
                   <span className="ml-2 font-medium text-blue-800">{tankData.capacity}L</span>
                 </div>
               </div>
@@ -344,7 +347,7 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
               className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
               disabled={loading}
             >
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </button>
             <button
               type="submit"
@@ -354,12 +357,12 @@ const FuelWithdrawalModal = ({ isOpen, onClose, onComplete, tankData }) => {
               {loading ? (
                 <>
                   <Loader className="w-4 h-4 animate-spin" />
-                  Recording...
+                  {tr('Saving...', 'Enregistrement...')}
                 </>
               ) : (
                 <>
                   <Car className="w-4 h-4" />
-                  Record Withdrawal
+                  {tr('Save withdrawal', 'Enregistrer le retrait')}
                 </>
               )}
             </button>

@@ -1,5 +1,9 @@
 import React from 'react';
 import { Play, Square, Edit, X, CheckCircle } from 'lucide-react';
+import i18n from '../../i18n';
+
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 const GiantActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) => {
   const canStart = booking.status === 'confirmed';
@@ -19,8 +23,8 @@ const GiantActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =>
           <div className="flex items-center justify-center">
             <Play className="h-12 w-12 mr-4" />
             <div className="text-left">
-              <div className="text-3xl font-black">START TOUR</div>
-              <div className="text-lg font-semibold opacity-90">▶️ Tap to begin</div>
+              <div className="text-3xl font-black">{tr('START TOUR', 'DEMARRER LE TOUR')}</div>
+              <div className="text-lg font-semibold opacity-90">{tr('▶️ Tap to begin', '▶️ Touchez pour commencer')}</div>
             </div>
           </div>
         </button>
@@ -35,8 +39,8 @@ const GiantActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =>
           <div className="flex items-center justify-center">
             <Square className="h-12 w-12 mr-4" />
             <div className="text-left">
-              <div className="text-3xl font-black">FINISH TOUR</div>
-              <div className="text-lg font-semibold opacity-90">⏹ Tap to complete</div>
+              <div className="text-3xl font-black">{tr('FINISH TOUR', 'TERMINER LE TOUR')}</div>
+              <div className="text-lg font-semibold opacity-90">{tr('⏹ Tap to complete', '⏹ Touchez pour terminer')}</div>
             </div>
           </div>
         </button>
@@ -48,8 +52,8 @@ const GiantActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =>
           <div className="flex items-center justify-center">
             <CheckCircle className="h-12 w-12 mr-4" />
             <div className="text-left">
-              <div className="text-3xl font-black">TOUR COMPLETED</div>
-              <div className="text-lg font-semibold opacity-90">✅ All done!</div>
+              <div className="text-3xl font-black">{tr('TOUR COMPLETED', 'TOUR TERMINE')}</div>
+              <div className="text-lg font-semibold opacity-90">{tr('✅ All done!', '✅ Tout est termine !')}</div>
             </div>
           </div>
         </div>
@@ -66,8 +70,8 @@ const GiantActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =>
             <div className="flex items-center justify-center">
               <Edit className="h-8 w-8 mr-3" />
               <div className="text-left">
-                <div className="text-xl font-bold">EDIT</div>
-                <div className="text-sm font-semibold opacity-90">✏️ Make changes</div>
+                <div className="text-xl font-bold">{tr('EDIT', 'MODIFIER')}</div>
+                <div className="text-sm font-semibold opacity-90">{tr('✏️ Make changes', '✏️ Modifier la reservation')}</div>
               </div>
             </div>
           </button>
@@ -82,8 +86,8 @@ const GiantActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =>
             <div className="flex items-center justify-center">
               <X className="h-8 w-8 mr-3" />
               <div className="text-left">
-                <div className="text-xl font-bold">CANCEL</div>
-                <div className="text-sm font-semibold opacity-90">❌ Remove booking</div>
+                <div className="text-xl font-bold">{tr('CANCEL', 'ANNULER')}</div>
+                <div className="text-sm font-semibold opacity-90">{tr('❌ Remove booking', '❌ Supprimer la reservation')}</div>
               </div>
             </div>
           </button>
@@ -93,12 +97,12 @@ const GiantActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =>
       {/* Helpful Instructions */}
       <div className="bg-blue-50 border-2 border-blue-200 p-4 rounded-2xl text-center">
         <div className="text-lg font-bold text-blue-900 mb-2">
-          💡 QUICK TIPS
+          💡 {tr('QUICK TIPS', 'CONSEILS RAPIDES')}
         </div>
         <div className="text-base font-semibold text-blue-800">
-          {canStart && "👆 Tap the green button to start the tour"}
-          {isOnTour && "👆 Tap the red button when tour is finished"}
-          {isCompleted && "✅ This tour is all done! Great job!"}
+          {canStart && tr('👆 Tap the green button to start the tour', '👆 Touchez le bouton vert pour demarrer le tour')}
+          {isOnTour && tr('👆 Tap the red button when tour is finished', '👆 Touchez le bouton rouge quand le tour est termine')}
+          {isCompleted && tr('✅ This tour is all done! Great job!', '✅ Ce tour est termine. Bon travail !')}
         </div>
       </div>
     </div>

@@ -7,7 +7,12 @@ import {
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import CustomerService from '../../services/EnhancedUnifiedCustomerService';
+import { getCustomerRentalHistory } from '../../services/EnhancedUnifiedCustomerService';
 import { uploadCustomerDocument } from '../../utils/storageUpload';
+import i18n from '../../i18n';
+
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 
 // ImageGallery component for displaying customer documents
@@ -24,7 +29,7 @@ const ImageGallery = ({ images, title, emptyMessage, gridLayout = true }) => {
   });
   
   if (validImages.length === 0) {
-    return <p className="text-sm text-gray-500">No valid images</p>;
+    return <p className="text-sm text-gray-500">{tr('No valid images', 'Aucune image valide')}</p>;
   }
   
   return (
@@ -127,7 +132,7 @@ const ViewCustomerDetailsDrawer = ({
     if (isOpen && (rental || customerId || isSecondDriverOnlyView)) {
       loadCustomerData();
     }
-  }, [isOpen, rental, customerId, isSecondDriverOnlyView]);
+  }, [isOpen, customerId, isSecondDriverOnlyView, rental?.id, rental?.customer_id]);
 
   useEffect(() => {
     if (!isSecondDriverOnlyView && customerData && customerData.id) {
@@ -164,12 +169,12 @@ const ViewCustomerDetailsDrawer = ({
             email: rental.customer_email || rental.email,
             phone: rental.customer_phone || rental.phone,
             licence_number: rental.customer_licence_number || rental.licence_number,
-            nationality: rental.nationality,
+            nationality: rental.customer_nationality || rental.nationality || '',
             created_at: rental.created_at,
             customer_id_image: rental.customer_id_image,
           });
         } else {
-          setError('No customer data available to display.');
+          setError(tr('No customer data available to display.', 'Aucune donnée client disponible à afficher.'));
         }
         setLoading(false);
         return;
@@ -195,23 +200,27 @@ const ViewCustomerDetailsDrawer = ({
       let dataToShow = {};
       const fallbackRental = latestRental || rental;
 
-      // CRITICAL FIX: If viewing from a rental, ALWAYS show rental customer data
+      // When a live customer profile exists, prefer its current fields and only
+      // fall back to the rental snapshot for anything missing.
       if (rental) {
-        console.log('🔄 Using RENTAL data (passed from parent):', rental.id);
-        
         dataToShow = {
           id: rental.customer_id || targetCustomerId,
           isRentalBased: true,
-          full_name: rental.customer_name || 'Unknown',
-          email: rental.customer_email || rental.email || '',
-          phone: rental.customer_phone || rental.phone || '',
-          licence_number: rental.customer_licence_number || rental.licence_number || '',
-          nationality: rental.nationality || '',
+          full_name: customerProfile?.full_name || rental.customer_name || 'Unknown',
+          email: customerProfile?.email || rental.customer_email || rental.email || '',
+          phone: customerProfile?.phone || rental.customer_phone || rental.phone || '',
+          address: customerProfile?.address || rental.customer_address || rental.address || '',
+          licence_number: customerProfile?.licence_number || rental.customer_licence_number || rental.licence_number || '',
+          nationality: customerProfile?.nationality || rental.customer_nationality || rental.nationality || '',
           created_at: rental.created_at || new Date().toISOString(),
-          customer_id_image: rental.customer_id_image,
-          id_scan_url: rental.customer?.id_scan_url,
+          customer_id_image: customerProfile?.customer_id_image || rental.customer_id_image,
+          id_scan_url: customerProfile?.id_scan_url || rental.customer?.id_scan_url,
           _source: 'rental',
           _rentalId: rental.id,
+          is_banned: Boolean(customerProfile?.scan_metadata?.is_banned),
+          ban_note: customerProfile?.scan_metadata?.ban_note || '',
+          has_active_alert_note: Boolean(customerProfile?.scan_metadata?.show_admin_note_alert),
+          active_alert_note: customerProfile?.scan_metadata?.admin_note || '',
         };
         
         // Store customer profile data separately for reference
@@ -221,17 +230,24 @@ const ViewCustomerDetailsDrawer = ({
             full_name: customerProfile.full_name,
             email: customerProfile.email,
             phone: customerProfile.phone,
+            nationality: customerProfile.nationality,
           };
         }
-        
+      
       } else if (customerProfile) {
         // No rental context - use customer profile
-        console.log('🔄 Using CUSTOMER PROFILE data');
-        dataToShow = { ...customerProfile, isRentalBased: false, _source: 'profile' };
+        dataToShow = {
+          ...customerProfile,
+          isRentalBased: false,
+          _source: 'profile',
+          is_banned: Boolean(customerProfile?.scan_metadata?.is_banned),
+          ban_note: customerProfile?.scan_metadata?.ban_note || '',
+          has_active_alert_note: Boolean(customerProfile?.scan_metadata?.show_admin_note_alert),
+          active_alert_note: customerProfile?.scan_metadata?.admin_note || '',
+        };
         
       } else if (fallbackRental) {
         // No customer profile, but have rental history
-        console.log('🔄 Using FALLBACK RENTAL data');
         dataToShow = {
           id: targetCustomerId,
           isRentalBased: true,
@@ -239,14 +255,22 @@ const ViewCustomerDetailsDrawer = ({
           email: fallbackRental.customer_email || fallbackRental.email,
           phone: fallbackRental.customer_phone || fallbackRental.phone,
           licence_number: fallbackRental.customer_licence_number || fallbackRental.licence_number,
-          nationality: fallbackRental.nationality,
+          nationality: fallbackRental.customer_nationality || fallbackRental.nationality || customerProfile?.nationality || '',
           created_at: fallbackRental.created_at,
           customer_id_image: fallbackRental.customer_id_image,
           id_scan_url: fallbackRental.customer?.id_scan_url,
           _source: 'fallback_rental',
+          is_banned: Boolean(customerProfile?.scan_metadata?.is_banned),
+          ban_note: customerProfile?.scan_metadata?.ban_note || '',
+          has_active_alert_note: false,
+          active_alert_note: '',
         };
       } else {
-        setError(`Customer with ID ${targetCustomerId} not found, and no rental history is available.`);
+        setError(`${
+          isFrenchLocale()
+            ? `Client avec l’ID ${targetCustomerId} introuvable et aucun historique de location disponible.`
+            : `Customer with ID ${targetCustomerId} not found, and no rental history is available.`
+        }`);
         setLoading(false);
         return;
       }
@@ -255,28 +279,23 @@ const ViewCustomerDetailsDrawer = ({
 
     } catch (err) {
       console.error('❌ Error loading customer data:', err);
-      setError(`Failed to load customer data: ${err.message}`);
+      setError(`${tr('Failed to load customer data:', 'Échec du chargement des données client :')} ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
   const loadRentalHistory = async (customerIdToFetch) => {
-    if (CustomerService && typeof CustomerService.getCustomerRentalHistory === 'function') {
-      try {
-        const rentalHistoryResult = await CustomerService.getCustomerRentalHistory(customerIdToFetch);
-        if (rentalHistoryResult.success) {
-          setRentalHistory(rentalHistoryResult.data);
-        } else {
-          console.warn('Could not fetch rental history:', rentalHistoryResult.error);
-          setRentalHistory([]);
-        }
-      } catch (err) {
-        console.error('❌ Unexpected error in loadRentalHistory:', err);
+    try {
+      const rentalHistoryResult = await getCustomerRentalHistory(customerIdToFetch);
+      if (rentalHistoryResult.success) {
+        setRentalHistory(rentalHistoryResult.data);
+      } else {
+        console.warn('Could not fetch rental history:', rentalHistoryResult.error);
         setRentalHistory([]);
       }
-    } else {
-      console.error("CustomerService.getCustomerRentalHistory is not available.");
+    } catch (err) {
+      console.error('❌ Unexpected error in loadRentalHistory:', err);
       setRentalHistory([]);
     }
   };
@@ -308,7 +327,7 @@ const ViewCustomerDetailsDrawer = ({
 
     } catch (err) {
       console.error('Upload error:', err);
-      setUploadError(`Upload failed: ${err.message}`);
+      setUploadError(`${tr('Upload failed:', 'Échec du téléversement :')} ${err.message}`);
     } finally {
       setUploading(false);
       if(fileInputRef.current) fileInputRef.current.value = '';
@@ -318,7 +337,7 @@ const ViewCustomerDetailsDrawer = ({
   const handleCreateCustomerProfile = async () => {
     const sourceRental = rental || (rentalHistory.length > 0 ? rentalHistory[0] : null);
     if (!sourceRental) {
-        setError("No rental data available to create a profile.");
+        setError(tr('No rental data available to create a profile.', 'Aucune donnée de location disponible pour créer un profil.'));
         return;
     }
 
@@ -332,41 +351,41 @@ const ViewCustomerDetailsDrawer = ({
         email: sourceRental.customer_email || sourceRental.email,
         phone: sourceRental.customer_phone || sourceRental.phone,
         licence_number: sourceRental.licence_number || sourceRental.customer_licence_number,
-        nationality: sourceRental.nationality,
+        nationality: sourceRental.customer_nationality || sourceRental.nationality,
         id_number: sourceRental.id_number || sourceRental.customer_id_number,
       };
 
       const result = await CustomerService.saveCustomer(customerToSave);
       
       if (result.success) {
-        setAlertMessage(result.message || (result.isExisting ? 'Found existing customer profile.' : 'Successfully created a new customer profile.'));
+        setAlertMessage(result.message || (result.isExisting ? tr('Found existing customer profile.', 'Profil client existant trouvé.') : tr('Successfully created a new customer profile.', 'Nouveau profil client créé avec succès.')));
         await loadCustomerData();
       } else {
-        setError(result.error || 'Failed to create or update customer profile.');
+        setError(result.error || tr('Failed to create or update customer profile.', 'Échec de la création ou de la mise à jour du profil client.'));
       }
     } catch (err) {
       console.error('❌ Error creating customer profile:', err);
-      setError(`An unexpected error occurred: ${err.message}`);
+      setError(`${tr('An unexpected error occurred:', 'Une erreur inattendue est survenue :')} ${err.message}`);
     } finally {
       setCreatingProfile(false);
     }
   };
 
   const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
+    if (!dateString) return tr('N/A', 'N/D');
     try {
-      return new Date(dateString).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      return new Date(dateString).toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric' });
     } catch {
-      return 'Invalid Date';
+      return tr('Invalid Date', 'Date invalide');
     }
   };
 
   const formatDateTime = (dateString) => {
-    if (!dateString) return 'N/A';
+    if (!dateString) return tr('N/A', 'N/D');
     try {
-      return new Date(dateString).toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      return new Date(dateString).toLocaleString(isFrenchLocale() ? 'fr-FR' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     } catch {
-      return 'Invalid Date';
+      return tr('Invalid Date', 'Date invalide');
     }
   };
 
@@ -379,26 +398,48 @@ const ViewCustomerDetailsDrawer = ({
   const idScanUrl = customerData?.id_scan_url;
   const customerIdImage = customerData?.customer_id_image;
   const extraImages = customerData?.extra_images || [];
+  const customerIdScans = [...new Set([idScanUrl, customerIdImage].filter(Boolean).map((url) => String(url).trim()))]
+    .map((url) => ({ url, label: '' }));
+  const sectionCardClass = 'rounded-[24px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]';
+  const sectionTitleIconClass = 'h-4 w-4 mr-2 text-violet-600';
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-end">
-      <div className="bg-white w-full max-w-md h-full overflow-y-auto shadow-xl">
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-slate-950/45 backdrop-blur-[2px]"
+      onClick={onClose}
+    >
+      <div
+        className="h-full w-full max-w-md overflow-y-auto border-l border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/60 shadow-[0_24px_60px_rgba(15,23,42,0.16)]"
+        onClick={(event) => event.stopPropagation()}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200 bg-gray-50">
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/50 to-slate-50 px-6 py-5 backdrop-blur">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">
-              {isSecondDriverOnlyView ? 'Additional Drivers' : 'Customer Details'}
-            </h2>
-            <p className="text-sm text-gray-600 mt-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-slate-900">
+                {isSecondDriverOnlyView ? tr('Additional Drivers', 'Conducteurs supplémentaires') : tr('Customer Details', 'Détails client')}
+              </h2>
+              {!isSecondDriverOnlyView && customerData?.is_banned && (
+                <span className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-800">
+                  🚫 {tr('Banned', 'Banni')}
+                </span>
+              )}
+              {!isSecondDriverOnlyView && customerData?.has_active_alert_note && (
+                <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                  🚨 {tr('Alert Note', 'Note d’alerte')}
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-sm text-slate-500">
               {isSecondDriverOnlyView
-                ? 'Second driver information linked to this rental'
+                ? tr('Second driver information linked to this rental', 'Informations du second conducteur liées à cette location')
                 : customerData?.isRentalBased
-                  ? 'Limited Information Available'
-                  : 'Complete Customer Profile'}
+                  ? tr('Limited Information Available', 'Informations limitées disponibles')
+                  : tr('Complete Customer Profile', 'Profil client complet')}
             </p>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
-            <X className="h-5 w-5 text-gray-500" />
+          <button onClick={onClose} className="rounded-full border border-violet-100 bg-white p-2 transition-colors hover:bg-violet-50">
+            <X className="h-5 w-5 text-slate-500" />
           </button>
         </div>
 
@@ -407,20 +448,20 @@ const ViewCustomerDetailsDrawer = ({
           {loading && (
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-              <span className="ml-3 text-gray-600">Loading customer data...</span>
+              <span className="ml-3 text-gray-600">{tr('Loading customer data...', 'Chargement des données client...')}</span>
             </div>
           )}
 
           {alertMessage && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <div className="flex items-center"><CheckCircle className="h-5 w-5 text-blue-400" /><span className="ml-2 text-blue-800 font-medium">Notification</span></div>
+            <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
+              <div className="flex items-center"><CheckCircle className="h-5 w-5 text-blue-400" /><span className="ml-2 text-blue-800 font-medium">{tr('Notification', 'Notification')}</span></div>
               <p className="text-blue-700 mt-1">{alertMessage}</p>
             </div>
           )}
 
           {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <div className="flex items-center"><AlertCircle className="h-5 w-5 text-red-400" /><span className="ml-2 text-red-800 font-medium">Error</span></div>
+            <div className="rounded-2xl border border-red-200 bg-red-50/80 p-4 shadow-sm">
+              <div className="flex items-center"><AlertCircle className="h-5 w-5 text-red-400" /><span className="ml-2 text-red-800 font-medium">{tr('Error', 'Erreur')}</span></div>
               <p className="text-red-700 mt-1">{error}</p>
             </div>
           )}
@@ -428,37 +469,64 @@ const ViewCustomerDetailsDrawer = ({
           {customerData && !loading && (
             <>
               {!isSecondDriverOnlyView && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="flex items-center"><CheckCircle className="h-5 w-5 text-green-400" /><span className="ml-2 text-green-800 font-medium">Customer Information</span></div>
-                  <p className="text-green-700 mt-1 text-sm">Customer details from rental records.</p>
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4 shadow-sm">
+                  <div className="flex items-center"><CheckCircle className="h-5 w-5 text-green-400" /><span className="ml-2 text-green-800 font-medium">{tr('Customer Information', 'Informations client')}</span></div>
+                  <p className="text-green-700 mt-1 text-sm">{tr('Customer details from rental records.', 'Détails client issus des enregistrements de location.')}</p>
+                </div>
+              )}
+
+              {!isSecondDriverOnlyView && customerData?.has_active_alert_note && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm">
+                  <div className="flex items-center">
+                    <span className="text-lg">🚨</span>
+                    <span className="ml-2 text-amber-900 font-medium">{tr('Active Rental Alert Note', 'Note d’alerte location active')}</span>
+                  </div>
+                  {customerData?.active_alert_note && (
+                    <p className="text-amber-800 mt-2 text-sm whitespace-pre-wrap">{customerData.active_alert_note}</p>
+                  )}
+                </div>
+              )}
+
+              {!isSecondDriverOnlyView && customerData?.is_banned && (
+                <div className="rounded-2xl border border-red-200 bg-red-50/80 p-4 shadow-sm">
+                  <div className="flex items-center">
+                    <span className="text-lg">🚫</span>
+                    <span className="ml-2 text-red-900 font-medium">{tr('Banned Customer', 'Client banni')}</span>
+                  </div>
+                  <p className="mt-2 text-sm text-red-800">
+                    {tr('This customer is currently banned. Review the reason below before taking any action.', 'Ce client est actuellement banni. Consultez la raison ci-dessous avant toute action.')}
+                  </p>
+                  {customerData?.ban_note && (
+                    <p className="mt-2 text-sm whitespace-pre-wrap text-red-800">{customerData.ban_note}</p>
+                  )}
                 </div>
               )}
 
               {/* Data Source Indicator */}
               {!isSecondDriverOnlyView && (
-              <div className="bg-gray-100 border border-gray-300 rounded-lg p-3">
+              <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
                 <div className="flex items-center text-sm">
-                  <span className="font-medium text-gray-700">Data Source:</span>
-                  <span className="ml-2 px-2 py-1 rounded text-xs font-medium bg-blue-100 text-blue-800">
-                    {customerData?._source === 'rental' ? 'Rental Record' : 
-                     customerData?._source === 'profile' ? 'Customer Profile' : 
-                     'Historical Rental'}
+                  <span className="font-medium text-slate-700">{tr('Data Source:', 'Source des données :')}</span>
+                  <span className="ml-2 rounded-full bg-violet-100 px-2.5 py-1 text-xs font-medium text-violet-800">
+                    {customerData?._source === 'rental' ? tr('Rental Record', 'Fiche de location') : 
+                     customerData?._source === 'profile' ? tr('Customer Profile', 'Profil client') : 
+                     tr('Historical Rental', 'Location historique')}
                   </span>
                   {customerData?._rentalId && (
-                    <span className="ml-2 text-gray-600 text-xs">
-                      (Rental ID: {customerData._rentalId})
+                    <span className="ml-2 text-xs text-slate-500">
+                      ({tr('Rental ID', 'ID location')} : {customerData._rentalId})
                     </span>
                   )}
                 </div>
                 {customerData?.customer_profile && customerData.customer_profile.full_name !== customerData.full_name && (
-                  <div className="mt-2 text-xs text-amber-700 bg-amber-50 p-2 rounded border border-amber-200">
+                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
                     <div className="flex items-center">
                       <AlertCircle className="h-3 w-3 mr-1" />
-                      <span className="font-medium">Note:</span>
+                      <span className="font-medium">{tr('Note:', 'Note :')}</span>
                     </div>
                     <p className="mt-1">
-                      Rental shows: <strong>{customerData.full_name}</strong><br/>
-                      Linked customer profile: <strong>{customerData.customer_profile.full_name}</strong>
+                      {tr('Rental shows:', 'La location affiche :')} <strong>{customerData.full_name}</strong><br/>
+                      {tr('Linked customer profile:', 'Profil client lié :')} <strong>{customerData.customer_profile.full_name}</strong>
                     </p>
                   </div>
                 )}
@@ -467,43 +535,43 @@ const ViewCustomerDetailsDrawer = ({
 
               {/* Contact Information */}
               {!isSecondDriverOnlyView && (
-              <div className="bg-gray-50 rounded-lg p-4">
-                <h3 className="text-sm font-medium text-gray-900 mb-3 flex items-center"><User className="h-4 w-4 mr-2 text-blue-600" />Contact Information</h3>
+              <div className={sectionCardClass}>
+                <h3 className="mb-4 flex items-center text-sm font-semibold text-slate-900"><User className={sectionTitleIconClass} />{tr('Contact Information', 'Coordonnées')}</h3>
                 <div className="space-y-3">
                   <div className="flex items-start">
                       <div className="w-28 flex-shrink-0 flex items-center">
                           <User className="h-4 w-4 text-gray-400 mr-2" />
-                          <span className="text-sm text-gray-500">Name:</span>
+                          <span className="text-sm text-gray-500">{tr('Name:', 'Nom :')}</span>
                       </div>
-                      <span className="text-sm font-medium text-gray-900 break-words">{customerData?.full_name ?? 'N/A'}</span>
+                      <span className="text-sm font-medium text-gray-900 break-words">{customerData?.full_name ?? tr('N/A', 'N/D')}</span>
                   </div>
                   <div className="flex items-start">
                       <div className="w-28 flex-shrink-0 flex items-center">
                           <Mail className="h-4 w-4 text-gray-400 mr-2" />
-                          <span className="text-sm text-gray-500">Email:</span>
+                          <span className="text-sm text-gray-500">{tr('Email:', 'E-mail :')}</span>
                       </div>
-                      <span className="text-sm text-gray-900 break-words">{customerData?.email ?? 'N/A'}</span>
+                      <span className="text-sm text-gray-900 break-words">{customerData?.email ?? tr('N/A', 'N/D')}</span>
                   </div>
                   <div className="flex items-start">
                       <div className="w-28 flex-shrink-0 flex items-center">
                           <Phone className="h-4 w-4 text-gray-400 mr-2" />
-                          <span className="text-sm text-gray-500">Phone:</span>
+                          <span className="text-sm text-gray-500">{tr('Phone:', 'Téléphone :')}</span>
                       </div>
-                      <span className="text-sm text-gray-900 break-words">{customerData?.phone ?? 'N/A'}</span>
+                      <span className="text-sm text-gray-900 break-words">{customerData?.phone ?? tr('N/A', 'N/D')}</span>
                   </div>
                   <div className="flex items-start">
                       <div className="w-28 flex-shrink-0 flex items-center">
                           <CreditCard className="h-4 w-4 text-gray-400 mr-2" />
-                          <span className="text-sm text-gray-500">License:</span>
+                          <span className="text-sm text-gray-500">{tr('License:', 'Permis :')}</span>
                       </div>
-                      <span className="text-sm text-gray-900 break-words">{customerData?.licence_number ?? 'N/A'}</span>
+                      <span className="text-sm text-gray-900 break-words">{customerData?.licence_number ?? tr('N/A', 'N/D')}</span>
                   </div>
                   <div className="flex items-start">
                       <div className="w-28 flex-shrink-0 flex items-center">
                           <MapPin className="h-4 w-4 text-gray-400 mr-2" />
-                          <span className="text-sm text-gray-500">Nationality:</span>
+                          <span className="text-sm text-gray-500">{tr('Nationality:', 'Nationalité :')}</span>
                       </div>
-                      <span className="text-sm text-gray-900 break-words">{customerData?.nationality ?? 'N/A'}</span>
+                      <span className="text-sm text-gray-900 break-words">{customerData?.nationality ?? tr('N/A', 'N/D')}</span>
                   </div>
                 </div>
               </div>
@@ -511,14 +579,14 @@ const ViewCustomerDetailsDrawer = ({
 
               {/* Second Drivers Section */}
               {secondDrivers && secondDrivers.length > 0 && (
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="text-sm font-medium text-gray-900 mb-3 flex items-center">
-                    <Users className="h-4 w-4 mr-2 text-blue-600" />
-                    Second Drivers ({secondDrivers.length})
+                <div className={sectionCardClass}>
+                  <h3 className="mb-4 flex items-center text-sm font-semibold text-slate-900">
+                    <Users className={sectionTitleIconClass} />
+                    {tr('Second Drivers', 'Conducteurs secondaires')} ({secondDrivers.length})
                   </h3>
                   <div className="space-y-4">
                     {secondDrivers.map((driver, index) => (
-                      <div key={driver.id || index} className="bg-white rounded-lg p-3 border border-gray-200">
+                      <div key={driver.id || index} className="rounded-2xl border border-violet-100 bg-slate-50/70 p-3 shadow-sm">
                         <div className="flex items-start gap-3">
                           {/* Driver Image */}
                           {(driver.id_scan_url || driver.customer_id_image || driver.id_image) ? (
@@ -537,8 +605,8 @@ const ViewCustomerDetailsDrawer = ({
                           <div className="flex-1 min-w-0">
                             <div className="flex items-start justify-between">
                               <p className="font-medium text-gray-900">{driver.full_name}</p>
-                              <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-                                Driver #{index + 1}
+                              <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700">
+                                {tr('Driver', 'Conducteur')} #{index + 1}
                               </span>
                             </div>
                             
@@ -546,25 +614,25 @@ const ViewCustomerDetailsDrawer = ({
                               {driver.licence_number && (
                                 <p className="flex items-center text-gray-600">
                                   <CreditCard className="w-3 h-3 mr-1 flex-shrink-0" />
-                                  <span className="truncate">License: {driver.licence_number}</span>
+                                  <span className="truncate">{tr('License:', 'Permis :')} {driver.licence_number}</span>
                                 </p>
                               )}
                               {driver.document_type && (
                                 <p className="flex items-center text-gray-600">
                                   <Shield className="w-3 h-3 mr-1 flex-shrink-0" />
-                                  <span className="truncate">Document Type: {driver.document_type}</span>
+                                  <span className="truncate">{tr('Document Type:', 'Type de document :')} {driver.document_type}</span>
                                 </p>
                               )}
                               {driver.document_number && !driver.id_number && (
                                 <p className="flex items-center text-gray-600">
                                   <FileText className="w-3 h-3 mr-1 flex-shrink-0" />
-                                  <span className="truncate">Document No: {driver.document_number}</span>
+                                  <span className="truncate">{tr('Document No:', 'No document :')} {driver.document_number}</span>
                                 </p>
                               )}
                               {driver.id_number && (
                                 <p className="flex items-center text-gray-600">
                                   <FileText className="w-3 h-3 mr-1 flex-shrink-0" />
-                                  <span className="truncate">ID: {driver.id_number}</span>
+                                  <span className="truncate">{tr('ID:', 'ID :')} {driver.id_number}</span>
                                 </p>
                               )}
                               {driver.phone && (
@@ -600,7 +668,7 @@ const ViewCustomerDetailsDrawer = ({
                               {driver.place_of_birth && (
                                 <p className="flex items-center text-gray-600">
                                   <MapPin className="w-3 h-3 mr-1 flex-shrink-0" />
-                                  <span className="truncate">Place of Birth: {driver.place_of_birth}</span>
+                                  <span className="truncate">{tr('Place of Birth:', 'Lieu de naissance :')} {driver.place_of_birth}</span>
                                 </p>
                               )}
                             </div>
@@ -608,17 +676,17 @@ const ViewCustomerDetailsDrawer = ({
                             {/* Additional Images Grid */}
                             {driver.uploaded_images && driver.uploaded_images.length > 1 && (
                               <div className="mt-3">
-                                <p className="text-xs text-gray-500 mb-2">Additional documents:</p>
+                                <p className="text-xs text-gray-500 mb-2">{tr('Additional documents:', 'Documents supplémentaires :')}</p>
                                 <div className="grid grid-cols-3 gap-2">
                                   {driver.uploaded_images.map((img, imgIndex) => (
                                     <div
                                       key={imgIndex}
                                       className="aspect-square rounded border border-gray-200 overflow-hidden cursor-pointer hover:opacity-90"
-                                      onClick={() => handleImageClick(img.url, `${driver.full_name} - Document ${imgIndex + 1}`)}
+                                      onClick={() => handleImageClick(img.url, `${driver.full_name} - ${tr('Document', 'Document')} ${imgIndex + 1}`)}
                                     >
                                       <img
                                         src={img.url}
-                                        alt={`${driver.full_name} doc ${imgIndex + 1}`}
+                                        alt={`${driver.full_name} ${tr('document', 'document')} ${imgIndex + 1}`}
                                         className="w-full h-full object-cover"
                                         onError={(e) => {
                                           e.target.onerror = null;
@@ -637,12 +705,12 @@ const ViewCustomerDetailsDrawer = ({
                               <button
                                 onClick={() => handleImageClick(
                                   driver.id_scan_url || driver.customer_id_image || driver.id_image,
-                                  `${driver.full_name} - ID Document`
+                                  `${driver.full_name} - ${tr('ID Document', 'Document d’identité')}`
                                 )}
                                 className="mt-2 text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
                               >
                                 <Eye className="w-3 h-3" />
-                                View Full Image
+                                {tr("View Full Image", "Voir l'image complète")}
                               </button>
                             )}
                           </div>
@@ -655,33 +723,40 @@ const ViewCustomerDetailsDrawer = ({
 
               {/* Rental History */}
               {!isSecondDriverOnlyView && (
-              <div className="bg-gray-50 rounded-lg p-4">
-                <h3 className="text-sm font-medium text-gray-900 mb-3 flex items-center"><Clock className="h-4 w-4 mr-2 text-blue-600" />Rental History ({rentalHistory.length})</h3>
+              <div className={sectionCardClass}>
+                <h3 className="mb-4 flex items-center text-sm font-semibold text-slate-900"><Clock className={sectionTitleIconClass} />{tr('Rental History', 'Historique des locations')} ({rentalHistory.length})</h3>
                 {rentalHistory.length > 0 ? (
                   <div className="space-y-3 max-h-60 overflow-y-auto">
                     {rentalHistory.map(r => (
-                      <Link to={`/admin/rentals/${r.id}`} key={r.id} className="block p-3 bg-white rounded-lg border hover:bg-gray-100 transition-colors">
+                      <Link to={`/admin/rentals/${r.id}`} key={r.id} className="block rounded-2xl border border-violet-100 bg-slate-50/70 p-3 transition-colors hover:bg-violet-50/60">
                         <div className="flex justify-between items-center mb-1">
-                          <p className="font-semibold text-sm">{r.vehicle?.name || 'Unknown Vehicle'}</p>
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${r.rental_status === 'completed' ? 'bg-blue-100 text-blue-800' : r.rental_status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>{r.rental_status}</span>
+                          <p className="font-semibold text-sm">{r.vehicle?.name || tr('Unknown Vehicle', 'Véhicule inconnu')}</p>
+                          <div className="flex flex-wrap items-center justify-end gap-1.5">
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${r.rental_status === 'completed' ? 'bg-blue-100 text-blue-800' : r.rental_status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>{r.rental_status}</span>
+                            {Boolean(r.is_impounded) && (
+                              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900">
+                                🚨 {tr('Impounded', 'Mis en fourrière')}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <p className="text-xs text-gray-500 mb-1">{formatDate(r.rental_start_date)} - {formatDate(r.rental_end_date)}</p>
-                        <p className="text-xs text-blue-600 font-mono">Rental ID: {r.rental_id || r.id}</p>
+                        <p className="text-xs text-blue-600 font-mono">{tr('Rental ID', 'ID location')} : {r.rental_id || r.id}</p>
                       </Link>
                     ))}
                   </div>
-                ) : (<p className="text-sm text-gray-500">No rental history found.</p>)}
+                ) : (<p className="text-sm text-gray-500">{tr('No rental history found.', 'Aucun historique de location trouvé.')}</p>)}
               </div>
               )}
 
               {/* ID Document Scans */}
               {!isSecondDriverOnlyView && (
-              <div className="bg-gray-50 rounded-lg p-4">
-                <h3 className="text-sm font-medium text-gray-900 mb-3 flex items-center"><Camera className="h-4 w-4 mr-2 text-blue-600" />ID Scans</h3>
+              <div className={sectionCardClass}>
+                <h3 className="mb-4 flex items-center text-sm font-semibold text-slate-900"><Camera className={sectionTitleIconClass} />{tr('ID Scans', "Scans d'identité")}</h3>
                 <ImageGallery 
-                  images={[idScanUrl, customerIdImage].filter(Boolean).map(url => ({ url, label: '' }))}
-                  title="ID Document"
-                  emptyMessage="No ID documents available."
+                  images={customerIdScans}
+                  title={tr('ID Document', "Document d'identité")}
+                  emptyMessage={tr('No ID documents available. Please scan or import an ID to complete customer verification.', "Aucun document d'identité disponible. Veuillez scanner ou importer une pièce d'identité pour terminer la vérification du client.")}
                   gridLayout={false}
                 />
               </div>
@@ -689,26 +764,26 @@ const ViewCustomerDetailsDrawer = ({
               
               {/* Additional Documents */}
               {!isSecondDriverOnlyView && !customerData.isRentalBased && (
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <h3 className="text-sm font-medium text-gray-900 mb-3 flex items-center"><FileText className="h-4 w-4 mr-2 text-blue-600" />Additional Documents</h3>
+                <div className={sectionCardClass}>
+                  <h3 className="mb-4 flex items-center text-sm font-semibold text-slate-900"><FileText className={sectionTitleIconClass} />{tr('Additional Documents', 'Documents supplémentaires')}</h3>
                   <div className="grid grid-cols-2 gap-4 mb-4">
                     {extraImages.map((imgUrl, index) => (
                       <div key={index} className="relative group">
                         <img 
                           src={imgUrl} 
-                          alt={`Extra doc ${index + 1}`} 
+                          alt={`${tr('Extra document', 'Document supplémentaire')} ${index + 1}`} 
                           className="w-full h-24 object-cover border rounded-lg cursor-pointer hover:opacity-90" 
-                          onClick={() => handleImageClick(imgUrl, `Document ${index + 1}`)}
+                          onClick={() => handleImageClick(imgUrl, `${tr('Document', 'Document')} ${index + 1}`)}
                         />
                       </div>
                     ))}
                   </div>
                   <div>
                     <label htmlFor="image-upload" className="w-full">
-                      <div className="mt-2 flex justify-center px-6 py-4 border-2 border-gray-300 border-dashed rounded-md cursor-pointer hover:border-blue-500 bg-white">
+                      <div className="mt-2 flex justify-center rounded-2xl border-2 border-dashed border-violet-200 bg-slate-50 px-6 py-4 cursor-pointer hover:border-violet-400">
                         <div className="text-center">
                           <Upload className="mx-auto h-8 w-8 text-gray-400" />
-                          <p className="mt-1 text-sm text-gray-600">{uploading ? 'Uploading...' : 'Click to upload a document'}</p>
+                          <p className="mt-1 text-sm text-gray-600">{uploading ? tr('Uploading...', 'Téléversement...') : tr('Click to upload a document', 'Cliquez pour téléverser un document')}</p>
                         </div>
                       </div>
                       <input 
@@ -722,7 +797,7 @@ const ViewCustomerDetailsDrawer = ({
                         accept="image/*,.pdf" 
                       />
                     </label>
-                    {uploading && <div className="mt-2 h-1 w-full bg-blue-200 rounded"><div className="h-1 bg-blue-600 rounded animate-pulse w-3/4"></div></div>}
+                    {uploading && <div className="mt-2 h-1 w-full rounded bg-violet-200"><div className="h-1 w-3/4 animate-pulse rounded bg-violet-600"></div></div>}
                     {uploadError && <p className="mt-2 text-sm text-red-600">{uploadError}</p>}
                   </div>
                 </div>
@@ -730,11 +805,11 @@ const ViewCustomerDetailsDrawer = ({
 
               {/* Account Information */}
               {!isSecondDriverOnlyView && (
-              <div className="bg-gray-50 rounded-lg p-4">
-                <h3 className="text-sm font-medium text-gray-900 mb-3 flex items-center"><CreditCard className="h-4 w-4 mr-2 text-blue-600" />Account Information</h3>
+              <div className={sectionCardClass}>
+                <h3 className="mb-4 flex items-center text-sm font-semibold text-slate-900"><CreditCard className={sectionTitleIconClass} />{tr('Account Information', 'Informations du compte')}</h3>
                 <div className="space-y-3">
-                  <div className="flex items-center"><span className="text-sm text-gray-500 w-20">Customer ID:</span><span className="text-sm font-mono text-gray-900">{customerData.id ?? 'N/A'}</span></div>
-                  <div className="flex items-center"><span className="text-sm text-gray-500 w-20">Created:</span><span className="text-sm text-gray-900">{formatDateTime(customerData.created_at)}</span></div>
+                  <div className="flex items-center"><span className="text-sm text-gray-500 w-20">{tr('Customer ID:', 'ID client :')}</span><span className="text-sm font-mono text-gray-900">{customerData.id ?? tr('N/A', 'N/D')}</span></div>
+                  <div className="flex items-center"><span className="text-sm text-gray-500 w-20">{tr('Created:', 'Créé le :')}</span><span className="text-sm text-gray-900">{formatDateTime(customerData.created_at)}</span></div>
                 </div>
               </div>
               )}
@@ -769,7 +844,7 @@ const ViewCustomerDetailsDrawer = ({
               target="_blank"
               rel="noopener noreferrer"
               className="absolute bottom-4 right-4 bg-white rounded-full p-2 shadow-lg hover:bg-gray-100"
-              title="Open in new tab"
+              title={tr('Open in new tab', 'Ouvrir dans un nouvel onglet')}
             >
               <Download className="h-5 w-5" />
             </a>

@@ -10,7 +10,10 @@
  */
 
 import { supabase } from '../../lib/supabase.js';
+import { buildApiUrl, GEMINI_PROXY_PATH } from '../apiUrl.js';
 import unifiedCustomerService from '../UnifiedCustomerService';
+
+const GEMINI_PROXY_URL = buildApiUrl(GEMINI_PROXY_PATH);
 
 class GeminiVisionOCR {
   constructor() {
@@ -29,13 +32,13 @@ class GeminiVisionOCR {
       };
       
       console.log('📤 Calling Gemini proxy with:', {
-        endpoint: '/api/gemini-proxy',
+        endpoint: GEMINI_PROXY_URL,
         method: 'POST',
         payload: requestPayload,
         payloadStringified: JSON.stringify(requestPayload)
       });
       
-      const response = await fetch('/api/gemini-proxy', {
+      const response = await fetch(GEMINI_PROXY_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -237,7 +240,7 @@ Rules: Dates as YYYY-MM-DD. Confidence 0.0-1.0. Prefer Latin text in full_name, 
     };
 
     console.log('=== GEMINI API REQUEST ===');
-    console.log('Using proxy endpoint: /api/gemini-proxy');
+    console.log('Using proxy endpoint:', GEMINI_PROXY_URL);
     console.log('MIME Type:', mimeType);
     console.log('Prompt Length:', mgxPrompt.length);
     console.log('Image Data Length:', base64Image.length);
@@ -246,6 +249,7 @@ Rules: Dates as YYYY-MM-DD. Confidence 0.0-1.0. Prefer Latin text in full_name, 
     
     console.log('📤 Calling Gemini proxy with:', {
       endpoint: '/api/gemini-proxy',
+      resolvedEndpoint: GEMINI_PROXY_URL,
       method: 'POST',
       action: requestBody.action,
       model: requestBody.model,
@@ -268,7 +272,7 @@ Rules: Dates as YYYY-MM-DD. Confidence 0.0-1.0. Prefer Latin text in full_name, 
     });
     
     try {
-      const response = await fetch('/api/gemini-proxy', {
+      const response = await fetch(GEMINI_PROXY_URL, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',

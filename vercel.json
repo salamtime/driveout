@@ -1,3 +1,41 @@
 {
-  "rewrites": [{ "source": "/((?!api/).*)", "destination": "/" }]
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/**/*.js": {
+      "maxDuration": 60
+    }
+  },
+  "redirects": [
+    {
+      "source": "/",
+      "has": [
+        { "type": "host", "value": "admin.saharax.co" }
+      ],
+      "destination": "/login",
+      "permanent": false
+    }
+  ],
+  "rewrites": [
+    { "source": "/share/rent/:listingId", "destination": "/api/public-links?resource=share-vehicle&listingId=:listingId" },
+    { "source": "/api/public-catalog", "destination": "/api/public-links?resource=public-catalog" },
+    { "source": "/api/public-pricing", "destination": "/api/public-links?resource=public-pricing" },
+    { "source": "/api/public-bookings", "destination": "/api/public-links?resource=public-bookings" },
+    { "source": "/api/tour-packages", "destination": "/api/tour-bookings?resource=packages" },
+    { "source": "/api/tour-tracking", "destination": "/api/tour-bookings?resource=tracking" },
+    { "source": "/api/admin/users", "destination": "/api/admin-users" },
+    { "source": "/api/admin/users/:userId", "destination": "/api/admin-users?userId=:userId" },
+    { "source": "/api/me/profile", "destination": "/api/me?resource=profile" },
+    { "source": "/api/business-owners", "destination": "/api/tenants?resource=business-owners" },
+    { "source": "/api/tenant-provisioning", "destination": "/api/tenants?resource=provisioning" },
+    { "source": "/api/tenant-session", "destination": "/api/tenants?resource=session" },
+    { "source": "/api/document-shares/create", "destination": "/api/public-links?resource=document-shares&action=create" },
+    { "source": "/api/document-shares/:token", "destination": "/api/public-links?resource=document-shares&token=:token" },
+    { "source": "/api/short-links/create", "destination": "/api/public-links?resource=short-links&action=create" },
+    { "source": "/api/short-links/:code", "destination": "/api/public-links?resource=short-links&code=:code" },
+    { "source": "/api/rentals/audit-log", "destination": "/api/rental-audit" },
+    { "source": "/api/rentals/:rentalId/audit-logs", "destination": "/api/rental-audit?rentalId=:rentalId" },
+    { "source": "/s/:code", "destination": "/api/public-links?resource=short-links&code=:code&mode=redirect" },
+    { "source": "/((?!api/|assets/|images/|favicon.ico|og-image.png|.*\\..*).*)", "destination": "/" }
+  ]
 }

@@ -1,3 +1,5 @@
+import { normalizePermissionMap as normalizeCatalogPermissionMap } from './permissionCatalog';
+
 // Module name mapping configuration
 const MODULE_NAME_MAP = {
   // UI module name (lowercase): Server module name (exact match)
@@ -14,6 +16,9 @@ const MODULE_NAME_MAP = {
   'finance': 'Financial Reports',
   'alerts': 'Alerts & Notifications',
   'users': 'User Management',
+  'verification': 'Verification Center',
+  'workspaces': 'Workspaces',
+  'marketplace': 'Marketplace Review',
   'settings': 'System Settings',
   'export': 'Data Export',
   'admin': 'Administration' // Add this for admin/owner checks
@@ -49,18 +54,31 @@ const normalizePermissionMap = (user) => {
   if (!user) return {};
 
   if (user.permissions && !Array.isArray(user.permissions) && typeof user.permissions === 'object') {
-    return user.permissions;
+    return normalizeCatalogPermissionMap(user.permissions);
   }
 
   if (Array.isArray(user.permissions)) {
-    return user.permissions.reduce((acc, permission) => {
+    return normalizeCatalogPermissionMap(user.permissions.reduce((acc, permission) => {
       if (!permission?.module_name) return acc;
       acc[permission.module_name] = permission.has_access === true;
       return acc;
-    }, {});
+    }, {}));
   }
 
   return {};
+};
+
+const buildPermissionSignature = (user) => {
+  if (!user) return 'anonymous';
+
+  const permissionMap = normalizePermissionMap(user);
+  const sortedEntries = Object.entries(permissionMap).sort(([left], [right]) => left.localeCompare(right));
+
+  return JSON.stringify({
+    role: String(user.role || ''),
+    accessEnabled: user.accessEnabled ?? user.access_enabled ?? null,
+    permissions: sortedEntries,
+  });
 };
 
 // Get current user from locally persisted auth state, if available.
@@ -81,22 +99,25 @@ export const hasPermission = (moduleName, user = null) => {
   if (!userProfile || !userProfile.id) {
     return false;
   }
+
+  const permissionSignature = buildPermissionSignature(userProfile);
+  const cacheKey = `${moduleName}__${permissionSignature}`;
   
   // ✅ Check cache first to avoid repeated permission lookups
-  const cached = permissionCache.get(userProfile.id, moduleName);
+  const cached = permissionCache.get(userProfile.id, cacheKey);
   if (cached !== undefined) {
     return cached;
   }
   
   // For owner role, always return true for all permissions
   if (userProfile.role === 'owner') {
-    return permissionCache.set(userProfile.id, moduleName, true);
+    return permissionCache.set(userProfile.id, cacheKey, true);
   }
   
   const permissionMap = normalizePermissionMap(userProfile);
 
   if (!Object.keys(permissionMap).length) {
-    return permissionCache.set(userProfile.id, moduleName, false);
+    return permissionCache.set(userProfile.id, cacheKey, false);
   }
   
   // Get the mapped module name, fallback to the input if no mapping
@@ -110,7 +131,7 @@ export const hasPermission = (moduleName, user = null) => {
   );
 
   const result = directHit ? directHit[1] === true : false;
-  return permissionCache.set(userProfile.id, moduleName, result);
+  return permissionCache.set(userProfile.id, cacheKey, result);
 };
 
 // ✅ NEW: Clear permission cache (call this when user logs out or permissions change)
@@ -146,7 +167,26 @@ export const canEditRentalPrice = (user) => {
     return true;
   }
 
-  return hasPermission('Change Rental Price', userProfile);
+  return (
+    hasPermission('Edit Rental Cost', userProfile) ||
+    hasPermission('Edit Rental Price', userProfile) ||
+    hasPermission('Change Rental Price', userProfile) ||
+    hasPermission('Edit Rental Price Without Approval', userProfile)
+  );
+};
+
+export const canEditRentalPriceWithoutApproval = (user) => {
+  return canEditRentalPrice(user);
+};
+
+export const canEditRentalContract = (user) => {
+  const userProfile = user || getCurrentUser();
+
+  if (String(userProfile?.role || '').toLowerCase() === 'owner') {
+    return true;
+  }
+
+  return hasPermission('Edit Rental Contract', userProfile);
 };
 
 export const canEditExtensionPrice = (user) => {
@@ -157,6 +197,40 @@ export const canEditExtensionPrice = (user) => {
   }
 
   return hasPermission('Change Extension Price', userProfile);
+};
+
+export const canEditExtensionHistory = (user) => {
+  const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+
+  if (role === 'owner') {
+    return true;
+  }
+
+  return hasPermission('Edit Extension History', userProfile);
+};
+
+export const canApproveRentalExtensions = (user) => {
+  const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+
+  return role === 'owner' || role === 'admin';
+};
+
+export const requiresExtensionApproval = (user) => {
+  const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+
+  if (role === 'owner' || role === 'admin') {
+    return false;
+  }
+
+  const permissionMap = normalizePermissionMap(userProfile);
+  if (!Object.prototype.hasOwnProperty.call(permissionMap, 'Require Extension Approval')) {
+    return true;
+  }
+
+  return hasPermission('Require Extension Approval', userProfile);
 };
 
 export const canChooseTourGuide = (user) => {
@@ -187,6 +261,32 @@ export const canAdjustVehicleFuelLevel = (user) => {
   }
 
   return hasPermission('Adjust Vehicle Fuel Level', userProfile);
+};
+
+export const canAdjustFuelTankLevel = (user) => {
+  const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+
+  if (role === 'owner') {
+    return true;
+  }
+
+  if (role !== 'admin') {
+    return false;
+  }
+
+  return hasPermission('Adjust Fuel Tank Level', userProfile);
+};
+
+export const canEditCustomerProfile = (user) => {
+  const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+
+  if (role === 'owner') {
+    return true;
+  }
+
+  return hasPermission('Edit Customer Profile', userProfile);
 };
 
 // Alternative: Case-insensitive comparison

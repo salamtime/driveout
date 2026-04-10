@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import i18n from '../../i18n';
 
 /**
  * Unauthorized Component
@@ -9,6 +10,8 @@ import { useAuth } from '../../contexts/AuthContext';
  * Provides helpful information about their current role and available actions.
  */
 const Unauthorized = () => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { user, signOut } = useAuth();
   const userRole = user ? user.role : 'customer';
 
@@ -23,34 +26,34 @@ const Unauthorized = () => {
   const getRoleInfo = () => {
     const roleInfo = {
       owner: {
-        name: 'Owner',
+        name: tr('Owner', 'Proprietaire'),
         color: 'purple',
-        description: 'Full system access',
-        capabilities: ['System management', 'User management', 'All administrative functions']
+        description: tr('Full system access', 'Acces complet au systeme'),
+        capabilities: [tr('System management', 'Gestion du systeme'), tr('User management', 'Gestion des utilisateurs'), tr('All administrative functions', 'Toutes les fonctions administratives')]
       },
       admin: {
-        name: 'Administrator',
+        name: tr('Administrator', 'Administrateur'),
         color: 'blue',
-        description: 'Administrative access',
-        capabilities: ['Fleet management', 'Rental operations', 'User management', 'Reports']
+        description: tr('Administrative access', 'Acces administratif'),
+        capabilities: [tr('Fleet management', 'Gestion de flotte'), tr('Rental operations', 'Operations de location'), tr('User management', 'Gestion des utilisateurs'), tr('Reports', 'Rapports')]
       },
       employee: {
-        name: 'Employee',
+        name: tr('Employee', 'Employe'),
         color: 'green',
-        description: 'Daily operations',
-        capabilities: ['Rental management', 'Vehicle updates', 'Customer service']
+        description: tr('Daily operations', 'Operations quotidiennes'),
+        capabilities: [tr('Rental management', 'Gestion des locations'), tr('Vehicle updates', 'Mises a jour vehicules'), tr('Customer service', 'Service client')]
       },
       guide: {
-        name: 'Guide',
+        name: tr('Guide', 'Guide'),
         color: 'yellow',
-        description: 'Tour operations',
-        capabilities: ['Tour management', 'Assigned vehicles', 'Customer communication']
+        description: tr('Tour operations', 'Operations des tours'),
+        capabilities: [tr('Tour management', 'Gestion des tours'), tr('Assigned vehicles', 'Vehicules assignes'), tr('Customer communication', 'Communication client')]
       },
       customer: {
-        name: 'Customer',
+        name: tr('Customer', 'Client'),
         color: 'gray',
-        description: 'Self-service access',
-        capabilities: ['Vehicle booking', 'Rental history', 'Profile management']
+        description: tr('Self-service access', 'Acces libre-service'),
+        capabilities: [tr('Vehicle booking', 'Reservation vehicule'), tr('Rental history', 'Historique de location'), tr('Profile management', 'Gestion du profil')]
       }
     };
 
@@ -68,10 +71,10 @@ const Unauthorized = () => {
           </svg>
         </div>
         <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-          Access Denied
+          {tr('Access Denied', 'Accès refusé')}
         </h2>
         <p className="mt-2 text-center text-sm text-gray-600">
-          You don't have permission to access this resource
+          {tr("You don't have permission to access this resource", "Vous n'avez pas l'autorisation d'accéder à cette ressource")}
         </p>
       </div>
 
@@ -80,7 +83,7 @@ const Unauthorized = () => {
           {/* Current User Info */}
           {user && (
             <div className="mb-6">
-              <h3 className="text-lg font-medium text-gray-900 mb-4">Current User</h3>
+              <h3 className="text-lg font-medium text-gray-900 mb-4">{tr('Current User', 'Utilisateur actuel')}</h3>
               <div className="bg-gray-50 rounded-lg p-4">
                 <div className="flex items-center space-x-3 mb-3">
                   <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center">
@@ -100,7 +103,7 @@ const Unauthorized = () => {
                 <p className="text-sm text-gray-600 mb-3">{roleInfo.description}</p>
                 
                 <div>
-                  <h4 className="text-xs font-medium text-gray-700 mb-2">Your Capabilities:</h4>
+                  <h4 className="text-xs font-medium text-gray-700 mb-2">{tr('Your Capabilities:', 'Vos capacites :')}</h4>
                   <ul className="text-xs text-gray-600 space-y-1">
                     {roleInfo.capabilities.map((capability, index) => (
                       <li key={index} className="flex items-center">
@@ -120,38 +123,38 @@ const Unauthorized = () => {
               to="/dashboard"
               className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             >
-              Go to Dashboard
+              {tr('Go to Dashboard', 'Aller au tableau de bord')}
             </Link>
 
             <Link
               to="/"
               className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             >
-              Go to Home
+              {tr('Go to Home', "Aller a l'accueil")}
             </Link>
 
             <button
               onClick={handleSignOut}
               className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             >
-              Sign Out & Try Different Account
+              {tr('Sign Out & Try Different Account', 'Se deconnecter et essayer un autre compte')}
             </button>
           </div>
 
           {/* Help Text */}
           <div className="mt-6 p-4 bg-yellow-50 rounded-lg">
-            <h4 className="text-sm font-medium text-yellow-800 mb-2">Need Different Access?</h4>
+            <h4 className="text-sm font-medium text-yellow-800 mb-2">{tr('Need Different Access?', 'Besoin d un autre acces ?')}</h4>
             <p className="text-xs text-yellow-700 mb-3">
-              If you need access to this feature, please contact your administrator or try logging in with a different account that has the required permissions.
+              {tr('If you need access to this feature, please contact your administrator or try logging in with a different account that has the required permissions.', "Si vous avez besoin d'acceder a cette fonctionnalite, contactez votre administrateur ou essayez un autre compte disposant des autorisations requises.")}
             </p>
             <div className="text-xs text-yellow-700">
-              <strong>Demo Accounts Available:</strong>
+              <strong>{tr('Demo Accounts Available:', 'Comptes demo disponibles :')}</strong>
               <ul className="mt-1 space-y-1">
-                <li>• Owner: owner_demo@saharax.com (Full access)</li>
-                <li>• Admin: admin@saharax.com (Administrative access)</li>
-                <li>• Employee: employee_demo@saharax.com (Operations access)</li>
-                <li>• Guide: guide_demo@saharax.com (Tour access)</li>
-                <li>• Customer: test@saharax.com (Limited access)</li>
+                <li>• {tr('Owner', 'Proprietaire')}: owner_demo@saharax.com ({tr('Full access', 'Acces complet')})</li>
+                <li>• {tr('Admin', 'Admin')}: admin@saharax.com ({tr('Administrative access', 'Acces administratif')})</li>
+                <li>• {tr('Employee', 'Employe')}: employee_demo@saharax.com ({tr('Operations access', 'Acces operations')})</li>
+                <li>• {tr('Guide', 'Guide')}: guide_demo@saharax.com ({tr('Tour access', 'Acces tours')})</li>
+                <li>• {tr('Customer', 'Client')}: test@saharax.com ({tr('Limited access', 'Acces limite')})</li>
               </ul>
             </div>
           </div>

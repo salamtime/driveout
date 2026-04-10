@@ -2,8 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { X, Save, Car, Fuel, Calculator, Calendar, DollarSign, Upload, Image as ImageIcon, FileText, Trash2 } from 'lucide-react';
 import { supabase } from '../utils/supabaseClient';
 import toast from 'react-hot-toast';
+import i18n from '../i18n';
 
 const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [loading, setLoading] = useState(false);
   const [vehicles, setVehicles] = useState([]);
   const [formData, setFormData] = useState({
@@ -56,7 +59,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
       setVehicles(data || []);
     } catch (error) {
       console.error('❌ Error loading vehicles:', error);
-      toast.error('Failed to load vehicles');
+      toast.error(tr('Failed to load vehicles', 'Échec du chargement des véhicules'));
     }
   };
 
@@ -90,7 +93,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
     if (!allowedTypes.includes(file.type)) {
       setErrors(prev => ({
         ...prev,
-        invoice_image: 'Please upload a JPG, PNG, GIF, or PDF file'
+        invoice_image: tr('Please upload a JPG, PNG, GIF, or PDF file', 'Veuillez téléverser un fichier JPG, PNG, GIF ou PDF')
       }));
       return;
     }
@@ -99,7 +102,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
     if (file.size > 10 * 1024 * 1024) {
       setErrors(prev => ({
         ...prev,
-        invoice_image: 'File size must be less than 10MB'
+        invoice_image: tr('File size must be less than 10MB', 'La taille du fichier doit être inférieure à 10 Mo')
       }));
       return;
     }
@@ -222,23 +225,23 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
     const newErrors = {};
 
     if (!formData.refill_date) {
-      newErrors.refill_date = 'Refill date is required';
+      newErrors.refill_date = tr('Refill date is required', 'La date de remplissage est requise');
     }
 
     if (!formData.vehicle_id) {
-      newErrors.vehicle_id = 'Vehicle selection is required';
+      newErrors.vehicle_id = tr('Vehicle selection is required', 'La sélection d’un véhicule est requise');
     }
 
     if (!formData.liters || parseFloat(formData.liters) <= 0) {
-      newErrors.liters = 'Liters must be greater than 0';
+      newErrors.liters = tr('Liters must be greater than 0', 'Les litres doivent être supérieurs à 0');
     }
 
     if (!formData.price_per_liter || parseFloat(formData.price_per_liter) <= 0) {
-      newErrors.price_per_liter = 'Price per liter must be greater than 0';
+      newErrors.price_per_liter = tr('Price per liter must be greater than 0', 'Le prix par litre doit être supérieur à 0');
     }
 
     if (formData.odometer_km && parseFloat(formData.odometer_km) < 0) {
-      newErrors.odometer_km = 'Odometer reading cannot be negative';
+      newErrors.odometer_km = tr('Odometer reading cannot be negative', 'Le relevé du compteur ne peut pas être négatif');
     }
 
     setErrors(newErrors);
@@ -301,7 +304,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
         // If it's a schema cache issue, provide helpful error message
         if (error.code === 'PGRST204' && error.message.includes('invoice_image')) {
           setErrors({ 
-            submit: 'Database schema cache needs refresh. Please wait a moment and try again, or contact support.' 
+            submit: tr('Database schema cache needs refresh. Please wait a moment and try again, or contact support.', 'Le cache du schéma de base de données doit être actualisé. Veuillez patienter un instant puis réessayer, ou contacter le support.') 
           });
         } else {
           setErrors({ submit: error.message });
@@ -313,9 +316,9 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
       
       // Show success message
       if (imageData && imageData.type === 'storage') {
-        toast.success('Vehicle refill and invoice image saved successfully!');
+        toast.success(tr('Vehicle refill and invoice image saved successfully!', 'Le remplissage du véhicule et l’image de facture ont été enregistrés avec succès !'));
       } else {
-        toast.success('Vehicle refill saved successfully!');
+        toast.success(tr('Vehicle refill saved successfully!', 'Le remplissage du véhicule a été enregistré avec succès !'));
       }
       
       // Reset form
@@ -334,7 +337,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
       onClose();
     } catch (error) {
       console.error('❌ Error saving vehicle refill:', error);
-      setErrors({ submit: error.message || 'Failed to save vehicle refill' });
+      setErrors({ submit: error.message || tr('Failed to save vehicle refill', 'Échec de l’enregistrement du remplissage du véhicule') });
     } finally {
       setLoading(false);
     }
@@ -367,7 +370,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
         <div className="flex items-center justify-between p-6 border-b">
           <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
             <Fuel className="h-5 w-5 text-blue-600" />
-            Add Vehicle Refill
+            {tr('Add Vehicle Refill', 'Ajouter un remplissage véhicule')}
           </h3>
           <button
             onClick={handleClose}
@@ -389,7 +392,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
               <Calendar className="h-4 w-4" />
-              Refill Date *
+              {tr('Refill Date', 'Date de remplissage')} *
             </label>
             <input
               type="date"
@@ -410,7 +413,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
               <Car className="h-4 w-4" />
-              Vehicle *
+              {tr('Vehicle', 'Véhicule')} *
             </label>
             <select
               name="vehicle_id"
@@ -421,7 +424,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
                 errors.vehicle_id ? 'border-red-300' : 'border-gray-300'
               }`}
             >
-              <option value="">Select a vehicle</option>
+              <option value="">{tr('Select a vehicle', 'Sélectionner un véhicule')}</option>
               {vehicles.map((vehicle) => (
                 <option key={vehicle.id} value={vehicle.id}>
                   {vehicle.name} - {vehicle.model} ({vehicle.plate_number})
@@ -437,7 +440,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
               <Fuel className="h-4 w-4" />
-              Liters *
+              {tr('Liters', 'Litres')} *
             </label>
             <input
               type="number"
@@ -461,7 +464,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
               <DollarSign className="h-4 w-4" />
-              Price per Liter (MAD) *
+              {tr('Price per Liter (MAD)', 'Prix par litre (MAD)')} *
             </label>
             <input
               type="number"
@@ -485,7 +488,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
               <Calculator className="h-4 w-4" />
-              Total Cost (MAD)
+              {tr('Total Cost (MAD)', 'Coût total (MAD)')}
             </label>
             <div className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-700 font-medium">
               {totalCost} MAD
@@ -495,7 +498,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
           {/* Odometer */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Odometer (km)
+              {tr('Odometer (km)', 'Compteur (km)')}
             </label>
             <input
               type="number"
@@ -505,7 +508,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
               disabled={loading}
               min="0"
               step="0.1"
-              placeholder="Optional"
+              placeholder={tr('Optional', 'Facultatif')}
               className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                 errors.odometer_km ? 'border-red-300' : 'border-gray-300'
               }`}
@@ -518,7 +521,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
           {/* Invoice Image Upload */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Invoice Image
+              {tr('Invoice Image', 'Image de facture')}
             </label>
             
             {!invoiceImage ? (
@@ -537,7 +540,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
                 <div className="mt-4">
                   <label htmlFor="invoice-upload" className="cursor-pointer">
                     <span className="text-blue-600 hover:text-blue-500 font-medium">
-                      Upload invoice image
+                      {tr('Upload invoice image', 'Téléverser l’image de la facture')}
                     </span>
                     <input
                       id="invoice-upload"
@@ -549,11 +552,11 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
                     />
                   </label>
                   <p className="text-gray-500 text-sm mt-1">
-                    or drag and drop
+                    {tr('or drag and drop', 'ou glisser-déposer')}
                   </p>
                 </div>
                 <p className="text-xs text-gray-400 mt-2">
-                  JPG, PNG, GIF, PDF up to 10MB
+                  {tr('JPG, PNG, GIF, PDF up to 10MB', 'JPG, PNG, GIF, PDF jusqu’à 10 Mo')}
                 </p>
               </div>
             ) : (
@@ -588,7 +591,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
                   <div className="mt-3">
                     <img
                       src={imagePreview}
-                      alt="Invoice preview"
+                      alt={tr('Invoice preview', 'Aperçu de la facture')}
                       className="max-w-full h-32 object-contain rounded border"
                     />
                   </div>
@@ -604,7 +607,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
           {/* Notes */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Notes
+              {tr('Notes', 'Notes')}
             </label>
             <textarea
               name="notes"
@@ -612,7 +615,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
               onChange={handleInputChange}
               disabled={loading}
               rows={3}
-              placeholder="Optional notes about this refill..."
+              placeholder={tr('Optional notes about this refill...', 'Notes facultatives sur ce remplissage...')}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
             />
           </div>
@@ -625,7 +628,7 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
               disabled={loading}
               className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </button>
             <button
               type="submit"
@@ -635,12 +638,12 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
               {loading ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  Saving...
+                  Enregistrement...
                 </>
               ) : (
                 <>
                   <Save className="h-4 w-4" />
-                  Save Refill
+                  Enregistrer le remplissage
                 </>
               )}
             </button>

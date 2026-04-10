@@ -1,295 +1,365 @@
-import React, { useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
+import React, { useMemo, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, ArrowRight, Compass, MapPin, Route, ShieldCheck, Sunset } from 'lucide-react';
+import PublicSiteChrome from '../components/public/PublicSiteChrome';
+import websiteContentService from '../services/WebsiteContentService';
+
+const TOUR_CITIES = ['Tangier'];
+
+const CITY_CONTENT = {
+  Tangier: {
+    providerName: 'SaharaX',
+    providerLogo: '/assets/logo.jpg',
+    identityLabel: 'Certified guided experiences',
+    citySummary:
+      'Tangier stays focused on polished guided rides with premium pacing, cleaner guest flow, and strong photo-friendly routes.',
+    trustPoints: [
+      'Certified fleet support',
+      'Guide-led routes',
+      'Direct booking flow',
+    ],
+  },
+};
+
+const TOUR_COLLECTION = [
+  {
+    id: 'sunset',
+    title: 'Sunset Dune Escape',
+    category: 'sunset',
+    duration: '2.5 hours',
+    groupSize: '2-6 riders',
+    difficulty: 'Easy',
+    city: 'Tangier',
+    price: 950,
+    routeName: 'Golden-hour dune loop',
+    summary:
+      'A softer golden-hour route for guests who want views, photos, and a calm guided rhythm.',
+    highlights: ['Golden hour route', 'Photo stops', 'Tea break'],
+    routeStops: ['Tangier coast', 'Open dunes', 'Sunset ridge'],
+    image:
+      'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80',
+  },
+  {
+    id: 'coastline',
+    title: 'Coastline Explorer Route',
+    category: 'adventure',
+    duration: '4 hours',
+    groupSize: '2-8 riders',
+    difficulty: 'Medium',
+    city: 'Tangier',
+    price: 1400,
+    routeName: 'Mixed coastal terrain ride',
+    summary:
+      'A stronger guided ride mixing coastal tracks, off-road sections, and a longer scenic loop.',
+    highlights: ['Longer route', 'Guide included', 'Mixed terrain'],
+    routeStops: ['Cap Spartel side', 'Cliff tracks', 'Scenic return loop'],
+    image:
+      'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1200&q=80',
+  },
+];
+
+const CATEGORY_LABELS = {
+  all: 'All guided tours',
+  sunset: 'Sunset',
+  adventure: 'Adventure',
+  family: 'Family',
+  'full-day': 'Full day',
+  coastal: 'Coastal',
+  discovery: 'Discovery',
+};
+
+const DIFFICULTY_TONE = {
+  Easy: 'bg-emerald-100 text-emerald-700',
+  Medium: 'bg-amber-100 text-amber-700',
+  Advanced: 'bg-rose-100 text-rose-700',
+};
 
 const Tours = () => {
-  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const requestedCity = searchParams.get('city') || 'Tangier';
+  const safeInitialCity = TOUR_CITIES.includes(requestedCity) ? requestedCity : 'Tangier';
+  const [selectedCity, setSelectedCity] = useState(safeInitialCity);
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const [websiteContent, setWebsiteContent] = useState(() => websiteContentService.getContent().toursPage);
 
-  const tours = [
-    {
-      id: 1,
-      title: "Sahara Sunset Adventure",
-      category: "sunset",
-      duration: "4 hours",
-      difficulty: "Easy",
-      price: 150,
-      image: "/assets/images/tours/sunset-tour.jpg",
-      description: "Experience the magic of a Sahara sunset on this unforgettable ATV adventure.",
-      highlights: ["Sunset viewing", "Desert photography", "Traditional tea", "Local guide"],
-      groupSize: "2-8 people"
-    },
-    {
-      id: 2,
-      title: "Desert Explorer Full Day",
-      category: "full-day",
-      duration: "8 hours",
-      difficulty: "Moderate",
-      price: 280,
-      image: "/assets/images/tours/full-day-tour.jpg",
-      description: "A comprehensive desert exploration with lunch and multiple stops.",
-      highlights: ["Oasis visit", "Berber village", "Traditional lunch", "Camel riding"],
-      groupSize: "4-12 people"
-    },
-    {
-      id: 3,
-      title: "Adrenaline Rush Express",
-      category: "adventure",
-      duration: "2 hours",
-      difficulty: "Hard",
-      price: 100,
-      image: "/assets/images/tours/adventure-tour.jpg",
-      description: "High-speed desert racing for thrill-seekers and experienced riders.",
-      highlights: ["High-speed riding", "Dune jumping", "Racing techniques", "Safety briefing"],
-      groupSize: "2-6 people"
-    },
-    {
-      id: 4,
-      title: "Family Desert Discovery",
-      category: "family",
-      duration: "3 hours",
-      difficulty: "Easy",
-      price: 120,
-      image: "/assets/images/tours/family-tour.jpg",
-      description: "Perfect for families with children, featuring gentle rides and cultural experiences.",
-      highlights: ["Kid-friendly ATVs", "Cultural activities", "Snacks included", "Photo stops"],
-      groupSize: "2-10 people"
-    },
-    {
-      id: 5,
-      title: "Overnight Desert Camp",
-      category: "overnight",
-      duration: "24 hours",
-      difficulty: "Moderate",
-      price: 450,
-      image: "/assets/images/tours/overnight-tour.jpg",
-      description: "Sleep under the stars in our luxury desert camp with traditional entertainment.",
-      highlights: ["Luxury tents", "Traditional dinner", "Stargazing", "Morning sunrise"],
-      groupSize: "2-16 people"
-    },
-    {
-      id: 6,
-      title: "Photography Safari",
-      category: "photography",
-      duration: "6 hours",
-      difficulty: "Easy",
-      price: 200,
-      image: "/assets/images/tours/photo-tour.jpg",
-      description: "Capture stunning desert landscapes with our professional photography guide.",
-      highlights: ["Pro photography tips", "Best photo spots", "Equipment provided", "Editing workshop"],
-      groupSize: "2-8 people"
-    }
-  ];
+  React.useEffect(() => websiteContentService.subscribe((next) => setWebsiteContent(next.toursPage)), []);
 
-  const categories = [
-    { id: 'all', name: 'All Tours' },
-    { id: 'sunset', name: 'Sunset Tours' },
-    { id: 'full-day', name: 'Full Day' },
-    { id: 'adventure', name: 'Adventure' },
-    { id: 'family', name: 'Family' },
-    { id: 'overnight', name: 'Overnight' },
-    { id: 'photography', name: 'Photography' }
-  ];
+  const filteredTours = useMemo(() => {
+    return TOUR_COLLECTION.filter((tour) => {
+      if (tour.city !== selectedCity) return false;
+      if (selectedCategory !== 'all' && tour.category !== selectedCategory) return false;
+      return true;
+    });
+  }, [selectedCity, selectedCategory]);
 
-  const filteredTours = selectedCategory === 'all' 
-    ? tours 
-    : tours.filter(tour => tour.category === selectedCategory);
+  const categories = useMemo(() => {
+    const currentCityCategories = TOUR_COLLECTION.filter((tour) => tour.city === selectedCity).map((tour) => tour.category);
+    return ['all', ...new Set(currentCityCategories)];
+  }, [selectedCity]);
 
-  const getDifficultyColor = (difficulty) => {
-    switch (difficulty.toLowerCase()) {
-      case 'easy': return 'text-green-600 bg-green-100';
-      case 'moderate': return 'text-yellow-600 bg-yellow-100';
-      case 'hard': return 'text-red-600 bg-red-100';
-      default: return 'text-gray-600 bg-gray-100';
-    }
-  };
+  const cityContent = CITY_CONTENT[selectedCity] || CITY_CONTENT.Tangier;
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Hero Section */}
-      <section className="bg-gradient-to-r from-orange-600 to-red-600 text-white py-20">
-        <div className="container mx-auto px-4 text-center">
-          <h1 className="text-4xl md:text-5xl font-bold mb-6">
-            Desert Tours & Adventures
-          </h1>
-          <p className="text-xl md:text-2xl max-w-3xl mx-auto">
-            Discover the magic of Morocco's Sahara Desert with our expertly guided tours
-          </p>
-        </div>
-      </section>
+    <div className="min-h-screen bg-[linear-gradient(180deg,#faf7ff_0%,#f3f1ff_28%,#ffffff_100%)]">
+      <PublicSiteChrome current="tours" />
+      <section className="relative overflow-hidden border-b border-violet-100 bg-[radial-gradient(circle_at_top_left,#e9d5ff_0%,#c4b5fd_22%,#f5f3ff_56%,#ffffff_100%)]">
+        <div className="absolute right-0 top-0 h-72 w-72 rounded-full bg-violet-200/40 blur-3xl" />
+        <div className="absolute left-10 top-20 h-56 w-56 rounded-full bg-indigo-200/30 blur-3xl" />
 
-      {/* Filter Section */}
-      <section className="py-8 bg-white shadow-sm">
-        <div className="container mx-auto px-4">
-          <div className="flex flex-wrap justify-center gap-4">
-            {categories.map(category => (
-              <button
-                key={category.id}
-                onClick={() => setSelectedCategory(category.id)}
-                className={`px-6 py-2 rounded-full font-medium transition-colors ${
-                  selectedCategory === category.id
-                    ? 'bg-orange-600 text-white'
-                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                }`}
-              >
-                {category.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      </section>
+        <div className="relative mx-auto max-w-7xl px-6 py-14">
+          <button
+            type="button"
+            onClick={() => navigate('/website')}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
+            title="Back to website"
+            aria-label="Back to website"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
 
-      {/* Tours Grid */}
-      <section className="py-16">
-        <div className="container mx-auto px-4">
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {filteredTours.map(tour => (
-              <div key={tour.id} className="bg-white rounded-lg shadow-lg overflow-hidden hover:shadow-xl transition-shadow">
-                {/* Tour Image */}
-                <div className="h-48 bg-gradient-to-r from-orange-400 to-red-400 flex items-center justify-center">
-                  <span className="text-white font-medium">Tour Image</span>
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="max-w-3xl">
+              <div className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white/80 px-4 py-2 text-sm font-semibold text-violet-700">
+                <Compass className="h-4 w-4" />
+                {websiteContent.badge}
+              </div>
+
+              <h1 className="mt-6 text-4xl font-semibold tracking-tight text-slate-950 sm:text-5xl">
+                {websiteContent.title}
+              </h1>
+              <p className="mt-4 max-w-2xl text-lg leading-8 text-slate-600">
+                {websiteContent.subtitle}
+              </p>
+            </div>
+
+            <div className="rounded-[28px] border border-violet-100 bg-white/90 p-5 shadow-[0_20px_50px_rgba(79,70,229,0.06)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-700">
+                {websiteContent.currentCityLabel}
+              </p>
+              <p className="mt-3 text-3xl font-semibold text-slate-950">{selectedCity}</p>
+              <p className="mt-2 text-sm text-slate-600">
+                {cityContent.citySummary}
+              </p>
+              <div className="mt-4 flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+                <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl bg-white">
+                  <img src={cityContent.providerLogo} alt={cityContent.providerName} className="h-full w-full object-contain" />
                 </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Powered by</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">{cityContent.providerName}</p>
+                </div>
+              </div>
+            </div>
+          </div>
 
-                {/* Tour Content */}
-                <div className="p-6">
-                  <div className="flex justify-between items-start mb-3">
-                    <h3 className="text-xl font-bold text-gray-800">{tour.title}</h3>
-                    <span className="text-2xl font-bold text-orange-600">${tour.price}</span>
-                  </div>
-
-                  <p className="text-gray-600 mb-4 text-sm">{tour.description}</p>
-
-                  {/* Tour Details */}
-                  <div className="space-y-2 mb-4">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500">Duration:</span>
-                      <span className="font-medium">{tour.duration}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500">Group Size:</span>
-                      <span className="font-medium">{tour.groupSize}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500">Difficulty:</span>
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${getDifficultyColor(tour.difficulty)}`}>
-                        {tour.difficulty}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Highlights */}
-                  <div className="mb-6">
-                    <h4 className="font-semibold text-gray-800 mb-2 text-sm">Highlights:</h4>
-                    <div className="flex flex-wrap gap-1">
-                      {tour.highlights.map((highlight, index) => (
-                        <span key={index} className="bg-gray-100 text-gray-700 px-2 py-1 rounded text-xs">
-                          {highlight}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Action Buttons */}
-                  <div className="flex gap-3">
-                    <Link
-                      to={`/tours/${tour.id}`}
-                      className="flex-1 bg-orange-600 text-white py-2 px-4 rounded-md hover:bg-orange-700 transition-colors text-center font-medium"
+          <div className="mt-10 rounded-[32px] border border-violet-100 bg-white/88 p-6 shadow-[0_30px_80px_rgba(79,70,229,0.06)] backdrop-blur">
+            <div className="grid gap-4 lg:grid-cols-[1.1fr,0.9fr]">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
+                  {websiteContent.cityStepLabel}
+                </p>
+                <h2 className="mt-2 text-2xl font-semibold text-slate-950">
+                  {websiteContent.cityStepTitle}
+                </h2>
+                <div className="mt-5 flex flex-wrap gap-3">
+                  {TOUR_CITIES.map((city) => (
+                    <button
+                      key={city}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCity(city);
+                        setSelectedCategory('all');
+                      }}
+                      className={`rounded-full px-4 py-2.5 text-sm font-semibold transition ${
+                        selectedCity === city
+                          ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white'
+                          : 'bg-violet-50 text-slate-700 hover:bg-violet-100'
+                      }`}
                     >
-                      Book Now
-                    </Link>
-                    <button className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-                      <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                      </svg>
+                      {city}
                     </button>
-                  </div>
+                  ))}
                 </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
+                  {websiteContent.categoryStepLabel}
+                </p>
+                <h2 className="mt-2 text-2xl font-semibold text-slate-950">
+                  {websiteContent.categoryStepTitle}
+                </h2>
+                <div className="mt-5 flex flex-wrap gap-3">
+                  {categories.map((category) => (
+                    <button
+                      key={category}
+                      type="button"
+                      onClick={() => setSelectedCategory(category)}
+                      className={`rounded-full px-4 py-2.5 text-sm font-semibold transition ${
+                        selectedCategory === category
+                          ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white'
+                          : 'bg-violet-50 text-violet-700 hover:bg-violet-100'
+                      }`}
+                    >
+                      {CATEGORY_LABELS[category] || category}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-8 grid gap-4 md:grid-cols-3">
+            {cityContent.trustPoints.map((point) => (
+              <div key={point} className="rounded-[26px] border border-violet-100 bg-white/90 p-5">
+                <ShieldCheck className="h-5 w-5 text-violet-600" />
+                <h3 className="mt-4 text-lg font-semibold text-slate-950">{point}</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  {'The Tangier tours page keeps the same clean guided-tour structure and trust-first reading flow.'}
+                </p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* Why Choose Us Section */}
-      <section className="py-16 bg-white">
-        <div className="container mx-auto px-4">
-          <h2 className="text-3xl font-bold text-center text-gray-800 mb-12">
-            Why Choose Our Tours?
-          </h2>
-          <div className="grid md:grid-cols-4 gap-8">
-            <div className="text-center">
-              <div className="bg-orange-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-semibold text-gray-800 mb-2">Expert Guides</h3>
-              <p className="text-gray-600 text-sm">
-                Local guides with years of desert experience and cultural knowledge
-              </p>
-            </div>
-            <div className="text-center">
-              <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-semibold text-gray-800 mb-2">Safety First</h3>
-              <p className="text-gray-600 text-sm">
-                Top-quality equipment and comprehensive safety briefings for all tours
-              </p>
-            </div>
-            <div className="text-center">
-              <div className="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-semibold text-gray-800 mb-2">Best Value</h3>
-              <p className="text-gray-600 text-sm">
-                Competitive pricing with no hidden fees and flexible payment options
-              </p>
-            </div>
-            <div className="text-center">
-              <div className="bg-purple-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-semibold text-gray-800 mb-2">Memorable Experience</h3>
-              <p className="text-gray-600 text-sm">
-                Unforgettable adventures that create lasting memories for all participants
-              </p>
-            </div>
+      <main className="mx-auto max-w-7xl px-6 py-12">
+        <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">
+              {websiteContent.guidedEyebrow}
+            </p>
+            <h2 className="mt-2 text-3xl font-semibold text-slate-950">
+              {websiteContent.toursReadyTemplate
+                .replace('{count}', String(filteredTours.length))
+                .replace('{city}', selectedCity)}
+            </h2>
           </div>
+          <Link
+            to={`/rent?city=${encodeURIComponent(selectedCity)}`}
+            className="inline-flex items-center gap-2 text-sm font-semibold text-violet-700 transition hover:text-violet-900"
+          >
+            {websiteContent.rentalsSwitchLabel}
+            <ArrowRight className="h-4 w-4" />
+          </Link>
         </div>
-      </section>
 
-      {/* CTA Section */}
-      <section className="py-16 bg-gradient-to-r from-orange-600 to-red-600 text-white">
-        <div className="container mx-auto px-4 text-center">
-          <h2 className="text-3xl font-bold mb-4">
-            Ready for Your Desert Adventure?
-          </h2>
-          <p className="text-xl mb-8 max-w-2xl mx-auto">
-            Book your tour today and experience the magic of Morocco's Sahara Desert
-          </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link
-              to="/contact"
-              className="bg-white text-orange-600 px-8 py-3 rounded-md font-semibold hover:bg-gray-100 transition-colors"
+        <div className="grid gap-6 lg:grid-cols-2">
+          {filteredTours.map((tour) => (
+            <article
+              key={tour.id}
+              className="overflow-hidden rounded-[30px] border border-violet-100 bg-white shadow-[0_18px_45px_rgba(79,70,229,0.05)]"
             >
-              Contact Us
-            </Link>
-            <Link
-              to="/rentals"
-              className="border-2 border-white text-white px-8 py-3 rounded-md font-semibold hover:bg-white hover:text-orange-600 transition-colors"
-            >
-              ATV Rentals
-            </Link>
-          </div>
+              <div className="relative h-64 overflow-hidden">
+                <img src={tour.image} alt={tour.title} className="h-full w-full object-cover" />
+                <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(15,23,42,0.08)_0%,rgba(15,23,42,0.72)_100%)]" />
+                <div className="absolute inset-x-0 bottom-0 p-6 text-white">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.24em] text-orange-100">
+                        {tour.city}
+                      </p>
+                      <h3 className="mt-3 text-3xl font-semibold">{tour.title}</h3>
+                    </div>
+                    <div className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white">
+                      {tour.category}
+                    </div>
+                  </div>
+                  <p className="mt-3 text-sm font-semibold text-orange-100">{tour.routeName}</p>
+                </div>
+              </div>
+
+              <div className="p-6">
+                <p className="text-sm leading-6 text-slate-600">{tour.summary}</p>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Duration</p>
+                    <p className="mt-2 text-lg font-semibold text-slate-950">{tour.duration}</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Group size</p>
+                    <p className="mt-2 text-lg font-semibold text-slate-950">{tour.groupSize}</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Difficulty</p>
+                    <span className={`mt-2 inline-flex rounded-full px-3 py-1 text-sm font-semibold ${DIFFICULTY_TONE[tour.difficulty] || 'bg-slate-100 text-slate-700'}`}>
+                      {tour.difficulty}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-5">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Route stops</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {tour.routeStops.map((stop) => (
+                      <span
+                        key={stop}
+                        className="inline-flex items-center rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700"
+                      >
+                        {stop}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap gap-2">
+                  {tour.highlights.map((highlight) => (
+                    <span
+                      key={highlight}
+                      className="inline-flex items-center rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700"
+                    >
+                      {highlight}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">From</p>
+                    <p className="mt-2 text-3xl font-semibold text-slate-950">{tour.price} MAD</p>
+                  </div>
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <Link
+                      to={`/rent?city=${encodeURIComponent(selectedCity)}`}
+                      className="inline-flex items-center justify-center rounded-full border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-300 hover:text-violet-700"
+                    >
+                      View rentals instead
+                    </Link>
+                    <Link
+                      to={`/tour-booking?city=${encodeURIComponent(selectedCity)}&tour=${encodeURIComponent(tour.id)}`}
+                      className="inline-flex items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#7c3aed_0%,#4f46e5_100%)] px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:scale-[1.01]"
+                    >
+                      Book guided tour
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            </article>
+          ))}
         </div>
-      </section>
+
+        {filteredTours.length === 0 && (
+          <div className="rounded-[30px] border border-dashed border-violet-200 bg-white p-12 text-center">
+            <Sunset className="mx-auto h-8 w-8 text-violet-500" />
+            <h3 className="mt-4 text-2xl font-semibold text-slate-950">No tours match this city and filter yet</h3>
+            <p className="mt-3 text-sm text-slate-600">
+              Switch the city or go back to rentals while we expand the guided experiences in this region.
+            </p>
+            <div className="mt-6 flex justify-center">
+              <Link
+                to={`/rent?city=${encodeURIComponent(selectedCity)}`}
+                className="inline-flex items-center gap-2 rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+              >
+                Back to rentals
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+          </div>
+        )}
+      </main>
     </div>
   );
 };

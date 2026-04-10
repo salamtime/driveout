@@ -186,14 +186,14 @@ const BookingCard = ({
                   <button
                     onClick={handleEditClick}
                     className="p-2 sm:p-3 sm:min-w-[44px] sm:min-h-[44px] text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors flex items-center justify-center"
-                    title="Edit Tour"
+                    title="Modifier le tour"
                   >
                     <Edit2 size={16} />
                   </button>
                   <button
                     onClick={handleDeleteClick}
                     className="p-2 sm:p-3 sm:min-w-[44px] sm:min-h-[44px] text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center justify-center"
-                    title="Delete Tour"
+                    title="Supprimer le tour"
                   >
                     <Trash2 size={16} />
                   </button>
@@ -220,7 +220,7 @@ const BookingCard = ({
           
           <div className="flex items-center">
             <MapPin size={16} className="mr-3 text-gray-400" />
-            <span>From {tour.location}</span>
+            <span>À partir de {tour.location}</span>
           </div>
           
           <div className="flex items-center">
@@ -423,7 +423,7 @@ const BookingCard = ({
                 }}
                 className="flex-1 px-4 py-2 sm:px-6 sm:py-3 sm:min-h-[44px] text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
               >
-                Cancel
+                Annuler
               </button>
               <button
                 onClick={(e) => {
@@ -432,7 +432,7 @@ const BookingCard = ({
                 }}
                 className="flex-1 px-4 py-2 sm:px-6 sm:py-3 sm:min-h-[44px] bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-medium"
               >
-                Book Now - ${pricingEnabled && priceDetails ? Math.max(1, priceDetails.total).toFixed(2) : (tour.price * quantity).toFixed(2)}
+                Réserver maintenant - ${pricingEnabled && priceDetails ? Math.max(1, priceDetails.total).toFixed(2) : (tour.price * quantity).toFixed(2)}
               </button>
             </div>
           </div>

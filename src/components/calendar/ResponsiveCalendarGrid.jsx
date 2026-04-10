@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
 import { ChevronLeft, ChevronRight, Calendar, Grid, List } from 'lucide-react';
+import i18n from '../../i18n';
+
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 const ResponsiveCalendarGrid = ({ 
   currentDate, 
@@ -46,8 +50,18 @@ const ResponsiveCalendarGrid = ({
   };
 
   const monthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
+    tr('January', 'Janvier'),
+    tr('February', 'Fevrier'),
+    tr('March', 'Mars'),
+    tr('April', 'Avril'),
+    tr('May', 'Mai'),
+    tr('June', 'Juin'),
+    tr('July', 'Juillet'),
+    tr('August', 'Aout'),
+    tr('September', 'Septembre'),
+    tr('October', 'Octobre'),
+    tr('November', 'Novembre'),
+    tr('December', 'Decembre')
   ];
 
   const calendarDays = generateCalendarDays();
@@ -111,7 +125,7 @@ const ResponsiveCalendarGrid = ({
       <div className="p-2 md:p-4">
         {/* Day Headers */}
         <div className="grid grid-cols-7 gap-1 mb-2">
-          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+          {[tr('Sun', 'Dim'), tr('Mon', 'Lun'), tr('Tue', 'Mar'), tr('Wed', 'Mer'), tr('Thu', 'Jeu'), tr('Fri', 'Ven'), tr('Sat', 'Sam')].map(day => (
             <div key={day} className="p-2 text-center text-sm font-medium text-gray-700">
               <span className="hidden sm:inline">{day}</span>
               <span className="sm:hidden">{day.charAt(0)}</span>
@@ -164,13 +178,13 @@ const ResponsiveCalendarGrid = ({
                           }}
                           className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded mb-1 truncate cursor-pointer hover:bg-blue-200 transition-colors"
                         >
-                          {booking.selectedTime} - {booking.participants?.[0]?.name || 'Guest'}
+                          {booking.selectedTime} - {booking.participants?.[0]?.name || tr('Guest', 'Invite')}
                         </div>
                       ))}
                       
                       {dayBookings.length > 2 && (
                         <div className="text-xs text-gray-500">
-                          +{dayBookings.length - 2} more
+                          +{dayBookings.length - 2} {tr('more', 'de plus')}
                         </div>
                       )}
                     </div>
@@ -185,7 +199,7 @@ const ResponsiveCalendarGrid = ({
       {/* Mobile Booking Summary */}
       <div className="md:hidden border-t border-gray-200 p-4">
         <div className="text-sm text-gray-600">
-          Total bookings this month: {bookings.filter(b => b.selectedDate?.startsWith(`${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`)).length}
+          {tr('Total bookings this month', 'Total des reservations ce mois-ci')}: {bookings.filter(b => b.selectedDate?.startsWith(`${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`)).length}
         </div>
       </div>
     </div>

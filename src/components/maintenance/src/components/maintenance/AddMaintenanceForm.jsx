@@ -14,6 +14,7 @@ import {
   Clock,
   FileText
 } from 'lucide-react';
+import i18n from '../../../../i18n';
 
 /**
  * AddMaintenanceForm - Mobile-friendly form for adding maintenance records
@@ -21,6 +22,8 @@ import {
  * Features auto-prefill from pricing catalog and comprehensive cost tracking
  */
 const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   // CRITICAL: Always initialize as arrays
@@ -211,7 +214,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null }) => {
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-2">
             <Wrench className="w-5 h-5" />
-            {editingRecord ? 'Edit Maintenance Record' : 'Add Maintenance Record'}
+            {editingRecord ? tr('Edit Maintenance Record', 'Modifier la fiche de maintenance') : tr('Add Maintenance Record', 'Ajouter une fiche de maintenance')}
           </CardTitle>
           <Button
             variant="ghost"
@@ -259,7 +262,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null }) => {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 <Wrench className="w-4 h-4 inline mr-1" />
-                Maintenance Type *
+                Type de maintenance *
               </label>
               <select
                 name="maintenance_type"
@@ -498,12 +501,12 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null }) => {
               {loading ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  {editingRecord ? 'Updating...' : 'Creating...'}
+                  {editingRecord ? tr('Updating...', 'Mise à jour...') : tr('Creating...', 'Création...')}
                 </>
               ) : (
                 <>
                   <Save className="w-4 h-4" />
-                  {editingRecord ? 'Update Maintenance' : 'Create Maintenance'}
+                  {editingRecord ? tr('Update Maintenance', 'Mettre à jour la maintenance') : tr('Create Maintenance', 'Créer la maintenance')}
                 </>
               )}
             </Button>

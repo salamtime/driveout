@@ -11,6 +11,7 @@ import { createAvatarDataURL, loadImageWithCache, createImageObserver } from '..
  */
 const OptimizedAvatar = ({ 
   src, 
+  fallbackImageSrc = '',
   name = '', 
   size = 40, 
   className = '', 
@@ -27,18 +28,23 @@ const OptimizedAvatar = ({
   const fallbackSrc = createAvatarDataURL(name);
 
   // Load image with caching
-  const loadImage = async (imageUrl) => {
+  const loadImage = async (imageUrl, backupUrl = fallbackImageSrc || fallbackSrc) => {
     if (!imageUrl || hasError) return;
     
     setIsLoading(true);
     try {
-      const loadedSrc = await loadImageWithCache(imageUrl, fallbackSrc);
+      const loadedSrc = await loadImageWithCache(imageUrl, backupUrl);
       setImageSrc(loadedSrc);
-      setHasError(loadedSrc === fallbackSrc && imageUrl !== fallbackSrc);
+      setHasError(loadedSrc === fallbackSrc && imageUrl !== fallbackSrc && backupUrl === fallbackSrc);
     } catch (error) {
       console.warn('Avatar image failed to load:', imageUrl, error);
-      setImageSrc(fallbackSrc);
-      setHasError(true);
+      if (backupUrl && backupUrl !== fallbackSrc && backupUrl !== imageUrl) {
+        setImageSrc(backupUrl);
+        setHasError(false);
+      } else {
+        setImageSrc(fallbackSrc);
+        setHasError(true);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -48,7 +54,9 @@ const OptimizedAvatar = ({
   useEffect(() => {
     if (!lazy || !imgRef.current) {
       if (src) {
-        loadImage(src);
+        loadImage(src, fallbackImageSrc || fallbackSrc);
+      } else if (fallbackImageSrc) {
+        loadImage(fallbackImageSrc, fallbackSrc);
       } else {
         setImageSrc(fallbackSrc);
       }
@@ -58,7 +66,9 @@ const OptimizedAvatar = ({
     // Set up intersection observer for lazy loading
     observerRef.current = createImageObserver((target) => {
       if (src) {
-        loadImage(src);
+        loadImage(src, fallbackImageSrc || fallbackSrc);
+      } else if (fallbackImageSrc) {
+        loadImage(fallbackImageSrc, fallbackSrc);
       } else {
         setImageSrc(fallbackSrc);
       }
@@ -74,26 +84,32 @@ const OptimizedAvatar = ({
         observerRef.current.disconnect();
       }
     };
-  }, [src, lazy, fallbackSrc]);
+  }, [src, fallbackImageSrc, lazy, fallbackSrc]);
 
   // Update when src changes
   useEffect(() => {
     if (!lazy && src !== imageSrc) {
       setHasError(false);
       if (src) {
-        loadImage(src);
+        loadImage(src, fallbackImageSrc || fallbackSrc);
+      } else if (fallbackImageSrc) {
+        loadImage(fallbackImageSrc, fallbackSrc);
       } else {
         setImageSrc(fallbackSrc);
       }
     }
-  }, [src, lazy]);
+  }, [src, fallbackImageSrc, lazy]);
 
   // Set initial fallback if no src provided
   useEffect(() => {
     if (!src && !imageSrc) {
-      setImageSrc(fallbackSrc);
+      if (fallbackImageSrc) {
+        loadImage(fallbackImageSrc, fallbackSrc);
+      } else {
+        setImageSrc(fallbackSrc);
+      }
     }
-  }, [src, imageSrc, fallbackSrc]);
+  }, [src, fallbackImageSrc, imageSrc, fallbackSrc]);
 
   const avatarStyle = {
     width: size,
@@ -121,9 +137,15 @@ const OptimizedAvatar = ({
           style={avatarStyle}
           loading={lazy ? 'lazy' : 'eager'}
           onError={(e) => {
-            // Prevent infinite loops by only setting fallback if not already using it
+            if (fallbackImageSrc && e.target.src !== fallbackImageSrc && e.target.src !== fallbackSrc) {
+              console.warn('Avatar primary image failed, using tenant logo fallback:', src);
+              setImageSrc(fallbackImageSrc);
+              setHasError(false);
+              return;
+            }
+
             if (e.target.src !== fallbackSrc) {
-              console.warn('Avatar image error, using fallback:', src);
+              console.warn('Avatar image error, using initials fallback:', src || fallbackImageSrc);
               setImageSrc(fallbackSrc);
               setHasError(true);
             }

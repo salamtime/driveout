@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, AlertTriangle, Trash2 } from 'lucide-react';
+import i18n from '../../i18n';
 
 /**
  * Delete Media Confirmation Dialog
@@ -13,6 +14,8 @@ const DeleteMediaDialog = ({
   isDeleting = false 
 }) => {
   if (!isOpen) return null;
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
 
   const formatFileSize = (bytes) => {
     if (!bytes) return '0 B';
@@ -24,7 +27,7 @@ const DeleteMediaDialog = ({
 
   const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
-    return new Date(timestamp).toLocaleString('en-US', {
+    return new Date(timestamp).toLocaleString(isFrench ? 'fr-FR' : 'en-US', {
       timeZone: 'Africa/Casablanca',
       month: 'short',
       day: 'numeric',
@@ -34,9 +37,9 @@ const DeleteMediaDialog = ({
   };
 
   const getFileTypeLabel = (fileType) => {
-    if (fileType?.startsWith('image/')) return 'Image';
-    if (fileType?.startsWith('video/')) return 'Video';
-    return 'File';
+    if (fileType?.startsWith('image/')) return tr('Image', 'Image');
+    if (fileType?.startsWith('video/')) return tr('Video', 'Vidéo');
+    return tr('File', 'Fichier');
   };
 
   return (
@@ -47,7 +50,7 @@ const DeleteMediaDialog = ({
           <div className="flex items-center">
             <AlertTriangle className="h-6 w-6 text-red-500 mr-2" />
             <h3 className="text-lg font-semibold text-gray-900">
-              Delete Media File
+              {tr('Delete Media File', 'Supprimer le fichier média')}
             </h3>
           </div>
           <button
@@ -63,21 +66,21 @@ const DeleteMediaDialog = ({
         <div className="p-6">
           <div className="mb-4">
             <p className="text-sm text-gray-600 mb-4">
-              Are you sure you want to delete this media file? This action cannot be undone.
+              {tr('Are you sure you want to delete this media file? This action cannot be undone.', 'Voulez-vous vraiment supprimer ce fichier média ? Cette action est irréversible.')}
             </p>
 
             {/* Media Info */}
             {mediaData && (
               <div className="bg-gray-50 rounded-lg p-4 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">File:</span>
+                  <span className="text-sm font-medium text-gray-700">{tr('File:', 'Fichier :')}</span>
                   <span className="text-sm text-gray-900">
-                    {mediaData.original_filename || 'Unknown'}
+                    {mediaData.original_filename || tr('Unknown', 'Inconnu')}
                   </span>
                 </div>
                 
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">Type:</span>
+                    <span className="text-sm font-medium text-gray-700">{tr('Type:', 'Type :')}</span>
                   <span className="text-sm text-gray-900">
                     {getFileTypeLabel(mediaData.file_type)}
                   </span>
@@ -85,7 +88,7 @@ const DeleteMediaDialog = ({
 
                 {mediaData.file_size && (
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-700">Size:</span>
+                    <span className="text-sm font-medium text-gray-700">{tr('Size:', 'Taille :')}</span>
                     <span className="text-sm text-gray-900">
                       {formatFileSize(mediaData.file_size)}
                     </span>
@@ -93,14 +96,14 @@ const DeleteMediaDialog = ({
                 )}
 
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">Phase:</span>
+                  <span className="text-sm font-medium text-gray-700">{tr('Phase:', 'Phase :')}</span>
                   <span className="text-sm text-gray-900 capitalize">
-                    {mediaData.phase === 'out' ? 'Opening' : 'Closing'}
+                    {mediaData.phase === 'out' ? tr('Opening', 'Ouverture') : tr('Closing', 'Clôture')}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">Uploaded:</span>
+                  <span className="text-sm font-medium text-gray-700">{tr('Uploaded:', 'Téléversé :')}</span>
                   <span className="text-sm text-gray-900">
                     {formatTimestamp(mediaData.uploaded_at)}
                   </span>
@@ -114,11 +117,10 @@ const DeleteMediaDialog = ({
               <AlertTriangle className="h-5 w-5 text-red-400 mr-2 flex-shrink-0 mt-0.5" />
               <div>
                 <h4 className="text-sm font-medium text-red-800">
-                  Warning
+                  {tr('Warning', 'Avertissement')}
                 </h4>
                 <p className="text-sm text-red-700 mt-1">
-                  This will permanently delete the media file from both the database and storage. 
-                  The action will be logged in the audit trail.
+                  {tr('This will permanently delete the media file from both the database and storage. The action will be logged in the audit trail.', "Cela supprimera définitivement le fichier média de la base de données et du stockage. L'action sera enregistrée dans la piste d'audit.")}
                 </p>
               </div>
             </div>
@@ -132,7 +134,7 @@ const DeleteMediaDialog = ({
             disabled={isDeleting}
             className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Cancel
+            {tr('Cancel', 'Annuler')}
           </button>
           
           <button
@@ -143,12 +145,12 @@ const DeleteMediaDialog = ({
             {isDeleting ? (
               <>
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                Deleting...
+                {tr('Deleting...', 'Suppression...')}
               </>
             ) : (
               <>
                 <Trash2 className="h-4 w-4 mr-2" />
-                Delete
+                {tr('Delete', 'Supprimer')}
               </>
             )}
           </button>

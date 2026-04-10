@@ -623,7 +623,7 @@ const TourEditModal = ({ isOpen, onClose, tour, onSave, onDelete, isSaving }) =>
                 ) : (
                   <>
                     <Save className="w-4 h-4 mr-2" />
-                    {isEditMode ? t('tours.saveChanges', 'Save Changes') : t('tours.createTour', 'Create Tour')}
+                    {isEditMode ? t('tours.saveChanges', 'Enregistrer les modifications') : t('tours.createTour', 'Créer le tour')}
                   </>
                 )}
               </button>

@@ -141,6 +141,14 @@ export const canCompleteRental = (rental) => {
     return { canComplete: false, reason: 'Rental has not been started yet' };
   }
 
+  const paymentStatus = String(rental.payment_status || '').toLowerCase();
+  const remainingAmount = Math.max(0, Number(rental.remaining_amount || 0) || 0);
+  const isPaid = paymentStatus === 'paid' || remainingAmount <= 0;
+
+  if (!isPaid) {
+    return { canComplete: false, reason: 'Rental must be fully paid before completion' };
+  }
+
   return { canComplete: true };
 };
 

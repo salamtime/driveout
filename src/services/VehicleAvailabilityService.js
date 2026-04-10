@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import WebsiteBookingLifecycleService from './WebsiteBookingLifecycleService';
 
 /**
  * VehicleAvailabilityService - Frontend-based anti-double-booking system
@@ -76,12 +77,13 @@ class VehicleAvailabilityService {
    */
   static async calculateVehicleStatus(vehicleId) {
     try {
+      await WebsiteBookingLifecycleService.cleanupExpiredWebsiteBookingLocks().catch(() => {});
       const now = new Date();
       
       // Get all active rentals for this vehicle
       const { data: rentals, error } = await supabase
         .from('app_4c3a7a6153_rentals')
-        .select('rental_start_date, rental_start_time, rental_end_date, rental_end_time, rental_status, customer_name, started_at')
+        .select('rental_start_date, rental_start_time, rental_end_date, rental_end_time, rental_status, customer_name, started_at, booking_source, website_booking_status, is_vehicle_locked, hold_expires_at')
         .eq('vehicle_id', vehicleId)
         .not('rental_status', 'in', '(cancelled,completed,void)')
         .order('rental_start_date', { ascending: true });
@@ -103,7 +105,7 @@ class VehicleAvailabilityService {
       }
 
       const scheduledRentals = rentals
-        .filter((rental) => ['scheduled', 'confirmed'].includes(String(rental.rental_status || '').toLowerCase()))
+        .filter((rental) => WebsiteBookingLifecycleService.shouldRentalBlockInventory(rental, now))
         .sort((a, b) => {
           const aStart = this.composeRentalDateTime(a.rental_start_date, a.rental_start_time)?.getTime() || 0;
           const bStart = this.composeRentalDateTime(b.rental_start_date, b.rental_start_time)?.getTime() || 0;
@@ -119,6 +121,7 @@ class VehicleAvailabilityService {
 
       // Fallback for legacy rows with missing/incorrect status but overlapping dates.
       const overlappingRental = rentals.find((rental) => {
+        if (!WebsiteBookingLifecycleService.shouldRentalBlockInventory(rental, now)) return false;
         const startTime = this.composeRentalDateTime(
           rental.started_at || rental.rental_start_date,
           rental.rental_start_time,
@@ -153,6 +156,7 @@ class VehicleAvailabilityService {
     console.log('🔍 ANTI-DOUBLE-BOOKING: Checking availability for:', { startDate, endDate, excludeRentalId });
     
     try {
+      await WebsiteBookingLifecycleService.cleanupExpiredWebsiteBookingLocks().catch(() => {});
       // Get all vehicles
       const { data: allVehicles, error: vehiclesError } = await supabase
         .from('saharax_0u4w4d_vehicles')
@@ -175,7 +179,7 @@ class VehicleAvailabilityService {
       // Get ALL active rentals to check for conflicts
       const { data: allRentals, error: rentalsError } = await supabase
         .from('app_4c3a7a6153_rentals')
-        .select('id, vehicle_id, rental_start_date, rental_end_date, rental_status, customer_name')
+        .select('id, vehicle_id, rental_start_date, rental_end_date, rental_status, customer_name, booking_source, website_booking_status, is_vehicle_locked, hold_expires_at')
         .not('rental_status', 'in', '(cancelled,completed,void)');
 
       if (rentalsError) {
@@ -189,6 +193,9 @@ class VehicleAvailabilityService {
       const conflictedVehicleIds = new Set();
 
       (allRentals || []).forEach(rental => {
+        if (!WebsiteBookingLifecycleService.shouldRentalBlockInventory(rental, new Date())) {
+          return;
+        }
         // Skip if this is the rental being edited
         if (excludeRentalId && rental.id === excludeRentalId) {
           return;
@@ -267,13 +274,14 @@ class VehicleAvailabilityService {
     console.log('🔍 VALIDATING RENTAL DATES:', { vehicleId, startDate, endDate, excludeRentalId });
     
     try {
+      await WebsiteBookingLifecycleService.cleanupExpiredWebsiteBookingLocks().catch(() => {});
       const requestStart = new Date(startDate);
       const requestEnd = new Date(endDate);
 
       // Get all active rentals for this vehicle
       let conflictQuery = supabase
         .from('app_4c3a7a6153_rentals')
-        .select('id, customer_name, rental_start_date, rental_end_date, rental_status')
+        .select('id, customer_name, rental_start_date, rental_end_date, rental_status, booking_source, website_booking_status, is_vehicle_locked, hold_expires_at')
         .eq('vehicle_id', vehicleId)
         .not('rental_status', 'in', '(cancelled,completed,void)');
 
@@ -293,6 +301,9 @@ class VehicleAvailabilityService {
 
       // Check each rental for overlap
       const overlappingRentals = (conflicts || []).filter(rental => {
+        if (!WebsiteBookingLifecycleService.shouldRentalBlockInventory(rental, new Date())) {
+          return false;
+        }
         const rentalStart = new Date(rental.rental_start_date);
         const rentalEnd = new Date(rental.rental_end_date);
 

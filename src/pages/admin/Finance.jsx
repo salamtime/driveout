@@ -1,6 +1,9 @@
 import React from 'react';
+import { BarChart3, FileText, RefreshCw } from 'lucide-react';
 import FinanceDashboardV2 from '../../components/finance/FinanceDashboardV2';
 import { Toaster } from 'react-hot-toast';
+import AdminModuleHero from '../../components/admin/AdminModuleHero';
+import i18n from '../../i18n';
 
 /**
  * Finance Page - Admin finance management and analytics
@@ -14,6 +17,8 @@ import { Toaster } from 'react-hot-toast';
  * - Export functionality and shareable links
  */
 const Finance = () => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   console.log('🏦 Finance: Page component rendering');
 
   const handleNavigateToFleet = (vehicleId = null) => {
@@ -23,7 +28,33 @@ const Finance = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-slate-50">
+      <AdminModuleHero
+        icon={<BarChart3 className="h-8 w-8 text-white" />}
+        eyebrow={tr('Finance', 'Finance')}
+        title={tr('Finance Management', 'Gestion financière')}
+        description={tr('Track revenue, profitability, customer performance, and exports from one shared finance workspace.', 'Suivez les revenus, la rentabilité, la performance client et les exports depuis un espace financier partagé.')}
+        className="w-full"
+        actions={
+          <>
+            <a
+              href="#finance-tabs"
+              className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
+            >
+              <RefreshCw className="h-4 w-4" />
+              {tr('Open Overview', "Ouvrir l'aperçu")}
+            </a>
+            <a
+              href="#finance-reports"
+              className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
+            >
+              <FileText className="h-4 w-4" />
+              {tr('Reports', 'Rapports')}
+            </a>
+          </>
+        }
+      />
+
       {/* Toast notifications for Finance Dashboard v2 */}
       <Toaster 
         position="top-right"

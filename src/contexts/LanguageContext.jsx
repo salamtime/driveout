@@ -1,4 +1,6 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
+import i18n, { changeLanguage as applyI18nLanguage } from '../i18n';
+import { fetchSystemSettings } from '../services/systemSettingsApi';
 
 // Create the Language Context
 const LanguageContext = createContext();
@@ -6,35 +8,75 @@ const LanguageContext = createContext();
 // Supported languages
 export const LANGUAGES = {
   en: { code: 'en', name: 'English', flag: '🇬🇧' },
-  fr: { code: 'fr', name: 'Français', flag: '🇫🇷' }
+  fr: { code: 'fr', name: 'Français', flag: '🇫🇷' },
+  ar: { code: 'ar', name: 'العربية', flag: '🇲🇦' }
 };
 
 // Language Provider Component
 export const LanguageProvider = ({ children }) => {
+  const getStoredLanguage = () => {
+    const savedLanguage = localStorage.getItem('app_language') || localStorage.getItem('saharax_language');
+    return savedLanguage && LANGUAGES[savedLanguage] ? savedLanguage : null;
+  };
+
   // Initialize language from localStorage or default to English
   const [currentLanguage, setCurrentLanguage] = useState(() => {
-    const savedLanguage = localStorage.getItem('app_language');
-    return savedLanguage && LANGUAGES[savedLanguage] ? savedLanguage : 'en';
+    return getStoredLanguage() || 'en';
   });
 
   // Persist language preference to localStorage
   useEffect(() => {
     localStorage.setItem('app_language', currentLanguage);
-    // Update HTML lang attribute for accessibility
-    document.documentElement.lang = currentLanguage;
+    localStorage.setItem('saharax_language', currentLanguage);
+    applyI18nLanguage(currentLanguage);
   }, [currentLanguage]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncLanguageFromSystemSettings = async () => {
+      if (getStoredLanguage()) {
+        return;
+      }
+
+      try {
+        const settings = await fetchSystemSettings();
+        const nextLanguage = settings?.language;
+        if (!cancelled && !getStoredLanguage() && nextLanguage && LANGUAGES[nextLanguage] && nextLanguage !== currentLanguage) {
+          setCurrentLanguage(nextLanguage);
+        }
+      } catch (error) {
+        // Ignore here because public pages / unauthenticated screens will not have a session yet.
+        if (import.meta.env.DEV) {
+          console.warn('LanguageContext: system settings language sync skipped:', error?.message || error);
+        }
+      }
+    };
+
+    syncLanguageFromSystemSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Toggle between languages
   const toggleLanguage = () => {
-    setCurrentLanguage(prev => prev === 'en' ? 'fr' : 'en');
+    setCurrentLanguage(prev => {
+      const nextLanguage = prev === 'en' ? 'fr' : 'en';
+      applyI18nLanguage(nextLanguage);
+      return nextLanguage;
+    });
   };
 
   // Set specific language
   const setLanguage = (langCode) => {
     if (LANGUAGES[langCode]) {
+      applyI18nLanguage(langCode);
       setCurrentLanguage(langCode);
     } else {
       console.warn(`Language ${langCode} not supported. Falling back to English.`);
+      applyI18nLanguage('en');
       setCurrentLanguage('en');
     }
   };

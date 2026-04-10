@@ -5,6 +5,22 @@ import { calculateTieredPrice, getPricingOptions, formatPriceSource } from '../u
 import KilometerPricingTab from './KilometerPricingTab';
 import FuelPricingTab from './FuelPricingTab'; // NEW: Import Fuel Pricing Tab
 import TourPackagesWorkspace from './admin/pricing/TourPackagesWorkspace';
+import AdminModuleHero from './admin/AdminModuleHero';
+import i18n from '../i18n';
+
+const scheduleBackgroundTask = (callback: () => void | Promise<void>) => {
+  if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+    return window.requestIdleCallback(() => {
+      void callback();
+    }, { timeout: 700 });
+  }
+
+  return window.setTimeout(() => {
+    void callback();
+  }, 0);
+};
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en: string, fr: string) => (isFrenchLocale() ? fr : en);
 
 interface BasePrice {
   id: string;
@@ -64,11 +80,18 @@ interface VehicleModel {
   vehicle_type?: string;
 }
 
+const parseHourTierValue = (value: string | number) => {
+  const numeric = parseFloat(String(value ?? '').replace(',', '.'));
+  if (!Number.isFinite(numeric)) return 0.5;
+  return Math.max(0.5, Math.round(numeric * 2) / 2);
+};
+
 // NEW: Damage Deposit Interfaces
 interface DamageDepositPreset {
   label: string;
   amount: number;
   enabled: boolean;
+  isDefault?: boolean;
 }
 
 interface VehicleModelDepositSettings {
@@ -87,18 +110,57 @@ interface TierEnforcement {
   fallbackToHourly: boolean;
 }
 
+const normalizeDamageDepositSettings = (
+  presets: unknown,
+  allowCustomDeposit = true
+): DamageDepositSettings => {
+  if (!presets || typeof presets !== 'object' || Array.isArray(presets)) {
+    return {
+      vehicleModelPresets: {},
+      allowCustomDeposit,
+    };
+  }
+
+  const vehicleModelPresets = Object.fromEntries(
+    Object.entries(presets as Record<string, unknown>).map(([vehicleModelId, rawPresets]) => {
+      const normalizedPresets = Array.isArray(rawPresets)
+        ? rawPresets
+            .map((preset) => {
+              if (!preset || typeof preset !== 'object') return null;
+              const typedPreset = preset as Record<string, unknown>;
+              return {
+                label: String(typedPreset.label || '').trim(),
+                amount: Number(typedPreset.amount || 0),
+                enabled: Boolean(typedPreset.enabled),
+                isDefault: Boolean(typedPreset.isDefault ?? typedPreset.is_default),
+              };
+            })
+            .filter((preset): preset is DamageDepositPreset => Boolean(preset?.label))
+        : [];
+
+      return [String(vehicleModelId), normalizedPresets];
+    })
+  );
+
+  return {
+    vehicleModelPresets,
+    allowCustomDeposit,
+  };
+};
+
 const PRICING_TAB_ITEMS = [
-  { id: 'base', label: 'Base Prices', icon: DollarSign },
-  { id: 'tiers', label: 'Pricing Tiers', icon: TrendingUp },
-  { id: 'extensions', label: 'Extension Rules', icon: Clock },
-  { id: 'transport', label: 'Transport Fees', icon: Truck },
-  { id: 'tour-pricing', label: 'Tours & Booking', icon: Route },
-  { id: 'packages', label: 'Kilometer Pricing', icon: Package },
-  { id: 'deposits', label: 'Damage Deposits', icon: Shield },
-  { id: 'fuel', label: 'Fuel Pricing', icon: Fuel },
+  { id: 'base', labelEn: 'Base Prices', labelFr: 'Tarifs de base', icon: DollarSign },
+  { id: 'tiers', labelEn: 'Pricing Tiers', labelFr: 'Paliers tarifaires', icon: TrendingUp },
+  { id: 'extensions', labelEn: 'Extension Rules', labelFr: 'Règles de prolongation', icon: Clock },
+  { id: 'transport', labelEn: 'Transport Fees', labelFr: 'Frais de transport', icon: Truck },
+  { id: 'tour-pricing', labelEn: 'Tours & Booking', labelFr: 'Tours et réservations', icon: Route },
+  { id: 'packages', labelEn: 'Kilometer Pricing', labelFr: 'Tarification kilométrique', icon: Package },
+  { id: 'deposits', labelEn: 'Damage Deposits', labelFr: 'Dépôts de garantie', icon: Shield },
+  { id: 'fuel', labelEn: 'Fuel Pricing', labelFr: 'Tarification carburant', icon: Fuel },
 ] as const;
 
 const DynamicPricingManagement: React.FC = () => {
+  const isFrench = isFrenchLocale();
   console.log('PRICING_MANAGEMENT: Loading with TIERED PRICING and FUEL PRICING support');
 
   // Tab state - UPDATED to include 'deposits' and 'fuel'
@@ -107,6 +169,7 @@ const DynamicPricingManagement: React.FC = () => {
   // State for Base Prices
   const [basePrices, setBasePrices] = useState<BasePrice[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -281,24 +344,13 @@ const DynamicPricingManagement: React.FC = () => {
 
       if (error) throw error;
 
-      if (data && data.damage_deposit_presets) {
-        const presets = data.damage_deposit_presets;
-        
-        // If it's an object with vehicle model IDs as keys, use it directly
-        if (typeof presets === 'object' && !Array.isArray(presets)) {
-          setDepositSettings({
-            vehicleModelPresets: presets,
-            allowCustomDeposit: data.allow_custom_deposit ?? true
-          });
-          console.log('✅ Loaded vehicle model-based deposit settings:', presets);
-        } else {
-          // Legacy format: initialize empty vehicle model structure
-          console.log('⚠️ Legacy deposit format detected, initializing vehicle model-based structure');
-          setDepositSettings({
-            vehicleModelPresets: {},
-            allowCustomDeposit: data.allow_custom_deposit ?? true
-          });
-        }
+      if (data) {
+        const normalized = normalizeDamageDepositSettings(
+          data.damage_deposit_presets,
+          data.allow_custom_deposit ?? true
+        );
+        setDepositSettings(normalized);
+        console.log('✅ Loaded vehicle model-based deposit settings:', normalized);
       }
     } catch (error: any) {
       console.log('🔄 Using default deposit settings:', error.message);
@@ -309,82 +361,77 @@ const DynamicPricingManagement: React.FC = () => {
   // Fetch ALL data from database
   const fetchData = async () => {
     console.log('🔄 Fetching ALL pricing data from database...');
-    setLoading(true);
+    if (!hasLoadedOnce) {
+      setLoading(true);
+    }
     setError(null);
     
     try {
-      // Fetch Vehicle Models first
-      await fetchVehicleModels();
-
-      // Fetch Base Prices
-      const { data: pricesData, error: pricesError } = await supabase
-        .from('app_4c3a7a6153_base_prices')
-        .select(`
-          *,
-          vehicle_model:saharax_0u4w4d_vehicle_models (
-            name,
-            model,
-            vehicle_type
-          )
-        `)
-        .order('created_at', { ascending: false });
-
-      if (pricesError) {
-        console.error('❌ Base prices error details:', pricesError);
-        throw new Error(`Base prices error: ${pricesError.message}`);
-      }
-
-      console.log(`✅ Loaded ${pricesData?.length || 0} base prices`);
-      setBasePrices(pricesData || []);
-
-      // Fetch Pricing Tiers
-      const { data: tiersData, error: tiersError } = await supabase
-        .from('pricing_tiers')
-        .select('*')
-        .order('min_hours', { ascending: true });
-
-      if (tiersError) {
-        console.error('❌ Pricing tiers error:', tiersError);
-      } else {
-        console.log(`✅ Loaded ${tiersData?.length || 0} pricing tiers`);
-        setPricingTiers(tiersData || []);
-      }
-
-      // Fetch Extension Rules
-      const { data: rulesData, error: rulesError } = await supabase
-        .from('rental_extension_rules')
-        .select('*');
-
-      if (rulesError) {
-        console.error('❌ Extension rules error:', rulesError);
-      } else {
-        console.log(`✅ Loaded ${rulesData?.length || 0} extension rules`);
-        setExtensionRules(rulesData || []);
-      }
-
-      // Load Transport Fees
-      console.log('📡 Loading transport fees from app_settings table...');
-      
-      try {
-        const { data: dbData, error: dbError } = await supabase
+      const [vehicleModelsResult, basePricesResult, appSettingsResult] = await Promise.allSettled([
+        supabase
+          .from('saharax_0u4w4d_vehicle_models')
+          .select('id, name, model, vehicle_type')
+          .eq('is_active', true)
+          .order('name', { ascending: true }),
+        supabase
+          .from('app_4c3a7a6153_base_prices')
+          .select(`
+            *,
+            vehicle_model:saharax_0u4w4d_vehicle_models (
+              name,
+              model,
+              vehicle_type
+            )
+          `)
+          .order('created_at', { ascending: false }),
+        supabase
           .from('app_settings')
-          .select('transport_pickup_fee, transport_dropoff_fee')
+          .select('transport_pickup_fee, transport_dropoff_fee, damage_deposit_presets, allow_custom_deposit, tier_pricing_enabled, require_tier_for_extensions, fallback_to_hourly')
           .eq('id', 1)
-          .single();
+          .single(),
+      ]);
 
-        if (dbError) throw dbError;
+      if (vehicleModelsResult.status === 'fulfilled') {
+        setVehicleModels(vehicleModelsResult.value.data || []);
+      } else {
+        console.error('❌ Error fetching vehicle models:', vehicleModelsResult.reason);
+        setVehicleModels([]);
+      }
 
-        const fees = {
-          pickup_fee: Number(dbData.transport_pickup_fee) || 0,
-          dropoff_fee: Number(dbData.transport_dropoff_fee) || 0
-        };
-        
-        console.log('✅ Loaded transport fees from database:', fees);
-        setTransportFees(fees);
-        setTransportFeeFormData(fees);
-        
-      } catch (dbError) {
-        console.log('🔄 Database failed, trying localStorage...');
+      if (basePricesResult.status === 'fulfilled') {
+        const { data: pricesData, error: pricesError } = basePricesResult.value;
+        if (pricesError) {
+          throw new Error(`Base prices error: ${pricesError.message}`);
+        }
+        setBasePrices(pricesData || []);
+      }
+
+      if (appSettingsResult.status === 'fulfilled') {
+        const { data: dbData, error: dbError } = appSettingsResult.value;
+        if (!dbError && dbData) {
+          const fees = {
+            pickup_fee: Number(dbData.transport_pickup_fee) || 0,
+            dropoff_fee: Number(dbData.transport_dropoff_fee) || 0
+          };
+          setTransportFees(fees);
+          setTransportFeeFormData(fees);
+          setTierEnforcement({
+            enabled: dbData.tier_pricing_enabled ?? true,
+            requireTierForExtensions: dbData.require_tier_for_extensions ?? true,
+            fallbackToHourly: dbData.fallback_to_hourly ?? false
+          });
+
+          setDepositSettings(
+            normalizeDamageDepositSettings(
+              dbData.damage_deposit_presets,
+              dbData.allow_custom_deposit ?? true
+            )
+          );
+        } else {
+          await fetchDepositSettings();
+        }
+      } else {
+        console.log('🔄 App settings fetch failed, using local defaults and localStorage fallback');
         const stored = localStorage.getItem('mgx_transport_fees_settings');
         if (stored) {
           const parsed = JSON.parse(stored);
@@ -395,13 +442,35 @@ const DynamicPricingManagement: React.FC = () => {
           setTransportFees(fees);
           setTransportFeeFormData(fees);
         }
+        await fetchDepositSettings();
       }
+      setHasLoadedOnce(true);
 
-      // NEW: Fetch Tier Enforcement Settings
-      await fetchTierEnforcementSettings();
+      scheduleBackgroundTask(async () => {
+        const [tiersResult, rulesResult] = await Promise.allSettled([
+          supabase
+            .from('pricing_tiers')
+            .select('*')
+            .order('min_hours', { ascending: true }),
+          supabase
+            .from('rental_extension_rules')
+            .select('*'),
+        ]);
 
-      // NEW: Fetch Deposit Settings
-      await fetchDepositSettings();
+        if (tiersResult.status === 'fulfilled') {
+          const { data: tiersData, error: tiersError } = tiersResult.value;
+          if (!tiersError) {
+            setPricingTiers(tiersData || []);
+          }
+        }
+
+        if (rulesResult.status === 'fulfilled') {
+          const { data: rulesData, error: rulesError } = rulesResult.value;
+          if (!rulesError) {
+            setExtensionRules(rulesData || []);
+          }
+        }
+      });
 
     } catch (error: any) {
       console.error('❌ Error fetching data:', error);
@@ -419,7 +488,7 @@ const DynamicPricingManagement: React.FC = () => {
   const getVehicleModelName = (vehicleModelId: string): string => {
     const model = vehicleModels.find(v => v.id === vehicleModelId);
     if (model) {
-      return model.name; // Use the full name (e.g., "SEGWAY AT5")
+      return [model.name, model.model].filter(Boolean).join(' ').trim() || model.name;
     }
     return vehicleModelId;
   };
@@ -515,10 +584,13 @@ const DynamicPricingManagement: React.FC = () => {
     });
     tiers.sort((a: any, b: any) => a[minField] - b[minField]);
 
+    const gapStep = tierData.duration_type === 'hours' ? 0.5 : 1;
     let gaps = [];
     for (let i = 0; i < tiers.length - 1; i++) {
-      if (tiers[i][maxField] + 1 < tiers[i + 1][minField]) {
-        gaps.push(`${tiers[i][maxField] + 1}-${tiers[i + 1][minField] - 1} ${tierData.duration_type}`);
+      const nextExpected = Number(tiers[i][maxField]) + gapStep;
+      const nextActual = Number(tiers[i + 1][minField]);
+      if (nextExpected < nextActual) {
+        gaps.push(`${nextExpected}-${nextActual - gapStep} ${tierData.duration_type}`);
       }
     }
 
@@ -705,7 +777,7 @@ const DynamicPricingManagement: React.FC = () => {
 };
 
   const handleDeleteTier = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this tier?')) return;
+    if (!window.confirm(tr('Are you sure you want to delete this tier?', 'Voulez-vous vraiment supprimer ce palier ?'))) return;
 
     try {
       const { error } = await supabase
@@ -719,7 +791,7 @@ const DynamicPricingManagement: React.FC = () => {
       console.log('✅ Tier deleted successfully');
     } catch (error: any) {
       console.error('❌ Error deleting tier:', error);
-      alert('Failed to delete tier');
+      alert(tr('Failed to delete tier', 'Impossible de supprimer le palier'));
     }
   };
 
@@ -732,8 +804,8 @@ const DynamicPricingManagement: React.FC = () => {
   try {
     const tierData = {
       vehicle_model_id: tierFormData.vehicle_model_id,
-      min_hours: tierFormData.duration_type === 'hours' ? parseInt(tierFormData.min_hours.toString()) : null,
-      max_hours: tierFormData.duration_type === 'hours' ? parseInt(tierFormData.max_hours.toString()) : null,
+      min_hours: tierFormData.duration_type === 'hours' ? parseHourTierValue(tierFormData.min_hours) : null,
+      max_hours: tierFormData.duration_type === 'hours' ? parseHourTierValue(tierFormData.max_hours) : null,
       price_amount: tierFormData.duration_type === 'hours' ? parseFloat(tierFormData.price_amount.toString()) : null,
       calculation_method: tierFormData.duration_type === 'hours' ? tierFormData.calculation_method : null,
       discount_percentage: tierFormData.duration_type === 'hours' && tierFormData.calculation_method === 'percentage' 
@@ -992,7 +1064,8 @@ const DynamicPricingManagement: React.FC = () => {
     const newPreset: DamageDepositPreset = {
       label: `Preset ${currentPresets.length + 1}`,
       amount: 0,
-      enabled: true
+      enabled: true,
+      isDefault: currentPresets.length === 0
     };
 
     setDepositSettings(prev => ({
@@ -1008,9 +1081,16 @@ const DynamicPricingManagement: React.FC = () => {
     if (!selectedVehicleForDeposits) return;
 
     const currentPresets = getCurrentVehiclePresets();
-    const updatedPresets = currentPresets.map((preset, i) => 
-      i === index ? { ...preset, [field]: value } : preset
-    );
+    const updatedPresets = currentPresets.map((preset, i) => {
+      if (field === 'isDefault') {
+        return {
+          ...preset,
+          isDefault: i === index ? Boolean(value) : false,
+        };
+      }
+
+      return i === index ? { ...preset, [field]: value } : preset;
+    });
 
     setDepositSettings(prev => ({
       ...prev,
@@ -1157,13 +1237,13 @@ const DynamicPricingManagement: React.FC = () => {
 
     switch (method) {
       case 'fixed':
-        return 'Fixed Price';
+        return tr('Fixed Price', 'Prix fixe');
       case 'percentage':
-        return 'Discount %';
+        return tr('Discount %', 'Remise %');
       case 'custom':
-        return 'Custom Formula';
+        return tr('Custom Formula', 'Formule personnalisée');
       default:
-        return 'Not set';
+        return tr('Not set', 'Non défini');
     }
   };
 
@@ -1172,6 +1252,93 @@ const DynamicPricingManagement: React.FC = () => {
       ? tier.daily_discount_percentage
       : tier.discount_percentage
   );
+
+  const getBasePricesForTier = (tier: PricingTier) => {
+    const matchingBasePrice = basePrices.find(
+      (price) => price.vehicle_model_id === tier.vehicle_model_id && price.is_active
+    ) || basePrices.find((price) => price.vehicle_model_id === tier.vehicle_model_id);
+
+    return {
+      hourly: Number(matchingBasePrice?.hourly_price || 0),
+      daily: Number(matchingBasePrice?.daily_price || 0),
+    };
+  };
+
+  const getTierCalculatedDiscountLabel = (tier: PricingTier) => {
+    const method = tier.duration_type === 'days'
+      ? tier.daily_calculation_method
+      : tier.calculation_method;
+    const configuredDiscount = Number(getTierDiscountValue(tier) || 0);
+
+    if (method === 'percentage' && configuredDiscount > 0) {
+      return `${Math.round(configuredDiscount)}%`;
+    }
+
+    if (method === 'custom') {
+      return tr('Custom', 'Personnalisé');
+    }
+
+    const basePricesForTier = getBasePricesForTier(tier);
+    const tierAmount = getTierAmount(tier);
+
+    if (tierAmount <= 0) {
+      return '—';
+    }
+
+    const minUnits = tier.duration_type === 'days'
+      ? Number(tier.min_days || 0)
+      : Number(tier.min_hours || 0);
+    const maxUnits = tier.duration_type === 'days'
+      ? Number(tier.max_days || 0)
+      : Number(tier.max_hours || 0);
+
+    if (minUnits <= 0 || maxUnits <= 0) {
+      return '—';
+    }
+
+    if (tier.duration_type === 'days') {
+      const baseDailyPrice = basePricesForTier.daily;
+
+      if (baseDailyPrice <= 0) {
+        return '—';
+      }
+
+      const dailySavings = Math.max(
+        0,
+        Math.round(((baseDailyPrice - tierAmount) / baseDailyPrice) * 100)
+      );
+
+      return dailySavings > 0 ? `${dailySavings}%` : '—';
+    }
+
+    const baseHourlyPrice = basePricesForTier.hourly;
+
+    if (baseHourlyPrice <= 0) {
+      return '—';
+    }
+
+    const standardMinTotal = baseHourlyPrice * minUnits;
+    const standardMaxTotal = baseHourlyPrice * maxUnits;
+
+    const minSavings = standardMinTotal > 0
+      ? Math.max(0, Math.round(((standardMinTotal - tierAmount) / standardMinTotal) * 100))
+      : 0;
+    const maxSavings = standardMaxTotal > 0
+      ? Math.max(0, Math.round(((standardMaxTotal - tierAmount) / standardMaxTotal) * 100))
+      : 0;
+
+    if (minSavings <= 0 && maxSavings <= 0) {
+      return '—';
+    }
+
+    if (minSavings === maxSavings || minUnits === maxUnits) {
+      return `${Math.max(minSavings, maxSavings)}%`;
+    }
+
+    const low = Math.min(minSavings, maxSavings);
+    const high = Math.max(minSavings, maxSavings);
+    return `${low}% - ${high}%`;
+  };
 
   const groupedVisibleTiers = vehicleModels
     .map((model) => ({
@@ -1191,13 +1358,14 @@ const DynamicPricingManagement: React.FC = () => {
   const depositOverview = vehicleModels.map((model) => {
     const presets = depositSettings.vehicleModelPresets[model.id] || [];
     const enabledPresets = presets.filter((preset) => preset.enabled);
+    const defaultPreset = enabledPresets.find((preset) => preset.isDefault) || enabledPresets[0] || null;
 
     return {
       model,
       presets,
       enabledPresets,
+      defaultPreset,
       enabledCount: enabledPresets.length,
-      totalAmount: enabledPresets.reduce((sum, preset) => sum + Number(preset.amount || 0), 0),
     };
   });
   const visibleDepositOverview = selectedVehicleForDeposits
@@ -1224,12 +1392,22 @@ const DynamicPricingManagement: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="p-6">
-        <div className="animate-pulse space-y-4">
-          <div className="h-8 bg-gray-200 rounded w-64"></div>
-          <div className="h-4 bg-gray-200 rounded w-96"></div>
-          <div className="h-12 bg-gray-200 rounded"></div>
-          <div className="h-64 bg-gray-200 rounded"></div>
+      <div className="min-h-screen bg-gray-50">
+        <AdminModuleHero
+          className="w-full"
+          icon={<DollarSign className="h-8 w-8 text-white" />}
+          eyebrow={tr('Pricing Management', 'Gestion tarifaire')}
+          title={tr('Pricing Management', 'Gestion tarifaire')}
+          description={tr('Preparing the pricing workspace...', 'Préparation de l’espace tarifaire...')}
+        />
+        <div className="max-w-7xl mx-auto p-6">
+          <div className="rounded-2xl border border-violet-100 bg-white p-8 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+            <div className="flex flex-col items-center justify-center text-center">
+              <div className="mb-4 text-4xl animate-spin">⏳</div>
+              <p className="text-base font-medium text-slate-700">{tr('Loading pricing...', 'Chargement des tarifs...')}</p>
+              <p className="mt-2 text-sm text-slate-500">{tr('Preparing rate tables, tiers, deposits, and pricing rules.', 'Préparation des tables tarifaires, paliers, cautions et règles de prix.')}</p>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -1247,9 +1425,9 @@ const DynamicPricingManagement: React.FC = () => {
                     <DollarSign className="h-8 w-8 text-white" />
                   </div>
                   <div>
-                    <h1 className="text-2xl font-bold text-white sm:text-3xl">Pricing Management</h1>
+                    <h1 className="text-2xl font-bold text-white sm:text-3xl">{tr('Pricing Management', 'Gestion tarifaire')}</h1>
                     <p className="mt-1 text-sm text-violet-200">
-                      Manage rates, tiers, extensions, deposits, fuel, and tour pricing from one pricing workspace.
+                      {tr('Manage rates, tiers, extensions, deposits, fuel, and tour pricing from one pricing workspace.', 'Gérez les tarifs, paliers, prolongations, dépôts, carburant et prix des tours depuis un seul espace tarifaire.')}
                     </p>
                   </div>
                 </div>
@@ -1260,12 +1438,12 @@ const DynamicPricingManagement: React.FC = () => {
                     className="inline-flex items-center rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
                   >
                     <RefreshCw className="mr-2 h-4 w-4" />
-                    Refresh Pricing
+                    {tr('Refresh Pricing', 'Actualiser les tarifs')}
                   </button>
 
                   <div className="inline-flex items-center rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm">
                     <CheckCircle className="mr-2 h-4 w-4" />
-                    Pricing workspace active
+                    {tr('Pricing workspace active', 'Espace tarifaire actif')}
                   </div>
                 </div>
               </div>
@@ -1291,7 +1469,7 @@ const DynamicPricingManagement: React.FC = () => {
                     }`}
                   >
                     <Icon className={`mr-2 h-5 w-5 transition-transform duration-200 ${active ? 'scale-110' : 'group-hover:scale-105'}`} />
-                    <span className="font-semibold">{item.label}</span>
+                    <span className="font-semibold">{isFrench ? item.labelFr : item.labelEn}</span>
                   </button>
                 );
               })}
@@ -1307,7 +1485,7 @@ const DynamicPricingManagement: React.FC = () => {
                 <div className="flex items-center gap-3">
                   <AlertCircle className="w-5 h-5 text-red-500" />
                   <div>
-                    <p className="font-medium text-red-800">Error</p>
+                    <p className="font-medium text-red-800">{tr('Error', 'Erreur')}</p>
                     <p className="mt-1 text-sm text-red-700">{error}</p>
                   </div>
                 </div>
@@ -1320,9 +1498,9 @@ const DynamicPricingManagement: React.FC = () => {
                 <div className="flex items-center gap-3">
                   <AlertCircle className="w-5 h-5 text-yellow-500" />
                   <div>
-                    <p className="font-medium text-yellow-800">No Vehicle Models Found</p>
+                    <p className="font-medium text-yellow-800">{tr('No Vehicle Models Found', 'Aucun modèle de véhicule trouvé')}</p>
                     <p className="mt-1 text-sm text-yellow-700">
-                      Please add vehicle models first before creating pricing tiers. Check the browser console for more details.
+                      {tr('Please add vehicle models first before creating pricing tiers. Check the browser console for more details.', 'Veuillez d’abord ajouter des modèles de véhicules avant de créer des paliers tarifaires. Consultez la console du navigateur pour plus de détails.')}
                     </p>
                   </div>
                 </div>
@@ -1332,32 +1510,32 @@ const DynamicPricingManagement: React.FC = () => {
             <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Pricing Workspace</p>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Pricing Workspace', 'Espace tarifaire')}</p>
                   <h1 className="mt-2 text-3xl font-bold text-slate-900">
-                    {PRICING_TAB_ITEMS.find((item) => item.id === activeTab)?.label}
+                    {isFrench ? PRICING_TAB_ITEMS.find((item) => item.id === activeTab)?.labelFr : PRICING_TAB_ITEMS.find((item) => item.id === activeTab)?.labelEn}
                   </h1>
                   <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                    {activeTab === 'base' && 'Set core rental prices by model. This is the base layer other pricing rules build on top of.'}
-                    {activeTab === 'tiers' && 'Shape longer rentals with duration tiers, discounts, and tier enforcement logic.'}
-                    {activeTab === 'extensions' && 'Control overtime, grace windows, and how extended rentals are priced.'}
-                    {activeTab === 'transport' && 'Manage pickup and drop-off charges without burying them inside system settings.'}
-                    {activeTab === 'tour-pricing' && 'Price each tour package by quad model and flexible timing like 1h, 1.5h, 2h, and 2.5h.'}
-                    {activeTab === 'packages' && 'Create kilometer-based packages with included distance and overage logic.'}
-                    {activeTab === 'deposits' && 'Keep deposit presets consistent by model and by rental workflow.'}
-                    {activeTab === 'fuel' && 'Set hourly and daily fuel line charges in the same workspace as the rest of pricing.'}
+                    {activeTab === 'base' && tr('Set core rental prices by model. This is the base layer other pricing rules build on top of.', 'Définissez les tarifs de location de base par modèle. C’est la couche principale sur laquelle reposent les autres règles tarifaires.')}
+                    {activeTab === 'tiers' && tr('Shape longer rentals with duration tiers, discounts, and tier enforcement logic.', 'Structurez les locations longues avec des paliers de durée, des remises et une logique de contrôle des paliers.')}
+                    {activeTab === 'extensions' && tr('Control overtime, grace windows, and how extended rentals are priced.', 'Contrôlez le dépassement, les délais de grâce et la tarification des prolongations.')}
+                    {activeTab === 'transport' && tr('Manage pickup and drop-off charges without burying them inside system settings.', 'Gérez les frais de départ et de retour sans les cacher dans les paramètres système.')}
+                    {activeTab === 'tour-pricing' && tr('Price each tour package by quad model and flexible timing like 1h, 1.5h, 2h, and 2.5h.', 'Tarifez chaque forfait tour par modèle de quad et avec des durées flexibles comme 1h, 1,5h, 2h et 2,5h.')}
+                    {activeTab === 'packages' && tr('Create kilometer-based packages with included distance and overage logic.', 'Créez des forfaits kilométriques avec distance incluse et logique de dépassement.')}
+                    {activeTab === 'deposits' && tr('Keep deposit presets consistent by model and by rental workflow.', 'Gardez des presets de dépôt cohérents par modèle et par workflow de location.')}
+                    {activeTab === 'fuel' && tr('Set hourly and daily fuel line charges in the same workspace as the rest of pricing.', 'Définissez les frais carburant horaires et journaliers dans le même espace que le reste des tarifs.')}
                   </p>
                 </div>
                 <div className="grid grid-cols-3 gap-3">
                   <div className="rounded-lg bg-gradient-to-br from-slate-100 to-white px-4 py-3 text-center ring-1 ring-slate-200/80">
-                    <p className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-slate-500">Models</p>
+                    <p className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-slate-500">{tr('Models', 'Modèles')}</p>
                     <p className="mt-1 text-2xl font-semibold text-slate-900">{pricingWorkspaceStats.vehicleModels}</p>
                   </div>
                   <div className="rounded-lg bg-violet-50 px-4 py-3 text-center ring-1 ring-violet-200/80">
-                    <p className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-violet-600">Base Prices</p>
+                    <p className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-violet-600">{tr('Base Prices', 'Tarifs de base')}</p>
                     <p className="mt-1 text-2xl font-semibold text-violet-900">{pricingWorkspaceStats.activeBasePrices}</p>
                   </div>
                   <div className="rounded-lg bg-indigo-50 px-4 py-3 text-center ring-1 ring-indigo-200/80">
-                    <p className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-indigo-600">Active Tiers</p>
+                    <p className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-indigo-600">{tr('Active Tiers', 'Paliers actifs')}</p>
                     <p className="mt-1 text-2xl font-semibold text-indigo-900">{pricingWorkspaceStats.activeTiers}</p>
                   </div>
                 </div>
@@ -1373,15 +1551,15 @@ const DynamicPricingManagement: React.FC = () => {
           <div className="border-b border-gray-200 p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">Base Prices</h2>
-                <p className="mt-1 text-sm text-gray-600">Set the standard hourly, daily, weekly, and monthly prices by vehicle model.</p>
+                <h2 className="text-lg font-semibold text-gray-900">{tr('Base Prices', 'Tarifs de base')}</h2>
+                <p className="mt-1 text-sm text-gray-600">{tr('Set the standard hourly, daily, weekly, and monthly prices by vehicle model.', 'Définissez les tarifs horaires, journaliers, hebdomadaires et mensuels standards par modèle de véhicule.')}</p>
               </div>
               <button
                 onClick={() => setShowBasePriceForm(true)}
                 className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
               >
                 <Plus className="w-4 h-4" />
-                Add Base Price
+                {tr('Add Base Price', 'Ajouter un tarif de base')}
               </button>
             </div>
 
@@ -1390,7 +1568,7 @@ const DynamicPricingManagement: React.FC = () => {
                 <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
                 <input
                   type="text"
-                  placeholder="Search by vehicle model..."
+                  placeholder={tr('Search by vehicle model...', 'Rechercher par modèle de véhicule...')}
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="w-full rounded-xl border border-gray-300 py-2.5 pl-10 pr-4 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
@@ -1402,10 +1580,10 @@ const DynamicPricingManagement: React.FC = () => {
                 onChange={(e) => setSelectedVehicleForBasePrices(e.target.value)}
                 className="rounded-xl border border-gray-300 px-4 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               >
-                <option value="">All Vehicle Models</option>
+                <option value="">{tr('All Vehicle Models', 'Tous les modèles')}</option>
                 {vehicleModels.map((model) => (
                   <option key={model.id} value={model.id}>
-                    {model.name}
+                    {getVehicleModelName(model.id)}
                   </option>
                 ))}
               </select>
@@ -1415,9 +1593,9 @@ const DynamicPricingManagement: React.FC = () => {
                 onChange={(e) => setStatusFilter(e.target.value)}
                 className="rounded-xl border border-gray-300 px-4 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               >
-                <option value="all">All Status</option>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
+                <option value="all">{tr('All Status', 'Tous les statuts')}</option>
+                <option value="active">{tr('Active', 'Actif')}</option>
+                <option value="inactive">{tr('Inactive', 'Inactif')}</option>
               </select>
             </div>
           </div>
@@ -1425,8 +1603,8 @@ const DynamicPricingManagement: React.FC = () => {
           <div className="p-6">
             {groupedBasePrices.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center">
-                <p className="text-sm font-semibold text-slate-900">No base prices found</p>
-                <p className="mt-1 text-sm text-slate-500">Add a base price or change the current filters.</p>
+                <p className="text-sm font-semibold text-slate-900">{tr('No base prices found', 'Aucun tarif de base trouvé')}</p>
+                <p className="mt-1 text-sm text-slate-500">{tr('Add a base price or change the current filters.', 'Ajoutez un tarif de base ou modifiez les filtres actuels.')}</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -1434,8 +1612,8 @@ const DynamicPricingManagement: React.FC = () => {
                   <div key={model.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                     <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
                       <div>
-                        <h3 className="text-base font-semibold text-slate-900">{model.name}</h3>
-                        <p className="mt-1 text-sm text-slate-500">{prices.length} base price record{prices.length === 1 ? '' : 's'}</p>
+                        <h3 className="text-base font-semibold text-slate-900">{getVehicleModelName(model.id)}</h3>
+                        <p className="mt-1 text-sm text-slate-500">{prices.length} {prices.length === 1 ? tr('base price record', 'tarif de base') : tr('base price records', 'tarifs de base')}</p>
                       </div>
                       <span className="inline-flex self-start rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600 border border-slate-200">
                         {model.vehicle_type || 'quad'}
@@ -1449,26 +1627,26 @@ const DynamicPricingManagement: React.FC = () => {
                             <div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${getStatusColor(price.is_active)}`}>
-                                  {price.is_active ? 'Active' : 'Inactive'}
+                                  {price.is_active ? tr('Active', 'Actif') : tr('Inactive', 'Inactif')}
                                 </span>
                                 <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                                  {price.price_source || 'auto'}
+                                  {price.price_source || tr('auto', 'auto')}
                                 </span>
                               </div>
-                              <p className="mt-3 text-sm font-medium text-slate-500">Default rates</p>
+                              <p className="mt-3 text-sm font-medium text-slate-500">{tr('Default rates', 'Tarifs par défaut')}</p>
                             </div>
                             <div className="flex items-center gap-2">
                               <button
                                 onClick={() => handleEditBasePrice(price)}
                                 className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-blue-600 transition hover:bg-blue-50"
-                                title="Edit base price"
+                                title={tr('Edit base price', 'Modifier le tarif de base')}
                               >
                                 <Edit className="h-4 w-4" />
                               </button>
                               <button
                                 onClick={() => handleDeleteBasePrice(price.id)}
                                 className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-red-200 text-red-600 transition hover:bg-red-50"
-                                title="Delete base price"
+                                title={tr('Delete base price', 'Supprimer le tarif de base')}
                               >
                                 <Trash2 className="h-4 w-4" />
                               </button>
@@ -1477,27 +1655,37 @@ const DynamicPricingManagement: React.FC = () => {
 
                           <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                             <div className="rounded-xl bg-slate-50 px-3 py-3">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Hourly</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Hourly', 'Horaire')}</p>
                               <p className="mt-2 text-base font-bold text-slate-900">{formatCurrency(price.hourly_price)}</p>
                             </div>
                             <div className="rounded-xl bg-slate-50 px-3 py-3">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Daily</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Daily', 'Journalier')}</p>
                               <p className="mt-2 text-base font-bold text-slate-900">{formatCurrency(price.daily_price)}</p>
                             </div>
                             <div className="rounded-xl bg-slate-50 px-3 py-3">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Weekly</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Weekly', 'Hebdomadaire')}</p>
                               <p className="mt-2 text-base font-bold text-slate-900">{price.weekly_price ? formatCurrency(price.weekly_price) : '—'}</p>
                             </div>
                             <div className="rounded-xl bg-slate-50 px-3 py-3">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Monthly</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Monthly', 'Mensuel')}</p>
                               <p className="mt-2 text-base font-bold text-slate-900">{price.monthly_price ? formatCurrency(price.monthly_price) : '—'}</p>
                             </div>
                           </div>
 
                           <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-500">
                             <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
-                              Dynamic pricing {price.dynamic_pricing_enabled ? 'enabled' : 'off'}
+                              {tr('Dynamic pricing', 'Tarification dynamique')} {price.dynamic_pricing_enabled ? tr('enabled', 'activée') : tr('off', 'désactivée')}
                             </span>
+                            {(price.hourly_price || 0) > 0 ? (
+                              <span className="inline-flex rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 font-medium text-violet-700">
+                                {tr('Hourly default: Unlimited KM', 'Horaire par défaut : KM illimités')}
+                              </span>
+                            ) : null}
+                            {(price.daily_price || 0) > 0 ? (
+                              <span className="inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 font-medium text-indigo-700">
+                                {tr('Daily default: Unlimited KM', 'Journalier par défaut : KM illimités')}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                       ))}
@@ -1516,7 +1704,7 @@ const DynamicPricingManagement: React.FC = () => {
           <div className="bg-white rounded-3xl shadow-xl max-w-2xl w-full">
             <div className="flex items-center justify-between p-6 border-b border-gray-200">
               <h3 className="text-lg font-semibold text-gray-900">
-                {editingPrice ? 'Edit Base Price' : 'Add Base Price'}
+                {editingPrice ? tr('Edit Base Price', 'Modifier le tarif de base') : tr('Add Base Price', 'Ajouter un tarif de base')}
               </h3>
               <button
                 onClick={resetBasePriceForm}
@@ -1528,9 +1716,9 @@ const DynamicPricingManagement: React.FC = () => {
 
             <form onSubmit={handleSubmitBasePrice} className="p-6 space-y-6">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Guided Base Price Setup</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Guided Base Price Setup', 'Configuration guidée du tarif de base')}</p>
                 <p className="mt-2 text-sm text-slate-600">
-                  Set the default rates that everything else builds on top of. Start with hourly and daily, then add weekly or monthly only if you use them.
+                  {tr('Set the default rates that everything else builds on top of. Start with hourly and daily, then add weekly or monthly only if you use them.', 'Définissez les tarifs par défaut sur lesquels repose tout le reste. Commencez par horaire et journalier, puis ajoutez hebdomadaire ou mensuel seulement si vous les utilisez.')}
                 </p>
               </div>
 
@@ -1538,7 +1726,7 @@ const DynamicPricingManagement: React.FC = () => {
                 <div className="space-y-6">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Vehicle Model
+                      {tr('Vehicle Model', 'Modèle de véhicule')}
                     </label>
                     <select
                       value={basePriceFormData.vehicle_model_id}
@@ -1546,10 +1734,10 @@ const DynamicPricingManagement: React.FC = () => {
                       className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                       required
                     >
-                      <option value="">Select a vehicle model</option>
+                      <option value="">{tr('Select a vehicle model', 'Sélectionner un modèle de véhicule')}</option>
                       {vehicleModels.map((model) => (
                         <option key={model.id} value={model.id}>
-                          {model.name}
+                          {getVehicleModelName(model.id)}
                         </option>
                       ))}
                     </select>
@@ -1558,7 +1746,7 @@ const DynamicPricingManagement: React.FC = () => {
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Hourly Price (MAD)
+                        {tr('Hourly Price (MAD)', 'Prix horaire (MAD)')}
                       </label>
                       <input
                         type="number"
@@ -1573,7 +1761,7 @@ const DynamicPricingManagement: React.FC = () => {
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Daily Price (MAD)
+                        {tr('Daily Price (MAD)', 'Prix journalier (MAD)')}
                       </label>
                       <input
                         type="number"
@@ -1588,7 +1776,7 @@ const DynamicPricingManagement: React.FC = () => {
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Weekly Price (MAD)
+                        {tr('Weekly Price (MAD)', 'Prix hebdomadaire (MAD)')}
                       </label>
                       <input
                         type="number"
@@ -1597,13 +1785,13 @@ const DynamicPricingManagement: React.FC = () => {
                         className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                         min="0"
                         step="0.01"
-                        placeholder="Optional"
+                        placeholder={tr('Optional', 'Facultatif')}
                       />
                     </div>
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Monthly Price (MAD)
+                        {tr('Monthly Price (MAD)', 'Prix mensuel (MAD)')}
                       </label>
                       <input
                         type="number"
@@ -1612,23 +1800,23 @@ const DynamicPricingManagement: React.FC = () => {
                         className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                         min="0"
                         step="0.01"
-                        placeholder="Optional"
+                        placeholder={tr('Optional', 'Facultatif')}
                       />
                     </div>
                   </div>
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Price Source
+                      {tr('Price Source', 'Source du prix')}
                     </label>
                     <select
                       value={basePriceFormData.price_source}
                       onChange={(e) => setBasePriceFormData({ ...basePriceFormData, price_source: e.target.value as any })}
                       className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                     >
-                      <option value="auto">Auto</option>
-                      <option value="manual">Manual</option>
-                      <option value="negotiated">Negotiated</option>
+                      <option value="auto">{tr('Auto', 'Auto')}</option>
+                      <option value="manual">{tr('Manual', 'Manuel')}</option>
+                      <option value="negotiated">{tr('Negotiated', 'Négocié')}</option>
                     </select>
                   </div>
 
@@ -1640,7 +1828,7 @@ const DynamicPricingManagement: React.FC = () => {
                         onChange={(e) => setBasePriceFormData({ ...basePriceFormData, is_active: e.target.checked })}
                         className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
-                      <span className="text-sm font-medium text-gray-700">Active</span>
+                      <span className="text-sm font-medium text-gray-700">{tr('Active', 'Actif')}</span>
                     </label>
 
                     <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -1650,41 +1838,53 @@ const DynamicPricingManagement: React.FC = () => {
                         onChange={(e) => setBasePriceFormData({ ...basePriceFormData, dynamic_pricing_enabled: e.target.checked })}
                         className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
-                      <span className="text-sm font-medium text-gray-700">Dynamic pricing enabled</span>
+                      <span className="text-sm font-medium text-gray-700">{tr('Tarification dynamique activée', 'Tarification dynamique activée')}</span>
                     </label>
                   </div>
                 </div>
 
                 <div className="space-y-4">
                   <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600">Preview</p>
-                    <p className="mt-3 text-base font-semibold text-slate-900">{selectedBaseModel?.name || 'Choose a vehicle model'}</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600">{tr('Aperçu', 'Aperçu')}</p>
+                    <p className="mt-3 text-base font-semibold text-slate-900">{selectedBaseModel ? getVehicleModelName(selectedBaseModel.id) : tr('Choisissez un modèle de véhicule', 'Choisissez un modèle de véhicule')}</p>
                     <div className="mt-4 space-y-3 text-sm">
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-500">Hourly</span>
+                        <span className="text-slate-500">{tr('Horaire', 'Horaire')}</span>
                         <span className="font-semibold text-slate-900">{formatCurrency(basePriceFormData.hourly_price || 0)}</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-500">Daily</span>
+                        <span className="text-slate-500">{tr('Journalier', 'Journalier')}</span>
                         <span className="font-semibold text-slate-900">{formatCurrency(basePriceFormData.daily_price || 0)}</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-500">Weekly</span>
+                        <span className="text-slate-500">{tr('Weekly', 'Hebdomadaire')}</span>
                         <span className="font-semibold text-slate-900">{basePriceFormData.weekly_price ? formatCurrency(basePriceFormData.weekly_price) : '—'}</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-500">Monthly</span>
+                        <span className="text-slate-500">{tr('Monthly', 'Mensuel')}</span>
                         <span className="font-semibold text-slate-900">{basePriceFormData.monthly_price ? formatCurrency(basePriceFormData.monthly_price) : '—'}</span>
                       </div>
+                    </div>
+                    <div className="mt-4 space-y-2 text-xs">
+                      {(basePriceFormData.hourly_price || 0) > 0 ? (
+                        <div className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 font-medium text-violet-700">
+                          {tr('Default hourly package label: Unlimited KM', 'Libellé horaire par défaut : KM illimités')}
+                        </div>
+                      ) : null}
+                      {(basePriceFormData.daily_price || 0) > 0 ? (
+                        <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 font-medium text-indigo-700">
+                          {tr('Default daily package label: Unlimited KM', 'Libellé journalier par défaut : KM illimités')}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-sm font-semibold text-slate-900">Quick guidance</p>
+                    <p className="text-sm font-semibold text-slate-900">{tr('Quick guidance', 'Guide rapide')}</p>
                     <ul className="mt-3 space-y-2 text-sm text-slate-600">
-                      <li>Always set hourly and daily first.</li>
-                      <li>Use weekly and monthly only when you actively sell those durations.</li>
-                      <li>Keep this page simple because tiers and extensions build on top of it.</li>
+                      <li>{tr('Always set hourly and daily first.', 'Définissez toujours le tarif horaire et le tarif journalier en premier.')}</li>
+                      <li>{tr('Use weekly and monthly only when you actively sell those durations.', 'Utilisez les tarifs hebdomadaires et mensuels uniquement si vous vendez réellement ces durées.')}</li>
+                      <li>{tr('Keep this page simple because tiers and extensions build on top of it.', 'Gardez cette page simple, car les paliers et les prolongations s’appuient dessus.')}</li>
                     </ul>
                   </div>
                 </div>
@@ -1696,7 +1896,7 @@ const DynamicPricingManagement: React.FC = () => {
                   onClick={resetBasePriceForm}
                   className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
                 >
-                  Cancel
+                  {tr('Cancel', 'Annuler')}
                 </button>
                 <button
                   type="submit"
@@ -1706,7 +1906,7 @@ const DynamicPricingManagement: React.FC = () => {
                   {submitting ? (
                     <Loader className="w-4 h-4 animate-spin mx-auto" />
                   ) : (
-                    editingPrice ? 'Update' : 'Create'
+                    editingPrice ? tr('Update', 'Mettre à jour') : tr('Create', 'Créer')
                   )}
                 </button>
               </div>
@@ -1722,9 +1922,9 @@ const DynamicPricingManagement: React.FC = () => {
             <div className="border-b border-slate-100 p-6">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold text-gray-900">Pricing Tiers</h2>
+                  <h2 className="text-lg font-semibold text-gray-900">{tr('Pricing Tiers', 'Paliers tarifaires')}</h2>
                   <p className="mt-1 text-sm text-gray-600">
-                    Create clearer hourly and daily rules without forcing the team to decode `1-1` style ranges.
+                    {tr('Create clearer hourly and daily rules without forcing the team to decode `1-1` style ranges.', "Créez des règles horaires et journalières plus claires sans obliger l'équipe à décoder des plages du type `1-1`.")}
                   </p>
                 </div>
                 <button
@@ -1732,7 +1932,7 @@ const DynamicPricingManagement: React.FC = () => {
                   className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
                 >
                   <Plus className="h-4 w-4" />
-                  Add Pricing Tier
+                  {tr('Add Pricing Tier', 'Ajouter un palier tarifaire')}
                 </button>
               </div>
 
@@ -1749,7 +1949,7 @@ const DynamicPricingManagement: React.FC = () => {
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      {type === 'hours' ? 'Hourly Tiers' : 'Daily Tiers'}
+                      {type === 'hours' ? tr('Hourly Tiers', 'Paliers horaires') : tr('Daily Tiers', 'Paliers journaliers')}
                     </button>
                   ))}
                 </div>
@@ -1760,10 +1960,10 @@ const DynamicPricingManagement: React.FC = () => {
                     onChange={(e) => setSelectedVehicleForTiers(e.target.value)}
                     className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                   >
-                    <option value="">All Vehicle Models</option>
+                    <option value="">{tr('All Vehicle Models', 'Tous les modèles de véhicules')}</option>
                     {vehicleModels.map((model) => (
                       <option key={model.id} value={model.id}>
-                        {model.name}
+                        {getVehicleModelName(model.id)}
                       </option>
                     ))}
                   </select>
@@ -1777,10 +1977,10 @@ const DynamicPricingManagement: React.FC = () => {
                   <div>
                     <h4 className="flex items-center gap-2 text-sm font-semibold text-blue-900">
                       <Lock className="h-4 w-4" />
-                      Extension Pricing Rules
+                      {tr('Extension Pricing Rules', 'Règles tarifaires de prolongation')}
                     </h4>
                     <p className="mt-1 text-sm text-blue-800">
-                      Keep extension pricing predictable by deciding when tiers are required and when fallback pricing is allowed.
+                      {tr('Keep extension pricing predictable by deciding when tiers are required and when fallback pricing is allowed.', 'Gardez une tarification de prolongation prévisible en décidant quand les paliers sont obligatoires et quand un tarif de secours est autorisé.')}
                     </p>
                   </div>
                   <button
@@ -1789,7 +1989,7 @@ const DynamicPricingManagement: React.FC = () => {
                     className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {savingTierEnforcement ? <Loader className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    {savingTierEnforcement ? 'Saving...' : 'Save Settings'}
+                    {savingTierEnforcement ? 'Enregistrement...' : 'Enregistrer les paramètres'}
                   </button>
                 </div>
 
@@ -1812,8 +2012,8 @@ const DynamicPricingManagement: React.FC = () => {
                       className="mt-1 h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                     />
                     <div>
-                      <span className="text-sm font-semibold text-slate-900">Enable tiered pricing</span>
-                      <p className="mt-1 text-xs text-slate-500">Apply tier prices when extensions are requested.</p>
+                      <span className="text-sm font-semibold text-slate-900">{tr('Enable tiered pricing', 'Activer la tarification par palier')}</span>
+                      <p className="mt-1 text-xs text-slate-500">{tr('Apply tier prices when extensions are requested.', 'Appliquer les prix par palier lors des demandes de prolongation.')}</p>
                     </div>
                   </label>
 
@@ -1826,8 +2026,8 @@ const DynamicPricingManagement: React.FC = () => {
                       className="mt-1 h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                     />
                     <div>
-                      <span className="text-sm font-semibold text-slate-900">Only allow matching tiers</span>
-                      <p className="mt-1 text-xs text-slate-500">Block extensions when no valid tier covers the requested duration.</p>
+                      <span className="text-sm font-semibold text-slate-900">{tr('Only allow matching tiers', 'Autoriser uniquement les paliers correspondants')}</span>
+                      <p className="mt-1 text-xs text-slate-500">{tr('Block extensions when no valid tier covers the requested duration.', 'Bloquer les prolongations lorsqu’aucun palier valide ne couvre la durée demandée.')}</p>
                     </div>
                   </label>
 
@@ -1840,8 +2040,8 @@ const DynamicPricingManagement: React.FC = () => {
                       className="mt-1 h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                     />
                     <div>
-                      <span className="text-sm font-semibold text-slate-900">Fallback to hourly pricing</span>
-                      <p className="mt-1 text-xs text-slate-500">If no tier matches, calculate from the hourly rate instead.</p>
+                      <span className="text-sm font-semibold text-slate-900">{tr('Fallback to hourly pricing', 'Basculer vers la tarification horaire')}</span>
+                      <p className="mt-1 text-xs text-slate-500">{tr('If no tier matches, calculate from the hourly rate instead.', "Si aucun palier ne correspond, calculez à partir du tarif horaire.")}</p>
                     </div>
                   </label>
                 </div>
@@ -1850,9 +2050,11 @@ const DynamicPricingManagement: React.FC = () => {
               <div className="mt-6 space-y-4">
                 {groupedVisibleTiers.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center">
-                    <p className="text-sm font-semibold text-slate-900">No {tierDurationFilter} tiers found</p>
+                    <p className="text-sm font-semibold text-slate-900">{tierDurationFilter === 'hours' ? tr('No hourly tiers found', 'Aucun palier horaire trouvé') : tr('No daily tiers found', 'Aucun palier journalier trouvé')}</p>
                     <p className="mt-1 text-sm text-slate-500">
-                      Add a {tierDurationFilter === 'hours' ? 'hourly' : 'daily'} tier or change the vehicle filter.
+                      {tierDurationFilter === 'hours'
+                        ? tr('Add a hourly tier or change the vehicle filter.', 'Ajoutez un palier horaire ou modifiez le filtre véhicule.')
+                        : tr('Add a daily tier or change the vehicle filter.', 'Ajoutez un palier journalier ou modifiez le filtre véhicule.')}
                     </p>
                   </div>
                 ) : (
@@ -1860,13 +2062,13 @@ const DynamicPricingManagement: React.FC = () => {
                     <div key={model.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                       <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <h3 className="text-base font-semibold text-slate-900">{model.name}</h3>
+                          <h3 className="text-base font-semibold text-slate-900">{getVehicleModelName(model.id)}</h3>
                           <p className="mt-1 text-sm text-slate-500">
-                            {tiers.length} {tierDurationFilter === 'hours' ? 'hourly' : 'daily'} tier{tiers.length === 1 ? '' : 's'}
+                            {tiers.length} {tierDurationFilter === 'hours' ? tr('hourly tier', 'palier horaire') : tr('daily tier', 'palier journalier')}{tiers.length === 1 ? '' : 's'}
                           </p>
                         </div>
                         <span className="inline-flex self-start rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600 border border-slate-200">
-                          {tierDurationFilter === 'hours' ? 'Hourly pricing' : 'Daily pricing'}
+                          {tierDurationFilter === 'hours' ? tr('Hourly pricing', 'Tarification horaire') : tr('Daily pricing', 'Tarification journalière')}
                         </span>
                       </div>
 
@@ -1880,7 +2082,7 @@ const DynamicPricingManagement: React.FC = () => {
                                     {formatTierDuration(tier)}
                                   </span>
                                   <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${getStatusColor(tier.is_active)}`}>
-                                    {tier.is_active ? 'Active' : 'Inactive'}
+                                    {tier.is_active ? tr('Active', 'Actif') : tr('Inactive', 'Inactif')}
                                   </span>
                                 </div>
                                 <p className="mt-3 text-2xl font-bold text-slate-900">{formatCurrency(getTierAmount(tier))}</p>
@@ -1890,7 +2092,7 @@ const DynamicPricingManagement: React.FC = () => {
                                 <button
                                   onClick={() => handleEditTier(tier)}
                                   className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-blue-600 transition hover:bg-blue-50"
-                                  title="Edit tier"
+                                  title={tr('Edit tier', 'Modifier le palier')}
                                 >
                                   <Edit className="h-4 w-4" />
                                 </button>
@@ -1900,14 +2102,14 @@ const DynamicPricingManagement: React.FC = () => {
                                     setEditingTier(null);
                                   }}
                                   className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:bg-slate-100"
-                                  title="Duplicate tier"
+                                  title={tr('Duplicate tier', 'Dupliquer le palier')}
                                 >
                                   <Plus className="h-4 w-4" />
                                 </button>
                                 <button
                                   onClick={() => handleDeleteTier(tier.id)}
                                   className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-red-200 text-red-600 transition hover:bg-red-50"
-                                  title="Delete tier"
+                                  title={tr('Delete tier', 'Supprimer le palier')}
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </button>
@@ -1916,17 +2118,17 @@ const DynamicPricingManagement: React.FC = () => {
 
                             <div className="mt-4 grid gap-3 sm:grid-cols-3">
                               <div className="rounded-xl bg-slate-50 px-3 py-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Applies to</p>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Applies to', "S'applique à")}</p>
                                 <p className="mt-2 text-sm font-semibold text-slate-900">{formatTierDuration(tier)}</p>
                               </div>
                               <div className="rounded-xl bg-slate-50 px-3 py-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Price Type</p>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Price Type', 'Type de prix')}</p>
                                 <p className="mt-2 text-sm font-semibold text-slate-900">{getTierMethodLabel(tier)}</p>
                               </div>
                               <div className="rounded-xl bg-slate-50 px-3 py-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Discount</p>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Discount', 'Remise')}</p>
                                 <p className="mt-2 text-sm font-semibold text-slate-900">
-                                  {getTierDiscountValue(tier) ? `${getTierDiscountValue(tier)}%` : '—'}
+                                  {getTierCalculatedDiscountLabel(tier)}
                                 </p>
                               </div>
                             </div>
@@ -1948,7 +2150,7 @@ const DynamicPricingManagement: React.FC = () => {
     <div className="bg-white rounded-3xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
       <div className="flex items-center justify-between p-6 border-b border-gray-200">
         <h3 className="text-lg font-semibold text-gray-900">
-          {editingTier ? 'Edit Pricing Tier' : 'Add Pricing Tier'}
+          {editingTier ? tr('Edit Pricing Tier', 'Modifier le palier tarifaire') : tr('Add Pricing Tier', 'Ajouter un palier tarifaire')}
         </h3>
         <button
           onClick={resetTierForm}
@@ -1960,9 +2162,9 @@ const DynamicPricingManagement: React.FC = () => {
 
       <form onSubmit={handleSubmitTier} className="p-6 space-y-6">
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Guided Tier Setup</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Guided Tier Setup', 'Configuration guidée du palier')}</p>
           <p className="mt-2 text-sm text-slate-600">
-            Choose the model, choose hourly or daily, then decide if this tier covers one exact duration or a range.
+            {tr('Choose the model, choose hourly or daily, then decide if this tier covers one exact duration or a range.', 'Choisissez le modèle, choisissez horaire ou journalier, puis décidez si ce palier couvre une durée exacte ou une plage.')}
           </p>
         </div>
 
@@ -1970,7 +2172,7 @@ const DynamicPricingManagement: React.FC = () => {
           <div className="space-y-6">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Vehicle Model
+                {tr('Vehicle Model', 'Modèle de véhicule')}
               </label>
               <select
                 value={tierFormData.vehicle_model_id}
@@ -1978,10 +2180,10 @@ const DynamicPricingManagement: React.FC = () => {
                 className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 required
               >
-                <option value="">Select a vehicle model</option>
+                <option value="">{tr('Select a vehicle model', 'Sélectionner un modèle de véhicule')}</option>
                 {vehicleModels.map((model) => (
                   <option key={model.id} value={model.id}>
-                    {model.name}
+                    {getVehicleModelName(model.id)}
                   </option>
                 ))}
               </select>
@@ -1989,7 +2191,7 @@ const DynamicPricingManagement: React.FC = () => {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Pricing Type
+                {tr('Pricing Type', 'Type de tarification')}
               </label>
               <div className="inline-flex rounded-2xl bg-slate-100 p-1">
                 {(['hours', 'days'] as const).map((type) => (
@@ -2011,7 +2213,7 @@ const DynamicPricingManagement: React.FC = () => {
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    {type === 'hours' ? 'Hourly Tier' : 'Daily Tier'}
+                    {type === 'hours' ? tr('Hourly Tier', 'Palier horaire') : tr('Daily Tier', 'Palier journalier')}
                   </button>
                 ))}
               </div>
@@ -2019,7 +2221,7 @@ const DynamicPricingManagement: React.FC = () => {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Applies To
+                {tr('Applies To', "S'applique à")}
               </label>
               <div className="inline-flex rounded-2xl bg-slate-100 p-1">
                 {(['single', 'range'] as const).map((mode) => (
@@ -2040,7 +2242,7 @@ const DynamicPricingManagement: React.FC = () => {
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    {mode === 'single' ? 'Single duration' : 'Duration range'}
+                    {mode === 'single' ? tr('Single duration', 'Durée unique') : tr('Duration range', 'Plage de durée')}
                   </button>
                 ))}
               </div>
@@ -2050,13 +2252,13 @@ const DynamicPricingManagement: React.FC = () => {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    {tierFormData.duration_mode === 'single' ? 'Hour' : 'From Hour'}
+                    {tierFormData.duration_mode === 'single' ? tr('Hour', 'Heure') : tr('From Hour', 'À partir de l’heure')}
                   </label>
                   <input
                     type="number"
                     value={tierFormData.min_hours}
                     onChange={(e) => {
-                      const value = parseInt(e.target.value || '1', 10) || 1;
+                      const value = parseHourTierValue(e.target.value || '1');
                       setTierFormData((prev: any) => ({
                         ...prev,
                         min_hours: value,
@@ -2065,22 +2267,24 @@ const DynamicPricingManagement: React.FC = () => {
                     }}
                     className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                     required
-                    min="1"
+                    min="0.5"
+                    step="0.5"
                   />
                 </div>
 
                 {tierFormData.duration_mode === 'range' && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      To Hour
+                      {tr('To Hour', "Jusqu'à l'heure")}
                     </label>
                     <input
                       type="number"
                       value={tierFormData.max_hours}
-                      onChange={(e) => setTierFormData({ ...tierFormData, max_hours: parseInt(e.target.value || '1', 10) || 1 })}
+                      onChange={(e) => setTierFormData({ ...tierFormData, max_hours: parseHourTierValue(e.target.value || '1') })}
                       className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                       required
                       min={tierFormData.min_hours || 1}
+                      step="0.5"
                     />
                   </div>
                 )}
@@ -2089,7 +2293,7 @@ const DynamicPricingManagement: React.FC = () => {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    {tierFormData.duration_mode === 'single' ? 'Day' : 'From Day'}
+                    {tierFormData.duration_mode === 'single' ? tr('Day', 'Jour') : tr('From Day', 'À partir du jour')}
                   </label>
                   <input
                     type="number"
@@ -2111,7 +2315,7 @@ const DynamicPricingManagement: React.FC = () => {
                 {tierFormData.duration_mode === 'range' && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      To Day
+                      {tr('To Day', "Jusqu'au jour")}
                     </label>
                     <input
                       type="number"
@@ -2129,7 +2333,7 @@ const DynamicPricingManagement: React.FC = () => {
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Price Type
+                  {tr('Price Type', 'Type de prix')}
                 </label>
                 <select
                   value={tierFormData.duration_type === 'days' ? tierFormData.daily_calculation_method : tierFormData.calculation_method}
@@ -2142,21 +2346,24 @@ const DynamicPricingManagement: React.FC = () => {
                   }}
                   className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 >
-                  <option value="fixed">Fixed Price</option>
-                  <option value="percentage">Discount %</option>
-                  <option value="custom">Custom Formula</option>
+                  <option value="fixed">{tr('Fixed Price', 'Prix fixe')}</option>
+                  <option value="percentage">{tr('Discount %', 'Remise %')}</option>
+                  <option value="custom">{tr('Custom Formula', 'Formule personnalisée')}</option>
                 </select>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {tierFormData.duration_type === 'days' ? 'Daily Price (MAD)' : 'Price Amount (MAD)'}
+                  {tierFormData.duration_type === 'days' ? tr('Daily Price (MAD)', 'Prix journalier (MAD)') : tr('Price Amount (MAD)', 'Montant du prix (MAD)')}
                 </label>
                 <input
-                  type="number"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   value={tierFormData.duration_type === 'days' ? tierFormData.daily_price_amount : tierFormData.price_amount}
                   onChange={(e) => {
-                    const value = parseFloat(e.target.value || '0') || 0;
+                    const sanitizedValue = String(e.target.value || '').replace(/[^\d]/g, '');
+                    const value = parseInt(sanitizedValue || '0', 10) || 0;
                     setTierFormData((prev: any) => prev.duration_type === 'days'
                       ? { ...prev, daily_price_amount: value }
                       : { ...prev, price_amount: value }
@@ -2164,8 +2371,7 @@ const DynamicPricingManagement: React.FC = () => {
                   }}
                   className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                   required
-                  min="0"
-                  step="0.01"
+                  placeholder="0"
                 />
               </div>
             </div>
@@ -2174,7 +2380,7 @@ const DynamicPricingManagement: React.FC = () => {
               (tierFormData.duration_type === 'hours' && tierFormData.calculation_method === 'percentage')) && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Discount Percentage
+                  {tr('Discount Percentage', 'Pourcentage de remise')}
                 </label>
                 <input
                   type="number"
@@ -2201,7 +2407,7 @@ const DynamicPricingManagement: React.FC = () => {
                 onChange={(e) => setTierFormData({ ...tierFormData, is_active: e.target.checked })}
                 className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
-              <span className="text-sm font-medium text-gray-700">Active</span>
+              <span className="text-sm font-medium text-gray-700">{tr('Active', 'Actif')}</span>
             </label>
 
             <div className="pt-2">
@@ -2211,17 +2417,17 @@ const DynamicPricingManagement: React.FC = () => {
                 className="inline-flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-purple-700"
               >
                 <Calculator className="h-4 w-4" />
-                Validate Tier
+                {tr('Valider le palier', 'Valider le palier')}
               </button>
             </div>
           </div>
 
           <div className="space-y-4">
             <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600">Preview</p>
-              <p className="mt-3 text-base font-semibold text-slate-900">{selectedTierModel?.name || 'Choose a vehicle model'}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600">{tr('Aperçu', 'Aperçu')}</p>
+              <p className="mt-3 text-base font-semibold text-slate-900">{selectedTierModel ? getVehicleModelName(selectedTierModel.id) : tr('Choisissez un modèle de véhicule', 'Choisissez un modèle de véhicule')}</p>
               <p className="mt-2 text-sm text-slate-600">
-                Applies to{' '}
+                {tr('Applies to', "S'applique à")}{' '}
                 <span className="font-semibold text-slate-900">
                   {tierPreviewMin === tierPreviewMax
                     ? `${tierPreviewMin} ${tierPreviewUnit}${tierPreviewMin === 1 ? '' : 's'}`
@@ -2231,17 +2437,17 @@ const DynamicPricingManagement: React.FC = () => {
               <p className="mt-2 text-2xl font-bold text-blue-700">{formatCurrency(tierPreviewPrice)}</p>
               <p className="mt-2 text-sm text-slate-500">
                 {tierFormData.duration_type === 'days'
-                  ? (tierFormData.daily_calculation_method === 'fixed' ? 'Fixed Price' : tierFormData.daily_calculation_method === 'percentage' ? 'Discount %' : 'Custom Formula')
-                  : (tierFormData.calculation_method === 'fixed' ? 'Fixed Price' : tierFormData.calculation_method === 'percentage' ? 'Discount %' : 'Custom Formula')}
+                  ? (tierFormData.daily_calculation_method === 'fixed' ? tr('Fixed Price', 'Prix fixe') : tierFormData.daily_calculation_method === 'percentage' ? tr('Discount %', 'Remise %') : tr('Custom Formula', 'Formule personnalisée'))
+                  : (tierFormData.calculation_method === 'fixed' ? tr('Fixed Price', 'Prix fixe') : tierFormData.calculation_method === 'percentage' ? tr('Discount %', 'Remise %') : tr('Custom Formula', 'Formule personnalisée'))}
               </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-sm font-semibold text-slate-900">Quick guidance</p>
+              <p className="text-sm font-semibold text-slate-900">{tr('Quick guidance', 'Guide rapide')}</p>
               <ul className="mt-3 space-y-2 text-sm text-slate-600">
-                <li>Use <span className="font-semibold text-slate-900">Single duration</span> for exact rules like 1 hour or 2 days.</li>
-                <li>Use <span className="font-semibold text-slate-900">Duration range</span> only when one price should cover multiple durations.</li>
-                <li>Choose <span className="font-semibold text-slate-900">Fixed Price</span> for most setups to keep pricing simple.</li>
+                <li>{tr('Use ', 'Utilisez ')}<span className="font-semibold text-slate-900">{tr('Single duration', 'Durée unique')}</span>{tr(' for exact rules like 1 hour or 2 days.', ' pour les règles exactes comme 1 heure ou 2 jours.')}</li>
+                <li>{tr('Use ', 'Utilisez ')}<span className="font-semibold text-slate-900">{tr('Duration range', 'Plage de durée')}</span>{tr(' only when one price should cover multiple durations.', " uniquement lorsqu'un seul prix doit couvrir plusieurs durées.")}</li>
+                <li>{tr('Choose ', 'Choisissez ')}<span className="font-semibold text-slate-900">{tr('Fixed Price', 'Prix fixe')}</span>{tr(' for most setups to keep pricing simple.', ' dans la plupart des cas pour garder une tarification simple.')}</li>
               </ul>
             </div>
           </div>
@@ -2253,7 +2459,7 @@ const DynamicPricingManagement: React.FC = () => {
             onClick={resetTierForm}
             className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
           >
-            Cancel
+            {tr('Cancel', 'Annuler')}
           </button>
           <button
             type="submit"
@@ -2263,7 +2469,7 @@ const DynamicPricingManagement: React.FC = () => {
             {submitting ? (
               <Loader className="w-4 h-4 animate-spin mx-auto" />
             ) : (
-              editingTier ? 'Update' : 'Create'
+              editingTier ? tr('Update', 'Mettre à jour') : tr('Create', 'Créer')
             )}
           </button>
         </div>
@@ -2278,9 +2484,9 @@ const DynamicPricingManagement: React.FC = () => {
           <div className="border-b border-gray-200 p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">Extension Rules</h2>
+                <h2 className="text-lg font-semibold text-gray-900">{tr('Extension Rules', 'Règles de prolongation')}</h2>
                 <p className="mt-1 text-sm text-gray-600">
-                  Control the grace period, uplift, and approval path for each vehicle model’s extension pricing.
+                  {tr('Control the grace period, uplift, and approval path for each vehicle model’s extension pricing.', 'Contrôlez la période de grâce, le multiplicateur et le parcours d’approbation pour la tarification de prolongation de chaque modèle de véhicule.')}
                 </p>
               </div>
               <button
@@ -2288,7 +2494,7 @@ const DynamicPricingManagement: React.FC = () => {
                 className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
               >
                 <Plus className="h-4 w-4" />
-                Add Extension Rule
+                {tr('Add Extension Rule', 'Ajouter une règle de prolongation')}
               </button>
             </div>
           </div>
@@ -2296,8 +2502,8 @@ const DynamicPricingManagement: React.FC = () => {
           <div className="p-6">
             {groupedExtensionRules.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center">
-                <p className="text-sm font-semibold text-slate-900">No extension rules found</p>
-                <p className="mt-1 text-sm text-slate-500">Add an extension rule to control grace periods and extension pricing behavior.</p>
+                <p className="text-sm font-semibold text-slate-900">{tr('No extension rules found', 'Aucune règle de prolongation trouvée')}</p>
+                <p className="mt-1 text-sm text-slate-500">{tr('Add an extension rule to control grace periods and extension pricing behavior.', 'Ajoutez une règle de prolongation pour contrôler les périodes de grâce et le comportement tarifaire des prolongations.')}</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -2307,7 +2513,7 @@ const DynamicPricingManagement: React.FC = () => {
                       <div>
                         <h3 className="text-base font-semibold text-slate-900">{model.name}</h3>
                         <p className="mt-1 text-sm text-slate-500">
-                          {rules.length} extension rule{rules.length === 1 ? '' : 's'} for this model
+                          {rules.length} {tr('extension rule for this model', 'règle de prolongation pour ce modèle')}{rules.length === 1 ? '' : 's'}
                         </p>
                       </div>
                       <span className="inline-flex self-start rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600">
@@ -2328,27 +2534,27 @@ const DynamicPricingManagement: React.FC = () => {
                                       ? 'border-green-200 bg-green-50 text-green-700'
                                       : 'border-amber-200 bg-amber-50 text-amber-700'
                                   }`}>
-                                    {rule.auto_adjust_enabled ? 'Auto adjust' : 'Manual pricing'}
+                                    {rule.auto_adjust_enabled ? tr('Auto adjust', 'Ajustement automatique') : tr('Manual pricing', 'Tarification manuelle')}
                                   </span>
                                   <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                                    Grace {rule.grace_period_minutes} min
+                                    {tr('Grace', 'Grâce')} {rule.grace_period_minutes} min
                                   </span>
                                 </div>
-                                <p className="mt-3 text-sm font-medium text-slate-500">Base rate</p>
-                                <p className="mt-1 text-base font-semibold text-slate-900">{basePrice?.vehicle_model?.name || 'Unknown base price'}</p>
+                                <p className="mt-3 text-sm font-medium text-slate-500">{tr('Base rate', 'Tarif de base')}</p>
+                                <p className="mt-1 text-base font-semibold text-slate-900">{basePrice?.vehicle_model?.name || tr('Unknown base price', 'Tarif de base inconnu')}</p>
                               </div>
                               <div className="flex items-center gap-2">
                                 <button
                                   onClick={() => handleEditExtension(rule)}
                                   className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-blue-600 transition hover:bg-blue-50"
-                                  title="Edit extension rule"
+                                  title={tr('Edit extension rule', 'Modifier la règle de prolongation')}
                                 >
                                   <Edit className="h-4 w-4" />
                                 </button>
                                 <button
                                   onClick={() => handleDeleteExtension(rule.id)}
                                   className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-red-200 text-red-600 transition hover:bg-red-50"
-                                  title="Delete extension rule"
+                                  title={tr('Delete extension rule', 'Supprimer la règle de prolongation')}
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </button>
@@ -2357,17 +2563,17 @@ const DynamicPricingManagement: React.FC = () => {
 
                             <div className="mt-4 grid gap-3 sm:grid-cols-3">
                               <div className="rounded-xl bg-slate-50 px-3 py-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Grace period</p>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Grace period', 'Période de grâce')}</p>
                                 <p className="mt-2 text-base font-bold text-slate-900">{rule.grace_period_minutes} min</p>
                               </div>
                               <div className="rounded-xl bg-slate-50 px-3 py-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Multiplier</p>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Multiplier', 'Multiplicateur')}</p>
                                 <p className="mt-2 text-base font-bold text-slate-900">{rule.extension_price_multiplier}x</p>
                               </div>
                               <div className="rounded-xl bg-slate-50 px-3 py-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Approval path</p>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Approval path', "Parcours d'approbation")}</p>
                                 <p className="mt-2 text-base font-bold text-slate-900">
-                                  {rule.requires_manual_extension ? 'Manual review' : 'Automatic'}
+                                  {rule.requires_manual_extension ? tr('Manual review', 'Revue manuelle') : tr('Automatic', 'Automatique')}
                                 </p>
                               </div>
                             </div>
@@ -2378,14 +2584,14 @@ const DynamicPricingManagement: React.FC = () => {
                                   ? 'border-green-200 bg-green-50 text-green-700'
                                   : 'border-slate-200 bg-slate-50 text-slate-600'
                               }`}>
-                                {rule.auto_adjust_enabled ? 'Price adjusts automatically' : 'Price stays manual'}
+                                {rule.auto_adjust_enabled ? tr('Price adjusts automatically', 'Le prix se règle automatiquement') : tr('Price stays manual', 'Le prix reste manuel')}
                               </span>
                               <span className={`inline-flex rounded-full border px-2.5 py-1 font-semibold ${
                                 rule.requires_manual_extension
                                   ? 'border-amber-200 bg-amber-50 text-amber-700'
                                   : 'border-blue-200 bg-blue-50 text-blue-700'
                               }`}>
-                                {rule.requires_manual_extension ? 'Requires staff approval' : 'Customer can continue directly'}
+                                {rule.requires_manual_extension ? tr('Requires staff approval', "Nécessite l'approbation du personnel") : tr('Customer can continue directly', 'Le client peut continuer directement')}
                               </span>
                             </div>
                           </div>
@@ -2406,7 +2612,7 @@ const DynamicPricingManagement: React.FC = () => {
           <div className="w-full max-w-2xl rounded-3xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-200 p-6">
               <h3 className="text-lg font-semibold text-gray-900">
-                {editingExtension ? 'Edit Extension Rule' : 'Add Extension Rule'}
+                {editingExtension ? tr('Edit Extension Rule', 'Modifier la règle de prolongation') : tr('Add Extension Rule', 'Ajouter une règle de prolongation')}
               </h3>
               <button
                 onClick={resetExtensionForm}
@@ -2418,9 +2624,9 @@ const DynamicPricingManagement: React.FC = () => {
 
             <form onSubmit={handleSubmitExtension} className="space-y-6 p-6">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Guided Extension Rule Setup</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Guided Extension Rule Setup', 'Configuration guidée de la règle de prolongation')}</p>
                 <p className="mt-2 text-sm text-slate-600">
-                  Choose the base vehicle price, define how much grace to allow, then decide whether the extension should price itself or wait for staff approval.
+                  {tr('Choose the base vehicle price, define how much grace to allow, then decide whether the extension should price itself or wait for staff approval.', "Choisissez le tarif de base du véhicule, définissez la période de grâce autorisée, puis décidez si la prolongation doit se tarifer automatiquement ou attendre l'approbation du personnel.")}
                 </p>
               </div>
 
@@ -2428,7 +2634,7 @@ const DynamicPricingManagement: React.FC = () => {
                 <div className="space-y-6">
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">
-                      Base Price
+                      {tr('Base Price', 'Tarif de base')}
                     </label>
                     <select
                       value={extensionFormData.base_price_id}
@@ -2436,7 +2642,7 @@ const DynamicPricingManagement: React.FC = () => {
                       className="w-full rounded-xl border border-gray-300 px-3 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                       required
                     >
-                      <option value="">Select a base price</option>
+                      <option value="">{tr('Select a base price', 'Sélectionner un tarif de base')}</option>
                       {basePrices.map((price) => (
                         <option key={price.id} value={price.id}>
                           {price.vehicle_model?.name}
@@ -2448,7 +2654,7 @@ const DynamicPricingManagement: React.FC = () => {
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div>
                       <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Grace Period (minutes)
+                        {tr('Grace Period (minutes)', 'Période de grâce (minutes)')}
                       </label>
                       <input
                         type="number"
@@ -2462,7 +2668,7 @@ const DynamicPricingManagement: React.FC = () => {
 
                     <div>
                       <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Price Multiplier
+                        {tr('Price Multiplier', 'Multiplicateur de prix')}
                       </label>
                       <input
                         type="number"
@@ -2484,7 +2690,7 @@ const DynamicPricingManagement: React.FC = () => {
                         onChange={(e) => setExtensionFormData({ ...extensionFormData, auto_adjust_enabled: e.target.checked })}
                         className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
-                      <span className="text-sm font-medium text-gray-700">Auto adjust pricing</span>
+                      <span className="text-sm font-medium text-gray-700">{tr('Auto adjust pricing', 'Ajuster automatiquement la tarification')}</span>
                     </label>
 
                     <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -2494,45 +2700,45 @@ const DynamicPricingManagement: React.FC = () => {
                         onChange={(e) => setExtensionFormData({ ...extensionFormData, requires_manual_extension: e.target.checked })}
                         className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
-                      <span className="text-sm font-medium text-gray-700">Requires staff approval</span>
+                      <span className="text-sm font-medium text-gray-700">{tr("Nécessite l'approbation du personnel", "Nécessite l'approbation du personnel")}</span>
                     </label>
                   </div>
                 </div>
 
                 <div className="space-y-4">
                   <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600">Preview</p>
-                    <p className="mt-3 text-base font-semibold text-slate-900">{selectedExtensionVehicle?.name || 'Choose a vehicle model'}</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600">{tr('Aperçu', 'Aperçu')}</p>
+                    <p className="mt-3 text-base font-semibold text-slate-900">{selectedExtensionVehicle?.name || tr('Choisissez un modèle de véhicule', 'Choisissez un modèle de véhicule')}</p>
                     <div className="mt-4 space-y-3 text-sm">
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-500">Grace period</span>
+                        <span className="text-slate-500">{tr('Période de grâce', 'Période de grâce')}</span>
                         <span className="font-semibold text-slate-900">{extensionFormData.grace_period_minutes || 0} min</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-500">Multiplier</span>
+                        <span className="text-slate-500">{tr('Multiplicateur', 'Multiplicateur')}</span>
                         <span className="font-semibold text-slate-900">{extensionFormData.extension_price_multiplier || 0}x</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-500">Pricing</span>
+                        <span className="text-slate-500">{tr('Tarification', 'Tarification')}</span>
                         <span className="font-semibold text-slate-900">
-                          {extensionFormData.auto_adjust_enabled ? 'Automatic' : 'Manual'}
+                          {extensionFormData.auto_adjust_enabled ? tr('Automatique', 'Automatique') : tr('Manuelle', 'Manuelle')}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-500">Approval</span>
+                        <span className="text-slate-500">{tr('Approval', 'Approbation')}</span>
                         <span className="font-semibold text-slate-900">
-                          {extensionFormData.requires_manual_extension ? 'Staff approval' : 'Direct'}
+                          {extensionFormData.requires_manual_extension ? tr('Staff approval', "Approbation du personnel") : tr('Direct', 'Direct')}
                         </span>
                       </div>
                     </div>
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-sm font-semibold text-slate-900">Quick guidance</p>
+                    <p className="text-sm font-semibold text-slate-900">{tr('Quick guidance', 'Guide rapide')}</p>
                     <ul className="mt-3 space-y-2 text-sm text-slate-600">
-                      <li>Use a short grace period to avoid charging customers for a few extra minutes.</li>
-                      <li>A multiplier above <span className="font-semibold text-slate-900">1.0x</span> increases the extension price.</li>
-                      <li>Turn on staff approval only when you want extensions reviewed before the rental can continue.</li>
+                      <li>{tr('Use a short grace period to avoid charging customers for a few extra minutes.', 'Utilisez une courte période de grâce pour éviter de facturer les clients pour quelques minutes supplémentaires.')}</li>
+                      <li>{tr('A multiplier above ', 'Un multiplicateur supérieur à ')}<span className="font-semibold text-slate-900">1.0x</span>{tr(' increases the extension price.', ' augmente le prix de prolongation.')}</li>
+                      <li>{tr('Turn on staff approval only when you want extensions reviewed before the rental can continue.', "Activez l'approbation du personnel uniquement si vous voulez qu'une prolongation soit revue avant que la location ne continue.")}</li>
                     </ul>
                   </div>
                 </div>
@@ -2544,7 +2750,7 @@ const DynamicPricingManagement: React.FC = () => {
                   onClick={resetExtensionForm}
                   className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
                 >
-                  Cancel
+            {tr('Cancel', 'Annuler')}
                 </button>
                 <button
                   type="submit"
@@ -2554,7 +2760,7 @@ const DynamicPricingManagement: React.FC = () => {
                   {submitting ? (
                     <Loader className="w-4 h-4 animate-spin mx-auto" />
                   ) : (
-                    editingExtension ? 'Update' : 'Create'
+              editingExtension ? tr('Update', 'Mettre à jour') : tr('Create', 'Créer')
                   )}
                 </button>
               </div>
@@ -2567,8 +2773,8 @@ const DynamicPricingManagement: React.FC = () => {
       {activeTab === 'transport' && (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200">
           <div className="p-6 border-b border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-900">Transport Fees</h2>
-            <p className="mt-1 text-sm text-gray-600">Set optional pickup and dropoff charges that are added to the rental total.</p>
+            <h2 className="text-lg font-semibold text-gray-900">{tr('Transport Fees', 'Frais de transport')}</h2>
+            <p className="mt-1 text-sm text-gray-600">{tr('Set optional pickup and dropoff charges that are added to the rental total.', 'Définissez des frais optionnels de prise en charge et de retour ajoutés au total de location.')}</p>
           </div>
 
           <form onSubmit={handleSaveTransportFees} className="p-6 space-y-6">
@@ -2595,7 +2801,7 @@ const DynamicPricingManagement: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Pickup Fee (MAD)
+                  {tr('Pickup Fee (MAD)', 'Frais de prise en charge (MAD)')}
                 </label>
                 <input
                   type="number"
@@ -2609,7 +2815,7 @@ const DynamicPricingManagement: React.FC = () => {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Dropoff Fee (MAD)
+                  {tr('Dropoff Fee (MAD)', 'Frais de retour (MAD)')}
                 </label>
                 <input
                   type="number"
@@ -2628,7 +2834,7 @@ const DynamicPricingManagement: React.FC = () => {
                 onClick={resetTransportFees}
                 className="px-6 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
               >
-                Reset
+                {tr('Reset', 'Réinitialiser')}
               </button>
               <button
                 type="submit"
@@ -2638,12 +2844,12 @@ const DynamicPricingManagement: React.FC = () => {
                 {savingTransportFees ? (
                   <>
                     <Loader className="w-4 h-4 animate-spin" />
-                    Saving...
+                    Enregistrement...
                   </>
                 ) : (
                   <>
                     <Save className="w-4 h-4" />
-                    Save Changes
+                    {tr('Save Changes', 'Enregistrer les modifications')}
                   </>
                 )}
               </button>
@@ -2671,9 +2877,9 @@ const DynamicPricingManagement: React.FC = () => {
           <div className="border-b border-gray-200 p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">Damage Deposits</h2>
+                <h2 className="text-lg font-semibold text-gray-900">{tr('Damage Deposits', 'Dépôts de garantie')}</h2>
                 <p className="mt-1 text-sm text-gray-600">
-                  Keep deposit presets clear by vehicle model, with up to three quick choices for the rental team.
+                  {tr('Keep deposit presets clear by vehicle model, with up to three quick choices for the rental team.', "Gardez des presets de dépôt clairs par modèle de véhicule, avec jusqu'à trois choix rapides pour l'équipe de location.")}
                 </p>
               </div>
               <button
@@ -2684,12 +2890,12 @@ const DynamicPricingManagement: React.FC = () => {
                 {savingDepositSettings ? (
                   <>
                     <Loader className="h-4 w-4 animate-spin" />
-                    Saving...
+                    Enregistrement...
                   </>
                 ) : (
                   <>
                     <Save className="h-4 w-4" />
-                    Save Deposit Settings
+                    {tr('Save Deposit Settings', 'Enregistrer les paramètres de dépôt')}
                   </>
                 )}
               </button>
@@ -2701,10 +2907,10 @@ const DynamicPricingManagement: React.FC = () => {
                 onChange={(e) => setSelectedVehicleForDeposits(e.target.value)}
                 className="rounded-xl border border-gray-300 px-4 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               >
-                <option value="">All Vehicle Models</option>
+                <option value="">{tr('All Vehicle Models', 'Tous les modèles de véhicules')}</option>
                 {vehicleModels.map((model) => (
                   <option key={model.id} value={model.id}>
-                    {model.name}
+                    {[model.name, model.model].filter(Boolean).join(' ').trim() || model.name}
                   </option>
                 ))}
               </select>
@@ -2717,8 +2923,8 @@ const DynamicPricingManagement: React.FC = () => {
                   className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                 />
                 <div>
-                  <span className="text-sm font-medium text-slate-900">Allow custom deposit entry</span>
-                  <p className="mt-0.5 text-xs text-slate-500">Lets staff type a manual deposit when none of the presets fit.</p>
+                  <span className="text-sm font-medium text-slate-900">{tr('Allow custom deposit entry', 'Autoriser la saisie manuelle du dépôt')}</span>
+                  <p className="mt-0.5 text-xs text-slate-500">{tr('Lets staff type a manual deposit when none of the presets fit.', "Permet à l'équipe de saisir un dépôt manuel lorsqu'aucun preset ne convient.")}</p>
                 </div>
               </label>
             </div>
@@ -2747,9 +2953,11 @@ const DynamicPricingManagement: React.FC = () => {
               <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                 <div className="flex flex-col gap-4 border-b border-slate-200 pb-4 lg:flex-row lg:items-start lg:justify-between">
                   <div>
-                    <h3 className="text-base font-semibold text-slate-900">{selectedDepositModel?.name || getVehicleModelName(selectedVehicleForDeposits)}</h3>
+                    <h3 className="text-base font-semibold text-slate-900">
+                      {[selectedDepositModel?.name, selectedDepositModel?.model].filter(Boolean).join(' ').trim() || getVehicleModelName(selectedVehicleForDeposits)}
+                    </h3>
                     <p className="mt-1 text-sm text-slate-500">
-                      Configure up to three clear deposit choices for this model. Keep the labels short so the rental team can choose quickly.
+                      {tr('Configure up to three clear deposit choices for this model. Keep the labels short so the rental team can choose quickly.', "Configurez jusqu'à trois choix de dépôt clairs pour ce modèle. Gardez des libellés courts pour que l'équipe de location choisisse rapidement.")}
                     </p>
                   </div>
                   <button
@@ -2758,14 +2966,14 @@ const DynamicPricingManagement: React.FC = () => {
                     className="inline-flex items-center gap-2 self-start rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Plus className="h-4 w-4" />
-                    Add Preset
+                    {tr('Add Preset', 'Ajouter un preset')}
                   </button>
                 </div>
 
                 {getCurrentVehiclePresets().length === 0 ? (
                   <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-10 text-center">
-                    <p className="text-sm font-semibold text-slate-900">No deposit presets for this model yet</p>
-                    <p className="mt-1 text-sm text-slate-500">Add your first preset to give the rental team a quick deposit choice.</p>
+                    <p className="text-sm font-semibold text-slate-900">{tr('No deposit presets for this model yet', 'Aucun preset de dépôt pour ce modèle pour le moment')}</p>
+                    <p className="mt-1 text-sm text-slate-500">{tr('Add your first preset to give the rental team a quick deposit choice.', "Ajoutez votre premier preset pour offrir à l'équipe de location un choix rapide de dépôt.")}</p>
                   </div>
                 ) : (
                   <div className="mt-4 grid gap-4 xl:grid-cols-3">
@@ -2773,12 +2981,12 @@ const DynamicPricingManagement: React.FC = () => {
                       <div key={index} className="rounded-2xl border border-white bg-white p-4 shadow-sm">
                         <div className="flex items-center justify-between gap-3">
                           <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                            Preset {index + 1}
+                            {tr('Preset', 'Preset')} {index + 1}
                           </span>
                           <button
                             onClick={() => handleDeletePresetForVehicle(index)}
                             className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-red-200 text-red-600 transition hover:bg-red-50"
-                            title="Delete preset"
+                            title={tr('Delete preset', 'Supprimer le preset')}
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
@@ -2786,18 +2994,18 @@ const DynamicPricingManagement: React.FC = () => {
 
                         <div className="mt-4 space-y-4">
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-slate-700">Label</label>
+                            <label className="mb-1 block text-sm font-medium text-slate-700">{tr('Label', 'Libellé')}</label>
                             <input
                               type="text"
                               value={preset.label}
                               onChange={(e) => handleUpdatePresetForVehicle(index, 'label', e.target.value)}
                               className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                              placeholder="e.g. Standard"
+                              placeholder={tr('e.g. Standard', 'ex. Standard')}
                             />
                           </div>
 
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-slate-700">Amount (MAD)</label>
+                            <label className="mb-1 block text-sm font-medium text-slate-700">{tr('Amount (MAD)', 'Montant (MAD)')}</label>
                             <input
                               type="number"
                               value={preset.amount}
@@ -2815,7 +3023,18 @@ const DynamicPricingManagement: React.FC = () => {
                               onChange={(e) => handleUpdatePresetForVehicle(index, 'enabled', e.target.checked)}
                               className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                             />
-                            <span className="text-sm font-medium text-slate-700">Preset enabled</span>
+                            <span className="text-sm font-medium text-slate-700">{tr('Preset enabled', 'Preset activé')}</span>
+                          </label>
+
+                          <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                            <input
+                              type="radio"
+                              name={`default-deposit-${selectedVehicleForDeposits}`}
+                              checked={Boolean(preset.isDefault)}
+                              onChange={(e) => handleUpdatePresetForVehicle(index, 'isDefault', e.target.checked)}
+                              className="h-4 w-4 border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span className="text-sm font-medium text-slate-700">{tr('Default preset', 'Preset par défaut')}</span>
                           </label>
                         </div>
                       </div>
@@ -2828,53 +3047,51 @@ const DynamicPricingManagement: React.FC = () => {
             <div>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h3 className="text-base font-semibold text-slate-900">Deposit Overview</h3>
-                  <p className="mt-1 text-sm text-slate-500">Review every model at a glance and jump back into the editor when something needs changing.</p>
+                  <h3 className="text-base font-semibold text-slate-900">{tr('Deposit Overview', "Vue d'ensemble des dépôts")}</h3>
+                  <p className="mt-1 text-sm text-slate-500">{tr('Review every model at a glance and jump back into the editor when something needs changing.', "Passez en revue chaque modèle d'un coup d'œil et revenez à l'éditeur lorsqu'une modification est nécessaire.")}</p>
                 </div>
               </div>
 
               <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                {visibleDepositOverview.map(({ model, presets, enabledPresets, enabledCount, totalAmount }) => (
+                {visibleDepositOverview.map(({ model, presets, enabledPresets, enabledCount, defaultPreset }) => (
                   <div key={model.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                     <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <h4 className="text-base font-semibold text-slate-900">{model.name}</h4>
+                          <h4 className="text-base font-semibold text-slate-900">
+                            {[model.name, model.model].filter(Boolean).join(' ').trim() || model.name}
+                          </h4>
                           <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${enabledCount > 0 ? 'border-green-200 bg-green-50 text-green-700' : 'border-slate-200 bg-white text-slate-600'}`}>
-                            {enabledCount > 0 ? 'Ready for rentals' : 'No active presets'}
+                            {enabledCount > 0 ? tr('Ready for rentals', 'Prêt pour les locations') : tr('No active presets', 'Aucun preset actif')}
                           </span>
                         </div>
                         <p className="mt-1 text-sm text-slate-500">
-                          {presets.length} preset{presets.length === 1 ? '' : 's'} configured
+                          {presets.length} {tr('preset configured', 'preset configuré')}{presets.length === 1 ? '' : 's'}
                         </p>
                       </div>
                       <button
                         onClick={() => setSelectedVehicleForDeposits(model.id)}
                         className="inline-flex self-start rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50"
                       >
-                        Configure
+                        {tr('Configure', 'Configurer')}
                       </button>
                     </div>
 
-                    <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
                       <div className="rounded-xl bg-white px-3 py-3">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Enabled presets</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Enabled presets', 'Presets activés')}</p>
                         <p className="mt-2 text-base font-bold text-slate-900">{enabledCount}</p>
                       </div>
                       <div className="rounded-xl bg-white px-3 py-3">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Preset total</p>
-                        <p className="mt-2 text-base font-bold text-slate-900">{formatCurrency(totalAmount)}</p>
-                      </div>
-                      <div className="rounded-xl bg-white px-3 py-3">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Custom entry</p>
-                        <p className="mt-2 text-base font-bold text-slate-900">{depositSettings.allowCustomDeposit ? 'Allowed' : 'Locked'}</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Custom entry', 'Saisie personnalisée')}</p>
+                        <p className="mt-2 text-base font-bold text-slate-900">{depositSettings.allowCustomDeposit ? tr('Allowed', 'Autorisée') : tr('Locked', 'Verrouillée')}</p>
                       </div>
                     </div>
 
                     <div className="mt-4 flex flex-wrap gap-2">
                       {presets.length === 0 ? (
                         <span className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-500">
-                          No presets yet
+                          {tr('No presets yet', 'Aucun preset pour le moment')}
                         </span>
                       ) : (
                         presets.map((preset, index) => (
@@ -2886,11 +3103,20 @@ const DynamicPricingManagement: React.FC = () => {
                                 : 'border-slate-200 bg-white text-slate-500'
                             }`}
                           >
-                            {preset.label}: {formatCurrency(preset.amount || 0)}
+                            {preset.label}: {formatCurrency(preset.amount || 0)}{preset.isDefault ? ` • ${tr('Default', 'Par défaut')}` : ''}
                           </span>
                         ))
                       )}
                     </div>
+
+                    {defaultPreset ? (
+                      <div className="mt-4 rounded-xl bg-white px-3 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Default damage deposit', 'Dépôt de garantie par défaut')}</p>
+                        <p className="mt-2 text-base font-bold text-slate-900">
+                          {defaultPreset.label}: {formatCurrency(defaultPreset.amount || 0)}
+                        </p>
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>

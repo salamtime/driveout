@@ -1,5 +1,8 @@
 import { supabase } from '../lib/supabase.js';
 import { geminiVisionOCR } from './ocr/optimizedGeminiVisionOcr.js';
+import { buildApiUrl, GEMINI_PROXY_PATH } from './apiUrl.js';
+import { uploadFile } from '../utils/storageUpload.js';
+import { optimizeFileForUpload } from '../utils/storageUpload.js';
 
 /**
  * EnhancedUnifiedCustomerService - Complete customer management with ID scanning integration
@@ -14,6 +17,235 @@ import { geminiVisionOCR } from './ocr/optimizedGeminiVisionOcr.js';
  * - FORM AUTO-POPULATION FIX: Returns extractedData in correct format for form population
  */
 class EnhancedUnifiedCustomerService {
+  constructor() {
+    this.ocrProxyWarmPromise = null;
+    this.ocrProxyWarmAt = 0;
+    this.geminiProxyUrl = buildApiUrl(GEMINI_PROXY_PATH);
+  }
+
+  buildDirectOcrPrompt(mode = 'fast') {
+    if (mode === 'fast') {
+      return `Extract the essential rental check-in fields from this ID document. Return ONLY this JSON object, with null for missing values:
+{
+  "fullName": "full name",
+  "dateOfBirth": "date of birth (YYYY-MM-DD)",
+  "idNumber": "ID or license number",
+  "nationality": "nationality",
+  "rawText": "all extracted text"
+}`;
+    }
+
+    return `Extract all text and information from this ID document. Return a JSON object with these fields:
+{
+  "fullName": "full name",
+  "dateOfBirth": "date of birth (YYYY-MM-DD)",
+  "idNumber": "ID/license number",
+  "address": "full address",
+  "expiryDate": "expiry date (YYYY-MM-DD)",
+  "issueDate": "issue date (YYYY-MM-DD)",
+  "nationality": "nationality",
+  "gender": "gender",
+  "rawText": "all extracted text"
+}`;
+  }
+
+  convertFileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === 'string' ? reader.result : '';
+        const base64 = result.split(',')[1] || '';
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async requestDirectGeminiOCR(file, prompt) {
+    const base64Image = await this.convertFileToBase64(file);
+    const mimeType = file?.type || 'image/jpeg';
+
+    let ocrData = {};
+    let ocrUnavailable = false;
+    let ocrErrorMessage = null;
+
+    try {
+      const geminiResponse = await fetch(this.geminiProxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'generateContent',
+          model: 'gemini-2.5-flash',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: prompt },
+                {
+                  inlineData: {
+                    mimeType,
+                    data: base64Image
+                  }
+                }
+              ]
+            }
+          ],
+          generationConfig: {
+            maxOutputTokens: 8192,
+            temperature: 0.1
+          }
+        })
+      });
+
+      if (!geminiResponse.ok) {
+        const errorText = await geminiResponse.text();
+        throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorText}`);
+      }
+
+      const geminiResult = await geminiResponse.json();
+      const ocrText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+      try {
+        const jsonMatch = ocrText.match(/```json\s*([\s\S]*?)\s*```/) || ocrText.match(/```\s*([\s\S]*?)\s*```/);
+        if (jsonMatch) {
+          ocrData = JSON.parse(jsonMatch[1]);
+        } else {
+          ocrData = JSON.parse(ocrText);
+        }
+      } catch (_parseError) {
+        ocrData = { rawText: ocrText };
+      }
+    } catch (ocrError) {
+      ocrUnavailable = true;
+      ocrErrorMessage = ocrError.message || 'OCR unavailable';
+    }
+
+    return {
+      ocrData,
+      ocrUnavailable,
+      ocrErrorMessage,
+    };
+  }
+
+  async prewarmOcrProxy() {
+    const warmTtlMs = 60 * 1000;
+    if (this.ocrProxyWarmPromise) {
+      return this.ocrProxyWarmPromise;
+    }
+
+    if (Date.now() - this.ocrProxyWarmAt < warmTtlMs) {
+      return true;
+    }
+
+    this.ocrProxyWarmPromise = fetch(this.geminiProxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'listModels',
+      }),
+    })
+      .then(() => {
+        this.ocrProxyWarmAt = Date.now();
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        this.ocrProxyWarmPromise = null;
+      });
+
+    return this.ocrProxyWarmPromise;
+  }
+
+  uploadOcrSourceImage(file, scanId, folder) {
+    const safeFileName = `${scanId || Date.now()}_${String(file.name || 'document.jpg').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    return uploadFile(file, {
+      bucket: 'rental-documents',
+      pathPrefix: folder,
+      fileName: safeFileName,
+      optimizationProfile: 'document',
+    });
+  }
+
+  async prepareOcrFile(file) {
+    const optimized = await optimizeFileForUpload(file, {
+      bucket: 'rental-documents',
+      optimizationProfile: 'document',
+    });
+
+    return optimized?.file || file;
+  }
+
+  async uploadPreparedOcrSourceImage(file, scanId, folder) {
+    const cleanName = String(file?.name || 'document.webp').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const filePath = `${folder}/${scanId || Date.now()}_${cleanName}`;
+
+    const { data, error } = await supabase.storage
+      .from('rental-documents')
+      .upload(filePath, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: file?.type || 'application/octet-stream',
+      });
+
+    if (error) {
+      return {
+        success: false,
+        error: error.message || 'Upload failed',
+      };
+    }
+
+    const {
+      data: { publicUrl },
+    } = supabase.storage.from('rental-documents').getPublicUrl(data.path);
+
+    return {
+      success: true,
+      url: publicUrl,
+      path: data.path,
+      optimized: true,
+    };
+  }
+
+  async runSharedOcrPipeline(file, scanId, options = {}) {
+    const {
+      folder = 'customers_ocr',
+      successMessage = 'OCR completed successfully',
+      unavailableMessage = 'Image uploaded successfully. OCR unavailable, continue manually.',
+      logPrefix = '[OCR]',
+      includePublicUrl = false,
+      ocrMode = 'fast',
+    } = options;
+
+    const prompt = this.buildDirectOcrPrompt(ocrMode);
+    const preparedFile = await this.prepareOcrFile(file);
+    const [uploadResult, ocrResult] = await Promise.all([
+      this.uploadPreparedOcrSourceImage(preparedFile, scanId, folder),
+      this.requestDirectGeminiOCR(preparedFile, prompt),
+    ]);
+
+    if (!uploadResult.success) {
+      console.error('❌ [UPLOAD] Failed:', uploadResult.error);
+      throw new Error(`Upload failed: ${uploadResult.error}`);
+    }
+
+    const publicUrl = uploadResult.url;
+    const { ocrData, ocrUnavailable, ocrErrorMessage } = ocrResult;
+
+    return {
+      success: true,
+      data: ocrData,
+      extractedData: ocrData,
+      imageUrl: publicUrl,
+      ...(includePublicUrl ? { publicUrl } : {}),
+      storagePath: uploadResult.path,
+      scanId,
+      ocrUnavailable,
+      ocrError: ocrErrorMessage,
+      message: ocrUnavailable ? unavailableMessage : successMessage,
+    };
+  }
+
   async uploadDocumentOnly(file, options = {}) {
     try {
       if (!file) {
@@ -23,28 +255,22 @@ class EnhancedUnifiedCustomerService {
       const folder = String(options.folder || 'manual_id_uploads').replace(/[^a-zA-Z0-9/_-]/g, '_');
       const prefix = String(options.prefix || `doc_${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '_');
       const safeFileName = String(file.name || 'document.jpg').replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storagePath = `${folder}/${prefix}_${Date.now()}_${safeFileName}`;
+      const uploadResult = await uploadFile(file, {
+        bucket: 'rental-documents',
+        pathPrefix: folder,
+        fileName: `${prefix}_${Date.now()}_${safeFileName}`,
+        optimizationProfile: 'document',
+      });
 
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('rental-documents')
-        .upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
-
-      if (uploadError) {
-        throw new Error(`Upload failed: ${uploadError.message}`);
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || 'Upload failed');
       }
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('rental-documents')
-        .getPublicUrl(storagePath);
 
       return {
         success: true,
-        storagePath: uploadData.path,
-        publicUrl,
-        imageUrl: publicUrl,
+        storagePath: uploadResult.path,
+        publicUrl: uploadResult.url,
+        imageUrl: uploadResult.url,
         fileName: file.name,
       };
     } catch (error) {
@@ -395,24 +621,22 @@ class EnhancedUnifiedCustomerService {
       console.log('📁 File path:', filePath);
 
       // Step 3: Upload image to storage
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('id_scans')
-        .upload(filePath, imageFile, {
-          cacheControl: '3600',
-          upsert: false
-        });
+      const uploadResult = await uploadFile(imageFile, {
+        bucket: 'id_scans',
+        pathPrefix: String(customerId),
+        fileName,
+        optimizationProfile: 'document',
+      });
 
-      if (uploadError) {
-        console.error('❌ FORM AUTO-POPULATION: Image upload failed:', uploadError);
-        throw new Error(`Failed to upload image: ${uploadError.message}`);
+      if (!uploadResult.success) {
+        console.error('❌ FORM AUTO-POPULATION: Image upload failed:', uploadResult.error);
+        throw new Error(`Failed to upload image: ${uploadResult.error}`);
       }
 
-      console.log('✅ FORM AUTO-POPULATION: Image uploaded successfully:', uploadData.path);
+      console.log('✅ FORM AUTO-POPULATION: Image uploaded successfully:', uploadResult.path);
 
       // Step 4: Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('id_scans')
-        .getPublicUrl(filePath);
+      const publicUrl = uploadResult.url;
 
       console.log('🖼️ FORM AUTO-POPULATION: Generated public URL:', publicUrl);
 
@@ -477,7 +701,7 @@ class EnhancedUnifiedCustomerService {
 
           const scanResult = {
             file_public_url: publicUrl,
-            file_path: filePath,
+            file_path: uploadResult.path,
             success: true
           };
 
@@ -1054,19 +1278,10 @@ class EnhancedUnifiedCustomerService {
    */
   // Primary driver/customer OCR processing (saves to customers table)
 
-  async processCustomerID(file) {
-    console.log('👥 [PRIMARY DRIVER API] processCustomerID called');
-    console.log('👥 File:', file?.name, 'Size:', file?.size);
-    
+  async processCustomerID(file, options = {}) {
     try {
-      // Generate a unique scan ID for tracking
       const scanId = `sd_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      console.log('👥 Generated scan ID:', scanId);
-      
-      // Call the core OCR pipeline
-      const result = await this.processCustomerOCR(file, scanId);
-      
-      console.log('✅ [PRIMARY DRIVER API] Pipeline completed successfully');
+      const result = await this.processCustomerOCR(file, scanId, options);
       return result;
       
     } catch (error) {
@@ -1079,151 +1294,15 @@ class EnhancedUnifiedCustomerService {
     }
   }
 
-  async processCustomerOCR(file, scanId = null) {
-    console.log('👥 [PRIMARY DRIVER OCR] Starting COMPLETELY SEPARATE OCR pipeline');
-    console.log('👥 This pipeline will NEVER create customer records');
-    console.log('👥 File:', file?.name, 'Scan ID:', scanId);
-    
+  async processCustomerOCR(file, scanId = null, options = {}) {
     try {
-      // Step 1: Upload to SEPARATE storage folder
-      const storagePath = `customers_ocr/${scanId || Date.now()}_${file.name}`;
-      console.log('👥 [UPLOAD] Uploading to separate folder:', storagePath);
-      
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('rental-documents')
-        .upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
-
-      if (uploadError) {
-        console.error('❌ [UPLOAD] Failed:', uploadError);
-        throw new Error(`Upload failed: ${uploadError.message}`);
-      }
-
-      console.log('✅ [UPLOAD] File uploaded successfully:', uploadData.path);
-
-      // Step 2: Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('rental-documents')
-        .getPublicUrl(storagePath);
-
-      console.log('👥 [OCR] Public URL:', publicUrl);
-
-      // Step 3: Call Gemini API directly for OCR
-      console.log('👥 [OCR] Calling Gemini API...');
-      
-      // Use existing geminiVisionOCR module
-      // Call Gemini Vision API directly with public URL
-      const prompt = `Extract all text and information from this ID document. Return a JSON object with these fields:
-{
-  "fullName": "full name",
-  "dateOfBirth": "date of birth (YYYY-MM-DD)",
-  "idNumber": "ID/license number",
-  "address": "full address",
-  "expiryDate": "expiry date (YYYY-MM-DD)",
-  "issueDate": "issue date (YYYY-MM-DD)",
-  "nationality": "nationality",
-  "gender": "gender",
-  "rawText": "all extracted text"
-}`;
-
-      // Convert image file to Base64 for Gemini API
-      console.log('👥 [OCR] Converting image to Base64...');
-      const base64Image = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          // Remove data URL prefix (e.g., "data:image/jpeg;base64,")
-          const base64 = reader.result.split(',')[1];
-          resolve(base64);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
+      const result = await this.runSharedOcrPipeline(file, scanId, {
+        folder: 'customers_ocr',
+        successMessage: 'Primary customer OCR completed - NO customer record created',
+        unavailableMessage: 'Primary customer image uploaded successfully. OCR unavailable, continue manually.',
+        logPrefix: '[PRIMARY DRIVER OCR]',
+        ocrMode: options.ocrMode || 'fast',
       });
-      console.log('👥 [OCR] Base64 conversion complete, length:', base64Image.length);
-
-      let ocrData = {};
-      let ocrUnavailable = false;
-      let ocrErrorMessage = null;
-
-      try {
-        // Call Gemini API directly with Base64 image data
-        const geminiResponse = await fetch('/api/gemini-proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'generateContent',
-            model: 'gemini-2.5-flash',
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { text: prompt },
-                  {
-                    inlineData: {
-                      mimeType: file.type,
-                      data: base64Image  // Base64 string, NOT URL
-                    }
-                  }
-                ]
-              }
-            ],
-            generationConfig: {
-              maxOutputTokens: 8192,
-              temperature: 0.1
-            }
-          })
-        });
-
-        if (!geminiResponse.ok) {
-          const errorText = await geminiResponse.text();
-          throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorText}`);
-        }
-
-        const geminiResult = await geminiResponse.json();
-        console.log('👥 [OCR] Gemini API response:', geminiResult);
-
-        // Extract the text from Gemini response
-        const ocrText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        console.log('👥 [OCR] Extracted text:', ocrText);
-
-        try {
-          // Try to extract JSON from markdown code blocks
-          const jsonMatch = ocrText.match(/```json\s*([\s\S]*?)\s*```/) || ocrText.match(/```\s*([\s\S]*?)\s*```/);
-          if (jsonMatch) {
-            ocrData = JSON.parse(jsonMatch[1]);
-          } else {
-            ocrData = JSON.parse(ocrText);
-          }
-        } catch (parseError) {
-          console.warn('👥 [OCR] Failed to parse JSON, using raw text:', parseError);
-          ocrData = { rawText: ocrText };
-        }
-
-        console.log('✅ [OCR] Gemini response processed');
-        console.log('👥 [OCR] Extracted data:', ocrData);
-      } catch (ocrError) {
-        ocrUnavailable = true;
-        ocrErrorMessage = ocrError.message || 'OCR unavailable';
-        console.warn('⚠️ [SECOND DRIVER OCR] OCR unavailable, continuing with uploaded image only:', ocrErrorMessage);
-      }
-
-
-      // Step 4: Return data (NO database operations)
-      const result = {
-        success: true,
-        data: ocrData,
-        extractedData: ocrData,
-        imageUrl: publicUrl,
-        storagePath: storagePath,
-        scanId: scanId,
-        ocrUnavailable,
-        ocrError: ocrErrorMessage,
-        message: 'Primary customer OCR completed - NO customer record created'
-      };
-
-      console.log('✅ [PRIMARY DRIVER OCR] Pipeline completed successfully');
-      console.log('👥 Result:', result);
       
       return result;
 
@@ -1236,19 +1315,10 @@ class EnhancedUnifiedCustomerService {
       };
     }
   }
-  async processSecondDriverID(file) {
-    console.log('👥 [SECOND DRIVER API] processSecondDriverID called');
-    console.log('👥 File:', file?.name, 'Size:', file?.size);
-    
+  async processSecondDriverID(file, options = {}) {
     try {
-      // Generate a unique scan ID for tracking
       const scanId = `sd_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      console.log('👥 Generated scan ID:', scanId);
-      
-      // Call the core OCR pipeline
-      const result = await this.processSecondDriverOCR(file, scanId);
-      
-      console.log('✅ [SECOND DRIVER API] Pipeline completed successfully');
+      const result = await this.processSecondDriverOCR(file, scanId, options);
       return result;
       
     } catch (error) {
@@ -1265,145 +1335,16 @@ class EnhancedUnifiedCustomerService {
    * 🆕 SEPARATE PIPELINE: Core OCR processing for second drivers
    * This method NEVER touches the customers table
    */
-  async processSecondDriverOCR(file, scanId = null) {
-    console.log('👥 [SECOND DRIVER OCR] Starting COMPLETELY SEPARATE OCR pipeline');
-    console.log('👥 This pipeline will NEVER create customer records');
-    console.log('👥 File:', file?.name, 'Scan ID:', scanId);
-    
+  async processSecondDriverOCR(file, scanId = null, options = {}) {
     try {
-      // Step 1: Upload to SEPARATE storage folder
-      const storagePath = `second_drivers_ocr/${scanId || Date.now()}_${file.name}`;
-      console.log('👥 [UPLOAD] Uploading to separate folder:', storagePath);
-      
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('rental-documents')
-        .upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
-
-      if (uploadError) {
-        console.error('❌ [UPLOAD] Failed:', uploadError);
-        throw new Error(`Upload failed: ${uploadError.message}`);
-      }
-
-      console.log('✅ [UPLOAD] File uploaded successfully:', uploadData.path);
-
-      // Step 2: Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('rental-documents')
-        .getPublicUrl(storagePath);
-
-      console.log('👥 [OCR] Public URL:', publicUrl);
-
-      // Step 3: Call Gemini API directly for OCR
-      console.log('👥 [OCR] Calling Gemini API...');
-      
-      // Use existing geminiVisionOCR module
-      // Call Gemini Vision API directly with public URL
-      const prompt = `Extract all text and information from this ID document. Return a JSON object with these fields:
-{
-  "fullName": "full name",
-  "dateOfBirth": "date of birth (YYYY-MM-DD)",
-  "idNumber": "ID/license number",
-  "address": "full address",
-  "expiryDate": "expiry date (YYYY-MM-DD)",
-  "issueDate": "issue date (YYYY-MM-DD)",
-  "nationality": "nationality",
-  "gender": "gender",
-  "rawText": "all extracted text"
-}`;
-
-      // Convert image file to Base64 for Gemini API
-      console.log('👥 [OCR] Converting image to Base64...');
-      const base64Image = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          // Remove data URL prefix (e.g., "data:image/jpeg;base64,")
-          const base64 = reader.result.split(',')[1];
-          resolve(base64);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
+      const result = await this.runSharedOcrPipeline(file, scanId, {
+        folder: 'second_drivers_ocr',
+        successMessage: 'Second driver OCR completed - NO customer record created',
+        unavailableMessage: 'Second driver image uploaded successfully. OCR unavailable, continue manually.',
+        logPrefix: '[SECOND DRIVER OCR]',
+        includePublicUrl: true,
+        ocrMode: options.ocrMode || 'fast',
       });
-      console.log('👥 [OCR] Base64 conversion complete, length:', base64Image.length);
-
-      // Call Gemini API directly with Base64 image data
-      const geminiResponse = await fetch('/api/gemini-proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'generateContent',
-          model: 'gemini-2.5-flash',
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                { text: prompt },
-                {
-                  inlineData: {
-                    mimeType: file.type,
-                    data: base64Image  // Base64 string, NOT URL
-                  }
-                }
-              ]
-            }
-          ],
-          generationConfig: {
-            maxOutputTokens: 8192,
-            temperature: 0.1
-          }
-        })
-      });
-
-      if (!geminiResponse.ok) {
-        const errorText = await geminiResponse.text();
-        throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorText}`);
-      }
-
-      const geminiResult = await geminiResponse.json();
-      console.log('👥 [OCR] Gemini API response:', geminiResult);
-
-      // Extract the text from Gemini response
-      const ocrText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      console.log('👥 [OCR] Extracted text:', ocrText);
-
-      // Parse JSON from the response
-      let ocrData = {};
-      try {
-        // Try to extract JSON from markdown code blocks
-        const jsonMatch = ocrText.match(/```json\s*([\s\S]*?)\s*```/) || ocrText.match(/```\s*([\s\S]*?)\s*```/);
-        if (jsonMatch) {
-          ocrData = JSON.parse(jsonMatch[1]);
-        } else {
-          ocrData = JSON.parse(ocrText);
-        }
-      } catch (parseError) {
-        console.warn('👥 [OCR] Failed to parse JSON, using raw text:', parseError);
-        ocrData = { rawText: ocrText };
-      }
-      console.log('✅ [OCR] Gemini response processed');
-      console.log('👥 [OCR] Extracted data:', ocrData);
-
-
-      // Step 4: Return data (NO database operations)
-      const result = {
-        success: true,
-        data: ocrData,
-        extractedData: ocrData,
-        imageUrl: publicUrl,
-        publicUrl,
-        storagePath: storagePath,
-        scanId: scanId,
-        ocrUnavailable,
-        ocrError: ocrErrorMessage,
-        message: ocrUnavailable
-          ? 'Second driver image uploaded successfully. OCR unavailable, continue manually.'
-          : 'Second driver OCR completed - NO customer record created'
-      };
-
-      console.log('✅ [SECOND DRIVER OCR] Pipeline completed successfully');
-      console.log('👥 Result:', result);
       
       return result;
 
@@ -1430,18 +1371,16 @@ class EnhancedUnifiedCustomerService {
 const enhancedUnifiedCustomerServiceInstance = new EnhancedUnifiedCustomerService();
 export default enhancedUnifiedCustomerServiceInstance;
 
-export const {
-  saveCustomer,
-  processSequentialImageUpload,
-  getCustomerById,
-  getAllCustomers,
-  deleteCustomer,
-  deleteCustomers,
-  searchCustomers,
-  getCustomerByLicenceNumber,
-  getCustomerByIdNumber,
-  debugCustomerRecord,
-  runDiagnostics,
-  checkCustomerRentalHistory,
-  getCustomerRentalHistory,
-} = EnhancedUnifiedCustomerService;
+export const saveCustomer = (...args) => EnhancedUnifiedCustomerService.saveCustomer(...args);
+export const processSequentialImageUpload = (...args) => EnhancedUnifiedCustomerService.processSequentialImageUpload(...args);
+export const getCustomerById = (...args) => EnhancedUnifiedCustomerService.getCustomerById(...args);
+export const getAllCustomers = (...args) => EnhancedUnifiedCustomerService.getAllCustomers(...args);
+export const deleteCustomer = (...args) => EnhancedUnifiedCustomerService.deleteCustomer(...args);
+export const deleteCustomers = (...args) => EnhancedUnifiedCustomerService.deleteCustomers(...args);
+export const searchCustomers = (...args) => EnhancedUnifiedCustomerService.searchCustomers(...args);
+export const getCustomerByLicenceNumber = (...args) => EnhancedUnifiedCustomerService.getCustomerByLicenceNumber(...args);
+export const getCustomerByIdNumber = (...args) => EnhancedUnifiedCustomerService.getCustomerByIdNumber(...args);
+export const debugCustomerRecord = (...args) => EnhancedUnifiedCustomerService.debugCustomerRecord(...args);
+export const runDiagnostics = (...args) => EnhancedUnifiedCustomerService.runDiagnostics(...args);
+export const checkCustomerRentalHistory = (...args) => EnhancedUnifiedCustomerService.checkCustomerRentalHistory(...args);
+export const getCustomerRentalHistory = (...args) => EnhancedUnifiedCustomerService.getCustomerRentalHistory(...args);

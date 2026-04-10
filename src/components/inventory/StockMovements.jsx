@@ -1,8 +1,13 @@
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Plus, Search, Filter, Calendar, Package, TrendingUp, TrendingDown } from 'lucide-react';
 import inventoryService from '../../services/InventoryService';
 
 const StockMovements = ({ initialParams, action, type }) => {
+  const { i18n } = useTranslation();
+  const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
+  const primaryActionButtonClass = 'rounded-2xl bg-violet-600 text-white shadow-sm hover:bg-violet-700';
+  const softActionButtonClass = 'rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900';
   const [movements, setMovements] = useState([]);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -22,6 +27,17 @@ const StockMovements = ({ initialParams, action, type }) => {
     notes: '',
     movement_date: new Date().toISOString().split('T')[0]
   });
+
+  const formatUnitLabel = (unitValue) => {
+    const normalized = String(unitValue || '').toLowerCase();
+    const labels = {
+      liter: tr('L', 'L'),
+      piece: tr('piece', 'pièce'),
+      box: tr('box', 'boîte'),
+      pack: tr('pack', 'paquet')
+    };
+    return labels[normalized] || unitValue || tr('unit', 'unité');
+  };
 
   useEffect(() => {
     fetchData();
@@ -61,7 +77,7 @@ const StockMovements = ({ initialParams, action, type }) => {
     try {
       await inventoryService.createStockMovement({
         ...formData,
-        quantity: parseInt(formData.quantity),
+        quantity: parseFloat(formData.quantity),
         item_id: parseInt(formData.item_id)
       });
       setShowModal(false);
@@ -76,7 +92,7 @@ const StockMovements = ({ initialParams, action, type }) => {
       fetchData();
     } catch (error) {
       console.error('Error creating movement:', error);
-      alert('Failed to create stock movement');
+      alert(tr('Failed to create stock movement', 'Impossible de créer le mouvement de stock'));
     }
   };
 
@@ -106,16 +122,40 @@ const StockMovements = ({ initialParams, action, type }) => {
     }
   };
 
+  const formatMovementNote = (movement) => {
+    const rawNote = String(movement?.notes || '').trim();
+    if (!rawNote) return '';
+
+    const stripMaintenanceId = (value) => value
+      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
+      .trim();
+
+    if (rawNote.startsWith('Used in maintenance')) {
+      const suffix = stripMaintenanceId(rawNote.replace('Used in maintenance', '').trim());
+      return suffix
+        ? `${tr('Used in maintenance', 'Utilisé en maintenance')} ${suffix}`
+        : tr('Used in maintenance', 'Utilisé en maintenance');
+    }
+
+    if (rawNote.startsWith('Restored from maintenance')) {
+      const suffix = stripMaintenanceId(rawNote.replace('Restored from maintenance', '').trim());
+      return suffix
+        ? `${tr('Restored from maintenance', 'Restauré depuis la maintenance')} ${suffix}`
+        : tr('Restored from maintenance', 'Restauré depuis la maintenance');
+    }
+
+    return rawNote;
+  };
+
   if (loading) {
     return (
       <div className="p-4 lg:p-6">
-        <div className="animate-pulse">
-          <div className="h-8 bg-gray-200 rounded w-64 mb-4"></div>
-          <div className="h-4 bg-gray-200 rounded w-96 mb-6"></div>
-          <div className="space-y-4">
-            {[...Array(5)].map((_, i) => (
-              <div key={i} className="h-16 bg-gray-200 rounded"></div>
-            ))}
+        <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+          <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+            <div className="text-5xl leading-none animate-pulse">⏳</div>
+            <h2 className="text-xl font-semibold text-slate-900">
+              {tr('Loading stock movements...', 'Chargement des mouvements de stock...')}
+            </h2>
           </div>
         </div>
       </div>
@@ -125,44 +165,44 @@ const StockMovements = ({ initialParams, action, type }) => {
   return (
     <div className="p-4 lg:p-6 space-y-6">
       <div>
-        <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">Stock Movements</h1>
-        <p className="text-gray-600 mt-1">Track and manage inventory stock movements</p>
+        <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">{tr('Stock Movements', 'Mouvements de stock')}</h1>
+        <p className="text-gray-600 mt-1">{tr('Track and manage inventory stock movements', "Suivez et gérez les mouvements de stock de l'inventaire")}</p>
       </div>
 
       {/* Filters */}
-      <div className="bg-white rounded-lg shadow-md border border-gray-200 mb-6">
+      <div className="mb-6 rounded-[2rem] border border-slate-200 bg-white shadow-sm">
         <div className="p-6 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Filters</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">{tr('Filters', 'Filtres')}</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Item</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Item', 'Article')}</label>
               <select
                 value={filters.itemId}
                 onChange={(e) => setFilters({...filters, itemId: e.target.value})}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option value="">All Items</option>
+                <option value="">{tr('All Items', 'Tous les articles')}</option>
                 {items.map(item => (
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Movement Type</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Movement Type', 'Type de mouvement')}</label>
               <select
                 value={filters.movementType}
                 onChange={(e) => setFilters({...filters, movementType: e.target.value})}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option value="">All Types</option>
-                <option value="in">Stock In</option>
-                <option value="out">Stock Out</option>
-                <option value="adjustment_in">Adjustment In</option>
-                <option value="adjustment_out">Adjustment Out</option>
+                <option value="">{tr('All Types', 'Tous les types')}</option>
+                <option value="in">{tr('Stock In', 'Entrée de stock')}</option>
+                <option value="out">{tr('Stock Out', 'Sortie de stock')}</option>
+                <option value="adjustment_in">{tr('Adjustment In', "Ajustement d'entrée")}</option>
+                <option value="adjustment_out">{tr('Adjustment Out', 'Ajustement de sortie')}</option>
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">{tr('From Date', 'Date de début')}</label>
               <input
                 type="date"
                 value={filters.dateFrom}
@@ -171,7 +211,7 @@ const StockMovements = ({ initialParams, action, type }) => {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">{tr('To Date', 'Date de fin')}</label>
               <input
                 type="date"
                 value={filters.dateTo}
@@ -189,7 +229,7 @@ const StockMovements = ({ initialParams, action, type }) => {
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
           <input
             type="text"
-            placeholder="Search movements..."
+            placeholder={tr('Search movements...', 'Rechercher des mouvements...')}
             value={filters.searchTerm}
             onChange={(e) => setFilters({...filters, searchTerm: e.target.value})}
             className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -197,23 +237,23 @@ const StockMovements = ({ initialParams, action, type }) => {
         </div>
         <button
           onClick={() => setShowModal(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
+          className={`flex items-center gap-2 px-4 py-2 ${primaryActionButtonClass}`}
         >
           <Plus className="w-4 h-4" />
-          Add Movement
+          {tr('Add Movement', 'Ajouter un mouvement')}
         </button>
       </div>
 
       {/* Movements List */}
-      <div className="bg-white rounded-lg shadow-md border border-gray-200">
+      <div className="rounded-[2rem] border border-slate-200 bg-white shadow-sm">
         <div className="p-6 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">Recent Movements</h3>
+          <h3 className="text-lg font-semibold text-gray-900">{tr('Recent Movements', 'Mouvements récents')}</h3>
         </div>
         <div className="divide-y divide-gray-200">
           {movements.length === 0 ? (
             <div className="p-8 text-center">
               <Package className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500">No stock movements found</p>
+              <p className="text-gray-500">{tr('No stock movements found', 'Aucun mouvement de stock trouvé')}</p>
             </div>
           ) : (
             movements.map((movement) => (
@@ -225,13 +265,21 @@ const StockMovements = ({ initialParams, action, type }) => {
                     </div>
                     <div>
                       <h4 className="font-medium text-gray-900">
-                        {movement.item?.name || 'Unknown Item'}
+                        {movement.item?.name || tr('Unknown Item', 'Article inconnu')}
                       </h4>
                       <p className="text-sm text-gray-500">
-                        {movement.movement_type.replace('_', ' ').toUpperCase()} • {movement.quantity} units
+                        {tr(
+                          movement.movement_type.replace('_', ' ').toUpperCase(),
+                          ({
+                            in: 'ENTRÉE DE STOCK',
+                            out: 'SORTIE DE STOCK',
+                            adjustment_in: "AJUSTEMENT D'ENTRÉE",
+                            adjustment_out: 'AJUSTEMENT DE SORTIE'
+                          }[movement.movement_type] || movement.movement_type.replace('_', ' ').toUpperCase())
+                        )} • {movement.quantity} {formatUnitLabel(movement.item?.unit)}
                       </p>
                       {movement.reference && (
-                        <p className="text-xs text-gray-400">Ref: {movement.reference}</p>
+                        <p className="text-xs text-gray-400">{tr('Ref:', 'Réf. :')} {movement.reference}</p>
                       )}
                     </div>
                   </div>
@@ -246,7 +294,7 @@ const StockMovements = ({ initialParams, action, type }) => {
                 </div>
                 {movement.notes && (
                   <div className="mt-3 pl-12">
-                    <p className="text-sm text-gray-600">{movement.notes}</p>
+                    <p className="text-sm text-gray-600">{formatMovementNote(movement)}</p>
                   </div>
                 )}
               </div>
@@ -258,54 +306,55 @@ const StockMovements = ({ initialParams, action, type }) => {
       {/* Add Movement Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+          <div className="w-full max-w-md rounded-[2rem] bg-white shadow-xl">
             <div className="p-6 border-b border-gray-200">
               <h3 className="text-lg font-semibold text-gray-900">
-                {formData.movement_type === 'out' ? 'Issue Items' : 'Add Stock Movement'}
+                {formData.movement_type === 'out' ? tr('Issue Items', 'Sortir des articles') : tr('Add Stock Movement', 'Ajouter un mouvement de stock')}
               </h3>
             </div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Item *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Item', 'Article')} *</label>
                 <select
                   value={formData.item_id}
                   onChange={(e) => setFormData({...formData, item_id: e.target.value})}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   required
                 >
-                  <option value="">Select Item</option>
+                  <option value="">{tr('Select Item', "Sélectionner l'article")}</option>
                   {items.map(item => (
-                    <option key={item.id} value={item.id}>{item.name}</option>
+                    <option key={item.id} value={item.id}>{item.name} • {item.stock_on_hand} {formatUnitLabel(item.unit)}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Movement Type *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Movement Type', 'Type de mouvement')} *</label>
                 <select
                   value={formData.movement_type}
                   onChange={(e) => setFormData({...formData, movement_type: e.target.value})}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   required
                 >
-                  <option value="in">Stock In</option>
-                  <option value="out">Stock Out</option>
-                  <option value="adjustment_in">Adjustment In</option>
-                  <option value="adjustment_out">Adjustment Out</option>
+                  <option value="in">{tr('Stock In', 'Entrée de stock')}</option>
+                  <option value="out">{tr('Stock Out', 'Sortie de stock')}</option>
+                  <option value="adjustment_in">{tr('Adjustment In', "Ajustement d'entrée")}</option>
+                  <option value="adjustment_out">{tr('Adjustment Out', 'Ajustement de sortie')}</option>
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Quantity *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Quantity', 'Quantité')} *</label>
                 <input
                   type="number"
+                  step="0.01"
+                  min="0.01"
                   value={formData.quantity}
                   onChange={(e) => setFormData({...formData, quantity: e.target.value})}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   required
-                  min="1"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Movement Date *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Movement Date', 'Date du mouvement')} *</label>
                 <input
                   type="date"
                   value={formData.movement_date}
@@ -315,38 +364,40 @@ const StockMovements = ({ initialParams, action, type }) => {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Reference</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Reference', 'Référence')}</label>
                 <input
                   type="text"
                   value={formData.reference}
                   onChange={(e) => setFormData({...formData, reference: e.target.value})}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Purchase order, maintenance ticket, etc."
+                  placeholder={tr('Purchase order, maintenance ticket, etc.', "Bon de commande, ticket de maintenance, etc.")}
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Notes', 'Notes')}</label>
                 <textarea
                   value={formData.notes}
                   onChange={(e) => setFormData({...formData, notes: e.target.value})}
                   rows={3}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Additional notes about this movement..."
+                  placeholder={tr('Additional notes about this movement...', 'Notes supplémentaires sur ce mouvement...')}
                 />
               </div>
               <div className="flex justify-end gap-3 pt-4">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                  className={`px-4 py-2 ${softActionButtonClass}`}
                 >
-                  Cancel
+                  {tr('Cancel', 'Annuler')}
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                  className={`px-4 py-2 ${primaryActionButtonClass}`}
                 >
-                  {formData.movement_type === 'out' ? 'Issue Items' : 'Add Movement'}
+                  {formData.movement_type === 'out'
+                    ? tr('Issue Items', 'Sortir des articles')
+                    : tr('Add Movement', 'Ajouter un mouvement')}
                 </button>
               </div>
             </form>

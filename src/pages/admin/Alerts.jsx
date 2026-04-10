@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -33,6 +33,8 @@ import fuelService from '../../services/FuelService';
 import inventoryAlertsService from '../../services/AlertsService';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { shortenUrl } from '../../services/UrlShortenerService';
+import { buildTourTrackingUrl } from '../../services/tourTrackingService';
+import i18n from '../../i18n';
 
 const RETURN_DUE_SOON_HOURS = 48;
 const TOUR_BOOKING_MARKER = '[tour_booking]';
@@ -40,6 +42,7 @@ const TOUR_BOOKING_MARKER = '[tour_booking]';
 const MODULE_META = {
   tours: {
     label: 'Tours & Booking',
+    labelFr: 'Tours & réservations',
     icon: Calendar,
     iconClass: 'bg-violet-100 text-violet-700',
     borderClass: 'border-violet-100',
@@ -48,6 +51,7 @@ const MODULE_META = {
   },
   rental: {
     label: 'Rental Management',
+    labelFr: 'Gestion des locations',
     icon: DollarSign,
     iconClass: 'bg-blue-100 text-blue-700',
     borderClass: 'border-blue-100',
@@ -56,6 +60,7 @@ const MODULE_META = {
   },
   fleet: {
     label: 'Fleet Management',
+    labelFr: 'Gestion de flotte',
     icon: Car,
     iconClass: 'bg-sky-100 text-sky-700',
     borderClass: 'border-sky-100',
@@ -63,7 +68,8 @@ const MODULE_META = {
     route: '/admin/fleet',
   },
   maintenance: {
-    label: 'Quad Maintenance',
+    label: 'Maintenance',
+    labelFr: 'Maintenance',
     icon: Wrench,
     iconClass: 'bg-amber-100 text-amber-700',
     borderClass: 'border-amber-100',
@@ -72,6 +78,7 @@ const MODULE_META = {
   },
   fuel: {
     label: 'Fuel Logs',
+    labelFr: 'Journal carburant',
     icon: Fuel,
     iconClass: 'bg-orange-100 text-orange-700',
     borderClass: 'border-orange-100',
@@ -80,6 +87,7 @@ const MODULE_META = {
   },
   inventory: {
     label: 'Inventory',
+    labelFr: 'Inventaire',
     icon: Boxes,
     iconClass: 'bg-emerald-100 text-emerald-700',
     borderClass: 'border-emerald-100',
@@ -88,6 +96,7 @@ const MODULE_META = {
   },
   price_approval: {
     label: 'Pricing Management',
+    labelFr: 'Gestion tarifaire',
     icon: DollarSign,
     iconClass: 'bg-fuchsia-100 text-fuchsia-700',
     borderClass: 'border-fuchsia-100',
@@ -99,16 +108,19 @@ const MODULE_META = {
 const PRIORITY_META = {
   high: {
     label: 'Critical',
+    labelFr: 'Critique',
     chip: 'bg-red-50 text-red-700 border border-red-200',
     dot: 'bg-red-500',
   },
   medium: {
     label: 'Warning',
+    labelFr: 'Alerte',
     chip: 'bg-amber-50 text-amber-700 border border-amber-200',
     dot: 'bg-amber-500',
   },
   low: {
     label: 'Info',
+    labelFr: 'Info',
     chip: 'bg-sky-50 text-sky-700 border border-sky-200',
     dot: 'bg-sky-500',
   },
@@ -127,23 +139,43 @@ const extractTourBookingMeta = (value) => {
 
 const formatAmount = (amount) => `${Number(amount || 0).toLocaleString()} MAD`;
 
+const scheduleBackgroundTask = (callback) => {
+  if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+    return window.requestIdleCallback(callback, { timeout: 700 });
+  }
+
+  return window.setTimeout(callback, 0);
+};
+
+const cancelBackgroundTask = (taskId) => {
+  if (typeof window !== 'undefined' && 'cancelIdleCallback' in window && typeof taskId === 'number') {
+    window.cancelIdleCallback(taskId);
+    return;
+  }
+
+  clearTimeout(taskId);
+};
+
 const localToday = () => {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 };
 
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+
 const formatRelativeTime = (value) => {
-  if (!value) return 'Just now';
+  if (!value) return tr('Just now', "À l'instant");
   const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return 'Just now';
+  if (!Number.isFinite(timestamp)) return tr('Just now', "À l'instant");
   const diffMs = Date.now() - timestamp;
   const diffMinutes = Math.floor(diffMs / (1000 * 60));
-  if (diffMinutes <= 0) return 'Just now';
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffMinutes <= 0) return tr('Just now', "À l'instant");
+  if (diffMinutes < 60) return isFrenchLocale() ? `il y a ${diffMinutes} min` : `${diffMinutes}m ago`;
   const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHours < 24) return isFrenchLocale() ? `il y a ${diffHours} h` : `${diffHours}h ago`;
   const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays}d ago`;
+  return isFrenchLocale() ? `il y a ${diffDays} j` : `${diffDays}d ago`;
 };
 
 const getTourEndTimestamp = (tour) => {
@@ -167,6 +199,7 @@ const getAlertRoute = (alert) => {
 };
 
 const Alerts = () => {
+  const isFrench = isFrenchLocale();
   const navigate = useNavigate();
   const { session, user } = useAuth();
   const [alerts, setAlerts] = useState([]);
@@ -181,13 +214,15 @@ const Alerts = () => {
   });
   const [collapsedModules, setCollapsedModules] = useState({});
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const alertsRefreshTimeoutRef = useRef(null);
 
   const loadFleetAlerts = useCallback(async () => {
     try {
       return alertService.getAllAlerts().map((alert) => ({
         id: alert.id,
-        title: alert.title || 'Fleet alert',
-        message: alert.message || 'Vehicle requires attention.',
+        title: alert.title || tr('Fleet alert', 'Alerte flotte'),
+        message: alert.message || tr('Vehicle requires attention.', 'Le vehicule demande une attention.'),
         type: alert.isExpired || alert.isOverdue ? 'error' : alert.priority === 'medium' ? 'warning' : 'info',
         priority: alert.priority || 'low',
         category: 'fleet',
@@ -223,8 +258,10 @@ const Alerts = () => {
       if (currentPercentage <= lowThreshold) {
         fuelAlerts.push({
           id: `fuel-low-${tank.id}`,
-          title: currentPercentage <= 5 ? 'Fuel critically low' : 'Fuel running low',
-          message: `${Number(currentPercentage).toFixed(1)}% remaining in the main tank (${tank.current_volume}L left).`,
+          title: currentPercentage <= 5 ? tr('Fuel critically low', 'Carburant critique') : tr('Fuel running low', 'Carburant faible'),
+          message: isFrench
+            ? `${Number(currentPercentage).toFixed(1)}% restants dans le reservoir principal (${tank.current_volume}L restants).`
+            : `${Number(currentPercentage).toFixed(1)}% remaining in the main tank (${tank.current_volume}L left).`,
           type: currentPercentage <= 5 ? 'error' : 'warning',
           priority: currentPercentage <= 5 ? 'high' : 'medium',
           category: 'fuel',
@@ -268,10 +305,20 @@ const Alerts = () => {
         const overdue = daysUntilDue < 0;
         return [{
           id: `maintenance-${maintenance.id}`,
-          title: overdue ? 'Maintenance overdue' : daysUntilDue <= 1 ? 'Maintenance due now' : 'Maintenance due soon',
-          message: `${maintenance.vehicle_name || 'Vehicle'} ${maintenance.type || maintenance.maintenance_type || 'service'} ${
-            overdue ? `overdue by ${Math.abs(daysUntilDue)} day${Math.abs(daysUntilDue) === 1 ? '' : 's'}` : `due in ${daysUntilDue} day${daysUntilDue === 1 ? '' : 's'}`
-          }.`,
+          title: overdue
+            ? tr('Maintenance overdue', 'Maintenance en retard')
+            : daysUntilDue <= 1
+              ? tr('Maintenance due now', 'Maintenance a faire maintenant')
+              : tr('Maintenance due soon', 'Maintenance bientot due'),
+          message: isFrench
+            ? `${maintenance.vehicle_name || 'Vehicule'} ${maintenance.type || maintenance.maintenance_type || 'service'} ${
+                overdue
+                  ? `en retard de ${Math.abs(daysUntilDue)} jour${Math.abs(daysUntilDue) === 1 ? '' : 's'}`
+                  : `prevue dans ${daysUntilDue} jour${daysUntilDue === 1 ? '' : 's'}`
+              }.`
+            : `${maintenance.vehicle_name || 'Vehicle'} ${maintenance.type || maintenance.maintenance_type || 'service'} ${
+                overdue ? `overdue by ${Math.abs(daysUntilDue)} day${Math.abs(daysUntilDue) === 1 ? '' : 's'}` : `due in ${daysUntilDue} day${daysUntilDue === 1 ? '' : 's'}`
+              }.`,
           type: overdue ? 'error' : daysUntilDue <= 1 ? 'warning' : 'info',
           priority: overdue ? 'high' : daysUntilDue <= 1 ? 'medium' : 'low',
           category: 'maintenance',
@@ -325,13 +372,15 @@ const Alerts = () => {
 
         const hoursUntilDue = Math.abs(dueDate.getTime() - now.getTime()) / (1000 * 60 * 60);
         const amountDue = Math.max(0, Number(rental.remaining_amount || 0));
-        const vehicleName = rental.vehicle?.model || rental.vehicle?.name || 'Vehicle';
-        const plateNumber = rental.vehicle?.plate_number || 'N/A';
+        const vehicleName = rental.vehicle?.model || rental.vehicle?.name || tr('Vehicle', 'Vehicule');
+        const plateNumber = rental.vehicle?.plate_number || tr('N/A', 'N/D');
 
         return [{
           id: `rental-${rental.id}-${isOverdue ? 'overdue' : 'due'}`,
-          title: isOverdue ? 'Rental overdue' : 'Rental ending soon',
-          message: `${rental.customer_name} · ${vehicleName} (${plateNumber}) ${isOverdue ? `overdue by ${Math.max(1, Math.ceil(hoursUntilDue))}h` : `ends in ${Math.max(1, Math.ceil(hoursUntilDue))}h`}.`,
+          title: isOverdue ? tr('Rental overdue', 'Location en retard') : tr('Rental ending soon', 'Location bientot terminee'),
+          message: isFrench
+            ? `${rental.customer_name} · ${vehicleName} (${plateNumber}) ${isOverdue ? `en retard de ${Math.max(1, Math.ceil(hoursUntilDue))}h` : `se termine dans ${Math.max(1, Math.ceil(hoursUntilDue))}h`}.`
+            : `${rental.customer_name} · ${vehicleName} (${plateNumber}) ${isOverdue ? `overdue by ${Math.max(1, Math.ceil(hoursUntilDue))}h` : `ends in ${Math.max(1, Math.ceil(hoursUntilDue))}h`}.`,
           type: isOverdue ? 'error' : 'warning',
           priority: isOverdue ? 'high' : 'medium',
           category: 'rental',
@@ -373,8 +422,10 @@ const Alerts = () => {
 
       return (data || []).map((rental) => ({
         id: `approval-${rental.id}`,
-        title: 'Price approval required',
-        message: `${rental.customer_name} requested ${formatAmount(rental.pending_total_request)} for ${rental.vehicle?.model || rental.vehicle?.name || 'vehicle'}.`,
+        title: tr('Price approval required', 'Validation tarifaire requise'),
+        message: isFrench
+          ? `${rental.customer_name} a demande ${formatAmount(rental.pending_total_request)} pour ${rental.vehicle?.model || rental.vehicle?.name || 'vehicule'}.`
+          : `${rental.customer_name} requested ${formatAmount(rental.pending_total_request)} for ${rental.vehicle?.model || rental.vehicle?.name || 'vehicle'}.`,
         type: 'warning',
         priority: 'high',
         category: 'rental',
@@ -409,14 +460,14 @@ const Alerts = () => {
         id: `inventory-${alert.id}`,
         title:
           alert.type === 'out_of_stock'
-            ? 'Out of stock'
+            ? tr('Out of stock', 'Rupture de stock')
             : alert.type === 'low_stock'
-              ? 'Low stock'
+              ? tr('Low stock', 'Stock faible')
               : alert.type === 'overstock'
-                ? 'Overstock'
+                ? tr('Overstock', 'Surstock')
                 : alert.type === 'inactive'
-                  ? 'Inactive inventory'
-                  : 'High value inventory',
+                  ? tr('Inactive inventory', 'Inventaire inactif')
+                  : tr('High value inventory', 'Inventaire de grande valeur'),
         message: `${alert.itemName}${alert.sku ? ` · ${alert.sku}` : ''} — ${alert.message}`,
         type: alert.priority === 'critical' ? 'error' : alert.priority === 'warning' ? 'warning' : 'info',
         priority: alert.priority === 'critical' ? 'high' : alert.priority === 'warning' ? 'medium' : 'low',
@@ -487,14 +538,14 @@ const Alerts = () => {
 
         return {
           groupId,
-          packageName: meta.packageName || first.package_name || 'Tour package',
-          customerName: first.customer_name || meta.customerName || 'Guest',
-          guideName: meta.guideName || first.guide_name || 'Unassigned',
+          packageName: meta.packageName || first.package_name || tr('Tour package', 'Forfait tour'),
+          customerName: first.customer_name || meta.customerName || tr('Guest', 'Invite'),
+          guideName: meta.guideName || first.guide_name || tr('Unassigned', 'Non assigne'),
           guideId: meta.guideId || first.guide_id || '',
           durationHours: Number(meta.durationHours || first.duration_hours || 1),
           scheduledStartAt: meta.scheduledStartAt || first.scheduled_for || first.rental_start_date,
           startedAt: meta.startedAt || first.started_at || '',
-          trackingUrl: meta.trackingUrl || `${window.location.origin}/track/tour/${groupId}`,
+          trackingUrl: buildTourTrackingUrl(groupId),
           status,
         };
       });
@@ -523,7 +574,11 @@ const Alerts = () => {
 
         return [{
           id: `tour-${tour.groupId}-${expired ? 'expired' : tour.status}`,
-          title: expired ? 'Expired tour' : startsSoon ? 'Tour starting soon' : 'Tour scheduled today',
+          title: expired
+            ? tr('Expired tour', 'Tour expire')
+            : startsSoon
+              ? tr('Tour starting soon', 'Tour bientot demarre')
+              : tr('Tour scheduled today', 'Tour prevu aujourd hui'),
           message: `${tour.packageName} · ${tour.customerName} · ${tour.guideName}`,
           type: expired ? 'error' : 'warning',
           priority: expired ? 'high' : 'medium',
@@ -544,65 +599,92 @@ const Alerts = () => {
     }
   }, [session?.access_token]);
 
+  const mergeAlerts = useCallback((incomingAlerts) => {
+    const normalized = incomingAlerts
+      .map((alert) => ({
+        ...alert,
+        read: Boolean(alert.read),
+        acknowledged: Boolean(alert.acknowledged),
+        resolved: Boolean(alert.resolved),
+      }))
+      .sort((a, b) => {
+        const priorityWeight = { high: 3, medium: 2, low: 1 };
+        const priorityDiff = (priorityWeight[b.priority] || 0) - (priorityWeight[a.priority] || 0);
+        if (priorityDiff !== 0) return priorityDiff;
+        return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+      });
+
+    setAlerts((prev) =>
+      normalized.map((alert) => {
+        const previous = prev.find((item) => item.id === alert.id);
+        return previous
+          ? {
+              ...alert,
+              read: previous.read,
+              acknowledged: previous.acknowledged,
+              resolved: previous.resolved,
+              resolvedAt: previous.resolvedAt,
+            }
+          : alert;
+      })
+    );
+  }, []);
+
   const loadAllAlerts = useCallback(async () => {
     try {
-      setLoading(true);
+      if (!hasLoadedOnce) {
+        setLoading(true);
+      }
       setError(null);
 
-      const [
-        fleetAlerts,
-        fuelAlerts,
-        maintenanceAlerts,
-        rentalAlerts,
-        priceApprovalAlerts,
-        inventoryAlerts,
-        tourAlerts,
-      ] = await Promise.all([
+      const [fleetResult, fuelResult, maintenanceResult, rentalResult, priceApprovalResult] = await Promise.allSettled([
         loadFleetAlerts(),
         loadFuelAlerts(),
         loadMaintenanceAlerts(),
         loadRentalAlerts(),
         loadPriceApprovalAlerts(),
-        loadInventoryAlerts(),
-        loadTourAlerts(),
       ]);
 
-      const allAlerts = [
+      const fleetAlerts = fleetResult.status === 'fulfilled' ? fleetResult.value : [];
+      const fuelAlerts = fuelResult.status === 'fulfilled' ? fuelResult.value : [];
+      const maintenanceAlerts = maintenanceResult.status === 'fulfilled' ? maintenanceResult.value : [];
+      const rentalAlerts = rentalResult.status === 'fulfilled' ? rentalResult.value : [];
+      const priceApprovalAlerts = priceApprovalResult.status === 'fulfilled' ? priceApprovalResult.value : [];
+
+      mergeAlerts([
         ...fleetAlerts,
         ...fuelAlerts,
         ...maintenanceAlerts,
         ...rentalAlerts,
         ...priceApprovalAlerts,
-        ...inventoryAlerts,
-        ...tourAlerts,
-      ]
-        .map((alert) => ({
-          ...alert,
-          read: Boolean(alert.read),
-          acknowledged: Boolean(alert.acknowledged),
-          resolved: Boolean(alert.resolved),
-        }))
-        .sort((a, b) => {
-          const priorityWeight = { high: 3, medium: 2, low: 1 };
-          const priorityDiff = (priorityWeight[b.priority] || 0) - (priorityWeight[a.priority] || 0);
-          if (priorityDiff !== 0) return priorityDiff;
-          return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
-        });
+      ]);
+      setHasLoadedOnce(true);
+      setLoading(false);
 
-      setAlerts((prev) =>
-        allAlerts.map((alert) => {
-          const previous = prev.find((item) => item.id === alert.id);
-          return previous
-            ? {
-                ...alert,
-                read: previous.read,
-                acknowledged: previous.acknowledged,
-                resolved: previous.resolved,
-                resolvedAt: previous.resolvedAt,
-              }
-            : alert;
-        })
-      );
+      const backgroundTaskId = scheduleBackgroundTask(async () => {
+        try {
+          const [inventoryResult, tourResult] = await Promise.allSettled([
+            loadInventoryAlerts(),
+            loadTourAlerts(),
+          ]);
+          const inventoryAlerts = inventoryResult.status === 'fulfilled' ? inventoryResult.value : [];
+          const tourAlerts = tourResult.status === 'fulfilled' ? tourResult.value : [];
+
+          mergeAlerts([
+            ...fleetAlerts,
+            ...fuelAlerts,
+            ...maintenanceAlerts,
+            ...rentalAlerts,
+            ...priceApprovalAlerts,
+            ...inventoryAlerts,
+            ...tourAlerts,
+          ]);
+        } catch (backgroundError) {
+          console.error('Background alerts load failed:', backgroundError);
+        }
+      });
+
+      return () => cancelBackgroundTask(backgroundTaskId);
     } catch (loadError) {
       console.error('Alerts load failed:', loadError);
       setError(loadError.message || 'Failed to load alerts');
@@ -610,6 +692,7 @@ const Alerts = () => {
       setLoading(false);
     }
   }, [
+    hasLoadedOnce,
     loadFleetAlerts,
     loadFuelAlerts,
     loadInventoryAlerts,
@@ -617,19 +700,40 @@ const Alerts = () => {
     loadPriceApprovalAlerts,
     loadRentalAlerts,
     loadTourAlerts,
+    mergeAlerts,
   ]);
 
-  useEffect(() => {
-    loadAllAlerts();
+  const scheduleAlertsRefresh = useCallback(() => {
+    if (alertsRefreshTimeoutRef.current) {
+      window.clearTimeout(alertsRefreshTimeoutRef.current);
+    }
 
-    const unsubscribeAlerts = alertService.subscribe(() => loadAllAlerts());
-    const unsubscribeFuel = fuelService.subscribe(() => loadAllAlerts());
+    alertsRefreshTimeoutRef.current = window.setTimeout(() => {
+      loadAllAlerts();
+      alertsRefreshTimeoutRef.current = null;
+    }, 250);
+  }, [loadAllAlerts]);
+
+  useEffect(() => {
+    let cleanupTask;
+    loadAllAlerts().then((cleanup) => {
+      cleanupTask = cleanup;
+    });
+
+    const unsubscribeAlerts = alertService.subscribe(() => scheduleAlertsRefresh());
+    const unsubscribeFuel = fuelService.subscribe(() => scheduleAlertsRefresh());
 
     return () => {
+      if (typeof cleanupTask === 'function') {
+        cleanupTask();
+      }
+      if (alertsRefreshTimeoutRef.current) {
+        window.clearTimeout(alertsRefreshTimeoutRef.current);
+      }
       unsubscribeAlerts();
       unsubscribeFuel();
     };
-  }, [loadAllAlerts]);
+  }, [loadAllAlerts, scheduleAlertsRefresh]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -666,7 +770,7 @@ const Alerts = () => {
     if (!cleanPhone) return;
 
     try {
-      const trackingUrl = alert?.data?.trackingUrl || `${window.location.origin}/track/tour/${alert.data?.groupId}`;
+      const trackingUrl = alert?.data?.trackingUrl || buildTourTrackingUrl(alert.data?.groupId);
       const shortTrackingUrl = await shortenUrl(trackingUrl, null, 'tour_tracking');
       const message = `Open and share location now: ${shortTrackingUrl}`;
       const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
@@ -740,27 +844,36 @@ const Alerts = () => {
 
   if (loading) {
     return (
-      <div className="p-6">
-        <div className="animate-pulse space-y-6">
-          <div className="h-44 rounded-xl bg-slate-200" />
-          <div className="grid grid-cols-2 gap-4 xl:grid-cols-6">
-            {Array.from({ length: 6 }).map((_, index) => (
-              <div key={index} className="h-28 rounded-xl bg-slate-200" />
-            ))}
+      <div className="min-h-screen bg-slate-50">
+        <AdminModuleHero
+          icon={<Bell className="h-8 w-8 text-white" />}
+          eyebrow={tr('Alerts', 'Alertes')}
+          title={tr('Alerts', 'Alertes')}
+          description=""
+          className="w-full"
+        />
+        <div className="p-4 sm:p-6">
+          <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+            <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+              <div className="text-5xl leading-none animate-pulse">⏳</div>
+              <h2 className="text-xl font-semibold text-slate-900">
+                {tr('Loading alerts...', 'Chargement des alertes...')}
+              </h2>
+            </div>
           </div>
-          <div className="h-64 rounded-xl bg-slate-200" />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="p-4 sm:p-6">
+    <div className="min-h-screen bg-slate-50">
       <AdminModuleHero
         icon={<Bell className="h-8 w-8 text-white" />}
-        eyebrow="Alerts"
-        title="Alerts"
+        eyebrow={tr('Alerts', 'Alertes')}
+        title={tr('Alerts', 'Alertes')}
         description=""
+        className="w-full"
         actions={
           <button
             onClick={handleRefresh}
@@ -768,16 +881,17 @@ const Alerts = () => {
             className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all hover:bg-white/20 disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-            Refresh
+            {tr('Refresh', 'Actualiser')}
           </button>
         }
       />
 
+      <div className="p-4 sm:p-6">
       {error ? (
         <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">
           <div className="flex items-center gap-2 font-semibold">
             <ShieldAlert className="h-5 w-5" />
-            Error loading alerts
+            {tr('Error loading alerts', 'Erreur de chargement des alertes')}
           </div>
           <p className="mt-1 text-sm">{error}</p>
         </div>
@@ -785,17 +899,17 @@ const Alerts = () => {
 
       <section className="mt-6">
         <div className="mb-4">
-          <p className="text-sm font-semibold uppercase tracking-[0.24em] text-violet-500">Operational inbox</p>
-          <h2 className="mt-2 text-3xl font-bold text-slate-900">Critical and live issues from every module</h2>
+          <p className="text-sm font-semibold uppercase tracking-[0.24em] text-violet-500">{tr('Operational inbox', 'Boîte opérationnelle')}</p>
+          <h2 className="mt-2 text-3xl font-bold text-slate-900">{tr('Critical and live issues from every module', 'Problèmes critiques et en direct de tous les modules')}</h2>
         </div>
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 2xl:grid-cols-6">
           {[
-            { label: 'Critical', value: stats.critical, icon: AlertTriangle, iconClass: 'bg-red-50 text-red-600', chipClass: 'text-red-600' },
-            { label: 'Unread', value: stats.unread, icon: Bell, iconClass: 'bg-violet-50 text-violet-600', chipClass: 'text-violet-600' },
-            { label: 'Assigned to me', value: stats.assignedToMe, icon: CheckCheck, iconClass: 'bg-sky-50 text-sky-600', chipClass: 'text-sky-600' },
-            { label: 'Resolved today', value: stats.resolvedToday, icon: CheckCircle, iconClass: 'bg-emerald-50 text-emerald-600', chipClass: 'text-emerald-600' },
-            { label: 'Fleet issues', value: stats.fleetIssues, icon: Car, iconClass: 'bg-amber-50 text-amber-600', chipClass: 'text-amber-600' },
-            { label: 'Tour issues', value: stats.tourIssues, icon: Calendar, iconClass: 'bg-fuchsia-50 text-fuchsia-600', chipClass: 'text-fuchsia-600' },
+            { label: tr('Critical', 'Critique'), value: stats.critical, icon: AlertTriangle, iconClass: 'bg-red-50 text-red-600', chipClass: 'text-red-600' },
+            { label: tr('Unread', 'Non lues'), value: stats.unread, icon: Bell, iconClass: 'bg-violet-50 text-violet-600', chipClass: 'text-violet-600' },
+            { label: tr('Assigned to me', 'Assignées à moi'), value: stats.assignedToMe, icon: CheckCheck, iconClass: 'bg-sky-50 text-sky-600', chipClass: 'text-sky-600' },
+            { label: tr('Resolved today', "Résolues aujourd'hui"), value: stats.resolvedToday, icon: CheckCircle, iconClass: 'bg-emerald-50 text-emerald-600', chipClass: 'text-emerald-600' },
+            { label: tr('Fleet issues', 'Problèmes flotte'), value: stats.fleetIssues, icon: Car, iconClass: 'bg-amber-50 text-amber-600', chipClass: 'text-amber-600' },
+            { label: tr('Tour issues', 'Problèmes tours'), value: stats.tourIssues, icon: Calendar, iconClass: 'bg-fuchsia-50 text-fuchsia-600', chipClass: 'text-fuchsia-600' },
           ].map((item) => {
             const Icon = item.icon;
             return (
@@ -818,8 +932,8 @@ const Alerts = () => {
       <section className="mt-6 rounded-xl border border-violet-100 bg-white p-4 shadow-[0_18px_45px_rgba(76,29,149,0.08)] sm:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-violet-500">Smart filters</p>
-            <h3 className="mt-1 text-xl font-bold text-slate-900">Find the right alert fast</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Smart filters', 'Filtres intelligents')}</p>
+            <h3 className="mt-1 text-xl font-bold text-slate-900">{tr("Find the right alert fast", "Trouvez la bonne alerte rapidement")}</h3>
           </div>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
             <div className="relative min-w-[260px]">
@@ -827,7 +941,7 @@ const Alerts = () => {
               <input
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search alerts, vehicles, guests, items..."
+                placeholder={tr('Search alerts, vehicles, guests, items...', 'Rechercher alertes, véhicules, clients, articles...')}
                 className="w-full rounded-2xl border border-violet-100 bg-slate-50/70 py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-violet-300 focus:bg-white focus:ring-2 focus:ring-violet-500/20"
               />
             </div>
@@ -837,19 +951,19 @@ const Alerts = () => {
                 onChange={(e) => setFilters((prev) => ({ ...prev, priority: e.target.value }))}
                 className="rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-500/20"
               >
-                <option value="all">All severities</option>
-                <option value="high">Critical</option>
-                <option value="medium">Warning</option>
-                <option value="low">Info</option>
+                <option value="all">{tr('All severities', 'Toutes les priorités')}</option>
+                <option value="high">{tr('Critical', 'Critique')}</option>
+                <option value="medium">{tr('Warning', 'Alerte')}</option>
+                <option value="low">{tr('Info', 'Info')}</option>
               </select>
               <select
                 value={filters.module}
                 onChange={(e) => setFilters((prev) => ({ ...prev, module: e.target.value }))}
                 className="rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-500/20"
               >
-                <option value="all">All modules</option>
+                <option value="all">{tr('All modules', 'Tous les modules')}</option>
                 {Object.entries(MODULE_META).map(([key, meta]) => (
-                  <option key={key} value={key}>{meta.label}</option>
+                  <option key={key} value={key}>{isFrench ? (meta.labelFr || meta.label) : meta.label}</option>
                 ))}
               </select>
               <select
@@ -857,11 +971,11 @@ const Alerts = () => {
                 onChange={(e) => setFilters((prev) => ({ ...prev, status: e.target.value }))}
                 className="rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-500/20"
               >
-                <option value="open">Open only</option>
-                <option value="unread">Unread</option>
-                <option value="acknowledged">Acknowledged</option>
-                <option value="resolved">Resolved</option>
-                <option value="all">Everything</option>
+                <option value="open">{tr('Open only', 'Ouvertes seulement')}</option>
+                <option value="unread">{tr('Unread', 'Non lues')}</option>
+                <option value="acknowledged">{tr('Acknowledged', 'Accusées')}</option>
+                <option value="resolved">{tr('Resolved', 'Résolues')}</option>
+                <option value="all">{tr('Everything', 'Toutes')}</option>
               </select>
             </div>
           </div>
@@ -870,14 +984,14 @@ const Alerts = () => {
 
       <section className="mt-6">
         <div className="mb-4">
-          <p className="text-sm font-semibold uppercase tracking-[0.22em] text-violet-500">Critical now</p>
-          <h3 className="mt-1 text-2xl font-bold text-slate-900">Handle the highest-priority issues first</h3>
+          <p className="text-sm font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Critical now', 'Critique maintenant')}</p>
+          <h3 className="mt-1 text-2xl font-bold text-slate-900">{tr('Handle the highest-priority issues first', 'Traitez d’abord les problèmes les plus prioritaires')}</h3>
         </div>
         {criticalAlerts.length === 0 ? (
           <div className="rounded-xl border border-violet-100 bg-white p-8 text-center shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
             <CheckCircle className="mx-auto h-12 w-12 text-emerald-500" />
-            <h4 className="mt-4 text-lg font-semibold text-slate-900">No critical alerts right now</h4>
-            <p className="mt-1 text-sm text-slate-500">Warnings and informational alerts are still available in the grouped feed below.</p>
+            <h4 className="mt-4 text-lg font-semibold text-slate-900">{tr('No critical alerts right now', "Aucune alerte critique pour l'instant")}</h4>
+            <p className="mt-1 text-sm text-slate-500">{tr('Warnings and informational alerts are still available in the grouped feed below.', 'Les alertes d’avertissement et d’information restent disponibles dans le flux groupé ci-dessous.')}</p>
           </div>
         ) : (
           <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
@@ -894,9 +1008,9 @@ const Alerts = () => {
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${PRIORITY_META[alert.priority]?.chip || PRIORITY_META.low.chip}`}>
-                            {PRIORITY_META[alert.priority]?.label || 'Info'}
+                            {isFrench ? (PRIORITY_META[alert.priority]?.labelFr || PRIORITY_META[alert.priority]?.label || 'Info') : (PRIORITY_META[alert.priority]?.label || 'Info')}
                           </span>
-                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">{moduleMeta.label}</span>
+                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">{isFrench ? (moduleMeta.labelFr || moduleMeta.label) : moduleMeta.label}</span>
                         </div>
                         <h4 className="mt-3 text-lg font-bold text-slate-900">{alert.title}</h4>
                         <p className="mt-2 text-sm leading-6 text-slate-600">{alert.message}</p>
@@ -911,7 +1025,7 @@ const Alerts = () => {
                       onClick={() => openAlert(alert)}
                       className="inline-flex items-center gap-2 rounded-2xl border border-violet-100 bg-white px-3 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-50"
                     >
-                      Open
+                      {tr('Open', 'Ouvrir')}
                       <ExternalLink className="h-4 w-4" />
                     </button>
                     {alert.source === 'tours' && alert.data?.guidePhone ? (
@@ -921,7 +1035,7 @@ const Alerts = () => {
                         className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
                       >
                         <MapPin className="h-4 w-4" />
-                        Locate Guide
+                        {tr('Locate Guide', 'Localiser le guide')}
                       </button>
                     ) : null}
                     <button
@@ -930,7 +1044,7 @@ const Alerts = () => {
                       className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
                     >
                       <Check className="h-4 w-4" />
-                      Acknowledge
+                      {tr('Acknowledge', 'Accuser')}
                     </button>
                     <button
                       type="button"
@@ -938,7 +1052,7 @@ const Alerts = () => {
                       className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
                     >
                       <CheckCheck className="h-4 w-4" />
-                      Resolve
+                      {tr('Resolve', 'Résoudre')}
                     </button>
                   </div>
                 </article>
@@ -950,8 +1064,8 @@ const Alerts = () => {
 
       <section className="mt-6">
         <div className="mb-4">
-          <p className="text-sm font-semibold uppercase tracking-[0.22em] text-violet-500">Grouped by module</p>
-          <h3 className="mt-1 text-2xl font-bold text-slate-900">Work through alerts where they happen</h3>
+          <p className="text-sm font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Grouped by module', 'Groupées par module')}</p>
+          <h3 className="mt-1 text-2xl font-bold text-slate-900">{tr('Work through alerts where they happen', 'Traitez les alertes là où elles apparaissent')}</h3>
         </div>
         <div className="space-y-4">
           {Object.entries(MODULE_META).map(([moduleKey, moduleMeta]) => {
@@ -971,8 +1085,8 @@ const Alerts = () => {
                       <ModuleIcon className="h-5 w-5" />
                     </div>
                     <div>
-                      <p className="text-lg font-bold text-slate-900">{moduleMeta.label}</p>
-                      <p className="text-sm text-slate-500">{moduleAlerts.length} open alert{moduleAlerts.length === 1 ? '' : 's'}</p>
+                      <p className="text-lg font-bold text-slate-900">{isFrench ? (moduleMeta.labelFr || moduleMeta.label) : moduleMeta.label}</p>
+                      <p className="text-sm text-slate-500">{isFrench ? `${moduleAlerts.length} alerte${moduleAlerts.length === 1 ? '' : 's'} ouverte${moduleAlerts.length === 1 ? '' : 's'}` : `${moduleAlerts.length} open alert${moduleAlerts.length === 1 ? '' : 's'}`}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
@@ -984,7 +1098,7 @@ const Alerts = () => {
                       }}
                       className="hidden rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 sm:inline-flex"
                     >
-                      Open module
+                      {tr('Open module', 'Ouvrir le module')}
                     </button>
                     {isCollapsed ? <ChevronRight className="h-5 w-5 text-slate-500" /> : <ChevronDown className="h-5 w-5 text-slate-500" />}
                   </div>
@@ -1001,16 +1115,16 @@ const Alerts = () => {
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className={`inline-flex h-2.5 w-2.5 rounded-full ${priorityMeta.dot}`} />
                                 <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${priorityMeta.chip}`}>
-                                  {priorityMeta.label}
+                                  {isFrench ? (priorityMeta.labelFr || priorityMeta.label) : priorityMeta.label}
                                 </span>
                                 {!alert.read ? (
                                   <span className="inline-flex items-center rounded-full bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700 border border-violet-200">
-                                    Unread
+                                    {tr('Unread', 'Non lue')}
                                   </span>
                                 ) : null}
                                 {alert.acknowledged && !alert.resolved ? (
                                   <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 border border-slate-200">
-                                    Acknowledged
+                                    {tr('Acknowledged', 'Accusée')}
                                   </span>
                                 ) : null}
                               </div>
@@ -1027,7 +1141,7 @@ const Alerts = () => {
                               onClick={() => openAlert(alert)}
                               className="inline-flex items-center gap-2 rounded-2xl border border-violet-100 bg-white px-3 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-50"
                             >
-                              Open
+                              {tr('Open', 'Ouvrir')}
                               <ExternalLink className="h-4 w-4" />
                             </button>
                             {alert.source === 'tours' && alert.data?.guidePhone ? (
@@ -1037,7 +1151,7 @@ const Alerts = () => {
                                 className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
                               >
                                 <MapPin className="h-4 w-4" />
-                                Locate Guide
+                                {tr('Locate Guide', 'Localiser le guide')}
                               </button>
                             ) : null}
                             {!alert.acknowledged ? (
@@ -1047,7 +1161,7 @@ const Alerts = () => {
                                 className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
                               >
                                 <Check className="h-4 w-4" />
-                                Acknowledge
+                                {tr('Acknowledge', 'Accuser')}
                               </button>
                             ) : null}
                             {!alert.resolved ? (
@@ -1057,7 +1171,7 @@ const Alerts = () => {
                                 className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
                               >
                                 <CheckCheck className="h-4 w-4" />
-                                Resolve
+                                {tr('Resolve', 'Résoudre')}
                               </button>
                             ) : null}
                           </div>
@@ -1079,8 +1193,8 @@ const Alerts = () => {
           className="flex w-full items-center justify-between gap-4 bg-slate-50/80 px-4 py-4 text-left sm:px-5"
         >
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-violet-500">History</p>
-            <h3 className="mt-1 text-2xl font-bold text-slate-900">Resolved alerts</h3>
+            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('History', 'Historique')}</p>
+            <h3 className="mt-1 text-2xl font-bold text-slate-900">{tr('Resolved alerts', 'Alertes résolues')}</h3>
           </div>
           <div className="flex items-center gap-3">
             <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600">
@@ -1093,7 +1207,7 @@ const Alerts = () => {
           <div className="space-y-3 px-4 py-4 sm:px-5">
             {resolvedAlerts.length === 0 ? (
               <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/70 p-6 text-center text-sm text-slate-500">
-                No resolved alerts yet.
+                {tr('No resolved alerts yet.', "Aucune alerte résolue pour l'instant.")}
               </div>
             ) : (
               resolvedAlerts.map((alert) => {
@@ -1108,9 +1222,9 @@ const Alerts = () => {
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                            Resolved
+                            {tr('Resolved', 'Résolue')}
                           </span>
-                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">{moduleMeta.label}</span>
+                          <span className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">{isFrench ? (moduleMeta.labelFr || moduleMeta.label) : moduleMeta.label}</span>
                         </div>
                         <h4 className="mt-2 text-base font-bold text-slate-900">{alert.title}</h4>
                         <p className="mt-1 text-sm text-slate-600">{alert.message}</p>
@@ -1124,6 +1238,7 @@ const Alerts = () => {
           </div>
         ) : null}
       </section>
+      </div>
     </div>
   );
 };

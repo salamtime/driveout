@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useTranslation } from 'react-i18next';
 import {
   fetchPurchases,
   createPurchase,
@@ -45,6 +46,11 @@ import { toast } from 'react-hot-toast';
 import InventoryService from '../../services/InventoryService';
 
 const PurchasesManagement = ({ initialParams, action }) => {
+  const { i18n } = useTranslation();
+  const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
+  const primaryActionButtonClass = 'rounded-2xl bg-violet-600 text-white shadow-sm hover:bg-violet-700';
+  const softActionButtonClass = 'rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900';
+  const dangerActionButtonClass = 'rounded-2xl border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800';
   const dispatch = useDispatch();
   const { purchases, loading, error } = useSelector(state => state.inventory);
 
@@ -107,7 +113,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
       })).unwrap();
     } catch (error) {
       dispatch(setError(error.message));
-      toast.error('Failed to load purchases');
+      toast.error(tr('Failed to load purchases', "Impossible de charger les achats"));
     }
   };
 
@@ -199,19 +205,19 @@ const PurchasesManagement = ({ initialParams, action }) => {
 
   const validateForm = () => {
     if (!formData.supplier || !formData.invoice_number || !formData.purchase_date) {
-      toast.error('Please fill in all required fields');
+      toast.error(tr('Please fill in all required fields', 'Veuillez remplir tous les champs obligatoires'));
       return false;
     }
 
     if (formData.lines.length === 0) {
-      toast.error('Please add at least one purchase item');
+      toast.error(tr('Please add at least one purchase item', "Veuillez ajouter au moins un article d'achat"));
       return false;
     }
 
     // Validate line items
     for (const line of formData.lines) {
-      if (!line.item_id || line.quantity <= 0 || line.unit_cost_mad <= 0) {
-        toast.error('Please complete all line item details and ensure quantities/costs are greater than 0');
+        if (!line.item_id || line.quantity <= 0 || line.unit_cost_mad <= 0) {
+        toast.error(tr('Please complete all line item details and ensure quantities/costs are greater than 0', "Veuillez compléter toutes les lignes et vérifier que les quantités/coûts sont supérieurs à 0"));
         return false;
       }
     }
@@ -224,14 +230,14 @@ const PurchasesManagement = ({ initialParams, action }) => {
       if (!validateForm()) return;
 
       await dispatch(createPurchase(formData)).unwrap();
-      toast.success('Purchase created successfully! Stock levels have been updated.');
+      toast.success(tr('Purchase created successfully! Stock levels have been updated.', "Achat créé avec succès ! Les niveaux de stock ont été mis à jour."));
       setIsCreateModalOpen(false);
       resetForm();
       loadPurchases();
       // Reload items to refresh stock levels
       loadAvailableItems();
     } catch (error) {
-      toast.error('Failed to create purchase');
+      toast.error(tr('Failed to create purchase', "Impossible de créer l'achat"));
     }
   };
 
@@ -243,7 +249,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
         id: selectedPurchase.id, 
         purchaseData: formData 
       })).unwrap();
-      toast.success('Purchase updated successfully! Stock levels have been adjusted.');
+      toast.success(tr('Purchase updated successfully! Stock levels have been adjusted.', "Achat mis à jour avec succès ! Les niveaux de stock ont été ajustés."));
       setIsEditModalOpen(false);
       resetForm();
       setSelectedPurchase(null);
@@ -251,20 +257,20 @@ const PurchasesManagement = ({ initialParams, action }) => {
       // Reload items to refresh stock levels
       loadAvailableItems();
     } catch (error) {
-      toast.error('Failed to update purchase');
+      toast.error(tr('Failed to update purchase', "Impossible de mettre à jour l'achat"));
     }
   };
 
   const handleDeletePurchase = async (purchaseId) => {
-    if (window.confirm('Are you sure you want to delete this purchase? This will also remove associated stock movements and adjust inventory levels.')) {
+    if (window.confirm(tr('Are you sure you want to delete this purchase? This will also remove associated stock movements and adjust inventory levels.', "Voulez-vous vraiment supprimer cet achat ? Cela supprimera aussi les mouvements de stock associés et ajustera les niveaux d'inventaire."))) {
       try {
         await dispatch(deletePurchase(purchaseId)).unwrap();
-        toast.success('Purchase deleted successfully! Stock levels have been adjusted.');
+        toast.success(tr('Purchase deleted successfully! Stock levels have been adjusted.', "Achat supprimé avec succès ! Les niveaux de stock ont été ajustés."));
         loadPurchases();
         // Reload items to refresh stock levels
         loadAvailableItems();
       } catch (error) {
-        toast.error('Failed to delete purchase');
+        toast.error(tr('Failed to delete purchase', "Impossible de supprimer l'achat"));
       }
     }
   };
@@ -317,17 +323,17 @@ const PurchasesManagement = ({ initialParams, action }) => {
   const renderLineItemsForm = () => (
     <div className="border-t pt-4">
       <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-medium">Purchase Items</h3>
-        <Button type="button" onClick={addLineItem} size="sm">
+        <h3 className="text-lg font-medium">{tr('Purchase Items', "Articles d'achat")}</h3>
+        <Button type="button" onClick={addLineItem} size="sm" className={primaryActionButtonClass}>
           <Plus className="h-4 w-4 mr-2" />
-          Add Item
+          {tr('Add Item', 'Ajouter un article')}
         </Button>
       </div>
       
       {formData.lines.length === 0 ? (
         <div className="text-center py-8 text-gray-500">
           <Package className="h-12 w-12 mx-auto mb-2 text-gray-300" />
-          <p>No items added yet. Click "Add Item" to start.</p>
+          <p>{tr('No items added yet. Click "Add Item" to start.', 'Aucun article ajouté pour le moment. Cliquez sur "Ajouter un article" pour commencer.')}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -336,19 +342,19 @@ const PurchasesManagement = ({ initialParams, action }) => {
             const isLowStock = selectedItem && selectedItem.is_low_stock;
             
             return (
-              <div key={line.id} className="grid grid-cols-12 gap-3 items-end p-3 bg-gray-50 rounded">
+              <div key={line.id} className="grid grid-cols-12 gap-3 items-end rounded-2xl border border-slate-200 bg-slate-50 p-3">
                 <div className="col-span-4">
-                  <label className="text-xs font-medium text-gray-600 mb-1 block">Item *</label>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">{tr('Item', 'Article')} *</label>
                   <select
                     value={line.item_id}
                     onChange={(e) => updateLineItem(line.id, 'item_id', e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
                     required
                   >
-                    <option value="">Select item...</option>
+                    <option value="">{tr('Select item...', 'Sélectionnez un article...')}</option>
                     {availableItems.map(item => (
                       <option key={item.id} value={item.id}>
-                        {item.name} ({item.sku}) - Stock: {item.stock_on_hand}
+                        {item.name} ({item.sku}) - {tr('Stock', 'Stock')} : {item.stock_on_hand}
                         {item.is_low_stock && ' ⚠️'}
                       </option>
                     ))}
@@ -356,23 +362,24 @@ const PurchasesManagement = ({ initialParams, action }) => {
                   {isLowStock && (
                     <div className="flex items-center gap-1 mt-1">
                       <AlertTriangle className="h-3 w-3 text-amber-500" />
-                      <span className="text-xs text-amber-600">Low stock item</span>
+                      <span className="text-xs text-amber-600">{tr('Low stock item', 'Article en stock faible')}</span>
                     </div>
                   )}
                 </div>
                 <div className="col-span-2">
-                  <label className="text-xs font-medium text-gray-600 mb-1 block">Quantity *</label>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">{tr('Quantity', 'Quantité')} *</label>
                   <Input
                     type="number"
-                    min="1"
+                    min="0.01"
+                    step="0.01"
                     value={line.quantity}
-                    onChange={(e) => updateLineItem(line.id, 'quantity', parseInt(e.target.value) || 0)}
+                    onChange={(e) => updateLineItem(line.id, 'quantity', parseFloat(e.target.value) || 0)}
                     className="text-sm"
                     required
                   />
                 </div>
                 <div className="col-span-2">
-                  <label className="text-xs font-medium text-gray-600 mb-1 block">Unit Cost *</label>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">{tr('Unit Cost', 'Coût unitaire')} *</label>
                   <Input
                     type="number"
                     step="0.01"
@@ -384,7 +391,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                   />
                 </div>
                 <div className="col-span-2">
-                  <label className="text-xs font-medium text-gray-600 mb-1 block">Total</label>
+                  <label className="text-xs font-medium text-gray-600 mb-1 block">{tr('Total', 'Total')}</label>
                   <Input
                     type="text"
                     value={formatCurrency(line.total_cost_mad)}
@@ -398,7 +405,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                     variant="outline"
                     size="sm"
                     onClick={() => removeLineItem(line.id)}
-                    className="text-red-600 hover:text-red-700"
+                    className={dangerActionButtonClass}
                   >
                     <Minus className="h-4 w-4" />
                   </Button>
@@ -410,7 +417,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
           {/* Total Summary */}
           <div className="flex justify-end pt-3 border-t">
             <div className="text-right">
-              <p className="text-sm text-gray-600">Total Amount:</p>
+              <p className="text-sm text-gray-600">{tr('Total Amount:', 'Montant total :')}</p>
               <p className="text-xl font-semibold text-green-600">
                 {formatCurrency(formData.total_amount_mad)}
               </p>
@@ -423,10 +430,12 @@ const PurchasesManagement = ({ initialParams, action }) => {
 
   if (loading.purchases) {
     return (
-      <div className="flex items-center justify-center p-8">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading purchases...</p>
+      <div className="p-4 lg:p-6">
+        <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+          <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+            <div className="text-5xl leading-none animate-pulse">⏳</div>
+            <h2 className="text-xl font-semibold text-slate-900">{tr('Loading purchases...', 'Chargement des achats...')}</h2>
+          </div>
         </div>
       </div>
     );
@@ -437,38 +446,38 @@ const PurchasesManagement = ({ initialParams, action }) => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">Purchases Management</h1>
-          <p className="text-gray-600 mt-1">Track purchases and supplier invoices - automatically updates inventory stock</p>
+          <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">{tr('Purchases Management', 'Gestion des achats')}</h1>
+          <p className="text-gray-600 mt-1">{tr('Track purchases and supplier invoices - automatically updates inventory stock', "Suivez les achats et les factures fournisseurs - met automatiquement à jour le stock d'inventaire")}</p>
         </div>
         <Dialog open={isCreateModalOpen} onOpenChange={setIsCreateModalOpen}>
           <DialogTrigger asChild>
-            <Button onClick={resetForm}>
+            <Button onClick={resetForm} className={primaryActionButtonClass}>
               <Plus className="h-4 w-4 mr-2" />
-              Add Purchase
+              {tr('Add Purchase', 'Ajouter un achat')}
             </Button>
           </DialogTrigger>
-          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto rounded-[2rem] border-slate-200">
             <DialogHeader>
-              <DialogTitle>Add New Purchase</DialogTitle>
+              <DialogTitle>{tr('Add New Purchase', 'Ajouter un nouvel achat')}</DialogTitle>
             </DialogHeader>
             <div className="grid gap-6 py-4">
               {/* Basic Information */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm font-medium mb-2 block">Supplier *</label>
+                  <label className="text-sm font-medium mb-2 block">{tr('Supplier', 'Fournisseur')} *</label>
                   <Input
                     value={formData.supplier}
                     onChange={(e) => setFormData({...formData, supplier: e.target.value})}
-                    placeholder="Enter supplier name"
+                    placeholder={tr('Enter supplier name', 'Entrez le nom du fournisseur')}
                     required
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium mb-2 block">Invoice Number *</label>
+                  <label className="text-sm font-medium mb-2 block">{tr('Invoice Number', 'Numéro de facture')} *</label>
                   <Input
                     value={formData.invoice_number}
                     onChange={(e) => setFormData({...formData, invoice_number: e.target.value})}
-                    placeholder="Enter invoice number"
+                    placeholder={tr('Enter invoice number', 'Entrez le numéro de facture')}
                     required
                   />
                 </div>
@@ -476,7 +485,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
               
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm font-medium mb-2 block">Purchase Date *</label>
+                  <label className="text-sm font-medium mb-2 block">{tr('Purchase Date', "Date d'achat")} *</label>
                   <Input
                     type="date"
                     value={formData.purchase_date}
@@ -485,14 +494,14 @@ const PurchasesManagement = ({ initialParams, action }) => {
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium mb-2 block">Total Amount (MAD)</label>
+                  <label className="text-sm font-medium mb-2 block">{tr('Total Amount (MAD)', 'Montant total (MAD)')}</label>
                   <Input
                     type="number"
                     step="0.01"
                     value={formData.total_amount_mad}
                     readOnly
                     className="bg-gray-50"
-                    placeholder="Auto-calculated from items"
+                    placeholder={tr('Auto-calculated from items', 'Calculé automatiquement à partir des articles')}
                   />
                 </div>
               </div>
@@ -502,23 +511,23 @@ const PurchasesManagement = ({ initialParams, action }) => {
 
               {/* Notes */}
               <div>
-                <label className="text-sm font-medium mb-2 block">Notes</label>
+                <label className="text-sm font-medium mb-2 block">{tr('Notes', 'Notes')}</label>
                 <Textarea
                   value={formData.notes}
                   onChange={(e) => setFormData({...formData, notes: e.target.value})}
-                  placeholder="Enter any notes about this purchase"
+                  placeholder={tr('Enter any notes about this purchase', 'Entrez des notes sur cet achat')}
                   rows={3}
                 />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setIsCreateModalOpen(false)}>
+              <Button variant="outline" onClick={() => setIsCreateModalOpen(false)} className={softActionButtonClass}>
                 <X className="h-4 w-4 mr-2" />
-                Cancel
+                {tr('Cancel', 'Annuler')}
               </Button>
-              <Button onClick={handleCreatePurchase}>
+              <Button onClick={handleCreatePurchase} className={primaryActionButtonClass}>
                 <Save className="h-4 w-4 mr-2" />
-                Create Purchase & Update Stock
+                {tr('Create Purchase & Update Stock', "Créer l'achat et mettre à jour le stock")}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -526,14 +535,14 @@ const PurchasesManagement = ({ initialParams, action }) => {
       </div>
 
       {/* Search and Filters */}
-      <Card>
+      <Card className="rounded-[2rem] border-slate-200 bg-white shadow-sm">
         <CardContent className="pt-6">
           <div className="flex flex-col md:flex-row gap-4">
             <div className="flex-1">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
                 <Input
-                  placeholder="Search by supplier or invoice number..."
+                  placeholder={tr('Search by supplier or invoice number...', 'Rechercher par fournisseur ou numéro de facture...')}
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
@@ -541,19 +550,19 @@ const PurchasesManagement = ({ initialParams, action }) => {
                 />
               </div>
             </div>
-            <Button onClick={handleSearch} variant="outline">
+            <Button onClick={handleSearch} variant="outline" className={softActionButtonClass}>
               <Search className="h-4 w-4 mr-2" />
-              Search
+              {tr('Search', 'Rechercher')}
             </Button>
           </div>
           
           <div className="flex flex-col md:flex-row gap-4 mt-4">
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-gray-500" />
-              <span className="text-sm font-medium text-gray-700">Filters</span>
+              <span className="text-sm font-medium text-gray-700">{tr('Filters', 'Filtres')}</span>
             </div>
             <Input
-              placeholder="Filter by supplier"
+              placeholder={tr('Filter by supplier', 'Filtrer par fournisseur')}
               value={supplierFilter}
               onChange={(e) => setSupplierFilter(e.target.value)}
               className="max-w-xs"
@@ -580,7 +589,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
           <Card>
             <CardContent className="text-center py-8">
               <Package className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-600">No purchases found</p>
+              <p className="text-gray-600">{tr('No purchases found', 'Aucun achat trouvé')}</p>
             </CardContent>
           </Card>
         ) : (
@@ -594,7 +603,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                         {purchase.supplier}
                       </h3>
                       <Badge variant="outline">
-                        Invoice #{purchase.invoice_number || purchase.purchase_number || 'N/A'}
+                        {tr('Invoice', 'Facture')} #{purchase.invoice_number || purchase.purchase_number || tr('N/A', 'N/D')}
                       </Badge>
                     </div>
                     
@@ -614,7 +623,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                       <div className="flex items-center gap-2">
                         <Package className="h-4 w-4 text-gray-500" />
                         <span className="text-sm text-gray-600">
-                          {purchase.purchase_lines?.length || 0} items
+                          {purchase.purchase_lines?.length || 0} {tr('items', 'articles')}
                         </span>
                       </div>
                     </div>
@@ -625,7 +634,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                           {purchase.purchase_lines.slice(0, 2).map((line, index) => (
                             <div key={index} className="text-sm text-gray-600 bg-gray-50 p-2 rounded">
-                              <span className="font-medium">{line.inventory_items?.name || 'Item'}</span>
+                              <span className="font-medium">{line.inventory_items?.name || tr('Item', 'Article')}</span>
                               <br />
                               <span>{line.quantity} × {formatCurrency(line.unit_cost_mad)}</span>
                             </div>
@@ -633,7 +642,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                         </div>
                         {purchase.purchase_lines.length > 2 && (
                           <p className="text-sm text-gray-500 mt-2">
-                            +{purchase.purchase_lines.length - 2} more items
+                            +{purchase.purchase_lines.length - 2} {tr('more items', "articles de plus")}
                           </p>
                         )}
                       </div>
@@ -643,7 +652,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                       <div className="flex items-start gap-2 mb-4">
                         <FileText className="h-4 w-4 text-gray-500 mt-0.5" />
                         <span className="text-sm text-gray-600">
-                          Notes: {purchase.notes}
+                          {tr('Notes:', 'Notes :')} {purchase.notes}
                         </span>
                       </div>
                     )}
@@ -656,7 +665,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                       onClick={() => openViewModal(purchase)}
                     >
                       <Eye className="h-4 w-4" />
-                      View Details
+                      {tr('View Details', 'Voir les détails')}
                     </Button>
                     <Button
                       variant="outline"
@@ -664,7 +673,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                       onClick={() => openEditModal(purchase)}
                     >
                       <Edit className="h-4 w-4" />
-                      Edit
+                      {tr('Edit', 'Modifier')}
                     </Button>
                     <Button 
                       variant="outline" 
@@ -673,7 +682,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
                       onClick={() => handleDeletePurchase(purchase.id)}
                     >
                       <Trash2 className="h-4 w-4" />
-                      Delete
+                      {tr('Delete', 'Supprimer')}
                     </Button>
                   </div>
                 </div>
@@ -687,26 +696,26 @@ const PurchasesManagement = ({ initialParams, action }) => {
       <Dialog open={isEditModalOpen} onOpenChange={setIsEditModalOpen}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Edit Purchase</DialogTitle>
+            <DialogTitle>{tr('Edit Purchase', "Modifier l'achat")}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-6 py-4">
             {/* Basic Information */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium mb-2 block">Supplier *</label>
+                <label className="text-sm font-medium mb-2 block">{tr('Supplier *', 'Fournisseur *')}</label>
                 <Input
                   value={formData.supplier}
                   onChange={(e) => setFormData({...formData, supplier: e.target.value})}
-                  placeholder="Enter supplier name"
+                  placeholder={tr('Enter supplier name', 'Entrez le nom du fournisseur')}
                   required
                 />
               </div>
               <div>
-                <label className="text-sm font-medium mb-2 block">Invoice Number *</label>
+                <label className="text-sm font-medium mb-2 block">{tr('Invoice Number *', 'Numéro de facture *')}</label>
                 <Input
                   value={formData.invoice_number}
                   onChange={(e) => setFormData({...formData, invoice_number: e.target.value})}
-                  placeholder="Enter invoice number"
+                  placeholder={tr('Enter invoice number', 'Entrez le numéro de facture')}
                   required
                 />
               </div>
@@ -714,7 +723,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
             
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium mb-2 block">Purchase Date *</label>
+                <label className="text-sm font-medium mb-2 block">{tr('Purchase Date *', "Date d'achat *")}</label>
                 <Input
                   type="date"
                   value={formData.purchase_date}
@@ -723,14 +732,14 @@ const PurchasesManagement = ({ initialParams, action }) => {
                 />
               </div>
               <div>
-                <label className="text-sm font-medium mb-2 block">Total Amount (MAD)</label>
+                <label className="text-sm font-medium mb-2 block">{tr('Total Amount (MAD)', 'Montant total (MAD)')}</label>
                 <Input
                   type="number"
                   step="0.01"
                   value={formData.total_amount_mad}
                   readOnly
                   className="bg-gray-50"
-                  placeholder="Auto-calculated from items"
+                  placeholder={tr('Auto-calculated from items', 'Calculé automatiquement à partir des articles')}
                 />
               </div>
             </div>
@@ -740,11 +749,11 @@ const PurchasesManagement = ({ initialParams, action }) => {
 
             {/* Notes */}
             <div>
-              <label className="text-sm font-medium mb-2 block">Notes</label>
+              <label className="text-sm font-medium mb-2 block">{tr('Notes', 'Notes')}</label>
               <Textarea
                 value={formData.notes}
                 onChange={(e) => setFormData({...formData, notes: e.target.value})}
-                placeholder="Enter any notes about this purchase"
+                placeholder={tr('Enter any notes about this purchase', 'Entrez des notes sur cet achat')}
                 rows={3}
               />
             </div>
@@ -752,11 +761,11 @@ const PurchasesManagement = ({ initialParams, action }) => {
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsEditModalOpen(false)}>
               <X className="h-4 w-4 mr-2" />
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </Button>
             <Button onClick={handleEditPurchase}>
               <Save className="h-4 w-4 mr-2" />
-              Update Purchase & Adjust Stock
+              {tr('Update Purchase & Adjust Stock', "Mettre à jour l'achat et ajuster le stock")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -766,35 +775,35 @@ const PurchasesManagement = ({ initialParams, action }) => {
       <Dialog open={isViewModalOpen} onOpenChange={setIsViewModalOpen}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
-            <DialogTitle>Purchase Details</DialogTitle>
+            <DialogTitle>{tr('Purchase Details', "Détails de l'achat")}</DialogTitle>
           </DialogHeader>
           {selectedPurchase && (
             <div className="py-4">
               <div className="grid grid-cols-2 gap-4 mb-6">
                 <div>
-                  <h4 className="font-medium text-gray-900 mb-2">Supplier Information</h4>
+                  <h4 className="font-medium text-gray-900 mb-2">{tr('Supplier Information', 'Informations du fournisseur')}</h4>
                   <p className="text-lg font-semibold">{selectedPurchase.supplier}</p>
-                  <p className="text-sm text-gray-600">Invoice: {selectedPurchase.invoice_number || selectedPurchase.purchase_number || 'N/A'}</p>
+                  <p className="text-sm text-gray-600">{tr('Invoice:', 'Facture :')} {selectedPurchase.invoice_number || selectedPurchase.purchase_number || tr('N/A', 'N/D')}</p>
                 </div>
                 <div>
-                  <h4 className="font-medium text-gray-900 mb-2">Purchase Information</h4>
-                  <p className="text-sm text-gray-600">Date: {formatDate(selectedPurchase.purchase_date)}</p>
+                  <h4 className="font-medium text-gray-900 mb-2">{tr('Purchase Information', "Informations sur l'achat")}</h4>
+                  <p className="text-sm text-gray-600">{tr('Date:', 'Date :')} {formatDate(selectedPurchase.purchase_date)}</p>
                   <p className="text-lg font-semibold text-green-600">
-                    Total: {formatCurrency(selectedPurchase.total_amount_mad)}
+                    {tr('Total:', 'Total :')} {formatCurrency(selectedPurchase.total_amount_mad)}
                   </p>
                 </div>
               </div>
 
               {selectedPurchase.purchase_lines && selectedPurchase.purchase_lines.length > 0 && (
                 <div className="mb-6">
-                  <h4 className="font-medium text-gray-900 mb-3">Items Purchased</h4>
+                  <h4 className="font-medium text-gray-900 mb-3">{tr('Items Purchased', 'Articles achetés')}</h4>
                   <div className="space-y-2">
                     {selectedPurchase.purchase_lines.map((line, index) => (
                       <div key={index} className="flex justify-between items-center p-3 bg-gray-50 rounded">
                         <div>
-                          <p className="font-medium">{line.inventory_items?.name || 'Item'}</p>
+                          <p className="font-medium">{line.inventory_items?.name || tr('Item', 'Article')}</p>
                           <p className="text-sm text-gray-600">
-                            Quantity: {line.quantity} × {formatCurrency(line.unit_cost_mad)}
+                            {tr('Quantity:', 'Quantité :')} {line.quantity} × {formatCurrency(line.unit_cost_mad)}
                           </p>
                         </div>
                         <div className="text-right">
@@ -808,7 +817,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
 
               {selectedPurchase.notes && (
                 <div>
-                  <h4 className="font-medium text-gray-900 mb-2">Notes</h4>
+                  <h4 className="font-medium text-gray-900 mb-2">{tr('Notes', 'Notes')}</h4>
                   <p className="text-gray-600 bg-gray-50 p-3 rounded">{selectedPurchase.notes}</p>
                 </div>
               )}
@@ -816,7 +825,7 @@ const PurchasesManagement = ({ initialParams, action }) => {
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsViewModalOpen(false)}>
-              Close
+              {tr('Close', 'Fermer')}
             </Button>
           </DialogFooter>
         </DialogContent>

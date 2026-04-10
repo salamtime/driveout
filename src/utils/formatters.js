@@ -1,5 +1,13 @@
 // Utility functions for formatting data in the Fuel Management System
 
+export const roundFuelLitersForDisplay = (amount) => {
+  if (amount === null || amount === undefined || isNaN(amount)) {
+    return null;
+  }
+
+  return Math.round(Number(amount) * 2) / 2;
+};
+
 export const formatCurrency = (amount) => {
   if (amount === null || amount === undefined || isNaN(amount)) {
     return 'N/A';
@@ -36,7 +44,8 @@ export const formatLiters = (amount, fuelType = '') => {
   if (amount === null || amount === undefined || isNaN(amount)) {
     return 'N/A';
   }
-  const formatted = parseFloat(amount).toFixed(2);
+  const roundedAmount = roundFuelLitersForDisplay(amount);
+  const formatted = Number(roundedAmount).toFixed(1);
   return `${formatted}L ${fuelType}`.trim();
 };
 

@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useRealtimeConnection } from '../../hooks/useRealtimeConnection';
 import DashboardService from '../../services/DashboardService';
+import i18n from '../../i18n';
 
 const RealtimeTestWidget = () => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [testResults, setTestResults] = useState([]);
   const [isCreatingTestData, setIsCreatingTestData] = useState(false);
   const { subscribe, connectionStatus, getConnectionHealth } = useRealtimeConnection();
@@ -76,13 +79,13 @@ const RealtimeTestWidget = () => {
   return (
     <div className="bg-white rounded-lg shadow p-6">
       <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold">Real-time Test Widget</h3>
+        <h3 className="text-lg font-semibold">{tr('Real-time Test Widget', 'Widget de test temps réel')}</h3>
         <button
           onClick={createTestAlert}
           disabled={isCreatingTestData}
           className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700 disabled:opacity-50"
         >
-          {isCreatingTestData ? 'Creating...' : 'Test Real-time'}
+          {isCreatingTestData ? tr('Creating...', 'Création...') : tr('Test Real-time', 'Tester le temps réel')}
         </button>
       </div>
 
@@ -90,7 +93,7 @@ const RealtimeTestWidget = () => {
       <div className="mb-4 p-3 bg-gray-50 rounded">
         <div className="text-sm">
           <div className="flex justify-between items-center mb-1">
-            <span className="font-medium">Connection Status:</span>
+            <span className="font-medium">{tr('Connection Status:', 'Statut de connexion :')}</span>
             <span className={`px-2 py-1 rounded text-xs ${
               connectionStatus === 'connected' ? 'bg-green-100 text-green-800' :
               connectionStatus === 'connecting' ? 'bg-yellow-100 text-yellow-800' :
@@ -100,7 +103,7 @@ const RealtimeTestWidget = () => {
             </span>
           </div>
           <div className="text-xs text-gray-600">
-            Active Subscriptions: {connectionHealth.activeSubscriptions}
+            {tr('Active Subscriptions:', 'Abonnements actifs :')} {connectionHealth.activeSubscriptions}
           </div>
         </div>
       </div>
@@ -109,7 +112,7 @@ const RealtimeTestWidget = () => {
       <div className="space-y-2 max-h-60 overflow-y-auto">
         {testResults.length === 0 ? (
           <div className="text-center py-4 text-gray-500 text-sm">
-            Click "Test Real-time" to create test data and verify real-time updates
+            {tr('Click "Test Real-time" to create test data and verify real-time updates', 'Cliquez sur "Tester le temps réel" pour créer des données de test et vérifier les mises à jour en temps réel')}
           </div>
         ) : (
           testResults.map((result) => (
@@ -123,21 +126,21 @@ const RealtimeTestWidget = () => {
             >
               <div className="flex justify-between items-start mb-1">
                 <span className="font-medium">
-                  {result.type === 'realtime' ? '📡 Real-time Update' :
-                   result.type === 'created' ? '✅ Data Created' :
-                   '❌ Error'}
+                  {result.type === 'realtime' ? tr('📡 Real-time Update', '📡 Mise à jour en temps réel') :
+                   result.type === 'created' ? tr('✅ Data Created', '✅ Données créées') :
+                   tr('❌ Error', '❌ Erreur')}
                 </span>
                 <span className="text-gray-500">{result.timestamp}</span>
               </div>
               <div className="text-gray-700">
                 {result.type === 'realtime' && (
-                  <span>Event: {result.data.eventType} | Table: {result.data.table || 'alerts'}</span>
+                  <span>{tr('Event', 'Événement')}: {result.data.eventType} | {tr('Table', 'Table')}: {result.data.table || 'alerts'}</span>
                 )}
                 {result.type === 'created' && (
-                  <span>Alert: {result.data.title}</span>
+                  <span>{tr('Alert', 'Alerte')}: {result.data.title}</span>
                 )}
                 {result.type === 'error' && (
-                  <span>Error: {result.data.error}</span>
+                  <span>{tr('Error', 'Erreur')}: {result.data.error}</span>
                 )}
               </div>
             </div>
@@ -147,11 +150,11 @@ const RealtimeTestWidget = () => {
 
       {/* Instructions */}
       <div className="mt-4 p-3 bg-blue-50 rounded text-sm">
-        <div className="font-medium text-blue-800 mb-1">Test Instructions:</div>
+        <div className="font-medium text-blue-800 mb-1">{tr('Test Instructions:', 'Instructions de test :')}</div>
         <div className="text-blue-700 text-xs">
-          1. Click "Test Real-time" to create test data<br/>
-          2. Watch for the green "📡 Real-time Update" event<br/>
-          3. If you see it, real-time is working perfectly!
+          1. {tr('Click "Test Real-time" to create test data', 'Cliquez sur "Tester le temps réel" pour créer des données de test')}<br/>
+          2. {tr('Watch for the green "📡 Real-time Update" event', 'Surveillez l’événement vert "📡 Mise à jour en temps réel"')}<br/>
+          3. {tr('If you see it, real-time is working perfectly!', 'Si vous le voyez, le temps réel fonctionne parfaitement !')}
         </div>
       </div>
     </div>

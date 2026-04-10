@@ -10,9 +10,12 @@ import EditBookingModal from '../components/calendar/EditBookingModal';
 import AudioNotificationSettings from '../components/calendar/AudioNotificationSettings';
 import audioNotificationSystem from '../utils/audioNotifications';
 import { useCalendarSync } from '../hooks/useCalendarSync';
+import i18n from '../i18n';
 
 const Calendar = () => {
   const { t } = useTranslation();
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const dispatch = useDispatch();
   const bookingsState = useSelector(state => state.bookings);
   const { bookings = [], loading = false, realTimeConnected = false, lastSync = null } = bookingsState || {};
@@ -102,8 +105,18 @@ const Calendar = () => {
 
   const calendarDays = generateCalendarDays();
   const monthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
+    tr('January', 'Janvier'),
+    tr('February', 'Fevrier'),
+    tr('March', 'Mars'),
+    tr('April', 'Avril'),
+    tr('May', 'Mai'),
+    tr('June', 'Juin'),
+    tr('July', 'Juillet'),
+    tr('August', 'Aout'),
+    tr('September', 'Septembre'),
+    tr('October', 'Octobre'),
+    tr('November', 'Novembre'),
+    tr('December', 'Decembre')
   ];
 
   const showConfirmation = (type, title, message, onConfirm, booking = null) => {
@@ -132,15 +145,17 @@ const Calendar = () => {
   const handleStartTour = (booking) => {
     showConfirmation(
       'success',
-      'START THIS TOUR?',
-      `Ready to start ${booking.tourName} for ${booking.participants?.[0]?.name || 'Guest'}?`,
+      tr('START THIS TOUR?', 'DEMARRER CE TOUR ?'),
+      isFrench
+        ? `Pret a demarrer ${booking.tourName} pour ${booking.participants?.[0]?.name || 'Invite'} ?`
+        : `Ready to start ${booking.tourName} for ${booking.participants?.[0]?.name || 'Guest'}?`,
       async () => {
         try {
           await dispatch(startTour(booking.id)).unwrap();
           hideConfirmation();
         } catch (error) {
           console.error('Failed to start tour:', error);
-          alert('❌ Could not start tour. Please try again.');
+          alert(tr('❌ Could not start tour. Please try again.', '❌ Impossible de demarrer le tour. Veuillez reessayer.'));
           hideConfirmation();
         }
       },
@@ -151,8 +166,10 @@ const Calendar = () => {
   const handleFinishTour = (booking) => {
     showConfirmation(
       'danger',
-      'FINISH THIS TOUR?',
-      `Are you ready to complete ${booking.tourName}? This will mark the tour as finished.`,
+      tr('FINISH THIS TOUR?', 'TERMINER CE TOUR ?'),
+      isFrench
+        ? `Etes-vous pret a terminer ${booking.tourName} ? Cela marquera le tour comme termine.`
+        : `Are you ready to complete ${booking.tourName}? This will mark the tour as finished.`,
       async () => {
         try {
           const startTime = new Date(booking.startTime);
@@ -167,7 +184,7 @@ const Calendar = () => {
           hideConfirmation();
         } catch (error) {
           console.error('Failed to finish tour:', error);
-          alert('❌ Could not finish tour. Please try again.');
+          alert(tr('❌ Could not finish tour. Please try again.', '❌ Impossible de terminer le tour. Veuillez reessayer.'));
           hideConfirmation();
         }
       },
@@ -189,13 +206,13 @@ const Calendar = () => {
       
       // For now, we'll just close the modal and show success
       setEditModal({ isOpen: false, booking: null });
-      alert('✅ Booking updated successfully!');
+      alert(tr('✅ Booking updated successfully!', '✅ Reservation mise a jour avec succes !'));
       
       // Refresh bookings to show changes
       dispatch(fetchAllBookings());
     } catch (error) {
       console.error('Failed to update booking:', error);
-      alert('❌ Could not update booking. Please try again.');
+      alert(tr('❌ Could not update booking. Please try again.', '❌ Impossible de mettre a jour la reservation. Veuillez reessayer.'));
     }
   };
 
@@ -209,17 +226,18 @@ const Calendar = () => {
   const handleCancelBooking = (booking) => {
     showConfirmation(
       'danger',
-      'CANCEL THIS BOOKING?',
-      `This will cancel ${booking.tourName} for ${booking.participants?.[0]?.name || 'Guest'}. This cannot be undone!`,
+      tr('CANCEL THIS BOOKING?', 'ANNULER CETTE RESERVATION ?'),
+      isFrench
+        ? `Cela annulera ${booking.tourName} pour ${booking.participants?.[0]?.name || 'Invite'}. Cette action est irreversible !`
+        : `This will cancel ${booking.tourName} for ${booking.participants?.[0]?.name || 'Guest'}. This cannot be undone!`,
       async () => {
         try {
           // Implement cancel booking logic here
-          console.log('Canceling booking:', booking.id);
-          alert('✅ Booking cancelled successfully!');
+          alert(tr('✅ Booking cancelled successfully!', '✅ Reservation annulee avec succes !'));
           hideConfirmation();
         } catch (error) {
           console.error('Failed to cancel booking:', error);
-          alert('❌ Could not cancel booking. Please try again.');
+          alert(tr('❌ Could not cancel booking. Please try again.', '❌ Impossible d annuler la reservation. Veuillez reessayer.'));
           hideConfirmation();
         }
       },
@@ -235,7 +253,11 @@ const Calendar = () => {
 
   const handleViewDetails = (dayBookings) => {
     // Show simple alert with booking count
-    alert(`📅 ${dayBookings.length} booking${dayBookings.length !== 1 ? 's' : ''} on this day!\n\nTap "LIST" view to see all bookings.`);
+    alert(
+      isFrench
+        ? `📅 ${dayBookings.length} reservation${dayBookings.length !== 1 ? 's' : ''} ce jour-la !\n\nTouchez la vue "LISTE" pour tout voir.`
+        : `📅 ${dayBookings.length} booking${dayBookings.length !== 1 ? 's' : ''} on this day!\n\nTap "LIST" view to see all bookings.`
+    );
   };
 
   // Audio settings handlers

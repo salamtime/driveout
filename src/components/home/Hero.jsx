@@ -27,7 +27,7 @@ const Hero = () => {
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Link 
-              to="/rentals" 
+              to="/rent" 
               className="px-6 py-3 md:px-8 md:py-4 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl text-sm md:text-base w-full sm:w-auto relative overflow-hidden group"
               style={{
                 position: 'relative',

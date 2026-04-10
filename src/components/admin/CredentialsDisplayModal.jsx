@@ -1,8 +1,11 @@
 import React, { useState } from 'react';
 import { X, Copy, Check, Eye, EyeOff, Mail, Key, User, Shield } from 'lucide-react';
 import toast from 'react-hot-toast';
+import i18n from '../../i18n';
 
 const CredentialsDisplayModal = ({ isOpen, onClose, user, password }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [copiedField, setCopiedField] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
@@ -10,37 +13,37 @@ const CredentialsDisplayModal = ({ isOpen, onClose, user, password }) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedField(field);
-      toast.success(`${field} copied to clipboard!`);
+      toast.success(tr(`${field} copied to clipboard!`, `${field} copié dans le presse-papiers !`));
       setTimeout(() => setCopiedField(''), 2000);
     } catch (err) {
-      toast.error('Failed to copy to clipboard');
+      toast.error(tr('Failed to copy to clipboard', 'Impossible de copier dans le presse-papiers'));
     }
   };
 
   const copyAllCredentials = async () => {
     const credentialsText = `
-User Account Created Successfully
+${tr('User Account Created Successfully', 'Compte utilisateur créé avec succès')}
 ================================
-Full Name: ${user?.full_name || 'Not provided'}
-Email: ${user?.email}
-Password: ${password}
-Role: ${user?.role?.charAt(0)?.toUpperCase() + user?.role?.slice(1)}
+${tr('Full Name', 'Nom complet')}: ${user?.full_name || tr('Not provided', 'Non renseigné')}
+${tr('Email', 'E-mail')}: ${user?.email}
+${tr('Password', 'Mot de passe')}: ${password}
+${tr('Role', 'Rôle')}: ${user?.role?.charAt(0)?.toUpperCase() + user?.role?.slice(1)}
 
-Login Instructions:
-1. Go to the application login page
-2. Enter the email and password above
-3. Change your password after first login (recommended)
+${tr('Login Instructions', 'Instructions de connexion')}:
+1. ${tr('Go to the application login page', "Accédez à la page de connexion de l'application")}
+2. ${tr('Enter the email and password above', "Saisissez l'e-mail et le mot de passe ci-dessus")}
+3. ${tr('Change your password after first login (recommended)', 'Changez votre mot de passe après la première connexion (recommandé)')}
 
-Account created on: ${new Date().toLocaleDateString()}
+${tr('Account created on', 'Compte créé le')} : ${new Date().toLocaleDateString()}
     `.trim();
 
     try {
       await navigator.clipboard.writeText(credentialsText);
-      toast.success('All credentials copied to clipboard!');
+      toast.success(tr('All credentials copied to clipboard!', 'Tous les identifiants ont été copiés dans le presse-papiers !'));
       setCopiedField('all');
       setTimeout(() => setCopiedField(''), 3000);
     } catch (err) {
-      toast.error('Failed to copy credentials');
+      toast.error(tr('Failed to copy credentials', 'Impossible de copier les identifiants'));
     }
   };
 
@@ -54,7 +57,7 @@ Account created on: ${new Date().toLocaleDateString()}
             <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
               <Check className="h-5 w-5 text-green-600" />
             </div>
-            <h2 className="text-xl font-semibold text-gray-900">User Created Successfully</h2>
+            <h2 className="text-xl font-semibold text-gray-900">{tr('User Created Successfully', 'Utilisateur créé avec succès')}</h2>
           </div>
           <button
             onClick={onClose}
@@ -74,8 +77,8 @@ Account created on: ${new Date().toLocaleDateString()}
                 </span>
               </div>
               <div>
-                <p className="font-medium text-gray-900">{user.full_name || 'No Name Set'}</p>
-                <p className="text-sm text-gray-600">Account created successfully</p>
+                <p className="font-medium text-gray-900">{user.full_name || tr('No Name Set', 'Aucun nom défini')}</p>
+                <p className="text-sm text-gray-600">{tr('Account created successfully', 'Compte créé avec succès')}</p>
               </div>
             </div>
           </div>

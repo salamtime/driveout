@@ -89,7 +89,73 @@ const createLocalApiPlugin = () => ({
     server.middlewares.use('/api', async (req, res, next) => {
       if (req.url?.startsWith('/gemini-proxy')) return next()
 
-      const endpoint = (req.url?.split('?')[0] || '').replace(/\/$/, '')
+      const applyLocalApiRewrite = (url) => {
+        const [rawPath = '', rawQuery = ''] = String(url || '').split('?')
+        const normalizedPath = rawPath.replace(/\/$/, '')
+        const nextQuery = new URLSearchParams(rawQuery)
+
+        if (normalizedPath === '/admin/users') {
+          return `/admin-users${nextQuery.toString() ? `?${nextQuery.toString()}` : ''}`
+        }
+
+        if (normalizedPath.startsWith('/admin/users/')) {
+          const userId = normalizedPath.slice('/admin/users/'.length)
+          if (userId) nextQuery.set('userId', userId)
+          return `/admin-users?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/me/profile') {
+          nextQuery.set('resource', 'profile')
+          return `/me?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/short-links/create') {
+          nextQuery.set('action', 'create')
+          return `/short-links?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/tour-packages') {
+          nextQuery.set('resource', 'packages')
+          return `/tour-bookings?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/tour-tracking') {
+          nextQuery.set('resource', 'tracking')
+          return `/tour-bookings?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/document-shares/create') {
+          nextQuery.set('action', 'create')
+          return `/document-shares?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath.startsWith('/document-shares/')) {
+          const token = normalizedPath.slice('/document-shares/'.length)
+          if (token) nextQuery.set('token', token)
+          return `/document-shares?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath.startsWith('/short-links/')) {
+          const code = normalizedPath.slice('/short-links/'.length)
+          if (code) nextQuery.set('code', code)
+          return `/short-links?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/rentals/audit-log') {
+          return `/rental-audit${nextQuery.toString() ? `?${nextQuery.toString()}` : ''}`
+        }
+
+        if (normalizedPath.startsWith('/rentals/') && normalizedPath.endsWith('/audit-logs')) {
+          const rentalId = normalizedPath.slice('/rentals/'.length, -'/audit-logs'.length)
+          if (rentalId) nextQuery.set('rentalId', rentalId)
+          return `/rental-audit?${nextQuery.toString()}`
+        }
+
+        return `${normalizedPath}${nextQuery.toString() ? `?${nextQuery.toString()}` : ''}`
+      }
+
+      const rewrittenUrl = applyLocalApiRewrite(req.url || '')
+      const endpoint = (rewrittenUrl.split('?')[0] || '').replace(/\/$/, '')
       const endpointSegments = endpoint.split('/').filter(Boolean)
       const apiRoot = path.resolve(process.cwd(), 'api')
 
@@ -161,7 +227,7 @@ const createLocalApiPlugin = () => ({
 
       const rawBody = await readRequestBody(req)
       const query = {
-        ...Object.fromEntries(new URLSearchParams(req.url?.split('?')[1] || '')),
+        ...Object.fromEntries(new URLSearchParams(rewrittenUrl.split('?')[1] || '')),
         ...resolvedRoute.routeParams,
       }
 
@@ -170,7 +236,7 @@ const createLocalApiPlugin = () => ({
         headers: req.headers,
         body: rawBody ? (() => { try { return JSON.parse(rawBody) } catch { return rawBody } })() : {},
         query,
-        url: req.url,
+        url: rewrittenUrl,
       }
 
       let statusCode = 200
@@ -210,6 +276,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), createGeminiProxyDevPlugin(geminiApiKey), createLocalApiPlugin()],
+    server: {
+      host: 'localhost',
+      port: 5173,
+      strictPort: true,
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Clock, Calendar, Wrench, CheckCircle, XCircle } from 'lucide-react';
+import i18n from '../i18n';
 
 // FIXED: Simple status constants instead of importing broken service
 const VEHICLE_STATUS = {
@@ -25,6 +26,7 @@ const VehicleStatusBadge = ({
   showIcon = true, 
   className = '' 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
   const getStatusConfig = (status) => {
     const normalizedStatus = (status || '').toLowerCase();
     
@@ -32,28 +34,28 @@ const VehicleStatusBadge = ({
       case VEHICLE_STATUS.AVAILABLE:
       case 'available':
         return {
-          label: 'Available',
+          label: isFrench ? 'Disponible' : 'Available',
           icon: CheckCircle,
           className: 'bg-green-100 text-green-800 border-green-200'
         };
       case VEHICLE_STATUS.SCHEDULED:
       case 'scheduled':
         return {
-          label: 'Scheduled',
+          label: isFrench ? 'Planifié' : 'Scheduled',
           icon: Calendar,
           className: 'bg-blue-100 text-blue-800 border-blue-200'
         };
       case VEHICLE_STATUS.RENTED:
       case 'rented':
         return {
-          label: 'Rented',
+          label: isFrench ? 'Loué' : 'Rented',
           icon: Clock,
           className: 'bg-orange-100 text-orange-800 border-orange-200'
         };
       case VEHICLE_STATUS.TOUR:
       case 'tour':
         return {
-          label: 'Tour',
+          label: isFrench ? 'Tour' : 'Tour',
           icon: Calendar,
           className: 'bg-violet-100 text-violet-800 border-violet-200'
         };
@@ -62,7 +64,7 @@ const VehicleStatusBadge = ({
       case 'service':
       case 'in service':
         return {
-          label: 'Maintenance',
+          label: isFrench ? 'Maintenance' : 'Maintenance',
           icon: Wrench,
           className: 'bg-gray-100 text-gray-800 border-gray-200'
         };
@@ -71,13 +73,13 @@ const VehicleStatusBadge = ({
       case 'out of service':
       case 'out of order':
         return {
-          label: 'Out of Service',
+          label: isFrench ? 'Hors service' : 'Out of Service',
           icon: XCircle,
           className: 'bg-red-100 text-red-800 border-red-200'
         };
       default:
         return {
-          label: status || 'Unknown',
+          label: status || (isFrench ? 'Inconnu' : 'Unknown'),
           icon: CheckCircle,
           className: 'bg-gray-100 text-gray-800 border-gray-200'
         };

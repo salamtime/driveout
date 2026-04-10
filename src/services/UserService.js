@@ -12,7 +12,7 @@ export const getUsers = async () => {
 /**
  * Adds a new user.
  */
-export const addUser = async (email, password, name, role) => {
+export const addUser = async (email, password, name, role, appProfile = {}) => {
   console.log('=== addUser START ===');
   console.log('Email:', email);
   console.log('Name:', name);
@@ -28,11 +28,46 @@ export const addUser = async (email, password, name, role) => {
         full_name: name,
         role,
       },
+      app_profile: {
+        full_name: name,
+        role,
+        ...appProfile,
+      },
     }),
   });
 
   console.log('Create user response - data:', data);
   console.log('=== addUser END ===');
+
+  return { user: data.user };
+};
+
+/**
+ * Promotes an existing auth/customer account into the staff user system.
+ * This intentionally reuses the existing email/auth user and refuses to create
+ * a duplicate account if the customer has not signed up yet.
+ */
+export const promoteExistingUserToStaff = async (email, name, role = 'employee', appProfile = {}) => {
+  const normalizedRole = String(role || 'employee').toLowerCase();
+
+  const data = await adminApiRequest('/api/admin/users', {
+    method: 'POST',
+    body: JSON.stringify({
+      email,
+      promote_existing: true,
+      user_metadata: {
+        full_name: name || email,
+        role: normalizedRole,
+        account_type: 'staff',
+      },
+      app_profile: {
+        full_name: name || email,
+        role: normalizedRole,
+        access_enabled: true,
+        ...appProfile,
+      },
+    }),
+  });
 
   return { user: data.user };
 };
@@ -82,7 +117,20 @@ export const updateUserProfile = async (userId, updates) => {
       full_name: updates.name,
       role: updates.role,
     },
+    app_profile: {
+      full_name: updates.name,
+      role: updates.role,
+      phone_number: updates.phone_number,
+      whatsapp_notifications: updates.whatsapp_notifications,
+      salary_amount: updates.salary_amount,
+      permissions: updates.permissions,
+      staff_id_documents: Array.isArray(updates.staff_id_documents) ? updates.staff_id_documents : undefined,
+    },
   };
+
+  if (Array.isArray(updates.staff_id_documents)) {
+    updatePayload.user_metadata.staff_id_documents = updates.staff_id_documents;
+  }
 
   if (updates.password && updates.password.trim() !== '') {
     updatePayload.password = updates.password;
@@ -141,40 +189,122 @@ export const setUserPermissions = async (userId, moduleIds) => {
 };
 
 export const updateUserPermission = async (userId, moduleName, hasAccess) => {
-  const { data: currentData, error: fetchError } = await supabase
-    .from('app_b30c02e74da644baad4668e3587d86b1_users')
-    .select('permissions, email, full_name, role, phone_number, whatsapp_notifications')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (fetchError) {
-    console.error('Error loading current permissions:', fetchError);
-    throw fetchError;
-  }
-
+  const currentPermissions = await getUserPermissions(userId);
   const updatedPermissions = {
-    ...(currentData?.permissions || {}),
+    ...(currentPermissions || {}),
     [moduleName]: hasAccess,
   };
 
-  const { error } = await supabase
-    .from('app_b30c02e74da644baad4668e3587d86b1_users')
-    .upsert({
-      id: userId,
-      email: currentData?.email || null,
-      full_name: currentData?.full_name || null,
-      role: currentData?.role || 'employee',
-      phone_number: currentData?.phone_number || null,
-      whatsapp_notifications: currentData?.whatsapp_notifications || false,
-      access_enabled: true,
-      permissions: updatedPermissions,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'id' });
+  await adminApiRequest(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      app_profile: {
+        permissions: updatedPermissions,
+      },
+    }),
+  });
+};
 
-  if (error) {
-    console.error('Error updating permission:', error);
-    throw error;
-  }
+export const approveBusinessOwner = async (userId) => {
+  const data = await adminApiRequest(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      action: 'approve_business_owner',
+    }),
+  });
+
+  return data;
+};
+
+export const rejectBusinessOwner = async (userId, reason) => {
+  const data = await adminApiRequest(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      action: 'reject_business_owner',
+      reason,
+    }),
+  });
+
+  return data;
+};
+
+export const requestBusinessOwnerInfo = async (userId) => {
+  const data = await adminApiRequest(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      action: 'request_business_owner_info',
+    }),
+  });
+
+  return data;
+};
+
+export const suspendBusinessOwner = async (userId, reason = '') => {
+  const data = await adminApiRequest(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      action: 'suspend_business_owner',
+      reason,
+    }),
+  });
+
+  return data;
+};
+
+export const reactivateBusinessOwner = async (userId) => {
+  const data = await adminApiRequest(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      action: 'reactivate_business_owner',
+    }),
+  });
+
+  return data;
+};
+
+export const extendBusinessOwnerTrial = async (userId) => {
+  const data = await adminApiRequest(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      action: 'extend_business_owner_trial',
+    }),
+  });
+
+  return data;
+};
+
+export const activateBusinessOwnerSubscription = async (userId) => {
+  const data = await adminApiRequest(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      action: 'activate_business_owner_subscription',
+    }),
+  });
+
+  return data;
+};
+
+export const changeBusinessOwnerPlan = async (userId, planType) => {
+  const data = await adminApiRequest(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      action: 'change_business_owner_plan',
+      plan_type: planType,
+    }),
+  });
+
+  return data;
+};
+
+export const selectBusinessOwnerPlan = async (subscriptionPlan) => {
+  const data = await adminApiRequest('/api/me?resource=subscription', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      subscription_plan: subscriptionPlan,
+    }),
+  });
+
+  return data;
 };
 
 /**

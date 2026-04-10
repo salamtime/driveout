@@ -101,12 +101,12 @@ const UserAccessToggle = ({ user, onAccessChange, disabled = false }) => {
         <span className={`text-sm font-medium ${
           user.access_enabled ? 'text-green-700' : 'text-red-700'
         }`}>
-          {user.access_enabled ? 'Access Enabled' : 'Access Denied'}
+          {user.access_enabled ? 'Accès activé' : 'Accès refusé'}
         </span>
         
         {!user.access_enabled && user.access_disabled_at && (
           <span className="text-xs text-gray-500">
-            Disabled {new Date(user.access_disabled_at).toLocaleDateString()}
+            Désactivé le {new Date(user.access_disabled_at).toLocaleDateString()}
           </span>
         )}
       </div>
@@ -119,7 +119,7 @@ const UserAccessToggle = ({ user, onAccessChange, disabled = false }) => {
 
       {!canManageAccess && (
         <div className="text-xs text-gray-500">
-          (View only)
+          (Lecture seule)
         </div>
       )}
     </div>

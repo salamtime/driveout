@@ -2,9 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSelector } from 'react-redux';
 import '../../components/admin/adminLayout.css';
+import i18n from '../../i18n';
 
 const Preferences = () => {
   const { t } = useTranslation();
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { userRoles } = useSelector((state) => state.auth);
   const isAdmin = userRoles?.includes('admin');
   
@@ -67,7 +70,7 @@ const Preferences = () => {
     // Simulate saving to backend
     setTimeout(() => {
       setSaving(false);
-      setSavedMessage(t('admin.preferences.saveSuccess', 'Settings saved successfully'));
+      setSavedMessage(tr('Settings saved successfully', 'Paramètres enregistrés avec succès'));
       
       // Clear message after 3 seconds
       setTimeout(() => {
@@ -80,16 +83,16 @@ const Preferences = () => {
     <div className="w-full h-full max-w-full overflow-y-auto">
       <div className="p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-800">{t('admin.menu.preferences', 'System Preferences')}</h1>
+        <h1 className="text-2xl font-bold text-gray-800">{tr('System Preferences', 'Préférences système')}</h1>
         <p className="text-gray-600 mt-1">
-          {t('admin.preferences.subtitle', 'Configure system-wide settings and preferences')}
+          {tr('Configure system-wide settings and preferences', 'Configurez les paramètres et préférences du système')}
         </p>
       </div>
 
       {loading ? (
         <div className="flex justify-center items-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-          <span className="ml-2">{t('common.loading', 'Loading...')}</span>
+          <span className="ml-2">{tr('Loading...', 'Chargement...')}</span>
         </div>
       ) : (
         <>
@@ -104,7 +107,7 @@ const Preferences = () => {
                 }`}
                 onClick={() => setActiveTab('general')}
               >
-                {t('admin.preferences.general', 'General')}
+                {tr('General', 'Général')}
               </button>
               <button
                 className={`pb-4 px-1 border-b-2 font-medium text-sm ${
@@ -114,7 +117,7 @@ const Preferences = () => {
                 }`}
                 onClick={() => setActiveTab('booking')}
               >
-                {t('admin.preferences.booking', 'Booking & Rentals')}
+                {tr('Booking & Rentals', 'Réservations et locations')}
               </button>
               <button
                 className={`pb-4 px-1 border-b-2 font-medium text-sm ${
@@ -134,7 +137,7 @@ const Preferences = () => {
                 }`}
                 onClick={() => setActiveTab('appearance')}
               >
-                {t('admin.preferences.appearance', 'Appearance')}
+                {tr('Appearance', 'Apparence')}
               </button>
               <button
                 className={`pb-4 px-1 border-b-2 font-medium text-sm ${
@@ -144,7 +147,7 @@ const Preferences = () => {
                 }`}
                 onClick={() => setActiveTab('advanced')}
               >
-                {t('admin.preferences.advanced', 'Advanced')}
+                {tr('Advanced', 'Avancé')}
               </button>
             </nav>
           </div>
@@ -154,12 +157,12 @@ const Preferences = () => {
               {/* General Settings */}
               {activeTab === 'general' && (
                 <div className="p-6">
-                  <h2 className="text-lg font-medium text-gray-900 mb-4">{t('admin.preferences.generalSettings', 'General Settings')}</h2>
+                  <h2 className="text-lg font-medium text-gray-900 mb-4">{tr('General Settings', 'Paramètres généraux')}</h2>
                   
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                     <div>
                       <label htmlFor="siteName" className="block text-sm font-medium text-gray-700 mb-1">
-                        {t('admin.preferences.siteName', 'Site Name')}
+                        {tr('Site Name', 'Nom du site')}
                       </label>
                       <input
                         type="text"
@@ -174,7 +177,7 @@ const Preferences = () => {
                     
                     <div>
                       <label htmlFor="companyEmail" className="block text-sm font-medium text-gray-700 mb-1">
-                        {t('admin.preferences.companyEmail', 'Company Email')}
+                        {tr('Company Email', "E-mail de l'entreprise")}
                       </label>
                       <input
                         type="email"
@@ -189,7 +192,7 @@ const Preferences = () => {
                     
                     <div>
                       <label htmlFor="supportPhone" className="block text-sm font-medium text-gray-700 mb-1">
-                        {t('admin.preferences.supportPhone', 'Support Phone')}
+                        {tr('Support Phone', 'Téléphone du support')}
                       </label>
                       <input
                         type="text"
@@ -204,7 +207,7 @@ const Preferences = () => {
                     
                     <div>
                       <label htmlFor="defaultLanguage" className="block text-sm font-medium text-gray-700 mb-1">
-                        {t('admin.preferences.defaultLanguage', 'Default Language')}
+                        {tr('Default Language', 'Langue par défaut')}
                       </label>
                       <select
                         id="defaultLanguage"
@@ -214,15 +217,15 @@ const Preferences = () => {
                         className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
                         disabled={!isAdmin}
                       >
-                        <option value="en">English</option>
-                        <option value="ar">Arabic</option>
-                        <option value="fr">French</option>
+                        <option value="en">{tr('English', 'Anglais')}</option>
+                        <option value="ar">{tr('Arabic', 'Arabe')}</option>
+                        <option value="fr">{tr('French', 'Français')}</option>
                       </select>
                     </div>
                     
                     <div>
                       <label htmlFor="currencySymbol" className="block text-sm font-medium text-gray-700 mb-1">
-                        {t('admin.preferences.currencySymbol', 'Currency Symbol')}
+                        {tr('Currency Symbol', 'Symbole monétaire')}
                       </label>
                       <select
                         id="currencySymbol"
@@ -240,7 +243,7 @@ const Preferences = () => {
 
                     <div>
                       <label htmlFor="workingHours" className="block text-sm font-medium text-gray-700 mb-1">
-                        {t('admin.preferences.workingHours', 'Working Hours')}
+                        {tr('Working Hours', "Heures d'ouverture")}
                       </label>
                       <input
                         type="text"
@@ -259,7 +262,7 @@ const Preferences = () => {
               {/* Booking & Rentals Settings */}
               {activeTab === 'booking' && (
                 <div className="p-6">
-                  <h2 className="text-lg font-medium text-gray-900 mb-4">{t('admin.preferences.bookingSettings', 'Booking & Rental Settings')}</h2>
+                  <h2 className="text-lg font-medium text-gray-900 mb-4">{tr('Booking & Rental Settings', 'Paramètres des réservations et locations')}</h2>
                   
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                     <div>
@@ -369,7 +372,7 @@ const Preferences = () => {
               {/* Notifications Settings */}
               {activeTab === 'notifications' && (
                 <div className="p-6">
-                  <h2 className="text-lg font-medium text-gray-900 mb-4">{t('admin.preferences.notificationsSettings', 'Notification Settings')}</h2>
+                  <h2 className="text-lg font-medium text-gray-900 mb-4">{tr('Notification Settings', 'Paramètres de notification')}</h2>
                   
                   <div className="space-y-4 mb-6">
                     <div className="flex items-center space-x-2">
@@ -441,7 +444,7 @@ const Preferences = () => {
               {/* Appearance Settings */}
               {activeTab === 'appearance' && (
                 <div className="p-6">
-                  <h2 className="text-lg font-medium text-gray-900 mb-4">{t('admin.preferences.appearanceSettings', 'Appearance Settings')}</h2>
+                  <h2 className="text-lg font-medium text-gray-900 mb-4">{tr('Appearance Settings', "Paramètres d'apparence")}</h2>
                   
                   <div className="space-y-6">
                     <div className="flex items-center space-x-2">
@@ -512,7 +515,7 @@ const Preferences = () => {
               {/* Advanced Settings */}
               {activeTab === 'advanced' && (
                 <div className="p-6">
-                  <h2 className="text-lg font-medium text-gray-900 mb-4">{t('admin.preferences.advancedSettings', 'Advanced Settings')}</h2>
+                  <h2 className="text-lg font-medium text-gray-900 mb-4">{tr('Advanced Settings', 'Paramètres avancés')}</h2>
                   
                   <div className="space-y-6">
                     <div>
@@ -576,7 +579,7 @@ const Preferences = () => {
                           className="py-2 px-4 border border-red-300 rounded-md text-sm font-medium text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
                           disabled={!isAdmin}
                         >
-                          {t('admin.preferences.maintenanceMode', 'Enter Maintenance Mode')}
+                          {tr('Enter Maintenance Mode', 'Passer en mode maintenance')}
                         </button>
                       </div>
                     </div>
@@ -596,14 +599,14 @@ const Preferences = () => {
                     type="button"
                     className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
                   >
-                    {t('admin.common.cancel', 'Cancel')}
+                    {tr('Cancel', 'Annuler')}
                   </button>
                   <button
                     type="submit"
                     className={`px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${saving ? 'opacity-75 cursor-not-allowed' : ''}`}
                     disabled={saving || !isAdmin}
                   >
-                    {saving ? t('admin.common.saving', 'Saving...') : t('admin.common.saveChanges', 'Save Changes')}
+                    {saving ? t('admin.common.saving', 'Enregistrement...') : t('admin.common.saveChanges', 'Enregistrer les modifications')}
                   </button>
                 </div>
               </div>

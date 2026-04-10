@@ -19,8 +19,11 @@ import {
   validatePermissionStructure
 } from '../../utils/customPermissions';
 import { ROLES, getRoleInfo } from '../../utils/permissions';
+import i18n from '../../i18n';
 
 const UserPermissionPanel = ({ user, onClose, onSave }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { userRoles } = useSelector(state => state.auth);
   const currentUserRole = userRoles?.[0];
   
@@ -47,16 +50,16 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
         <div className="bg-white rounded-lg p-6 max-w-md">
           <div className="flex items-center text-red-600 mb-4">
             <AlertTriangle className="h-6 w-6 mr-2" />
-            <h3 className="text-lg font-semibold">Access Denied</h3>
+            <h3 className="text-lg font-semibold">{tr('Access Denied', 'Accès refusé')}</h3>
           </div>
           <p className="text-gray-600 mb-4">
-            Only the system Owner can manage user permissions.
+            {tr('Only the system Owner can manage user permissions.', 'Seul le propriétaire du système peut gérer les autorisations utilisateur.')}
           </p>
           <button
             onClick={onClose}
             className="px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
           >
-            Close
+            {tr('Close', 'Fermer')}
           </button>
         </div>
       </div>
@@ -67,27 +70,29 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
   const modules = [
     { key: 'dashboard', name: 'Dashboard' },
     { key: 'calendar', name: 'Calendar' },
-    { key: 'tours', name: 'Tours Management' },
-    { key: 'rentals', name: 'Rental Management' },
-    { key: 'fleet', name: 'Fleet Management' },
-    { key: 'fuel', name: 'Fuel Records' },
-    { key: 'maintenance', name: 'Maintenance' },
-    { key: 'inventory', name: 'Inventory' },
-    { key: 'finance', name: 'Finance Management' },
-    { key: 'users', name: 'User Accounts' },
-    { key: 'alerts', name: 'System Alerts' },
-    { key: 'liveMap', name: 'Live Tour Map' },
-    { key: 'tourHistory', name: 'Tour History' },
-    { key: 'systemPrefs', name: 'System Preferences' },
-    { key: 'settings', name: 'Settings' }
+    { key: 'tours', name: tr('Tours Management', 'Gestion des tours') },
+    { key: 'teamTasks', name: tr('Team Tasks', 'Tâches équipe') },
+    { key: 'rentals', name: tr('Rental Management', 'Gestion des locations') },
+    { key: 'fleet', name: tr('Fleet Management', 'Gestion de flotte') },
+    { key: 'fuel', name: tr('Fuel Records', 'Journaux carburant') },
+    { key: 'maintenance', name: tr('Maintenance', 'Maintenance') },
+    { key: 'inventory', name: tr('Inventory', 'Inventaire') },
+    { key: 'finance', name: tr('Finance Management', 'Gestion financière') },
+    { key: 'users', name: tr('User Accounts', 'Comptes utilisateurs') },
+    { key: 'marketplace', name: tr('Marketplace Review', 'Revue marketplace') },
+    { key: 'alerts', name: tr('System Alerts', 'Alertes système') },
+    { key: 'liveMap', name: tr('Live Tour Map', 'Carte des tours en direct') },
+    { key: 'tourHistory', name: tr('Tour History', 'Historique des tours') },
+    { key: 'systemPrefs', name: tr('System Preferences', 'Préférences système') },
+    { key: 'settings', name: tr('Settings', 'Paramètres') }
   ];
 
   const actions = [
-    { key: 'view', name: 'View', color: 'blue' },
-    { key: 'create', name: 'Create', color: 'green' },
-    { key: 'edit', name: 'Edit', color: 'yellow' },
-    { key: 'delete', name: 'Delete', color: 'red' },
-    { key: 'report', name: 'Report', color: 'purple' }
+    { key: 'view', name: tr('View', 'Voir'), color: 'blue' },
+    { key: 'create', name: tr('Create', 'Créer'), color: 'green' },
+    { key: 'edit', name: tr('Edit', 'Modifier'), color: 'yellow' },
+    { key: 'delete', name: tr('Delete', 'Supprimer'), color: 'red' },
+    { key: 'report', name: tr('Report', 'Rapport'), color: 'purple' }
   ];
 
 
@@ -147,7 +152,7 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
       // Save custom permissions
       const success = setUserCustomPermissions(user.id, permissions);
       if (!success) {
-        throw new Error('Failed to save permissions');
+        throw new Error(tr('Failed to save permissions', "Impossible d'enregistrer les autorisations"));
       }
       
       setHasChanges(false);
@@ -165,7 +170,7 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
   };
 
   const handleResetToDefaults = () => {
-    if (window.confirm('Reset all permissions to role defaults? This will remove all custom overrides for this user.')) {
+    if (window.confirm(tr('Reset all permissions to role defaults? This will remove all custom overrides for this user.', "Réinitialiser toutes les autorisations aux valeurs par défaut du rôle ? Cela supprimera toutes les personnalisations de cet utilisateur."))) {
       resetUserToRoleDefaults(user.id);
       loadUserPermissions();
       setSuccess(true);
@@ -193,7 +198,7 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
             <Shield className="h-6 w-6 text-blue-600 mr-3" />
             <div>
               <h2 className="text-xl font-bold text-gray-900">
-                User Permission Management
+                {tr('User Permission Management', 'Gestion des autorisations utilisateur')}
               </h2>
               <div className="flex items-center mt-1">
                 <span className="text-gray-600">
@@ -204,7 +209,7 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
                 </span>
                 {hasUserOverrides && (
                   <span className="ml-2 px-2 py-1 bg-orange-100 text-orange-800 rounded-full text-xs font-semibold">
-                    Custom Overrides
+                    {tr('Custom Overrides', 'Personnalisations')}
                   </span>
                 )}
               </div>
@@ -231,7 +236,7 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
           {success && (
             <div className="mb-4 p-3 bg-green-100 border border-green-400 text-green-700 rounded flex items-center">
               <Check className="h-5 w-5 mr-2" />
-              Permissions saved successfully!
+              {tr('Permissions saved successfully!', 'Autorisations enregistrées avec succès !')}
             </div>
           )}
 
@@ -241,7 +246,7 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
               <thead>
                 <tr className="bg-gray-50">
                   <th className="px-4 py-3 text-left font-semibold text-gray-900 border-b">
-                    Module
+                    {tr('Module', 'Module')}
                   </th>
                   {actions.map(action => (
                     <th key={action.key} className="px-3 py-3 text-center font-semibold text-gray-900 border-b border-l">
@@ -272,10 +277,10 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
                               className={`h-4 w-4 rounded border-gray-300 text-${action.color}-600 focus:ring-${action.color}-500`}
                             />
                             {isDefault && (
-                              <span className="text-xs text-gray-500 mt-1">Default</span>
+                              <span className="text-xs text-gray-500 mt-1">{tr('Default', 'Par défaut')}</span>
                             )}
                             {!isDefault && isChecked && (
-                              <span className="text-xs text-blue-600 mt-1">Custom</span>
+                              <span className="text-xs text-blue-600 mt-1">{tr('Custom', 'Personnalisé')}</span>
                             )}
                           </div>
                         </td>
@@ -289,19 +294,19 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
 
           {/* Legend */}
           <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-            <h4 className="font-semibold text-gray-900 mb-2">Legend:</h4>
+            <h4 className="font-semibold text-gray-900 mb-2">{tr('Legend:', 'Légende :')}</h4>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
               <div className="flex items-center">
                 <span className="w-3 h-3 bg-gray-300 rounded mr-2"></span>
-                <span>Default (from role)</span>
+                <span>{tr('Default (from role)', 'Par défaut (depuis le rôle)')}</span>
               </div>
               <div className="flex items-center">
                 <span className="w-3 h-3 bg-blue-500 rounded mr-2"></span>
-                <span>Custom override</span>
+                <span>{tr('Custom override', 'Personnalisation')}</span>
               </div>
               <div className="flex items-center">
                 <span className="w-3 h-3 bg-orange-500 rounded mr-2"></span>
-                <span>Modified from default</span>
+                <span>{tr('Modified from default', 'Modifié depuis la valeur par défaut')}</span>
               </div>
             </div>
           </div>
@@ -316,11 +321,11 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
               disabled={saving}
             >
               <RotateCcw className="h-4 w-4 mr-2" />
-              Reset to Role Defaults
+              {tr('Reset to Role Defaults', 'Réinitialiser aux valeurs du rôle')}
             </button>
             {hasChanges && (
               <span className="text-sm text-orange-600 font-medium">
-                Unsaved changes
+                {tr('Unsaved changes', 'Modifications non enregistrées')}
               </span>
             )}
           </div>
@@ -331,7 +336,7 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
               className="px-4 py-2 text-gray-600 hover:text-gray-800 border border-gray-300 rounded hover:bg-gray-100 transition-colors"
               disabled={saving}
             >
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </button>
             <button
               onClick={handleSave}
@@ -341,12 +346,12 @@ const UserPermissionPanel = ({ user, onClose, onSave }) => {
               {saving ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                  Saving...
+                  {tr('Saving...', 'Enregistrement...')}
                 </>
               ) : (
                 <>
                   <Save className="h-4 w-4 mr-2" />
-                  Save Custom Permissions
+                  {tr('Save Custom Permissions', 'Enregistrer les autorisations personnalisées')}
                 </>
               )}
             </button>

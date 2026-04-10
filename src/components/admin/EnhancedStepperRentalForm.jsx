@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   User, Car, CreditCard, Check, ChevronRight, ChevronLeft,
-  Scan, UserSearch, AlertCircle, Loader, Clock, DollarSign,
+  Scan, UserSearch, AlertCircle, Loader, Loader2, Clock, DollarSign,
   Calculator, Info, Phone, Mail, Calendar, MapPin, FileText,
   Upload, Shield, CheckCircle, XCircle, CalendarDays, Car as CarIcon,
   Users, UserPlus, BadgeCheck, FileImage, DownloadCloud, Plus, Minus,
@@ -28,12 +28,155 @@ import {
   formatDateToYYYYMMDD 
 } from '../../utils/moroccoTime';
 import { toast } from 'sonner';
-import { uploadCustomerDocument } from '../../utils/storageUpload';
+import { uploadFile } from '../../utils/storageUpload';
 import ViewCustomerDetailsDrawer from './ViewCustomerDetailsDrawer';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
+import i18n from '../../i18n';
+import { fetchSystemSettings } from '../../services/systemSettingsApi';
+import { getUsers } from '../../services/UserService';
+
+const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
+const DEFAULT_BOOKING_GRACE_MINUTES = 120;
+const MAX_BOOKING_GRACE_MINUTES = 120;
+const normalizeBookingGraceMinutes = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_BOOKING_GRACE_MINUTES;
+  return Math.max(0, Math.min(MAX_BOOKING_GRACE_MINUTES, parsed));
+};
+const PAYMENT_RESET_FIELDS_ON_EDIT = new Set([
+  'vehicle_id',
+  'rental_type',
+  'rental_start_date',
+  'rental_end_date',
+  'rental_start_time',
+  'rental_end_time',
+  'quantity_days',
+  'quantity_hours',
+  'unit_price',
+  'transport_fee',
+  'selected_package_id',
+  'use_package_pricing',
+  'pickup_transport',
+  'dropoff_transport',
+  'pickup_location',
+  'dropoff_location',
+]);
+const EDIT_WORKFLOW_RESET_FIELDS = PAYMENT_RESET_FIELDS_ON_EDIT;
+const EDIT_WORKFLOW_NUMERIC_FIELDS = new Set([
+  'vehicle_id',
+  'quantity_days',
+  'quantity_hours',
+  'unit_price',
+  'transport_fee',
+]);
+const EDIT_WORKFLOW_BOOLEAN_FIELDS = new Set([
+  'pickup_transport',
+  'dropoff_transport',
+  'use_package_pricing',
+]);
+const getEditWorkflowResetFields = (submissionData = {}, initialData = {}) => ({
+  payment_status: 'unpaid',
+  deposit_amount: '',
+  remaining_amount: Number(submissionData.total_amount) || 0,
+  rental_status: initialData?.rental_status === 'completed' ? 'completed' : 'scheduled',
+  contract_signed: false,
+  signature_url: null,
+  contract_signed_by: null,
+  contract_signed_by_name: null,
+  contract_signed_at: null,
+  opening_video_url: null,
+  start_odometer: null,
+  start_fuel_level: null,
+  fuel_charge: 0,
+});
+const isScheduledConflictExpired = (conflict, graceMinutes = DEFAULT_BOOKING_GRACE_MINUTES) => {
+  if (String(conflict?.rental_status || '').toLowerCase() !== 'scheduled' || !conflict?.rental_start_date) {
+    return false;
+  }
+
+  const scheduledStart = new Date(conflict.rental_start_date);
+  if (Number.isNaN(scheduledStart.getTime())) return false;
+  return Date.now() > scheduledStart.getTime() + normalizeBookingGraceMinutes(graceMinutes) * 60 * 1000;
+};
+
+const normalizeMoneyInput = (value) => {
+  if (value === null || value === undefined) return '';
+
+  const normalized = String(value).replace(',', '.').replace(/[^\d.]/g, '');
+  if (!normalized) return '';
+
+  const [integerPartRaw = '', ...decimalParts] = normalized.split('.');
+  const decimalPart = decimalParts.join('');
+
+  let integerPart = integerPartRaw.replace(/^0+(?=\d)/, '');
+  if (integerPart === '') integerPart = '0';
+
+  if (normalized.startsWith('.')) {
+    return `0.${decimalPart}`;
+  }
+
+  return decimalPart ? `${integerPart}.${decimalPart}` : integerPart;
+};
+
+const formatWholeMad = (value) => {
+  const amount = Number(value || 0);
+  return new Intl.NumberFormat('en-MA', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(amount);
+};
+
+const getPackageDurationUnits = (pkg = {}) => {
+  const durationUnits = Number(
+    pkg.duration_units ??
+    pkg.durationUnits ??
+    pkg.package_duration_units ??
+    pkg.packageDurationUnits
+  );
+
+  return Number.isFinite(durationUnits) && durationUnits > 0 ? durationUnits : null;
+};
+
+const normalizeEditWorkflowFieldValue = (field, value) => {
+  if (field === 'rental_start_time' || field === 'rental_end_time') {
+    const raw = String(value ?? '').trim();
+    return raw ? raw.slice(0, 5) : '';
+  }
+
+  if (field === 'rental_start_date' || field === 'rental_end_date') {
+    if (!value) return '';
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
+  }
+
+  return String(value ?? '');
+};
+
+const hasEditWorkflowChanges = (nextData = {}, initialData = {}) => {
+  for (const field of EDIT_WORKFLOW_RESET_FIELDS) {
+    const nextValue = nextData[field];
+    const initialValue = initialData[field];
+
+    if (EDIT_WORKFLOW_NUMERIC_FIELDS.has(field)) {
+      if ((Number(nextValue) || 0) !== (Number(initialValue) || 0)) return true;
+      continue;
+    }
+
+    if (EDIT_WORKFLOW_BOOLEAN_FIELDS.has(field)) {
+      if (Boolean(nextValue) !== Boolean(initialValue)) return true;
+      continue;
+    }
+
+    if (normalizeEditWorkflowFieldValue(field, nextValue) !== normalizeEditWorkflowFieldValue(field, initialValue)) return true;
+  }
+
+  return false;
+};
 
 // ==================== CUSTOM HOOK - ALL BUSINESS LOGIC ====================
-const useRentalWizard = (initialData = null, mode = 'create', navigate) => {
+const useRentalWizard = (initialData = null, mode = 'create', navigate, options = {}) => {
   const { userProfile } = useAuth();
+  const requiresCustomerVerification = Boolean(options.requiresCustomerVerification);
   
   // Core form state
   const [formData, setFormData] = useState({
@@ -75,12 +218,15 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate) => {
     
     // Financial
     quantity_days: 0,
+    quantity_hours: null,
     unit_price: 0,
     transport_fee: 0,
     total_amount: 0,
     deposit_amount: '',
     damage_deposit: 0,
     damage_deposit_source: '', // NEW: track preset source
+    damage_deposit_document_url: null,
+    damage_deposit_document_name: '',
     remaining_amount: 0,
     payment_status: 'unpaid',
     
@@ -129,10 +275,12 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate) => {
   const [transportFees, setTransportFees] = useState({ pickup_fee: 0, dropoff_fee: 0 });
   const [availabilityStatus, setAvailabilityStatus] = useState('unknown');
   const [availablePackages, setAvailablePackages] = useState([]);
+  const [isLoadingPackages, setIsLoadingPackages] = useState(false);
   
   // ==================== FUEL CHARGE TOGGLE ====================
   const [fuelChargeEnabled, setFuelChargeEnabled] = useState(false);
   const [fuelChargeAmount, setFuelChargeAmount] = useState(0);
+  const [bookingGraceMinutes, setBookingGraceMinutes] = useState(DEFAULT_BOOKING_GRACE_MINUTES);
 
   const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
   const [vehicleConflict, setVehicleConflict] = useState({
@@ -143,6 +291,9 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate) => {
     dates: null
   });
   const [autoCalculatedPrice, setAutoCalculatedPrice] = useState(0);
+  const [pricingComputationMode, setPricingComputationMode] = useState('per_unit');
+  const [pricingComputationLabel, setPricingComputationLabel] = useState('');
+  const isCustomerVerificationOnlyMode = Boolean(options.requiresCustomerVerification) && mode === 'edit';
   
   // NEW: Damage Deposit States
   const [damageDepositConfig, setDamageDepositConfig] = useState({
@@ -151,6 +302,7 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate) => {
   });
   const [selectedDepositTab, setSelectedDepositTab] = useState(null);
   const [customDepositAmount, setCustomDepositAmount] = useState('');
+  const [depositDocumentUploading, setDepositDocumentUploading] = useState(false);
   
   // Customer Data
   const [customers, setCustomers] = useState([]);
@@ -158,6 +310,10 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate) => {
   const [suggestions, setSuggestions] = useState([]);
   const [isPhoneDirty, setIsPhoneDirty] = useState(false);
   const [isEmailDirty, setIsEmailDirty] = useState(false);
+  const [customerAlert, setCustomerAlert] = useState(null);
+  const [showCustomerAlertModal, setShowCustomerAlertModal] = useState(false);
+  const alertedCustomerIdsRef = useRef(new Set());
+  const manuallyClearedVehicleRef = useRef(false);
   
   // ==================== SECOND DRIVERS MANAGEMENT ====================
   const [secondDrivers, setSecondDrivers] = useState([]);
@@ -235,6 +391,8 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate) => {
   const customerSearchRef = useRef(null);
   const isProcessing = useRef(false);
   const vehicleLoadTimeout = useRef(null);
+  const preserveEditFinancialTermsRef = useRef(mode === 'edit');
+  const preserveCreateFinancialOverrideRef = useRef(false);
 
   // ==================== NEW: LOAD DAMAGE DEPOSIT CONFIG ====================
   const loadDamageDepositConfig = async () => {
@@ -322,6 +480,12 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     return Array.isArray(presets) ? presets.filter(p => p.enabled) : [];
   };
 
+  const getDefaultPresetForVehicle = (vehicleId) => {
+    const enabledPresets = getEnabledPresetsForVehicle(vehicleId);
+    if (!enabledPresets.length) return null;
+    return enabledPresets.find((preset) => preset.isDefault) || enabledPresets[0];
+  };
+
   // ==================== INITIALIZATION ====================
   useEffect(() => {
     const init = async () => {
@@ -348,20 +512,31 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     init();
   }, []);
 
-  // ==================== NEW: AUTO-SELECT FIRST PRESET ====================
   useEffect(() => {
+    loadRentalTimingSettings();
+  }, []);
+
+  // ==================== NEW: AUTO-SELECT DEFAULT PRESET ====================
+  useEffect(() => {
+    if (isCustomerVerificationOnlyMode) {
+      return;
+    }
+
+    if (mode === 'edit') {
+      return;
+    }
+
     if (formData.vehicle_id) {
-      const enabledPresets = getEnabledPresetsForVehicle(formData.vehicle_id);
-      
-      if (enabledPresets.length > 0) {
-        const firstPreset = enabledPresets[0];
-        setSelectedDepositTab(firstPreset.label);
+      const defaultPreset = getDefaultPresetForVehicle(formData.vehicle_id);
+
+      if (defaultPreset) {
+        setSelectedDepositTab(defaultPreset.label);
         setFormData(prev => ({
           ...prev,
-          damage_deposit: firstPreset.amount,
-          damage_deposit_source: firstPreset.label
+          damage_deposit: defaultPreset.amount,
+          damage_deposit_source: defaultPreset.label
         }));
-        console.log(`✅ Auto-selected deposit: ${firstPreset.label} (${firstPreset.amount} MAD)`);
+        console.log(`✅ Auto-selected deposit: ${defaultPreset.label} (${defaultPreset.amount} MAD)`);
       } else if (damageDepositConfig.allowCustomDeposit) {
         setSelectedDepositTab('custom');
         setFormData(prev => ({
@@ -370,7 +545,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         }));
       }
     }
-  }, [formData.vehicle_id, damageDepositConfig]);
+  }, [formData.vehicle_id, damageDepositConfig, isCustomerVerificationOnlyMode]);
 
   // ==================== DATA LOADING ====================
   const loadCustomers = async () => {
@@ -420,9 +595,11 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         return vehicles;
       }
       
+      const blockingConflicts = (allConflicts || []).filter((conflict) => !isScheduledConflictExpired(conflict, bookingGraceMinutes));
+
       const conflictingVehicleIds = new Set();
-      if (allConflicts && allConflicts.length > 0) {
-        allConflicts.forEach(conflict => {
+      if (blockingConflicts.length > 0) {
+        blockingConflicts.forEach(conflict => {
           if (initialData?.id && conflict.id === initialData.id) {
             return;
           }
@@ -431,9 +608,9 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       }
 
       console.log('🔍 CONFLICT QUERY RESULTS:', {
-        totalConflicts: allConflicts?.length || 0,
+        totalConflicts: blockingConflicts.length,
         conflictingVehicleIds: Array.from(conflictingVehicleIds),
-        conflictDetails: allConflicts?.map(c => ({
+        conflictDetails: blockingConflicts.map(c => ({
           vehicle_id: c.vehicle_id,
           start: c.rental_start_date,
           end: c.rental_end_date,
@@ -477,7 +654,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         setAvailableVehicles([]);
       } else {
         const eligibleVehicles = (vehicles || []).filter(vehicle => {
-          if (vehicle.status === 'available') {
+          if (vehicle.status === 'available' || vehicle.status === 'scheduled') {
             return true;
           }
 
@@ -532,6 +709,21 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     }
   };
 
+  const loadRentalTimingSettings = async () => {
+    try {
+      const settings = await fetchSystemSettings();
+      setBookingGraceMinutes(
+        normalizeBookingGraceMinutes(
+          settings?.rentalGracePeriodMinutes ??
+          settings?.rental_grace_period_minutes
+        )
+      );
+    } catch (err) {
+      console.error('Error loading rental timing settings:', err);
+      setBookingGraceMinutes(DEFAULT_BOOKING_GRACE_MINUTES);
+    }
+  };
+
   const checkVehicleAvailability = async (vehicleId, startDate, endDate, startTime = null, endTime = null) => {
     if (!vehicleId || !startDate || !endDate) {
       return { available: true };
@@ -562,13 +754,15 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         return { available: true };
       }
       
-      if (conflicts && conflicts.length > 0) {
-        console.log(`❌ Found ${conflicts.length} conflict(s) for vehicle ${vehicleId}`);
+      const blockingConflicts = (conflicts || []).filter((conflict) => !isScheduledConflictExpired(conflict, bookingGraceMinutes));
+
+      if (blockingConflicts.length > 0) {
+        console.log(`❌ Found ${blockingConflicts.length} conflict(s) for vehicle ${vehicleId}`);
         
         setVehicleConflict({
           hasConflict: true,
           conflictingVehicle: availableVehicles.find(v => v.id == vehicleId),
-          conflicts,
+          conflicts: blockingConflicts,
           availableAlternatives: [],
           dates: {
             start: startDate,
@@ -581,8 +775,8 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         setIsCheckingAvailability(false);
         return {
           available: false,
-          conflicts,
-          conflictCount: conflicts.length
+          conflicts: blockingConflicts,
+          conflictCount: blockingConflicts.length
         };
       }
       
@@ -661,53 +855,148 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
   // ==================== EDIT MODE INITIALIZATION ====================
   const initializeEditData = (data) => {
-  let startTime = '';
-  let endTime = '';
-  
-  if (data.rental_start_date) {
-    const startDate = new Date(data.rental_start_date);
-    if (!isNaN(startDate.getTime())) {
-      startTime = startDate.toTimeString().slice(0, 5);
-    }
-  }
-  
-  if (data.rental_end_date) {
-    const endDate = new Date(data.rental_end_date);
-    if (!isNaN(endDate.getTime())) {
-      endTime = endDate.toTimeString().slice(0, 5);
-    }
-  }
+    let startTime = '';
+    let endTime = '';
 
-  const cleanStartDate = data.rental_start_date ? data.rental_start_date.split('T')[0] : '';
-  const cleanEndDate = data.rental_end_date ? data.rental_end_date.split('T')[0] : '';
-  
-  setFormData({
-    ...formData,
-    ...data,
-    rental_start_date: cleanStartDate,
-    rental_end_date: cleanEndDate,
-    rental_start_time: startTime,
-    rental_end_time: endTime,
-  });
-  
-  // ✅ Load fuel charge settings from the rental data
-  if (data.fuel_charge_enabled !== undefined) {
-    setFuelChargeEnabled(data.fuel_charge_enabled);
-  }
-  if (data.fuel_charge !== undefined) {
-    setFuelChargeAmount(data.fuel_charge || 0);
-  }
-  // Reload fuel pricing when rental type changes
-  if (data.rental_type && formData.vehicle?.vehicle_model_id) {
-    loadFuelChargeSettings(formData.vehicle.vehicle_model_id, data.rental_type);
-  }
-  
-  if (data.damage_deposit_source) {
-    setSelectedDepositTab(data.damage_deposit_source);
-  }
-  
-  isProgrammaticChange.current = true;
-};
+    if (data.rental_start_date) {
+      const startDate = new Date(data.rental_start_date);
+      if (!isNaN(startDate.getTime())) {
+        startTime = startDate.toTimeString().slice(0, 5);
+      }
+    }
+
+    if (data.rental_end_date) {
+      const endDate = new Date(data.rental_end_date);
+      if (!isNaN(endDate.getTime())) {
+        endTime = endDate.toTimeString().slice(0, 5);
+      }
+    }
+
+    const cleanStartDate = data.rental_start_date ? data.rental_start_date.split('T')[0] : '';
+    const cleanEndDate = data.rental_end_date ? data.rental_end_date.split('T')[0] : '';
+    const linkedPackage = data.package || null;
+    const resolvedPackageId = data.selected_package_id || data.package_id || linkedPackage?.id || null;
+    const resolvedPackageName = data.selected_package_name || data.package_name || linkedPackage?.package_name || linkedPackage?.name || '';
+    const resolvedPackageRate =
+      Number(data.selected_package_rate_per_unit) ||
+      Number(data.package_rate_per_unit) ||
+      Number(linkedPackage?.rate_per_unit) ||
+      Number(linkedPackage?.fixed_amount) ||
+      0;
+    const resolvedIncludedKmPerUnit =
+      Number(data.selected_package_included_km_per_unit) ||
+      Number(data.package_included_km_per_unit) ||
+      Number(linkedPackage?.included_kilometers) ||
+      null;
+    const resolvedExtraRate =
+      Number(data.selected_package_extra_rate) ||
+      Number(data.package_extra_rate) ||
+      Number(linkedPackage?.extra_km_rate) ||
+      0;
+    const resolvedUsePackagePricing = Boolean(data.use_package_pricing || resolvedPackageId);
+    const resolvedMinimumDuration = data.rental_type === 'hourly' ? 0.5 : 1;
+    const resolvedDuration = Math.max(
+      resolvedMinimumDuration,
+      Number(
+        data.rental_type === 'hourly'
+          ? (data.quantity_hours ?? data.quantity_days)
+          : data.quantity_days
+      ) || resolvedMinimumDuration
+    );
+    const resolvedTransportFee = Number(data.transport_fee) || 0;
+    const resolvedStoredTotal = Number(data.total_amount) || 0;
+    const resolvedSavedBaseRate =
+      resolvedUsePackagePricing
+        ? resolvedPackageRate
+        : Math.max(
+            0,
+            Number(data.unit_price) ||
+              ((resolvedStoredTotal > 0 ? Math.max(0, resolvedStoredTotal - resolvedTransportFee) : 0) / resolvedDuration)
+          );
+    const resolvedDepositAmount =
+      data.deposit_amount === null || data.deposit_amount === undefined || data.deposit_amount === ''
+        ? ''
+        : String(data.deposit_amount);
+    const resolvedDamageDeposit =
+      data.damage_deposit === null || data.damage_deposit === undefined || data.damage_deposit === ''
+        ? 0
+        : Number(data.damage_deposit) || 0;
+
+    const hydratedEditData = {
+      ...data,
+      deposit_amount: resolvedDepositAmount,
+      damage_deposit: resolvedDamageDeposit,
+      quantity_days: resolvedDuration,
+      quantity_hours: data.rental_type === 'hourly' ? resolvedDuration : null,
+      rental_start_date: cleanStartDate,
+      rental_end_date: cleanEndDate,
+      rental_start_time: startTime,
+      rental_end_time: endTime,
+      unit_price: resolvedSavedBaseRate,
+      transport_fee: resolvedTransportFee,
+      total_amount: resolvedStoredTotal,
+      remaining_amount:
+        data.remaining_amount === null || data.remaining_amount === undefined || data.remaining_amount === ''
+          ? Math.max(0, resolvedStoredTotal - (Number(resolvedDepositAmount) || 0))
+          : Number(data.remaining_amount) || 0,
+      selected_package_id: resolvedPackageId,
+      selected_package_name: resolvedPackageName,
+      selected_package_fixed_amount: Number(data.selected_package_fixed_amount) || resolvedPackageRate,
+      selected_package_rate_per_unit: resolvedPackageRate,
+      selected_package_included_km: Number(data.selected_package_included_km) || resolvedIncludedKmPerUnit,
+      selected_package_included_km_per_unit: resolvedIncludedKmPerUnit,
+      selected_package_total_included_km:
+        Number(data.selected_package_total_included_km) ||
+        Number(data.package_total_included_km) ||
+        resolvedIncludedKmPerUnit ||
+        null,
+      selected_package_extra_rate: resolvedExtraRate,
+      selected_package_description: data.selected_package_description || data.package_description || linkedPackage?.description || '',
+      use_package_pricing: resolvedUsePackagePricing,
+    };
+
+    setFormData((prev) => ({
+      ...prev,
+      ...hydratedEditData,
+    }));
+
+    if (data.fuel_charge_enabled !== undefined) {
+      setFuelChargeEnabled(data.fuel_charge_enabled);
+    }
+    if (data.fuel_charge !== undefined) {
+      setFuelChargeAmount(data.fuel_charge || 0);
+    }
+
+    setAutoCalculatedPrice(resolvedSavedBaseRate);
+
+    const resolvedVehicleModelId =
+      data.vehicle?.vehicle_model_id ||
+      data.vehicle_model_id ||
+      availableVehicles.find((vehicle) => String(vehicle.id) === String(data.vehicle_id))?.vehicle_model_id ||
+      null;
+    const inferredPresetLabel =
+      resolvedVehicleModelId
+        ? (damageDepositConfig.vehicleModelPresets[resolvedVehicleModelId] || []).find((preset) => preset.enabled && Number(preset.amount) === resolvedDamageDeposit)?.label
+        : null;
+    const normalizedDepositSource =
+      data.damage_deposit_source === 'document'
+        ? null
+        : data.damage_deposit_source;
+    const inferredDepositTab =
+      normalizedDepositSource ||
+      inferredPresetLabel ||
+      (resolvedDamageDeposit > 0 ? 'custom' : null);
+
+    if (inferredDepositTab) {
+      setSelectedDepositTab(inferredDepositTab);
+    }
+    if (inferredDepositTab === 'custom') {
+      setCustomDepositAmount(resolvedDamageDeposit ? String(resolvedDamageDeposit) : '');
+    }
+
+    preserveEditFinancialTermsRef.current = true;
+    isProgrammaticChange.current = true;
+  };
 
   // ==================== CORE FUNCTIONS ====================
   const composeDateTime = (date, time) => {
@@ -727,16 +1016,20 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     return isNaN(localDate.getTime()) ? null : localDate;
   };
 
+  const shouldPreserveFinancialTerms = () =>
+    (mode === 'edit' && preserveEditFinancialTermsRef.current) || preserveCreateFinancialOverrideRef.current;
+
   // ==================== UPDATED: GET DIRECT PRICING FROM DATABASE WITH TIER CHECK ====================
-  const getDirectPricing = async (vehicleId, rentalType, hours) => {
+  const getDirectPricing = async (vehicleId, rentalType, quantity = 1) => {
     const vehicle = availableVehicles.find(v => v.id == vehicleId);
     if (!vehicle) {
       return rentalType === 'hourly' ? 400 : 1500;
     }
     
     const modelId = vehicle.vehicle_model_id;
+    const normalizedQuantity = Number(quantity) || 1;
     
-    if ((rentalType === 'hourly' && hours === 1) || (rentalType === 'daily' && hours === 1)) {
+    if ((rentalType === 'hourly' && normalizedQuantity === 1) || (rentalType === 'daily' && normalizedQuantity === 1)) {
       const { data: basePriceData, error } = await supabase
         .from('app_4c3a7a6153_base_prices')
         .select(rentalType === 'hourly' ? 'hourly_price' : 'daily_price')
@@ -770,30 +1063,25 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         throw new Error('No pricing tiers found');
       }
       
-      if (rentalType === 'hourly' && hours && hours > 0) {
-        if (hours === 1) {
+      if (rentalType === 'hourly' && normalizedQuantity > 0) {
+        if (normalizedQuantity === 1) {
           throw new Error('Single unit should use base price');
         }
 
         for (const tier of pricingTiers) {
           if (tier.min_hours !== null && tier.max_hours !== null && tier.price_amount) {
-            const min = parseInt(tier.min_hours);
-            const max = parseInt(tier.max_hours);
+            const min = parseFloat(tier.min_hours);
+            const max = parseFloat(tier.max_hours);
             
-            if (hours >= min && hours <= max) {
+            if (normalizedQuantity >= min && normalizedQuantity <= max) {
               return parseFloat(tier.price_amount);
             }
           }
         }
-        
-        const anyHourly = pricingTiers.find(t => t.price_amount);
-        if (anyHourly) {
-          return parseFloat(anyHourly.price_amount);
-        }
       }
       
       if (rentalType === 'daily') {
-        const days = hours ? Math.ceil(hours / 24) : 1;
+        const days = Math.max(1, Number(quantity) || 1);
         
         for (const tier of pricingTiers) {
           if (tier.daily_price_amount) {
@@ -805,22 +1093,10 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
             }
           }
         }
-        
-        const anyDaily = pricingTiers.find(t => t.daily_price_amount);
-        if (anyDaily) {
-          return parseFloat(anyDaily.daily_price_amount);
-        }
-        
-        const anyHourly = pricingTiers.find(t => t.price_amount);
-        if (anyHourly) {
-          const calculatedDaily = parseFloat(anyHourly.price_amount) * 24;
-          return calculatedDaily;
-        }
       }
       
       if (rentalType === 'weekly') {
-        const weeks = hours ? Math.ceil(hours / (24 * 7)) : 1;
-        const dailyPrice = await getDirectPricing(vehicleId, 'daily', 24);
+        const dailyPrice = await getDirectPricing(vehicleId, 'daily', 1);
         return dailyPrice * 7;
       }
       
@@ -891,6 +1167,66 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     }
   };
 
+  const getPricingComputationMeta = async (vehicleId, rentalType, quantity = 1) => {
+    const defaultMeta = {
+      mode: 'per_unit',
+      label: ''
+    };
+
+    if (rentalType !== 'hourly' || Number(quantity) !== 1.5) {
+      return defaultMeta;
+    }
+
+    const vehicle = availableVehicles.find(v => v.id == vehicleId);
+    const modelId = vehicle?.vehicle_model_id;
+
+    if (!modelId) {
+      return defaultMeta;
+    }
+
+    try {
+      const { data: pricingTiers, error } = await supabase
+        .from('pricing_tiers')
+        .select('min_hours, max_hours, price_amount, calculation_method, is_active')
+        .eq('vehicle_model_id', modelId)
+        .eq('duration_type', 'hours')
+        .eq('is_active', true)
+        .order('min_hours', { ascending: true });
+
+      if (error || !pricingTiers?.length) {
+        return defaultMeta;
+      }
+
+      const matchingTier = pricingTiers.find((tier) => {
+        if (!tier?.price_amount || tier.min_hours === null || tier.max_hours === null) {
+          return false;
+        }
+        const min = parseFloat(tier.min_hours);
+        const max = parseFloat(tier.max_hours);
+        return quantity >= min && quantity <= max;
+      });
+
+      if (!matchingTier) {
+        return defaultMeta;
+      }
+
+      if (matchingTier.calculation_method === 'fixed') {
+        const min = parseFloat(matchingTier.min_hours);
+        const max = parseFloat(matchingTier.max_hours);
+        const rangeLabel = min === max ? `${min}` : `${min}-${max}`;
+
+        return {
+          mode: 'flat_total',
+          label: `${rangeLabel}-hour fixed tier`
+        };
+      }
+
+      return defaultMeta;
+    } catch (error) {
+      return defaultMeta;
+    }
+  };
+
   const autoPopulateUnitPrice = async () => {
     try {
       // 🚨 IMPORTANT: Skip auto-population if package pricing is active
@@ -909,6 +1245,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
       const quantity = formData.quantity_days || 1;
       const isSingleUnit = quantity === 1;
+      const pricingMeta = await getPricingComputationMeta(formData.vehicle_id, formData.rental_type, quantity);
       
       let unitPrice = 0;
 
@@ -939,6 +1276,12 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       }
 
       setAutoCalculatedPrice(unitPrice);
+      setPricingComputationMode(pricingMeta.mode);
+      setPricingComputationLabel(pricingMeta.label);
+
+      if (shouldPreserveFinancialTerms()) {
+        return;
+      }
 
       // 🚨 Only update unit_price if package pricing is NOT active
       if (!formData.use_package_pricing) {
@@ -959,6 +1302,12 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         );
         
         setAutoCalculatedPrice(fallbackPrice);
+        setPricingComputationMode('per_unit');
+        setPricingComputationLabel('');
+
+        if (shouldPreserveFinancialTerms()) {
+          return;
+        }
 
         // 🚨 Only update unit_price if package pricing is NOT active
         if (!formData.use_package_pricing) {
@@ -973,11 +1322,14 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
           unit_price: 0
         }));
         setAutoCalculatedPrice(0);
+        setPricingComputationMode('per_unit');
+        setPricingComputationLabel('');
       }
     }
   };
 
   const calculateTransportFee = () => {
+    if (isCustomerVerificationOnlyMode) return;
     let totalTransportFee = 0;
     if (formData.pickup_transport) totalTransportFee += transportFees.pickup_fee || 0;
     if (formData.dropoff_transport) totalTransportFee += transportFees.dropoff_fee || 0;
@@ -986,7 +1338,13 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
   };
 
   const calculateFinancials = () => {
-  const subtotal = (formData.quantity_days || 0) * (formData.unit_price || 0);
+  if (isCustomerVerificationOnlyMode) return;
+  const isFlatTierTotal = !formData.use_package_pricing && pricingComputationMode === 'flat_total';
+  const subtotal = formData.use_package_pricing
+    ? (formData.unit_price || 0)
+    : isFlatTierTotal
+    ? (formData.unit_price || 0)
+    : (formData.quantity_days || 0) * (formData.unit_price || 0);
   const total = subtotal + (formData.transport_fee || 0);
   const remaining = total - (formData.deposit_amount || 0);
 
@@ -998,6 +1356,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 };
 
   const calculateQuantityAndPricing = async () => {
+    if (isCustomerVerificationOnlyMode) return;
     const { rental_type, rental_start_date, rental_end_date, rental_start_time, rental_end_time, vehicle_id, quantity_days } = formData;
 
     if (!rental_start_date || !rental_end_date) {
@@ -1022,7 +1381,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       }
       
       const diffHours = (endDatetime - startDatetime) / (1000 * 60 * 60);
-      quantity = Math.ceil(Math.max(diffHours, 1));
+      quantity = Math.max(Math.round(Math.max(diffHours, 0.5) * 2) / 2, 0.5);
     } else {
       const startDateOnly = new Date(rental_start_date);
       startDateOnly.setHours(0, 0, 0, 0);
@@ -1056,13 +1415,70 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
           rental_type,
           quantity
         );
+        const pricingMeta = await getPricingComputationMeta(vehicle_id, rental_type, quantity);
         setAutoCalculatedPrice(unitPrice);
-        setFormData(prev => ({ 
-          ...prev, 
-          unit_price: unitPrice 
-        }));
+        setPricingComputationMode(pricingMeta.mode);
+        setPricingComputationLabel(pricingMeta.label);
+        if (!shouldPreserveFinancialTerms()) {
+          setFormData(prev => ({ 
+            ...prev, 
+            unit_price: unitPrice 
+          }));
+        }
       }, 100);
     }
+  };
+
+  const getCurrentRentalDurationUnits = () => {
+    const startDatetime = composeDateTime(formData.rental_start_date, formData.rental_start_time);
+    const endDatetime = composeDateTime(formData.rental_end_date, formData.rental_end_time);
+
+    if (formData.rental_type === 'hourly') {
+      if (startDatetime && endDatetime) {
+        let adjustedEndDatetime = endDatetime;
+        if (startDatetime >= adjustedEndDatetime) {
+          adjustedEndDatetime = new Date(adjustedEndDatetime);
+          adjustedEndDatetime.setDate(adjustedEndDatetime.getDate() + 1);
+        }
+        const diffHours = (adjustedEndDatetime - startDatetime) / (1000 * 60 * 60);
+        return Math.max(Math.round(Math.max(diffHours, 0.5) * 2) / 2, 0.5);
+      }
+      return Math.max(Number(formData.quantity_days) || 0.5, 0.5);
+    }
+
+    if (startDatetime && endDatetime) {
+      const diffMs = endDatetime - startDatetime;
+      return Math.max(Math.round(diffMs / (1000 * 60 * 60 * 24)), 1);
+    }
+
+    return Math.max(Number(formData.quantity_days) || 1, 1);
+  };
+
+  const syncEndDateTimeFromStart = (draftFormData, durationUnits = null) => {
+    if (!draftFormData.rental_start_date || !draftFormData.rental_start_time) {
+      return draftFormData;
+    }
+
+    const startDatetime = composeDateTime(draftFormData.rental_start_date, draftFormData.rental_start_time);
+    if (!startDatetime) {
+      return draftFormData;
+    }
+
+    const minimumUnits = draftFormData.rental_type === 'hourly' ? 0.5 : 1;
+    const unitsToUse = Math.max(Number(durationUnits || getCurrentRentalDurationUnits()) || minimumUnits, minimumUnits);
+    const millisecondsToAdd =
+      draftFormData.rental_type === 'hourly'
+        ? unitsToUse * 60 * 60 * 1000
+        : unitsToUse * 24 * 60 * 60 * 1000;
+
+    const endDatetime = new Date(startDatetime.getTime() + millisecondsToAdd);
+
+    draftFormData.rental_end_date = formatDateToYYYYMMDD(endDatetime);
+    draftFormData.rental_end_time = endDatetime.toTimeString().slice(0, 5);
+    draftFormData.quantity_days = unitsToUse;
+    draftFormData.quantity_hours = draftFormData.rental_type === 'hourly' ? unitsToUse : null;
+
+    return draftFormData;
   };
 
   const getAggregatedCustomerData = useCallback(() => {
@@ -1134,16 +1550,13 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
   const sendWhatsAppNotifications = async (pendingTotalRequest, rentalId) => {
     try {
-      const { data: admins, error } = await supabase
-        .from('app_b30c02e74da644baad4668e3587d86b1_users')
-        .select('id, full_name, phone_number, whatsapp_notifications, role')
-        .in('role', ['owner', 'admin'])
-        .eq('whatsapp_notifications', true)
-        .not('phone_number', 'is', null);
-
-      if (error) {
-        return 0;
-      }
+      const allUsers = await getUsers();
+      const admins = (allUsers || []).filter(
+        (user) =>
+          ['owner', 'admin'].includes(String(user.role || '')) &&
+          user.whatsapp_notifications &&
+          user.phone_number
+      );
 
       if (!admins || admins.length === 0) {
         return 0;
@@ -1199,14 +1612,11 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
   // ==================== QUICK HOUR SELECT HANDLER ====================
   const handleQuickHourSelect = (hours) => {
-    if (!formData.rental_start_date || !formData.rental_start_time) {
-      toast.error('Please set start date and time first');
-      return;
-    }
-    
-    const startDateTime = composeDateTime(formData.rental_start_date, formData.rental_start_time);
+    const startDate = formData.rental_start_date || getMoroccoTodayString();
+    const startTime = formData.rental_start_time || new Date().toTimeString().slice(0, 5);
+    const startDateTime = composeDateTime(startDate, startTime);
     if (!startDateTime) {
-      toast.error('Invalid start date/time');
+      toast.error(tr('Invalid start date/time', 'Date/heure de début invalide'));
       return;
     }
     
@@ -1216,27 +1626,36 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     
     setFormData(prev => ({
       ...prev,
+      rental_type: 'hourly',
+      rental_start_date: startDate,
+      rental_start_time: startTime,
       rental_end_date: formatDateToYYYYMMDD(endDateTime),
-      rental_end_time: endDateTime.toTimeString().slice(0, 5)
-    }));
+        rental_end_time: endDateTime.toTimeString().slice(0, 5),
+        quantity_days: hours,
+        quantity_hours: hours,
+      }));
     
-    toast.success(`✅ Set ${hours}-hour rental period`);
+    const hourLabel = Number(hours) === 1 ? tr('hour', 'heure') : tr('hours', 'heures');
+    toast.success(`✅ ${tr('Rental period set to', 'Période de location définie à')} ${hours} ${hourLabel}`);
   };
 
   const handleQuickDaySelect = (days) => {
-    if (formData.rental_start_date) {
-      const startDate = new Date(formData.rental_start_date);
-      const endDate = new Date(startDate);
-      endDate.setDate(startDate.getDate() + days);
-      
-      const newEndDate = endDate.toISOString().split('T')[0];
-      const endTime = formData.rental_start_time || new Date().toTimeString().slice(0, 5);
-      
+    const startDate = formData.rental_start_date || getMoroccoTodayString();
+    const startTime = formData.rental_start_time || new Date().toTimeString().slice(0, 5);
+    const startDateTime = composeDateTime(startDate, startTime);
+
+    if (startDateTime) {
+      const endDateTime = new Date(startDateTime.getTime() + (days * 24 * 60 * 60 * 1000));
+
       setFormData(prev => ({
         ...prev,
-        rental_end_date: newEndDate,
-        rental_end_time: endTime,
+        rental_type: 'daily',
+        rental_start_date: startDate,
+        rental_start_time: startTime,
+        rental_end_date: formatDateToYYYYMMDD(endDateTime),
+        rental_end_time: endDateTime.toTimeString().slice(0, 5),
         quantity_days: days,
+        quantity_hours: null,
       }));
       
       setSelectedQuickDuration(days);
@@ -1245,12 +1664,16 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         setTimeout(() => {
           getDirectPricing(formData.vehicle_id, 'daily', days).then(price => {
             setAutoCalculatedPrice(price);
-            setFormData(prev => ({ ...prev, unit_price: price }));
+            if (!shouldPreserveFinancialTerms()) {
+              setFormData(prev => ({ ...prev, unit_price: price }));
+            }
           });
         }, 100);
       }
+      
+      toast.success(`✅ ${tr('Rental period set to', 'Période de location définie à')} ${days} ${days > 1 ? tr('days', 'jours') : tr('day', 'jour')}`);
     } else {
-      toast.error('Please set a start date first.');
+      toast.error(tr('Invalid start date/time', 'Date/heure de début invalide'));
     }
   };
 
@@ -1277,20 +1700,65 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
   // ==================== NEW: DAMAGE DEPOSIT TAB HANDLER ====================
   const handleDepositTabClick = (tabId, amount) => {
     setSelectedDepositTab(tabId);
-    
+
     if (tabId === 'custom') {
       setFormData(prev => ({
         ...prev,
         damage_deposit: amount || parseFloat(customDepositAmount) || 0,
-        damage_deposit_source: 'custom'
+        damage_deposit_source: 'custom',
       }));
     } else {
       setFormData(prev => ({
         ...prev,
         damage_deposit: amount,
-        damage_deposit_source: tabId
+        damage_deposit_source: tabId,
       }));
     }
+  };
+
+  const handleDepositDocumentUpload = async (file) => {
+    if (!file) return;
+
+    setDepositDocumentUploading(true);
+    try {
+      const result = await uploadFile(file, {
+        bucket: 'id_scans',
+        pathPrefix: `damage-deposits/${formData.customer_id || 'temp'}`,
+      });
+
+      if (!result.success) {
+        throw new Error(result.error || tr('Failed to upload document', 'Impossible de téléverser le document'));
+      }
+
+      setFormData((prev) => ({
+        ...prev,
+        damage_deposit_document_url: result.url,
+        damage_deposit_document_name: file.name || tr('Security document', 'Document de garantie'),
+      }));
+
+      toast.success(tr('Security document uploaded', 'Document de garantie téléversé'));
+    } catch (error) {
+      toast.error(error.message || tr('Failed to upload security document', 'Impossible de téléverser le document de garantie'));
+    } finally {
+      setDepositDocumentUploading(false);
+    }
+  };
+
+  const handleDepositDocumentTypeSelect = (documentType) => {
+    setFormData((prev) => ({
+      ...prev,
+      damage_deposit_document_url: null,
+      damage_deposit_document_name: documentType,
+    }));
+    toast.success(tr('Security document marked as held', 'Document de garantie marqué comme retenu'));
+  };
+
+  const handleDepositDocumentClear = () => {
+    setFormData((prev) => ({
+      ...prev,
+      damage_deposit_document_url: null,
+      damage_deposit_document_name: '',
+    }));
   };
 
   // ==================== ENHANCED: PHONE NUMBER FORMATTING ====================
@@ -1350,6 +1818,12 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     if (field === 'customer_phone') setIsPhoneDirty(true);
     if (field === 'customer_email') setIsEmailDirty(true);
 
+    const shouldResetPaidEditState =
+      mode === 'edit' &&
+      formData.payment_status === 'paid' &&
+      PAYMENT_RESET_FIELDS_ON_EDIT.has(field) &&
+      formData[field] !== value;
+
     if (field === 'rental_start_time' || field === 'rental_end_time' || 
         field === 'rental_start_date' || field === 'rental_end_date') {
       setSelectedQuickDuration(null);
@@ -1357,17 +1831,48 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
     const newFormData = { ...formData, [field]: value };
 
+    if (field === 'unit_price' && !newFormData.use_package_pricing) {
+      preserveCreateFinancialOverrideRef.current = true;
+    }
+
+    if (shouldResetPaidEditState) {
+      isManualStatusChange.current = true;
+      newFormData.payment_status = 'unpaid';
+      newFormData.deposit_amount = '';
+    }
+
     if (field === 'vehicle_id') {
+      preserveCreateFinancialOverrideRef.current = false;
+      manuallyClearedVehicleRef.current = !value;
       newFormData.vehicle_id = value;
+
+      if (!value) {
+        newFormData.selected_package_id = null;
+        newFormData.selected_package_name = '';
+        newFormData.selected_package_fixed_amount = 0;
+        newFormData.selected_package_rate_per_unit = 0;
+        newFormData.selected_package_included_km = null;
+        newFormData.selected_package_included_km_per_unit = null;
+        newFormData.selected_package_total_included_km = null;
+        newFormData.selected_package_extra_rate = 0;
+        newFormData.selected_package_description = '';
+        newFormData.use_package_pricing = false;
+        newFormData.package_overrides_tier = false;
+      }
       
-      if (value && formData.rental_type && !formData.use_package_pricing) {
+      if (value && formData.rental_type && !formData.use_package_pricing && !shouldPreserveFinancialTerms()) {
         setTimeout(() => {
           autoPopulateUnitPrice();
         }, 100);
       }
     }
 
+    if (field === 'rental_start_time' || field === 'rental_start_date') {
+      syncEndDateTimeFromStart(newFormData);
+    }
+
     if (field === 'rental_type') {
+      preserveCreateFinancialOverrideRef.current = false;
       setSelectedQuickDuration(null);
       
       const today = getMoroccoTodayString();
@@ -1416,8 +1921,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         dateValue = dateValue.split('T')[0];
       }
       if (newFormData.rental_type === 'daily') {
-        const nextDay = getMoroccoDateOffset(1, dateValue);
-        newFormData.rental_end_date = nextDay;
+        syncEndDateTimeFromStart(newFormData);
       } else if (newFormData.rental_type === 'hourly') {
         newFormData.rental_end_date = dateValue;
       }
@@ -1451,10 +1955,14 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     }
     
     if (field === 'vehicle_id' || field === 'rental_type') {
-      if (newFormData.vehicle_id && newFormData.rental_type) {
+      if (newFormData.vehicle_id && newFormData.rental_type && !shouldPreserveFinancialTerms()) {
         await autoPopulateUnitPrice();
       }
     }
+  };
+
+  const handleResetAutoPrice = () => {
+    preserveCreateFinancialOverrideRef.current = false;
   };
 
   const handleSuggestionClick = async (suggestion) => {
@@ -1494,7 +2002,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       setIsEmailDirty(false);
       setIsPhoneDirty(false);
       
-      toast.success(`✅ Customer "${customerData.full_name}" data loaded from database`);
+      toast.success(`✅ ${tr('Customer', 'Client')} "${customerData.full_name}" ${tr('data loaded from database', 'chargé depuis la base de données')}`);
       
     } catch (error) {
       setFormData(prev => ({
@@ -1505,18 +2013,77 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         customer_licence_number: suggestion.licence_number || '',
         customer_id: suggestion.id || null,
       }));
-      toast.info('⚠️ Using cached customer data');
+      toast.info(tr('⚠️ Using cached customer data', '⚠️ Utilisation des données client en cache'));
     }
     
     setSuggestions([]);
   };
+
+  useEffect(() => {
+    const loadCustomerAlert = async () => {
+      const customerId = formData.customer_id;
+      if (!customerId) {
+        setCustomerAlert(null);
+        setShowCustomerAlertModal(false);
+        return;
+      }
+
+      if (alertedCustomerIdsRef.current.has(customerId)) {
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('app_4c3a7a6153_customers')
+          .select('id, full_name, scan_metadata')
+          .eq('id', customerId)
+          .single();
+
+        if (error) throw error;
+
+        const scanMetadata = data?.scan_metadata || {};
+        if (scanMetadata.is_banned) {
+          setCustomerAlert({
+            type: 'banned',
+            customerId: data.id,
+            customerName: data.full_name || formData.customer_name,
+            note: scanMetadata.ban_note || '',
+            historyCount: Array.isArray(scanMetadata.staff_notes_history) ? scanMetadata.staff_notes_history.length : 0,
+            isBanned: true,
+          });
+          setShowCustomerAlertModal(true);
+        } else if (scanMetadata.show_admin_note_alert && scanMetadata.admin_note) {
+          setCustomerAlert({
+            type: 'internal_note',
+            customerId: data.id,
+            customerName: data.full_name || formData.customer_name,
+            note: scanMetadata.admin_note,
+            historyCount: Array.isArray(scanMetadata.staff_notes_history) ? scanMetadata.staff_notes_history.length : 0,
+            isBanned: false,
+          });
+          setShowCustomerAlertModal(true);
+        } else {
+          setCustomerAlert(null);
+          setShowCustomerAlertModal(false);
+        }
+
+        alertedCustomerIdsRef.current.add(customerId);
+      } catch (error) {
+        console.error('Failed to load customer alert note:', error);
+      }
+    };
+
+    loadCustomerAlert();
+  }, [formData.customer_id, formData.customer_name]);
+
+  const isBannedCustomerBlocked = customerAlert?.type === 'banned' && Boolean(formData.customer_id);
 
   const handleFileUpload = async (field, fileOrUrl) => {
     if (!fileOrUrl) return;
     
     if (typeof fileOrUrl === 'string') {
       setFormData(prev => ({ ...prev, [field]: fileOrUrl }));
-      toast.success('ID image URL set!');
+      toast.success(tr("ID image URL set!", "URL de l'image de la pièce définie !"));
       return;
     }
     
@@ -1537,9 +2104,9 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       const { data: { publicUrl } } = supabase.storage.from('customer-documents').getPublicUrl(data.path);
 
       setFormData(prev => ({ ...prev, [field]: publicUrl }));
-      toast.success('File uploaded successfully!');
+      toast.success(tr('File uploaded successfully!', 'Fichier téléversé avec succès !'));
     } catch (err) {
-      toast.error('Failed to upload file');
+      toast.error(tr('Failed to upload file', 'Impossible de téléverser le fichier'));
     } finally {
       setLoading(false);
     }
@@ -1578,27 +2145,33 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       
       setIsEmailDirty(false);
       setIsPhoneDirty(false);
+      setCustomerScanNote('');
       
       const populatedFields = [];
-      if (customerData.full_name) populatedFields.push('Name');
-      if (customerData.date_of_birth) populatedFields.push('Date of Birth');
-      if (customerData.nationality) populatedFields.push('Nationality');
-      if (customerData.place_of_birth) populatedFields.push('Place of Birth');
+      if (customerData.full_name) populatedFields.push(tr('Name', 'Nom'));
+      if (customerData.date_of_birth) populatedFields.push(tr('Date of Birth', 'Date de naissance'));
+      if (customerData.nationality) populatedFields.push(tr('Nationality', 'Nationalité'));
+      if (customerData.place_of_birth) populatedFields.push(tr('Place of Birth', 'Lieu de naissance'));
       
-      toast.success(`✅ ID scan completed! Populated: ${populatedFields.join(', ')}`);
-      setSuccess('✅ Customer information updated from ID scan!');
+      toast.success(`✅ ${tr('ID scan completed! Populated:', 'Scan de la pièce terminé ! Champs remplis :')} ${populatedFields.join(', ')}`);
+      setSuccess(tr('✅ Customer information updated from ID scan!', "✅ Informations client mises à jour depuis le scan d'identité !"));
       
     } catch (error) {
-      toast.error('Failed to populate customer data from scan');
+      toast.error(tr('Failed to populate customer data from scan', "Impossible de remplir les données client à partir du scan"));
     }
   };
 
   const handleIDScanComplete = async (scannedData, imageFile) => {
     try {
+      const isOcrSkipped = Boolean(scannedData?.ocrSkipped);
+      const isOcrUnavailable = Boolean(scannedData?.ocrUnavailable);
+
       let savedCustomer = null;
-      try {
+      if (!isOcrSkipped) {
+        try {
         savedCustomer = await saveCustomerFromScan(scannedData, imageFile);
-      } catch (saveError) {
+        } catch (saveError) {
+        }
       }
 
       setIsEmailDirty(false);
@@ -1623,12 +2196,27 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         
         return newState;
       });
-      
-      const customerName = scannedData.full_name || scannedData.name || scannedData.customer_name || 'Customer';
-      toast.success(`✅ Primary customer "${customerName}" data updated from scan`);
+
+      if (isOcrSkipped) {
+        setCustomerScanNote(tr('ID image saved. Enter the customer details manually.', "Image de la pièce enregistrée. Saisissez manuellement les détails du client."));
+        toast.success(tr('ID image saved. Enter the customer details manually.', "Image de la pièce enregistrée. Saisissez manuellement les détails du client."));
+        return;
+      }
+
+      if (isOcrUnavailable) {
+        setCustomerScanNote(tr('OCR is unavailable right now. Please enter the customer name and license manually.', "L'OCR est indisponible pour le moment. Veuillez saisir manuellement le nom du client et le permis."));
+        toast(tr('ID image captured. OCR is unavailable, so please enter the customer details manually.', "L'image de la pièce a été capturée. L'OCR est indisponible, veuillez donc saisir manuellement les détails du client."), {
+          icon: '⚠️',
+        });
+        return;
+      }
+
+      setCustomerScanNote('');
+      const customerName = scannedData.full_name || scannedData.name || scannedData.customer_name || tr('Customer', 'Client');
+      toast.success(`✅ ${tr('Primary customer', 'Client principal')} "${customerName}" ${tr('data updated from scan', 'mis à jour depuis le scan')}`);
       
     } catch (error) {
-      toast.error(`Failed to process ID scan: ${error.message}`);
+      toast.error(`${tr('Failed to process ID scan:', "Impossible de traiter le scan d'identité :")} ${error.message}`);
     }
   };
 
@@ -1636,54 +2224,57 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     const newErrors = {};
     
     if (step === 1) {
-      if (!formData.customer_name.trim()) newErrors.customer_name = 'Customer name is required';
+      if (!formData.customer_name.trim()) newErrors.customer_name = tr('Customer name is required', 'Le nom du client est requis');
       
       const phoneValue = formData.customer_phone || '';
       if (!phoneValue.trim()) {
-        newErrors.customer_phone = 'Phone number is required';
+        newErrors.customer_phone = tr('Phone number is required', 'Le numéro de téléphone est requis');
       } else {
         const cleanedPhone = phoneValue.replace(/[^\d+]/g, '');
         if (!cleanedPhone.startsWith('+')) {
-          newErrors.customer_phone = 'Phone number must include country code (e.g., +212)';
+          newErrors.customer_phone = tr('Phone number must include country code (e.g., +212)', 'Le numéro de téléphone doit inclure l’indicatif pays (ex. : +212)');
         } else if (cleanedPhone.length < 8) {
-          newErrors.customer_phone = 'Please enter a valid phone number';
+          newErrors.customer_phone = tr('Please enter a valid phone number', 'Veuillez saisir un numéro de téléphone valide');
         }
       }
       
       if (formData.customer_email && formData.customer_email.trim()) {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(formData.customer_email.trim())) {
-          newErrors.customer_email = 'Please enter a valid email address';
+          newErrors.customer_email = tr('Please enter a valid email address', 'Veuillez saisir une adresse e-mail valide');
         }
       }
       
-      if (!formData.customer_licence_number?.trim()) {
-        newErrors.customer_licence_number = 'Driver\'s license number is required';
+      if (requiresCustomerVerification && !formData.customer_licence_number?.trim()) {
+        newErrors.customer_licence_number = tr("Driver's license number is required", 'Le numéro du permis de conduire est requis');
+      }
+      if (requiresCustomerVerification && !formData.customer_id_image) {
+        newErrors.customer_id_image = tr('Please scan or import the customer ID before saving verification', "Veuillez scanner ou importer l'identité du client avant d'enregistrer la vérification");
       }
     } else if (step === 2) {
       if (!formData.vehicle_id) {
-        newErrors.vehicle_id = 'Vehicle selection is required';
+        newErrors.vehicle_id = tr('Vehicle selection is required', 'La sélection d’un véhicule est requise');
       } else {
         const vehicleIdStr = formData.vehicle_id;
         if (!vehicleIdStr) {
-          newErrors.vehicle_id = 'Please select a valid vehicle';
+          newErrors.vehicle_id = tr('Please select a valid vehicle', 'Veuillez sélectionner un véhicule valide');
         }
       }
       
-      if (!formData.rental_start_date) newErrors.rental_start_date = 'Start date is required';
-      if (!formData.rental_end_date) newErrors.rental_end_date = 'End date is required';
+      if (!formData.rental_start_date) newErrors.rental_start_date = tr('Start date is required', 'La date de début est requise');
+      if (!formData.rental_end_date) newErrors.rental_end_date = tr('End date is required', 'La date de fin est requise');
       
       if (formData.rental_start_date && formData.rental_end_date) {
         const start = composeDateTime(formData.rental_start_date, formData.rental_start_time);
         const end = composeDateTime(formData.rental_end_date, formData.rental_end_time);
         if (start && end && start >= end) {
-          newErrors.rental_end_date = 'End date must be after start date';
+          newErrors.rental_end_date = tr('End date must be after start date', 'La date de fin doit être postérieure à la date de début');
         }
       }
 
       if (formData.second_driver_name && !formData.second_driver_id_image) {
-        newErrors.second_driver_id_image = 'ID scan required for second driver';
-        toast.error('Please scan or upload ID for second driver');
+        newErrors.second_driver_id_image = tr('ID scan required for second driver', "Le scan de la pièce d'identité est requis pour le second conducteur");
+        toast.error(tr('Please scan or upload ID for second driver', "Veuillez scanner ou téléverser la pièce d'identité du second conducteur"));
       }
       
       if (formData.second_driver_name && formData.customer_name) {
@@ -1691,21 +2282,21 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         const secondName = formData.second_driver_name.toLowerCase().trim();
         
         if (primaryName === secondName) {
-          newErrors.second_driver_name = 'Second driver cannot be the same as primary driver';
+          newErrors.second_driver_name = tr('Second driver cannot be the same as primary driver', 'Le second conducteur ne peut pas être identique au conducteur principal');
         }
         
         if (formData.customer_licence_number && formData.second_driver_license && 
             formData.customer_licence_number.trim() === formData.second_driver_license.trim()) {
-          newErrors.second_driver_license = 'License number cannot be same as primary driver';
+          newErrors.second_driver_license = tr('License number cannot be same as primary driver', 'Le numéro du permis ne peut pas être identique à celui du conducteur principal');
         }
         
         if (formData.customer_id_number && formData.second_driver_id_number && 
             formData.customer_id_number.trim() === formData.second_driver_id_number.trim()) {
-          newErrors.second_driver_id_number = 'ID number cannot be same as primary driver';
+          newErrors.second_driver_id_number = tr('ID number cannot be same as primary driver', "Le numéro d'identité ne peut pas être identique à celui du conducteur principal");
         }
       }
     } else if (step === 3) {
-      if (!formData.unit_price || formData.unit_price <= 0) newErrors.unit_price = 'Unit price is required';
+      if (!formData.unit_price || formData.unit_price <= 0) newErrors.unit_price = tr('Unit price is required', "Le prix unitaire est requis");
     }
     
     setErrors(newErrors);
@@ -1720,6 +2311,12 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     if (isSubmitting) {
       return;
     }
+
+    if (isBannedCustomerBlocked) {
+      setShowCustomerAlertModal(true);
+      toast.error(tr('This customer is banned. An admin or owner must remove the ban before you can continue.', "Ce client est banni. Un administrateur ou le propriétaire doit lever le bannissement avant de continuer."));
+      throw new Error(tr('Banned customer cannot be booked', 'Un client banni ne peut pas être réservé'));
+    }
     
     setIsSubmitting(true);
     setSubmitting(true);
@@ -1729,7 +2326,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       const submissionReadyFormData = { ...formData };
 
       if (!submissionReadyFormData.rental_start_date || !submissionReadyFormData.rental_end_date) {
-        throw new Error('Please set both start and end dates in Step 2');
+        throw new Error(tr('Please set both start and end dates in Step 2', "Veuillez définir les dates de début et de fin à l'étape 2"));
       }
 
       if (!submissionReadyFormData.rental_end_date && submissionReadyFormData.rental_start_date) {
@@ -1748,12 +2345,12 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       if (!submissionReadyFormData.customer_name || !submissionReadyFormData.customer_phone || 
           !submissionReadyFormData.vehicle_id || !submissionReadyFormData.rental_start_date || 
           !submissionReadyFormData.rental_end_date) {
-        throw new Error('Please fill in all required fields');
+        throw new Error(tr('Please fill in all required fields', 'Veuillez remplir tous les champs obligatoires'));
       }
 
       const vehicleIdStr = submissionReadyFormData.vehicle_id;
       if (!vehicleIdStr) {
-        throw new Error('Please select a valid vehicle');
+        throw new Error(tr('Please select a valid vehicle', 'Veuillez sélectionner un véhicule valide'));
       }
 
       const trimmedEmail = (submissionReadyFormData.customer_email || '').trim();
@@ -1762,7 +2359,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       if (trimmedEmail.length > 0) {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(trimmedEmail)) {
-          throw new Error('Please enter a valid email address or leave the email field empty.');
+          throw new Error(tr('Please enter a valid email address or leave the email field empty.', 'Veuillez saisir une adresse e-mail valide ou laisser le champ e-mail vide.'));
         }
       }
 
@@ -1841,7 +2438,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
           if (existingCustomer?.id) {
             finalCustomerId = existingCustomer.id;
           } else {
-            throw new Error(`Failed to create new customer: ${insertError.message}`);
+            throw new Error(`${tr('Failed to create new customer:', 'Impossible de créer un nouveau client :')} ${insertError.message}`);
           }
         } else {
           finalCustomerId = insertedCustomer.id;
@@ -1879,7 +2476,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
             if (existingCustomer?.id) {
               finalCustomerId = existingCustomer.id;
             } else {
-              throw new Error(`Failed to create customer: ${createError?.message || 'Unknown error'}`);
+              throw new Error(`${tr('Failed to create customer:', 'Impossible de créer le client :')} ${createError?.message || tr('Unknown error', 'Erreur inconnue')}`);
             }
           } else {
             finalCustomerId = createdCustomer.id;
@@ -1914,14 +2511,105 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
           }
         }
       }
+
+      if (isCustomerVerificationOnlyMode && initialData?.id) {
+        const verificationCustomerPayload = {
+          full_name: submissionReadyFormData.customer_name,
+          phone: submissionReadyFormData.customer_phone,
+          email: emailToSubmit,
+          licence_number: submissionReadyFormData.customer_licence_number || null,
+          id_number: submissionReadyFormData.customer_id_number || null,
+          date_of_birth: submissionReadyFormData.customer_dob || null,
+          nationality: submissionReadyFormData.customer_nationality || null,
+          place_of_birth: submissionReadyFormData.customer_place_of_birth || null,
+          id_scan_url: submissionReadyFormData.customer_id_image || null,
+          updated_at: new Date().toISOString(),
+        };
+
+        const { error: verificationCustomerError } = await supabase
+          .from('app_4c3a7a6153_customers')
+          .update(verificationCustomerPayload)
+          .eq('id', finalCustomerId);
+
+        if (verificationCustomerError) {
+          throw new Error(`${tr('Failed to update customer verification data:', 'Impossible de mettre à jour les données de vérification du client :')} ${verificationCustomerError.message}`);
+        }
+
+        const verificationRentalPayload = {
+          customer_id: finalCustomerId,
+          customer_name: submissionReadyFormData.customer_name,
+          customer_email: emailToSubmit,
+          customer_phone: submissionReadyFormData.customer_phone,
+          customer_licence_number: submissionReadyFormData.customer_licence_number || null,
+          customer_id_number: submissionReadyFormData.customer_id_number || null,
+          customer_dob: submissionReadyFormData.customer_dob || null,
+          customer_place_of_birth: submissionReadyFormData.customer_place_of_birth || null,
+          customer_nationality: submissionReadyFormData.customer_nationality || null,
+          customer_issue_date: submissionReadyFormData.customer_issue_date || null,
+          customer_id_image: submissionReadyFormData.customer_id_image || null,
+        };
+
+        const { data: verifiedRental, error: verificationRentalError } = await supabase
+          .from('app_4c3a7a6153_rentals')
+          .update(verificationRentalPayload)
+          .eq('id', initialData.id)
+          .select('*')
+          .single();
+
+        if (verificationRentalError) {
+          throw new Error(`${tr('Failed to save customer verification to the rental:', 'Impossible d’enregistrer la vérification du client sur la location :')} ${verificationRentalError.message}`);
+        }
+
+        setSuccessfullySubmitted(true);
+        setErrors({});
+        toast.success(tr('Customer verification saved successfully.', 'Vérification du client enregistrée avec succès.'));
+
+        return { result: verifiedRental, rentalId: verifiedRental.id };
+      }
       
+      const snapshotVehicle =
+        availableVehicles.find((vehicle) => String(vehicle.id) === String(submissionReadyFormData.vehicle_id)) ||
+        null;
+
       const submissionData = {
         customer_name: submissionReadyFormData.customer_name,
         customer_email: emailToSubmit,
         customer_phone: submissionReadyFormData.customer_phone,
         customer_id: finalCustomerId,
+        created_by:
+          mode === 'edit'
+            ? (initialData?.created_by ?? null)
+            : (userProfile?.id || null),
+        created_by_name:
+          mode === 'edit'
+            ? (initialData?.created_by_name ?? null)
+            : (userProfile?.fullName || userProfile?.email || null),
         customer_licence_number: submissionReadyFormData.customer_licence_number || null,
         vehicle_id: submissionReadyFormData.vehicle_id || null,
+        vehicle_plate_number:
+          mode === 'edit'
+            ? (initialData?.vehicle_plate_number ?? snapshotVehicle?.plate_number ?? null)
+            : (snapshotVehicle?.plate_number || null),
+        selected_vehicle_id_snapshot:
+          mode === 'edit'
+            ? (initialData?.selected_vehicle_id_snapshot ?? initialData?.vehicle_id ?? null)
+            : (snapshotVehicle?.id ?? submissionReadyFormData.vehicle_id ?? null),
+        selected_vehicle_plate_snapshot:
+          mode === 'edit'
+            ? (initialData?.selected_vehicle_plate_snapshot ?? initialData?.vehicle_plate_number ?? null)
+            : (snapshotVehicle?.plate_number || null),
+        selected_vehicle_model_snapshot:
+          mode === 'edit'
+            ? (initialData?.selected_vehicle_model_snapshot ?? null)
+            : (snapshotVehicle?.model || snapshotVehicle?.name || null),
+        selected_vehicle_selected_by:
+          mode === 'edit'
+            ? (initialData?.selected_vehicle_selected_by ?? initialData?.created_by ?? null)
+            : (userProfile?.id || null),
+        selected_vehicle_selected_at:
+          mode === 'edit'
+            ? (initialData?.selected_vehicle_selected_at ?? initialData?.created_at ?? null)
+            : new Date().toISOString(),
         rental_type: submissionReadyFormData.rental_type,
         rental_start_date: composeDateTime(formData.rental_start_date, formData.rental_start_time)?.toISOString(),
         rental_end_date: composeDateTime(formData.rental_end_date, formData.rental_end_time)?.toISOString(),
@@ -1932,12 +2620,18 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         pickup_transport: submissionReadyFormData.pickup_transport || false,
         dropoff_transport: submissionReadyFormData.dropoff_transport || false,
         quantity_days: Number(submissionReadyFormData.quantity_days) || 0,
+        quantity_hours:
+          submissionReadyFormData.rental_type === 'hourly'
+            ? (Number(submissionReadyFormData.quantity_hours ?? submissionReadyFormData.quantity_days) || 0)
+            : null,
         unit_price: Number(submissionReadyFormData.unit_price) || 0,
         transport_fee: Number(submissionReadyFormData.transport_fee) || 0,
         total_amount: Number(submissionReadyFormData.total_amount) || 0,
         deposit_amount: Number(submissionReadyFormData.deposit_amount) || 0,
         damage_deposit: Number(submissionReadyFormData.damage_deposit) || 0,
         damage_deposit_source: submissionReadyFormData.damage_deposit_source || null,
+        damage_deposit_document_url: submissionReadyFormData.damage_deposit_document_url || null,
+        damage_deposit_document_name: submissionReadyFormData.damage_deposit_document_name || null,
         remaining_amount: Number(submissionReadyFormData.remaining_amount) || 0,
         payment_status: submissionReadyFormData.payment_status || 'unpaid',
         rental_status: submissionReadyFormData.rental_status || 'scheduled',
@@ -1966,6 +2660,67 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         package_extra_rate: submissionReadyFormData.selected_package_extra_rate || 0,
         use_package_pricing: submissionReadyFormData.use_package_pricing || false,
       };
+
+      if (isCustomerVerificationOnlyMode && initialData) {
+        const preservedFields = [
+          'vehicle_id',
+          'vehicle_plate_number',
+          'selected_vehicle_id_snapshot',
+          'selected_vehicle_plate_snapshot',
+          'selected_vehicle_model_snapshot',
+          'selected_vehicle_selected_by',
+          'selected_vehicle_selected_at',
+          'rental_type',
+          'rental_start_date',
+          'rental_end_date',
+          'rental_start_time',
+          'rental_end_time',
+          'pickup_location',
+          'dropoff_location',
+          'pickup_transport',
+          'dropoff_transport',
+          'quantity_days',
+          'quantity_hours',
+          'unit_price',
+          'transport_fee',
+          'total_amount',
+          'deposit_amount',
+          'damage_deposit',
+          'damage_deposit_source',
+          'damage_deposit_document_url',
+          'damage_deposit_document_name',
+          'remaining_amount',
+          'payment_status',
+          'rental_status',
+          'insurance_included',
+          'helmet_included',
+          'gear_included',
+          'contract_signed',
+          'accessories',
+          'signature_url',
+          'approval_status',
+          'pending_total_request',
+          'fuel_charge_enabled',
+          'fuel_charge',
+          'package_id',
+          'package_name',
+          'package_rate_per_unit',
+          'package_included_km_per_unit',
+          'package_total_included_km',
+          'package_extra_rate',
+          'use_package_pricing',
+        ];
+
+        preservedFields.forEach((field) => {
+          if (Object.prototype.hasOwnProperty.call(initialData, field)) {
+            submissionData[field] = initialData[field];
+          }
+        });
+      }
+
+      if (mode === 'edit' && initialData?.id && !isCustomerVerificationOnlyMode && hasEditWorkflowChanges(submissionData, initialData)) {
+        Object.assign(submissionData, getEditWorkflowResetFields(submissionData, initialData));
+      }
       
       console.log('📦 Submitting rental with package:', {
         package_id: submissionData.package_id,
@@ -1975,27 +2730,47 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         quantity_days: submissionData.quantity_days
       });
       
-      const manualPrice = parseFloat(submissionData.unit_price) || 0;
-      const autoPrice = parseFloat(autoCalculatedPrice) || 0;
-      const isPriceOverride = manualPrice !== autoPrice;
-      const canAutoApprovePrice = canEditRentalPrice(userProfile);
+      if (!isCustomerVerificationOnlyMode) {
+        const manualPrice = parseFloat(submissionData.unit_price) || 0;
+        const autoPrice = parseFloat(autoCalculatedPrice) || 0;
+        const isPriceOverride = manualPrice !== autoPrice;
+        const canAutoApprovePrice = canEditRentalPrice(userProfile);
 
-      if (isPriceOverride) {
-        if (!canAutoApprovePrice) {
-          const originalSubtotal = (submissionData.quantity_days || 0) * autoPrice;
-          const originalTotal = originalSubtotal + (submissionData.transport_fee || 0);
-          
-          submissionData.approval_status = 'pending';
-          submissionData.pending_total_request = submissionData.total_amount;
-          submissionData.total_amount = originalTotal;
-          submissionData.remaining_amount = originalTotal - (submissionData.deposit_amount || 0);
+        if (isPriceOverride) {
+          if (!canAutoApprovePrice) {
+            const originalSubtotal = pricingComputationMode === 'flat_total'
+              ? autoPrice
+              : (submissionData.quantity_days || 0) * autoPrice;
+            const originalTotal = originalSubtotal + (submissionData.transport_fee || 0);
+            
+            submissionData.approval_status = 'pending';
+            submissionData.pending_total_request = submissionData.total_amount;
+            submissionData.total_amount = originalTotal;
+            submissionData.remaining_amount = originalTotal - (submissionData.deposit_amount || 0);
+          } else {
+            submissionData.approval_status = 'approved';
+            submissionData.pending_total_request = null;
+          }
         } else {
-          submissionData.approval_status = 'approved';
+          submissionData.approval_status = 'auto';
           submissionData.pending_total_request = null;
         }
+      }
+
+      const normalizedTotalAmount = Math.max(0, Number(submissionData.total_amount) || 0);
+      const normalizedDepositAmount = Math.max(0, Number(submissionData.deposit_amount) || 0);
+      const normalizedPaymentStatus = String(submissionData.payment_status || '').toLowerCase();
+
+      if (normalizedPaymentStatus === 'paid') {
+        submissionData.deposit_amount = normalizedTotalAmount;
+        submissionData.remaining_amount = 0;
+      } else if (normalizedPaymentStatus === 'unpaid') {
+        submissionData.deposit_amount = 0;
+        submissionData.remaining_amount = normalizedTotalAmount;
       } else {
-        submissionData.approval_status = 'auto';
-        submissionData.pending_total_request = null;
+        const boundedDepositAmount = Math.min(normalizedDepositAmount, normalizedTotalAmount);
+        submissionData.deposit_amount = boundedDepositAmount;
+        submissionData.remaining_amount = Math.max(0, normalizedTotalAmount - boundedDepositAmount);
       }
 
       const cleanRentalData = { ...submissionData };
@@ -2024,6 +2799,18 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         setErrors({});
         
         const rentalId = result.data.id;
+
+        if (mode === 'edit' && initialData?.id && !isCustomerVerificationOnlyMode && rentalId) {
+          try {
+            await supabase
+              .from('app_2f7bf469b0_rental_media')
+              .delete()
+              .eq('rental_id', rentalId)
+              .eq('phase', 'out');
+          } catch (openingMediaResetError) {
+            console.error('❌ Failed to reset opening media after rental edit:', openingMediaResetError);
+          }
+        }
         
         const invalidDrivers = secondDrivers.filter(driver => {
           const licenceNum = driver.licence_number || driver.license;
@@ -2093,11 +2880,11 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
           const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)).length;
           
           if (failed === 0) {
-            toast.success(`✅ Saved ${successful} second driver(s)`);
+            toast.success(`✅ ${successful} ${tr('second driver(s) saved', 'second conducteur(s) enregistré(s)')}`);
           } else if (successful > 0) {
-            toast.warning(`⚠️ Saved ${successful} second driver(s), ${failed} failed`);
+            toast.warning(`⚠️ ${successful} ${tr('second driver(s) saved,', 'second conducteur(s) enregistré(s),')} ${failed} ${tr('failed', 'échoué(s)')}`);
           } else {
-            toast.error(`❌ Failed to save second drivers`);
+            toast.error(`❌ ${tr('Failed to save second drivers', "Impossible d'enregistrer les seconds conducteurs")}`);
           }
         }
         
@@ -2179,12 +2966,12 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
             );
             
             if (notificationCount > 0) {
-              toast.success(`📱 WhatsApp notifications sent to ${notificationCount} admin(s)`);
+              toast.success(`📱 ${tr('WhatsApp notifications sent to', 'Notifications WhatsApp envoyées à')} ${notificationCount} ${tr('admin(s)', 'administrateur(s)')}`);
             } else {
-              toast.info('⚠️ No admins with WhatsApp enabled found. Approval request saved.');
+              toast.info(tr('⚠️ No admins with WhatsApp enabled found. Approval request saved.', "⚠️ Aucun administrateur avec WhatsApp activé n'a été trouvé. La demande d'approbation a été enregistrée."));
             }
           } catch (whatsappError) {
-            toast.warning('⚠️ Approval request saved, but WhatsApp notifications failed');
+            toast.warning(tr('⚠️ Approval request saved, but WhatsApp notifications failed', "⚠️ La demande d'approbation a été enregistrée, mais les notifications WhatsApp ont échoué"));
           }
         }
         
@@ -2192,11 +2979,11 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         
         return { result: result.data, rentalId: result.data.id };
       } else {
-        throw new Error(result?.error || 'Unknown rental service error.');
+        throw new Error(result?.error || tr('Unknown rental service error.', 'Erreur inconnue du service de location.'));
       }
       
     } catch (err) {
-      const errorMessage = err.message || 'An unexpected error occurred';
+      const errorMessage = err.message || tr('An unexpected error occurred', "Une erreur inattendue s'est produite");
       
       setErrors({ general: errorMessage });
       toast.error(errorMessage);
@@ -2232,6 +3019,8 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       deposit_amount: '',
       damage_deposit: 0,
       damage_deposit_source: '',
+      damage_deposit_document_url: null,
+      damage_deposit_document_name: '',
       remaining_amount: 0,
       customer_licence_number: '',
       customer_id_number: '',
@@ -2335,6 +3124,10 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
   }, [formData.rental_start_date, formData.rental_end_date, formData.rental_start_time, formData.rental_end_time]);
 
   useEffect(() => {
+    if (isCustomerVerificationOnlyMode) {
+      return;
+    }
+
     if (isProcessing.current) {
       return;
     }
@@ -2381,7 +3174,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
                   rental_start_date: newStartDate,
                   rental_start_time: newStartTime,
                 }));
-                setDateError("Start time was automatically adjusted to be before the end time.");
+                setDateError(tr('Start time was automatically adjusted to be before the end time.', "L'heure de début a été automatiquement ajustée pour être antérieure à l'heure de fin."));
                 return;
               }
             } else {
@@ -2404,16 +3197,19 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     formData.rental_start_time,
     formData.rental_end_time,
     formData.rental_type,
-    formData.vehicle_id
+    formData.vehicle_id,
+    isCustomerVerificationOnlyMode
   ]);
 
   useEffect(() => {
+    if (isCustomerVerificationOnlyMode) return;
     calculateTransportFee();
-  }, [formData.pickup_transport, formData.dropoff_transport, transportFees]);
+  }, [formData.pickup_transport, formData.dropoff_transport, transportFees, isCustomerVerificationOnlyMode]);
 
   useEffect(() => {
+    if (isCustomerVerificationOnlyMode) return;
     calculateFinancials();
-  }, [formData.quantity_days, formData.unit_price, formData.transport_fee, formData.deposit_amount]);
+  }, [formData.quantity_days, formData.unit_price, formData.transport_fee, formData.deposit_amount, formData.use_package_pricing, pricingComputationMode, isCustomerVerificationOnlyMode]);
 
   useEffect(() => {
     if (isManualStatusChange.current) {
@@ -2446,6 +3242,10 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
   }, [formData.deposit_amount, formData.total_amount]);
 
   useEffect(() => {
+    if (isCustomerVerificationOnlyMode) {
+      return;
+    }
+
     // 🚨 Don't auto-populate if package pricing is active
     if (formData.use_package_pricing) {
       console.log('📦 Package pricing active, skipping auto-populate effect');
@@ -2453,6 +3253,9 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     }
 
     if (formData.vehicle_id && formData.rental_type && formData.quantity_days > 0) {
+      if (shouldPreserveFinancialTerms()) {
+        return;
+      }
       setTimeout(() => {
         autoPopulateUnitPrice();
       }, 50);
@@ -2460,9 +3263,11 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       if (!formData.vehicle_id) {
         setFormData(prev => ({ ...prev, unit_price: 0 }));
         setAutoCalculatedPrice(0);
+        setPricingComputationMode('per_unit');
+        setPricingComputationLabel('');
       }
     }
-  }, [formData.vehicle_id, formData.rental_type, formData.quantity_days, formData.use_package_pricing]);
+  }, [formData.vehicle_id, formData.rental_type, formData.quantity_days, formData.use_package_pricing, isCustomerVerificationOnlyMode]);
 
   useEffect(() => {
     if (isProgrammaticChange.current && formData.customer_name) {
@@ -2537,8 +3342,12 @@ useEffect(() => {
   // Load packages ONLY for the selected vehicle's model
   useEffect(() => {
     const loadPackagesForSelectedVehicle = async () => {
+      setIsLoadingPackages(true);
+
       if (formData.vehicle_id && formData.rental_type) {
-        const vehicle = availableVehicles.find(v => v.id == formData.vehicle_id);
+        const vehicle =
+          availableVehicles.find(v => v.id == formData.vehicle_id) ||
+          allVehiclesBeforeFilter.find(v => v.id == formData.vehicle_id);
         if (vehicle?.vehicle_model_id) {
           console.log(`🔍 Vehicle selected: ${vehicle.id}, model ID: ${vehicle.vehicle_model_id}`);
           
@@ -2557,7 +3366,7 @@ useEffect(() => {
           // If the currently selected package doesn't belong to this vehicle, clear it
           if (formData.selected_package_id) {
             const selectedPackageStillValid = packages.some(p => p.id === formData.selected_package_id);
-            if (!selectedPackageStillValid) {
+            if (!selectedPackageStillValid && !shouldPreserveFinancialTerms()) {
               console.log(`⚠️ Previously selected package ${formData.selected_package_id} not valid for this vehicle, clearing...`);
               setFormData(prev => ({
                 ...prev,
@@ -2581,14 +3390,17 @@ useEffect(() => {
       } else {
         setAvailablePackages([]);
       }
+
+      setIsLoadingPackages(false);
     };
     
     if (formData.vehicle_id && formData.rental_type) {
       loadPackagesForSelectedVehicle();
     } else {
+      setIsLoadingPackages(false);
       setAvailablePackages([]);
     }
-  }, [formData.vehicle_id, formData.rental_type]);
+  }, [formData.vehicle_id, formData.rental_type, availableVehicles, allVehiclesBeforeFilter]);
 
   const calculatePackagePrice = (pkg, dur) => {
     if (!pkg || !dur) return null;
@@ -2617,14 +3429,21 @@ useEffect(() => {
     vehicleModels,
     availableVehicles,
     availablePackages,
+    isLoadingPackages,
     setAvailablePackages,
     calculatePackagePrice,
     transportFees,
     availabilityStatus,
     autoCalculatedPrice,
+    pricingComputationMode,
+    pricingComputationLabel,
     customers,
     rentals,
     suggestions,
+    customerAlert,
+    isBannedCustomerBlocked,
+    showCustomerAlertModal,
+    setShowCustomerAlertModal,
     mode,
     selectedQuickDuration,
     damageDepositConfig,
@@ -2643,8 +3462,13 @@ useEffect(() => {
     handleIDScanComplete,
     handleQuickHourSelect,
     handleQuickDaySelect,
+    syncEndDateTimeFromStart,
     handlePaymentStatusTabClick,
     handleDepositTabClick,
+    handleDepositDocumentUpload,
+    handleDepositDocumentTypeSelect,
+    handleDepositDocumentClear,
+    depositDocumentUploading,
     validateStep,
     handleSubmit,
     handleReset,
@@ -2658,23 +3482,24 @@ useEffect(() => {
     setFuelChargeEnabled,
     fuelChargeAmount,
     loadFuelChargeSettings,
+    manuallyClearedVehicleRef,
   };
 };
 
 // ==================== SIMPLIFIED UI COMPONENTS ====================
 
 const ProgressStepper = ({ currentStep, steps }) => (
-  <div className="mb-6 sm:mb-8 px-2 sm:px-0">
-    <div className="flex items-center justify-between">
+  <div className="mb-6 sm:mb-8 rounded-2xl border border-violet-100 bg-white px-3 py-4 shadow-[0_12px_30px_-22px_rgba(15,23,42,0.35)] sm:px-5">
+    <div className="flex items-center justify-between gap-2">
       {steps.map((step, index) => (
         <React.Fragment key={step.number}>
           <div className="flex flex-col items-center flex-1 relative">
-            <div className={`w-11 h-11 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-sm sm:text-xs font-semibold z-10 transition-all active:scale-95 ${
+            <div className={`z-10 flex h-11 w-11 items-center justify-center rounded-full text-sm font-bold transition-all active:scale-95 sm:h-10 sm:w-10 sm:text-sm ${
               currentStep > step.number
-                ? 'bg-green-500 text-white shadow-md'
+                ? 'bg-emerald-500 text-white shadow-sm'
                 : currentStep === step.number
-                ? 'bg-blue-600 text-white ring-2 ring-blue-300 shadow-lg'
-                : 'bg-gray-200 text-gray-500'
+                ? 'border border-violet-200 bg-violet-50 text-violet-700 ring-4 ring-violet-100 shadow-sm'
+                : 'border border-slate-200 bg-slate-50 text-slate-400'
             }`}>
               {currentStep > step.number ? (
                 <Check className="w-5 h-5 sm:w-4 sm:h-4" />
@@ -2682,15 +3507,15 @@ const ProgressStepper = ({ currentStep, steps }) => (
                 step.number
               )}
             </div>
-            <span className={`text-xs mt-2 sm:mt-1 text-center font-medium truncate max-w-[70px] sm:max-w-none ${
-              currentStep >= step.number ? 'text-gray-900' : 'text-gray-400'
+            <span className={`mt-2 max-w-[88px] truncate text-center text-xs font-semibold uppercase tracking-[0.14em] sm:max-w-none ${
+              currentStep >= step.number ? 'text-slate-700' : 'text-slate-400'
             }`}>
               {step.title}
             </span>
           </div>
           {index < steps.length - 1 && (
-            <div className={`flex-1 h-1 sm:h-0.5 mx-1 sm:mx-2 transition-all rounded-full ${
-              currentStep > step.number ? 'bg-green-500' : 'bg-gray-200'
+            <div className={`mx-1 h-1 flex-1 rounded-full transition-all sm:mx-3 ${
+              currentStep > step.number ? 'bg-emerald-500' : 'bg-slate-200'
             }`} />
           )}
         </React.Fragment>
@@ -2850,28 +3675,36 @@ const CollapsibleDatesTimes = ({
   handleInputChange,
   handleQuickHourSelect,
   handleQuickDaySelect,
-  selectedQuickDuration 
+  selectedQuickDuration,
+  showQuickDurationShortcuts = true
 }) => {
   const [isDatesCollapsed, setIsDatesCollapsed] = useState(true);
+  const hasDateRange = formData.rental_start_date && formData.rental_end_date;
+  const summaryText = hasDateRange
+    ? `${formData.rental_start_date} ${formData.rental_start_time || ''} → ${formData.rental_end_date} ${formData.rental_end_time || ''}`
+    : tr('Set rental period', 'Définir la période de location');
   
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden mb-4">
       <button
         type="button"
         onClick={() => setIsDatesCollapsed(!isDatesCollapsed)}
-        className="w-full px-4 py-4 sm:py-3 bg-gray-50 flex items-center justify-between hover:bg-gray-100 active:bg-gray-200 transition-colors touch-manipulation"
+        className="w-full px-4 py-4 sm:py-3 bg-gradient-to-r from-slate-50 via-white to-blue-50/70 flex items-center justify-between hover:from-slate-100 hover:to-blue-100/80 active:bg-gray-200 transition-colors touch-manipulation"
       >
         <div className="flex items-center gap-3">
-          <CalendarDays className="w-5 h-5 text-gray-600" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-100 text-blue-700 shadow-sm">
+            <CalendarDays className="w-5 h-5" />
+          </div>
           <div className="text-left">
             <span className="font-medium text-gray-900 text-base sm:text-sm block">
               Dates & Times
             </span>
-            <span className="text-xs text-gray-500 mt-0.5 block">
-              {formData.rental_start_date && formData.rental_end_date 
-                ? `${formData.rental_start_date} ${formData.rental_start_time || ''} → ${formData.rental_end_date} ${formData.rental_end_time || ''}`
-                : 'Set rental period'
-              }
+            <span className={`mt-1 inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold shadow-sm ${
+              hasDateRange
+                ? 'bg-blue-100 text-blue-800 ring-1 ring-blue-200'
+                : 'bg-slate-100 text-slate-600 ring-1 ring-slate-200'
+            }`}>
+              {summaryText}
             </span>
           </div>
         </div>
@@ -2886,22 +3719,43 @@ const CollapsibleDatesTimes = ({
           <div className="mb-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-gray-900">Manual Dates & Times</h3>
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  onClick={() => handleQuickHourSelect(1)}
-                  className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 transition-colors"
-                >
-                  1h
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickDaySelect(1)}
-                  className="text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100 transition-colors"
-                >
-                  1d
-                </button>
-              </div>
+              {showQuickDurationShortcuts && (
+                <div className="flex gap-2 rounded-xl border border-slate-200 bg-slate-50 p-1">
+                  <button
+                    type="button"
+                    onClick={() => handleQuickHourSelect(1)}
+                    className={`text-xs px-3 py-1.5 rounded-lg transition-colors font-semibold ${
+                      rentalType === 'hourly'
+                        ? 'bg-blue-600 text-white shadow-sm hover:bg-blue-700'
+                        : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                    }`}
+                  >
+                    1h
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickHourSelect(1.5)}
+                    className={`text-xs px-3 py-1.5 rounded-lg transition-colors font-semibold ${
+                      rentalType === 'hourly'
+                        ? 'bg-blue-600 text-white shadow-sm hover:bg-blue-700'
+                        : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                    }`}
+                  >
+                    1.5h
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDaySelect(1)}
+                    className={`text-xs px-3 py-1.5 rounded-lg transition-colors font-semibold ${
+                      rentalType === 'daily'
+                        ? 'bg-emerald-600 text-white shadow-sm hover:bg-emerald-700'
+                        : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                    }`}
+                  >
+                    1d
+                  </button>
+                </div>
+              )}
             </div>
             
             <div className="grid grid-cols-2 gap-3">
@@ -2919,7 +3773,7 @@ const CollapsibleDatesTimes = ({
               </div>
               
               <div className="space-y-1">
-                <label className="block text-xs font-medium text-gray-500">Start Time</label>
+                <label className="block text-xs font-medium text-gray-500">{tr('Start Time', 'Heure de début')}</label>
                 <input
                   type="time"
                   value={formData.rental_start_time}
@@ -2930,7 +3784,7 @@ const CollapsibleDatesTimes = ({
               </div>
               
               <div className="space-y-1">
-                <label className="block text-xs font-medium text-gray-500">End Date *</label>
+                <label className="block text-xs font-medium text-gray-500">{tr('End Date', 'Date de fin')} *</label>
                 <input
                   type="date"
                   value={formData.rental_end_date}
@@ -2943,7 +3797,7 @@ const CollapsibleDatesTimes = ({
               </div>
               
               <div className="space-y-1">
-                <label className="block text-xs font-medium text-gray-500">End Time</label>
+                <label className="block text-xs font-medium text-gray-500">{tr('End Time', 'Heure de fin')}</label>
                 <input
                   type="time"
                   value={formData.rental_end_time}
@@ -2965,9 +3819,9 @@ const CollapsibleDatesTimes = ({
             
             {formData.quantity_days > 0 && (
               <div className="mt-3 flex items-center justify-between">
-                <span className="text-xs text-gray-500">Duration:</span>
+                <span className="text-xs text-gray-500">{tr('Duration:', 'Durée :')}</span>
                 <span className="text-xs font-semibold text-blue-700">
-                  {formData.quantity_days} {formData.rental_type === 'hourly' ? 'hour(s)' : 'day(s)'}
+                  {formData.quantity_days} {formData.rental_type === 'hourly' ? tr('hour(s)', 'heure(s)') : tr('day(s)', 'jour(s)')}
                 </span>
               </div>
             )}
@@ -3222,8 +4076,14 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
       (vehicle.model && vehicle.model.toLowerCase().includes(query))
     );
   });
-  
-  const displayedVehicles = isMobile ? filteredVehicles.slice(0, 6) : filteredVehicles;
+
+  const selectedVehicle =
+    filteredVehicles.find((vehicle) => String(vehicle.id) === String(selectedId)) ||
+    normalizedVehicles.find((vehicle) => String(vehicle.id) === String(selectedId)) ||
+    null;
+  const displayedVehicles = selectedVehicle
+    ? [selectedVehicle]
+    : (isMobile ? filteredVehicles.slice(0, 6) : filteredVehicles);
   const recommendedVehicleId = filteredVehicles[0]?.id || normalizedVehicles[0]?.id || null;
 
   const getMileagePriority = (vehicle) => {
@@ -3275,7 +4135,7 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
             <UserSearch className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
             <input
               type="text"
-              placeholder="Search by plate number..."
+              placeholder={tr('Search by plate number...', 'Rechercher par numéro de plaque...')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 transition-all"
@@ -3292,8 +4152,8 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
           </div>
           <div className="flex items-center justify-between mt-2">
             <span className="text-xs text-gray-500">
-              {filteredVehicles.length} of {vehicles.length} vehicles
-              {searchQuery && ` matching "${searchQuery}"`}
+              {filteredVehicles.length} {tr('of', 'sur')} {vehicles.length} {tr('vehicles', 'véhicules')}
+              {searchQuery && ` ${tr('matching', 'correspondant à')} "${searchQuery}"`}
             </span>
           </div>
         </div>
@@ -3308,14 +4168,14 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
           return (
             <div
               key={vehicle.id}
-              onClick={() => onSelect(vehicle.id)}
-              className={`relative cursor-pointer transition-all rounded-xl border-2 p-4 ${
+              onClick={() => onSelect(isSelected ? null : vehicle.id)}
+              className={`relative cursor-pointer rounded-xl border-2 p-4 transform-gpu transition-[transform,border-color,box-shadow,background-color,opacity] duration-200 ease-out ${
                 isSelected
-                  ? 'border-green-500 bg-green-50 ring-2 ring-green-200 shadow-md'
+                  ? 'border-green-500 bg-green-50 ring-2 ring-green-200 shadow-md scale-[1.01]'
                   : isRecommended
-                    ? 'border-blue-300 bg-blue-50/50 shadow-sm hover:border-blue-400'
-                    : 'border-gray-200 hover:border-gray-300 bg-white hover:shadow-sm'
-              } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    ? 'border-blue-300 bg-blue-50/50 shadow-sm hover:border-blue-400 hover:-translate-y-0.5 hover:shadow-md'
+                    : 'border-gray-200 bg-white hover:border-gray-300 hover:-translate-y-0.5 hover:shadow-sm'
+              } ${disabled ? 'opacity-50 cursor-not-allowed' : 'active:scale-[0.99]'}`}
             >
               {/* Header with Plate and Status */}
               <div className="flex items-start justify-between mb-3">
@@ -3324,7 +4184,7 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
                     <CarIcon className={`w-5 h-5 ${isSelected ? 'text-green-600' : 'text-gray-600'}`} />
                   </div>
                   <div>
-                    <div className="text-xs text-gray-500">Plate</div>
+                    <div className="text-xs text-gray-500">{tr('Plate', 'Plaque')}</div>
                     <div className="text-lg font-bold text-gray-900">
                       {vehicle.plate_number || 'N/A'}
                     </div>
@@ -3333,7 +4193,7 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
                 <div className="flex items-center gap-2">
                   {isRecommended && !isSelected && (
                     <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-1 text-[11px] font-semibold text-blue-700">
-                      Lowest mileage
+                      {tr('Lowest mileage', 'Kilométrage le plus bas')}
                     </span>
                   )}
                   <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
@@ -3341,10 +4201,10 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
                       ? 'bg-green-100 text-green-800'
                       : 'bg-red-100 text-red-800'
                   }`}>
-                    {vehicle.status === 'available' ? '✓ Available' : '✗ Unavailable'}
+                    {vehicle.status === 'available' ? tr('✓ Available', '✓ Disponible') : tr('✗ Unavailable', '✗ Indisponible')}
                   </span>
                   {isSelected && (
-                    <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
+                    <div className="flex h-6 w-6 items-center justify-center rounded-full bg-green-500 shadow-sm transition-all duration-200 ease-out">
                       <Check className="w-4 h-4 text-white" />
                     </div>
                   )}
@@ -3355,9 +4215,9 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
               <div className="mb-3">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-xs font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
-                    MODEL
+                    {tr('MODEL', 'MODÈLE')}
                   </span>
-                  <span className="text-xs text-gray-500">{duration} {duration > 1 ? (rentalType === 'hourly' ? 'hrs' : 'days') : (rentalType === 'hourly' ? 'hr' : 'day')}</span>
+                  <span className="text-xs text-gray-500">{duration} {duration > 1 ? (rentalType === 'hourly' ? tr('hrs', 'h') : tr('days', 'jours')) : (rentalType === 'hourly' ? tr('hr', 'h') : tr('day', 'jour'))}</span>
                 </div>
                 <h4 className="font-semibold text-gray-900">{vehicle.name}</h4>
                 <p className="text-sm text-gray-600">{vehicle.model}</p>
@@ -3365,7 +4225,7 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
                   <p className="text-[11px] font-medium text-gray-500">
                     {vehicle.current_odometer !== null && vehicle.current_odometer !== undefined && vehicle.current_odometer !== ''
                       ? `${vehicle.current_odometer} km`
-                      : 'Odometer not set'}
+                      : tr('Odometer not set', 'Compteur non défini')}
                   </p>
                   <span className={`inline-flex items-center rounded-full px-2 py-1 text-[11px] font-semibold ${mileagePriority.className}`}>
                     {mileagePriority.label}
@@ -3395,7 +4255,7 @@ const VehicleCardGrid = ({ vehicles, selectedId, onSelect, disabled, rentalType,
         <button className="w-full mt-4 px-4 py-3 border-2 border-dashed border-gray-300 rounded-xl text-gray-600 hover:border-gray-400 hover:text-gray-800 active:bg-gray-50 transition-colors">
           <div className="flex items-center justify-center gap-2">
             <Plus className="w-5 h-5" />
-            <span className="text-base font-medium">Load more vehicles</span>
+            <span className="text-base font-medium">{tr('Load more vehicles', 'Charger plus de véhicules')}</span>
           </div>
         </button>
       )}
@@ -3519,10 +4379,10 @@ const MultipleImageUpload = ({
         const allImages = [...images, ...uploadedImages];
         onImagesChange(allImages);
         
-        toast.success(`✅ ${uploadedImages.length} image(s) uploaded successfully!`);
+        toast.success(`✅ ${uploadedImages.length} ${tr('image(s) uploaded successfully!', 'image(s) téléversée(s) avec succès !')}`);
         
       } catch (error) {
-        toast.error(`Failed to upload files: ${error.message}`);
+        toast.error(`${tr('Failed to upload files:', 'Impossible de téléverser les fichiers :')} ${error.message}`);
       } finally {
         setUploading(false);
       }
@@ -3539,7 +4399,7 @@ const MultipleImageUpload = ({
           .remove([imageToRemove.path]);
         
         if (error) {
-          toast.error('Failed to remove file from storage');
+          toast.error(tr('Failed to remove file from storage', 'Impossible de supprimer le fichier du stockage'));
           return;
         }
       }
@@ -3548,10 +4408,10 @@ const MultipleImageUpload = ({
       newImages.splice(index, 1);
       onImagesChange(newImages);
       
-      toast.success('Image removed successfully');
+      toast.success(tr('Image removed successfully', 'Image supprimée avec succès'));
       
     } catch (error) {
-      toast.error('Failed to remove image');
+      toast.error(tr('Failed to remove image', "Impossible de supprimer l'image"));
     }
   };
 
@@ -3667,10 +4527,10 @@ const MultipleImageUpload = ({
 
 // ==================== ENHANCED PRICE CALCULATOR WITH EDIT FUNCTIONALITY ====================
 
-const PriceCalculator = ({ formData, onPriceChange, autoCalculatedPrice, userProfile, disabled,fuelChargeEnabled,fuelChargeAmount}) => {
+const PriceCalculator = ({ formData, onPriceChange, onResetToAuto, autoCalculatedPrice, userProfile, disabled, fuelChargeEnabled, fuelChargeAmount, pricingComputationMode = 'per_unit', pricingComputationLabel = '' }) => {
   const [showBreakdown, setShowBreakdown] = useState(false);
-  const [isEditingPrice, setIsEditingPrice] = useState(false);
-  const [tempUnitPrice, setTempUnitPrice] = useState(formData.unit_price);
+  const [isEditingTotal, setIsEditingTotal] = useState(false);
+  const [tempTotalPrice, setTempTotalPrice] = useState(formData.total_amount || 0);
 
   const userRole = userProfile?.role || 'unknown';
   const isStaff = userRole === 'employee' || userRole === 'guide';
@@ -3682,9 +4542,14 @@ const PriceCalculator = ({ formData, onPriceChange, autoCalculatedPrice, userPro
   const manualPrice = parseFloat(formData.unit_price) || 0;
   const autoPrice = parseFloat(autoCalculatedPrice) || 0;
   const isPriceOverride = !formData.use_package_pricing && manualPrice !== autoPrice && autoPrice > 0;
+  const isFlatTierTotal = !formData.use_package_pricing && pricingComputationMode === 'flat_total';
 
   const calculateBreakdown = () => {
-    const rentalCost = (formData.quantity_days || 0) * (formData.unit_price || 0);
+    const rentalCost = formData.use_package_pricing
+      ? (formData.unit_price || 0)
+      : isFlatTierTotal
+      ? (formData.unit_price || 0)
+      : (formData.quantity_days || 0) * (formData.unit_price || 0);
     const transportCost = formData.transport_fee || 0;
     const fuelCharge = fuelChargeEnabled ? fuelChargeAmount : 0;
     const total = rentalCost + transportCost + fuelCharge;
@@ -3702,71 +4567,106 @@ const PriceCalculator = ({ formData, onPriceChange, autoCalculatedPrice, userPro
   };
 
   const breakdown = calculateBreakdown();
+  const autoRentalCost = (formData.use_package_pricing || isFlatTierTotal)
+    ? autoPrice
+    : (formData.quantity_days || 0) * autoPrice;
+  const autoTotal = autoRentalCost + breakdown.transportCost + breakdown.fuelCharge;
 
-  const handleEditClick = () => {
-    setTempUnitPrice(formData.unit_price);
-    setIsEditingPrice(true);
+  const handleEditTotalClick = () => {
+    setTempTotalPrice(String(Math.round(Number(breakdown.total || 0))));
+    setIsEditingTotal(true);
   };
 
-  const handleSavePrice = () => {
-    const newPrice = parseFloat(tempUnitPrice);
-    if (!isNaN(newPrice) && newPrice > 0) {
-      onPriceChange('unit_price', newPrice);
-      setIsEditingPrice(false);
-      
-      if (!formData.use_package_pricing && newPrice !== autoPrice) {
-        if (requiresApproval) {
-          toast.info('⏳ Price override will require admin approval');
-        } else {
-          toast.success('✅ Price updated (auto-approved)');
-        }
+  const handleSaveTotal = () => {
+    const newTotal = parseFloat(tempTotalPrice);
+    const includedExtras = breakdown.transportCost + breakdown.fuelCharge;
+    const durationUnits = Number(formData.quantity_days) || 0;
+
+    if (Number.isNaN(newTotal) || newTotal <= 0) {
+      toast.error(tr('Please enter a valid total', 'Veuillez saisir un total valide'));
+      return;
+    }
+
+    if (durationUnits <= 0) {
+      toast.error(tr('Please set the rental duration first', 'Veuillez d’abord définir la durée de location'));
+      return;
+    }
+
+    if (newTotal < includedExtras) {
+      toast.error(
+        tr(
+          'Total must cover transport and fuel charges',
+          'Le total doit couvrir les frais de transport et de carburant'
+        )
+      );
+      return;
+    }
+
+    const newUnitPrice = isFlatTierTotal
+      ? (newTotal - includedExtras)
+      : (newTotal - includedExtras) / durationUnits;
+
+    if (!Number.isFinite(newUnitPrice) || newUnitPrice <= 0) {
+      toast.error(tr('Please enter a valid total', 'Veuillez saisir un total valide'));
+      return;
+    }
+
+    onPriceChange('unit_price', Number(newUnitPrice.toFixed(2)));
+    setIsEditingTotal(false);
+
+    if (!formData.use_package_pricing && newUnitPrice !== autoPrice) {
+      if (requiresApproval) {
+        toast.info(tr('⏳ Total override will require admin approval', "⏳ Le remplacement du total nécessitera l'approbation d'un administrateur"));
+      } else {
+        toast.success(tr('✅ Total updated (auto-approved)', '✅ Total mis à jour (approbation automatique)'));
       }
-    } else {
-      toast.error('Please enter a valid price');
     }
   };
 
   const handleCancelEdit = () => {
-    setTempUnitPrice(formData.unit_price);
-    setIsEditingPrice(false);
+    setTempTotalPrice(String(Math.round(Number(breakdown.total || 0))));
+    setIsEditingTotal(false);
   };
 
   const handleResetToAuto = () => {
+    onResetToAuto?.();
     onPriceChange('unit_price', autoPrice);
-    setTempUnitPrice(autoPrice);
-    setIsEditingPrice(false);
-    toast.success('✅ Price reset to system rate');
+    setTempTotalPrice(String(Math.round(Number(autoTotal || 0))));
+    setIsEditingTotal(false);
+    toast.success(tr('✅ Price reset to system rate', '✅ Prix réinitialisé au tarif système'));
   };
 
   return (
-    <div className="bg-gray-50 rounded-xl p-4 sm:p-5 border-2 border-gray-200">
+    <div className={`rounded-xl p-4 sm:p-5 border-2 ${
+      !formData.use_package_pricing && canEditPrice && !disabled
+        ? 'bg-gradient-to-br from-white via-slate-50 to-violet-50/70 border-violet-100 shadow-[0_14px_35px_rgba(76,29,149,0.06)]'
+        : 'bg-white border-slate-200 shadow-sm'
+    }`}>
       <div className="flex items-center justify-between mb-4 gap-2">
-        <h3 className="font-semibold text-gray-900 text-base sm:text-lg">Price Summary</h3>
+        <h3 className="font-semibold text-gray-900 text-base sm:text-lg">{tr('Price Summary', 'Résumé du prix')}</h3>
         <button
           type="button"
           onClick={() => setShowBreakdown(!showBreakdown)}
-          className="text-sm text-blue-600 hover:text-blue-800 active:text-blue-900 px-3 py-2 -mr-2 touch-manipulation"
+          className="rounded-full border border-violet-100 bg-white px-3 py-2 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-50 hover:text-violet-800 active:text-violet-900"
         >
-          {showBreakdown ? 'Hide Details' : 'Show Details'}
+          {showBreakdown ? tr('Hide Details', 'Masquer les détails') : tr('Show Details', 'Afficher les détails')}
         </button>
       </div>
-      
+
       <div className="space-y-3">
-        <div className="bg-white rounded-lg p-3 border border-gray-200">
+        <div className={`rounded-lg p-3 border ${
+          !formData.use_package_pricing && canEditPrice && !disabled
+            ? 'bg-white border-violet-100 shadow-sm'
+            : 'bg-white border-gray-200'
+        }`}>
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm font-medium text-gray-700">
-              {formData.use_package_pricing ? 'Package Rate' : `Unit Price (${formData.rental_type || 'N/A'}):`}
+              {formData.use_package_pricing
+                ? 'Package Rate'
+                : isFlatTierTotal
+                  ? 'Tier Price'
+                  : `Unit Price (${formData.rental_type || 'N/A'}):`}
             </span>
-            {!formData.use_package_pricing && canEditPrice && !disabled && !isEditingPrice && (
-              <button
-                type="button"
-                onClick={handleEditClick}
-                className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors"
-              >
-                <Edit2 className="w-3 h-3" />
-                Edit
-              </button>
-            )}
           </div>
 
           {!formData.use_package_pricing && !canEditPrice && !disabled && (
@@ -3775,68 +4675,40 @@ const PriceCalculator = ({ formData, onPriceChange, autoCalculatedPrice, userPro
             </div>
           )}
           
-          {isEditingPrice ? (
-            <div className="space-y-2">
-              <input
-                type="number"
-                value={tempUnitPrice}
-                onChange={(e) => setTempUnitPrice(e.target.value)}
-                className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                min="0"
-                step="0.01"
-                autoFocus
-              />
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleSavePrice}
-                  className="flex-1 px-3 py-1.5 bg-green-600 text-white text-sm rounded hover:bg-green-700 transition-colors flex items-center justify-center gap-1"
-                >
-                  <Save className="w-3 h-3" />
-                  Save
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCancelEdit}
-                  className="flex-1 px-3 py-1.5 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-              {isPriceOverride && (
-                <button
-                  type="button"
-                  onClick={handleResetToAuto}
-                  className="w-full px-3 py-1.5 bg-orange-50 text-orange-600 text-xs rounded hover:bg-orange-100 transition-colors flex items-center justify-center gap-1"
-                >
-                  <Calculator className="w-3 h-3" />
-                  Reset to System Rate ({autoPrice.toFixed(2)} MAD)
-                </button>
-              )}
-            </div>
-          ) : (
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="text-lg font-bold text-gray-900">
-                  {formData.unit_price.toFixed(2)} MAD
+          <div>
+              <div className={`rounded-lg px-3 py-3 ${
+                !formData.use_package_pricing && canEditPrice && !disabled
+                  ? 'bg-blue-50 border border-blue-100'
+                  : ''
+              }`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-lg font-bold text-gray-900">
+                      {formData.unit_price.toFixed(2)} MAD
+                      {(formData.use_package_pricing || isFlatTierTotal) && (
+                        <span className="ml-2 text-xs font-normal text-purple-600">
+	                          {isFlatTierTotal
+	                            ? tr('flat total', 'total fixe')
+	                            : tr('package price', 'prix du forfait')}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="ml-3 flex shrink-0 flex-col items-end gap-2">
                   {formData.use_package_pricing && (
-                    <span className="ml-2 text-xs font-normal text-purple-600">
-                      per {formData.rental_type === 'hourly' ? 'hour' : 'day'}
+                    <span className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">
+                      <Package className="w-3 h-3" />
+                      {tr('Package', 'Forfait')}
                     </span>
                   )}
-                </span>
-                {formData.use_package_pricing && (
-                  <span className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">
-                    <Package className="w-3 h-3" />
-                    Package
-                  </span>
-                )}
-                {!formData.use_package_pricing && isPriceOverride && (
-                  <span className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-orange-100 text-orange-700">
-                    <AlertCircle className="w-3 h-3" />
-                    Override
-                  </span>
-                )}
+                  {!formData.use_package_pricing && isPriceOverride && (
+                    <span className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-orange-100 text-orange-700">
+                      <AlertCircle className="w-3 h-3" />
+                      {tr('Override', 'Remplacement')}
+                    </span>
+                  )}
+                  </div>
+                </div>
               </div>
               
               {formData.use_package_pricing && (
@@ -3845,12 +4717,24 @@ const PriceCalculator = ({ formData, onPriceChange, autoCalculatedPrice, userPro
                     <Package className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />
                     <div className="text-xs text-purple-800">
                       <p className="font-medium">{formData.selected_package_name}</p>
-                      <p className="mt-1">
-                        Rate: {formData.unit_price?.toFixed(2)} MAD per {formData.rental_type === 'hourly' ? 'hour' : 'day'}
-                      </p>
-                      <p className="mt-1">
-                        Total: {(formData.unit_price * formData.quantity_days).toFixed(2)} MAD for {formData.quantity_days} {formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? 'hours' : 'days') : (formData.rental_type === 'hourly' ? 'hour' : 'day')}
-                      </p>
+	                      <p className="mt-1">
+	                        {tr('Package price:', 'Prix du forfait :')} {formData.unit_price?.toFixed(2)} MAD
+	                      </p>
+	                      <p className="mt-1">
+	                        {tr('Duration:', 'Durée :')} {formData.quantity_days === 0.5 ? '30 min' : `${formData.quantity_days} ${formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')) : (formData.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour'))}`}
+	                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {isFlatTierTotal && (
+                <div className="mt-2 p-2 bg-purple-50 rounded border border-purple-200">
+                  <div className="flex items-start gap-2">
+                    <Info className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />
+                    <div className="text-xs text-purple-800">
+                      <p className="font-medium">{pricingComputationLabel || tr('1.5-hour fixed tier', 'Palier fixe de 1,5 heure')}</p>
+                      <p className="mt-1">{tr('This amount is a flat tier total for the selected duration.', 'Ce montant est un total fixe pour la durée sélectionnée.')}</p>
                     </div>
                   </div>
                 </div>
@@ -3861,61 +4745,118 @@ const PriceCalculator = ({ formData, onPriceChange, autoCalculatedPrice, userPro
                   <div className="flex items-start gap-2">
                     <Info className="w-4 h-4 text-orange-600 mt-0.5 flex-shrink-0" />
                     <div className="text-xs text-orange-800">
-                      <p className="font-medium">Price Override Detected</p>
-                      <p className="mt-1">System rate: {autoPrice.toFixed(2)} MAD</p>
+                      <p className="font-medium">{tr('Price Override Detected', 'Remplacement de prix détecté')}</p>
+                      <p className="mt-1">{tr('System rate:', 'Tarif système :')} {autoPrice.toFixed(2)} MAD</p>
                       <p className="mt-1">
-                        {requiresApproval ? '⏳ Requires admin approval' : '✅ Override allowed'}
+                        {requiresApproval ? tr('⏳ Requires admin approval', "⏳ Nécessite l'approbation d'un administrateur") : tr('✅ Override allowed', '✅ Remplacement autorisé')}
                       </p>
                     </div>
                   </div>
                 </div>
               )}
             </div>
-          )}
         </div>
 
         <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-0 py-2 border-b border-gray-200">
-          <span className="text-gray-600 text-sm">Rental Cost:</span>
+          <span className="text-gray-600 text-sm">{tr('Rental Cost:', 'Coût de location :')}</span>
           <div className="text-right sm:text-right">
             <span className="font-medium text-gray-900">
               {breakdown.rentalCost.toFixed(2)} MAD
             </span>
             <div className="text-xs text-gray-500">
-              {formData.quantity_days} × {formData.unit_price.toFixed(2)}
+              {formData.use_package_pricing
+                ? tr('Fixed package price applied', 'Prix du forfait fixe appliqué')
+                : isFlatTierTotal
+                ? (pricingComputationLabel || tr('Flat tier total applied', 'Total fixe appliqué'))
+                : `${formData.quantity_days} × ${formData.unit_price.toFixed(2)}`}
             </div>
           </div>
         </div>
         
         <div className="flex justify-between items-center py-2 border-b border-gray-200">
-          <span className="text-gray-600 text-sm">Transport:</span>
+          <span className="text-gray-600 text-sm">{tr('Transport:', 'Transport :')}</span>
           <span className="font-medium text-gray-900">{breakdown.transportCost.toFixed(2)} MAD</span>
         </div>
         {/* Fuel Charge */}
 <div className="flex justify-between items-center py-2 border-b border-gray-200">
-  <span className="text-gray-600 text-sm">Fuel Charge:</span>
+  <span className="text-gray-600 text-sm">{tr('Fuel Charge:', 'Frais de carburant :')}</span>
   <span className="font-medium text-gray-900">{breakdown.fuelCharge.toFixed(2)} MAD</span>
 </div>
         
         <div className="pt-3 mt-1">
-          <div className="flex justify-between items-center">
-            <span className="text-base sm:text-lg font-bold text-gray-900">Total:</span>
-            <span className="text-xl sm:text-2xl font-bold text-blue-600">{breakdown.total.toFixed(2)} MAD</span>
+          <div className="flex justify-between items-center rounded-xl border border-violet-100 bg-white px-4 py-3 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
+            <div>
+              <span className="text-base sm:text-lg font-bold text-gray-900">{tr('Total:', 'Total :')}</span>
+              {!formData.use_package_pricing && canEditPrice && !disabled && (
+                <p className="mt-0.5 text-xs text-gray-500">
+                  {tr('You can edit the unit price or the final total', 'Vous pouvez modifier le prix unitaire ou le total final')}
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              {isEditingTotal ? (
+                <div className="flex flex-col items-end gap-2">
+                  <input
+                    type="text"
+                    value={tempTotalPrice}
+                    onChange={(e) => setTempTotalPrice(normalizeMoneyInput(e.target.value))}
+                    className="w-40 rounded-lg border border-violet-200 px-3 py-2 text-right text-base font-semibold text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    inputMode="numeric"
+                    placeholder="0"
+                    autoFocus
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSaveTotal}
+                      className="inline-flex items-center gap-1 rounded-md bg-green-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-green-700"
+                    >
+                      <Save className="h-3.5 w-3.5" />
+                      {tr('Save', 'Enregistrer')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelEdit}
+                      className="inline-flex items-center gap-1 rounded-md bg-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-300"
+                    >
+                      {tr('Cancel', 'Annuler')}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <span className="text-xl sm:text-2xl font-bold text-violet-700 text-right">{formatWholeMad(breakdown.total)} MAD</span>
+                  {!formData.use_package_pricing && canEditPrice && !disabled && (
+                    <button
+                      type="button"
+                      onClick={handleEditTotalClick}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-violet-200 bg-white px-3 py-1.5 text-sm font-semibold text-violet-700 transition-colors hover:bg-violet-50"
+                    >
+                      <Edit2 className="h-3.5 w-3.5" />
+                      {tr('Edit Total', 'Modifier le total')}
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </div>
         
         {showBreakdown && (
-          <div className="mt-4 pt-4 border-t space-y-2">
+          <div className="mt-4 rounded-xl border border-slate-200 bg-white/90 px-4 py-3 shadow-sm">
+            <div className="space-y-2">
             <div className="flex justify-between">
-              <span className="text-gray-600">Deposit Paid:</span>
+              <span className="text-gray-600">{tr('Deposit Paid:', 'Acompte versé :')}</span>
               <span className="font-medium">{breakdown.deposit.toFixed(2)} MAD</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-600">Remaining:</span>
+              <span className="text-gray-600">{tr('Remaining:', 'Reste :')}</span>
               <span className={`font-medium ${
                 breakdown.remaining === 0 ? 'text-green-600' : 'text-red-600'
               }`}>
                 {breakdown.remaining.toFixed(2)} MAD
               </span>
+            </div>
             </div>
           </div>
         )}
@@ -3933,8 +4874,22 @@ const DamageDepositTabs = ({
   customAmount,
   onTabClick,
   onCustomAmountChange,
+  onDocumentUpload,
+  onDocumentTypeSelect,
+  onDocumentClear,
+  documentUploading,
   disabled 
 }) => {
+  const cameraInputRef = useRef(null);
+  const hasDocumentSelection = Boolean(formData.damage_deposit_document_url || formData.damage_deposit_document_name);
+  const [showDocumentSection, setShowDocumentSection] = useState(hasDocumentSelection);
+
+  useEffect(() => {
+    if (hasDocumentSelection) {
+      setShowDocumentSection(true);
+    }
+  }, [hasDocumentSelection]);
+
   const tabs = [
     ...enabledPresets.map(preset => ({
       id: preset.label,
@@ -3943,7 +4898,7 @@ const DamageDepositTabs = ({
     })),
     ...(allowCustomDeposit ? [{
       id: 'custom',
-      label: 'Custom',
+      label: tr('Custom', 'Personnalisé'),
       amount: null
     }] : [])
   ];
@@ -3952,7 +4907,7 @@ const DamageDepositTabs = ({
     return (
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
-          Damage Deposit (MAD)
+          {tr('Damage Deposit (MAD)', 'Dépôt de garantie (MAD)')}
         </label>
         <input
           type="number"
@@ -3962,7 +4917,7 @@ const DamageDepositTabs = ({
           className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
           min="0"
           step="1"
-          placeholder="Enter amount"
+          placeholder={tr('Enter amount', 'Saisir un montant')}
         />
       </div>
     );
@@ -3971,7 +4926,7 @@ const DamageDepositTabs = ({
   return (
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-2">
-        Damage Deposit Selection
+        {tr('Damage Deposit Selection', 'Sélection du dépôt de garantie')}
       </label>
       
       <div className="flex gap-2 flex-wrap mb-3">
@@ -3988,13 +4943,38 @@ const DamageDepositTabs = ({
             } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <div className="flex flex-col items-center">
-              <span className="font-semibold">{tab.label}</span>
+              <span className="flex items-center gap-2 font-semibold">
+                {tab.icon ? <tab.icon className="h-4 w-4" /> : null}
+                {tab.label}
+              </span>
               {tab.amount !== null && (
                 <span className="text-xs mt-0.5">{tab.amount.toLocaleString()} MAD</span>
               )}
             </div>
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => {
+            if (showDocumentSection || hasDocumentSelection) {
+              setShowDocumentSection(false);
+              onDocumentClear?.();
+              return;
+            }
+            setShowDocumentSection(true);
+          }}
+          disabled={disabled}
+          className={`px-4 py-2 rounded-lg border-2 font-medium transition-all text-sm ${
+            showDocumentSection || hasDocumentSelection
+              ? 'border-emerald-500 bg-emerald-50 text-emerald-700 ring-2 ring-emerald-200'
+              : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+          } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+        >
+          <span className="flex items-center gap-2 font-semibold">
+            <FileText className="h-4 w-4" />
+            {tr('Document', 'Document')}
+          </span>
+        </button>
       </div>
 
       {selectedTab === 'custom' && (
@@ -4012,7 +4992,7 @@ const DamageDepositTabs = ({
             className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
             min="0"
             step="100"
-            placeholder="Enter custom amount (e.g., 8500)"
+            placeholder={tr('Enter custom amount (e.g., 8500)', 'Saisir un montant personnalisé (ex. : 8500)')}
           />
         </div>
       )}
@@ -4021,6 +5001,116 @@ const DamageDepositTabs = ({
         <div className="mt-2 text-sm text-gray-600">
           Selected: <span className="font-medium text-gray-900">{formData.damage_deposit} MAD</span>
         </div>
+      )}
+
+      {showDocumentSection && (
+      <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-emerald-900">
+              {tr('Security Document (optional)', 'Document de garantie (optionnel)')}
+            </p>
+            <p className="mt-1 text-xs text-emerald-800">
+              {tr(
+                'Hold a document in addition to the monetary damage deposit if needed.',
+                'Conservez un document en plus du dépôt de garantie monétaire si nécessaire.'
+              )}
+            </p>
+          </div>
+          {hasDocumentSelection ? (
+            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+              {tr('Document added', 'Document ajouté')}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+          <button
+            type="button"
+            onClick={() => cameraInputRef.current?.click()}
+            disabled={disabled || documentUploading}
+            className={`flex-1 rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-50 ${disabled || documentUploading ? 'cursor-not-allowed opacity-50' : ''}`}
+          >
+            <span className="flex items-center justify-center gap-2">
+              <FileImage className="h-4 w-4" />
+              {documentUploading ? tr('Uploading...', 'Téléversement...') : tr('Take Photo', 'Prendre une photo')}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onDocumentTypeSelect?.('National ID')}
+            disabled={disabled}
+            className={`flex-1 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 ${disabled || documentUploading ? 'cursor-not-allowed opacity-50' : ''}`}
+          >
+            <span className="flex items-center justify-center gap-2">
+              <FileText className="h-4 w-4" />
+              {tr('National ID', 'Carte d’identité')}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onDocumentTypeSelect?.('Passport')}
+            disabled={disabled}
+            className={`flex-1 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+          >
+            <span className="flex items-center justify-center gap-2">
+              <FileText className="h-4 w-4" />
+              {tr('Passport', 'Passeport')}
+            </span>
+          </button>
+        </div>
+
+        <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(e) => onDocumentUpload?.(e.target.files?.[0] || null)}
+        />
+
+        {hasDocumentSelection ? (
+          <div className="mt-3 rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm text-gray-700">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-medium text-gray-900">
+                  {formData.damage_deposit_document_name || tr('Security document added', 'Document de garantie ajouté')}
+                </div>
+                {formData.damage_deposit_document_url ? (
+                  <a
+                    href={formData.damage_deposit_document_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 inline-flex text-xs font-medium text-emerald-700 hover:text-emerald-800"
+                  >
+                    {tr('View captured photo', 'Voir la photo prise')}
+                  </a>
+                ) : (
+                  <p className="mt-1 text-xs text-gray-600">
+                    {tr('Physical document is being held without a photo.', 'Le document physique est retenu sans photo.')}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => onDocumentClear?.()}
+                disabled={disabled}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-red-200 bg-white text-red-500 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={tr('Remove document', 'Supprimer le document')}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-3 text-xs text-gray-600">
+            {tr(
+              'Choose one of the options if you want to hold an ID or passport as extra security.',
+              'Choisissez une des options si vous souhaitez retenir une pièce d’identité ou un passeport comme garantie supplémentaire.'
+            )}
+          </p>
+        )}
+      </div>
       )}
     </div>
   );
@@ -4038,16 +5128,31 @@ const PhoneInputWithCountryCode = ({
   const countryCodes = [
     { code: '+212', flag: '🇲🇦', name: 'Morocco', pattern: /^\+212\s?\d{9}$/, example: '+212 6XX XXX XXX', digits: 9 },
     { code: '+33', flag: '🇫🇷', name: 'France', pattern: /^\+33\s?\d{9}$/, example: '+33 1 XX XX XX XX', digits: 9 },
-    { code: '+1', flag: '🇺🇸', name: 'USA/Canada', pattern: /^\+1\s?\d{10}$/, example: '+1 XXX XXX XXXX', digits: 10 },
-    { code: '+44', flag: '🇬🇧', name: 'UK', pattern: /^\+44\s?\d{10}$/, example: '+44 7XXX XXX XXX', digits: 10 },
-    { code: '+49', flag: '🇩🇪', name: 'Germany', pattern: /^\+49\s?\d{10,11}$/, example: '+49 1XX XXX XXXX', digits: 10 },
     { code: '+34', flag: '🇪🇸', name: 'Spain', pattern: /^\+34\s?\d{9}$/, example: '+34 6XX XXX XXX', digits: 9 },
+    { code: '+32', flag: '🇧🇪', name: 'Belgium', pattern: /^\+32\s?\d{8,9}$/, example: '+32 4XX XX XX XX', digits: 9 },
+    { code: '+31', flag: '🇳🇱', name: 'Netherlands', pattern: /^\+31\s?\d{9}$/, example: '+31 6 XXXX XXXX', digits: 9 },
+    { code: '+351', flag: '🇵🇹', name: 'Portugal', pattern: /^\+351\s?\d{9}$/, example: '+351 9XX XXX XXX', digits: 9 },
+    { code: '+41', flag: '🇨🇭', name: 'Switzerland', pattern: /^\+41\s?\d{9}$/, example: '+41 7X XXX XX XX', digits: 9 },
+    { code: '+353', flag: '🇮🇪', name: 'Ireland', pattern: /^\+353\s?\d{9}$/, example: '+353 8X XXX XXXX', digits: 9 },
+    { code: '+44', flag: '🇬🇧', name: 'United Kingdom', pattern: /^\+44\s?\d{10}$/, example: '+44 7XXX XXX XXX', digits: 10 },
+    { code: '+49', flag: '🇩🇪', name: 'Germany', pattern: /^\+49\s?\d{10,11}$/, example: '+49 1XX XXX XXXX', digits: 10 },
     { code: '+39', flag: '🇮🇹', name: 'Italy', pattern: /^\+39\s?\d{9,10}$/, example: '+39 3XX XXX XXXX', digits: 9 },
+    { code: '+1', flag: '🇺🇸', name: 'United States / Canada', pattern: /^\+1\s?\d{10}$/, example: '+1 XXX XXX XXXX', digits: 10 },
     { code: '+90', flag: '🇹🇷', name: 'Turkey', pattern: /^\+90\s?\d{10}$/, example: '+90 5XX XXX XXXX', digits: 10 },
-    { code: '+971', flag: '🇦🇪', name: 'UAE', pattern: /^\+971\s?\d{9}$/, example: '+971 5X XXX XXXX', digits: 9 },
+    { code: '+971', flag: '🇦🇪', name: 'United Arab Emirates', pattern: /^\+971\s?\d{9}$/, example: '+971 5X XXX XXXX', digits: 9 },
     { code: '+966', flag: '🇸🇦', name: 'Saudi Arabia', pattern: /^\+966\s?\d{9}$/, example: '+966 5X XXX XXXX', digits: 9 },
+    { code: '+974', flag: '🇶🇦', name: 'Qatar', pattern: /^\+974\s?\d{8}$/, example: '+974 XXXX XXXX', digits: 8 },
+    { code: '+965', flag: '🇰🇼', name: 'Kuwait', pattern: /^\+965\s?\d{8}$/, example: '+965 XXXX XXXX', digits: 8 },
+    { code: '+973', flag: '🇧🇭', name: 'Bahrain', pattern: /^\+973\s?\d{8}$/, example: '+973 XXXX XXXX', digits: 8 },
+    { code: '+968', flag: '🇴🇲', name: 'Oman', pattern: /^\+968\s?\d{8}$/, example: '+968 XXXX XXXX', digits: 8 },
+    { code: '+213', flag: '🇩🇿', name: 'Algeria', pattern: /^\+213\s?\d{9}$/, example: '+213 5XX XX XX XX', digits: 9 },
     { code: '+216', flag: '🇹🇳', name: 'Tunisia', pattern: /^\+216\s?\d{8}$/, example: '+216 XX XXX XXX', digits: 8 },
     { code: '+20', flag: '🇪🇬', name: 'Egypt', pattern: /^\+20\s?\d{10}$/, example: '+20 1XX XXX XXXX', digits: 10 },
+    { code: '+221', flag: '🇸🇳', name: 'Senegal', pattern: /^\+221\s?\d{9}$/, example: '+221 7X XXX XX XX', digits: 9 },
+    { code: '+234', flag: '🇳🇬', name: 'Nigeria', pattern: /^\+234\s?\d{10}$/, example: '+234 8XX XXX XXXX', digits: 10 },
+    { code: '+91', flag: '🇮🇳', name: 'India', pattern: /^\+91\s?\d{10}$/, example: '+91 XXXXX XXXXX', digits: 10 },
+    { code: '+92', flag: '🇵🇰', name: 'Pakistan', pattern: /^\+92\s?\d{10}$/, example: '+92 3XX XXX XXXX', digits: 10 },
+    { code: '+86', flag: '🇨🇳', name: 'China', pattern: /^\+86\s?\d{11}$/, example: '+86 1XX XXXX XXXX', digits: 11 },
   ];
 
   const [countryCode, setCountryCode] = useState('+212');
@@ -4258,65 +5363,71 @@ const PhoneInputWithCountryCode = ({
 
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1">
+      <label className="block text-sm font-semibold text-slate-700 mb-2">
         Phone *
       </label>
-      <div className="flex">
+      <div className="relative flex items-stretch rounded-lg border border-slate-200 bg-white">
         <div className="relative" ref={dropdownRef}>
           <button
             type="button"
             onClick={() => !disabled && setIsDropdownOpen(!isDropdownOpen)}
             disabled={disabled}
-            className={`flex items-center gap-2 px-3 py-2 border border-r-0 border-gray-300 rounded-l-lg bg-gray-50 hover:bg-gray-100 transition-colors ${
+            className={`flex h-full min-h-[56px] items-center gap-3 border-r border-slate-200 bg-slate-50 px-5 text-slate-900 transition-colors hover:bg-slate-100 ${
               disabled ? 'opacity-50 cursor-not-allowed' : ''
-            } ${displayError ? 'border-red-500' : ''}`}
+            } ${displayError ? 'border-red-400' : ''}`}
           >
             <span className="text-lg">{selectedCountry.flag}</span>
-            <span className="text-sm font-medium">{selectedCountry.code}</span>
-            <ChevronDown className={`w-4 h-4 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
+            <span className="text-base font-semibold">{selectedCountry.code}</span>
+            <ChevronDown className={`h-4 w-4 text-slate-700 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
           </button>
 
           {isDropdownOpen && !disabled && (
-            <div className="absolute z-10 mt-1 w-64 bg-white border border-gray-300 rounded-lg shadow-lg max-h-80 overflow-hidden">
-              <div className="p-2 border-b">
+            <div className="absolute left-0 top-full z-20 mt-2 max-h-80 w-64 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+              <div className="border-b border-slate-100 p-2">
                 <div className="relative">
                   <input
                     type="text"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     placeholder="Search country..."
-                    className="w-full px-3 py-2 pl-9 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 pl-9 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
                     autoFocus
                   />
-                  <UserSearch className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                  <UserSearch className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
                 </div>
               </div>
 
               <div className="overflow-y-auto max-h-64">
-                {filteredCountries.map((country) => (
-                  <button
-                    key={country.code}
-                    type="button"
-                    onClick={() => handleCountryCodeChange(country.code)}
-                    className="w-full px-4 py-3 text-left hover:bg-blue-50 flex items-center gap-3 border-b border-gray-100 last:border-b-0"
-                  >
-                    <span className="text-xl">{country.flag}</span>
-                    <div className="flex-1 text-left">
-                      <div className="font-medium text-gray-900">{country.name}</div>
-                      <div className="text-sm text-gray-500">{country.code} ({country.digits} digits)</div>
-                    </div>
-                    {countryCode === country.code && (
-                      <Check className="w-4 h-4 text-green-500" />
-                    )}
-                  </button>
-                ))}
+                {filteredCountries.length > 0 ? (
+                  filteredCountries.map((country) => (
+                    <button
+                      key={country.code}
+                      type="button"
+                      onClick={() => handleCountryCodeChange(country.code)}
+                      className="flex w-full items-center gap-3 border-b border-slate-100 px-4 py-3 text-left hover:bg-violet-50 last:border-b-0"
+                    >
+                      <span className="text-xl">{country.flag}</span>
+                      <div className="flex-1 text-left">
+                        <div className="font-semibold text-slate-900">{country.name}</div>
+                        <div className="text-sm text-slate-500">{country.code} ({country.digits} digits)</div>
+                      </div>
+                      {countryCode === country.code && (
+                        <Check className="h-4 w-4 text-emerald-500" />
+                      )}
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-4 py-6 text-center text-sm font-medium text-slate-500">
+                    No countries found. Try typing the country name or code.
+                  </div>
+                )}
               </div>
             </div>
           )}
         </div>
 
         <div className="flex-1 relative">
-          <Phone className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+          <Phone className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
           <input
             type="tel"
             value={phoneNumber}
@@ -4328,8 +5439,8 @@ const PhoneInputWithCountryCode = ({
             }}
             placeholder={selectedCountry.code === '+212' ? "6XX XXX XXX" : "Phone number"}
             disabled={disabled}
-            className={`w-full px-3 py-2 pl-10 border rounded-r-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-              displayError ? 'border-red-500' : 'border-gray-300 border-l-0'
+            className={`min-h-[56px] w-full bg-white px-5 py-4 pl-14 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500 ${
+              displayError ? 'text-red-600 placeholder:text-red-300' : 'placeholder:text-slate-400'
             } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
           />
         </div>
@@ -4338,8 +5449,8 @@ const PhoneInputWithCountryCode = ({
       <div className="mt-2 space-y-1">
         {displayError && (
           <div className="flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-            <p className="text-red-500 text-xs">{displayError}</p>
+            <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-500" />
+            <p className="text-xs font-medium text-red-500">{displayError}</p>
           </div>
         )}
         
@@ -4366,7 +5477,7 @@ const PhoneInputWithCountryCode = ({
         )}
         
         {!displayError && (
-          <p className="text-gray-500 text-xs">
+          <p className="text-xs font-medium text-slate-500">
             {selectedCountry.code === '+212' 
               ? "Moroccan format: +212 6XX XXX XXX (9 digits)"
               : `Format: ${selectedCountry.example} (${selectedCountry.digits} digits)`}
@@ -4389,6 +5500,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
     packagePrice: null,
     packageName: null,
     isPackagePricing: false,
+    isFlatTierTotal: false,
     fixedPackageAmount: 0,
     packageIncludedKm: null,
     packageExtraRate: 0
@@ -4446,11 +5558,11 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
           const vehicleModelUpper = (vehicle.model || '').toUpperCase();
           
           if (vehicleModelUpper.includes('AT6')) {
-            basePrice = rentalType === 'hourly' ? 580 : 2000;
+            basePrice = rentalType === 'hourly' ? 599 : 1999;
           } else if (vehicleModelUpper.includes('AT10')) {
-            basePrice = rentalType === 'hourly' ? 1000 : 3500;
+            basePrice = rentalType === 'hourly' ? 999 : 3499;
           } else if (vehicleModelUpper.includes('AT5')) {
-            basePrice = rentalType === 'hourly' ? 380 : 1500;
+            basePrice = rentalType === 'hourly' ? 399 : 1499;
           } else {
             basePrice = rentalType === 'hourly' ? 400 : 1500;
           }
@@ -4466,8 +5578,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
         if (usePackagePricing && selectedPackageId && availablePackages.length > 0) {
           const selectedPkg = availablePackages.find(p => p.id === selectedPackageId);
           if (selectedPkg) {
-            // The fixed_amount is the rate PER UNIT (per hour or per day)
-            // Total = fixed_amount * duration
+            // Kilometer rental packages are fixed offers. The duration controls the timer, not the package price.
             fixedPackageAmount = parseFloat(selectedPkg.fixed_amount) || 0;
             packageIncludedKm = selectedPkg.included_kilometers;
             packageExtraRate = parseFloat(selectedPkg.extra_km_rate) || 0;
@@ -4478,7 +5589,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
 
         // If package pricing is active, use it instead of tier pricing
         if (packagePricePerUnit !== null) {
-          const totalAmount = packagePricePerUnit * duration;
+          const totalAmount = packagePricePerUnit;
 
           setPriceInfo({
             basePrice,
@@ -4490,18 +5601,20 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
             packagePrice: packagePricePerUnit,
             packageName,
             isPackagePricing: true,
+            isFlatTierTotal: false,
             fixedPackageAmount: packagePricePerUnit,
             packageIncludedKm,
             packageExtraRate
           });
 
-          console.log(`📦 Package selected: ${packageName}, rate per ${rentalType === 'hourly' ? 'hour' : 'day'}: ${packagePricePerUnit} MAD, total for ${duration} ${rentalType === 'hourly' ? 'hours' : 'days'}: ${totalAmount} MAD`);
+          console.log(`📦 Package selected: ${packageName}, fixed package price: ${packagePricePerUnit} MAD, duration: ${duration} ${rentalType === 'hourly' ? 'hours' : 'days'}`);
           return;
         }
 
         // Otherwise calculate tier pricing
         let tierPrice = basePrice;
         let tierName = 'Base rate';
+        let isFlatTierTotal = false;
         
         if (rentalType === 'daily' && duration > 1) {
           const { data: pricingTiers, error } = await supabase
@@ -4572,6 +5685,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
               tierPrice = parseFloat(matchingTier.price_amount);
               const minHours = matchingTier.min_hours || 1;
               const maxHours = matchingTier.max_hours || '∞';
+              isFlatTierTotal = matchingTier.calculation_method === 'fixed' && Number(duration) === 1.5;
               
               if (tierPrice < basePrice) {
                 const discountPercent = Math.round(((basePrice - tierPrice) / basePrice) * 100);
@@ -4583,7 +5697,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
           }
         }
 
-        const total = tierPrice * duration;
+        const total = isFlatTierTotal ? tierPrice : tierPrice * duration;
         
         setPriceInfo({
           basePrice,
@@ -4592,7 +5706,8 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
           loading: false,
           tierName,
           modelType: modelType || vehicle.model || '',
-          isPackagePricing: false
+          isPackagePricing: false,
+          isFlatTierTotal
         });
 
       } catch (error) {
@@ -4613,7 +5728,8 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
           total: fallbackPrice * duration, 
           loading: false,
           tierName: 'Base rate',
-          modelType: vehicleModel
+          modelType: vehicleModel,
+          isFlatTierTotal: false
         });
       }
     };
@@ -4631,6 +5747,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
   };
 
   const isPackagePricing = priceInfo.isPackagePricing;
+  const isFlatTierTotal = priceInfo.isFlatTierTotal;
   const isTierPricing = !isPackagePricing && duration > 1 && priceInfo.tierPrice !== priceInfo.basePrice;
 
   if (isMobile) {
@@ -4656,12 +5773,17 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
         </div>
         {isPackagePricing && (
           <div className="mt-1 text-purple-600 text-xs">
-            <span>Package: {priceInfo.packageName} &bull; {formatCurrency(priceInfo.tierPrice)} MAD &times; {duration} {duration > 1 ? (rentalType === 'hourly' ? 'hours' : 'days') : (rentalType === 'hourly' ? 'hour' : 'day')}</span>
+            <span>Package: {priceInfo.packageName} &bull; fixed {formatCurrency(priceInfo.tierPrice)} MAD</span>
+          </div>
+        )}
+        {isFlatTierTotal && (
+          <div className="mt-1 text-blue-600 text-xs">
+            <span>Fixed 1.5-hour tier total</span>
           </div>
         )}
         {!isPackagePricing && isTierPricing && (
           <div className="mt-1 text-green-600 text-xs">
-            <span>Save {formatCurrency((priceInfo.basePrice - priceInfo.tierPrice) * duration)}</span>
+            <span>Save {formatCurrency(isFlatTierTotal ? ((priceInfo.basePrice * duration) - priceInfo.tierPrice) : ((priceInfo.basePrice - priceInfo.tierPrice) * duration))}</span>
           </div>
         )}
       </div>
@@ -4703,12 +5825,17 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
         <>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 mb-2">
             <span className="text-sm text-gray-600">
-              {isPackagePricing ? 'Package rate:' : (rentalType === 'hourly' ? 'Hourly rate:' : 'Daily rate:')}
+              {isPackagePricing ? 'Package rate:' : isFlatTierTotal ? 'Tier total:' : (rentalType === 'hourly' ? 'Hourly rate:' : 'Daily rate:')}
             </span>
             <div className="flex flex-wrap items-center gap-2 justify-end">
               {isPackagePricing && (
                 <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
                   Fixed rate package
+                </span>
+              )}
+              {isFlatTierTotal && (
+                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+                  Fixed 1.5h tier
                 </span>
               )}
               {!isPackagePricing && isTierPricing && priceInfo.basePrice > priceInfo.tierPrice && (
@@ -4729,14 +5856,14 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
             <div className="space-y-2">
               {/* Package Total - More compact and cleaner */}
               <div className="flex items-center justify-between bg-purple-50 px-3 py-2 rounded-lg">
-                <span className="text-sm font-medium text-purple-700">Package Total:</span>
+                <span className="text-sm font-medium text-purple-700">{tr('Package Total:', 'Total du forfait :')}</span>
                 <span className="text-lg font-bold text-purple-700">{formatCurrency(priceInfo.total)} MAD</span>
               </div>
               
               {/* Package Calculation - Single line, more compact */}
               <div className="flex items-center justify-between text-xs text-gray-600 bg-white px-3 py-2 rounded-lg border border-purple-100">
                 <span>
-                  {formatCurrency(priceInfo.tierPrice)} MAD × {duration} {duration > 1 ? (rentalType === 'hourly' ? 'hours' : 'days') : (rentalType === 'hourly' ? 'hour' : 'day')}
+                  Fixed package price
                 </span>
                 <span className="font-medium text-purple-600">= {formatCurrency(priceInfo.total)} MAD</span>
               </div>
@@ -4747,10 +5874,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
                   <div className="flex-1 bg-green-50 px-2 py-1.5 rounded-lg border border-green-100">
                     <div className="flex flex-col">
                       <span className="text-xs text-green-700 font-medium">
-                        ✓ {priceInfo.packageIncludedKm} km per {rentalType === 'hourly' ? 'hour' : 'day'}
-                      </span>
-                      <span className="text-xs text-gray-600 mt-0.5">
-                        Total: {priceInfo.packageIncludedKm * duration} km
+                        ✓ {priceInfo.packageIncludedKm} km included
                       </span>
                     </div>
                   </div>
@@ -4767,7 +5891,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
           {!isPackagePricing && isTierPricing && priceInfo.tierPrice < priceInfo.basePrice && (
             <div className="flex justify-end mb-2">
               <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
-                Save {formatCurrency(priceInfo.basePrice - priceInfo.tierPrice)}/{rentalType === 'hourly' ? 'hour' : 'day'}
+                Save {formatCurrency(isFlatTierTotal ? ((priceInfo.basePrice * duration) - priceInfo.tierPrice) : ((priceInfo.basePrice - priceInfo.tierPrice) * duration))}
               </span>
             </div>
           )}
@@ -4792,14 +5916,14 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
               
               <div className="flex justify-between text-gray-600">
                 <span>Calculation:</span>
-                <span>{formatCurrency(priceInfo.tierPrice)} × {duration}</span>
+                <span>{isFlatTierTotal ? 'Fixed 1.5-hour tier total' : `${formatCurrency(priceInfo.tierPrice)} × ${duration}`}</span>
               </div>
               
               {isTierPricing && priceInfo.tierPrice < priceInfo.basePrice && (
                 <div className="bg-green-50 px-2 py-1.5 rounded border border-green-100">
                   <div className="flex justify-between text-green-700">
                     <span className="font-medium">Savings:</span>
-                    <span className="font-bold">{formatCurrency((priceInfo.basePrice - priceInfo.tierPrice) * duration)} MAD</span>
+                    <span className="font-bold">{formatCurrency(isFlatTierTotal ? ((priceInfo.basePrice * duration) - priceInfo.tierPrice) : ((priceInfo.basePrice - priceInfo.tierPrice) * duration))} MAD</span>
                   </div>
                 </div>
               )}
@@ -4818,20 +5942,23 @@ const TierPricingBreakdown = ({
   duration, 
   unitPrice, 
   rentalType,
-  availableVehicles = []
+  availableVehicles = [],
+  pricingComputationMode = 'per_unit'
 }) => {
   const [baseRate, setBaseRate] = useState(0);
   const [loading, setLoading] = useState(true);
   const [priceSource, setPriceSource] = useState('unknown');
   const [tierName, setTierName] = useState('');
+  const [matchedTierPrice, setMatchedTierPrice] = useState(0);
+  const [hasMatchedTier, setHasMatchedTier] = useState(false);
 
-  if (duration <= 1) {
+  if (rentalType === 'daily' && duration <= 1) {
     return null;
   }
 
   useEffect(() => {
     const fetchBaseRate = async () => {
-      if (!vehicleModelId || !rentalType || duration <= 1 || !unitPrice) {
+      if (!vehicleModelId || !rentalType || !duration || duration <= 0 || !unitPrice) {
         setLoading(false);
         return;
       }
@@ -4839,6 +5966,9 @@ const TierPricingBreakdown = ({
       try {
         let baseRate = 0;
         let priceSource = '';
+
+        let matchedTierPrice = 0;
+        let hasTierMatch = false;
 
         if (rentalType === 'hourly') {
           const { data: basePrices, error: baseError } = await supabase
@@ -4852,6 +5982,37 @@ const TierPricingBreakdown = ({
             baseRate = parseFloat(basePrices.hourly_price);
             priceSource = 'base_prices';
           }
+
+          const { data: pricingTiers } = await supabase
+            .from('pricing_tiers')
+            .select('*')
+            .eq('vehicle_model_id', vehicleModelId)
+            .eq('is_active', true)
+            .eq('duration_type', 'hours')
+            .order('min_hours', { ascending: true });
+
+          const matchingTier = (pricingTiers || []).find((tier) => {
+            if (tier.min_hours === null || tier.max_hours === null || !tier.price_amount) return false;
+            const min = parseFloat(tier.min_hours);
+            const max = parseFloat(tier.max_hours);
+            return duration >= min && duration <= max;
+          });
+
+          if (matchingTier) {
+            matchedTierPrice = parseFloat(matchingTier.price_amount) || 0;
+            hasTierMatch = true;
+            const minHours = parseFloat(matchingTier.min_hours);
+            const maxHours = parseFloat(matchingTier.max_hours);
+            const durationRange = minHours === maxHours ? `${minHours}` : `${minHours}-${maxHours}`;
+            if (duration === 1.5) {
+              setTierName('1.5-hour special rate');
+            } else if (matchedTierPrice < baseRate) {
+              const discountPercent = baseRate > 0 ? Math.round(((baseRate - matchedTierPrice) / baseRate) * 100) : 0;
+              setTierName(`${durationRange}-hour tier (${discountPercent}% off)`);
+            } else {
+              setTierName(`${durationRange}-hour tier`);
+            }
+          }
         } else if (rentalType === 'daily') {
           const { data: basePrices, error: baseError } = await supabase
             .from('app_4c3a7a6153_base_prices')
@@ -4863,6 +6024,35 @@ const TierPricingBreakdown = ({
           if (!baseError && basePrices?.daily_price) {
             baseRate = parseFloat(basePrices.daily_price);
             priceSource = 'base_prices';
+          }
+
+          const { data: pricingTiers } = await supabase
+            .from('pricing_tiers')
+            .select('*')
+            .eq('vehicle_model_id', vehicleModelId)
+            .eq('is_active', true)
+            .eq('duration_type', 'days')
+            .order('min_days', { ascending: true });
+
+          const matchingTier = (pricingTiers || []).find((tier) => {
+            if (!tier.daily_price_amount) return false;
+            const min = tier.min_days ? parseInt(tier.min_days, 10) : 1;
+            const max = tier.max_days ? parseInt(tier.max_days, 10) : Number.POSITIVE_INFINITY;
+            return duration >= min && duration <= max;
+          });
+
+          if (matchingTier) {
+            matchedTierPrice = parseFloat(matchingTier.daily_price_amount) || 0;
+            hasTierMatch = true;
+            const minDays = matchingTier.min_days || 1;
+            const maxDays = matchingTier.max_days || minDays;
+            const durationRange = minDays === maxDays ? `${minDays}` : `${minDays}-${maxDays}`;
+            if (matchedTierPrice < baseRate) {
+              const discountPercent = baseRate > 0 ? Math.round(((baseRate - matchedTierPrice) / baseRate) * 100) : 0;
+              setTierName(`${durationRange}-day tier (${discountPercent}% off)`);
+            } else {
+              setTierName(`${durationRange}-day tier`);
+            }
           }
         }
 
@@ -4896,16 +6086,19 @@ const TierPricingBreakdown = ({
         }
 
         setBaseRate(baseRate);
-        setPriceSource(priceSource);
+        setMatchedTierPrice(matchedTierPrice);
+        setHasMatchedTier(hasTierMatch);
+        setPriceSource(hasTierMatch ? 'pricing_tiers' : priceSource);
         
-        if (rentalType === 'daily') {
+        if (!hasTierMatch && rentalType === 'daily') {
           if (duration === 2) setTierName("2-day package deal");
           else if (duration === 3) setTierName("3-day special offer");
           else if (duration >= 4 && duration < 7) setTierName(`${duration}-day extended package`);
           else if (duration >= 7) setTierName("Weekly+ package (7+ days)");
           else setTierName(`${duration}-day package`);
-        } else {
+        } else if (!hasTierMatch) {
           if (duration === 2) setTierName("2-hour special rate");
+          else if (duration === 1.5) setTierName("1.5-hour special rate");
           else if (duration === 3) setTierName("3-hour package deal");
           else if (duration >= 4 && duration < 24) setTierName(`${duration}-hour bundle`);
           else if (duration >= 24) setTierName("Daily package (24h)");
@@ -4923,6 +6116,8 @@ const TierPricingBreakdown = ({
           setBaseRate(rentalType === 'hourly' ? 400 : 1500);
         }
         setPriceSource('error_fallback');
+        setMatchedTierPrice(0);
+        setHasMatchedTier(false);
         setTierName(`${duration}-${rentalType === 'daily' ? 'day' : 'hour'} package`);
       } finally {
         setLoading(false);
@@ -4940,11 +6135,14 @@ const TierPricingBreakdown = ({
     return null;
   }
 
-  const baseTotal = duration * baseRate;
-  const tierTotal = duration * unitPrice;
-  const savings = baseTotal - tierTotal;
+  const isFlatTierTotal = pricingComputationMode === 'flat_total';
+  const appliedTierPrice = Number(unitPrice || 0) || 0;
+  const standardComparisonPrice = hasMatchedTier ? matchedTierPrice : baseRate;
+  const baseTotal = isFlatTierTotal ? standardComparisonPrice : duration * standardComparisonPrice;
+  const tierTotal = isFlatTierTotal ? appliedTierPrice : duration * appliedTierPrice;
+  const savings = Math.max(0, baseTotal - tierTotal);
   const savingsPercentage = baseTotal > 0 ? (savings / baseTotal * 100).toFixed(1) : 0;
-  const isDiscounted = savings > 0;
+  const isDiscounted = savings > 0 && standardComparisonPrice > 0;
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-MA', {
@@ -4967,6 +6165,13 @@ const TierPricingBreakdown = ({
           <div className="flex items-center gap-1 text-xs text-blue-600">
             <CheckCircle className="w-3 h-3" />
             <span>Base price from vehicle models</span>
+          </div>
+        );
+      case 'pricing_tiers':
+        return (
+          <div className="flex items-center gap-1 text-xs text-violet-600">
+            <CheckCircle className="w-3 h-3" />
+            <span>Matched pricing tier</span>
           </div>
         );
       case 'fallback_at5':
@@ -5017,7 +6222,7 @@ const TierPricingBreakdown = ({
           <div className="bg-white p-3 sm:p-4 rounded-lg border border-blue-100">
             <div className="text-blue-700 text-xs font-medium mb-1">DURATION</div>
             <div className="text-sm sm:text-base font-semibold text-gray-900">
-              {duration} {duration > 1 ? getPeriodLabelPlural() : ''}
+              {duration === 1.5 ? '1.5 hours' : `${duration} ${duration > 1 ? getPeriodLabelPlural() : (rentalType === 'daily' ? 'day' : 'hour')}`}
             </div>
           </div>
         </div>
@@ -5025,16 +6230,20 @@ const TierPricingBreakdown = ({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
           <div className="bg-white p-4 rounded-lg border border-green-200 shadow-sm">
             <div className="text-green-700 text-xs font-medium mb-1">YOUR TIER RATE</div>
-            <div className="text-2xl sm:text-3xl font-bold text-green-600">{formatCurrency(unitPrice)}</div>
-            <div className="text-green-600 text-sm">MAD per {rentalType === 'daily' ? 'day' : 'hour'}</div>
+            <div className="text-2xl sm:text-3xl font-bold text-green-600">{formatCurrency(appliedTierPrice)}</div>
+            <div className="text-green-600 text-sm">
+              {isFlatTierTotal ? `MAD total for ${duration === 1.5 ? '1.5 hours' : 'this tier'}` : `MAD per ${rentalType === 'daily' ? 'day' : 'hour'}`}
+            </div>
             <div className="text-xs text-green-500 mt-2 truncate">{tierName}</div>
           </div>
           
           <div className="bg-white p-4 rounded-lg border border-gray-100 shadow-sm">
             <div className="text-gray-500 text-xs font-medium mb-1">STANDARD RATE</div>
-            <div className="text-xl sm:text-2xl text-gray-400 line-through">{formatCurrency(baseRate)}</div>
-            <div className="text-gray-500 text-sm">MAD per {rentalType === 'daily' ? 'day' : 'hour'}</div>
-            <div className="text-xs text-gray-400 mt-2">Base {rentalType} price</div>
+            <div className="text-xl sm:text-2xl text-gray-400 line-through">{formatCurrency(standardComparisonPrice)}</div>
+            <div className="text-gray-500 text-sm">
+              {isFlatTierTotal ? `MAD total for ${duration === 1.5 ? '1.5 hours' : 'this tier'}` : `MAD per ${rentalType === 'daily' ? 'day' : 'hour'}`}
+            </div>
+            <div className="text-xs text-gray-400 mt-2">{hasMatchedTier ? 'Matched tier from pricing management' : `Base ${rentalType} price`}</div>
           </div>
         </div>
 
@@ -5048,8 +6257,8 @@ const TierPricingBreakdown = ({
                   </svg>
                 </div>
                 <div>
-                  <div className="text-green-800 font-bold text-sm">Total Savings</div>
-                  <div className="text-green-600 text-xs">You're paying less!</div>
+                  <div className="text-green-800 font-bold text-sm">{tr('Total Savings', 'Économies totales')}</div>
+                  <div className="text-green-600 text-xs">{tr("You're paying less!", 'Vous payez moins !')}</div>
                 </div>
               </div>
               <div className="text-right">
@@ -5071,21 +6280,35 @@ const TierPricingBreakdown = ({
           </div>
         )}
 
-        {!isDiscounted && baseRate > 0 && (
+        {!isDiscounted && hasMatchedTier && baseRate > 0 && (
           <div className="bg-gradient-to-r from-blue-50 to-cyan-50 p-4 rounded-lg border border-blue-200">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
                 <Info className="w-5 h-5 text-blue-600" />
               </div>
               <div>
-                <div className="text-blue-800 font-bold text-sm">Fixed Package Price</div>
-                <div className="text-blue-600 text-sm">{duration}-{rentalType === 'daily' ? 'day' : 'hour'} flat rate applied</div>
+                <div className="text-blue-800 font-bold text-sm">Tier Price Applied</div>
+                <div className="text-blue-600 text-sm">{tierName || `${duration}-${rentalType === 'daily' ? 'day' : 'hour'} tier`} matched successfully</div>
               </div>
             </div>
             <div className="mt-2 text-xs text-blue-700">
               <div className="flex justify-between">
-                <span>Total amount:</span>
+                <span>Calculated total:</span>
                 <span className="font-bold">{formatCurrency(tierTotal)} MAD</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!hasMatchedTier && baseRate > 0 && (
+          <div className="bg-gradient-to-r from-slate-50 to-slate-100 p-4 rounded-lg border border-slate-200">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center">
+                <Info className="w-5 h-5 text-slate-600" />
+              </div>
+              <div>
+                <div className="text-slate-800 font-bold text-sm">Standard Base Rate Applied</div>
+                <div className="text-slate-600 text-sm">No matching pricing tier was found for this duration</div>
               </div>
             </div>
           </div>
@@ -5145,7 +6368,7 @@ const KMPackagesTab = ({
   // Calculate total included kilometers for the entire duration
   const getTotalIncludedKm = (pkg) => {
     if (!pkg || !pkg.included_kilometers) return null;
-    return pkg.included_kilometers * duration;
+    return pkg.included_kilometers;
   };
 
   // Calculate total cost based on estimated kilometers
@@ -5153,12 +6376,12 @@ const KMPackagesTab = ({
     if (!pkg) return 0;
     
     const ratePerUnit = parseFloat(pkg.fixed_amount) || 0;
-    const baseRentalCost = ratePerUnit * duration;
+    const baseRentalCost = ratePerUnit;
     
     if (!pkg.included_kilometers) return baseRentalCost;
     
     const extraRate = parseFloat(pkg.extra_km_rate) || 0;
-    const totalIncludedKm = pkg.included_kilometers * duration;
+    const totalIncludedKm = pkg.included_kilometers;
     
     if (kms <= totalIncludedKm) {
       return baseRentalCost;
@@ -5172,7 +6395,7 @@ const KMPackagesTab = ({
   // Calculate extra cost for display
   const calculateExtraCost = (pkg, kms) => {
     if (!pkg || !pkg.included_kilometers) return 0;
-    const totalIncludedKm = pkg.included_kilometers * duration;
+    const totalIncludedKm = pkg.included_kilometers;
     if (kms <= totalIncludedKm) return 0;
     const extraKms = kms - totalIncludedKm;
     const extraRate = parseFloat(pkg.extra_km_rate) || 0;
@@ -5181,11 +6404,25 @@ const KMPackagesTab = ({
 
   // Handle package selection
   const handlePackageSelect = (pkg) => {
+    if ((selectedPackageId && String(selectedPackageId) === String(pkg.id)) || (selectedPackage?.id && String(selectedPackage.id) === String(pkg.id))) {
+      handleClearPackage();
+      return;
+    }
+
+    const ratePerUnit = parseFloat(pkg.fixed_amount) || 0;
+    const packageDurationUnits = getPackageDurationUnits(pkg);
+
+    if (!packageDurationUnits) {
+      toast.error(tr(
+        'Package duration is missing. Please set the package duration in Pricing before using it.',
+        'La durée du forfait est manquante. Veuillez définir la durée du forfait dans la tarification avant de l’utiliser.'
+      ));
+      return;
+    }
+
     setSelectedPackage(pkg);
     setHasOverridden(true);
     onPackageSelect(pkg.id);
-    
-    const ratePerUnit = parseFloat(pkg.fixed_amount) || 0;
     
     // Prepare ALL package data in one object
     const packageData = {
@@ -5193,8 +6430,10 @@ const KMPackagesTab = ({
       package_name: pkg.name,
       package_rate_per_unit: ratePerUnit,
       package_included_km_per_unit: pkg.included_kilometers,
+      package_total_included_km: pkg.included_kilometers,
       package_extra_rate: parseFloat(pkg.extra_km_rate) || 0,
       package_description: pkg.description,
+      package_duration_units: packageDurationUnits,
       use_package_pricing: true,
       package_overrides_tier: true
     };
@@ -5207,7 +6446,7 @@ const KMPackagesTab = ({
     // Don't update formData directly here - let the parent handle it
     // Don't call onPriceOverride separately
     
-    toast.success(`Package "${pkg.name}" selected - ${ratePerUnit.toFixed(2)} MAD per ${rentalType === 'hourly' ? 'hour' : 'day'}`);
+    toast.success(`Package "${pkg.name}" selected - ${ratePerUnit.toFixed(2)} MAD`);
   };
 
   // Handle clear package selection
@@ -5218,6 +6457,11 @@ const KMPackagesTab = ({
     
     if (onPackageCalculations) {
       onPackageCalculations({
+        package_name: '',
+        package_rate_per_unit: 0,
+        package_included_km_per_unit: null,
+        package_extra_rate: 0,
+        package_description: '',
         use_package_pricing: false,
         package_overrides_tier: false,
         package_id: null
@@ -5265,13 +6509,9 @@ const KMPackagesTab = ({
           </span>
         </div>
         {selectedPackage && (
-          <button
-            type="button"
-            onClick={handleClearPackage}
-            className="text-xs text-red-600 hover:text-red-800 px-2 py-1 hover:bg-red-50 rounded"
-          >
-            Clear Package
-          </button>
+          <span className="text-xs text-purple-600 font-medium">
+            {tr('Tap the selected package again to unselect', 'Appuyez à nouveau sur le forfait sélectionné pour l’annuler')}
+          </span>
         )}
       </div>
 
@@ -5280,8 +6520,8 @@ const KMPackagesTab = ({
         {packages.map((pkg) => {
           const isSelected = selectedPackageId === pkg.id || selectedPackage?.id === pkg.id;
           const ratePerUnit = parseFloat(pkg.fixed_amount) || 0;
-          const totalForDuration = ratePerUnit * duration;
-          const totalIncludedKm = pkg.included_kilometers ? pkg.included_kilometers * duration : null;
+          const totalForDuration = ratePerUnit;
+          const totalIncludedKm = pkg.included_kilometers || null;
           
           return (
             <button
@@ -5289,17 +6529,17 @@ const KMPackagesTab = ({
               type="button"
               onClick={() => handlePackageSelect(pkg)}
               disabled={disabled}
-              className={`relative p-4 rounded-xl border-2 transition-all text-left ${
+              className={`relative rounded-xl border-2 p-4 text-left transform-gpu transition-[transform,border-color,box-shadow,background-color,opacity] duration-200 ease-out ${
                 isSelected
-                  ? 'border-purple-500 bg-gradient-to-r from-purple-50 to-indigo-50 ring-2 ring-purple-200 shadow-md'
-                  : 'border-gray-200 bg-white hover:border-purple-300 hover:bg-purple-50/30'
-              } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:shadow-sm'}`}
+                  ? 'border-purple-500 bg-gradient-to-r from-purple-50 to-indigo-50 ring-2 ring-purple-200 shadow-md scale-[1.01]'
+                  : 'border-gray-200 bg-white hover:border-purple-300 hover:bg-purple-50/30 hover:-translate-y-0.5 hover:shadow-sm'
+              } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-[0.99]'}`}
             >
               <div className="flex flex-col h-full">
                 <div className="flex items-start justify-between mb-2">
                   <Gauge className={`w-5 h-5 ${isSelected ? 'text-purple-600' : 'text-gray-400'}`} />
                   {isSelected && (
-                    <div className="w-5 h-5 bg-purple-500 rounded-full flex items-center justify-center">
+                    <div className="flex h-5 w-5 items-center justify-center rounded-full bg-purple-500 shadow-sm transition-all duration-200 ease-out">
                       <Check className="w-3 h-3 text-white" />
                     </div>
                   )}
@@ -5309,7 +6549,7 @@ const KMPackagesTab = ({
                 
                 <div className="mt-2 space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Rate per {rentalType === 'hourly' ? 'hour' : 'day'}:</span>
+                    <span className="text-xs text-gray-500">{tr('Package price:', 'Prix du forfait :')}</span>
                     <span className="text-sm font-bold text-purple-700">
                       {ratePerUnit.toFixed(2)} MAD
                     </span>
@@ -5317,7 +6557,7 @@ const KMPackagesTab = ({
                   
                   {pkg.included_kilometers && (
                     <div className="flex items-center justify-between">
-                      <span className="text-xs text-gray-500">Included per unit:</span>
+                      <span className="text-xs text-gray-500">{tr('Included:', 'Inclus :')}</span>
                       <span className="text-xs font-medium text-gray-700">
                         {pkg.included_kilometers} km
                       </span>
@@ -5326,7 +6566,7 @@ const KMPackagesTab = ({
                   
                   {totalIncludedKm && (
                     <div className="flex items-center justify-between pt-1 border-t border-dashed border-gray-200">
-                      <span className="text-xs font-medium text-green-600">Total included:</span>
+                    <span className="text-xs font-medium text-green-600">{tr('Included limit:', 'Limite incluse :')}</span>
                       <span className="text-xs font-bold text-green-700">
                         {totalIncludedKm} km
                       </span>
@@ -5345,7 +6585,7 @@ const KMPackagesTab = ({
 
                 <div className="mt-3 pt-2 border-t border-gray-100">
                   <div className="text-xs text-gray-500">
-                    Total for {duration} {duration > 1 ? (rentalType === 'hourly' ? 'hours' : 'days') : (rentalType === 'hourly' ? 'hour' : 'day')}:
+                    {tr('Fixed package total:', 'Total fixe du forfait :')}
                   </div>
                   <div className="text-base font-bold text-purple-700">
                     {totalForDuration.toFixed(2)} MAD
@@ -5396,9 +6636,9 @@ const KMPackagesTab = ({
             <div className="p-5 bg-white">
               {(() => {
                 const ratePerUnit = parseFloat(selectedPackage.fixed_amount) || 0;
-                const baseRentalCost = ratePerUnit * duration; // FIXED package total
+                const baseRentalCost = ratePerUnit;
                 const includedKmsPerUnit = selectedPackage.included_kilometers;
-                const totalIncludedKm = includedKmsPerUnit ? includedKmsPerUnit * duration : null;
+                const totalIncludedKm = includedKmsPerUnit || null;
                 const extraRate = parseFloat(selectedPackage.extra_km_rate) || 0;
                 
                 // Calculate potential extra charges based on estimate (INFORMATIONAL ONLY)
@@ -5421,45 +6661,42 @@ const KMPackagesTab = ({
                       
                       <div className="space-y-2">
                         <div className="flex justify-between items-center">
-                          <span className="text-sm text-gray-600">Package:</span>
+                          <span className="text-sm text-gray-600">{tr('Package:', 'Forfait :')}</span>
                           <span className="text-sm font-bold text-purple-700">{selectedPackage.name}</span>
                         </div>
                         
                         <div className="flex justify-between items-center">
-                          <span className="text-sm text-gray-600">Rate per {rentalType === 'hourly' ? 'hour' : 'day'}:</span>
+                          <span className="text-sm text-gray-600">{tr('Package price:', 'Prix du forfait :')}</span>
                           <span className="text-sm font-bold text-gray-900">{ratePerUnit.toFixed(2)} MAD</span>
                         </div>
                         
                         <div className="flex justify-between items-center">
-                          <span className="text-sm text-gray-600">Duration:</span>
+                          <span className="text-sm text-gray-600">{tr('Duration:', 'Durée :')}</span>
                           <span className="text-sm font-bold text-gray-900">
-                            {duration} {duration > 1 ? (rentalType === 'hourly' ? 'hours' : 'days') : (rentalType === 'hourly' ? 'hour' : 'day')}
+                            {duration} {duration > 1 ? (rentalType === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')) : (rentalType === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour'))}
                           </span>
                         </div>
                         
                         {includedKmsPerUnit && (
                           <>
                             <div className="flex justify-between items-center pt-2 border-t border-purple-100">
-                              <span className="text-sm text-gray-600">Included per unit:</span>
+                              <span className="text-sm text-gray-600">{tr('Included:', 'Inclus :')}</span>
                               <span className="text-sm font-medium text-gray-700">
                                 {includedKmsPerUnit} km
                               </span>
                             </div>
                             <div className="flex justify-between items-center">
-                              <span className="text-sm text-gray-600">Total included:</span>
+                              <span className="text-sm text-gray-600">{tr('Included limit:', 'Limite incluse :')}</span>
                               <span className="text-sm font-bold text-green-600">
                                 {totalIncludedKm} km
                               </span>
-                            </div>
-                            <div className="text-xs text-gray-500 -mt-1 text-right">
-                              {includedKmsPerUnit} km × {duration} = {totalIncludedKm} km
                             </div>
                           </>
                         )}
                         
                         {/* FIXED Package Total - Does NOT include extra km */}
                         <div className="flex justify-between items-center pt-3 border-t border-purple-200 mt-2">
-                          <span className="text-base font-semibold text-purple-900">Package Total (Fixed):</span>
+                          <span className="text-base font-semibold text-purple-900">{tr('Package Total (Fixed):', 'Total du forfait (fixe) :')}</span>
                           <span className="text-xl font-bold text-purple-700">
                             {baseRentalCost.toFixed(2)} MAD
                           </span>
@@ -5566,7 +6803,7 @@ const KMPackagesTab = ({
                         <span className="text-2xl font-bold">{baseRentalCost.toFixed(2)} MAD</span>
                       </div>
                       <div className="text-xs text-purple-100 mt-2 border-t border-purple-400 pt-2">
-                        {ratePerUnit.toFixed(2)} MAD × {duration} = {baseRentalCost.toFixed(2)} MAD
+                        {tr('Fixed package price', 'Prix du forfait fixe')}: {baseRentalCost.toFixed(2)} MAD
                         {totalIncludedKm && ` • Includes ${totalIncludedKm} km`}
                       </div>
                     </div>
@@ -5680,14 +6917,19 @@ const SimplifiedRentalWizard = ({
   mode = 'create',
   onSuccess,
   onCancel,
-  isLoading = false 
+  isLoading = false,
+  initialStep = 1,
+  initialCustomerScanNote = '',
+  requiresCustomerVerification = false,
 }) => {
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState(1);
   const [basePrices, setBasePrices] = React.useState([]);
   const [showIDScanModal, setShowIDScanModal] = useState(false);
   const [showSecondDriverScanModal, setShowSecondDriverScanModal] = useState(false);
+  const [secondDriverScanEntryMode, setSecondDriverScanEntryMode] = useState('scan');
   const [activeTab, setActiveTab] = useState('basic');
+  const [customerScanNote, setCustomerScanNote] = useState(initialCustomerScanNote);
   const [countryCode, setCountryCode] = useState('+212');
   const [showCustomerDrawer, setShowCustomerDrawer] = useState(false);
   const [selectedRentalForDrawer, setSelectedRentalForDrawer] = useState(null);
@@ -5714,7 +6956,13 @@ const SimplifiedRentalWizard = ({
     transportFees,
     availabilityStatus,
     autoCalculatedPrice,
+    pricingComputationMode,
+    pricingComputationLabel,
     suggestions,
+    customerAlert,
+    isBannedCustomerBlocked,
+    showCustomerAlertModal,
+    setShowCustomerAlertModal,
     selectedQuickDuration,
     damageDepositConfig,
     selectedDepositTab,
@@ -5732,19 +6980,37 @@ const SimplifiedRentalWizard = ({
     handleIDScanComplete,
     handleQuickHourSelect,
     handleQuickDaySelect,
+    syncEndDateTimeFromStart,
     handlePaymentStatusTabClick,
     handleDepositTabClick,
+    handleDepositDocumentUpload,
+    handleDepositDocumentTypeSelect,
+    handleDepositDocumentClear,
+    depositDocumentUploading,
     validateStep,
     handleSubmit,
     handleReset,
+    handleResetAutoPrice,
     getEnabledPresetsForVehicle,
     customerSearchRef,
     availablePackages,
+    isLoadingPackages,
     calculatePackagePrice,
     fuelChargeEnabled,
     setFuelChargeEnabled,
     fuelChargeAmount,
-  } = useRentalWizard(initialData, mode, navigate);
+    manuallyClearedVehicleRef,
+  } = useRentalWizard(initialData, mode, navigate, { requiresCustomerVerification });
+
+  useEffect(() => {
+    setCurrentStep(Math.min(Math.max(Number(initialStep) || 1, 1), 3));
+  }, [initialStep]);
+
+  useEffect(() => {
+    setCustomerScanNote(initialCustomerScanNote || '');
+  }, [initialCustomerScanNote]);
+
+  const isPackageDurationLocked = Boolean(formData.use_package_pricing || formData.selected_package_id);
 
   useEffect(() => {
     if (!availableVehicles || availableVehicles.length === 0) {
@@ -5787,36 +7053,6 @@ const SimplifiedRentalWizard = ({
   }, [activeModelFilter]);
 
   useEffect(() => {
-    const sourceVehicles = filteredVehicles.length > 0
-      ? filteredVehicles
-      : (availableVehicles || []);
-
-    if (!sourceVehicles.length) return;
-    if (formData.vehicle_id) return;
-
-    const sortedByMileage = [...sourceVehicles].sort((a, b) => {
-      const aOdometer = Number(a?.current_odometer);
-      const bOdometer = Number(b?.current_odometer);
-      const aValid = Number.isFinite(aOdometer);
-      const bValid = Number.isFinite(bOdometer);
-
-      if (aValid && bValid && aOdometer !== bOdometer) {
-        return aOdometer - bOdometer;
-      }
-
-      if (aValid && !bValid) return -1;
-      if (!aValid && bValid) return 1;
-
-      return String(a?.plate_number || a?.name || '').localeCompare(String(b?.plate_number || b?.name || ''));
-    });
-
-    const suggestedVehicle = sortedByMileage[0];
-    if (suggestedVehicle?.id) {
-      handleInputChange('vehicle_id', suggestedVehicle.id);
-    }
-  }, [filteredVehicles, availableVehicles, formData.vehicle_id]);
-
-  useEffect(() => {
     const validateTiers = async () => {
       // Pricing tiers validation
     };
@@ -5824,11 +7060,16 @@ const SimplifiedRentalWizard = ({
     validateTiers();
   }, []);
 
+  const isCustomerVerificationOnlyMode = requiresCustomerVerification && mode === 'edit';
+
   const steps = [
-    { number: 1, title: 'Customer', icon: User },
-    { number: 2, title: 'Vehicle & Dates', icon: Car },
-    { number: 3, title: 'Payment', icon: CreditCard }
+    { number: 1, title: tr('Customer', 'Client'), icon: User },
+    { number: 2, title: tr('Vehicle & Dates', 'Véhicule et dates'), icon: Car },
+    { number: 3, title: tr('Payment', 'Paiement'), icon: CreditCard }
   ];
+  const displayedSteps = isCustomerVerificationOnlyMode
+    ? [{ number: 1, title: tr('Customer Verification', 'Vérification client'), icon: User }]
+    : steps;
 
   const getSelectedVehicle = () => {
     return availableVehicles.find(v => v.id == formData.vehicle_id) || 
@@ -5841,7 +7082,7 @@ const SimplifiedRentalWizard = ({
         <span className="font-medium text-sm sm:text-base">
           {formData.rental_start_date} {formData.rental_start_time || '00:00'}
         </span>
-        <span className="text-gray-400 text-xs sm:text-sm hidden sm:inline">to</span>
+        <span className="text-gray-400 text-xs sm:text-sm hidden sm:inline">{tr('to', 'au')}</span>
         <span className="text-gray-400 text-xs sm:hidden">↓</span>
         <span className="font-medium text-sm sm:text-base">
           {formData.rental_end_date} {formData.rental_end_time || '00:00'}
@@ -5854,242 +7095,304 @@ const SimplifiedRentalWizard = ({
     handleInputChange('customer_phone', value);
   };
 
+  const customerSectionButtonClass =
+    'inline-flex items-center justify-center gap-2 rounded-lg px-5 py-3 text-sm font-bold transition-all shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed';
+  const customerPrimaryButtonClass = `${customerSectionButtonClass} bg-violet-700 text-white hover:bg-violet-800`;
+  const customerSecondaryButtonClass = `${customerSectionButtonClass} border border-slate-200 bg-white text-slate-700 hover:bg-slate-50`;
+  const customerTabButtonClass =
+    'inline-flex items-center justify-center rounded-xl border px-4 py-3 text-sm font-semibold whitespace-nowrap transition-all';
+
   const customerTabs = [
     {
       id: 'basic',
-      label: 'Basic Info',
+      label: tr('Basic Info', 'Infos de base'),
       content: (
         <div className="space-y-4">
-          {/* Customer Name */}
-          <div className="relative" ref={customerSearchRef}>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Customer Name *
-            </label>
-            <input
-              type="text"
-              value={formData.customer_name}
-              onChange={(e) => handleInputChange('customer_name', e.target.value)}
-              placeholder="Enter customer name"
-              disabled={successfullySubmitted}
-              className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-base ${
-                errors.customer_name ? 'border-red-500' : 'border-gray-300'
-              } ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
-            />
-            {errors.customer_name && (
-              <p className="text-red-500 text-xs mt-1">{errors.customer_name}</p>
-            )}
-            {suggestions.length > 0 && !successfullySubmitted && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                {suggestions.map((suggestion, index) => (
-                  <button
-                    key={index}
-                    type="button"
-                    onClick={() => handleSuggestionClick(suggestion)}
-                    className="w-full px-4 py-3 text-left hover:bg-blue-50 flex items-center gap-3 border-b border-gray-100 last:border-b-0"
-                  >
-                    <UserSearch className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-gray-800 truncate">{suggestion.name}</p>
-                      <p className="text-sm text-gray-500 truncate">{suggestion.phone}</p>
-                    </div>
-                  </button>
-                ))}
+          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4">
+            <div className="flex items-start gap-3">
+              <User className="mt-1 h-5 w-5 text-slate-700" />
+              <div className="flex-1">
+                <h4 className="text-lg font-semibold text-slate-900">{tr('Primary customer details', 'Détails principaux du client')}</h4>
+                <p className="mt-1 text-xs text-slate-500">
+                  {tr('Keep the same styling and spacing as Additional Info so the form feels consistent.', "Gardez le même style et le même espacement qu'Informations supplémentaires pour conserver une mise en page cohérente.")}
+                </p>
               </div>
-            )}
-          </div>
-
-          {/* Phone */}
-          <PhoneInputWithCountryCode
-            value={formData.customer_phone}
-            onChange={handlePhoneChange}
-            error={errors.customer_phone}
-            disabled={successfullySubmitted}
-            countryCode={countryCode}
-            onCountryCodeChange={setCountryCode}
-            mobileOptimized={true}
-          />
-
-          {/* Email */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Email
-            </label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-3.5 w-4 h-4 text-gray-400" />
-              <input
-                type="email"
-                value={formData.customer_email}
-                onChange={(e) => handleInputChange('customer_email', e.target.value)}
-                placeholder="customer@example.com"
-                disabled={successfullySubmitted}
-                className={`w-full px-4 py-3 pl-10 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-base ${
-                  errors.customer_email ? 'border-red-500' : 'border-gray-300'
-                } ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
-              />
             </div>
-            {errors.customer_email && (
-              <p className="text-red-500 text-xs mt-1">{errors.customer_email}</p>
-            )}
-          </div>
-        </div>
-      )
-    },
-    {
-      id: 'license',
-      label: 'License & ID',
-      content: (
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-              License Number *
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                value={formData.customer_licence_number}
-                onChange={(e) => handleInputChange('customer_licence_number', e.target.value)}
-                placeholder="Enter license number"
-                disabled={successfullySubmitted}
-                className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-base ${
-                  errors.customer_licence_number ? 'border-red-500' : !formData.customer_licence_number?.trim() ? 'border-gray-300 bg-gray-50' : 'border-gray-300'
-                } ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
-              />
-            </div>
-            {errors.customer_licence_number && (
-              <p className="text-red-500 text-xs mt-1">{errors.customer_licence_number}</p>
-            )}
-            {!formData.customer_licence_number?.trim() && !errors.customer_licence_number && !successfullySubmitted && (
-              <p className="text-gray-500 text-xs mt-1 flex items-center gap-1">
-                <Info className="w-3 h-3" />
-                Required before moving to the next step
-              </p>
-            )}
-          </div>
 
-          {/* ID Scan Status */}
-          {(formData.customer_name || formData.customer_licence_number || formData.customer_id_image) ? (
-            <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-              <div className="flex flex-col gap-3">
-                <div className="flex items-start gap-3">
-                  <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-                  <div className="min-w-0 flex-1">
-                    <span className="text-sm font-medium text-green-800 block">
-                      ✓ ID Scan Complete
-                    </span>
-                    <div className="text-xs text-green-600 mt-1 space-y-1">
-                      {formData.customer_name && (
-                        <p className="truncate">Name: {formData.customer_name}</p>
-                      )}
-                      {formData.customer_licence_number && (
-                        <p className="truncate">License: {formData.customer_licence_number}</p>
-                      )}
+            <div className="mt-4 space-y-4">
+              <div className="rounded-lg bg-white p-4">
+                <div className="relative" ref={customerSearchRef}>
+                  <label className="text-sm font-semibold text-slate-700">{tr('Customer Name', 'Nom du client')} *</label>
+                  <input
+                    type="text"
+                    value={formData.customer_name}
+                    onChange={(e) => handleInputChange('customer_name', e.target.value)}
+                    placeholder={tr('Enter customer name', 'Entrez le nom du client')}
+                    disabled={successfullySubmitted}
+                    className={`mt-2 w-full rounded-lg border bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500 ${
+                      errors.customer_name ? 'border-red-400' : 'border-slate-200'
+                    } ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  />
+                  {errors.customer_name && (
+                    <p className="mt-2 text-xs font-medium text-red-500">{errors.customer_name}</p>
+                  )}
+                  {suggestions.length > 0 && !successfullySubmitted && (
+                    <div className="absolute z-10 mt-2 max-h-60 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+                      {suggestions.map((suggestion, index) => (
+                        <button
+                          key={index}
+                          type="button"
+                          onClick={() => handleSuggestionClick(suggestion)}
+                          className="flex w-full items-center gap-3 border-b border-slate-100 px-4 py-3 text-left hover:bg-violet-50 last:border-b-0"
+                        >
+                          <UserSearch className="h-4 w-4 flex-shrink-0 text-slate-500" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-semibold text-slate-800">{suggestion.name}</p>
+                            <p className="truncate text-sm text-slate-500">{suggestion.phone}</p>
+                          </div>
+                        </button>
+                      ))}
                     </div>
-                  </div>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFormData(prev => ({ ...prev, customer_id_image: null }));
-                    toast.info('ID scan image removed');
-                  }}
-                  className="text-xs text-red-600 hover:text-red-800 px-3 py-2 hover:bg-red-50 rounded-lg w-full text-center"
-                >
-                  Remove
-                </button>
               </div>
-            </div>
-          ) : (
-            <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
-              <div className="flex items-start gap-3">
-                <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-                <span className="text-sm text-blue-800">
-                  Scan ID to auto-fill license and personal details
-                </span>
-              </div>
-            </div>
-          )}
 
-          {/* Multiple Image Upload */}
-          <div className="pt-2">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Additional ID Images
-            </label>
-            <MultipleImageUpload
-              images={formData.customer_uploaded_images || []}
-              onImagesChange={(newImages) => {
-                handleInputChange('customer_uploaded_images', newImages);
-              }}
-              accept="image/*,.pdf"
-              maxImages={5}
-              disabled={successfullySubmitted}
-              mobileOptimized={true}
-            />
-            <p className="text-xs text-gray-500 mt-2">
-              Upload additional ID copies or documents (max 5)
-            </p>
+              <div className="rounded-lg bg-white p-4">
+                <label className="block text-sm font-semibold text-slate-700 mb-2">
+                  {tr('License Number', 'Numéro de permis')} {requiresCustomerVerification ? '*' : ''}
+                </label>
+                <input
+                  type="text"
+                  value={formData.customer_licence_number}
+                  onChange={(e) => handleInputChange('customer_licence_number', e.target.value)}
+                  placeholder={tr('Enter license number', 'Entrez le numéro du permis')}
+                  disabled={successfullySubmitted}
+                  className={`w-full rounded-lg border bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500 ${
+                    errors.customer_licence_number ? 'border-red-400' : !formData.customer_licence_number?.trim() ? 'border-slate-200 bg-slate-50' : 'border-slate-200'
+                  } ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
+                />
+                {errors.customer_licence_number && (
+                  <p className="mt-2 text-xs font-medium text-red-500">{errors.customer_licence_number}</p>
+                )}
+                {!formData.customer_licence_number?.trim() && !errors.customer_licence_number && !successfullySubmitted && (
+                  <p className="mt-2 text-xs font-medium text-slate-500">
+                    {requiresCustomerVerification
+                      ? tr('Required before starting this rental.', 'Obligatoire avant de démarrer cette location.')
+                      : tr('Optional for scheduling. Required before the rental can start.', 'Optionnel pour planifier. Obligatoire avant le démarrage de la location.')}
+                  </p>
+                )}
+                {errors.customer_id_image && (
+                  <p className="mt-2 text-xs font-medium text-red-500">{errors.customer_id_image}</p>
+                )}
+              </div>
+
+              <div className="rounded-lg bg-white p-4">
+                <PhoneInputWithCountryCode
+                  value={formData.customer_phone}
+                  onChange={handlePhoneChange}
+                  error={errors.customer_phone}
+                  disabled={successfullySubmitted}
+                  countryCode={countryCode}
+                  onCountryCodeChange={setCountryCode}
+                  mobileOptimized={true}
+                />
+              </div>
+
+              <div className="rounded-lg bg-white p-4">
+                <label className="text-sm font-semibold text-slate-700">{tr('Email (Optional)', 'E-mail (optionnel)')}</label>
+                <div className="relative mt-2">
+                  <Mail className="absolute left-4 top-4 h-4 w-4 text-slate-400" />
+                  <input
+                    type="email"
+                    value={formData.customer_email}
+                    onChange={(e) => handleInputChange('customer_email', e.target.value)}
+                    placeholder="customer@example.com"
+                    disabled={successfullySubmitted}
+                    className={`w-full rounded-lg border bg-white py-4 pl-11 pr-4 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500 ${
+                      errors.customer_email ? 'border-red-400' : 'border-slate-200'
+                    } ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  />
+                </div>
+                {errors.customer_email && (
+                  <p className="mt-2 text-xs font-medium text-red-500">{errors.customer_email}</p>
+                )}
+              </div>
+
+            </div>
           </div>
         </div>
       )
     },
     {
       id: 'additional',
-      label: 'Additional Info',
+      label: tr('Additional Info', 'Informations supplémentaires'),
       content: (
         <div className="space-y-4">
-          {secondDrivers.length > 0 && (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedRentalForDrawer({
-                  id: 'preview-rental-id',
-                  customer_id: formData.customer_id,
-                  customer_name: formData.customer_name,
-                  customer_email: formData.customer_email,
-                  customer_phone: formData.customer_phone,
-                  customer_licence_number: formData.customer_licence_number,
-                  customer_id_image: formData.customer_id_image
-                });
-                setShowCustomerDrawer(true);
-              }}
-              className="w-full px-4 py-4 bg-blue-50 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors flex items-center justify-center gap-2 text-sm"
-            >
-              <Eye className="w-4 h-4" />
-              <span>View All Drivers ({secondDrivers.length} second driver{secondDrivers.length !== 1 ? 's' : ''})</span>
-            </button>
-          )}
-
-          <SecondDriversManager
-            secondDrivers={secondDrivers}
-            onRemove={removeSecondDriver}
-            onUpdate={updateSecondDriver}
-            disabled={successfullySubmitted}
-          />
-
-          {!successfullySubmitted && (
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={() => setShowSecondDriverScanModal(true)}
-                className="w-full px-4 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2 text-sm"
-              >
-                <Users className="w-4 h-4" />
-                <span>Add Second Driver</span>
-              </button>
-              <p className="mt-2 text-xs text-gray-500 text-center">
-                Scan an ID or enter the driver details manually in one place.
-              </p>
+          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{tr('Optional second driver', 'Second conducteur optionnel')}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {tr('Match the Tours flow: scan or upload the ID, then review the visible fields here.', "Suivez le même flux que pour les tours : scannez ou téléversez l'identité, puis vérifiez ici les champs visibles.")}
+                </p>
+              </div>
+              {(formData.second_driver_name || formData.second_driver_license || formData.second_driver_id_image) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFormData((prev) => ({
+                      ...prev,
+                      second_driver_name: '',
+                      second_driver_license: '',
+                      second_driver_id_image: null,
+                    }));
+                    setSecondDrivers([]);
+                      toast.info(tr('Second driver cleared', 'Second conducteur supprimé'));
+                  }}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-red-200 bg-white text-red-600 hover:bg-red-50"
+                  aria-label={tr('Clear second driver', 'Effacer le second conducteur')}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
             </div>
-          )}
+
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div className="rounded-lg bg-white p-4">
+                <label className="text-sm font-semibold text-slate-700">{tr('Second Driver Name', 'Nom du second conducteur')}</label>
+                <input
+                  type="text"
+                  value={formData.second_driver_name || ''}
+                  onChange={(event) => handleInputChange('second_driver_name', event.target.value)}
+                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                  placeholder={tr('Optional', 'Optionnel')}
+                  disabled={successfullySubmitted}
+                />
+              </div>
+              <div className="rounded-lg bg-white p-4">
+                <label className="text-sm font-semibold text-slate-700">{tr('Second Driver License', 'Permis du second conducteur')}</label>
+                <input
+                  type="text"
+                  value={formData.second_driver_license || ''}
+                  onChange={(event) => handleInputChange('second_driver_license', event.target.value)}
+                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                  placeholder={tr('Optional', 'Optionnel')}
+                  disabled={successfullySubmitted}
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg bg-white p-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-700">{tr('Second Driver Scan', 'Scan du second conducteur')}</p>
+              </div>
+              {formData.second_driver_id_image && (
+                <div className="mt-3 flex items-center justify-between gap-3 rounded-lg bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700">
+                  <div className="min-w-0">
+                    <p className="truncate">
+                      {tr('ID captured', 'Pièce capturée')} {formData.second_driver_name ? `${tr('for', 'pour')} ${formData.second_driver_name}` : ''}
+                    </p>
+                    <a
+                      href={formData.second_driver_id_image}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 inline-flex text-xs font-semibold text-violet-600 hover:underline"
+                    >
+                      {tr('View uploaded ID', "Voir l'identité téléversée")}
+                    </a>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData((prev) => ({ ...prev, second_driver_id_image: null }));
+                      setSecondDrivers([]);
+                      toast.info(tr('Second driver ID removed', "Pièce d'identité du second conducteur supprimée"));
+                    }}
+                    className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-white text-violet-600 hover:bg-violet-100"
+                    aria-label={tr('Remove second driver ID', "Supprimer l'identité du second conducteur")}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+              {!successfullySubmitted && (
+                <div className="pt-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSecondDriverScanEntryMode('upload');
+                      setShowSecondDriverScanModal(true);
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-5 py-3 text-sm font-bold text-violet-700 hover:bg-violet-100"
+                  >
+                    <Upload className="h-4 w-4" />
+                    {tr('Upload Photo', 'Téléverser une photo')}
+                  </button>
+                  <p className="text-xs text-gray-500 text-center">
+                    {tr('Use the top button to scan the second driver ID, or upload a photo here.', "Utilisez le bouton du haut pour scanner l'identité du second conducteur, ou téléversez une photo ici.")}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )
     }
   ];
 
-  const handleNext = async () => {
-    const isValid = await validateStep(currentStep);
-    if (isValid) {
-      setCurrentStep(prev => Math.min(prev + 1, 3));
+  useEffect(() => {
+    if (!customerTabs.some((tab) => tab.id === activeTab)) {
+      setActiveTab('basic');
     }
+  }, [activeTab]);
+
+  const previewRentalForDrawer = useMemo(() => ({
+    customer_id: formData.customer_id,
+    customer_name: formData.customer_name,
+    customer_email: formData.customer_email,
+    customer_phone: formData.customer_phone,
+    customer_licence_number: formData.customer_licence_number,
+    customer_id_image: formData.customer_id_image,
+    id: selectedRentalForDrawer?.id || 'preview-rental-id',
+  }), [
+    formData.customer_id,
+    formData.customer_name,
+    formData.customer_email,
+    formData.customer_phone,
+    formData.customer_licence_number,
+    formData.customer_id_image,
+    selectedRentalForDrawer?.id,
+  ]);
+
+  const submitVerificationOnlyFlow = async () => {
+    const submissionResult = await handleSubmit();
+    if (submissionResult?.rentalId) {
+      navigate(`/admin/rentals/${submissionResult.rentalId}`);
+      return;
+    }
+    if (onSuccess && submissionResult) {
+      setTimeout(() => onSuccess(submissionResult.result), 1000);
+    }
+  };
+
+  const handleNext = async () => {
+    if (isBannedCustomerBlocked) {
+      setShowCustomerAlertModal(true);
+      toast.error('This customer is banned. An admin or owner must remove the ban before you can continue.');
+      return;
+    }
+
+    const isValid = await validateStep(currentStep);
+    if (!isValid) {
+      return;
+    }
+
+    if (isCustomerVerificationOnlyMode && currentStep === 1) {
+      await submitVerificationOnlyFlow();
+      return;
+    }
+
+    setCurrentStep(prev => Math.min(prev + 1, 3));
   };
 
   const handleBack = () => {
@@ -6111,12 +7414,7 @@ const SimplifiedRentalWizard = ({
     }
     
     try {
-      const submissionResult = await handleSubmit();
-      if (submissionResult && submissionResult.rentalId) {
-        navigate(`/admin/rentals/${submissionResult.rentalId}`);
-      } else if (onSuccess && submissionResult) {
-        setTimeout(() => onSuccess(submissionResult.result), 1000);
-      }
+      await submitVerificationOnlyFlow();
     } catch (error) {
     }
   };
@@ -6127,9 +7425,9 @@ const SimplifiedRentalWizard = ({
         <div className="flex flex-col items-center justify-center py-20">
           <Loader className="w-12 h-12 text-blue-600 animate-spin mb-4" />
           <h2 className="text-2xl font-bold text-gray-900 mb-2">
-            ✅ Rental Successfully Created!
+            {tr('✅ Rental Successfully Created!', '✅ Location créée avec succès !')}
           </h2>
-          <p className="text-gray-600">Redirecting to rental details...</p>
+          <p className="text-gray-600">{tr('Redirecting to rental details...', 'Redirection vers les détails de la location...')}</p>
         </div>
       </div>
     );
@@ -6137,14 +7435,14 @@ const SimplifiedRentalWizard = ({
 
   return (
     <div className="max-w-4xl mx-auto p-4">
-      <ProgressStepper currentStep={currentStep} steps={steps} />
+      <ProgressStepper currentStep={isCustomerVerificationOnlyMode ? 1 : currentStep} steps={displayedSteps} />
 
       {errors.general && (
         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
           <div className="flex items-center gap-3">
             <AlertCircle className="w-5 h-5 text-red-500" />
             <div>
-              <p className="text-red-800 font-medium">Error</p>
+              <p className="text-red-800 font-medium">{tr('Error', 'Erreur')}</p>
               <p className="text-red-700 text-sm mt-1">{errors.general}</p>
             </div>
           </div>
@@ -6165,10 +7463,43 @@ const SimplifiedRentalWizard = ({
           <div className="p-4 sm:p-6">
             {/* Simplified Header - Removed subtitle text */}
             <div className="flex flex-col gap-3 mb-4">
-              <h2 className="text-lg font-bold text-gray-900">Customer Information</h2>
+              <h2 className="text-lg font-bold text-gray-900">{tr('Customer Information', 'Informations client')}</h2>
               
               {/* Action buttons stacked vertically on mobile */}
               <div className="flex flex-col gap-2 w-full">
+                {!successfullySubmitted && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeTab === 'additional') {
+                        setSecondDriverScanEntryMode('scan');
+                        setShowSecondDriverScanModal(true);
+                        return;
+                      }
+                      setShowIDScanModal(true);
+                    }}
+                    className={`${customerPrimaryButtonClass} w-full`}
+                    disabled={loading || submitting || successfullySubmitted}
+                  >
+                    <FileImage className="w-4 h-4" />
+                    <span>
+                      {activeTab === 'additional'
+                        ? (formData.second_driver_id_image ? tr('Rescan Second Driver ID', "Scanner à nouveau l'identité du second conducteur") : tr('Scan Second Driver ID', "Scanner l'identité du second conducteur"))
+                        : (formData.customer_id_image ? tr('Rescan ID', "Scanner à nouveau l'identité") : tr('Scan ID', "Scanner l'identité"))}
+                    </span>
+                  </button>
+                )}
+                {activeTab !== 'additional' && customerScanNote && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+                    {customerScanNote}
+                  </div>
+                )}
+                {activeTab !== 'additional' && requiresCustomerVerification && !formData.customer_id_image && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+                    {tr('ID scan required. Please scan or import the customer ID before saving verification.', "Scan d'identité requis. Veuillez scanner ou importer l'identité du client avant d'enregistrer la vérification.")}
+                  </div>
+                )}
+
                 {formData.customer_name && (
                   <button
                     type="button"
@@ -6184,22 +7515,10 @@ const SimplifiedRentalWizard = ({
                       });
                       setShowCustomerDrawer(true);
                     }}
-                    className="flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-all shadow-sm active:scale-95 text-sm w-full"
+                    className={`${customerSecondaryButtonClass} w-full`}
                   >
                     <Eye className="w-4 h-4" />
-                    <span>View Details {secondDrivers.length > 0 && `(${secondDrivers.length})`}</span>
-                  </button>
-                )}
-                
-                {activeTab !== 'additional' && (
-                  <button
-                    type="button"
-                    onClick={() => setShowIDScanModal(true)}
-                    className="flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg hover:from-purple-700 hover:to-blue-700 transition-all shadow-sm active:scale-95 text-sm w-full"
-                    disabled={loading || submitting || successfullySubmitted}
-                  >
-                    <Scan className="w-4 h-4" />
-                    <span>Scan Customer ID</span>
+                    <span>{tr('View Details', 'Voir les détails')} {secondDrivers.length > 0 && `(${secondDrivers.length})`}</span>
                   </button>
                 )}
               </div>
@@ -6207,15 +7526,15 @@ const SimplifiedRentalWizard = ({
 
             {/* Mobile-friendly tabs with horizontal scroll - Moved below buttons */}
             <div className="mb-4 -mx-4 px-4 overflow-x-auto scrollbar-hide">
-              <div className="flex gap-1 min-w-max pb-1">
+              <div className="flex gap-2 min-w-max pb-1">
                 {customerTabs.map((tab) => (
                   <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id)}
-                    className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
+                    className={`${customerTabButtonClass} ${
                       activeTab === tab.id
-                        ? 'bg-blue-600 text-white shadow-md'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        ? 'border-violet-200 bg-violet-50 text-violet-700 shadow-sm'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
                     }`}
                   >
                     {tab.label}
@@ -6230,11 +7549,11 @@ const SimplifiedRentalWizard = ({
             </div>
 
             {/* Additional Customer Details */}
-            <CollapsibleSection title="Additional Customer Details" defaultOpen={false}>
+            <CollapsibleSection title={tr('Additional Customer Details', 'Détails client supplémentaires')} defaultOpen={false}>
               <div className="grid grid-cols-1 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    ID Number
+                    {tr('ID Number', "Numéro d'identité")}
                   </label>
                   <input
                     type="text"
@@ -6246,7 +7565,7 @@ const SimplifiedRentalWizard = ({
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Date of Birth
+                    {tr('Date of Birth', 'Date de naissance')}
                   </label>
                   <input
                     type="date"
@@ -6258,7 +7577,7 @@ const SimplifiedRentalWizard = ({
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Place of Birth
+                    {tr('Place of Birth', 'Lieu de naissance')}
                   </label>
                   <input
                     type="text"
@@ -6270,7 +7589,7 @@ const SimplifiedRentalWizard = ({
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Nationality
+                    {tr('Nationality', 'Nationalité')}
                   </label>
                   <input
                     type="text"
@@ -6287,7 +7606,7 @@ const SimplifiedRentalWizard = ({
 
         {currentStep === 2 && (
           <div className="p-4 sm:p-6">
-            <h2 className="text-xl font-bold text-gray-900 mb-6">Vehicle & Rental Period</h2>
+          <h2 className="text-xl font-bold text-gray-900 mb-6">{tr('Vehicle & Rental Period', 'Véhicule et période de location')}</h2>
             
             <div className="space-y-6">
               <div>
@@ -6320,7 +7639,7 @@ const SimplifiedRentalWizard = ({
                 </div>
               </div>
 
-              {formData.rental_type && (
+              {formData.rental_type && !isPackageDurationLocked && (
                 <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-xl border border-blue-200 transition-all duration-300">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
                     <div className="flex items-center gap-2">
@@ -6334,7 +7653,7 @@ const SimplifiedRentalWizard = ({
                   {formData.rental_type === 'hourly' && (
                     <div>
                       <div className="grid grid-cols-4 gap-2 mb-2">
-                        {[1, 2, 3, 4].map((hours) => (
+                        {[1, 1.5, 2, 3].map((hours) => (
                           <button
                             key={hours}
                             type="button"
@@ -6347,7 +7666,9 @@ const SimplifiedRentalWizard = ({
                             } ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
                           >
                             <span className="text-lg font-bold">{hours}</span>
-                            <span className="text-xs mt-0.5">{hours === 1 ? 'Hour' : 'Hours'}</span>
+                            <span className="text-xs mt-0.5">
+                              {hours === 1 ? 'Hour' : 'Hours'}
+                            </span>
                           </button>
                         ))}
                       </div>
@@ -6388,6 +7709,7 @@ const SimplifiedRentalWizard = ({
                 handleQuickHourSelect={handleQuickHourSelect}
                 handleQuickDaySelect={handleQuickDaySelect}
                 selectedQuickDuration={selectedQuickDuration}
+                showQuickDurationShortcuts={!isPackageDurationLocked}
               />
 
               {activeModels.length > 0 && (
@@ -6404,105 +7726,137 @@ const SimplifiedRentalWizard = ({
 
               {/* KM Packages Section - Appears when rental type is selected, positioned under filter by model */}
               {formData.rental_type && (
-                <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm mb-4">
+                <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm mb-4 min-h-[150px]">
                   <div className="flex items-center gap-2 mb-4">
                     <Package className="w-5 h-5 text-purple-600" />
-                    <h3 className="font-semibold text-gray-900">KM Packages</h3>
+                    <h3 className="font-semibold text-gray-900">{tr('KM Packages', 'Forfaits kilométriques')}</h3>
                     <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-                      {formData.rental_type === 'hourly' ? 'Hourly packages' : 'Daily packages'}
+                      {formData.rental_type === 'hourly' ? tr('Hourly packages', 'Forfaits horaires') : tr('Daily packages', 'Forfaits journaliers')}
                     </span>
                   </div>
 
-                  {!formData.vehicle_id && (
-                    <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                      <div className="flex items-center gap-2 text-blue-700">
-                        <Info className="w-5 h-5" />
-                        <span className="text-sm">Select a vehicle to see available {formData.rental_type} packages</span>
+                  {formData.vehicle_id && !isLoadingPackages && availablePackages.length === 0 && (
+                    <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                      <div className="flex items-center gap-2 text-gray-600">
+                        <Package className="w-5 h-5" />
+                        <span className="text-sm">{tr('No', 'Aucun')} {formData.rental_type === 'hourly' ? tr('hourly', 'horaire') : tr('daily', 'journalier')} {tr('packages available for this vehicle', 'disponible pour ce véhicule')}</span>
                       </div>
                     </div>
                   )}
 
-                  {formData.vehicle_id && availablePackages.length === 0 && (
-                    <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
-                      <div className="flex items-center gap-2 text-gray-600">
-                        <Package className="w-5 h-5" />
-                        <span className="text-sm">No {formData.rental_type} packages available for this vehicle</span>
+                  {formData.vehicle_id && isLoadingPackages && (
+                    <div className="min-h-[150px] rounded-xl border border-purple-100 bg-gradient-to-r from-purple-50/70 to-indigo-50/60 p-4">
+                      <div className="flex items-center gap-2 text-sm font-medium text-purple-700">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>{tr('Loading packages...', 'Chargement des forfaits...')}</span>
                       </div>
                     </div>
                   )}
 
                   {formData.vehicle_id && formData.rental_type && availablePackages.length > 0 && (
-                    <KMPackagesTab
-                      packages={availablePackages.filter(pkg => {
-                        // Filter packages by rental type: hourly packages for hourly, daily for daily
-                        if (!formData.rental_type) return true;
-                        const pkgRateType = pkg.rate_types?.name?.toLowerCase();
-                        if (!pkgRateType) return true; // Show packages without a rate type
-                        if (formData.rental_type === 'hourly') return pkgRateType === 'hourly';
-                        if (formData.rental_type === 'daily') return pkgRateType === 'daily';
-                        return true;
-                      })}
-                      selectedPackageId={formData.selected_package_id}
-                      onPackageSelect={(packageId) => {
-                        handleInputChange('selected_package_id', packageId);
-                      }}
-                      onPackageCalculations={(packageData) => {
-                        console.log('📦 Package calculations received:', packageData);
-                        
-                        // Calculate total included km
-                        const totalIncludedKm = packageData.package_included_km_per_unit * (formData.quantity_days || 1);
-                        
-                        // Update form data with package info in a SINGLE state update
-                        setFormData(prev => {
-                          console.log('📦 Updating from price:', prev.unit_price, 'to:', packageData.package_rate_per_unit);
+                    <div className="transition-all duration-200 ease-out opacity-100 translate-y-0">
+                      <KMPackagesTab
+                        packages={availablePackages.filter(pkg => {
+                          // Filter packages by rental type: hourly packages for hourly, daily for daily
+                          if (!formData.rental_type) return true;
+                          const pkgRateType = pkg.rate_types?.name?.toLowerCase();
+                          if (!pkgRateType) return true; // Show packages without a rate type
+                          if (formData.rental_type === 'hourly') return pkgRateType === 'hourly';
+                          if (formData.rental_type === 'daily') return pkgRateType === 'daily';
+                          return true;
+                        })}
+                        selectedPackageId={formData.selected_package_id}
+                        onPackageSelect={(packageId) => {
+                          handleInputChange('selected_package_id', packageId);
+                        }}
+                        onPackageCalculations={(packageData) => {
+                          console.log('📦 Package calculations received:', packageData);
+
+                          if (!packageData?.use_package_pricing && !packageData?.package_id) {
+                            setFormData(prev => ({
+                              ...prev,
+                              selected_package_id: null,
+                              selected_package_name: '',
+                              selected_package_fixed_amount: 0,
+                              selected_package_rate_per_unit: 0,
+                              selected_package_included_km: null,
+                              selected_package_included_km_per_unit: null,
+                              selected_package_total_included_km: null,
+                              selected_package_extra_rate: 0,
+                              selected_package_description: '',
+                              use_package_pricing: false,
+                              package_overrides_tier: false
+                            }));
+                            return;
+                          }
                           
-                          const newFormData = {
-                            ...prev,
-                            // Package identification
-                            selected_package_id: packageData.package_id,
-                            selected_package_name: packageData.package_name,
-                            
-                            // Package rates
-                            selected_package_fixed_amount: packageData.package_rate_per_unit,
-                            selected_package_rate_per_unit: packageData.package_rate_per_unit,
-                            
-                            // Kilometer limits
-                            selected_package_included_km: packageData.package_included_km_per_unit,
-                            selected_package_included_km_per_unit: packageData.package_included_km_per_unit,
-                            selected_package_total_included_km: totalIncludedKm,
-                            
-                            // Extra rates
-                            selected_package_extra_rate: packageData.package_extra_rate,
-                            selected_package_description: packageData.package_description,
-                            
-                            // CRITICAL: Set package pricing flags FIRST
-                            use_package_pricing: true,
-                            package_overrides_tier: true,
-                            
-                            // CRITICAL: Override the unit price with package rate
-                            unit_price: packageData.package_rate_per_unit
-                          };
+                          const packageDurationUnits = Number(packageData.package_duration_units);
+
+                          if (!Number.isFinite(packageDurationUnits) || packageDurationUnits <= 0) {
+                            toast.error(tr(
+                              'Package duration is missing. Please set the package duration in Pricing before using it.',
+                              'La durée du forfait est manquante. Veuillez définir la durée du forfait dans la tarification avant de l’utiliser.'
+                            ));
+                            return;
+                          }
+                          const totalIncludedKm = packageData.package_total_included_km ?? packageData.package_included_km_per_unit ?? null;
                           
-                          console.log('📦 Final form data update:', {
-                            old_price: prev.unit_price,
-                            new_price: newFormData.unit_price,
-                            use_package_pricing: newFormData.use_package_pricing,
-                            package_rate: packageData.package_rate_per_unit
+                          // Update form data with package info in a SINGLE state update
+                          setFormData(prev => {
+                            console.log('📦 Updating from price:', prev.unit_price, 'to:', packageData.package_rate_per_unit);
+                            
+                            const newFormData = {
+                              ...prev,
+                              quantity_days: packageDurationUnits,
+                              quantity_hours: prev.rental_type === 'hourly' ? packageDurationUnits : null,
+                              // Package identification
+                              selected_package_id: packageData.package_id,
+                              selected_package_name: packageData.package_name,
+                              
+                              // Package rates
+                              selected_package_fixed_amount: packageData.package_rate_per_unit,
+                              selected_package_rate_per_unit: packageData.package_rate_per_unit,
+                              
+                              // Kilometer limits
+                              selected_package_included_km: packageData.package_included_km_per_unit,
+                              selected_package_included_km_per_unit: packageData.package_included_km_per_unit,
+                              selected_package_total_included_km: totalIncludedKm,
+                              
+                              // Extra rates
+                              selected_package_extra_rate: packageData.package_extra_rate,
+                              selected_package_description: packageData.package_description,
+                              
+                              // CRITICAL: Set package pricing flags FIRST
+                              use_package_pricing: true,
+                              package_overrides_tier: true,
+                              
+                              // CRITICAL: Override the unit price with package rate
+                              unit_price: packageData.package_rate_per_unit
+                            };
+                            syncEndDateTimeFromStart(newFormData, packageDurationUnits);
+                            
+                            console.log('📦 Final form data update:', {
+                              old_price: prev.unit_price,
+                              new_price: newFormData.unit_price,
+                              package_duration_units: packageDurationUnits,
+                              use_package_pricing: newFormData.use_package_pricing,
+                              package_rate: packageData.package_rate_per_unit
+                            });
+                            
+                            return newFormData;
                           });
-                          
-                          return newFormData;
-                        });
-                      }}
-                      onPriceOverride={(newUnitPrice) => {
-                        console.log('💰 Price override called with:', newUnitPrice);
-                        handleInputChange('unit_price', newUnitPrice);
-                      }}
-                      rentalType={formData.rental_type}
-                      duration={formData.quantity_days}
-                      disabled={successfullySubmitted}
-                      formData={formData}
-                      setFormData={setFormData}
-                    />
+                        }}
+                        onPriceOverride={(newUnitPrice) => {
+                          console.log('💰 Price override called with:', newUnitPrice);
+                          handleInputChange('unit_price', newUnitPrice);
+                        }}
+                        rentalType={formData.rental_type}
+                        duration={formData.quantity_days}
+                        disabled={successfullySubmitted}
+                        formData={formData}
+                        setFormData={setFormData}
+                      />
+                    </div>
                   )}
                 </div>
               )}
@@ -6510,11 +7864,11 @@ const SimplifiedRentalWizard = ({
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <label className="block text-sm font-medium text-gray-700">
-                    Select Vehicle * ({filteredVehicles.length > 0 ? filteredVehicles.length : availableVehicles.length} available)
+                    {tr('Select a vehicle', 'Sélectionnez un véhicule')} * ({filteredVehicles.length > 0 ? filteredVehicles.length : availableVehicles.length} {tr('available', 'disponibles')})
                   </label>
                   {formData.rental_type && formData.quantity_days > 0 && (
                     <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
-                      {formData.quantity_days} {formData.rental_type === 'hourly' ? 'hour' : 'day'}{formData.quantity_days > 1 ? 's' : ''} selected
+                      {formData.quantity_days} {formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? tr('hours selected', 'heures sélectionnées') : tr('days selected', 'jours sélectionnés')) : (formData.rental_type === 'hourly' ? tr('hour selected', 'heure sélectionnée') : tr('day selected', 'jour sélectionné'))}
                     </span>
                   )}
                 </div>
@@ -6523,9 +7877,7 @@ const SimplifiedRentalWizard = ({
                   selectedId={formData.vehicle_id}
                   showSearchBar={activeModelFilter === null}
                   onSelect={(vehicleId) => {
-                    if (vehicleId) {
-                      handleInputChange('vehicle_id', vehicleId);
-                    }
+                    handleInputChange('vehicle_id', vehicleId || '');
                   }}
                   disabled={loading || successfullySubmitted}
                   rentalType={formData.rental_type}
@@ -6541,13 +7893,13 @@ const SimplifiedRentalWizard = ({
                   <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                     <div className="flex items-center gap-2 text-blue-700">
                       <Info className="w-4 h-4" />
-                      <span className="text-sm">Select a vehicle to see real-time pricing</span>
+                      <span className="text-sm">{tr('Select a vehicle to see real-time pricing', 'Sélectionnez un véhicule pour voir le prix en temps réel')}</span>
                     </div>
                   </div>
                 )}
               </div>
 
-              <CollapsibleSection title="Transport Options" defaultOpen={false}>
+              <CollapsibleSection title={tr('Transport Options', 'Options de transport')} defaultOpen={false}>
                 <div className="space-y-3">
                   <label className="flex items-center gap-3">
                     <input
@@ -6558,7 +7910,7 @@ const SimplifiedRentalWizard = ({
                       className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
                     />
                     <span className="text-gray-700">
-                      Pick-up Transport (+{transportFees.pickup_fee.toFixed(2)} MAD)
+                      {tr('Pick-up Transport', 'Transport aller')} (+{transportFees.pickup_fee.toFixed(2)} MAD)
                     </span>
                   </label>
                   <label className="flex items-center gap-3">
@@ -6570,17 +7922,17 @@ const SimplifiedRentalWizard = ({
                       className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
                     />
                     <span className="text-gray-700">
-                      Drop-off Transport (+{transportFees.dropoff_fee.toFixed(2)} MAD)
+                      {tr('Drop-off Transport', 'Transport retour')} (+{transportFees.dropoff_fee.toFixed(2)} MAD)
                     </span>
                   </label>
                 </div>
               </CollapsibleSection>
 
-              <CollapsibleSection title="Pickup & Drop-off Locations" defaultOpen={false}>
+              <CollapsibleSection title={tr('Pickup & Drop-off Locations', 'Lieux de prise en charge et de retour')} defaultOpen={false}>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Pickup Location
+                      {tr('Pickup Location', 'Lieu de prise en charge')}
                     </label>
                     <select
                       value={formData.pickup_location}
@@ -6588,15 +7940,15 @@ const SimplifiedRentalWizard = ({
                       disabled={successfullySubmitted}
                       className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
-                      <option value="Office">Office</option>
-                      <option value="Hotel">Hotel</option>
-                      <option value="Airport">Airport</option>
-                      <option value="Custom">Custom Location</option>
+                      <option value="Office">{tr('Office', 'Bureau')}</option>
+                      <option value="Hotel">{tr('Hotel', 'Hôtel')}</option>
+                      <option value="Airport">{tr('Airport', 'Aéroport')}</option>
+                      <option value="Custom">{tr('Custom Location', 'Lieu personnalisé')}</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Drop-off Location
+                      {tr('Drop-off Location', 'Lieu de retour')}
                     </label>
                     <select
                       value={formData.dropoff_location}
@@ -6604,10 +7956,10 @@ const SimplifiedRentalWizard = ({
                       disabled={successfullySubmitted}
                       className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
-                      <option value="Office">Office</option>
-                      <option value="Hotel">Hotel</option>
-                      <option value="Airport">Airport</option>
-                      <option value="Custom">Custom Location</option>
+                      <option value="Office">{tr('Office', 'Bureau')}</option>
+                      <option value="Hotel">{tr('Hotel', 'Hôtel')}</option>
+                      <option value="Airport">{tr('Airport', 'Aéroport')}</option>
+                      <option value="Custom">{tr('Custom Location', 'Lieu personnalisé')}</option>
                     </select>
                   </div>
                 </div>
@@ -6620,41 +7972,41 @@ const SimplifiedRentalWizard = ({
 
 {currentStep === 3 && (
   <div className="p-4 sm:p-6">
-    <h2 className="text-xl font-bold text-gray-900 mb-6">Review & Payment</h2>
+    <h2 className="text-xl font-bold text-gray-900 mb-6">{tr('Review & Payment', 'Vérification et paiement')}</h2>
     
     <div className="space-y-6">
       {/* Rental Summary with Package Info */}
       <div className="bg-gray-50 rounded-lg p-4">
-        <h3 className="font-semibold text-gray-900 mb-3">Rental Summary</h3>
+        <h3 className="font-semibold text-gray-900 mb-3">{tr('Rental Summary', 'Résumé de la location')}</h3>
         <div className="space-y-2">
           <div className="flex justify-between">
-            <span className="text-gray-600">Customer:</span>
+            <span className="text-gray-600">{tr('Customer:', 'Client :')}</span>
             <span className="font-medium">{formData.customer_name}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">Vehicle:</span>
+            <span className="text-gray-600">{tr('Vehicle:', 'Véhicule :')}</span>
             <span className="font-medium">
               {(() => {
                 const vehicle = getSelectedVehicle();
-                if (!vehicle) return 'Not selected';
-                return `${vehicle.plate_number || 'N/A'} - ${vehicle.model || vehicle.name}`;
+                if (!vehicle) return tr('Not selected', 'Non sélectionné');
+                return `${vehicle.plate_number || tr('N/A', 'N/D')} - ${vehicle.model || vehicle.name}`;
               })()}
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">Period:</span>
+            <span className="text-gray-600">{tr('Period:', 'Période :')}</span>
             <span className="font-medium">
               {formatPeriodDisplay()}
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">Duration:</span>
+            <span className="text-gray-600">{tr('Duration:', 'Durée :')}</span>
             <span className="font-medium">
-              {formData.quantity_days} {formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? 'hours' : 'days') : (formData.rental_type === 'hourly' ? 'hour' : 'day')}
+              {formData.quantity_days} {formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')) : (formData.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour'))}
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">Type:</span>
+            <span className="text-gray-600">{tr('Type:', 'Type :')}</span>
             <span className="font-medium capitalize">{formData.rental_type}</span>
           </div>
           
@@ -6663,26 +8015,26 @@ const SimplifiedRentalWizard = ({
             <div className="mt-3 pt-3 border-t border-gray-200">
               <div className="flex items-center gap-2 mb-2">
                 <Package className="w-4 h-4 text-purple-600" />
-                <span className="text-sm font-semibold text-purple-700">Selected Package</span>
+                <span className="text-sm font-semibold text-purple-700">{tr('Selected Package', 'Forfait sélectionné')}</span>
               </div>
               <div className="bg-purple-50 rounded-lg p-3">
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm text-purple-700">Package:</span>
+                  <span className="text-sm text-purple-700">{tr('Package:', 'Forfait :')}</span>
                   <span className="text-sm font-bold text-purple-700">{formData.selected_package_name}</span>
                 </div>
                 <div className="flex justify-between items-center mb-1">
-                  <span className="text-xs text-gray-600">Rate per {formData.rental_type === 'hourly' ? 'hour' : 'day'}:</span>
+                  <span className="text-xs text-gray-600">{tr('Package price:', 'Prix du forfait :')}</span>
                   <span className="text-xs font-semibold">{formData.selected_package_rate_per_unit?.toFixed(2)} MAD</span>
                 </div>
                 {formData.selected_package_included_km && (
                   <div className="flex justify-between items-center mb-1">
-                    <span className="text-xs text-gray-600">Included KM:</span>
+                    <span className="text-xs text-gray-600">{tr('Included KM:', 'KM inclus :')}</span>
                     <span className="text-xs font-semibold">{formData.selected_package_included_km} km</span>
                   </div>
                 )}
                 {formData.selected_package_extra_rate > 0 && (
                   <div className="flex justify-between items-center">
-                    <span className="text-xs text-gray-600">Extra KM rate:</span>
+                    <span className="text-xs text-gray-600">{tr('Extra KM rate:', 'Tarif KM supplémentaire :')}</span>
                     <span className="text-xs font-semibold text-orange-600">{formData.selected_package_extra_rate.toFixed(2)} MAD/km</span>
                   </div>
                 )}
@@ -6696,9 +8048,14 @@ const SimplifiedRentalWizard = ({
       <PriceCalculator 
         formData={formData} 
         onPriceChange={handleInputChange} 
+        onResetToAuto={handleResetAutoPrice}
         autoCalculatedPrice={autoCalculatedPrice} 
         userProfile={userProfile} 
         disabled={successfullySubmitted} 
+        fuelChargeEnabled={fuelChargeEnabled}
+        fuelChargeAmount={fuelChargeAmount}
+        pricingComputationMode={pricingComputationMode}
+        pricingComputationLabel={pricingComputationLabel}
       />
 
       {/* Package Summary if selected */}
@@ -6706,54 +8063,45 @@ const SimplifiedRentalWizard = ({
         <div className="bg-purple-50 rounded-xl p-4 border-2 border-purple-200">
           <div className="flex items-center gap-2 mb-3">
             <Package className="w-5 h-5 text-purple-600" />
-            <h3 className="font-semibold text-purple-900">Package Summary</h3>
+            <h3 className="font-semibold text-purple-900">{tr('Package Summary', 'Résumé du forfait')}</h3>
             <span className="text-xs bg-purple-200 text-purple-700 px-2 py-0.5 rounded-full">
-              Active
+              {tr('Active', 'Actif')}
             </span>
           </div>
           
           <div className="space-y-3">
             <div className="flex justify-between items-center">
-              <span className="text-sm text-gray-600">Package:</span>
+              <span className="text-sm text-gray-600">{tr('Package:', 'Forfait :')}</span>
               <span className="text-sm font-bold text-purple-700">{formData.selected_package_name}</span>
             </div>
             
-            <div className="flex justify-between items-center">
-              <span className="text-sm text-gray-600">Rate per {formData.rental_type === 'hourly' ? 'hour' : 'day'}:</span>
-              <span className="text-sm font-bold text-gray-900">{formData.selected_package_rate_per_unit?.toFixed(2)} MAD</span>
-            </div>
+	            <div className="flex justify-between items-center">
+	              <span className="text-sm text-gray-600">{tr('Package price:', 'Prix du forfait :')}</span>
+	              <span className="text-sm font-bold text-gray-900">{formData.selected_package_rate_per_unit?.toFixed(2)} MAD</span>
+	            </div>
             
             <div className="flex justify-between items-center">
-              <span className="text-sm text-gray-600">Duration:</span>
-              <span className="text-sm font-bold text-gray-900">
-                {formData.quantity_days} {formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? 'hours' : 'days') : (formData.rental_type === 'hourly' ? 'hour' : 'day')}
-              </span>
-            </div>
+              <span className="text-sm text-gray-600">{tr('Duration:', 'Durée :')}</span>
+	              <span className="text-sm font-bold text-gray-900">
+	                {formData.quantity_days === 0.5 ? '30 min' : `${formData.quantity_days} ${formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? 'hours' : 'days') : (formData.rental_type === 'hourly' ? 'hour' : 'day')}`}
+	              </span>
+	            </div>
             
-            {/* Show per-unit included km and total included km */}
-            {formData.selected_package_included_km_per_unit && (
-              <>
-                <div className="flex justify-between items-center pt-2 border-t border-purple-100">
-                  <span className="text-sm text-gray-600">Included km per unit:</span>
-                  <span className="text-sm font-medium text-gray-700">
-                    {formData.selected_package_included_km_per_unit} km
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Total included km:</span>
-                  <span className="text-sm font-bold text-green-600">
-                    {formData.selected_package_included_km_per_unit * formData.quantity_days} km
-                  </span>
-                </div>
-                <div className="text-xs text-gray-500 -mt-1">
-                  {formData.selected_package_included_km_per_unit} km × {formData.quantity_days} {formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? 'hours' : 'days') : (formData.rental_type === 'hourly' ? 'hour' : 'day')}
-                </div>
-              </>
-            )}
+	            {/* Show package included km */}
+	            {formData.selected_package_included_km_per_unit && (
+	              <>
+	                <div className="flex justify-between items-center pt-2 border-t border-purple-100">
+	                  <span className="text-sm text-gray-600">{tr('Included km:', 'Km inclus :')}</span>
+	                  <span className="text-sm font-medium text-gray-700">
+	                    {formData.selected_package_included_km_per_unit} km
+	                  </span>
+	                </div>
+	              </>
+	            )}
             
             {formData.selected_package_extra_rate > 0 && (
               <div className="flex justify-between items-center">
-                <span className="text-sm text-gray-600">Extra km rate:</span>
+                <span className="text-sm text-gray-600">{tr('Extra km rate:', 'Tarif km supplémentaire :')}</span>
                 <span className="text-sm font-medium text-orange-600">
                   {formData.selected_package_extra_rate.toFixed(2)} MAD/km
                 </span>
@@ -6761,21 +8109,21 @@ const SimplifiedRentalWizard = ({
             )}
             
             <div className="flex justify-between items-center pt-3 border-t border-purple-200">
-              <span className="text-base font-semibold text-purple-900">Package Total:</span>
-              <span className="text-xl font-bold text-purple-700">
-                {(formData.selected_package_rate_per_unit * formData.quantity_days).toFixed(2)} MAD
-              </span>
+              <span className="text-base font-semibold text-purple-900">{tr('Package Total:', 'Total du forfait :')}</span>
+	              <span className="text-xl font-bold text-purple-700">
+	                {formData.selected_package_rate_per_unit?.toFixed(2)} MAD
+	              </span>
             </div>
             
             <div className="text-xs text-purple-600 mt-2 bg-white p-2 rounded">
               <div className="flex items-start gap-2">
                 <Info className="w-4 h-4 text-purple-500 mt-0.5 flex-shrink-0" />
                 <div>
-                  {formData.selected_package_included_km_per_unit && (
-                    <span>Total included: {formData.selected_package_included_km_per_unit * formData.quantity_days} km. </span>
-                  )}
+	                  {formData.selected_package_included_km_per_unit && (
+	                    <span>{tr('Total included:', 'Total inclus :')} {formData.selected_package_included_km_per_unit} km. </span>
+	                  )}
                   {formData.selected_package_extra_rate > 0 && (
-                    <span>Extra km: {formData.selected_package_extra_rate.toFixed(2)} MAD/km.</span>
+                    <span>{tr('Extra km:', 'Km supplémentaires :')} {formData.selected_package_extra_rate.toFixed(2)} MAD/km.</span>
                   )}
                 </div>
               </div>
@@ -6800,6 +8148,7 @@ const SimplifiedRentalWizard = ({
           unitPrice={formData.unit_price}
           rentalType={formData.rental_type}
           availableVehicles={availableVehicles}
+          pricingComputationMode={pricingComputationMode}
         />
       ) : !formData.use_package_pricing && (
         <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-200">
@@ -6808,14 +8157,14 @@ const SimplifiedRentalWizard = ({
               <Info className="w-5 h-5 text-blue-600" />
             </div>
             <div className="min-w-0">
-              <h4 className="font-bold text-blue-900 text-base sm:text-lg">Standard Rate Applied</h4>
+              <h4 className="font-bold text-blue-900 text-base sm:text-lg">{tr('Standard Rate Applied', 'Tarif standard appliqué')}</h4>
               <p className="text-blue-600 text-sm mt-1">
-                {formData.quantity_days || 0} {formData.rental_type === 'hourly' ? 'hour' : 'day'} 
-                rental at {formData.unit_price?.toFixed(2) || '0.00'} MAD
-                {formData.rental_type === 'hourly' ? '/hour' : '/day'}
+                {formData.quantity_days || 0} {formData.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour')} 
+                {tr(' rental at ', ' de location à ')}{formData.unit_price?.toFixed(2) || '0.00'} MAD
+                {formData.rental_type === 'hourly' ? tr('/hour', '/heure') : tr('/day', '/jour')}
               </p>
               <p className="text-xs text-blue-500 mt-2">
-                Tier pricing applies for 2+ {formData.rental_type === 'hourly' ? 'hours' : 'days'}
+                {tr('Tier pricing applies for 2+ ', 'La tarification par paliers s’applique à partir de 2 ')}{formData.rental_type === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')}
               </p>
             </div>
           </div>
@@ -6824,11 +8173,11 @@ const SimplifiedRentalWizard = ({
 
       {/* Payment Details */}
       <div className="space-y-4">
-        <h3 className="font-semibold text-gray-900">Payment Details</h3>
+        <h3 className="font-semibold text-gray-900">{tr('Payment Details', 'Détails du paiement')}</h3>
         
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            Payment Status
+            {tr('Payment Status', 'Statut du paiement')}
           </label>
           <div className="flex gap-2">
             {['paid', 'unpaid', 'partial'].map((status) => (
@@ -6851,16 +8200,21 @@ const SimplifiedRentalWizard = ({
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            Deposit Amount (MAD)
+            {tr('Deposit Amount (MAD)', 'Montant du dépôt (MAD)')}
           </label>
           <input
-            type="number"
+            type="text"
+            inputMode="decimal"
             value={formData.deposit_amount}
-            onChange={(e) => handleInputChange('deposit_amount', parseFloat(e.target.value) || 0)}
+            onFocus={(e) => {
+              if (String(formData.deposit_amount || '') === '0') {
+                e.target.select();
+              }
+            }}
+            onChange={(e) => handleInputChange('deposit_amount', normalizeMoneyInput(e.target.value))}
             disabled={successfullySubmitted}
             className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
-            min="0"
-            step="0.01"
+            placeholder="0"
           />
         </div>
 
@@ -6872,6 +8226,10 @@ const SimplifiedRentalWizard = ({
           customAmount={customDepositAmount}
           onTabClick={handleDepositTabClick}
           onCustomAmountChange={setCustomDepositAmount}
+          onDocumentUpload={handleDepositDocumentUpload}
+          onDocumentTypeSelect={handleDepositDocumentTypeSelect}
+          onDocumentClear={handleDepositDocumentClear}
+          documentUploading={depositDocumentUploading}
           disabled={successfullySubmitted}
         />
       </div>
@@ -6888,7 +8246,7 @@ const SimplifiedRentalWizard = ({
 </div>
 
       {/* Additional Options */}
-      <CollapsibleSection title="Additional Options" defaultOpen={false}>
+      <CollapsibleSection title={tr('Additional Options', 'Options supplémentaires')} defaultOpen={false}>
         <div className="space-y-3">
           <label className="flex items-center gap-3">
             <input
@@ -6898,7 +8256,7 @@ const SimplifiedRentalWizard = ({
               disabled={successfullySubmitted}
               className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
             />
-            <span className="text-gray-700">Insurance Included</span>
+            <span className="text-gray-700">{tr('Insurance Included', 'Assurance incluse')}</span>
           </label>
           <label className="flex items-center gap-3">
             <input
@@ -6908,7 +8266,7 @@ const SimplifiedRentalWizard = ({
               disabled={successfullySubmitted}
               className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
             />
-            <span className="text-gray-700">Helmet Included</span>
+            <span className="text-gray-700">{tr('Helmet Included', 'Casque inclus')}</span>
           </label>
           <label className="flex items-center gap-3">
             <input
@@ -6918,7 +8276,7 @@ const SimplifiedRentalWizard = ({
               disabled={successfullySubmitted}
               className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
             />
-            <span className="text-gray-700">Gear Included</span>
+            <span className="text-gray-700">{tr('Gear Included', 'Équipement inclus')}</span>
           </label>
           <label className="flex items-center gap-3">
             <input
@@ -6928,7 +8286,7 @@ const SimplifiedRentalWizard = ({
               disabled={successfullySubmitted}
               className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
             />
-            <span className="text-gray-700">Contract Signed</span>
+            <span className="text-gray-700">{tr('Contract Signed', 'Contrat signé')}</span>
           </label>
         </div>
       </CollapsibleSection>
@@ -6936,7 +8294,7 @@ const SimplifiedRentalWizard = ({
       {/* Accessories / Notes */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
-          Accessories / Notes
+          {tr('Accessories / Notes', 'Accessoires / notes')}
         </label>
         <textarea
           value={formData.accessories}
@@ -6944,14 +8302,14 @@ const SimplifiedRentalWizard = ({
           disabled={successfullySubmitted}
           className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
           rows="3"
-          placeholder="Any additional accessories or notes..."
+          placeholder={tr('Any additional accessories or notes...', 'Tout accessoire ou note supplémentaire...')}
         />
       </div>
     </div>
   </div>
 )}
 
-        <div className="p-4 sm:p-6 border-t border-gray-200 bg-gray-50 rounded-b-xl">
+        <div className="rounded-b-xl border-t border-slate-200 bg-slate-50 p-4 sm:p-6">
           <div className="flex flex-col gap-3 sm:flex-row">
             <div className="flex-1 flex gap-3">
               {currentStep > 1 && (
@@ -6962,7 +8320,7 @@ const SimplifiedRentalWizard = ({
                   disabled={submitting || isSubmitting || successfullySubmitted}
                 >
                   <ChevronLeft className="w-5 h-5 sm:w-4 sm:h-4 inline mr-1" />
-                  Back
+                  {tr('Back', 'Retour')}
                 </button>
               )}
               
@@ -6972,7 +8330,7 @@ const SimplifiedRentalWizard = ({
                 className="px-4 py-3 sm:py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 active:bg-gray-200 transition-colors flex-1 sm:flex-none touch-manipulation"
                 disabled={submitting || isSubmitting || successfullySubmitted}
               >
-                Reset Form
+                {tr('Reset Form', 'Réinitialiser le formulaire')}
               </button>
               
               {onCancel && (
@@ -6982,33 +8340,62 @@ const SimplifiedRentalWizard = ({
                   className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors flex-1 sm:flex-none"
                   disabled={submitting || isSubmitting || successfullySubmitted}
                 >
-                  Cancel
+                  {tr('Cancel', 'Annuler')}
                 </button>
               )}
             </div>
             
             <div className="flex-1 flex gap-3 justify-end">
               {currentStep < 3 ? (
-                <button
-                  type="button"
-                  onClick={handleNext}
-                  disabled={submitting || isSubmitting || successfullySubmitted || (currentStep === 1 && !formData.customer_licence_number?.trim())}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center justify-center flex-1 sm:flex-none disabled:opacity-50 disabled:cursor-not-allowed"
-                  title={currentStep === 1 && !formData.customer_licence_number?.trim() ? "Please enter driver's license first" : ""}
-                >
+              <button
+                type="button"
+                onClick={handleNext}
+                disabled={
+                  submitting ||
+                  isSubmitting ||
+                  successfullySubmitted ||
+                  isBannedCustomerBlocked ||
+                  (currentStep === 1 && requiresCustomerVerification && (!formData.customer_licence_number?.trim() || !formData.customer_id_image))
+                }
+                className="flex flex-1 items-center justify-center rounded-lg bg-violet-700 px-6 py-3 font-semibold text-white transition-colors hover:bg-violet-800 sm:flex-none disabled:cursor-not-allowed disabled:opacity-50"
+                title={
+                  isBannedCustomerBlocked
+                    ? tr('This customer is banned until an admin or owner removes the ban.', "Ce client est banni jusqu'à ce qu'un administrateur ou le propriétaire lève le bannissement.")
+                    : currentStep === 1 && requiresCustomerVerification && !formData.customer_licence_number?.trim()
+                      ? tr("Please enter driver's license first", "Veuillez d'abord saisir le permis de conduire")
+                      : currentStep === 1 && requiresCustomerVerification && !formData.customer_id_image
+                        ? tr('Please scan or import the customer ID first', "Veuillez d'abord scanner ou importer l'identité du client")
+                        : ""
+                }
+              >
                   {submitting || isSubmitting ? (
                     <>
                       <Loader className="w-4 h-4 mr-2 animate-spin" />
-                      Loading...
+                      {tr('Loading...', 'Chargement...')}
                     </>
-                  ) : currentStep === 1 && !formData.customer_licence_number?.trim() ? (
+                  ) : isBannedCustomerBlocked ? (
                     <>
                       <AlertCircle className="w-4 h-4 mr-2" />
-                      Enter License
+                      {tr('Banned Customer', 'Client banni')}
+                    </>
+                  ) : currentStep === 1 && requiresCustomerVerification && !formData.customer_licence_number?.trim() ? (
+                    <>
+                      <AlertCircle className="w-4 h-4 mr-2" />
+                      {tr('Enter License', 'Saisir le permis')}
+                    </>
+                  ) : currentStep === 1 && requiresCustomerVerification && !formData.customer_id_image ? (
+                    <>
+                      <AlertCircle className="w-4 h-4 mr-2" />
+                      {tr('Scan ID First', "Scanner l'identité")}
+                    </>
+                  ) : isCustomerVerificationOnlyMode && currentStep === 1 ? (
+                    <>
+                      {tr('Save Verification', 'Enregistrer la vérification')}
+                      <CheckCircle className="w-4 h-4 ml-2" />
                     </>
                   ) : (
                     <>
-                      Next
+                      {tr('Next', 'Suivant')}
                       <ChevronRight className="w-4 h-4 ml-1" />
                     </>
                   )}
@@ -7019,16 +8406,16 @@ const SimplifiedRentalWizard = ({
                   onClick={() => {
                     explicitSubmitRef.current = true;
                   }}
-                  disabled={submitting || isSubmitting || isLoading || successfullySubmitted}
-                  className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium flex items-center justify-center flex-1 sm:flex-none disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={submitting || isSubmitting || isLoading || successfullySubmitted || isBannedCustomerBlocked}
+                  className="flex flex-1 items-center justify-center rounded-lg bg-violet-700 px-6 py-3 font-semibold text-white transition-colors hover:bg-violet-800 sm:flex-none disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {submitting || isSubmitting || isLoading ? (
                     <>
                       <Loader className="w-4 h-4 mr-2 animate-spin" />
-                      {mode === 'edit' ? 'Updating...' : 'Creating...'}
+                      {mode === 'edit' ? tr('Updating...', 'Mise à jour...') : tr('Creating...', 'Création...')}
                     </>
                   ) : (
-                    mode === 'edit' ? 'Update Rental' : 'Create Rental'
+                    isBannedCustomerBlocked ? tr('Blocked Until Unbanned', "Bloqué jusqu'au déblocage") : mode === 'edit' ? tr('Update Rental', 'Mettre à jour la location') : tr('Create Rental', 'Créer la location')
                   )}
                 </button>
               )}
@@ -7056,17 +8443,21 @@ const SimplifiedRentalWizard = ({
             setShowIDScanModal(false);
           }}
           customerId={formData.customer_id}
-          title="Scan ID Document"
           autoProcessOnSelect={false}
           allowSaveWithoutOcr
-          saveWithoutOcrLabel="Save image only"
         />
       )}
 
       {showSecondDriverScanModal && (
         <SecondDriverIDScanModal
           isOpen={showSecondDriverScanModal}
-          onClose={() => setShowSecondDriverScanModal(false)}
+          title={secondDriverScanEntryMode === 'upload' ? "Téléverser l'identité du second conducteur" : "Scanner l'identité du second conducteur"}
+          autoLaunchPicker={secondDriverScanEntryMode === 'upload'}
+          scanOnlyMode
+          onClose={() => {
+            setShowSecondDriverScanModal(false);
+            setSecondDriverScanEntryMode('scan');
+          }}
           onDriverAdded={(driverData) => {
             const enhancedDriverData = {
               ...driverData,
@@ -7095,9 +8486,21 @@ const SimplifiedRentalWizard = ({
               created_at: new Date().toISOString()
             };
             
-            setSecondDrivers(prev => [...prev, enhancedDriverData]);
-            toast.success(`✅ Second driver "${enhancedDriverData.full_name}" added with ${enhancedDriverData.id_scan_url ? 'ID image' : 'no image'}`);
+            setSecondDrivers([enhancedDriverData]);
+            setFormData((prev) => {
+              return {
+                ...prev,
+                second_driver_name: enhancedDriverData.full_name || prev.second_driver_name,
+                second_driver_license: enhancedDriverData.licence_number || prev.second_driver_license,
+                second_driver_id_image:
+                  enhancedDriverData.id_scan_url ||
+                  enhancedDriverData.customer_id_image ||
+                  prev.second_driver_id_image,
+              };
+            });
+            toast.success(`✅ ${tr('Second driver', 'Second conducteur')} "${enhancedDriverData.full_name}" ${enhancedDriverData.id_scan_url ? tr('added with ID image', "ajouté avec une image d'identité") : tr('added without image', 'ajouté sans image')}`);
             setActiveTab('additional');
+            setSecondDriverScanEntryMode('scan');
           }}
         />
       )}
@@ -7109,18 +8512,78 @@ const SimplifiedRentalWizard = ({
             setShowCustomerDrawer(false);
             setSelectedRentalForDrawer(null);
           }}
-          rental={{
-            customer_id: formData.customer_id,
-            customer_name: formData.customer_name,
-            customer_email: formData.customer_email,
-            customer_phone: formData.customer_phone,
-            customer_licence_number: formData.customer_licence_number,
-            customer_id_image: formData.customer_id_image,
-            id: selectedRentalForDrawer?.id || 'preview-rental-id'
-          }}
+          rental={previewRentalForDrawer}
           secondDrivers={secondDrivers}
         />
       )}
+
+      <Dialog
+        open={showCustomerAlertModal}
+        onOpenChange={(open) => {
+          if (customerAlert?.type === 'banned' && !open) {
+            setShowCustomerAlertModal(false);
+            return;
+          }
+          setShowCustomerAlertModal(open);
+        }}
+      >
+        <DialogContent className="max-w-md rounded-2xl border border-amber-200 bg-white p-0 shadow-xl">
+          <DialogHeader className="border-b border-amber-100 bg-gradient-to-r from-white via-amber-50 to-white px-6 py-5">
+            <DialogTitle className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+              <AlertCircle className="h-5 w-5 text-amber-600" />
+              {customerAlert?.type === 'banned' ? tr('Banned Customer', 'Client banni') : tr('Customer Alert', 'Alerte client')}
+            </DialogTitle>
+            <DialogDescription className="pt-1 text-sm text-slate-600">
+              {customerAlert?.type === 'banned'
+                ? `${customerAlert?.customerName || formData.customer_name || tr('This customer', 'Ce client')} ${tr('is currently banned.', 'est actuellement banni.')}`
+                : `${tr('Internal staff note for', "Note interne de l'équipe pour")} ${customerAlert?.customerName || formData.customer_name || tr('this customer', 'ce client')}.`}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 px-6 py-5">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="whitespace-pre-wrap text-sm font-medium leading-6 text-amber-900">
+                {customerAlert?.note || (customerAlert?.type === 'banned'
+                  ? tr('No ban reason has been saved yet. Open the customer profile to review this customer before continuing.', "Aucune raison de bannissement n'a encore été enregistrée. Ouvrez le profil client pour examiner ce client avant de continuer.")
+                  : tr('No alert note available.', "Aucune note d'alerte disponible."))}
+              </p>
+            </div>
+
+            {customerAlert?.type === 'banned' ? (
+              <p className="text-xs font-medium text-slate-500">
+                {tr('This reservation is blocked. Open the customer details drawer to review the ban note. Only an admin or owner can remove the ban.', "Cette réservation est bloquée. Ouvrez le panneau des détails client pour consulter la note de bannissement. Seul un administrateur ou le propriétaire peut lever le bannissement.")}
+              </p>
+            ) : !!customerAlert?.historyCount && (
+              <p className="text-xs font-medium text-slate-500">
+                {customerAlert.historyCount} {tr('saved staff note', 'note interne enregistrée')}{customerAlert.historyCount > 1 ? 's' : ''} {tr('available in the customer profile.', 'disponible dans le profil client.')}
+              </p>
+            )}
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setShowCustomerAlertModal(false)}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+              >
+                {customerAlert?.type === 'banned' ? tr('Close', 'Fermer') : tr('Continue', 'Continuer')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (customerAlert?.type !== 'banned') {
+                    setShowCustomerAlertModal(false);
+                  }
+                  setSelectedRentalForDrawer({ id: customerAlert?.customerId || 'preview-rental-id' });
+                  setShowCustomerDrawer(true);
+                }}
+                className="rounded-xl border border-violet-700 bg-violet-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-800"
+              >
+                {customerAlert?.type === 'banned' ? tr('Open Customer Details', 'Ouvrir les détails du client') : tr('View Customer', 'Voir le client')}
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       </div>
   );
 };

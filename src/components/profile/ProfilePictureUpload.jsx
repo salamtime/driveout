@@ -4,15 +4,23 @@ import UserProfileService from '../../services/UserProfileService';
 
 const ProfilePictureUpload = ({ 
   userId, 
+  fallbackLabel = '',
   currentPictureUrl, 
+  fallbackImageUrl = '',
   onPictureUpdate, 
   size = 'medium',
-  editable = true 
+  editable = true,
+  showInstructions = true,
 }) => {
   const { t } = useTranslation();
   const fileInputRef = useRef(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [activeImageUrl, setActiveImageUrl] = useState(currentPictureUrl || fallbackImageUrl || '');
+
+  React.useEffect(() => {
+    setActiveImageUrl(currentPictureUrl || fallbackImageUrl || '');
+  }, [currentPictureUrl, fallbackImageUrl]);
 
   const sizeClasses = {
     small: 'w-12 h-12',
@@ -95,9 +103,12 @@ const ProfilePictureUpload = ({
   };
 
   const getInitials = () => {
-    // Try to get initials from user data or email
-    const email = userId || 'User';
-    return email.charAt(0).toUpperCase();
+    const source = fallbackLabel || userId || t('profile.picture.userFallback', 'User');
+    const parts = String(source || '').trim().split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
+    }
+    return String(source || 'U').charAt(0).toUpperCase();
   };
 
   return (
@@ -116,14 +127,17 @@ const ProfilePictureUpload = ({
           </div>
         )}
 
-        {currentPictureUrl ? (
+        {activeImageUrl ? (
           <img
-            src={currentPictureUrl}
+            src={activeImageUrl}
             alt={t('profile.picture.alt')}
             className="w-full h-full object-cover"
-            onError={(e) => {
-              e.target.style.display = 'none';
-              e.target.nextSibling.style.display = 'flex';
+            onError={() => {
+              if (currentPictureUrl && fallbackImageUrl && activeImageUrl !== fallbackImageUrl) {
+                setActiveImageUrl(fallbackImageUrl);
+                return;
+              }
+              setActiveImageUrl('');
             }}
           />
         ) : (
@@ -196,7 +210,7 @@ const ProfilePictureUpload = ({
       )}
 
       {/* Upload Instructions */}
-      {editable && (size === 'large' || size === 'xlarge') && (
+      {editable && showInstructions && (size === 'large' || size === 'xlarge') && (
         <div className="absolute top-full left-0 right-0 mt-2">
           <p className="text-xs text-gray-500 text-center">
             {t('profile.picture.instructions')}

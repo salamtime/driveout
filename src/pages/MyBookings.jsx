@@ -2,9 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSelector } from 'react-redux';
 import { CalendarIcon, MapPinIcon, ClockIcon, UsersIcon } from 'lucide-react';
+import i18n from '../i18n';
 
 const MyBookings = () => {
   const { t } = useTranslation();
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { user } = useSelector(state => state.auth);
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -15,10 +18,10 @@ const MyBookings = () => {
       {
         id: 1,
         type: 'tour',
-        title: 'Desert Safari Adventure',
+        title: tr('Desert Safari Adventure', 'Aventure safari dans le desert'),
         date: '2024-07-15',
         time: '09:00',
-        location: 'Sahara Desert',
+        location: tr('Sahara Desert', 'Desert du Sahara'),
         status: 'confirmed',
         participants: 4,
         price: 299
@@ -26,10 +29,10 @@ const MyBookings = () => {
       {
         id: 2,
         type: 'rental',
-        title: 'ATV Rental',
+        title: tr('ATV Rental', 'Location ATV'),
         date: '2024-07-20',
         time: '14:00',
-        location: 'Base Camp',
+        location: tr('Base Camp', 'Camp de base'),
         status: 'pending',
         participants: 2,
         price: 150
@@ -80,23 +83,23 @@ const MyBookings = () => {
             <div className="bg-white rounded-lg shadow-sm p-8 text-center">
               <CalendarIcon className="h-16 w-16 text-gray-300 mx-auto mb-4" />
               <h3 className="text-lg font-medium text-gray-900 mb-2">
-                No bookings yet
+                {tr('No bookings yet', 'Aucune reservation pour le moment')}
               </h3>
               <p className="text-gray-500 mb-6">
-                You haven't made any bookings yet. Start exploring our tours and rentals!
+                {tr("You haven't made any bookings yet. Start exploring our tours and rentals!", 'Vous n avez encore fait aucune reservation. Explorez nos tours et locations !')}
               </p>
               <div className="space-x-4">
                 <a 
                   href="/tours" 
                   className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 transition-colors"
                 >
-                  Browse Tours
+                  {tr('Browse Tours', 'Voir les tours')}
                 </a>
                 <a 
                   href="/rentals" 
                   className="bg-gray-600 text-white px-6 py-2 rounded-md hover:bg-gray-700 transition-colors"
                 >
-                  Browse Rentals
+                  {tr('Browse Rentals', 'Voir les locations')}
                 </a>
               </div>
             </div>
@@ -110,12 +113,18 @@ const MyBookings = () => {
                         {booking.title}
                       </h3>
                       <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(booking.status)}`}>
-                        {booking.status.charAt(0).toUpperCase() + booking.status.slice(1)}
+                        {booking.status === 'confirmed'
+                          ? tr('Confirmed', 'Confirmee')
+                          : booking.status === 'pending'
+                            ? tr('Pending', 'En attente')
+                            : booking.status === 'cancelled'
+                              ? tr('Cancelled', 'Annulee')
+                              : booking.status}
                       </span>
                     </div>
                     <div className="text-right">
                       <p className="text-2xl font-bold text-gray-900">${booking.price}</p>
-                      <p className="text-sm text-gray-500">Total</p>
+                      <p className="text-sm text-gray-500">{tr('Total', 'Total')}</p>
                     </div>
                   </div>
 
@@ -137,15 +146,15 @@ const MyBookings = () => {
                   <div className="mt-4 flex items-center justify-between">
                     <div className="flex items-center text-sm text-gray-600">
                       <UsersIcon className="h-4 w-4 mr-2 text-gray-400" />
-                      <span>{booking.participants} participants</span>
+                      <span>{booking.participants} {tr('participants', 'participants')}</span>
                     </div>
                     <div className="space-x-2">
                       <button className="text-blue-600 hover:text-blue-800 text-sm font-medium">
-                        View Details
+                        {tr('View Details', 'Voir les details')}
                       </button>
                       {booking.status === 'confirmed' && (
                         <button className="text-red-600 hover:text-red-800 text-sm font-medium">
-                          Cancel
+                          {tr('Cancel', 'Annuler')}
                         </button>
                       )}
                     </div>

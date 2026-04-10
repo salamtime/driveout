@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { Plus, Edit, Trash2, Search, Car, Calendar, AlertTriangle, X, FileText, Gauge, Wrench, Shield, Image as ImageIcon, StickyNote, File, Clock, CheckCircle, AlertCircle, DollarSign, LayoutGrid, List, RefreshCw, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Edit, Trash2, Search, Car, Calendar, AlertTriangle, X, FileText, Gauge, Wrench, Shield, Image as ImageIcon, StickyNote, File, Clock, CheckCircle, AlertCircle, DollarSign, LayoutGrid, List, RefreshCw, ExternalLink, ChevronDown, ChevronUp, MapPin } from 'lucide-react';
 import VehicleModelService from '../services/VehicleModelService';
 import VehicleModelMigrationRunner from './VehicleModelMigrationRunner';
 import SegwayCleanupRunner from './SegwayCleanupRunner';
@@ -18,7 +18,22 @@ import { TBL } from '../config/tables';
 import VehicleGridView from './VehicleGridView';
 import VehicleListView from './VehicleListView';
 import AdminModuleHero from './admin/AdminModuleHero';
+import FleetLocationsManager from './admin/FleetLocationsManager';
 import { resolveTankCapacityLiters } from '../utils/vehicleModelSpecs';
+import i18n from '../i18n';
+import FleetLocationService from '../services/FleetLocationService';
+import WebsiteBookingLifecycleService from '../services/WebsiteBookingLifecycleService';
+import VehicleDispositionService from '../services/VehicleDispositionService';
+
+const scheduleBackgroundTask = (callback: () => void) => {
+  if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+    return window.requestIdleCallback(callback, { timeout: 800 });
+  }
+
+  return window.setTimeout(callback, 0);
+};
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en: string, fr: string) => (isFrenchLocale() ? fr : en);
 
 interface Vehicle {
   id: number;
@@ -29,7 +44,7 @@ interface Vehicle {
   capacity: number;
   color: string;
   location_id: number | null;
-  status: 'available' | 'rented' | 'tour' | 'maintenance' | 'out_of_service';
+  status: 'available' | 'rented' | 'impounded' | 'tour' | 'maintenance' | 'out_of_service' | 'sold' | 'disposed';
   image_url: string;
   features: string[];
   plate_number: string;
@@ -56,6 +71,24 @@ interface Vehicle {
   purchase_date: string | null;
   purchase_supplier: string | null;
   purchase_invoice_url: string | null;
+  registration_date?: string | null;
+  sold_date?: string | null;
+  sale_price_mad?: number | null;
+  sold_buyer_name?: string | null;
+  sale_proof_url?: string | null;
+  sale_proof_name?: string | null;
+  sale_notes?: string | null;
+  location_name?: string | null;
+}
+
+interface FleetLocation {
+  id: number;
+  name: string;
+  code?: string | null;
+  address?: string | null;
+  is_active: boolean;
+  is_default: boolean;
+  display_order: number;
 }
 
 interface VehicleDocument {
@@ -106,6 +139,7 @@ const VehicleManagement: React.FC = () => {
   console.log('VEHICLE_FORM_CANONICAL_PATH: /workspace/react_template/src/components/VehicleManagement.tsx');
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [impoundedVehicleIds, setImpoundedVehicleIds] = useState<Set<string>>(new Set());
   const [vehicleModels, setVehicleModels] = useState<VehicleModel[]>([]);
   const [maintenanceRecords, setMaintenanceRecords] = useState<MaintenanceRecord[]>([]);
   const [vehicleFuelStateMap, setVehicleFuelStateMap] = useState<Record<string, any>>({});
@@ -118,7 +152,7 @@ const VehicleManagement: React.FC = () => {
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [viewingVehicle, setViewingVehicle] = useState<Vehicle | null>(null);
-  const [activeTab, setActiveTab] = useState<'vehicles' | 'models' | 'out_of_service'>('vehicles');
+  const [activeTab, setActiveTab] = useState<'vehicles' | 'models' | 'out_of_service' | 'locations' | 'archive'>('vehicles');
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const [showAddModelForm, setShowAddModelForm] = useState(false);
   const [modelFormData, setModelFormData] = useState({
@@ -140,8 +174,11 @@ const VehicleManagement: React.FC = () => {
   const [showMaintenanceSummary, setShowMaintenanceSummary] = useState(false);
 
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [fleetLocations, setFleetLocations] = useState<FleetLocation[]>([]);
+  const [vehicleDispositions, setVehicleDispositions] = useState<any[]>([]);
   const navigate = useNavigate();
   const location = useLocation();
+  const deferredSearchTerm = useDeferredValue(searchTerm);
 
   // Out of Service tab filters
   const [oosSearchTerm, setOosSearchTerm] = useState('');
@@ -174,7 +211,8 @@ const VehicleManagement: React.FC = () => {
     purchase_cost_mad: '',
     purchase_date: '',
     purchase_supplier: '',
-    purchase_invoice_url: ''
+    purchase_invoice_url: '',
+    location_id: ''
   });
 
   const [formData, setFormData] = useState(getEmptyFormData());
@@ -354,6 +392,12 @@ const VehicleManagement: React.FC = () => {
     sanitized.notes = sanitized.notes ? sanitized.notes.trim() : '';
     sanitized.purchase_supplier = sanitized.purchase_supplier ? sanitized.purchase_supplier.trim() : '';
     sanitized.purchase_invoice_url = sanitized.purchase_invoice_url ? sanitized.purchase_invoice_url.trim() : '';
+    if (sanitized.location_id === '' || sanitized.location_id === undefined) {
+      sanitized.location_id = null;
+    } else if (typeof sanitized.location_id === 'string') {
+      const parsedLocationId = parseInt(sanitized.location_id, 10);
+      sanitized.location_id = Number.isNaN(parsedLocationId) ? null : parsedLocationId;
+    }
     
     sanitized.image_url = sanitized.image_url || '';
     
@@ -361,7 +405,6 @@ const VehicleManagement: React.FC = () => {
   };
 
   useEffect(() => {
-    console.log('🔄 VehicleManagement mounted, fetching data...');
     fetchData();
   }, []);
 
@@ -379,61 +422,238 @@ const VehicleManagement: React.FC = () => {
   }, [location.pathname, location.state, navigate, loading, vehicles]);
 
   const fetchData = async () => {
-    console.log('🚀 Starting data fetch...');
     setLoading(true);
     setError(null);
     
     try {
       // Fetch vehicles
-      const { data: vehiclesData, error: vehiclesError } = await supabase
+      const vehicleSelectColumns = 'id, name, model, vehicle_type, power_cc, capacity, color, location_id, status, image_url, features, plate_number, current_odometer, engine_hours, last_oil_change_date, last_oil_change_odometer, next_oil_change_due, next_oil_change_odometer, registration_number, registration_date, registration_expiry_date, insurance_policy_number, insurance_provider, insurance_expiry_date, general_notes, notes, created_at, updated_at, vehicle_model_id, purchase_cost_mad, purchase_date, purchase_supplier, purchase_invoice_url, sold_date, sale_price_mad, sold_buyer_name, sale_proof_url, sale_proof_name, sale_notes';
+      const fallbackVehicleSelectColumns = 'id, name, model, vehicle_type, power_cc, capacity, color, location_id, status, image_url, features, plate_number, current_odometer, engine_hours, last_oil_change_date, last_oil_change_odometer, next_oil_change_due, next_oil_change_odometer, registration_number, registration_expiry_date, insurance_policy_number, insurance_provider, insurance_expiry_date, general_notes, notes, created_at, updated_at, vehicle_model_id, purchase_cost_mad, purchase_date, purchase_supplier, purchase_invoice_url';
+      let { data: vehiclesData, error: vehiclesError } = await supabase
         .from(TBL.VEHICLES)
-        .select('*')
+        .select(vehicleSelectColumns)
         .order('created_at', { ascending: false })
         .limit(50);
 
+      if (vehiclesError?.message?.includes('registration_date') || vehiclesError?.message?.includes('sold_date') || vehiclesError?.message?.includes('sale_') || vehiclesError?.message?.includes('sold_buyer')) {
+        const fallbackResult = await supabase
+          .from(TBL.VEHICLES)
+          .select(fallbackVehicleSelectColumns)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        vehiclesData = fallbackResult.data;
+        vehiclesError = fallbackResult.error;
+      }
+
       if (vehiclesError) {
-        console.error('❌ Vehicles fetch failed:', vehiclesError);
+        console.error('Vehicles fetch failed:', vehiclesError);
         throw vehiclesError;
       }
 
-      console.log('✅ Vehicles loaded:', vehiclesData?.length || 0);
-      
-      // Load document counts for vehicles
-      const vehiclesWithCounts = vehiclesData ? await loadVehicleDocumentCounts(vehiclesData) : [];
-      setVehicles(vehiclesWithCounts);
-
-      const fuelStates = await FuelTransactionService.getVehicleFuelStates().catch((fuelError) => {
-        console.error('❌ Fuel state fetch failed:', fuelError);
+      const fetchedLocations = await FleetLocationService.listLocations(true).catch((locationError) => {
+        console.error('Fleet locations fetch failed:', locationError);
         return [];
       });
-      const nextFuelStateMap: Record<string, any> = {};
-      (fuelStates || []).forEach((state: any) => {
-        const stateKey = String(state?.vehicle_id || state?.id || '');
-        if (stateKey) {
-          nextFuelStateMap[stateKey] = state;
+      setVehicleDispositions(VehicleDispositionService.listDispositions());
+      const locationNameById = new Map(
+        (fetchedLocations || []).map((fleetLocation: FleetLocation) => [String(fleetLocation.id), fleetLocation.name])
+      );
+      setFleetLocations(fetchedLocations as FleetLocation[]);
+
+      const vehicleIds = (vehiclesData || []).map((vehicle) => vehicle.id).filter(Boolean);
+      let initialImpoundedVehicleIds = new Set<string>();
+      let activeRentalVehicleIds = new Set<string>();
+      let blockingScheduledVehicleIds = new Set<string>();
+      let openMaintenanceVehicleIds = new Set<string>();
+
+      if (vehicleIds.length > 0) {
+        const { data: rentalOverlayData, error: rentalOverlayError } = await supabase
+          .from('app_4c3a7a6153_rentals')
+          .select('vehicle_id, rental_status, is_impounded, impounded_at, released_from_impound_at, updated_at, booking_source, website_booking_status, is_vehicle_locked, hold_expires_at')
+          .in('vehicle_id', vehicleIds)
+          .order('updated_at', { ascending: false });
+
+        if (rentalOverlayError) {
+          console.error('Vehicle rental status overlay fetch failed:', rentalOverlayError);
+        } else {
+          initialImpoundedVehicleIds = new Set(
+            (rentalOverlayData || [])
+              .filter((record: any) =>
+                Boolean(record?.vehicle_id) &&
+                (
+                  Boolean(record?.is_impounded) ||
+                  String(record?.rental_status || '').toLowerCase() === 'impounded'
+                ) &&
+                !record?.released_from_impound_at
+              )
+              .map((record: any) => String(record.vehicle_id))
+          );
+
+          activeRentalVehicleIds = new Set(
+            (rentalOverlayData || [])
+              .filter((record: any) => {
+                if (!record?.vehicle_id) return false;
+                const status = String(record?.rental_status || '').toLowerCase();
+                return ['active', 'in_progress', 'checked_out'].includes(status);
+              })
+              .map((record: any) => String(record.vehicle_id))
+          );
+
+          blockingScheduledVehicleIds = new Set(
+            (rentalOverlayData || [])
+              .filter((record: any) =>
+                Boolean(record?.vehicle_id) &&
+                WebsiteBookingLifecycleService.shouldRentalBlockInventory(record, new Date())
+              )
+              .map((record: any) => String(record.vehicle_id))
+          );
         }
+
+        const { data: openMaintenanceData, error: openMaintenanceError } = await supabase
+          .from('app_687f658e98_maintenance')
+          .select('vehicle_id, status')
+          .in('vehicle_id', vehicleIds)
+          .in('status', ['scheduled', 'in_progress', 'pending']);
+
+        if (openMaintenanceError) {
+          console.error('Open maintenance overlay fetch failed:', openMaintenanceError);
+        } else {
+          openMaintenanceVehicleIds = new Set(
+            (openMaintenanceData || [])
+              .filter((record: any) => Boolean(record?.vehicle_id))
+              .map((record: any) => String(record.vehicle_id))
+          );
+        }
+      }
+
+      setImpoundedVehicleIds(initialImpoundedVehicleIds);
+
+      const baseVehicles = (vehiclesData || []).map((vehicle) => {
+        const isStaleRentedStatus =
+          String(vehicle?.status || '').toLowerCase() === 'rented' &&
+          !activeRentalVehicleIds.has(String(vehicle.id));
+        const isStaleScheduledStatus =
+          String(vehicle?.status || '').toLowerCase() === 'scheduled' &&
+          !blockingScheduledVehicleIds.has(String(vehicle.id));
+        const isStaleMaintenanceStatus =
+          String(vehicle?.status || '').toLowerCase() === 'maintenance' &&
+          !openMaintenanceVehicleIds.has(String(vehicle.id));
+
+        return {
+          ...vehicle,
+          status: isStaleRentedStatus || isStaleScheduledStatus || isStaleMaintenanceStatus ? 'available' : vehicle.status,
+          document_count: 0,
+          location_name: vehicle.location_id ? locationNameById.get(String(vehicle.location_id)) || null : null,
+        };
       });
-      setVehicleFuelStateMap(nextFuelStateMap);
+      setVehicles(baseVehicles as Vehicle[]);
+      setLoading(false);
       
       if (vehiclesData) {
         alertService.updateAllOilChangeAlerts(vehiclesData);
       }
 
-      // DIRECT FIX: Fetch vehicle models from database
-      console.log('🔍 Fetching vehicle models...');
-      const { data: modelsData, error: modelsError } = await supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('*')
-        .order('name', { ascending: true });
+      scheduleBackgroundTask(async () => {
+        if (vehicleIds.length > 0) {
+          supabase
+            .from('app_4c3a7a6153_rentals')
+            .select('vehicle_id, rental_status, is_impounded, impounded_at, released_from_impound_at, updated_at')
+            .in('vehicle_id', vehicleIds)
+            .order('updated_at', { ascending: false })
+            .then(({ data, error }) => {
+              if (error) {
+                console.error('Vehicle rental status overlay fetch failed:', error);
+                return;
+              }
 
-      if (modelsError) {
-        console.error('❌ Models fetch error:', modelsError);
-        setVehicleModels([]);
-      } else {
-        console.log('✅ Models fetched:', modelsData?.length || 0);
-        
-        if (modelsData && modelsData.length > 0) {
-          // Process models to ensure proper data types
+              const impoundedVehicleIds = new Set(
+                (data || [])
+                  .filter((record: any) =>
+                    Boolean(record?.vehicle_id) &&
+                    (
+                      Boolean(record?.is_impounded) ||
+                      String(record?.rental_status || '').toLowerCase() === 'impounded'
+                    ) &&
+                    !record?.released_from_impound_at
+                  )
+                  .map((record: any) => String(record.vehicle_id))
+              );
+
+              setImpoundedVehicleIds(impoundedVehicleIds);
+            })
+            .catch((rentalOverlayError) => {
+              console.error('Vehicle rental status overlay fetch failed:', rentalOverlayError);
+            });
+        }
+
+        if (vehicleIds.length > 0) {
+          supabase
+            .from('vehicle_fuel_state')
+            .select('vehicle_id, current_fuel_liters, current_fuel_lines, max_fuel_lines, tank_capacity_liters, last_source, last_updated_at')
+            .in('vehicle_id', vehicleIds)
+            .then(({ data, error }) => {
+              if (!error) {
+                const nextFuelStateMap: Record<string, any> = {};
+                (data || []).forEach((state: any) => {
+                  const stateKey = String(state?.vehicle_id || state?.id || '');
+                  if (stateKey) {
+                    nextFuelStateMap[stateKey] = state;
+                  }
+                });
+                setVehicleFuelStateMap(nextFuelStateMap);
+                return;
+              }
+
+              return FuelTransactionService.getVehicleFuelStates()
+                .then((fuelStates) => {
+                  const fallbackFuelStateMap: Record<string, any> = {};
+                  (fuelStates || []).forEach((state: any) => {
+                    const stateKey = String(state?.vehicle_id || state?.id || '');
+                    if (stateKey) {
+                      fallbackFuelStateMap[stateKey] = state;
+                    }
+                  });
+                  setVehicleFuelStateMap(fallbackFuelStateMap);
+                })
+                .catch((fuelError) => {
+                  console.error('Fuel state fetch failed:', fuelError);
+                  setVehicleFuelStateMap({});
+                });
+            })
+            .catch((fuelError) => {
+              console.error('Fuel state fetch failed:', fuelError);
+              setVehicleFuelStateMap({});
+            });
+        }
+
+        const priorityVehicles = (vehiclesData || []).slice(0, 12) as Vehicle[];
+        const remainingVehicles = (vehiclesData || []).slice(12) as Vehicle[];
+
+        const [priorityVehiclesWithCounts, modelsResult] = await Promise.all([
+          priorityVehicles.length > 0 ? loadVehicleDocumentCounts(priorityVehicles) : Promise.resolve([] as Vehicle[]),
+          supabase
+            .from('saharax_0u4w4d_vehicle_models')
+            .select('*')
+            .order('name', { ascending: true }),
+        ]);
+
+        const prioritizedVehicleMap = new Map(priorityVehiclesWithCounts.map((vehicle) => [vehicle.id, vehicle]));
+        const firstPassVehicles = baseVehicles.map((vehicle) => prioritizedVehicleMap.get(vehicle.id) || vehicle);
+        setVehicles(firstPassVehicles as Vehicle[]);
+
+        if (remainingVehicles.length > 0) {
+          scheduleBackgroundTask(async () => {
+            const remainingVehiclesWithCounts = await loadVehicleDocumentCounts(remainingVehicles);
+            const remainingVehicleMap = new Map(remainingVehiclesWithCounts.map((vehicle) => [vehicle.id, vehicle]));
+            setVehicles((currentVehicles) => currentVehicles.map((vehicle) => remainingVehicleMap.get(vehicle.id) || vehicle));
+          });
+        }
+
+        const { data: modelsData, error: modelsError } = modelsResult;
+        if (modelsError) {
+          console.error('Models fetch error:', modelsError);
+          setVehicleModels([]);
+        } else if (modelsData && modelsData.length > 0) {
           const processedModels = modelsData.map(model => ({
             ...model,
             power_cc_min: parseInt(model.power_cc_min) || 0,
@@ -441,39 +661,24 @@ const VehicleManagement: React.FC = () => {
             capacity_min: parseInt(model.capacity_min) || 0,
             capacity_max: parseInt(model.capacity_max) || 0,
             tank_capacity_liters: resolveTankCapacityLiters(model.tank_capacity_liters, model.model, model.name),
-            // Get vehicle count for each model
-            vehicles: [{ 
-              count: vehiclesWithCounts.filter(v => v.vehicle_model_id === model.id).length 
+            vehicles: [{
+              count: baseVehicles.filter(v => v.vehicle_model_id === model.id).length
             }]
           }));
-          
+
           setVehicleModels(processedModels);
-          
-          // Debug log
-          console.log('📋 Processed models:', processedModels.map(m => ({
-            name: m.name,
-            power_cc_min: m.power_cc_min,
-            power_cc_max: m.power_cc_max,
-            capacity_min: m.capacity_min,
-            capacity_max: m.capacity_max,
-            tank_capacity_liters: m.tank_capacity_liters,
-          })));
         } else {
-          console.warn('⚠️ No vehicle models found in database');
           setVehicleModels([]);
         }
-      }
+      });
 
-      // Load supporting data
-      await Promise.all([
-        loadMaintenanceData()
-      ]);
+      scheduleBackgroundTask(() => {
+        loadMaintenanceData();
+      });
 
-      console.log('✅ All data loaded successfully');
-      
     } catch (error) {
-      console.error('❌ Error in fetchData:', error);
-      setError(`Failed to load data: ${error.message}`);
+      console.error('Error in fetchData:', error);
+      setError(`Impossible de charger les données : ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -498,7 +703,7 @@ const VehicleManagement: React.FC = () => {
 
   // Return vehicle to service handler
   const handleReturnToService = async (vehicle: Vehicle) => {
-    if (!window.confirm(`Are you sure you want to return "${vehicle.name}" (${vehicle.plate_number}) to service?`)) {
+    if (!window.confirm(`Êtes-vous sûr de vouloir remettre "${vehicle.name}" (${vehicle.plate_number}) en service ?`)) {
       return;
     }
 
@@ -517,7 +722,7 @@ const VehicleManagement: React.FC = () => {
       await fetchData();
     } catch (error) {
       console.error('Error returning vehicle to service:', error);
-      alert(`Failed to return vehicle to service: ${error.message}`);
+      alert(`Impossible de remettre le véhicule en service : ${error.message}`);
     }
   };
 
@@ -598,7 +803,7 @@ const VehicleManagement: React.FC = () => {
           .single();
 
         if (error) {
-          throw new Error(`Failed to update vehicle: ${error.message}`);
+          throw new Error(`Impossible de mettre à jour le véhicule : ${error.message}`);
         }
 
         if (vehicleDocuments.length > 0) {
@@ -615,21 +820,21 @@ const VehicleManagement: React.FC = () => {
           );
         }
         
-        alert('Vehicle updated successfully!');
+        alert('Véhicule mis à jour avec succès !');
       } else {
         const { data: newVehicle, error } = await supabase
           .from(TBL.VEHICLES)
           .insert([{
             ...sanitizedData,
             features: [],
-            location_id: null,
+            location_id: sanitizedData.location_id ?? null,
             vehicle_model_id: vehicleModels[0]?.id || null
           }])
           .select()
           .single();
 
         if (error) {
-          throw new Error(`Failed to create vehicle: ${error.message}`);
+          throw new Error(`Impossible de créer le véhicule : ${error.message}`);
         }
 
         if (vehicleDocuments.length > 0 && newVehicle) {
@@ -723,7 +928,8 @@ const VehicleManagement: React.FC = () => {
         purchase_cost_mad: fullVehicle.purchase_cost_mad?.toString() || '',
         purchase_date: fullVehicle.purchase_date || '',
         purchase_supplier: fullVehicle.purchase_supplier || '',
-        purchase_invoice_url: fullVehicle.purchase_invoice_url || ''
+        purchase_invoice_url: fullVehicle.purchase_invoice_url || '',
+        location_id: fullVehicle.location_id?.toString() || ''
       });
       
       setVehicleImageUrl(normalizeVehicleImageUrl(fullVehicle.image_url || ''));
@@ -743,7 +949,7 @@ const VehicleManagement: React.FC = () => {
   };
 
   const handleDelete = async (id: number) => {
-    if (window.confirm('Are you sure you want to delete this vehicle?')) {
+    if (window.confirm('Êtes-vous sûr de vouloir supprimer ce véhicule ?')) {
       try {
         const { error } = await supabase
           .from(TBL.VEHICLES)
@@ -761,7 +967,7 @@ const VehicleManagement: React.FC = () => {
   const handleDeleteModel = async (model: VehicleModel) => {
     const vehicleCount = model.vehicles?.[0]?.count || 0;
     
-    let confirmMessage = `Are you sure you want to delete the vehicle model "${model.name}"?`;
+    let confirmMessage = `Êtes-vous sûr de vouloir supprimer le modèle de véhicule "${model.name}" ?`;
     
     if (vehicleCount > 0) {
       confirmMessage += `\n\nWarning: This model is currently used by ${vehicleCount} vehicle(s). Deletion will be blocked if vehicles are still referencing this model.`;
@@ -796,7 +1002,7 @@ const VehicleManagement: React.FC = () => {
     try {
       await fetchData();
       
-      alert(`Vehicle model "${updatedModel.name}" has been updated successfully.`);
+      alert(`Le modèle de véhicule "${updatedModel.name}" a été mis à jour avec succès.`);
     } catch (error) {
       console.error('Error after model update:', error);
     }
@@ -804,7 +1010,7 @@ const VehicleManagement: React.FC = () => {
 
   const handleModelEditError = (error: string) => {
     setModelEditError(error);
-    alert(`Error updating vehicle model: ${error}`);
+    alert(`Erreur lors de la mise à jour du modèle de véhicule : ${error}`);
   };
 
   const closeEditModal = () => {
@@ -819,10 +1025,10 @@ const VehicleManagement: React.FC = () => {
     
     try {
       if (!modelFormData.name.trim()) {
-        throw new Error('Model name is required');
+        throw new Error('Le nom du modèle est requis');
       }
       if (!modelFormData.model.trim()) {
-        throw new Error('Model identifier is required');
+        throw new Error("L'identifiant du modèle est requis");
       }
 
       await VehicleModelService.createVehicleModel({
@@ -851,7 +1057,7 @@ const VehicleManagement: React.FC = () => {
       alert('Vehicle model added successfully!');
     } catch (error) {
       console.error('Error adding model:', error);
-      setModelFormError(error.message || 'Failed to create vehicle model');
+      setModelFormError(error.message || 'Impossible de créer le modèle de véhicule');
     }
   };
 
@@ -889,6 +1095,7 @@ const VehicleManagement: React.FC = () => {
       case 'available': return 'bg-green-100 text-green-800';
       case 'tour': return 'bg-violet-100 text-violet-800';
       case 'rented': return 'bg-blue-100 text-blue-800';
+      case 'impounded': return 'bg-amber-100 text-amber-800';
       case 'maintenance': return 'bg-yellow-100 text-yellow-800';
       case 'out_of_service': return 'bg-red-100 text-red-800';
       default: return 'bg-gray-100 text-gray-800';
@@ -905,18 +1112,43 @@ const VehicleManagement: React.FC = () => {
     return daysUntilDue <= 30;
   };
 
-  const filteredVehicles = vehicles.filter(vehicle => {
-    if (vehicle.status === 'out_of_service') return false;
-    const matchesSearch = vehicle.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         vehicle.model.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         vehicle.plate_number.toLowerCase().includes(searchTerm.toLowerCase());
+  const displayVehicles = useMemo(
+    () =>
+      vehicles.map((vehicle) =>
+        impoundedVehicleIds.has(String(vehicle.id))
+          ? { ...vehicle, status: 'impounded' as const }
+          : vehicle
+      ),
+    [vehicles, impoundedVehicleIds]
+  );
+  const dispositionByVehicleId = useMemo(
+    () => new Map(vehicleDispositions.map((record) => [String(record.vehicle_id), record])),
+    [vehicleDispositions]
+  );
+
+  const filteredVehicles = useMemo(() => displayVehicles.filter(vehicle => {
+    if (vehicle.status === 'out_of_service' || vehicle.status === 'sold' || vehicle.status === 'disposed' || dispositionByVehicleId.has(String(vehicle.id))) return false;
+    const normalizedSearchTerm = deferredSearchTerm.toLowerCase();
+    const matchesSearch = vehicle.name.toLowerCase().includes(normalizedSearchTerm) ||
+                         vehicle.model.toLowerCase().includes(normalizedSearchTerm) ||
+                         vehicle.plate_number.toLowerCase().includes(normalizedSearchTerm);
     const matchesStatus = statusFilter === 'all' || vehicle.status === statusFilter;
     const matchesType = typeFilter === 'all' || vehicle.vehicle_type === typeFilter;
     return matchesSearch && matchesStatus && matchesType;
-  });
+  }), [displayVehicles, dispositionByVehicleId, deferredSearchTerm, statusFilter, typeFilter]);
+
+  const archivedVehicles = useMemo(() => displayVehicles
+    .filter((vehicle) => {
+      const disposition = dispositionByVehicleId.get(String(vehicle.id));
+      return Boolean(disposition) || vehicle.status === 'sold' || vehicle.status === 'disposed';
+    })
+    .map((vehicle) => ({
+      ...vehicle,
+      disposition: dispositionByVehicleId.get(String(vehicle.id)) || null,
+    })), [displayVehicles, dispositionByVehicleId]);
 
   // Filter out of service vehicles
-  const outOfServiceVehicles = vehicles.filter(vehicle => {
+  const outOfServiceVehicles = displayVehicles.filter(vehicle => {
     if (vehicle.status !== 'out_of_service') return false;
 
     const matchesSearch = vehicle.name.toLowerCase().includes(oosSearchTerm.toLowerCase()) ||
@@ -947,58 +1179,51 @@ const VehicleManagement: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="p-6">
-        <div className="mb-6">
-          <div className="animate-pulse h-8 bg-gray-200 rounded w-64 mb-2"></div>
-          <div className="animate-pulse h-4 bg-gray-200 rounded w-96"></div>
-        </div>
-
-        <div className="border-b border-gray-200 mb-6">
-          <nav className="-mb-px flex space-x-8">
-            {Array.from({ length: 5 }).map((_, index) => (
-              <div key={index} className="animate-pulse py-2 px-1 border-b-2 border-transparent">
-                <div className="h-6 bg-gray-200 rounded w-24"></div>
-              </div>
-            ))}
-          </nav>
-        </div>
-
-        <div className="mb-6 flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-          <div className="flex flex-col sm:flex-row gap-4 flex-1">
-            <div className="animate-pulse h-10 bg-gray-200 rounded w-64"></div>
-            <div className="flex gap-2">
-              <div className="animate-pulse h-10 bg-gray-200 rounded w-32"></div>
-              <div className="animate-pulse h-10 bg-gray-200 rounded w-32"></div>
+      <div className="min-h-screen bg-slate-50">
+        <AdminModuleHero
+          className="w-full"
+          icon={<Car className="h-8 w-8 text-white" />}
+          eyebrow={tr('Fleet Management', 'Gestion de flotte')}
+          title={tr('Fleet Management', 'Gestion de flotte')}
+          description={tr('Manage your fleet, vehicle models, maintenance activity, and out-of-service units.', 'Gérez votre flotte, les modèles de véhicules, l’activité de maintenance et les unités hors service.')}
+        />
+        <div className="p-6">
+          <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+            <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+              <div className="text-5xl leading-none animate-pulse">⏳</div>
+              <h2 className="text-xl font-semibold text-slate-900">
+                {tr('Loading fleet...', 'Chargement de la flotte...')}
+              </h2>
             </div>
           </div>
-          <div className="animate-pulse h-10 bg-gray-200 rounded w-32"></div>
         </div>
-
-        <GridSkeleton />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="p-6">
+      <div className="min-h-screen bg-slate-50">
         <AdminModuleHero
+          className="w-full"
           icon={<Car className="h-8 w-8 text-white" />}
-          eyebrow="Fleet Management"
-          title="Fleet Management"
-          description="Manage your fleet, vehicle models, maintenance activity, and out-of-service units."
+          eyebrow={tr('Fleet Management', 'Gestion de flotte')}
+          title={tr('Fleet Management', 'Gestion de flotte')}
+          description={tr('Manage your fleet, vehicle models, maintenance activity, and out-of-service units.', 'Gérez votre flotte, les modèles de véhicules, l’activité de maintenance et les unités hors service.')}
         />
 
-        <div className="mt-6 bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-          <AlertTriangle className="w-16 h-16 text-red-400 mx-auto mb-4" />
-          <h3 className="text-lg font-semibold text-red-800 mb-2">Failed to Load Data</h3>
-          <p className="text-red-600 mb-4">{error}</p>
-          <button
-            onClick={fetchData}
-            className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
-          >
-            Try Again
-          </button>
+        <div className="p-6">
+          <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-6 text-center">
+            <AlertTriangle className="mx-auto mb-4 h-16 w-16 text-red-400" />
+            <h3 className="mb-2 text-lg font-semibold text-red-800">{tr('Failed to Load Data', 'Échec du chargement')}</h3>
+            <p className="mb-4 text-red-600">{error}</p>
+            <button
+              onClick={fetchData}
+              className="rounded-lg bg-red-600 px-4 py-2 text-white transition-colors hover:bg-red-700"
+            >
+              {tr('Try Again', 'Réessayer')}
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -1017,13 +1242,16 @@ const VehicleManagement: React.FC = () => {
   });
 
   return (
-      <div className="p-6">
+      <div className="min-h-screen bg-slate-50">
         <AdminModuleHero
+          className="w-full"
           icon={<Car className="h-8 w-8 text-white" />}
-          eyebrow="Fleet Management"
-          title="Fleet Management"
-          description="Manage your fleet, vehicle models, maintenance activity, and out-of-service units."
+          eyebrow={tr('Fleet Management', 'Gestion de flotte')}
+          title={tr('Fleet Management', 'Gestion de flotte')}
+          description={tr('Manage your fleet, vehicle models, maintenance activity, and out-of-service units.', 'Gérez votre flotte, les modèles de véhicules, l’activité de maintenance et les unités hors service.')}
         />
+
+      <div className="p-6">
 
       {showSegwayCleanup && activeTab === 'models' && (
         <SegwayCleanupRunner onComplete={fetchData} />
@@ -1035,7 +1263,7 @@ const VehicleManagement: React.FC = () => {
 
       {/* Tab Navigation */}
       <div className="mt-6 mb-6 rounded-[28px] border border-violet-100 bg-white p-2 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
-        <nav className="grid grid-cols-1 gap-2 md:grid-cols-3">
+        <nav className="grid grid-cols-1 gap-2 md:grid-cols-5">
           <button
             onClick={() => setActiveTab('vehicles')}
             className={`flex items-center justify-center gap-2 rounded-[22px] px-4 py-4 text-sm font-semibold transition-all ${
@@ -1045,7 +1273,7 @@ const VehicleManagement: React.FC = () => {
             }`}
           >
             <Car className="h-4 w-4" />
-            <span>Fleet</span>
+            <span>{tr('Fleet', 'Flotte')}</span>
             <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
               activeTab === 'vehicles'
                 ? 'bg-white/20 text-white'
@@ -1063,7 +1291,7 @@ const VehicleManagement: React.FC = () => {
             }`}
           >
             <LayoutGrid className="h-4 w-4" />
-            <span>Vehicle Models</span>
+            <span>{tr('Vehicle Models', 'Modèles véhicule')}</span>
             <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
               activeTab === 'models'
                 ? 'bg-white/20 text-white'
@@ -1081,13 +1309,49 @@ const VehicleManagement: React.FC = () => {
             }`}
           >
             <AlertTriangle className="h-4 w-4" />
-            <span>Out of Service</span>
+            <span>{tr('Out of Service', 'Hors service')}</span>
             <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
               activeTab === 'out_of_service'
                 ? 'bg-white/20 text-white'
                 : 'bg-rose-50 text-rose-600'
             }`}>
               {outOfServiceVehicles.length}
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab('locations')}
+            className={`flex items-center justify-center gap-2 rounded-[22px] px-4 py-4 text-sm font-semibold transition-all ${
+              activeTab === 'locations'
+                ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)]'
+                : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'
+            }`}
+          >
+            <MapPin className="h-4 w-4" />
+            <span>{tr('Fleet Locations', 'Emplacements flotte')}</span>
+            <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
+              activeTab === 'locations'
+                ? 'bg-white/20 text-white'
+                : 'bg-slate-100 text-slate-600'
+            }`}>
+              {fleetLocations.length}
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab('archive')}
+            className={`flex items-center justify-center gap-2 rounded-[22px] px-4 py-4 text-sm font-semibold transition-all ${
+              activeTab === 'archive'
+                ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)]'
+                : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'
+            }`}
+          >
+            <FileText className="h-4 w-4" />
+            <span>{tr('Sold Archive', 'Archives vendus')}</span>
+            <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
+              activeTab === 'archive'
+                ? 'bg-white/20 text-white'
+                : 'bg-slate-100 text-slate-600'
+            }`}>
+              {archivedVehicles.length}
             </span>
           </button>
         </nav>
@@ -1103,7 +1367,7 @@ const VehicleManagement: React.FC = () => {
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
                 <input
                   type="text"
-                  placeholder="Search vehicles..."
+                  placeholder={tr('Search vehicles...', 'Rechercher des véhicules...')}
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -1116,12 +1380,13 @@ const VehicleManagement: React.FC = () => {
                   onChange={(e) => setStatusFilter(e.target.value)}
                   className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
-                  <option value="all">All Status</option>
-                  <option value="available">Available</option>
-<option value="scheduled">Scheduled</option>
-<option value="rented">Rented</option>
-                  <option value="tour">Tour</option>
-                  <option value="maintenance">Maintenance</option>
+                  <option value="all">{tr('All Status', 'Tous les statuts')}</option>
+                  <option value="available">{tr('Available', 'Disponible')}</option>
+<option value="scheduled">{tr('Scheduled', 'Planifié')}</option>
+                  <option value="rented">{tr('Rented', 'Loué')}</option>
+                  <option value="impounded">{tr('Impounded', 'Mis en fourrière')}</option>
+                  <option value="tour">{tr('Tour', 'Tour')}</option>
+                  <option value="maintenance">{tr('Maintenance', 'Maintenance')}</option>
                 </select>
                 
                 <select
@@ -1129,10 +1394,19 @@ const VehicleManagement: React.FC = () => {
                   onChange={(e) => setTypeFilter(e.target.value)}
                   className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
-                  <option value="all">All Types</option>
+                  <option value="all">{tr('All Types', 'Tous les types')}</option>
                   <option value="quad">Quad</option>
                   <option value="ATV">ATV</option>
+                  <option value="UTV">UTV</option>
+                  <option value="buggy">Buggy</option>
+                  <option value="car">Car</option>
+                  <option value="motorhome">Motorhome</option>
+                  <option value="jet_ski">Jet Ski</option>
+                  <option value="electric_bike">Electric Bike</option>
+                  <option value="electric_motorbike">Electric Motorbike</option>
+                  <option value="electric_motorcycle">Electric Motorcycle</option>
                   <option value="motorcycle">Motorcycle</option>
+                  <option value="scooter">Scooter</option>
                 </select>
               </div>
             </div>
@@ -1142,14 +1416,14 @@ const VehicleManagement: React.FC = () => {
                 <button
                   onClick={() => setViewMode('grid')}
                   className={`rounded-xl p-2 transition-all ${viewMode === 'grid' ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_10px_24px_rgba(79,70,229,0.24)]' : 'text-slate-500 hover:bg-violet-50 hover:text-violet-700'}`}
-                  title="Grid View"
+                  title={tr('Grid View', 'Vue grille')}
                 >
                   <LayoutGrid className="w-5 h-5" />
                 </button>
                 <button
                   onClick={() => setViewMode('list')}
                   className={`rounded-xl p-2 transition-all ${viewMode === 'list' ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_10px_24px_rgba(79,70,229,0.24)]' : 'text-slate-500 hover:bg-violet-50 hover:text-violet-700'}`}
-                  title="List View"
+                  title={tr('List View', 'Vue liste')}
                 >
                   <List className="w-5 h-5" />
                 </button>
@@ -1159,7 +1433,7 @@ const VehicleManagement: React.FC = () => {
                 className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)] transition-all hover:scale-[1.01] hover:shadow-[0_18px_36px_rgba(79,70,229,0.34)]"
               >
                 <Plus className="w-4 h-4" />
-                Add Vehicle
+                {tr('Add Vehicle', 'Ajouter un véhicule')}
               </button>
             </div>
           </div>
@@ -1171,15 +1445,15 @@ const VehicleManagement: React.FC = () => {
               className="flex w-full flex-col items-start gap-4 bg-gradient-to-r from-violet-50 via-white to-indigo-50 p-5 text-left xl:flex-row xl:items-center xl:justify-between"
             >
               <div className="min-w-0">
-                <h2 className="text-lg font-semibold text-slate-900">Maintenance Summary</h2>
+                <h2 className="text-lg font-semibold text-slate-900">{tr('Maintenance Summary', 'Résumé maintenance')}</h2>
                 <p className="mt-1 text-sm text-slate-600">
-                  Quick maintenance counts for Fleet. Open Quad Maintenance only when you need the full repair workflow.
+                  {tr('Quick maintenance counts for Fleet. Open Quad Maintenance only when you need the full repair workflow.', 'Compteurs rapides de maintenance pour la flotte. Ouvrez la maintenance quad seulement si vous avez besoin du workflow complet de réparation.')}
                 </p>
               </div>
               <div className="flex w-full flex-wrap items-center gap-3 xl:w-auto xl:flex-nowrap xl:justify-end">
                 <div className="hidden rounded-2xl border border-violet-100 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm lg:flex lg:flex-wrap lg:items-center lg:gap-4 xl:flex-nowrap">
-                  <span>Open: {openMaintenanceRecords.length}</span>
-                  <span>In maintenance: {vehiclesCurrentlyInMaintenance}</span>
+                  <span>{tr('Open:', 'Ouverts :')} {openMaintenanceRecords.length}</span>
+                  <span>{tr('In maintenance:', 'En maintenance :')} {vehiclesCurrentlyInMaintenance}</span>
                 </div>
                 <span className="rounded-full border border-violet-100 bg-white p-2 text-violet-700 shadow-sm">
                   {showMaintenanceSummary ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
@@ -1192,19 +1466,19 @@ const VehicleManagement: React.FC = () => {
                 <div className="grid grid-cols-1 gap-4 pt-4 2xl:grid-cols-[minmax(0,1fr)_auto] 2xl:items-start">
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
                     <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
-                      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Open Records</p>
+                      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{tr('Open Records', 'Dossiers ouverts')}</p>
                       <p className="mt-2 text-2xl font-bold text-violet-700">{openMaintenanceRecords.length}</p>
                     </div>
                     <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
-                      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Vehicles In Maintenance</p>
+                      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{tr('Vehicles In Maintenance', 'Véhicules en maintenance')}</p>
                       <p className="mt-2 text-2xl font-bold text-indigo-700">{vehiclesCurrentlyInMaintenance}</p>
                     </div>
                     <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
-                      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Completed Records</p>
+                      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{tr('Completed Records', 'Dossiers terminés')}</p>
                       <p className="mt-2 text-2xl font-bold text-emerald-600">{completedMaintenanceCount}</p>
                     </div>
                     <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
-                      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Total Cost</p>
+                      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{tr('Total Cost', 'Coût total')}</p>
                       <p className="mt-2 text-2xl font-bold text-slate-900">{maintenanceTotalCost.toFixed(2)} MAD</p>
                     </div>
                   </div>
@@ -1215,7 +1489,7 @@ const VehicleManagement: React.FC = () => {
                     className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)] transition-all hover:scale-[1.01] hover:shadow-[0_18px_36px_rgba(79,70,229,0.34)] 2xl:self-start"
                   >
                     <Wrench className="h-4 w-4" />
-                    Open Quad Maintenance
+                    {tr('Open Quad Maintenance', 'Ouvrir maintenance quad')}
                     <ExternalLink className="h-4 w-4" />
                   </button>
                 </div>
@@ -1248,10 +1522,14 @@ const VehicleManagement: React.FC = () => {
           {filteredVehicles.length === 0 && (
             <div className="text-center py-12">
               <Car className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500">No vehicles found matching your criteria</p>
+              <p className="text-gray-500">{tr('No vehicles found matching your criteria', 'Aucun véhicule ne correspond à vos critères')}</p>
             </div>
           )}
         </>
+      )}
+
+      {activeTab === 'locations' && (
+        <FleetLocationsManager onLocationsChanged={fetchData} />
       )}
 
       {/* Out of Service Tab */}
@@ -1264,7 +1542,7 @@ const VehicleManagement: React.FC = () => {
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
                 <input
                   type="text"
-                  placeholder="Search by plate, name, or registration..."
+                  placeholder={tr('Search by plate, name, or registration...', 'Rechercher par plaque, nom ou immatriculation...')}
                   value={oosSearchTerm}
                   onChange={(e) => setOosSearchTerm(e.target.value)}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
@@ -1277,7 +1555,7 @@ const VehicleManagement: React.FC = () => {
                   onChange={(e) => setOosModelFilter(e.target.value)}
                   className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
                 >
-                  <option value="all">All Models</option>
+                  <option value="all">{tr('All Models', 'Tous les modèles')}</option>
                   {[...new Set(vehicles.filter(v => v.status === 'out_of_service').map(v => v.model))].map(model => (
                     <option key={model} value={model}>{model}</option>
                   ))}
@@ -1288,7 +1566,7 @@ const VehicleManagement: React.FC = () => {
                   onChange={(e) => setOosTypeFilter(e.target.value)}
                   className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
                 >
-                  <option value="all">All Types</option>
+                  <option value="all">{tr('All Types', 'Tous les types')}</option>
                   <option value="quad">Quad</option>
                   <option value="ATV">ATV</option>
                   <option value="motorcycle">Motorcycle</option>
@@ -1299,10 +1577,10 @@ const VehicleManagement: React.FC = () => {
             <button
               onClick={fetchData}
               className="inline-flex items-center gap-2 rounded-lg bg-gray-100 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-200 xl:justify-self-end"
-              title="Refresh"
+              title={tr('Refresh', 'Actualiser')}
             >
               <RefreshCw className="w-4 h-4" />
-              Refresh
+              {tr('Refresh', 'Actualiser')}
             </button>
           </div>
 
@@ -1328,7 +1606,7 @@ const VehicleManagement: React.FC = () => {
                       )}
                       <div className="absolute top-2 right-2">
                         <span className="bg-red-600 text-white px-3 py-1 rounded-full text-xs font-semibold">
-                          Out of Service
+                          {tr('Out of Service', 'Hors service')}
                         </span>
                       </div>
                     </div>
@@ -1344,23 +1622,23 @@ const VehicleManagement: React.FC = () => {
 
                       <div className="space-y-2 text-sm text-gray-600 mb-4">
                         <div className="flex items-center gap-2">
-                          <span className="font-medium">Plate:</span>
+                          <span className="font-medium">{tr('Plate:', 'Plaque :')}</span>
                           <span>{vehicle.plate_number}</span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="font-medium">Type:</span>
+                          <span className="font-medium">{tr('Type:', 'Type :')}</span>
                           <span className="capitalize">{vehicle.vehicle_type}</span>
                         </div>
                         {vehicle.registration_number && (
                           <div className="flex items-center gap-2">
-                            <span className="font-medium">Registration:</span>
+                            <span className="font-medium">{tr('Registration:', 'Immatriculation :')}</span>
                             <span>{vehicle.registration_number}</span>
                           </div>
                         )}
                         <div className="flex items-center gap-2">
                           <Clock className="w-4 h-4 text-red-600" />
                           <span className="text-red-600 font-medium">
-                            {daysOutOfService} {daysOutOfService === 1 ? 'day' : 'days'} out of service
+                            {daysOutOfService} {daysOutOfService === 1 ? tr('day', 'jour') : tr('days', 'jours')} {tr('out of service', 'hors service')}
                           </span>
                         </div>
                       </div>
@@ -1368,7 +1646,7 @@ const VehicleManagement: React.FC = () => {
                       {/* Reason for out of service */}
                       {(vehicle.general_notes || vehicle.notes) && (
                         <div className="mb-4 p-3 bg-red-50 rounded-lg border border-red-100">
-                          <p className="text-xs font-medium text-red-800 mb-1">Reason:</p>
+                          <p className="text-xs font-medium text-red-800 mb-1">{tr('Reason:', 'Raison :')}</p>
                           <p className="text-sm text-red-700">
                             {vehicle.general_notes || vehicle.notes}
                           </p>
@@ -1381,14 +1659,14 @@ const VehicleManagement: React.FC = () => {
                             onClick={() => handleView(vehicle)}
                             className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
                           >
-                          Open Profile
+                          {tr('Open Profile', 'Ouvrir le profil')}
                         </button>
                         <button
                           onClick={() => handleReturnToService(vehicle)}
                           className="flex-1 bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-1"
                         >
                           <CheckCircle className="w-4 h-4" />
-                          Return to Service
+                          {tr('Return to Service', 'Remettre en service')}
                         </button>
                       </div>
                     </div>
@@ -1399,8 +1677,109 @@ const VehicleManagement: React.FC = () => {
           ) : (
             <div className="text-center py-12 bg-white rounded-lg border-2 border-dashed border-gray-300">
               <CheckCircle className="w-16 h-16 text-green-400 mx-auto mb-4" />
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">All Vehicles In Service</h3>
-              <p className="text-gray-500">No vehicles are currently out of service</p>
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">{tr('All Vehicles In Service', 'Tous les véhicules sont en service')}</h3>
+              <p className="text-gray-500">{tr('No vehicles are currently out of service', 'Aucun véhicule n’est actuellement hors service')}</p>
+            </div>
+          )}
+        </>
+      )}
+
+      {activeTab === 'archive' && (
+        <>
+          <div className="mb-6 rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-900">{tr('Sold Vehicle Archive', 'Archive des véhicules vendus')}</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {tr('Vehicles with a sale or disposal history live here so the active fleet stays clean.', 'Les véhicules avec un historique de vente ou de sortie apparaissent ici afin de garder la flotte active claire.')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={fetchData}
+                className="inline-flex items-center gap-2 rounded-lg bg-gray-100 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-200"
+              >
+                <RefreshCw className="w-4 h-4" />
+                {tr('Refresh', 'Actualiser')}
+              </button>
+            </div>
+          </div>
+
+          {archivedVehicles.length > 0 ? (
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+              {archivedVehicles.map((vehicle: any) => {
+                const disposition = vehicle.disposition;
+                const eventType = disposition?.event_type || vehicle.status || 'sold';
+                const salePrice = disposition?.sale_price_mad ?? vehicle.sale_price_mad ?? 0;
+                const saleDate = disposition?.event_date || vehicle.sold_date;
+                const buyerName = disposition?.buyer_name || vehicle.sold_buyer_name;
+                return (
+                  <div key={vehicle.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+                    <div className="relative h-44 bg-slate-100">
+                      {normalizeVehicleImageUrl(vehicle.image_url) ? (
+                        <img
+                          src={normalizeVehicleImageUrl(vehicle.image_url)}
+                          alt={vehicle.name}
+                          className="h-full w-full object-cover opacity-80"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center">
+                          <Car className="h-14 w-14 text-slate-300" />
+                        </div>
+                      )}
+                      <span className="absolute right-3 top-3 rounded-full bg-slate-900/85 px-3 py-1 text-xs font-semibold text-white">
+                        {eventType === 'sold' ? tr('Sold', 'Vendu') : tr('Disposed', 'Sorti')}
+                      </span>
+                    </div>
+                    <div className="space-y-4 p-5">
+                      <div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-lg font-semibold text-slate-900">{vehicle.plate_number || vehicle.name}</h3>
+                            <p className="text-sm text-slate-500">{vehicle.model} • {vehicle.vehicle_type}</p>
+                          </div>
+                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+                            ID {vehicle.id}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div className="rounded-xl bg-slate-50 p-3">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Purchase', 'Achat')}</p>
+                          <p className="mt-1 font-semibold text-slate-900">{Number(vehicle.purchase_cost_mad || 0).toLocaleString()} MAD</p>
+                          <p className="text-xs text-slate-500">{vehicle.purchase_date ? new Date(vehicle.purchase_date).toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US') : tr('Date not set', 'Date non définie')}</p>
+                        </div>
+                        <div className="rounded-xl bg-emerald-50 p-3">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">{tr('Sale', 'Vente')}</p>
+                          <p className="mt-1 font-semibold text-slate-900">{Number(salePrice || 0).toLocaleString()} MAD</p>
+                          <p className="text-xs text-slate-500">{saleDate ? new Date(saleDate).toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US') : tr('Date not set', 'Date non définie')}</p>
+                        </div>
+                      </div>
+                      {buyerName ? (
+                        <p className="text-sm text-slate-600">
+                          <span className="font-medium text-slate-900">{tr('Buyer', 'Acheteur')}:</span> {buyerName}
+                        </p>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => handleView(vehicle)}
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        {tr('Open Vehicle Profile', 'Ouvrir le profil véhicule')}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-[28px] border border-dashed border-slate-300 bg-white px-6 py-14 text-center">
+              <FileText className="mx-auto mb-4 h-14 w-14 text-slate-300" />
+              <h3 className="text-lg font-semibold text-slate-900">{tr('No sold vehicles archived yet', 'Aucun véhicule vendu archivé')}</h3>
+              <p className="mt-2 text-sm text-slate-500">
+                {tr('Add sold history from a vehicle profile and it will appear here automatically.', 'Ajoutez un historique de vente depuis un profil véhicule et il apparaîtra ici automatiquement.')}
+              </p>
             </div>
           )}
         </>
@@ -1411,24 +1790,24 @@ const VehicleManagement: React.FC = () => {
         <>
           <div className="mb-6 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div>
-              <h2 className="text-xl font-semibold text-gray-900">Vehicle Models ({vehicleModels.length})</h2>
-              <p className="mt-1 text-sm text-gray-600">Manage the reusable model catalog used when creating and organizing fleet vehicles.</p>
+              <h2 className="text-xl font-semibold text-gray-900">{tr('Vehicle Models', 'Modèles véhicule')} ({vehicleModels.length})</h2>
+              <p className="mt-1 text-sm text-gray-600">{tr('Manage the reusable model catalog used when creating and organizing fleet vehicles.', 'Gérez le catalogue réutilisable de modèles utilisé pour créer et organiser les véhicules de la flotte.')}</p>
             </div>
             <div className="flex flex-wrap gap-2 xl:justify-end">
               <button
                 onClick={fetchData}
                 className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
-                title="Refresh Models"
+                title={tr('Refresh Models', 'Actualiser les modèles')}
               >
                 <RefreshCw className="w-4 h-4" />
-                Refresh
+                {tr('Refresh', 'Actualiser')}
               </button>
               <button
                 onClick={() => setShowAddModelForm(true)}
                 className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                Add Model
+                {tr('Add Model', 'Ajouter un modèle')}
               </button>
             </div>
           </div>
@@ -1450,7 +1829,7 @@ const VehicleManagement: React.FC = () => {
                       <button
                         onClick={() => handleEditModel(model)}
                         className="p-1 text-gray-400 hover:text-blue-600 transition-colors"
-                        title="Edit Model"
+                        title={tr('Edit Model', 'Modifier le modèle')}
                       >
                         <Edit className="w-4 h-4" />
                       </button>
@@ -1462,7 +1841,7 @@ const VehicleManagement: React.FC = () => {
                             ? 'text-gray-400 cursor-not-allowed'
                             : 'text-red-600 hover:text-red-900'
                         }`}
-                        title={deletingModelId === model.id ? 'Deleting...' : 'Delete Model'}
+                        title={deletingModelId === model.id ? tr('Deleting...', 'Suppression...') : tr('Delete Model', 'Supprimer le modèle')}
                       >
                         {deletingModelId === model.id ? (
                           <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600"></div>
@@ -1473,29 +1852,29 @@ const VehicleManagement: React.FC = () => {
                     </div>
                   </div>
                   
-                  <p className="text-sm text-gray-600 mb-4">{model.description || 'No description available'}</p>
+                  <p className="text-sm text-gray-600 mb-4">{model.description || tr('No description available', 'Aucune description disponible')}</p>
                   
                   <div className="grid grid-cols-2 gap-2 text-sm text-gray-500">
-                    <div>Model: {model.model || 'N/A'}</div>
-                    <div>Type: {model.vehicle_type || 'N/A'}</div>
-                    <div>Power: {
+                    <div>{tr('Model', 'Modèle')}: {model.model || 'N/D'}</div>
+                    <div>{tr('Type', 'Type')}: {model.vehicle_type || 'N/D'}</div>
+                    <div>{tr('Power', 'Puissance')} : {
                       powerMin === 0 && powerMax === 0 
-                        ? 'N/A' 
+                        ? 'N/D' 
                         : `${powerMin}-${powerMax}cc`
                     }</div>
-                    <div>Capacity: {
+                    <div>{tr('Capacity', 'Capacité')} : {
                       capacityMin === 0 && capacityMax === 0
-                        ? 'N/A'
+                        ? 'N/D'
                         : `${capacityMin}-${capacityMax}`
                     }</div>
-                    <div>Fuel Tank: {tankCapacityLiters ? `${tankCapacityLiters}L` : 'N/A'}</div>
-                    <div>Active Vehicles: {model.vehicles?.[0]?.count || 0}</div>
-                    <div>Status: {model.is_active ? 'Active' : 'Inactive'}</div>
+                    <div>{tr('Fuel Tank', 'Réservoir')}: {tankCapacityLiters ? `${tankCapacityLiters}L` : 'N/D'}</div>
+                    <div>{tr('Active Vehicles', 'Véhicules actifs')}: {model.vehicles?.[0]?.count || 0}</div>
+                    <div>{tr('Status', 'Statut')}: {model.is_active ? tr('Active', 'Actif') : tr('Inactive', 'Inactif')}</div>
                   </div>
                   
                   {model.features && model.features.length > 0 && (
                     <div className="mt-4">
-                      <p className="text-xs font-medium text-gray-700 mb-1">Features:</p>
+                      <p className="text-xs font-medium text-gray-700 mb-1">{tr('Features:', 'Caractéristiques :')}</p>
                       <div className="flex flex-wrap gap-1">
                         {model.features.map((feature, index) => (
                           <span key={index} className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">
@@ -1513,7 +1892,7 @@ const VehicleManagement: React.FC = () => {
           {vehicleModels.length === 0 && (
             <div className="text-center py-12">
               <Car className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500">No vehicle models found</p>
+              <p className="text-gray-500">{tr('No vehicle models found', 'Aucun modèle de véhicule trouvé')}</p>
             </div>
           )}
         </>
@@ -1540,10 +1919,10 @@ const VehicleManagement: React.FC = () => {
                 </div>
                 <div>
                   <h2 className="text-xl font-semibold text-gray-900">
-                    {viewingVehicle ? 'Vehicle Details' : editingVehicle ? 'Edit Vehicle' : 'Add New Vehicle'}
+                    {viewingVehicle ? tr('Vehicle Details', 'Détails du véhicule') : editingVehicle ? tr('Edit Vehicle', 'Modifier le véhicule') : tr('Add New Vehicle', 'Ajouter un nouveau véhicule')}
                   </h2>
                   <p className="text-sm text-gray-600">
-                    {viewingVehicle ? 'View comprehensive vehicle information' : 'Create a new vehicle with comprehensive fleet management'}
+                    {viewingVehicle ? tr('View comprehensive vehicle information', 'Voir les informations complètes du véhicule') : tr('Create a new vehicle with comprehensive fleet management', 'Créer un nouveau véhicule avec une gestion de flotte complète')}
                   </p>
                 </div>
               </div>
@@ -1560,20 +1939,20 @@ const VehicleManagement: React.FC = () => {
               <div className="bg-blue-50 rounded-lg p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <FileText className="w-5 h-5 text-blue-600" />
-                  <h3 className="text-lg font-semibold text-blue-900">Basic Information</h3>
+                  <h3 className="text-lg font-semibold text-blue-900">{tr('Basic Information', 'Informations de base')}</h3>
                   <span className="text-red-500">*</span>
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Vehicle Name <span className="text-red-500">*</span>
+                      {tr('Vehicle Name', 'Nom du véhicule')} <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
                       value={formData.name}
                       onChange={(e) => setFormData({...formData, name: e.target.value})}
-                      placeholder="e.g., ATV-001, Raptor-Blue"
+                      placeholder={tr('e.g., ATV-001, Raptor-Blue', 'ex. ATV-001, Raptor-Bleu')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       required
                       disabled={!!viewingVehicle}
@@ -1582,13 +1961,13 @@ const VehicleManagement: React.FC = () => {
                   
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Model <span className="text-red-500">*</span>
+                      {tr('Model', 'Modèle')} <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
                       value={formData.model}
                       onChange={(e) => setFormData({...formData, model: e.target.value})}
-                      placeholder="e.g., Yamaha Raptor 700, Honda TRX450R"
+                      placeholder={tr('e.g., Yamaha Raptor 700, Honda TRX450R', 'ex. Yamaha Raptor 700, Honda TRX450R')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       required
                       disabled={!!viewingVehicle}
@@ -1597,7 +1976,7 @@ const VehicleManagement: React.FC = () => {
                   
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Vehicle Type <span className="text-red-500">*</span>
+                      {tr('Vehicle Type', 'Type de véhicule')} <span className="text-red-500">*</span>
                     </label>
                     <select
                       value={formData.vehicle_type}
@@ -1608,19 +1987,28 @@ const VehicleManagement: React.FC = () => {
                     >
                       <option value="quad">Quad</option>
                       <option value="ATV">ATV</option>
+                      <option value="UTV">UTV</option>
+                      <option value="buggy">Buggy</option>
+                      <option value="car">Car</option>
+                      <option value="motorhome">Motorhome</option>
+                      <option value="jet_ski">Jet Ski</option>
+                      <option value="electric_bike">Electric Bike</option>
+                      <option value="electric_motorbike">Electric Motorbike</option>
+                      <option value="electric_motorcycle">Electric Motorcycle</option>
                       <option value="motorcycle">Motorcycle</option>
+                      <option value="scooter">Scooter</option>
                     </select>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Engine Power (CC)</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Engine Power (CC)', 'Puissance moteur (CC)')}</label>
                     <input
                       type="number"
                       value={formData.power_cc}
                       onChange={(e) => setFormData({...formData, power_cc: parseInt(e.target.value) || 0})}
-                      placeholder="e.g., 700, 450, 1000"
+                      placeholder={tr('e.g., 700, 450, 1000', 'ex. 700, 450, 1000')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       disabled={!!viewingVehicle}
                       min="0"
@@ -1628,7 +2016,7 @@ const VehicleManagement: React.FC = () => {
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Seating Capacity</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Seating Capacity', 'Capacité de places')}</label>
                     <input
                       type="number"
                       value={formData.capacity}
@@ -1641,12 +2029,12 @@ const VehicleManagement: React.FC = () => {
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Color</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Color', 'Couleur')}</label>
                     <input
                       type="text"
                       value={formData.color}
                       onChange={(e) => setFormData({...formData, color: e.target.value})}
-                      placeholder="e.g., Red, Blue, Black, Camo"
+                      placeholder={tr('e.g., Red, Blue, Black, Camo', 'ex. Rouge, Bleu, Noir, Camo')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       disabled={!!viewingVehicle}
                     />
@@ -1656,13 +2044,13 @@ const VehicleManagement: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Plate Number <span className="text-red-500">*</span>
+                      {tr('Plate Number', "Numéro d'immatriculation")} <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
                       value={formData.plate_number}
                       onChange={(e) => setFormData({...formData, plate_number: e.target.value})}
-                      placeholder="e.g., ABC-123, XYZ-456"
+                      placeholder={tr('e.g., ABC-123, XYZ-456', 'ex. ABC-123, XYZ-456')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       required
                       disabled={!!viewingVehicle}
@@ -1670,51 +2058,72 @@ const VehicleManagement: React.FC = () => {
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Status', 'Statut')}</label>
                     <select
                       value={formData.status}
                       onChange={(e) => setFormData({...formData, status: e.target.value})}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       disabled={!!viewingVehicle}
                     >
-                      <option value="available">Available</option>
-                      <option value="scheduled">Scheduled</option>
-                      <option value="rented">Rented</option>
-                      <option value="tour">Tour</option>
-                      <option value="maintenance">Maintenance</option>
-                      <option value="out_of_service">Out of Service</option>
+                      <option value="available">{tr('Available', 'Disponible')}</option>
+                      <option value="scheduled">{tr('Scheduled', 'Planifié')}</option>
+                      <option value="rented">{tr('Rented', 'Loué')}</option>
+                      <option value="impounded">{tr('Impounded', 'Mis en fourrière')}</option>
+                      <option value="tour">{tr('Tour', 'Tour')}</option>
+                      <option value="maintenance">{tr('Maintenance', 'Maintenance')}</option>
+                      <option value="out_of_service">{tr('Out of Service', 'Hors service')}</option>
                     </select>
                   </div>
+                </div>
+
+                <div className="mt-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Current location', 'Emplacement actuel')}</label>
+                  <select
+                    value={formData.location_id}
+                    onChange={(e) => setFormData({ ...formData, location_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={!!viewingVehicle}
+                  >
+                    <option value="">{tr('No location selected', 'Aucun emplacement sélectionné')}</option>
+                    {fleetLocations
+                      .filter((fleetLocation) => fleetLocation.is_active !== false)
+                      .map((fleetLocation) => (
+                        <option key={fleetLocation.id} value={fleetLocation.id}>
+                          {fleetLocation.name}
+                          {fleetLocation.is_default ? ` ${tr('(Default)', '(Par défaut)')}` : ''}
+                        </option>
+                      ))}
+                  </select>
                 </div>
 
                 {/* Insurance fields inline */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Insurance Policy Number</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Insurance Policy Number', "Numéro de police d'assurance")}</label>
                     <input
                       type="text"
                       value={formData.insurance_policy_number}
                       onChange={(e) => setFormData({...formData, insurance_policy_number: e.target.value})}
-                      placeholder="e.g., POL-2025-001"
+                      placeholder={tr('e.g., POL-2025-001', 'ex. POL-2025-001')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       disabled={!!viewingVehicle}
                     />
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Insurance Provider</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Insurance Provider', 'Assureur')}</label>
                     <input
                       type="text"
                       value={formData.insurance_provider}
                       onChange={(e) => setFormData({...formData, insurance_provider: e.target.value})}
-                      placeholder="e.g., Wafa Assurance"
+                      placeholder={tr('e.g., Wafa Assurance', 'ex. Wafa Assurance')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       disabled={!!viewingVehicle}
                     />
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Insurance Expiry Date</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Insurance Expiry Date', "Date d'expiration de l'assurance")}</label>
                     <input
                       type="date"
                       value={formData.insurance_expiry_date}
@@ -1728,19 +2137,19 @@ const VehicleManagement: React.FC = () => {
                 {/* Registration fields inline */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Registration Number</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Registration Number', "Numéro d'immatriculation administratif")}</label>
                     <input
                       type="text"
                       value={formData.registration_number}
                       onChange={(e) => setFormData({...formData, registration_number: e.target.value})}
-                      placeholder="e.g., REG-001-2025"
+                      placeholder={tr('e.g., REG-001-2025', 'ex. REG-001-2025')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       disabled={!!viewingVehicle}
                     />
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Registration Expiry Date</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr("Registration Expiry Date", "Date d'expiration de l'immatriculation")}</label>
                     <input
                       type="date"
                       value={formData.registration_expiry_date}
@@ -1756,14 +2165,14 @@ const VehicleManagement: React.FC = () => {
               <div className="bg-orange-50 rounded-lg p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <Gauge className="w-5 h-5 text-orange-600" />
-                  <h3 className="text-lg font-semibold text-orange-900">Fleet Information</h3>
+                  <h3 className="text-lg font-semibold text-orange-900">{tr('Fleet Information', 'Informations de flotte')}</h3>
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
                       <Gauge className="w-4 h-4" />
-                      Current Odometer (km)
+                      {tr('Current Odometer (km)', 'Odomètre actuel (km)')}
                     </label>
                     <input
                       type="number"
@@ -1780,7 +2189,7 @@ const VehicleManagement: React.FC = () => {
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
                       <Clock className="w-4 h-4" />
-                      Engine Hours
+                      {tr('Engine Hours', 'Heures moteur')}
                     </label>
                     <input
                       type="number"
@@ -1799,7 +2208,7 @@ const VehicleManagement: React.FC = () => {
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
                       <Calendar className="w-4 h-4" />
-                      Last Oil Change Date
+                      {tr('Last Oil Change Date', 'Date du dernier changement d’huile')}
                     </label>
                     <input
                       type="date"
@@ -1813,7 +2222,7 @@ const VehicleManagement: React.FC = () => {
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
                       <Gauge className="w-4 h-4" />
-                      Last Oil Change Odometer (km)
+                      {tr('Last Oil Change Odometer (km)', "Odomètre du dernier changement d’huile (km)")}
                     </label>
                     <input
                       type="number"
@@ -1847,7 +2256,7 @@ const VehicleManagement: React.FC = () => {
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
                       <Gauge className="w-4 h-4" />
-                      Next Oil Change Odometer (km)
+                      Prochain odomètre de vidange (km)
                     </label>
                     <input
                       type="number"
@@ -1872,7 +2281,7 @@ const VehicleManagement: React.FC = () => {
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Purchase Cost (MAD)</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Purchase Cost (MAD)', "Coût d'achat (MAD)")}</label>
                     <input
                       type="number"
                       min="0"
@@ -1886,7 +2295,7 @@ const VehicleManagement: React.FC = () => {
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Purchase Date</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Purchase Date', "Date d'achat")}</label>
                     <input
                       type="date"
                       value={formData.purchase_date}
@@ -1897,19 +2306,19 @@ const VehicleManagement: React.FC = () => {
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Supplier / Seller</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Supplier / Seller', 'Fournisseur / vendeur')}</label>
                     <input
                       type="text"
                       value={formData.purchase_supplier}
                       onChange={(e) => setFormData({...formData, purchase_supplier: e.target.value})}
-                      placeholder="e.g., Segway Morocco"
+                      placeholder={tr('e.g., Segway Morocco', 'ex. Segway Maroc')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                       disabled={!!viewingVehicle}
                     />
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Invoice/Receipt URL</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Invoice/Receipt URL', 'URL de la facture / du reçu')}</label>
                     <input
                       type="url"
                       value={formData.purchase_invoice_url}
@@ -1926,7 +2335,7 @@ const VehicleManagement: React.FC = () => {
               <div className="bg-purple-50 rounded-lg p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <ImageIcon className="w-5 h-5 text-purple-600" />
-                  <h3 className="text-lg font-semibold text-purple-900">Vehicle Image</h3>
+                  <h3 className="text-lg font-semibold text-purple-900">{tr('Vehicle Image', 'Image du véhicule')}</h3>
                 </div>
                 
                 <VehicleImageUpload
@@ -1942,7 +2351,7 @@ const VehicleManagement: React.FC = () => {
               <div className="bg-indigo-50 rounded-lg p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <File className="w-5 h-5 text-indigo-600" />
-                  <h3 className="text-lg font-semibold text-indigo-900">Documents (Legal & Administrative)</h3>
+                  <h3 className="text-lg font-semibold text-indigo-900">{tr('Documents (Legal & Administrative)', 'Documents (juridiques et administratifs)')}</h3>
                   {vehicleDocuments.length > 0 && (
                     <span className="bg-indigo-100 text-indigo-800 text-xs font-medium px-2 py-1 rounded-full">
                       {vehicleDocuments.length}
@@ -1977,29 +2386,29 @@ const VehicleManagement: React.FC = () => {
               <div className="bg-gray-50 rounded-lg p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <StickyNote className="w-5 h-5 text-gray-600" />
-                  <h3 className="text-lg font-semibold text-gray-900">Additional Notes</h3>
+                  <h3 className="text-lg font-semibold text-gray-900">{tr('Additional Notes', 'Notes supplémentaires')}</h3>
                 </div>
                 
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">General Notes</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('General Notes', 'Notes générales')}</label>
                     <textarea
                       value={formData.general_notes}
                       onChange={(e) => setFormData({...formData, general_notes: e.target.value})}
                       rows={4}
-                      placeholder="Any additional notes about this vehicle, special instructions, known issues, modifications, etc..."
+                      placeholder={tr('Any additional notes about this vehicle, special instructions, known issues, modifications, etc...', 'Toute note supplémentaire sur ce véhicule, instructions spéciales, problèmes connus, modifications, etc...')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-500 focus:border-transparent resize-none"
                       disabled={!!viewingVehicle}
                     />
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">System Notes</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{tr('System Notes', 'Notes système')}</label>
                     <textarea
                       value={formData.notes}
                       onChange={(e) => setFormData({...formData, notes: e.target.value})}
                       rows={4}
-                      placeholder="Internal notes for staff, booking system notes, etc..."
+                      placeholder={tr('Internal notes for staff, booking system notes, etc...', 'Notes internes pour le personnel, notes du système de réservation, etc...')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-500 focus:border-transparent resize-none"
                       disabled={!!viewingVehicle}
                     />
@@ -2014,7 +2423,7 @@ const VehicleManagement: React.FC = () => {
                   onClick={resetForm}
                   className="px-6 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors font-medium"
                 >
-                  Cancel
+                  {tr('Cancel', 'Annuler')}
                 </button>
                 {!viewingVehicle && (
                   <button
@@ -2029,12 +2438,12 @@ const VehicleManagement: React.FC = () => {
                     {submitting ? (
                       <>
                         <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                        {editingVehicle ? 'Updating...' : 'Creating...'}
+                        {editingVehicle ? tr('Updating...', 'Mise à jour...') : tr('Creating...', 'Création...')}
                       </>
                     ) : (
                       <>
                         <FileText className="w-4 h-4" />
-                        {editingVehicle ? 'Update Vehicle' : 'Create Vehicle'}
+                        {editingVehicle ? tr('Update Vehicle', 'Mettre à jour le véhicule') : tr('Create Vehicle', 'Créer le véhicule')}
                       </>
                     )}
                   </button>
@@ -2050,7 +2459,7 @@ const VehicleManagement: React.FC = () => {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
             <div className="p-6">
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">Add New Vehicle Model</h2>
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">{tr('Add New Vehicle Model', 'Ajouter un nouveau modèle de véhicule')}</h2>
               
               {modelFormError && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
@@ -2060,7 +2469,7 @@ const VehicleManagement: React.FC = () => {
               
               <form onSubmit={handleAddModel} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Model Name *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Model Name *', 'Nom du modèle *')}</label>
                   <input
                     type="text"
                     value={modelFormData.name}
@@ -2072,7 +2481,7 @@ const VehicleManagement: React.FC = () => {
                 </div>
                 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Model Identifier *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Model Identifier *', 'Identifiant du modèle *')}</label>
                   <input
                     type="text"
                     value={modelFormData.model}
@@ -2084,7 +2493,7 @@ const VehicleManagement: React.FC = () => {
                 </div>
                 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Vehicle Type</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Vehicle Type', 'Type de véhicule')}</label>
                   <select
                     value={modelFormData.vehicle_type}
                     onChange={(e) => setModelFormData({...modelFormData, vehicle_type: e.target.value})}
@@ -2092,24 +2501,32 @@ const VehicleManagement: React.FC = () => {
                   >
                     <option value="quad">Quad</option>
                     <option value="ATV">ATV</option>
+                    <option value="UTV">UTV</option>
+                    <option value="buggy">Buggy</option>
+                    <option value="car">Car</option>
+                    <option value="motorhome">Motorhome</option>
+                    <option value="jet_ski">Jet Ski</option>
+                    <option value="electric_bike">Electric Bike</option>
+                    <option value="electric_motorbike">Electric Motorbike</option>
+                    <option value="electric_motorcycle">Electric Motorcycle</option>
                     <option value="motorcycle">Motorcycle</option>
                     <option value="scooter">Scooter</option>
                   </select>
                 </div>
                 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Description', 'Description')}</label>
                   <textarea
                     value={modelFormData.description}
                     onChange={(e) => setModelFormData({...modelFormData, description: e.target.value})}
                     rows={3}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="Optional description of the vehicle model"
+                    placeholder={tr('Optional description of the vehicle model', 'Description facultative du modèle de véhicule')}
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Fuel Tank Capacity (L)</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Fuel Tank Capacity (L)', 'Capacité du réservoir (L)')}</label>
                   <input
                     type="number"
                     min="1"
@@ -2138,13 +2555,13 @@ const VehicleManagement: React.FC = () => {
                     }}
                     className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                   >
-                    Cancel
+                    {tr('Cancel', 'Annuler')}
                   </button>
                   <button
                     type="submit"
                     className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
                   >
-                    Add Model
+                    {tr('Add Model', 'Ajouter un modèle')}
                   </button>
                 </div>
               </form>
@@ -2152,6 +2569,7 @@ const VehicleManagement: React.FC = () => {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

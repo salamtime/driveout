@@ -4,13 +4,15 @@ import { Card, CardHeader, CardTitle, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import MaintenanceTrackingService from '../../services/MaintenanceTrackingService';
 import VehicleReportService from '../../services/VehicleReportService';
+import appWarmupService from '../../services/AppWarmupService';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatRentalReference } from '../../utils/rentalReference';
 import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
 import AddMaintenanceForm from './AddMaintenanceForm';
 import MaintenanceListView from './MaintenanceListView';
 import AdminModuleHero from '../admin/AdminModuleHero';
-import { 
+import i18n from '../../i18n';
+import {
   Plus, 
   Wrench, 
   AlertTriangle, 
@@ -23,26 +25,232 @@ import {
   Trash2
 } from 'lucide-react';
 
+let maintenanceDashboardSnapshotPromise = null;
+let maintenanceDashboardSnapshotCache = null;
+let maintenanceDashboardSnapshotCacheAt = 0;
+let maintenancePrimarySnapshotPromise = null;
+let maintenancePrimarySnapshotCache = null;
+let maintenancePrimarySnapshotCacheAt = 0;
+let maintenanceHistorySnapshotPromise = null;
+let maintenanceHistorySnapshotCache = null;
+let maintenanceHistorySnapshotCacheAt = 0;
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+
+const resetMaintenanceDashboardCaches = () => {
+  maintenanceDashboardSnapshotPromise = null;
+  maintenanceDashboardSnapshotCache = null;
+  maintenanceDashboardSnapshotCacheAt = 0;
+  maintenancePrimarySnapshotPromise = null;
+  maintenancePrimarySnapshotCache = null;
+  maintenancePrimarySnapshotCacheAt = 0;
+  maintenanceHistorySnapshotPromise = null;
+  maintenanceHistorySnapshotCache = null;
+  maintenanceHistorySnapshotCacheAt = 0;
+};
+
+const buildLinkedReportMap = async ({ vehiclesData = [], upcomingData = [], historyData = [] }) => {
+  const maintenanceIds = [
+    ...(Array.isArray(vehiclesData)
+      ? vehiclesData.flatMap((item) => (item?.maintenance_records || []).map((record) => record?.id))
+      : []),
+    ...(Array.isArray(upcomingData) ? upcomingData.map((record) => record?.id) : []),
+    ...(Array.isArray(historyData) ? historyData.map((record) => record?.id) : []),
+  ].filter(Boolean);
+
+  if (maintenanceIds.length === 0) {
+    return {};
+  }
+
+  return VehicleReportService.getReportsByMaintenanceIds(maintenanceIds);
+};
+
+const hydrateMaintenanceVehicles = (vehiclesData = [], reportsByMaintenanceId = {}) =>
+  (Array.isArray(vehiclesData) ? vehiclesData : []).map((vehicleData) => {
+    const maintenanceRecords = (vehicleData?.maintenance_records || []).map((record) => ({
+      ...record,
+      linked_rental_report: reportsByMaintenanceId[record?.id] || null,
+    }));
+
+    return {
+      ...vehicleData,
+      maintenance_records: maintenanceRecords,
+      linked_report_count: maintenanceRecords.filter((record) => Boolean(record.linked_rental_report)).length,
+      has_linked_rental_report: maintenanceRecords.some((record) => Boolean(record.linked_rental_report)),
+    };
+  });
+
+const getMaintenancePrimarySnapshot = async () => {
+  const now = Date.now();
+  if (maintenancePrimarySnapshotCache && now - maintenancePrimarySnapshotCacheAt < 5000) {
+    return maintenancePrimarySnapshotCache;
+  }
+
+  if (maintenancePrimarySnapshotPromise) {
+    return maintenancePrimarySnapshotPromise;
+  }
+
+  maintenancePrimarySnapshotPromise = (async () => {
+    const vehiclesData = await MaintenanceTrackingService.getVehiclesInMaintenance();
+    const [upcomingResult, statsResult] = await Promise.allSettled([
+      MaintenanceTrackingService.getUpcomingMaintenance(),
+      MaintenanceTrackingService.getMaintenanceStatistics(),
+    ]);
+
+    const upcomingData = upcomingResult.status === 'fulfilled' ? upcomingResult.value : [];
+    const statsData = statsResult.status === 'fulfilled' ? statsResult.value : {};
+    const reportsByMaintenanceId = await buildLinkedReportMap({ vehiclesData, upcomingData });
+
+    const snapshot = {
+      vehiclesInMaintenance: hydrateMaintenanceVehicles(vehiclesData, reportsByMaintenanceId),
+      upcomingMaintenance: (Array.isArray(upcomingData) ? upcomingData : []).map((record) => ({
+        ...record,
+        linked_rental_report: reportsByMaintenanceId[record?.id] || null,
+      })),
+      statistics: statsData || {},
+    };
+
+    maintenancePrimarySnapshotCache = snapshot;
+    maintenancePrimarySnapshotCacheAt = Date.now();
+    return snapshot;
+  })();
+
+  try {
+    return await maintenancePrimarySnapshotPromise;
+  } finally {
+    maintenancePrimarySnapshotPromise = null;
+  }
+};
+
+const getMaintenanceHistorySnapshot = async () => {
+  const now = Date.now();
+  if (maintenanceHistorySnapshotCache && now - maintenanceHistorySnapshotCacheAt < 5000) {
+    return maintenanceHistorySnapshotCache;
+  }
+
+  if (maintenanceHistorySnapshotPromise) {
+    return maintenanceHistorySnapshotPromise;
+  }
+
+  maintenanceHistorySnapshotPromise = (async () => {
+    const historyData = await MaintenanceTrackingService.getMaintenanceHistory({ limit: 10 });
+    const reportsByMaintenanceId = await buildLinkedReportMap({ historyData });
+    const snapshot = {
+      maintenanceHistory: (Array.isArray(historyData) ? historyData : []).map((record) => ({
+        ...record,
+        linked_rental_report: reportsByMaintenanceId[record?.id] || null,
+      })),
+    };
+
+    maintenanceHistorySnapshotCache = snapshot;
+    maintenanceHistorySnapshotCacheAt = Date.now();
+    return snapshot;
+  })();
+
+  try {
+    return await maintenanceHistorySnapshotPromise;
+  } finally {
+    maintenanceHistorySnapshotPromise = null;
+  }
+};
+
+const getMaintenanceDashboardSnapshot = async () => {
+  const now = Date.now();
+  if (maintenanceDashboardSnapshotCache && now - maintenanceDashboardSnapshotCacheAt < 5000) {
+    return maintenanceDashboardSnapshotCache;
+  }
+
+  if (maintenanceDashboardSnapshotPromise) {
+    return maintenanceDashboardSnapshotPromise;
+  }
+
+  maintenanceDashboardSnapshotPromise = (async () => {
+    const vehiclesData = await MaintenanceTrackingService.getVehiclesInMaintenance();
+    const [upcomingResult, historyResult, statsResult] = await Promise.allSettled([
+      MaintenanceTrackingService.getUpcomingMaintenance(),
+      MaintenanceTrackingService.getMaintenanceHistory({ limit: 10 }),
+      MaintenanceTrackingService.getMaintenanceStatistics(),
+    ]);
+
+    const upcomingData = upcomingResult.status === 'fulfilled' ? upcomingResult.value : [];
+    const historyData = historyResult.status === 'fulfilled' ? historyResult.value : [];
+    const statsData = statsResult.status === 'fulfilled' ? statsResult.value : {};
+    const maintenanceIds = [
+      ...(Array.isArray(vehiclesData)
+        ? vehiclesData.flatMap((item) => (item?.maintenance_records || []).map((record) => record?.id))
+        : []),
+      ...(Array.isArray(upcomingData) ? upcomingData.map((record) => record?.id) : []),
+      ...(Array.isArray(historyData) ? historyData.map((record) => record?.id) : []),
+    ].filter(Boolean);
+
+    const reportsByMaintenanceId = maintenanceIds.length > 0
+      ? await VehicleReportService.getReportsByMaintenanceIds(maintenanceIds)
+      : {};
+
+    const hydratedVehicles = (Array.isArray(vehiclesData) ? vehiclesData : []).map((vehicleData) => {
+      const maintenanceRecords = (vehicleData?.maintenance_records || []).map((record) => ({
+        ...record,
+        linked_rental_report: reportsByMaintenanceId[record?.id] || null,
+      }));
+
+      return {
+        ...vehicleData,
+        maintenance_records: maintenanceRecords,
+        linked_report_count: maintenanceRecords.filter((record) => Boolean(record.linked_rental_report)).length,
+        has_linked_rental_report: maintenanceRecords.some((record) => Boolean(record.linked_rental_report)),
+      };
+    });
+
+    const snapshot = {
+      vehiclesInMaintenance: hydratedVehicles,
+      upcomingMaintenance: (Array.isArray(upcomingData) ? upcomingData : []).map((record) => ({
+        ...record,
+        linked_rental_report: reportsByMaintenanceId[record?.id] || null,
+      })),
+      maintenanceHistory: (Array.isArray(historyData) ? historyData : []).map((record) => ({
+        ...record,
+        linked_rental_report: reportsByMaintenanceId[record?.id] || null,
+      })),
+      statistics: statsData || {},
+    };
+
+    maintenanceDashboardSnapshotCache = snapshot;
+    maintenanceDashboardSnapshotCacheAt = Date.now();
+    return snapshot;
+  })();
+
+  try {
+    return await maintenanceDashboardSnapshotPromise;
+  } finally {
+    maintenanceDashboardSnapshotPromise = null;
+  }
+};
+
 /**
  * MaintenanceTrackingDashboard - Main dashboard for maintenance tracking system
  * 
  * Mobile-friendly, comprehensive maintenance management interface
  */
 const MaintenanceTrackingDashboard = () => {
+  const isFrench = isFrenchLocale();
   const { userProfile } = useAuth();
   const isOwner = userProfile?.role === 'owner';
   const location = useLocation();
   const navigate = useNavigate();
+  const warmMaintenanceSnapshot = appWarmupService.getWarmMaintenanceSnapshot();
   const [activeTab, setActiveTab] = useState(location.state?.activeTab || 'dashboard');
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(Boolean(warmMaintenanceSnapshot));
+  const [historyLoading, setHistoryLoading] = useState(!(warmMaintenanceSnapshot?.maintenanceHistory?.length > 0));
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   
   // Data states - ALWAYS INITIALIZE AS ARRAYS
-  const [vehiclesInMaintenance, setVehiclesInMaintenance] = useState([]);
-  const [upcomingMaintenance, setUpcomingMaintenance] = useState([]);
-  const [maintenanceHistory, setMaintenanceHistory] = useState([]);
-  const [statistics, setStatistics] = useState({});
+  const [vehiclesInMaintenance, setVehiclesInMaintenance] = useState(warmMaintenanceSnapshot?.vehiclesInMaintenance || []);
+  const [upcomingMaintenance, setUpcomingMaintenance] = useState(warmMaintenanceSnapshot?.upcomingMaintenance || []);
+  const [maintenanceHistory, setMaintenanceHistory] = useState(warmMaintenanceSnapshot?.maintenanceHistory || []);
+  const [statistics, setStatistics] = useState(warmMaintenanceSnapshot?.statistics || {});
   const [showAddForm, setShowAddForm] = useState(false);
   const [initialFormContext, setInitialFormContext] = useState(null);
   const [initialEditRecordId, setInitialEditRecordId] = useState(null);
@@ -50,6 +258,9 @@ const MaintenanceTrackingDashboard = () => {
   const [dashboardSourceFilter, setDashboardSourceFilter] = useState('all');
   const [selectedRecordForDelete, setSelectedRecordForDelete] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const softActionButtonClass = 'rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900';
+  const primaryActionButtonClass = 'rounded-2xl bg-violet-600 text-white shadow-sm hover:bg-violet-700';
+  const dangerActionButtonClass = 'rounded-2xl border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800';
 
   const clearInitialRecordSelection = () => {
     setInitialEditRecordId(null);
@@ -108,57 +319,51 @@ const MaintenanceTrackingDashboard = () => {
 
   const loadDashboardData = async () => {
     try {
-      setLoading(true);
+      if (!hasLoadedOnce) {
+        setLoading(true);
+      } else {
+        setRefreshing(true);
+      }
       setError(null);
 
-      const [vehiclesData, upcomingData, historyData, statsData] = await Promise.all([
-        MaintenanceTrackingService.getVehiclesInMaintenance(),
-        MaintenanceTrackingService.getUpcomingMaintenance(),
-        MaintenanceTrackingService.getMaintenanceHistory({ limit: 10 }),
-        MaintenanceTrackingService.getMaintenanceStatistics()
-      ]);
-
-      const maintenanceIds = [
-        ...(Array.isArray(vehiclesData) ? vehiclesData.flatMap((item) => (item?.maintenance_records || []).map((record) => record?.id)) : []),
-        ...(Array.isArray(upcomingData) ? upcomingData.map((record) => record?.id) : []),
-        ...(Array.isArray(historyData) ? historyData.map((record) => record?.id) : []),
-      ].filter(Boolean);
-
-      const reportsByMaintenanceId = await VehicleReportService.getReportsByMaintenanceIds(maintenanceIds);
-
-      // CRITICAL: Always ensure arrays, never undefined
-      const safeVehiclesData = (Array.isArray(vehiclesData) ? vehiclesData : []).map((vehicleData) => {
-        const maintenanceRecords = (vehicleData?.maintenance_records || []).map((record) => ({
-          ...record,
-          linked_rental_report: reportsByMaintenanceId[record?.id] || null,
-        }));
-
-        return {
-          ...vehicleData,
-          maintenance_records: maintenanceRecords,
-          linked_report_count: maintenanceRecords.filter((record) => Boolean(record.linked_rental_report)).length,
-          has_linked_rental_report: maintenanceRecords.some((record) => Boolean(record.linked_rental_report)),
-        };
+      const primarySnapshot = await getMaintenancePrimarySnapshot();
+      setVehiclesInMaintenance(primarySnapshot.vehiclesInMaintenance || []);
+      setUpcomingMaintenance(primarySnapshot.upcomingMaintenance || []);
+      setStatistics(primarySnapshot.statistics || {});
+      setHasLoadedOnce(true);
+      appWarmupService.setWarmMaintenanceSnapshot({
+        vehiclesInMaintenance: primarySnapshot.vehiclesInMaintenance || [],
+        upcomingMaintenance: primarySnapshot.upcomingMaintenance || [],
+        maintenanceHistory,
+        statistics: primarySnapshot.statistics || {},
       });
-      const safeUpcomingData = (Array.isArray(upcomingData) ? upcomingData : []).map((record) => ({
-        ...record,
-        linked_rental_report: reportsByMaintenanceId[record?.id] || null,
-      }));
-      const safeHistoryData = (Array.isArray(historyData) ? historyData : []).map((record) => ({
-        ...record,
-        linked_rental_report: reportsByMaintenanceId[record?.id] || null,
-      }));
-      const safeStatsData = statsData || {};
+      setLoading(false);
+      setRefreshing(false);
 
-      setVehiclesInMaintenance(safeVehiclesData);
-      setUpcomingMaintenance(safeUpcomingData);
-      setMaintenanceHistory(safeHistoryData);
-      setStatistics(safeStatsData);
-
-      console.log('✅ Dashboard data loaded successfully');
+      window.setTimeout(async () => {
+        setHistoryLoading(true);
+        try {
+          const historySnapshot = await getMaintenanceHistorySnapshot();
+          setMaintenanceHistory(historySnapshot.maintenanceHistory || []);
+          appWarmupService.setWarmMaintenanceSnapshot({
+            vehiclesInMaintenance: primarySnapshot.vehiclesInMaintenance || [],
+            upcomingMaintenance: primarySnapshot.upcomingMaintenance || [],
+            maintenanceHistory: historySnapshot.maintenanceHistory || [],
+            statistics: primarySnapshot.statistics || {},
+          });
+        } catch (historyError) {
+          console.error('Error loading maintenance history:', historyError);
+        } finally {
+          setHistoryLoading(false);
+        }
+      }, 0);
     } catch (err) {
       console.error('Error loading dashboard data:', err);
-      setError(`Failed to load dashboard data: ${err.message}`);
+      setError(
+        isFrench
+          ? `Impossible de charger les donnees du tableau de bord : ${err.message}`
+          : `Failed to load dashboard data: ${err.message}`
+      );
       // CRITICAL: Set empty arrays on error
       setVehiclesInMaintenance([]);
       setUpcomingMaintenance([]);
@@ -166,13 +371,17 @@ const MaintenanceTrackingDashboard = () => {
       setStatistics({});
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
   const handleMaintenanceAdded = async () => {
-    setSuccess('✅ Maintenance record added successfully!');
+    setSuccess(tr('✅ Maintenance record added successfully!', '✅ Fiche de maintenance ajoutee avec succes !'));
     setShowAddForm(false);
     setInitialFormContext(null);
+    resetMaintenanceDashboardCaches();
+    appWarmupService.invalidateModule('maintenance');
+    appWarmupService.invalidateModule('finance');
     await loadDashboardData();
     
     // Clear success message after delay
@@ -180,8 +389,11 @@ const MaintenanceTrackingDashboard = () => {
   };
 
   const handleMaintenanceUpdated = async () => {
-    setSuccess('✅ Maintenance record updated successfully!');
+    setSuccess(tr('✅ Maintenance record updated successfully!', '✅ Fiche de maintenance mise a jour avec succes !'));
     clearInitialRecordSelection();
+    resetMaintenanceDashboardCaches();
+    appWarmupService.invalidateModule('maintenance');
+    appWarmupService.invalidateModule('finance');
     await loadDashboardData();
     
     // Clear success message after delay
@@ -194,10 +406,13 @@ const MaintenanceTrackingDashboard = () => {
     try {
       setLoading(true);
       await MaintenanceTrackingService.deleteMaintenanceRecord(selectedRecordForDelete.id);
-      setSuccess('✅ Maintenance record deleted successfully!');
+      setSuccess(tr('✅ Maintenance record deleted successfully!', '✅ Fiche de maintenance supprimee avec succes !'));
       setShowDeleteModal(false);
       setSelectedRecordForDelete(null);
       clearInitialRecordSelection();
+      resetMaintenanceDashboardCaches();
+      appWarmupService.invalidateModule('maintenance');
+      appWarmupService.invalidateModule('finance');
       await loadDashboardData();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
@@ -282,19 +497,22 @@ const MaintenanceTrackingDashboard = () => {
 
   const filteredVehiclesInMaintenance = getFilteredVehiclesInMaintenance();
 
-  if (loading && activeTab === 'dashboard') {
+  if (loading && !hasLoadedOnce && activeTab === 'dashboard') {
     return (
-      <div className="p-4 md:p-6">
-        <div className="animate-pulse space-y-6">
-          <div className="h-8 bg-gray-200 rounded w-64"></div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-24 bg-gray-200 rounded"></div>
-            ))}
-          </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="h-64 bg-gray-200 rounded"></div>
-            <div className="h-64 bg-gray-200 rounded"></div>
+      <div className="min-h-screen bg-slate-50">
+        <AdminModuleHero
+          icon={<Wrench className="h-8 w-8 text-white" />}
+          eyebrow={tr('Maintenance', 'Maintenance')}
+          title={tr('Maintenance', 'Maintenance')}
+          description={tr('Preparing the maintenance workspace...', 'Préparation de l’espace maintenance...')}
+          className="w-full"
+        />
+        <div className="max-w-7xl mx-auto p-6">
+          <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+            <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+              <div className="text-5xl leading-none animate-pulse">⏳</div>
+              <p className="text-xl font-semibold text-slate-900">{tr('Loading maintenance...', 'Chargement de la maintenance...')}</p>
+            </div>
           </div>
         </div>
       </div>
@@ -302,63 +520,71 @@ const MaintenanceTrackingDashboard = () => {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-7xl mx-auto">
+    <div className="min-h-screen bg-slate-50">
       <AdminModuleHero
         icon={<Wrench className="h-8 w-8 text-white" />}
-        eyebrow="Quad Maintenance"
-        title="Quad Maintenance"
-        description="Run maintenance work, parts usage, and cost tracking from one execution-focused workflow."
+        eyebrow={tr('Maintenance', 'Maintenance')}
+        title={tr('Maintenance', 'Maintenance')}
+        description={tr('Run maintenance work, parts usage, and cost tracking from one execution-focused workflow.', "Gérez les travaux de maintenance, l'utilisation des pièces et le suivi des coûts depuis un flux unique d'exécution.")}
+        className="w-full"
         actions={
           <Button
             onClick={() => setShowAddForm(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
+            className="hidden items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20 sm:inline-flex"
           >
             <Plus className="w-4 h-4" />
-            New Maintenance Record
+            {tr('Add Maintenance', 'Ajouter une maintenance')}
           </Button>
         }
       />
 
+      <div className="p-4 md:p-6 max-w-7xl mx-auto">
+      {refreshing && hasLoadedOnce ? (
+        <div className="mt-6 inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+          {tr('Refreshing maintenance data...', 'Actualisation des données de maintenance...')}
+        </div>
+      ) : null}
+
       {/* Success/Error Messages */}
       {success && (
-        <div className="mb-6 mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+        <div className="mb-6 mt-6 rounded-[1.5rem] border border-green-200 bg-green-50 px-4 py-4 shadow-sm">
           <p className="text-sm font-medium text-green-800">{success}</p>
         </div>
       )}
 
       {error && (
-        <div className="mb-6 mt-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+        <div className="mb-6 mt-6 rounded-[1.5rem] border border-red-200 bg-red-50 px-4 py-4 shadow-sm">
           <p className="text-sm font-medium text-red-800">{error}</p>
         </div>
       )}
 
       {/* Tab Navigation */}
-      <div className="border-b border-gray-200 mb-6 mt-6">
-        <nav className="-mb-px flex space-x-8 overflow-x-auto">
+      <div className="mb-6 mt-6 rounded-[1.75rem] border border-slate-200 bg-white px-4 py-3 shadow-sm">
+        <nav className="flex gap-3 overflow-x-auto">
           <button
             onClick={() => setActiveTab('dashboard')}
-            className={`py-2 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${
+            className={`inline-flex items-center rounded-2xl px-4 py-2.5 font-semibold text-sm whitespace-nowrap transition ${
               activeTab === 'dashboard'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                ? 'bg-violet-600 text-white shadow-sm'
+                : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
             }`}
           >
             <Wrench className="inline-block w-4 h-4 mr-2" />
-            Dashboard
+            {tr('Dashboard', 'Tableau de bord')}
           </button>
           <button
             onClick={() => {
               clearInitialRecordSelection();
               setActiveTab('maintenance');
             }}
-            className={`py-2 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${
+            className={`inline-flex items-center rounded-2xl px-4 py-2.5 font-semibold text-sm whitespace-nowrap transition ${
               activeTab === 'maintenance'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                ? 'bg-violet-600 text-white shadow-sm'
+                : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
             }`}
           >
             <Car className="inline-block w-4 h-4 mr-2" />
-            Maintenance Records
+            {tr('Maintenance Records', 'Dossiers de maintenance')}
           </button>
         </nav>
       </div>
@@ -368,58 +594,58 @@ const MaintenanceTrackingDashboard = () => {
         <div className="space-y-6">
           {/* Quick Stats */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Card>
+            <Card className="rounded-[1.75rem] border-slate-200 bg-white shadow-sm">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-gray-600">Vehicles in Maintenance</p>
-                    <p className="text-2xl font-bold text-blue-600">{statistics.vehiclesInMaintenance || 0}</p>
+                    <p className="text-sm font-medium text-slate-500">{tr('Maintenance', 'Maintenance')}</p>
+                    <p className="text-2xl font-bold text-violet-700">{statistics.vehiclesInMaintenance || 0}</p>
                   </div>
-                  <div className="p-2 bg-blue-100 rounded-lg">
-                    <Car className="w-6 h-6 text-blue-600" />
+                  <div className="rounded-2xl bg-violet-50 p-3">
+                    <Car className="w-6 h-6 text-violet-600" />
                   </div>
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="rounded-[1.75rem] border-slate-200 bg-white shadow-sm">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-gray-600">Overdue Items</p>
+                    <p className="text-sm font-medium text-slate-500">{tr('Overdue Items', 'Éléments en retard')}</p>
                     <p className="text-2xl font-bold text-red-600">{getOverdueCount()}</p>
                   </div>
-                  <div className="p-2 bg-red-100 rounded-lg">
+                  <div className="rounded-2xl bg-red-50 p-3">
                     <AlertTriangle className="w-6 h-6 text-red-600" />
                   </div>
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="rounded-[1.75rem] border-slate-200 bg-white shadow-sm">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-gray-600">Due Soon</p>
+                    <p className="text-sm font-medium text-slate-500">{tr('Due Soon', 'À venir bientôt')}</p>
                     <p className="text-2xl font-bold text-yellow-600">{getDueSoonCount()}</p>
                   </div>
-                  <div className="p-2 bg-yellow-100 rounded-lg">
+                  <div className="rounded-2xl bg-amber-50 p-3">
                     <Clock className="w-6 h-6 text-yellow-600" />
                   </div>
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="rounded-[1.75rem] border-slate-200 bg-white shadow-sm">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-gray-600">Monthly Cost</p>
+                    <p className="text-sm font-medium text-slate-500">{tr('Monthly Cost', 'Coût mensuel')}</p>
                     <p className="text-2xl font-bold text-green-600">
                       {MaintenanceTrackingService.formatCurrency(statistics.totalCostThisMonth)}
                     </p>
                   </div>
-                  <div className="p-2 bg-green-100 rounded-lg">
+                  <div className="rounded-2xl bg-emerald-50 p-3">
                     <DollarSign className="w-6 h-6 text-green-600" />
                   </div>
                 </div>
@@ -428,14 +654,14 @@ const MaintenanceTrackingDashboard = () => {
           </div>
 
           {/* Main Content Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Vehicles in Maintenance */}
-            <Card>
-              <CardHeader>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            {/* Maintenance */}
+            <Card className="rounded-[2rem] border-slate-200 bg-slate-50/90 shadow-sm">
+              <CardHeader className="border-b border-slate-100 bg-slate-50/70 rounded-t-[2rem]">
                 <CardTitle className="flex items-center justify-between">
                   <span className="flex items-center gap-2">
                     <Wrench className="w-5 h-5" />
-                    Vehicles in Maintenance ({filteredVehiclesInMaintenance.length})
+                    {tr('Maintenance', 'Maintenance')} ({filteredVehiclesInMaintenance.length})
                   </span>
                   <div className="flex items-center gap-2">
                     <Button
@@ -446,17 +672,17 @@ const MaintenanceTrackingDashboard = () => {
                         setInitialViewRecordId(null);
                         setActiveTab('maintenance');
                       }}
-                      className="rounded-lg"
+                      className={softActionButtonClass}
                     >
-                      View All Records
+                      {tr('View All Records', 'Voir tous les dossiers')}
                     </Button>
                     <Button
                       size="sm"
                       onClick={() => setShowAddForm(true)}
-                      className="flex items-center gap-2 rounded-lg"
+                      className={`flex items-center gap-2 ${primaryActionButtonClass}`}
                     >
                       <Plus className="w-4 h-4" />
-                      New Record
+                      {tr('New Record', 'Nouveau dossier')}
                     </Button>
                   </div>
                 </CardTitle>
@@ -464,9 +690,9 @@ const MaintenanceTrackingDashboard = () => {
               <CardContent className="p-4">
                 <div className="mb-4 flex flex-wrap gap-2">
                   {[
-                    { id: 'all', label: 'All' },
-                    { id: 'linked', label: 'Linked Rental Reports' },
-                    { id: 'regular', label: 'Regular Maintenance' },
+                    { id: 'all', label: tr('All', 'Tous') },
+                    { id: 'linked', label: tr('Linked Rental Reports', 'Rapports de location liés') },
+                    { id: 'regular', label: tr('Regular Maintenance', 'Maintenance standard') },
                   ].map((option) => (
                     <button
                       key={option.id}
@@ -474,8 +700,8 @@ const MaintenanceTrackingDashboard = () => {
                       onClick={() => setDashboardSourceFilter(option.id)}
                       className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
                         dashboardSourceFilter === option.id
-                          ? 'border-blue-600 bg-blue-600 text-white'
-                          : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                          ? 'border-violet-600 bg-violet-600 text-white'
+                          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                       }`}
                     >
                       {option.label}
@@ -485,11 +711,12 @@ const MaintenanceTrackingDashboard = () => {
                 {filteredVehiclesInMaintenance.length === 0 ? (
                   <div className="text-center py-8 text-gray-500">
                     <Car className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                    <p className="text-lg font-medium mb-2">No vehicles match this maintenance filter</p>
-                    <p className="text-sm">Try another source filter or create a new maintenance record.</p>
+                    <p className="text-lg font-medium mb-2">{tr('No vehicles match this maintenance filter', 'Aucun véhicule ne correspond à ce filtre de maintenance')}</p>
+                    <p className="text-sm">{tr('Try another source filter or create a new maintenance record.', 'Essayez un autre filtre source ou créez un nouveau dossier de maintenance.')}</p>
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                <div className="rounded-[1.75rem] border border-slate-200/80 bg-slate-100/80 p-3 shadow-inner">
+                <div className="space-y-4">
                     {filteredVehiclesInMaintenance.slice(0, 5).map((vehicleData) => {
                       // CRITICAL: Safe access to nested arrays
                       const safeMaintenanceRecords = Array.isArray(vehicleData.maintenance_records) ? vehicleData.maintenance_records : [];
@@ -500,19 +727,19 @@ const MaintenanceTrackingDashboard = () => {
                       const latestLinkedReport = safeMaintenanceRecords.find((record) => record?.linked_rental_report)?.linked_rental_report || null;
                       
                       return (
-                        <div key={safeVehicle.id || Math.random()} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm hover:shadow-md transition-shadow">
+                        <div key={safeVehicle.id || Math.random()} className="rounded-[1.5rem] border border-slate-300 bg-white p-4 shadow-[0_12px_28px_rgba(15,23,42,0.06)] transition-all hover:border-violet-200 hover:shadow-[0_16px_34px_rgba(76,29,149,0.10)]">
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <h4 className="font-semibold text-gray-900">
-                                {safeVehicle.name || 'Unknown Vehicle'} ({safeVehicle.plate_number || 'N/A'})
+                              <h4 className="font-semibold text-slate-900">
+                                {safeVehicle.name || tr('Unknown Vehicle', 'Véhicule inconnu')} ({safeVehicle.plate_number || 'N/A'})
                               </h4>
-                              <p className="mt-1 text-sm text-gray-500">
-                                {safeMaintenanceRecords.length} open item{safeMaintenanceRecords.length !== 1 ? 's' : ''}
+                              <p className="mt-1 text-sm text-slate-500">
+                                {safeMaintenanceRecords.length} {tr('open item', 'élément ouvert')}{safeMaintenanceRecords.length !== 1 ? 's' : ''}
                               </p>
                               {latestLinkedReport && (
                                 <div className="mt-2 flex flex-wrap items-center gap-2">
                                   <span className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-red-700">
-                                    Linked Rental Report
+                                    {tr('Linked Rental Report', 'Rapport de location lié')}
                                   </span>
                                   <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-2.5 py-1 text-[11px] font-medium text-orange-700">
                                     {getLinkedReportLabel(latestLinkedReport)}
@@ -524,36 +751,36 @@ const MaintenanceTrackingDashboard = () => {
                               )}
                             </div>
                             <span className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-1 text-xs font-medium text-orange-700 border border-orange-200">
-                              {safeMaintenanceRecords.length} open item{safeMaintenanceRecords.length !== 1 ? 's' : ''}
+                              {safeMaintenanceRecords.length} {tr('open item', 'élément ouvert')}{safeMaintenanceRecords.length !== 1 ? 's' : ''}
                             </span>
                           </div>
 
                           {latestLinkedReport && (
                             <div className="mt-4 rounded-lg border border-red-100 bg-red-50 p-3">
-                              <p className="text-xs font-semibold uppercase tracking-wide text-red-700">Rental-linked repair</p>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-red-700">{tr('Rental-linked repair', 'Réparation liée à une location')}</p>
                               <div className="mt-2 grid grid-cols-1 gap-2 text-sm text-gray-700 sm:grid-cols-3">
                                 <div>
-                                  <p className="text-[11px] uppercase tracking-wide text-gray-400">Rental</p>
+                                  <p className="text-[11px] uppercase tracking-wide text-gray-400">{tr('Rental', 'Location')}</p>
                                   <p className="font-medium text-gray-900">{formatRentalReference(latestLinkedReport.rental_id)}</p>
                                 </div>
                                 <div>
-                                  <p className="text-[11px] uppercase tracking-wide text-gray-400">Report</p>
+                                  <p className="text-[11px] uppercase tracking-wide text-gray-400">{tr('Report', 'Rapport')}</p>
                                   <p className="font-medium text-gray-900">{getLinkedReportLabel(latestLinkedReport)}</p>
                                 </div>
                                 <div>
-                                  <p className="text-[11px] uppercase tracking-wide text-gray-400">Status</p>
+                                  <p className="text-[11px] uppercase tracking-wide text-gray-400">{tr('Status', 'Statut')}</p>
                                   <p className="font-medium text-gray-900">
-                                    {latestLinkedReport.status === 'maintenance_completed' ? 'Ready to close rental' : 'Repair in progress'}
+                                    {latestLinkedReport.status === 'maintenance_completed' ? tr('Ready to close rental', 'Prêt à clôturer la location') : tr('Repair in progress', 'Réparation en cours')}
                                   </p>
                                 </div>
                               </div>
                             </div>
                           )}
 
-                          <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50/70 p-3">
+                          <div className="mt-4 rounded-2xl border border-violet-100 bg-violet-50/70 p-3">
                             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                               <div>
-                                <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Pricing shown from latest record</p>
+                                <p className="text-xs font-semibold uppercase tracking-wide text-violet-700">{tr('Pricing shown from latest record', 'Tarif affiché à partir du dernier dossier')}</p>
                                 {(() => {
                                   const maintenanceVisual = getMaintenanceTypeVisual(latestRecord?.maintenance_type);
                                   return (
@@ -562,36 +789,36 @@ const MaintenanceTrackingDashboard = () => {
                                         <span>{maintenanceVisual.emoji}</span>
                                         <span>{maintenanceVisual.label}</span>
                                       </span>
-                                      <p className="text-sm font-medium text-blue-900">
-                                        {latestRecord?.maintenance_type || 'No maintenance type'}
+                                      <p className="text-sm font-medium text-slate-900">
+                                        {latestRecord?.maintenance_type || tr('No maintenance type', 'Aucun type de maintenance')}
                                       </p>
                                     </div>
                                   );
                                 })()}
                               </div>
                               {safeMaintenanceRecords.length > 1 && (
-                                <span className="inline-flex items-center rounded-full border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-medium text-blue-700">
-                                  Combined open total: {MaintenanceTrackingService.formatCurrency(combinedTotals.total)}
+                                <span className="inline-flex items-center rounded-full border border-violet-200 bg-white px-2.5 py-1 text-[11px] font-medium text-violet-700">
+                                  {tr('Combined open total:', 'Total combiné ouvert :')} {MaintenanceTrackingService.formatCurrency(combinedTotals.total)}
                                 </span>
                               )}
                             </div>
                           </div>
 
-                          <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div className="mt-4 grid grid-cols-2 gap-3 2xl:grid-cols-4">
                             <div className="rounded-lg bg-blue-50 border border-blue-100 p-3">
-                              <p className="text-[11px] font-medium uppercase tracking-wide text-blue-700">Labor</p>
+                              <p className="text-[11px] font-medium uppercase tracking-wide text-blue-700">{tr('Labor', "Main-d'œuvre")}</p>
                               <p className="mt-1 text-sm font-semibold text-blue-900">{MaintenanceTrackingService.formatCurrency(latestRecordTotals.labor)}</p>
                             </div>
                             <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3">
-                              <p className="text-[11px] font-medium uppercase tracking-wide text-indigo-700">Parts</p>
+                              <p className="text-[11px] font-medium uppercase tracking-wide text-indigo-700">{tr('Parts', 'Pièces')}</p>
                               <p className="mt-1 text-sm font-semibold text-indigo-900">{MaintenanceTrackingService.formatCurrency(latestRecordTotals.parts)}</p>
                             </div>
                             <div className="rounded-lg bg-amber-50 border border-amber-100 p-3">
-                              <p className="text-[11px] font-medium uppercase tracking-wide text-amber-700">Tax</p>
+                              <p className="text-[11px] font-medium uppercase tracking-wide text-amber-700">{tr('Tax', 'Taxe')}</p>
                               <p className="mt-1 text-sm font-semibold text-amber-900">{MaintenanceTrackingService.formatCurrency(latestRecordTotals.tax)}</p>
                             </div>
                             <div className="rounded-lg bg-green-50 border border-green-100 p-3">
-                              <p className="text-[11px] font-medium uppercase tracking-wide text-green-700">Total</p>
+                              <p className="text-[11px] font-medium uppercase tracking-wide text-green-700">{tr('Total', 'Total')}</p>
                               <p className="mt-1 text-sm font-semibold text-green-900">{MaintenanceTrackingService.formatCurrency(latestRecordTotals.total)}</p>
                             </div>
                           </div>
@@ -602,7 +829,7 @@ const MaintenanceTrackingDashboard = () => {
                                 key={record.id || Math.random()}
                                 type="button"
                                 onClick={() => openMaintenanceRecord(record.id, 'view')}
-                                className="w-full flex items-center justify-between text-sm rounded-lg border border-gray-100 bg-gray-50 px-3 py-2.5 text-left hover:bg-gray-100 transition-colors"
+                                className="w-full flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-left text-sm transition-colors hover:bg-slate-100"
                               >
                                 <div className="pr-2">
                                   {(() => {
@@ -613,14 +840,14 @@ const MaintenanceTrackingDashboard = () => {
                                           <span>{maintenanceVisual.emoji}</span>
                                           <span>{maintenanceVisual.label}</span>
                                         </span>
-                                        <p className="text-gray-800 font-medium">{record.maintenance_type || 'Unknown Type'}</p>
+                                        <p className="font-medium text-slate-800">{record.maintenance_type || tr('Unknown Type', 'Type inconnu')}</p>
                                       </div>
                                     );
                                   })()}
-                                  <p className="mt-1 text-xs text-gray-500">{MaintenanceTrackingService.formatCurrency(getRecordFinancialSummary(record).total)}</p>
+                                  <p className="mt-1 text-xs text-slate-500">{MaintenanceTrackingService.formatCurrency(getRecordFinancialSummary(record).total)}</p>
                                   {record?.linked_rental_report && (
                                     <p className="mt-1 text-[11px] font-medium text-red-600">
-                                      Linked rental {formatRentalReference(record.linked_rental_report.rental_id)}
+                                      {tr('Linked rental', 'Location liée')} {formatRentalReference(record.linked_rental_report.rental_id)}
                                     </p>
                                   )}
                                 </div>
@@ -637,24 +864,24 @@ const MaintenanceTrackingDashboard = () => {
                               </p>
                             )}
                           </div>
-                          <div className="mt-4 flex flex-col lg:flex-row gap-2">
+                          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                             {safeMaintenanceRecords[0]?.id && (
                               <Button
                                 size="sm"
                                 variant="outline"
                                 onClick={() => openMaintenanceRecord(safeMaintenanceRecords[0].id, 'view')}
-                                className="w-full lg:w-auto"
+                                className={`w-full sm:w-auto sm:flex-1 xl:flex-none ${softActionButtonClass}`}
                               >
-                                Open Record
+                                {tr('Open Record', 'Ouvrir le dossier')}
                               </Button>
                             )}
                             {safeMaintenanceRecords[0]?.id && (
                               <Button
                                 size="sm"
                                 onClick={() => openMaintenanceRecord(safeMaintenanceRecords[0].id, 'edit')}
-                                className="w-full lg:w-auto"
+                                className={`w-full sm:w-auto sm:flex-1 xl:flex-none ${primaryActionButtonClass}`}
                               >
-                                Edit Record
+                                {tr('Edit Record', 'Modifier le dossier')}
                               </Button>
                             )}
                             {isOwner && safeMaintenanceRecords[0]?.id && (
@@ -665,15 +892,15 @@ const MaintenanceTrackingDashboard = () => {
                                   setSelectedRecordForDelete(safeMaintenanceRecords[0]);
                                   setShowDeleteModal(true);
                                 }}
-                                className="w-full border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 lg:w-auto"
+                                className={`w-full sm:w-auto sm:flex-1 xl:flex-none ${dangerActionButtonClass}`}
                               >
                                 <Trash2 className="mr-1.5 h-4 w-4" />
-                                Delete Record
+                                {tr('Delete Record', 'Supprimer le dossier')}
                               </Button>
                             )}
                             {safeMaintenanceRecords.length > 2 && (
-                              <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-2 text-xs font-medium text-gray-600">
-                                +{safeMaintenanceRecords.length - 2} more records
+                              <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600">
+                                +{safeMaintenanceRecords.length - 2} {tr('more records', 'autres dossiers')}
                               </span>
                             )}
                           </div>
@@ -688,31 +915,32 @@ const MaintenanceTrackingDashboard = () => {
                             setInitialViewRecordId(null);
                             setActiveTab('maintenance');
                           }}
-                          className="w-full text-center text-sm text-blue-600 hover:text-blue-700 py-2"
+                            className="w-full py-2 text-center text-sm text-violet-600 hover:text-violet-700"
                         >
-                          View all {filteredVehiclesInMaintenance.length} vehicles →
+                          {tr('View all', 'Voir les')} {filteredVehiclesInMaintenance.length} {tr('vehicles', 'véhicules')} →
                         </button>
                       </div>
                     )}
+                  </div>
                   </div>
                 )}
               </CardContent>
             </Card>
 
             {/* Upcoming/Overdue Maintenance */}
-            <Card>
-              <CardHeader>
+            <Card className="rounded-[2rem] border-slate-200 bg-slate-50/90 shadow-sm">
+              <CardHeader className="border-b border-slate-100 bg-slate-50/70 rounded-t-[2rem]">
                 <CardTitle className="flex items-center gap-2">
                   <Clock className="w-5 h-5" />
-                  Upcoming & Overdue ({safeUpcomingMaintenance.length})
+                  {tr('Upcoming & Overdue', 'À venir & en retard')} ({safeUpcomingMaintenance.length})
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-4">
                 {safeUpcomingMaintenance.length === 0 ? (
                   <div className="text-center py-8 text-gray-500">
                     <CheckCircle className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                    <p className="text-lg font-medium mb-2">All caught up!</p>
-                    <p className="text-sm">No upcoming maintenance scheduled</p>
+                    <p className="text-lg font-medium mb-2">{tr('All caught up!', 'Tout est à jour !')}</p>
+                    <p className="text-sm">{tr('No upcoming maintenance scheduled', 'Aucune maintenance à venir planifiée')}</p>
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -726,7 +954,7 @@ const MaintenanceTrackingDashboard = () => {
                           key={record.id || Math.random()}
                           type="button"
                           onClick={() => openMaintenanceRecord(record.id, 'view')}
-                          className={`w-full text-left p-4 rounded-xl border transition-colors hover:shadow-sm ${
+                          className={`w-full rounded-[1.5rem] border p-4 text-left transition-colors hover:shadow-sm ${
                           MaintenanceTrackingService.getPriorityColor(record.priority)
                         }`}>
                           <div className="flex items-center justify-between mb-2">
@@ -736,20 +964,20 @@ const MaintenanceTrackingDashboard = () => {
                                   <span>{maintenanceVisual.emoji}</span>
                                   <span>{maintenanceVisual.label}</span>
                                 </span>
-                                <h4 className="font-medium text-gray-900">
-                                  {safeVehicle.plate_number || 'No Plate'} - {record.maintenance_type || 'Unknown Type'}
+                                <h4 className="font-medium text-slate-900">
+                                  {safeVehicle.plate_number || tr('No Plate', 'Sans plaque')} - {record.maintenance_type || tr('Unknown Type', 'Type inconnu')}
                                 </h4>
                               </div>
-                              <p className="text-xs text-gray-500 mt-1">
-                                {safeVehicle.name || 'Unknown Vehicle'}
+                              <p className="mt-1 text-xs text-slate-500">
+                                {safeVehicle.name || tr('Unknown Vehicle', 'Véhicule inconnu')}
                               </p>
                             </div>
                             <span className="text-xs font-medium">
-                              {record.isOverdue ? 'OVERDUE' : 'DUE SOON'}
+                              {record.isOverdue ? tr('OVERDUE', 'EN RETARD') : tr('DUE SOON', 'BIENTÔT DÛ')}
                             </span>
                           </div>
-                          <div className="flex items-center justify-between text-sm text-gray-600">
-                            <span>Scheduled: {MaintenanceTrackingService.formatDate(record.scheduled_date)}</span>
+                          <div className="flex items-center justify-between text-sm text-slate-600">
+                            <span>{tr('Scheduled:', 'Planifié :')} {MaintenanceTrackingService.formatDate(record.scheduled_date)}</span>
                             <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                               MaintenanceTrackingService.getStatusColor(record.status)
                             }`}>
@@ -766,9 +994,9 @@ const MaintenanceTrackingDashboard = () => {
                           setInitialViewRecordId(null);
                           setActiveTab('maintenance');
                         }}
-                        className="w-full text-center text-sm text-blue-600 hover:text-blue-700 py-2"
+                        className="w-full py-2 text-center text-sm text-violet-600 hover:text-violet-700"
                       >
-                        View all {safeUpcomingMaintenance.length} items →
+                          {tr('View all', 'Voir les')} {safeUpcomingMaintenance.length} {tr('items', 'éléments')} →
                       </button>
                     )}
                   </div>
@@ -778,30 +1006,30 @@ const MaintenanceTrackingDashboard = () => {
           </div>
 
           {/* Recent Maintenance History */}
-          <Card>
-            <CardHeader>
+          <Card className="rounded-[2rem] border-slate-200 bg-white shadow-sm">
+            <CardHeader className="border-b border-slate-100 bg-slate-50/70 rounded-t-[2rem]">
               <CardTitle className="flex items-center gap-2">
                 <Calendar className="w-5 h-5" />
-                Recent Maintenance History
+                {tr('Recent Maintenance History', 'Historique récent de maintenance')}
               </CardTitle>
             </CardHeader>
             <CardContent className="p-4">
               {safeMaintenanceHistory.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   <TrendingUp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  <p className="text-lg font-medium mb-2">No maintenance history</p>
-                  <p className="text-sm">Start tracking maintenance to see history here</p>
+                  <p className="text-lg font-medium mb-2">{tr('No maintenance history', 'Aucun historique de maintenance')}</p>
+                  <p className="text-sm">{tr('Start tracking maintenance to see history here', "Commencez à suivre la maintenance pour voir l'historique ici")}</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto rounded-[1.5rem] border border-slate-100 bg-white">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-gray-200">
-                        <th className="text-left py-2 px-3 font-medium text-gray-900">Vehicle</th>
-                        <th className="text-left py-2 px-3 font-medium text-gray-900">Type</th>
-                        <th className="text-left py-2 px-3 font-medium text-gray-900">Date</th>
-                        <th className="text-left py-2 px-3 font-medium text-gray-900">Status</th>
-                        <th className="text-left py-2 px-3 font-medium text-gray-900">Cost</th>
+                      <tr className="border-b border-slate-200 bg-slate-50">
+                        <th className="px-3 py-3 text-left font-medium text-slate-900">{tr('Vehicle', 'Véhicule')}</th>
+                        <th className="px-3 py-3 text-left font-medium text-slate-900">{tr('Type', 'Type')}</th>
+                        <th className="px-3 py-3 text-left font-medium text-slate-900">{tr('Date', 'Date')}</th>
+                        <th className="px-3 py-3 text-left font-medium text-slate-900">{tr('Status', 'Statut')}</th>
+                        <th className="px-3 py-3 text-left font-medium text-slate-900">{tr('Cost', 'Coût')}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -813,16 +1041,16 @@ const MaintenanceTrackingDashboard = () => {
                         return (
                           <tr
                             key={record.id || Math.random()}
-                            className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors"
+                            className="cursor-pointer border-b border-slate-100 transition-colors hover:bg-slate-50"
                             onClick={() => openMaintenanceRecord(record.id, 'view')}
                           >
                             <td className="py-2 px-3">
                               <div>
-                                <p className="font-medium text-gray-900">{safeVehicle.name || 'Unknown Vehicle'}</p>
-                                <p className="text-xs text-gray-500">{safeVehicle.plate_number || 'N/A'}</p>
+                                <p className="font-medium text-slate-900">{safeVehicle.name || 'Unknown Vehicle'}</p>
+                                <p className="text-xs text-slate-500">{safeVehicle.plate_number || 'N/A'}</p>
                               </div>
                             </td>
-                            <td className="py-2 px-3 text-gray-600">
+                            <td className="py-2 px-3 text-slate-600">
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${maintenanceVisual.classes}`}>
                                   <span>{maintenanceVisual.emoji}</span>
@@ -831,7 +1059,7 @@ const MaintenanceTrackingDashboard = () => {
                                 <span>{record.maintenance_type || 'Unknown Type'}</span>
                               </div>
                             </td>
-                            <td className="py-2 px-3 text-gray-600">
+                            <td className="py-2 px-3 text-slate-600">
                               {MaintenanceTrackingService.formatDate(record.scheduled_date)}
                             </td>
                             <td className="py-2 px-3">
@@ -848,7 +1076,7 @@ const MaintenanceTrackingDashboard = () => {
                                 )}
                               </div>
                             </td>
-                            <td className="py-2 px-3 text-gray-900 font-medium">
+                            <td className="py-2 px-3 font-medium text-slate-900">
                               {MaintenanceTrackingService.formatCurrency(record.total_cost_mad)}
                             </td>
                           </tr>
@@ -860,7 +1088,7 @@ const MaintenanceTrackingDashboard = () => {
                     <div className="text-center pt-4">
                       <button
                         onClick={() => setActiveTab('maintenance')}
-                        className="text-sm text-blue-600 hover:text-blue-700"
+                        className="text-sm text-violet-600 hover:text-violet-700"
                       >
                         View complete history →
                       </button>
@@ -882,6 +1110,19 @@ const MaintenanceTrackingDashboard = () => {
           initialViewRecordId={initialViewRecordId}
           onClearInitialSelection={clearInitialRecordSelection}
         />
+      )}
+
+      {!showAddForm && (
+        <button
+          onClick={() => setShowAddForm(true)}
+          className="sm:hidden fixed bottom-6 right-6 z-50 inline-flex items-center gap-2 rounded-[1.6rem] border border-violet-500/80 bg-gradient-to-r from-violet-600 via-violet-600 to-indigo-700 px-5 py-4 text-white shadow-[0_18px_36px_rgba(79,70,229,0.28)] transition-all duration-200 hover:scale-[1.01] hover:from-violet-700 hover:to-indigo-800 active:scale-[0.99]"
+          aria-label={tr('Add Maintenance', 'Ajouter une maintenance')}
+        >
+          <span className="inline-flex h-8 w-8 items-center justify-center rounded-2xl bg-white/16 ring-1 ring-white/20">
+            <Plus className="h-5 w-5" />
+          </span>
+          <span className="text-sm font-semibold tracking-tight">{tr('Add Maintenance', 'Ajouter une maintenance')}</span>
+        </button>
       )}
 
       {/* Add Maintenance Form Modal */}
@@ -906,7 +1147,7 @@ const MaintenanceTrackingDashboard = () => {
                   <Trash2 className="h-5 w-5 text-red-600" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold text-gray-900">Delete Maintenance Record</h3>
+                  <h3 className="text-lg font-semibold text-gray-900">{tr('Delete Maintenance Record', 'Supprimer la fiche de maintenance')}</h3>
                   <p className="text-sm text-gray-500">Owner-only action</p>
                 </div>
               </div>
@@ -923,20 +1164,21 @@ const MaintenanceTrackingDashboard = () => {
                   }}
                   disabled={loading}
                 >
-                  Cancel
+                  {tr('Cancel', 'Annuler')}
                 </Button>
                 <Button
                   variant="destructive"
                   onClick={handleDeleteRecord}
                   disabled={loading}
                 >
-                  Delete Record
+                  {tr('Delete Record', 'Supprimer la fiche')}
                 </Button>
               </div>
             </div>
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

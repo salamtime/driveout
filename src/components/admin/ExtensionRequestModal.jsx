@@ -4,10 +4,10 @@ import { Button } from '../ui/button';
 import { Alert, AlertDescription } from '../ui/alert';
 import { AlertTriangle, Clock, CheckCircle, Check, Calendar, Package, Calculator, ChevronUp, ChevronDown } from 'lucide-react';
 import ExtensionPricingService from '../../services/ExtensionPricingService';
-import { canApprovePriceOverrides, canEditExtensionPrice } from '../../utils/permissionHelpers';
+import { canApproveRentalExtensions, canEditExtensionPrice, requiresExtensionApproval } from '../../utils/permissionHelpers';
 import { supabase } from '../../lib/supabase';
 
-export default function ExtensionRequestModal({ isOpen, onClose, rental, onExtensionCreated, currentUser }) {
+export default function ExtensionRequestModal({ isOpen, onClose, rental, onExtensionCreated, currentUser, editingExtension = null }) {
   const [extensionType, setExtensionType] = useState('hours');
   const [selectedHours, setSelectedHours] = useState(1);
   const [selectedDays, setSelectedDays] = useState(1);
@@ -28,9 +28,12 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
   const [packagePrice, setPackagePrice] = useState(null);
   const [showPackageSelector, setShowPackageSelector] = useState(false);
   const [showCalculator, setShowCalculator] = useState(false);
+  const isEditing = Boolean(editingExtension?.id);
 
-  const canApproveExtensionPrice = canApprovePriceOverrides(currentUser);
+  const canApproveExtensionPrice = canApproveRentalExtensions(currentUser);
   const canOverrideExtensionPrice = canEditExtensionPrice(currentUser);
+  const extensionApprovalRequired = requiresExtensionApproval(currentUser);
+  const canAutoApproveExtension = canApproveExtensionPrice || !extensionApprovalRequired;
   const hourOptions = [1, 2, 3, 4];
   const dayOptions = [1, 2, 3, 4];
 
@@ -56,6 +59,51 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
       fetchKMPackages();
     }
   }, [rental?.vehicle?.vehicle_model?.id, extensionType]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    if (editingExtension) {
+      const nextType = editingExtension.extension_type === 'days' ? 'days' : 'hours';
+      const nextValue = Number(editingExtension.extension_value) || (nextType === 'days'
+        ? Math.max(1, Math.round((Number(editingExtension.extension_hours) || 24) / 24))
+        : Math.max(1, Number(editingExtension.extension_hours) || 1));
+      const isManual = Boolean(editingExtension.is_custom_price) || editingExtension.price_source === 'manual';
+      const isPackage = Boolean(editingExtension.use_package_pricing || editingExtension.package_id);
+
+      setExtensionType(nextType);
+      setSelectedHours(nextType === 'hours' ? nextValue : 1);
+      setSelectedDays(nextType === 'days' ? nextValue : 1);
+      setManualPriceOverride(isManual);
+      setCustomPrice(String(editingExtension.extension_price || ''));
+      setUsePackagePricing(isPackage);
+      setShowPackageSelector(isPackage);
+      setShowCalculator(isPackage);
+      setError(null);
+    } else {
+      setExtensionType('hours');
+      setSelectedHours(1);
+      setSelectedDays(1);
+      setManualPriceOverride(false);
+      setCustomPrice('');
+      setUsePackagePricing(false);
+      setSelectedPackage(null);
+      setPackagePrice(null);
+      setShowPackageSelector(false);
+      setShowCalculator(false);
+      setError(null);
+    }
+  }, [editingExtension, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !editingExtension || !availablePackages.length) return;
+    if (!(editingExtension.use_package_pricing || editingExtension.package_id)) return;
+
+    const matchingPackage = availablePackages.find((pkg) => pkg.id === editingExtension.package_id);
+    if (matchingPackage) {
+      setSelectedPackage(matchingPackage);
+    }
+  }, [availablePackages, editingExtension, isOpen]);
 
   const fetchBaseRates = async () => {
     try {
@@ -273,24 +321,122 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
         ? { ...extensionData, bypassValidation: true }
         : null;
 
-      const { extension } = await ExtensionPricingService.validateAndCalculateExtensionPrice(
-        rental.id, 
-        extensionHours, 
-        currentUser?.id, 
-        autoApprove,
-        overrideData
-      );
+      if (isEditing) {
+        const oldHours = parseFloat(editingExtension.extension_hours) || 0;
+        const oldPrice = parseFloat(editingExtension.extension_price) || 0;
+        const deltaHours = extensionHours - oldHours;
+        const deltaPrice = finalPrice - oldPrice;
+        const isApprovedExtension = editingExtension.status === 'approved';
 
-      alert(autoApprove 
-        ? '✅ Extension approved and rental updated!' 
-        : '✅ Extension request submitted for approval!'
-      );
+        const updatePayload = {
+          extension_hours: extensionHours,
+          extension_type: extensionType,
+          extension_value: extensionValue,
+          extension_price: finalPrice,
+          price_source: extensionData.price_source,
+          calculation_method: extensionData.calculation_method,
+          tier_applied: extensionData.tier_applied,
+          tier_id: extensionData.tier_id,
+          package_id: extensionData.package_id || null,
+          package_name: extensionData.package_name || null,
+          package_rate_per_unit: extensionData.package_rate_per_unit || 0,
+          package_included_km_per_unit: extensionData.package_included_km_per_unit || null,
+          package_total_included_km: extensionData.package_total_included_km || null,
+          package_extra_rate: extensionData.package_extra_rate || 0,
+          package_extra_cost: extensionData.package_extra_cost || 0,
+          package_extra_kms: extensionData.package_extra_kms || 0,
+          estimated_kms: extensionData.estimated_kms || null,
+          use_package_pricing: Boolean(extensionData.use_package_pricing),
+          is_custom_price: manualPriceOverride,
+          updated_at: new Date().toISOString(),
+        };
 
-      onExtensionCreated();
+        const { data: updatedExtension, error: updateError } = await supabase
+          .from('rental_extensions')
+          .update(updatePayload)
+          .eq('id', editingExtension.id)
+          .select('*')
+          .single();
+
+        if (updateError) throw updateError;
+
+        let newEndDate = rental?.actual_end_date || rental?.rental_end_date || null;
+
+        if (isApprovedExtension) {
+          const currentEnd = new Date(rental?.actual_end_date || rental?.rental_end_date || new Date().toISOString());
+          const adjustedEnd = new Date(currentEnd.getTime() + (deltaHours * 60 * 60 * 1000));
+          newEndDate = adjustedEnd.toISOString();
+
+          const isHourlyRental = rental?.rental_type === 'hourly';
+          const currentQuantityHours = parseFloat(rental?.quantity_hours) || 0;
+          const currentQuantityDays = parseFloat(rental?.quantity_days) || 0;
+          const nextTotalAmount = (parseFloat(rental?.total_amount) || 0) + deltaPrice;
+          const nextDepositAmount = parseFloat(rental?.deposit_amount) || 0;
+
+          const rentalUpdatePayload = {
+            rental_end_date: newEndDate,
+            actual_end_date: newEndDate,
+            total_amount: nextTotalAmount,
+            remaining_amount: Math.max(0, nextTotalAmount - nextDepositAmount),
+            quantity_hours: isHourlyRental
+              ? currentQuantityHours + deltaHours
+              : currentQuantityHours,
+            quantity_days: isHourlyRental
+              ? currentQuantityDays
+              : currentQuantityDays + (deltaHours / 24),
+            updated_at: new Date().toISOString(),
+          };
+
+          const { error: rentalUpdateError } = await supabase
+            .from('app_4c3a7a6153_rentals')
+            .update(rentalUpdatePayload)
+            .eq('id', rental.id);
+
+          if (rentalUpdateError) throw rentalUpdateError;
+        }
+
+        alert('✅ Extension updated successfully!');
+
+        onExtensionCreated({
+          extension: updatedExtension,
+          autoApprove: isApprovedExtension,
+          extensionHours,
+          extensionType,
+          extensionValue,
+          extensionPrice: finalPrice,
+          newEndDate,
+        });
+      } else {
+        const { extension } = await ExtensionPricingService.validateAndCalculateExtensionPrice(
+          rental.id, 
+          extensionHours, 
+          currentUser?.id, 
+          autoApprove,
+          overrideData
+        );
+
+        alert(autoApprove 
+          ? '✅ Extension approved and rental updated!' 
+          : '✅ Extension request submitted for approval!'
+        );
+
+        onExtensionCreated({
+          extension,
+          autoApprove,
+          extensionHours,
+          extensionType,
+          extensionValue,
+          extensionPrice: finalPrice,
+          newEndDate:
+            priceCalculation?.newEndDate ||
+            new Date(new Date(rental.rental_end_date).getTime() + extensionHours * 60 * 60 * 1000).toISOString(),
+        });
+      }
+
       onClose();
     } catch (err) {
       console.error('❌ Error creating extension request:', err);
-      setError(`Failed to create extension request: ${err.message}`);
+      setError(`Failed to ${isEditing ? 'update' : 'create'} extension request: ${err.message}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -358,18 +504,21 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-lg sm:text-xl">
-            <Clock className="w-5 h-5 text-purple-600" />
-            Request Extension
+      <DialogContent className="max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-0 shadow-xl sm:max-w-2xl">
+        <DialogHeader className="border-b border-slate-200 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 px-5 py-5 sm:px-6">
+          <DialogTitle className="flex items-center gap-2 text-lg font-semibold text-slate-900 sm:text-xl">
+            <Clock className="h-5 w-5 text-violet-600" />
+            {isEditing ? 'Edit Extension' : 'Request Extension'}
           </DialogTitle>
+          <p className="mt-1 text-sm font-medium text-slate-500">
+            {isEditing ? 'Adjust the saved extension without leaving rental details.' : 'Keep the extension flow quick and easy for the team.'}
+          </p>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-5 px-5 py-5 sm:px-6">
           {/* Extension Type Toggle */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4">
+            <label className="mb-3 block text-sm font-semibold text-slate-700">
               Extension Type
             </label>
             <div className="flex gap-2">
@@ -383,10 +532,10 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                   setShowPackageSelector(false);
                 }}
                 className={`
-                  flex-1 py-2 px-4 rounded-lg border-2 font-medium text-sm transition-all flex items-center justify-center gap-2
+                  flex-1 rounded-xl border px-4 py-3 text-sm font-semibold transition-all flex items-center justify-center gap-2
                   ${extensionType === 'hours'
-                    ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-md'
-                    : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300'
+                    ? 'border-violet-200 bg-violet-50 text-violet-700 shadow-sm ring-2 ring-violet-100'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
                   }
                 `}
               >
@@ -403,10 +552,10 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                   setShowPackageSelector(false);
                 }}
                 className={`
-                  flex-1 py-2 px-4 rounded-lg border-2 font-medium text-sm transition-all flex items-center justify-center gap-2
+                  flex-1 rounded-xl border px-4 py-3 text-sm font-semibold transition-all flex items-center justify-center gap-2
                   ${extensionType === 'days'
-                    ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-md'
-                    : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300'
+                    ? 'border-violet-200 bg-violet-50 text-violet-700 shadow-sm ring-2 ring-violet-100'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
                   }
                 `}
               >
@@ -417,8 +566,8 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
           </div>
 
           {/* Duration Selection */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4">
+            <label className="mb-3 block text-sm font-semibold text-slate-700">
               Extension Duration
             </label>
             <div className="grid grid-cols-4 gap-2">
@@ -428,10 +577,10 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                     key={hours}
                     onClick={() => setSelectedHours(hours)}
                     className={`
-                      py-2 px-3 rounded-lg border-2 font-medium text-sm transition-all
+                      rounded-xl border px-3 py-3 font-semibold text-sm transition-all
                       ${selectedHours === hours
-                        ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-md'
-                        : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300'
+                        ? 'border-violet-200 bg-violet-50 text-violet-700 shadow-sm ring-2 ring-violet-100'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
                       }
                     `}
                   >
@@ -444,10 +593,10 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                     key={days}
                     onClick={() => setSelectedDays(days)}
                     className={`
-                      py-2 px-3 rounded-lg border-2 font-medium text-sm transition-all
+                      rounded-xl border px-3 py-3 font-semibold text-sm transition-all
                       ${selectedDays === days
-                        ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-md'
-                        : 'border-gray-200 bg-white text-gray-700 hover:border-blue-300'
+                        ? 'border-violet-200 bg-violet-50 text-violet-700 shadow-sm ring-2 ring-violet-100'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
                       }
                     `}
                   >
@@ -457,15 +606,44 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
               )}
             </div>
             {extensionType === 'days' && (
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="mt-2 text-xs font-medium text-slate-500">
                 {selectedDays} day{selectedDays > 1 ? 's' : ''} = {selectedDays * 24} hours
               </p>
             )}
           </div>
 
+          {canOverrideExtensionPrice && !usePackagePricing && (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={manualPriceOverride}
+                  onChange={(e) => setManualPriceOverride(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                />
+                <span className="text-sm font-semibold text-slate-700">Override Price</span>
+              </label>
+
+              {manualPriceOverride && (
+                <div className="mt-3 space-y-2">
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Custom Extension Fee (MAD)
+                  </label>
+                  <input
+                    type="text"
+                    value={customPrice}
+                    onChange={handleCustomPriceChange}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    placeholder="Enter custom amount"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Apply KM Package Toggle - Harmonic with layout */}
           {availablePackages.length > 0 && (
-            <div className="border-t border-gray-200 pt-4 mt-4">
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4">
               <div className="flex items-center justify-between mb-3">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -478,15 +656,15 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                       setManualPriceOverride(false);
                       if (!newValue) setTimeout(calculatePrice, 100);
                     }}
-                    className="w-4 h-4 text-purple-600 rounded border-gray-300 focus:ring-purple-500"
+                    className="w-4 h-4 text-violet-600 rounded border-slate-300 focus:ring-violet-500"
                   />
-                  <span className="text-sm font-medium text-gray-700 flex items-center gap-1.5">
-                    <Package className="w-4 h-4 text-purple-600" />
+                  <span className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+                    <Package className="w-4 h-4 text-violet-600" />
                     Apply {extensionType === 'hours' ? 'Hourly' : 'Daily'} Package
                   </span>
                 </label>
                 {usePackagePricing && (
-                  <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
+                  <span className="rounded-full bg-violet-100 px-2 py-1 text-xs font-semibold text-violet-700">
                     {availablePackages.length} available
                   </span>
                 )}
@@ -505,7 +683,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                         const ratePerUnit = parseFloat(pkg.fixed_amount) || 0;
                         
                         return (
-                          <button
+                      <button
                             key={pkg.id}
                             type="button"
                             onClick={() => {
@@ -513,50 +691,50 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                               setTimeout(calculatePrice, 100);
                             }}
                             className={`
-                              relative px-3 py-2.5 rounded-lg border-2 transition-all text-left
+                              relative rounded-xl border px-3 py-3 transition-all text-left
                               ${isSelected
-                                ? 'border-purple-500 bg-gradient-to-r from-purple-50 to-indigo-50 ring-2 ring-purple-200 shadow-sm'
-                                : 'border-gray-200 bg-white text-gray-700 hover:border-purple-300 hover:bg-purple-50/30'
+                                ? 'border-violet-200 bg-violet-50 ring-2 ring-violet-100 shadow-sm'
+                                : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
                               }
                             `}
                           >
                             <div className="flex flex-col gap-1">
                               <div className="flex items-center justify-between">
-                                <span className="font-semibold text-gray-900 text-sm truncate pr-1">
+                                <span className="font-semibold text-slate-900 text-sm truncate pr-1">
                                   {pkg.name}
                                 </span>
                                 {isSelected && (
-                                  <div className="w-4 h-4 bg-purple-500 rounded-full flex items-center justify-center flex-shrink-0">
+                                  <div className="w-4 h-4 bg-violet-600 rounded-full flex items-center justify-center flex-shrink-0">
                                     <Check className="w-2.5 h-2.5 text-white" />
                                   </div>
                                 )}
                               </div>
                               
                               <div className="flex items-center gap-2 text-xs">
-                                <span className="font-bold text-purple-700">
+                                <span className="font-bold text-violet-700">
                                   {ratePerUnit.toFixed(0)} MAD
                                 </span>
-                                <span className="text-gray-400 text-[10px]">/ {extensionType === 'hours' ? 'hr' : 'day'}</span>
+                                <span className="text-slate-400 text-[10px]">/ {extensionType === 'hours' ? 'hr' : 'day'}</span>
                               </div>
                               
                               <div className="flex flex-wrap gap-1 mt-0.5">
                                 {pkg.included_kilometers && (
-                                  <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full">
+                                  <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full">
                                     {pkg.included_kilometers}km incl.
                                   </span>
                                 )}
                                 {pkg.extra_km_rate > 0 && (
-                                  <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full">
+                                  <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">
                                     +{pkg.extra_km_rate}/km
                                   </span>
                                 )}
                               </div>
                               
-                              <div className="mt-1 pt-1 border-t border-gray-100 text-[10px] text-gray-500">
-                                <span className="font-medium text-purple-600">
+                              <div className="mt-1 pt-1 border-t border-slate-100 text-[10px] text-slate-500">
+                                <span className="font-medium text-violet-600">
                                   {(ratePerUnit * (extensionType === 'days' ? selectedDays : selectedHours)).toFixed(0)} MAD
                                 </span>
-                                <span className="text-gray-400 ml-1">total</span>
+                                <span className="text-slate-400 ml-1">total</span>
                               </div>
                             </div>
                           </button>
@@ -569,40 +747,16 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
             </div>
           )}
 
-          {/* Manual Price Override */}
-          {canOverrideExtensionPrice && !usePackagePricing && (
-            <div className="border-t pt-4">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={manualPriceOverride}
-                  onChange={(e) => setManualPriceOverride(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 rounded"
-                />
-                <span className="text-sm font-medium text-gray-700">Custom Extension Fee</span>
-              </label>
-            </div>
-          )}
-
-          {manualPriceOverride && canOverrideExtensionPrice && (
-            <Alert className="bg-yellow-50 border-yellow-200">
-              <AlertTriangle className="h-4 w-4 text-yellow-600" />
-              <AlertDescription className="text-sm text-yellow-800">
-                You are manually overriding the calculated price. The custom amount will be used instead of the automatic calculation.
-              </AlertDescription>
-            </Alert>
-          )}
-
           {/* Price Display */}
           {isCalculating ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="w-8 h-8 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
+            <div className="flex items-center justify-center rounded-xl border border-slate-200 bg-slate-50 py-10">
+              <div className="h-8 w-8 rounded-full border-4 border-violet-600 border-t-transparent animate-spin" />
             </div>
           ) : priceCalculation && (
-            <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 sm:p-5 space-y-4">
               <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Extension Duration:</span>
-                <span className="font-semibold text-gray-900">
+                <span className="text-sm font-semibold text-slate-600">Extension Duration</span>
+                <span className="font-semibold text-slate-900">
                   {extensionType === 'days' 
                     ? `${selectedDays} day${selectedDays > 1 ? 's' : ''} (${selectedDays * 24}h)`
                     : `${selectedHours} hour${selectedHours > 1 ? 's' : ''}`
@@ -611,9 +765,9 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
               </div>
 
               {/* Extension Fee - Always visible outside collapse */}
-              <div className="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-lg p-3 text-white mb-3">
+              <div className="mb-3 rounded-xl bg-violet-700 p-4 text-white shadow-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Extension Fee</span>
+                  <span className="text-sm font-semibold">Extension Fee</span>
                   <span className="text-xl font-bold">
                     {(() => {
                       // Calculate based on selected package or standard pricing
@@ -632,7 +786,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                     })()} MAD
                   </span>
                 </div>
-                <div className="text-[10px] text-purple-100 mt-1">
+                <div className="mt-1 text-[10px] font-medium text-violet-100">
                   {usePackagePricing && selectedPackage ? (
                     `${parseFloat(selectedPackage.fixed_amount).toFixed(0)} MAD × ${extensionType === 'days' ? selectedDays : selectedHours} ${extensionType === 'days' ? 'days' : 'hrs'}`
                   ) : (
@@ -643,25 +797,25 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
 
               {/* Package Details - Collapsible (only when package selected) */}
               {usePackagePricing && selectedPackage && (
-                <div className="border border-purple-200 rounded-lg overflow-hidden">
+                <div className="overflow-hidden rounded-xl border border-violet-200 bg-white">
                   {/* Collapsible Header */}
                   <button
                     type="button"
                     onClick={() => setShowCalculator(!showCalculator)}
-                    className="w-full px-3 py-2 bg-purple-50 flex items-center justify-between hover:bg-purple-100 transition-colors"
+                    className="w-full px-4 py-3 bg-violet-50 flex items-center justify-between hover:bg-violet-100 transition-colors"
                   >
                     <div className="flex items-center gap-2">
-                      <Calculator className="w-4 h-4 text-purple-600" />
-                      <span className="text-sm font-medium text-purple-900">Package Details</span>
+                      <Calculator className="w-4 h-4 text-violet-600" />
+                      <span className="text-sm font-semibold text-violet-900">Package Details</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-purple-600">
+                      <span className="text-xs font-medium text-violet-600">
                         {showCalculator ? 'Hide' : 'Show'}
                       </span>
                       {showCalculator ? (
-                        <ChevronUp className="w-4 h-4 text-purple-600" />
+                        <ChevronUp className="w-4 h-4 text-violet-600" />
                       ) : (
-                        <ChevronDown className="w-4 h-4 text-purple-600" />
+                        <ChevronDown className="w-4 h-4 text-violet-600" />
                       )}
                     </div>
                   </button>
@@ -680,18 +834,18 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                             {/* Stats Grid */}
                             <div className="grid grid-cols-2 gap-2">
                               {totalIncludedKm && (
-                                <div className="bg-green-50 rounded-lg p-2 text-center">
-                                  <div className="text-xs text-gray-500">Included</div>
-                                  <div className="font-bold text-green-600">{totalIncludedKm}km</div>
-                                  <div className="text-[10px] text-gray-400">
+                                <div className="bg-emerald-50 rounded-lg p-2 text-center">
+                                  <div className="text-xs text-slate-500">Included</div>
+                                  <div className="font-bold text-emerald-600">{totalIncludedKm}km</div>
+                                  <div className="text-[10px] text-slate-400">
                                     {includedKmsPerUnit}km × {duration}
                                   </div>
                                 </div>
                               )}
                               {selectedPackage.extra_km_rate > 0 && (
-                                <div className="bg-orange-50 rounded-lg p-2 text-center">
-                                  <div className="text-xs text-gray-500">Extra rate</div>
-                                  <div className="font-bold text-orange-600">{selectedPackage.extra_km_rate} MAD/km</div>
+                                <div className="bg-amber-50 rounded-lg p-2 text-center">
+                                  <div className="text-xs text-slate-500">Extra rate</div>
+                                  <div className="font-bold text-amber-600">{selectedPackage.extra_km_rate} MAD/km</div>
                                 </div>
                               )}
                             </div>
@@ -707,10 +861,10 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                 <>
                   {/* Standard pricing display (existing code) */}
                   <div className="space-y-2 pt-2 border-t">
-                    <p className="text-xs font-medium text-gray-600">Price Breakdown:</p>
+                    <p className="text-xs font-semibold text-slate-600">Price Breakdown</p>
                     
                     <div className="flex justify-between text-sm">
-                      <span className="text-gray-700">
+                      <span className="text-slate-700">
                         {extensionType === 'hours' 
                           ? `${selectedHours} hour${selectedHours > 1 ? 's' : ''} @ ${formatCurrency(getEffectiveRate())} MAD/hour`
                           : `${selectedDays} day${selectedDays > 1 ? 's' : ''} @ ${formatCurrency(getEffectiveRate())} MAD/day`
@@ -722,14 +876,14 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
 
                     {/* Show base rate comparison when using tier pricing */}
                     {extensionType === 'hours' && priceCalculation.tier_applied && baseHourlyRate && (
-                      <div className="flex justify-between text-xs text-gray-500 pt-1 border-t border-gray-200 mt-1">
+                      <div className="mt-1 flex justify-between border-t border-slate-200 pt-1 text-xs text-slate-500">
                         <span>Base rate would be:</span>
                         <span>{formatCurrency(baseHourlyRate)} MAD/hour × {selectedHours}h = {formatCurrency(baseHourlyRate * selectedHours)} MAD</span>
                       </div>
                     )}
 
                     {extensionType === 'days' && priceCalculation.tier_applied && baseDailyRate && (
-                      <div className="flex justify-between text-xs text-gray-500 pt-1 border-t border-gray-200 mt-1">
+                      <div className="mt-1 flex justify-between border-t border-slate-200 pt-1 text-xs text-slate-500">
                         <span>Base rate would be:</span>
                         <span>{formatCurrency(baseDailyRate)} MAD/day × {selectedDays} day{selectedDays > 1 ? 's' : ''} = {formatCurrency(baseDailyRate * selectedDays)} MAD</span>
                       </div>
@@ -738,8 +892,8 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
 
                   {/* Savings */}
                   {calculateSavings() > 0 && (
-                    <div className="flex items-center justify-between text-sm text-green-600 bg-green-50 p-2 rounded-md">
-                      <span className="font-medium">You Save:</span>
+                    <div className="flex items-center justify-between rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
+                      <span className="font-semibold">You Save</span>
                       <span className="font-semibold">{formatCurrency(calculateSavings())} MAD</span>
                     </div>
                   )}
@@ -750,7 +904,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
 
               {/* New End Date */}
               {priceCalculation?.newEndDate && (
-                <div className="text-xs text-gray-500 pt-2 border-t border-gray-200">
+                <div className="border-t border-slate-200 pt-2 text-xs font-medium text-slate-500">
                   <p>New end date: {new Date(priceCalculation.newEndDate).toLocaleString()}</p>
                 </div>
               )}
@@ -758,44 +912,28 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
           )}
 
           {error && (
-            <Alert className="bg-red-50 border-red-200">
+            <Alert className="border-red-200 bg-red-50">
               <AlertTriangle className="h-4 w-4 text-red-600" />
               <AlertDescription className="text-sm text-red-800">{error}</AlertDescription>
             </Alert>
           )}
 
-          {/* Manual price input for override */}
-          {manualPriceOverride && canOverrideExtensionPrice && !usePackagePricing && (
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-gray-700">
-                Custom Extension Fee (MAD)
-              </label>
-              <input
-                type="text"
-                value={customPrice}
-                onChange={handleCustomPriceChange}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Enter custom amount"
-              />
-            </div>
-          )}
-
           {/* Action Buttons */}
-          <div className="flex flex-col sm:flex-row gap-2 pt-2">
+          <div className="sticky bottom-0 flex flex-col gap-2 border-t border-slate-200 bg-slate-50 pt-4 sm:flex-row">
             <Button
               variant="outline"
               onClick={onClose}
               disabled={isSubmitting}
-              className="w-full sm:w-auto order-2 sm:order-1"
+              className="order-2 w-full rounded-lg border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:order-1 sm:w-auto"
             >
               Cancel
             </Button>
 
-            {canApproveExtensionPrice ? (
+            {canAutoApproveExtension ? (
               <Button
                 onClick={() => handleSubmit(true)}
                 disabled={isSubmitting || isCalculating || !priceCalculation}
-                className="w-full sm:flex-1 bg-green-600 hover:bg-green-700 text-white order-1 sm:order-2"
+                className="order-1 w-full rounded-lg bg-violet-700 px-5 py-3 text-sm font-semibold text-white hover:bg-violet-800 sm:order-2 sm:flex-1"
               >
                 {isSubmitting ? (
                   <>
@@ -805,7 +943,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                 ) : (
                   <>
                     <CheckCircle className="w-4 h-4 mr-2" />
-                    Approve & Extend Immediately
+                    {isEditing ? 'Save Extension Changes' : canApproveExtensionPrice ? 'Approve & Extend Immediately' : 'Create Extension'}
                   </>
                 )}
               </Button>
@@ -813,7 +951,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
               <Button
                 onClick={() => handleSubmit(false)}
                 disabled={isSubmitting || isCalculating || !priceCalculation}
-                className="w-full sm:flex-1 bg-purple-600 hover:bg-purple-700 text-white order-1 sm:order-2"
+                className="order-1 w-full rounded-lg bg-violet-700 px-5 py-3 text-sm font-semibold text-white hover:bg-violet-800 sm:order-2 sm:flex-1"
               >
                 {isSubmitting ? (
                   <>
@@ -823,7 +961,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
                 ) : (
                   <>
                     <Clock className="w-4 h-4 mr-2" />
-                    Submit Request
+                    {isEditing ? 'Save Extension Changes' : 'Submit Request'}
                   </>
                 )}
               </Button>

@@ -2,9 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { format, parseISO } from 'date-fns';
 import { supabase } from '../../lib/supabase';
+import i18n from '../../i18n';
 
 const RentalDetailsModal = ({ rental, isOpen, onClose, onUpdate }) => {
   const { t } = useTranslation();
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [vehicle, setVehicle] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -34,12 +37,12 @@ const RentalDetailsModal = ({ rental, isOpen, onClose, onUpdate }) => {
     });
 
         if (error) {
-          setError('Failed to load vehicle details');
+          setError(tr('Échec du chargement des détails du véhicule', 'Échec du chargement des détails du véhicule'));
         } else {
           setVehicle(data);
         }
       } catch (err) {
-        setError('Failed to load vehicle details');
+        setError(tr('Échec du chargement des détails du véhicule', 'Échec du chargement des détails du véhicule'));
       } finally {
         setLoading(false);
       }
@@ -51,11 +54,11 @@ const RentalDetailsModal = ({ rental, isOpen, onClose, onUpdate }) => {
   }, [rental, isOpen]);
   
   const formatDate = (dateString) => {
-    if (!dateString) return 'Not set';
+    if (!dateString) return tr('Non défini', 'Non défini');
     try {
       return format(parseISO(dateString), 'PPP p');
     } catch (error) {
-      return 'Invalid date';
+      return tr('Date invalide', 'Date invalide');
     }
   };
   
@@ -100,7 +103,7 @@ const RentalDetailsModal = ({ rental, isOpen, onClose, onUpdate }) => {
       }
       
     } catch (err) {
-      setError('Failed to update rental status');
+      setError(tr('Échec de la mise à jour du statut de location', 'Échec de la mise à jour du statut de location'));
     } finally {
       setLoading(false);
     }
@@ -114,12 +117,12 @@ const RentalDetailsModal = ({ rental, isOpen, onClose, onUpdate }) => {
         <div className="p-6">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-2xl font-bold text-gray-900">
-              Rental Details
+              {tr('Détails de la location', 'Détails de la location')}
             </h2>
             <button 
               onClick={onClose}
               className="text-gray-500 hover:text-gray-700"
-              aria-label="Close"
+              aria-label={tr('Fermer', 'Fermer')}
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
@@ -139,33 +142,33 @@ const RentalDetailsModal = ({ rental, isOpen, onClose, onUpdate }) => {
               {/* Rental Information */}
               <div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                  Rental Information
+                  {tr('Informations de location', 'Informations de location')}
                 </h3>
                 <div className="space-y-3">
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Rental ID:</span>
+                    <span className="text-gray-600">{tr('ID location', 'ID location')} :</span>
                     <span className="font-medium">{rental.id}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Status:</span>
+                    <span className="text-gray-600">{tr('Statut', 'Statut')} :</span>
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusBadgeColor(rental.rental_status)}`}>
                       {rental.rental_status}
                     </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Start Date:</span>
+                    <span className="text-gray-600">{tr('Date de début', 'Date de début')} :</span>
                     <span className="font-medium">{formatDate(rental.rental_start_date)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">End Date:</span>
+                    <span className="text-gray-600">{tr('Date de fin', 'Date de fin')} :</span>
                     <span className="font-medium">{formatDate(rental.rental_end_date)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Total Amount:</span>
+                    <span className="text-gray-600">{tr('Montant total', 'Montant total')} :</span>
                     <span className="font-medium">{rental.total_amount} MAD</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Deposit Amount:</span>
+                    <span className="text-gray-600">{tr('Montant du dépôt', 'Montant du dépôt')} :</span>
                     <span className="font-medium">{rental.deposit_amount} MAD</span>
                   </div>
                 </div>
@@ -174,27 +177,27 @@ const RentalDetailsModal = ({ rental, isOpen, onClose, onUpdate }) => {
               {/* Customer Information */}
               <div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                  Customer Information
+                  {tr('Informations client', 'Informations client')}
                 </h3>
                 <div className="space-y-3">
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Name:</span>
+                    <span className="text-gray-600">{tr('Nom', 'Nom')} :</span>
                     <span className="font-medium">{rental.customer_name}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Email:</span>
+                    <span className="text-gray-600">{tr('E-mail', 'E-mail')} :</span>
                     <span className="font-medium">{rental.customer_email}</span>
                   </div>
                   {rental.customer_phone && (
                     <div className="flex justify-between">
-                      <span className="text-gray-600">Phone:</span>
+                      <span className="text-gray-600">{tr('Téléphone', 'Téléphone')} :</span>
                       <span className="font-medium">{rental.customer_phone}</span>
                     </div>
                   )}
                   {rental.customer_id_image && (
                     <div>
-                      <span className="text-gray-600">Customer ID:</span>
-                      <img src={rental.customer_id_image} alt="Customer ID" className="mt-2 rounded-lg w-full" />
+                      <span className="text-gray-600">{tr('Pièce client', 'Pièce client')} :</span>
+                      <img src={rental.customer_id_image} alt={tr('Pièce client', 'Pièce client')} className="mt-2 rounded-lg w-full" />
                     </div>
                   )}
                 </div>
@@ -204,16 +207,16 @@ const RentalDetailsModal = ({ rental, isOpen, onClose, onUpdate }) => {
               {rental.second_driver_name && (
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                    Second Driver Information
+                    {tr('Informations du second conducteur', 'Informations du second conducteur')}
                   </h3>
                   <div className="space-y-3">
                     <div className="flex justify-between">
-                      <span className="text-gray-600">Name:</span>
+                      <span className="text-gray-600">{tr('Nom', 'Nom')} :</span>
                       <span className="font-medium">{rental.second_driver_name}</span>
                     </div>
                     {rental.second_driver_license && (
                        <div className="flex justify-between">
-                        <span className="text-gray-600">License:</span>
+                        <span className="text-gray-600">{tr('Permis', 'Permis')} :</span>
                         <span className="font-medium">{rental.second_driver_license}</span>
                       </div>
                     )}

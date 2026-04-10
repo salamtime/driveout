@@ -1,33 +1,111 @@
 import { supabase } from '../lib/supabase';
+import { TABLE_NAMES } from '../config/tableNames';
+import FuelTransactionService from './FuelTransactionService';
+import { adminApiRequest } from './adminApi';
 
 class UserProfileService {
+  isAbortLikeError(error) {
+    const message = String(error?.message || error || '').toLowerCase();
+    const name = String(error?.name || '').toLowerCase();
+
+    return (
+      name === 'aborterror' ||
+      message.includes('aborterror') ||
+      message.includes('signal is aborted') ||
+      message.includes('signal has been aborted') ||
+      message.includes('the operation was aborted') ||
+      message.includes('body stream already read')
+    );
+  }
+
+  isActivityLogAccessError(error) {
+    const message = String(error?.message || error?.details || '').toLowerCase();
+    return (
+      message.includes('permission denied') ||
+      message.includes('forbidden') ||
+      message.includes('403') ||
+      message.includes('saharax_0u4w4d_activity_log')
+    );
+  }
+
+  buildContainsFilter(value = '') {
+    const normalized = String(value || '').trim();
+    if (!normalized) return '';
+    return `*${normalized.replaceAll(',', ' ').replaceAll('.', ' ')}*`;
+  }
+
+  getUsersTable() {
+    return TABLE_NAMES.USERS || 'app_b30c02e74da644baad4668e3587d86b1_users';
+  }
+
+  splitFullName(fullName = '') {
+    const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) {
+      return { first_name: '', last_name: '' };
+    }
+
+    if (parts.length === 1) {
+      return { first_name: parts[0], last_name: '' };
+    }
+
+    return {
+      first_name: parts.slice(0, -1).join(' '),
+      last_name: parts.slice(-1).join(' '),
+    };
+  }
+
+  normalizeUserRow(row, fallbackEmail = '') {
+    if (!row) return null;
+
+    const fullName = String(row.full_name || row.name || fallbackEmail || '').trim();
+    const { first_name, last_name } = this.splitFullName(fullName);
+
+    return {
+      ...row,
+      username: row.username || null,
+      full_name: fullName,
+      first_name: row.first_name || first_name,
+      last_name: row.last_name || last_name,
+      profile_picture_url: row.profile_picture_url || row.avatar_url || null,
+      phone: row.phone || row.phone_number || null,
+      address: row.address || null,
+      date_of_birth: row.date_of_birth || null,
+      emergency_contact: row.emergency_contact || null,
+      emergency_phone: row.emergency_phone || null,
+      staff_id_documents: Array.isArray(row.staff_id_documents) ? row.staff_id_documents : undefined,
+    };
+  }
+
+  normalizeActivityQuery(limitOrOptions = 50, userName = '', userEmail = '') {
+    if (typeof limitOrOptions === 'object' && limitOrOptions !== null) {
+      return {
+        limit: Math.max(1, Number(limitOrOptions.limit || 50)),
+        offset: Math.max(0, Number(limitOrOptions.offset || 0)),
+        userName: String(limitOrOptions.userName || '').trim(),
+        userEmail: String(limitOrOptions.userEmail || '').trim(),
+      };
+    }
+
+    return {
+      limit: Math.max(1, Number(limitOrOptions || 50)),
+      offset: 0,
+      userName: String(userName || '').trim(),
+      userEmail: String(userEmail || '').trim(),
+    };
+  }
+
   // Get user profile with role information
   async getUserProfile(userId) {
     try {
-      console.log('📋 Fetching user profile for:', userId);
-      
-      const { data, error } = await supabase
-        .from('users')
-        .select(`
-          *,
-          profile_picture_url,
-          phone,
-          address,
-          date_of_birth,
-          emergency_contact,
-          emergency_phone,
-          created_at,
-          updated_at
-        `)
-        .eq('id', userId)
-        .single();
-
-      if (error && error.code !== 'PGRST116') {
-        throw error;
-      }
-
-      return { data, error: null };
+      const response = await adminApiRequest('/api/me/profile');
+      return { data: this.normalizeUserRow(response?.profile), error: null };
     } catch (error) {
+      if (this.isAbortLikeError(error)) {
+        return { data: null, error: null };
+      }
+      if (this.isUsersTableAccessError(error)) {
+        return { data: null, error: null };
+      }
       console.error('❌ Error fetching user profile:', error);
       return { data: null, error };
     }
@@ -36,32 +114,12 @@ class UserProfileService {
   // Update user profile information
   async updateUserProfile(userId, profileData) {
     try {
-      console.log('✏️ Updating user profile for:', userId);
-      
-      const updateData = {
-        ...profileData,
-        updated_at: new Date().toISOString()
-      };
+      const response = await adminApiRequest('/api/me/profile', {
+        method: 'PATCH',
+        body: JSON.stringify(profileData),
+      });
 
-      // Remove sensitive fields that shouldn't be updated here
-      delete updateData.id;
-      delete updateData.email;
-      delete updateData.role;
-      delete updateData.created_at;
-
-      const { data, error } = await supabase
-        .from('users')
-        .update(updateData)
-        .eq('id', userId)
-        .select()
-        .single();
-
-      if (error) {
-        throw error;
-      }
-
-      console.log('✅ Profile updated successfully');
-      return { data, error: null };
+      return { data: this.normalizeUserRow(response?.profile), error: null };
     } catch (error) {
       console.error('❌ Error updating user profile:', error);
       return { data: null, error };
@@ -141,9 +199,22 @@ class UserProfileService {
         .from('profile-pictures')
         .getPublicUrl(filePath);
 
-      // Update user profile with new picture URL
+      // Persist to auth metadata first because the users table may not have a
+      // profile_picture_url column in older deployments.
+      const { error: metadataError } = await supabase.auth.updateUser({
+        data: {
+          profile_picture_url: publicUrl,
+          avatar_url: publicUrl,
+        },
+      });
+
+      if (metadataError) {
+        console.warn('⚠️ Profile picture uploaded but auth metadata update failed:', metadataError);
+      }
+
+      // Best effort: update the app users table only when that column exists.
       const { data: updateData, error: updateError } = await supabase
-        .from('users')
+        .from(this.getUsersTable())
         .update({ 
           profile_picture_url: publicUrl,
           updated_at: new Date().toISOString()
@@ -152,12 +223,15 @@ class UserProfileService {
         .select()
         .single();
 
-      if (updateError) {
+      if (updateError && !this.isMissingProfilePictureColumnError(updateError) && !this.isUsersTableAccessError(updateError)) {
         throw updateError;
+      }
+      if (updateError) {
+        console.warn('⚠️ Users table profile picture update skipped; profile picture stored in auth metadata only.');
       }
 
       console.log('✅ Profile picture uploaded successfully');
-      return { data: { url: publicUrl, user: updateData }, error: null };
+      return { data: { url: publicUrl, user: this.normalizeUserRow(updateData) || { profile_picture_url: publicUrl } }, error: null };
     } catch (error) {
       console.error('❌ Error uploading profile picture:', error);
       return { data: null, error };
@@ -183,9 +257,20 @@ class UserProfileService {
         console.warn('⚠️ Error deleting file from storage:', deleteError);
       }
 
-      // Update user profile to remove picture URL
+      const { error: metadataError } = await supabase.auth.updateUser({
+        data: {
+          profile_picture_url: null,
+          avatar_url: null,
+        },
+      });
+
+      if (metadataError) {
+        console.warn('⚠️ Profile picture deleted but auth metadata update failed:', metadataError);
+      }
+
+      // Best effort: update the app users table only when that column exists.
       const { data, error } = await supabase
-        .from('users')
+        .from(this.getUsersTable())
         .update({ 
           profile_picture_url: null,
           updated_at: new Date().toISOString()
@@ -194,12 +279,15 @@ class UserProfileService {
         .select()
         .single();
 
-      if (error) {
+      if (error && !this.isMissingProfilePictureColumnError(error) && !this.isUsersTableAccessError(error)) {
         throw error;
+      }
+      if (error) {
+        console.warn('⚠️ Users table profile picture delete skipped; profile picture cleared from auth metadata only.');
       }
 
       console.log('✅ Profile picture deleted successfully');
-      return { data, error: null };
+      return { data: this.normalizeUserRow(data), error: null };
     } catch (error) {
       console.error('❌ Error deleting profile picture:', error);
       return { data: null, error };
@@ -207,25 +295,345 @@ class UserProfileService {
   }
 
   // Get user activity log (if exists)
-  async getUserActivityLog(userId, limit = 50) {
+  async getUserActivityLog(userId, limitOrOptions = 50, legacyUserName = '', legacyUserEmail = '') {
     try {
-      console.log('📊 Fetching user activity log for:', userId);
-      
-      const { data, error } = await supabase
-        .from('user_activity_log')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(limit);
+      const { limit, offset, userName, userEmail } = this.normalizeActivityQuery(limitOrOptions, legacyUserName, legacyUserEmail);
+      const fetchSize = Math.max(limit + offset + 20, 80);
+      const directLogs = [];
+      const normalizedUserName = String(userName || '').trim();
+      const normalizedUserEmail = String(userEmail || '').trim().toLowerCase();
+      const normalizedUserNameLower = normalizedUserName.toLowerCase();
+      const normalizedUserEmailLower = normalizedUserEmail.toLowerCase();
+      const buildEvent = ({
+        id,
+        action,
+        description,
+        details,
+        createdAt,
+        source,
+        userName: eventUserName,
+        metadata = {},
+      }) => ({
+        id,
+        user_id: userId,
+        action,
+        title: action,
+        description,
+        details,
+        created_at: createdAt || new Date().toISOString(),
+        source,
+        user_name: eventUserName || null,
+        metadata,
+      });
 
-      if (error && error.code !== 'PGRST116') {
-        throw error;
+      const userNameMatches = (...candidates) => {
+        if (!normalizedUserNameLower) return false;
+        return candidates.some((candidate) =>
+          String(candidate || '').toLowerCase().includes(normalizedUserNameLower)
+        );
+      };
+
+      const userEmailMatches = (...candidates) => {
+        if (!normalizedUserEmailLower) return false;
+        return candidates.some((candidate) =>
+          String(candidate || '').toLowerCase() === normalizedUserEmailLower
+        );
+      };
+
+      const normalizeDirectLog = (log) => {
+        const actionValue = log.action || log.event_name || log.title || 'Activity';
+        const metadata = log.metadata || {};
+        const isRentalContractPriceEdit = String(actionValue).toLowerCase() === 'rental_contract_price_edited';
+
+        return buildEvent({
+          id: `direct-${log.id || `${log.user_id}-${log.created_at || Date.now()}`}`,
+          action: isRentalContractPriceEdit ? 'Edited rental contract price' : actionValue,
+          description: isRentalContractPriceEdit
+            ? `Edited rental contract price for ${metadata.rental_reference || metadata.rental_id || 'a rental'}`
+            : (log.description || log.details || log.message || 'Platform activity recorded'),
+          details: isRentalContractPriceEdit
+            ? `${metadata.edited_by_name || log.user_name || 'Staff'} • ${Number(metadata.previous_price || 0)} MAD → ${Number(metadata.new_price || 0)} MAD${metadata.override_note ? ` • ${metadata.override_note}` : ''}`
+            : (log.details || log.message || log.event_name || log.description || 'No details'),
+          createdAt: log.created_at || log.performed_at || log.updated_at,
+          source: log.source || log.module || 'system',
+          userName: log.user_name || log.actor_name || null,
+          metadata,
+        });
+      };
+
+      const buildRentalEvent = (rental, action, actorName, createdAt, metadata = {}) => buildEvent({
+        id: `${rental.id}-${action}-${createdAt || rental.created_at || ''}`,
+        action,
+        description: `${action} rental ${rental.rental_id || rental.id}${rental.customer_name ? ` for ${rental.customer_name}` : ''}`,
+        details: `${actorName || 'Staff'} • ${rental.vehicle_id ? `Vehicle ${rental.vehicle_id}` : 'Rental activity'}`,
+        createdAt: createdAt || rental.created_at || rental.updated_at || new Date().toISOString(),
+        source: 'rental',
+        userName: actorName || null,
+        metadata: {
+          rental_id: rental.id,
+          rental_reference: rental.rental_id || null,
+          ...metadata,
+        },
+      });
+
+      const selectColumns = 'id,rental_id,customer_name,vehicle_id,created_at,updated_at,created_by,created_by_name';
+
+      const [createdResult, signedResult, startedResult, completedResult, extensionsResult, customersResult, tourActivityResult, fuelTransactionsResult] = await Promise.all([
+        supabase
+          .from(TABLE_NAMES.RENTALS)
+          .select(selectColumns)
+          .eq('created_by', userId)
+          .order('created_at', { ascending: false })
+          .limit(fetchSize),
+        Promise.resolve({ data: [], error: null }),
+        Promise.resolve({ data: [], error: null }),
+        Promise.resolve({ data: [], error: null }),
+        supabase
+          .from('rental_extensions')
+          .select('id,rental_id,requested_at,approved_at,requested_by,approved_by,extension_hours,extension_type,extension_value,extension_price,status')
+          .order('requested_at', { ascending: false })
+          .limit(fetchSize),
+        supabase
+          .from('app_4c3a7a6153_customers')
+          .select('id,full_name,updated_at,scan_metadata')
+          .order('updated_at', { ascending: false })
+          .limit(fetchSize),
+        normalizedUserEmail
+          ? supabase
+              .from('app_687f658e98_activity_log')
+              .select('id,action,user_email,details,created_at')
+              .ilike('user_email', normalizedUserEmail)
+              .order('created_at', { ascending: false })
+              .limit(fetchSize)
+          : Promise.resolve({ data: [], error: null }),
+        FuelTransactionService.getAllTransactions({ limit: fetchSize }),
+      ]);
+
+      const normalizedDirectLogs = directLogs.map(normalizeDirectLog);
+      const rentalFallbackLogs = [];
+
+      if (!createdResult.error) {
+        (createdResult.data || []).forEach((rental) => {
+          rentalFallbackLogs.push(
+            buildRentalEvent(rental, 'Created rental', rental.created_by_name, rental.created_at)
+          );
+        });
       }
 
-      return { data: data || [], error: null };
+      if (!signedResult.error) {
+        (signedResult.data || []).forEach((rental) => {
+          if (rental.contract_signed_by_name || rental.contract_signed_by) {
+            rentalFallbackLogs.push(
+              buildRentalEvent(rental, 'Signed contract', rental.contract_signed_by_name, rental.updated_at)
+            );
+          }
+        });
+      }
+
+      if (!startedResult.error) {
+        (startedResult.data || []).forEach((rental) => {
+          if (rental.started_by_name || rental.started_by) {
+            rentalFallbackLogs.push(
+              buildRentalEvent(rental, 'Started rental', rental.started_by_name, rental.started_at)
+            );
+          }
+        });
+      }
+
+      if (!completedResult.error) {
+        (completedResult.data || []).forEach((rental) => {
+          if (rental.completed_by_name || rental.completed_by) {
+            rentalFallbackLogs.push(
+              buildRentalEvent(rental, 'Completed rental', rental.completed_by_name, rental.completed_at)
+            );
+          }
+        });
+      }
+
+      const extensionLogs = [];
+      if (!extensionsResult.error) {
+        (extensionsResult.data || []).forEach((extension) => {
+          const requestedByMatches =
+            String(extension?.requested_by || '') === String(userId) ||
+            false;
+          if (!requestedByMatches) return;
+
+          const requesterName = normalizedUserName || 'Staff';
+          extensionLogs.push(buildEvent({
+            id: `extension-request-${extension.id}`,
+            action: 'Requested extension',
+            description: `Requested ${extension.extension_value || extension.extension_hours} ${extension.extension_type || 'hours'} extension for rental ${extension.rental_id}`,
+            details: `${requesterName} • ${Number(extension.extension_price || 0)} MAD • ${extension.status || 'pending'}`,
+            createdAt: extension.requested_at || extension.created_at,
+            source: 'extension',
+            userName: requesterName,
+            metadata: {
+              rental_id: extension.rental_id,
+              extension_id: extension.id,
+            },
+          }));
+        });
+        (extensionsResult.data || []).forEach((extension) => {
+          const approvedByMatches =
+            String(extension?.approved_by || '') === String(userId) ||
+            false;
+          if (!approvedByMatches) return;
+
+          const approverName = normalizedUserName || 'Staff';
+          extensionLogs.push(buildEvent({
+            id: `extension-approval-${extension.id}`,
+            action: 'Approved extension',
+            description: `Approved extension for rental ${extension.rental_id}`,
+            details: `${approverName} • ${Number(extension.extension_price || 0)} MAD`,
+            createdAt: extension.approved_at || extension.updated_at,
+            source: 'extension',
+            userName: approverName,
+            metadata: {
+              rental_id: extension.rental_id,
+              extension_id: extension.id,
+            },
+          }));
+        });
+      }
+
+      const fuelLogs = [];
+      const buildFuelActorMatch = (row) => {
+        const performedByUserId = row?.performed_by_user_id || row?.created_by;
+        const candidateNames = [
+          row?.performed_by_name,
+          row?.filled_by,
+          row?.refilled_by,
+        ].filter(Boolean);
+
+        if (performedByUserId && String(performedByUserId) === String(userId)) return true;
+        if (!normalizedUserName) return false;
+        return candidateNames.some((name) => String(name).toLowerCase().includes(normalizedUserName.toLowerCase()));
+      };
+
+      if (fuelTransactionsResult?.success) {
+        (fuelTransactionsResult.transactions || []).filter(buildFuelActorMatch).forEach((row) => {
+          const actorName = row.performed_by_name || row.refilled_by || row.filled_by || row.created_by || 'Staff';
+          const isWithdrawal = String(row.transaction_type || '').toLowerCase().includes('withdrawal');
+          fuelLogs.push(buildEvent({
+            id: `fuel-${row.id}`,
+            action: isWithdrawal ? 'Recorded fuel withdrawal' : 'Recorded fuel refill',
+            description: `${isWithdrawal ? 'Recorded fuel withdrawal' : 'Recorded fuel refill'} for vehicle ${row.vehicle_id || 'N/A'}`,
+            details: `${actorName} • ${Number(row.liters_withdrawn || row.liters_taken || row.liters_added || row.liters || row.amount || 0)}L${Number(row.total_cost || 0) > 0 ? ` • ${Number(row.total_cost || 0)} MAD` : ''}`,
+            createdAt: row.created_at,
+            source: 'fuel',
+            userName: actorName,
+            metadata: { fuel_transaction_id: row.id, vehicle_id: row.vehicle_id || null },
+          }));
+        });
+      }
+
+      const customerLogs = [];
+      if (!customersResult.error) {
+        (customersResult.data || []).forEach((customer) => {
+          const noteHistory = Array.isArray(customer?.scan_metadata?.staff_notes_history)
+            ? customer.scan_metadata.staff_notes_history
+            : [];
+
+          noteHistory.forEach((note) => {
+            const matchesUser =
+              (note?.created_by && String(note.created_by) === String(userId)) ||
+              (normalizedUserName && String(note?.created_by_name || '').toLowerCase().includes(normalizedUserName.toLowerCase()));
+
+            if (!matchesUser) return;
+
+            customerLogs.push(buildEvent({
+              id: `customer-note-${customer.id}-${note.id || note.created_at || ''}`,
+              action: note?.is_alert ? 'Saved customer alert note' : 'Saved customer note',
+              description: `Added note for customer ${customer.full_name || customer.id}`,
+              details: note?.note_text || 'Customer note saved',
+              createdAt: note?.created_at || customer.updated_at,
+              source: 'customer',
+              userName: note?.created_by_name || 'Staff',
+              metadata: { customer_id: customer.id },
+            }));
+          });
+        });
+      }
+
+      const tourLogs = [];
+      if (!tourActivityResult.error) {
+        const tourPingWindowMs = 2 * 60 * 60 * 1000;
+        const compressedTourPings = new Map();
+
+        (tourActivityResult.data || []).forEach((log) => {
+          const action = String(log.action || 'Tour activity');
+          const normalizedAction = action.toLowerCase();
+          const metadata = log.details || {};
+          const description = log?.details?.description || 'Tour activity recorded';
+          const createdTime = new Date(log.created_at || Date.now()).getTime();
+          const groupId = String(metadata.group_id || metadata.groupId || 'tour');
+
+          if (normalizedAction === 'tour_location_ping') {
+            const windowKey = Number.isFinite(createdTime)
+              ? Math.floor(createdTime / tourPingWindowMs)
+              : 'recent';
+            const key = `${groupId}:${windowKey}`;
+            const existing = compressedTourPings.get(key);
+            const latestTime = existing ? new Date(existing.createdAt || 0).getTime() : 0;
+
+            compressedTourPings.set(key, {
+              id: `tour-location-ping-${key}`,
+              action: 'Tour location updates',
+              description: `${existing ? existing.count + 1 : 1} guide location ${existing ? 'updates' : 'update'} for ${metadata.package_name || metadata.packageName || 'tour tracking'}`,
+              details: `${log.user_email || 'Staff'} • ${metadata.package_name || metadata.packageName || 'Live tour'}${groupId !== 'tour' ? ` • ${groupId}` : ''}`,
+              createdAt: createdTime >= latestTime ? log.created_at : existing?.createdAt,
+              source: 'tour',
+              userName: log.user_email || null,
+              metadata: {
+                ...metadata,
+                compressed_activity: true,
+                compressed_action: 'tour_location_ping',
+                count: existing ? existing.count + 1 : 1,
+                first_seen_at: existing?.metadata?.first_seen_at || log.created_at,
+                latest_seen_at: createdTime >= latestTime ? log.created_at : existing?.metadata?.latest_seen_at,
+              },
+              count: existing ? existing.count + 1 : 1,
+            });
+            return;
+          }
+
+          tourLogs.push(buildEvent({
+            id: `tour-${log.id}`,
+            action: action.replaceAll('_', ' '),
+            description,
+            details: `${log.user_email || 'Staff'}${metadata.package_name ? ` • ${metadata.package_name}` : ''}`,
+            createdAt: log.created_at,
+            source: 'tour',
+            userName: log.user_email || null,
+            metadata,
+          }));
+        });
+
+        compressedTourPings.forEach((entry) => {
+          tourLogs.push(buildEvent(entry));
+        });
+      }
+
+      const mergedLogs = [...normalizedDirectLogs, ...rentalFallbackLogs, ...extensionLogs, ...fuelLogs, ...customerLogs, ...tourLogs]
+        .filter(Boolean)
+        .filter((log, index, logs) => logs.findIndex((candidate) => candidate.id === log.id) === index)
+        .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
+      ;
+      const pageLogs = mergedLogs.slice(offset, offset + limit);
+      const hasMore = mergedLogs.length > offset + limit;
+
+      return { data: pageLogs, hasMore, total: mergedLogs.length, error: null };
     } catch (error) {
+      if (this.isAbortLikeError(error)) {
+        console.warn('⚠️ User activity log request was aborted during rerender/navigation.');
+        return { data: [], hasMore: false, total: 0, error: null };
+      }
+      if (this.isActivityLogAccessError(error)) {
+        console.warn('⚠️ Activity log access unavailable; returning empty activity list.');
+        return { data: [], hasMore: false, total: 0, error: null };
+      }
       console.error('❌ Error fetching user activity log:', error);
-      return { data: [], error };
+      return { data: [], hasMore: false, total: 0, error };
     }
   }
 
@@ -272,6 +680,10 @@ class UserProfileService {
       errors.phone = 'Please enter a valid phone number';
     }
 
+    if (profileData.username && !/^[a-z0-9](?:[a-z0-9._-]{1,28}[a-z0-9])?$/.test(profileData.username)) {
+      errors.username = 'Username must be 3-30 characters and use lowercase letters, numbers, dots, underscores, or hyphens';
+    }
+
     if (profileData.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profileData.email)) {
       errors.email = 'Please enter a valid email address';
     }
@@ -290,6 +702,27 @@ class UserProfileService {
       isValid: Object.keys(errors).length === 0,
       errors
     };
+  }
+
+  isMissingProfilePictureColumnError(error) {
+    const message = String(error?.message || error?.details || '').toLowerCase();
+    return (
+      message.includes('profile_picture_url') &&
+      (
+        message.includes('does not exist') ||
+        message.includes('schema cache') ||
+        message.includes('could not find')
+      )
+    );
+  }
+
+  isUsersTableAccessError(error) {
+    const message = String(error?.message || error?.details || '').toLowerCase();
+    return (
+      message.includes('infinite recursion detected in policy') ||
+      message.includes('app_b30c02e74da644baad4668e3587d86b1_users') ||
+      (message.includes('policy') && message.includes('users'))
+    );
   }
 
   // Check if user can edit profile (role-based permissions)
@@ -312,6 +745,7 @@ class UserProfileService {
     const baseFields = [
       'first_name',
       'last_name',
+      'username',
       'phone',
       'address',
       'date_of_birth',

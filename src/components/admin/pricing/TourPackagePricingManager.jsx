@@ -224,7 +224,7 @@ const TourPackagePricingManager = ({
   const handleAddDuration = () => {
     const value = Number(customDuration || 0);
     if (!Number.isFinite(value) || value <= 0) {
-      toast.error('Enter a valid tour duration');
+      toast.error('Saisissez une durée de tour valide');
       return;
     }
     const normalized = Number(value.toFixed(1));
@@ -235,13 +235,13 @@ const TourPackagePricingManager = ({
   const handleAddVehicleModel = () => {
     const modelId = String(vehicleModelToAdd || '');
     if (!modelId) {
-      toast.error('Choose a vehicle model first');
+      toast.error('Choisissez d’abord un modèle de véhicule');
       return;
     }
 
     setDraftRows((current) => {
       if (current[modelId]) {
-        toast.error('This vehicle model is already added');
+        toast.error('Ce modèle de véhicule est déjà ajouté');
         return current;
       }
       return {

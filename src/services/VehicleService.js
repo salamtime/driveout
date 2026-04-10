@@ -1,5 +1,16 @@
 import { supabase } from '../lib/supabase';
 
+const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
+const isExpiredScheduledConflict = (rentalLike, graceMinutes = DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES) => {
+  if (String(rentalLike?.rental_status || '').toLowerCase() !== 'scheduled' || !rentalLike?.rental_start_date) {
+    return false;
+  }
+
+  const scheduledStart = new Date(rentalLike.rental_start_date);
+  if (Number.isNaN(scheduledStart.getTime())) return false;
+  return Date.now() > scheduledStart.getTime() + graceMinutes * 60 * 1000;
+};
+
 /**
  * Vehicle Service - FIXED to use actual database tables instead of non-existent view
  * 
@@ -163,8 +174,10 @@ class VehicleService {
             .or(`and(rental_start_date.lte.${endDate},rental_end_date.gte.${startDate})`)
             .in('rental_status', ['scheduled', 'active', 'confirmed']);
 
-          if (conflictingRentals && conflictingRentals.length > 0) {
-            const conflictingVehicleIds = conflictingRentals.map(r => r.vehicle_id);
+          const activeConflicts = (conflictingRentals || []).filter((rental) => !isExpiredScheduledConflict(rental));
+
+          if (activeConflicts.length > 0) {
+            const conflictingVehicleIds = activeConflicts.map(r => r.vehicle_id);
             availableVehicles = availableVehicles.filter(v => 
               !conflictingVehicleIds.includes(v.id)
             );
@@ -435,11 +448,13 @@ class VehicleService {
 
         if (conflictError) throw conflictError;
 
+        const activeConflicts = (conflicts || []).filter((rental) => !isExpiredScheduledConflict(rental));
+
         return {
           success: true,
           current_status: vehicle.status,
-          has_conflicts: conflicts && conflicts.length > 0,
-          conflicts: conflicts || []
+          has_conflicts: activeConflicts.length > 0,
+          conflicts: activeConflicts
         };
       } catch (error) {
         lastError = error;

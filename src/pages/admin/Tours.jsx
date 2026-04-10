@@ -17,6 +17,7 @@ import {
   History,
   MapPinned,
   Minus,
+  MoreHorizontal,
   PanelRightOpen,
   Package2,
   Plus,
@@ -32,12 +33,15 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
+import i18n from '../../i18n';
 import { useAuth } from '../../contexts/AuthContext';
 import { TABLE_NAMES } from '../../config/tableNames';
 import EnhancedUnifiedIDScanModal from '../../components/customers/EnhancedUnifiedIDScanModal';
+import PhoneInputWithCountryCode from '../../components/forms/PhoneInputWithCountryCode';
 import { canChooseTourGuide, canManageTourPackages as canManageTourPackagesPermission } from '../../utils/permissionHelpers';
 import { fetchVehicles } from '../../store/slices/vehiclesSlice';
 import FuelTransactionService from '../../services/FuelTransactionService';
+import { searchCustomers as searchCustomerRecords } from '../../services/EnhancedUnifiedCustomerService';
 import {
   assignTourVehicles,
   createTourBookings,
@@ -51,6 +55,7 @@ import {
   fetchRecentTrackedTours,
 } from '../../services/tourTrackingService';
 import { shortenUrl } from '../../services/UrlShortenerService';
+import { getUsers } from '../../services/UserService';
 import { fetchTourPackages } from '../../services/tourPackageService';
 import {
   fetchTourPackageModelPrices,
@@ -62,6 +67,8 @@ import VehicleModelPricingService from '../../services/VehicleModelPricingServic
 
 const TOUR_PACKAGE_RULES_MARKER = '[tour_package_rules]';
 const TOUR_BOOKING_MARKER = '[tour_booking]';
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 // Returns today's date as YYYY-MM-DD in the device's local timezone (not UTC)
 const localToday = () => {
@@ -116,29 +123,54 @@ const createInitialBookingForm = () => ({
   ],
 });
 
-const createInitialReturnEntry = (vehicle) => ({
+const createInitialReturnEntry = (vehicle, departureEntry = null) => ({
   vehicleId: vehicle.id,
-  vehicleName: `${vehicle.plate_number || 'No plate'} • ${vehicle.name || 'SEGWAY'} ${vehicle.model || ''}`.trim(),
-  startOdometer: Number(vehicle.current_odometer || 0),
+  vehicleName: departureEntry?.vehicleName || `${vehicle.plate_number || 'No plate'} • ${vehicle.name || 'SEGWAY'} ${vehicle.model || ''}`.trim(),
+  startOdometer: departureEntry?.startOdometer ?? Number(vehicle.current_odometer || 0),
+  startFuelLevel: departureEntry?.startFuelLevel ?? null,
+  sourceFuelLevel: departureEntry?.sourceFuelLevel ?? null,
   endOdometer: vehicle.current_odometer !== null && vehicle.current_odometer !== undefined && vehicle.current_odometer !== ''
     ? String(vehicle.current_odometer)
     : '',
   fuelLevel: '',
 });
 
+const createInitialDepartureEntry = (vehicle, fuelState = null) => {
+  const sourceFuelLevel = Number.isFinite(Number(fuelState?.current_fuel_lines))
+    ? Number(fuelState.current_fuel_lines)
+    : null;
+
+  return {
+    vehicleId: vehicle.id,
+    vehicleName: `${vehicle.plate_number || 'No plate'} • ${vehicle.name || 'SEGWAY'} ${vehicle.model || ''}`.trim(),
+    startOdometer: vehicle.current_odometer !== null && vehicle.current_odometer !== undefined && vehicle.current_odometer !== ''
+      ? String(vehicle.current_odometer)
+      : '',
+    sourceFuelLevel,
+    startFuelLevel: sourceFuelLevel ?? '',
+  };
+};
+
+const TOUR_FUEL_TANK_LINES = 8;
+const TOUR_FUEL_TANK_LITERS = 23;
+
+const tourFuelLinesToLiters = (fuelLevel) => (
+  Math.round(((Number(fuelLevel || 0) / TOUR_FUEL_TANK_LINES) * TOUR_FUEL_TANK_LITERS) * 1000) / 1000
+);
+
 const tabs = [
-  { id: 'schedule', label: 'Schedule', icon: CalendarDays },
-  { id: 'bookings', label: 'Book Tour', icon: Compass },
+  { id: 'schedule', label: tr('Schedule', 'Planning'), icon: CalendarDays },
+  { id: 'bookings', label: tr('Book Tour', 'Réserver un tour'), icon: Compass },
 ];
 
 const tabDescriptions = {
   schedule: {
-    title: 'Operational board',
-    description: 'Track active tours, scheduled departures, and completed tour history in one place.',
+    title: tr('Operational board', 'Tableau opérationnel'),
+    description: tr('Track active tours, scheduled departures, and completed tour history in one place.', 'Suivez les tours en cours, les départs programmés et l’historique des tours terminés au même endroit.'),
   },
   bookings: {
-    title: 'Tour booking flow',
-    description: 'Create fast staff tour bookings with package rules, driver details, and vehicle assignment.',
+    title: tr('Tour booking flow', 'Flux de réservation des tours'),
+    description: tr('Create fast staff tour bookings with package rules, driver details, and vehicle assignment.', 'Créez rapidement des réservations internes avec règles de forfait, détails conducteur et attribution des véhicules.'),
   },
 };
 
@@ -307,7 +339,7 @@ const buildVehiclesForModelMix = (vehicles = [], selectedModelMix = []) => {
 const getLegacyPackagePricingBadge = (pkg) => {
   const fallbackPrice = getPackagePrice(pkg);
   if (fallbackPrice > 0) {
-    return `From ${fallbackPrice} MAD`;
+    return tr(`From ${fallbackPrice} MAD`, `À partir de ${fallbackPrice} MAD`);
   }
   return 'Model pricing';
 };
@@ -414,8 +446,8 @@ const getTourTimingSummary = (tour, referenceTime = Date.now()) => {
   const startedAtTime = new Date(tour?.startedAt || '').getTime();
   if (!Number.isFinite(startedAtTime)) {
     return {
-      actualDurationLabel: 'Not started',
-      overrunLabel: 'On time',
+      actualDurationLabel: tr('Not started', 'Pas démarré'),
+      overrunLabel: tr('On time', 'Dans les temps'),
       isOverrun: false,
     };
   }
@@ -427,7 +459,7 @@ const getTourTimingSummary = (tour, referenceTime = Date.now()) => {
 
   return {
     actualDurationLabel: formatDuration(actualDurationMs),
-    overrunLabel: overrunMs > 0 ? `+${formatDuration(overrunMs)}` : 'On time',
+    overrunLabel: overrunMs > 0 ? `+${formatDuration(overrunMs)}` : tr('On time', 'Dans les temps'),
     isOverrun: overrunMs > 0,
   };
 };
@@ -484,14 +516,14 @@ const detectWhatsAppCountryRule = (formatted, fallbackCountryCode = '+212') => {
 const getWhatsAppAvailability = (input, countryCode = '+212') => {
   const formatted = formatWhatsAppPhoneNumber(input, countryCode);
   if (!formatted) {
-    return { isValid: false, link: '', helper: 'Saved in WhatsApp format for quick contact.' };
+    return { isValid: false, link: '', helper: tr('Saved in WhatsApp format for quick contact.', 'Enregistré au format WhatsApp pour un contact rapide.') };
   }
 
   const compactValue = formatted.replace(/\s/g, '');
   const digitsOnly = compactValue.replace(/\D/g, '');
 
   if (!compactValue.startsWith('+')) {
-    return { isValid: false, link: '', helper: 'Saved in WhatsApp format for quick contact.' };
+    return { isValid: false, link: '', helper: tr('Saved in WhatsApp format for quick contact.', 'Enregistré au format WhatsApp pour un contact rapide.') };
   }
 
   const detectedRule = detectWhatsAppCountryRule(compactValue, countryCode);
@@ -546,10 +578,16 @@ const formatLogTimestamp = (value) => {
 };
 
 const createEmptyDriver = () => ({
+  customerId: '',
   fullName: '',
   whatsapp: '',
+  email: '',
   idNumber: '',
   licenseNumber: '',
+  dateOfBirth: '',
+  nationality: '',
+  placeOfBirth: '',
+  issueDate: '',
   idFile: null,
   idFileName: '',
   idFileUrl: '',
@@ -566,10 +604,17 @@ const syncDriverSlots = (drivers = [], quadCount = 1) => {
 const hasAnyDriverValue = (driver) =>
   Boolean(
     String(driver?.fullName || '').trim() ||
+    String(driver?.whatsapp || '').trim() ||
+    String(driver?.email || '').trim() ||
     String(driver?.idNumber || '').trim() ||
     String(driver?.licenseNumber || '').trim() ||
     String(driver?.idFileName || '').trim()
   );
+
+const hasValidEmail = (value) => /\S+@\S+\.\S+/.test(String(value || '').trim());
+
+const hasDriverContactMethod = (driver) =>
+  Boolean(String(driver?.whatsapp || '').trim() || String(driver?.email || '').trim());
 
 const overlapsWindow = (rowStartValue, rowEndValue, rangeStart, rangeEnd) => {
   const rowStart = new Date(rowStartValue);
@@ -584,6 +629,37 @@ const startsWithinOneHour = (value) => {
   return start.getTime() - Date.now() <= 60 * 60 * 1000;
 };
 
+const CLOSED_TOUR_STATUSES = ['completed', 'cancelled', 'no_show', 'expired'];
+const TOUR_REVIEW_GRACE_MS = 60 * 60 * 1000;
+
+const getTourStatusLabel = (status) => {
+  switch (String(status || '').toLowerCase()) {
+    case 'scheduled':
+      return tr('Scheduled', 'Planifié');
+    case 'active':
+      return tr('Active', 'Actif');
+    case 'completed':
+      return tr('Completed', 'Terminé');
+    case 'cancelled':
+      return tr('Cancelled', 'Annulé');
+    case 'no_show':
+      return tr('No-show', 'No-show');
+    case 'expired':
+      return tr('Expired', 'Expiré');
+    default:
+      return status || tr('Scheduled', 'Planifié');
+  }
+};
+
+const isTourPastReviewWindow = (tour) => {
+  if (String(tour?.status || '').toLowerCase() !== 'scheduled') return false;
+  const start = new Date(tour?.scheduledStartAt || '');
+  if (Number.isNaN(start.getTime())) return false;
+  const created = new Date(tour?.createdAt || '');
+  if (!Number.isNaN(created.getTime()) && Date.now() - created.getTime() < 10 * 60 * 1000) return false;
+  return Date.now() - start.getTime() > TOUR_REVIEW_GRACE_MS;
+};
+
 const toStatusTone = (status) => {
   switch (String(status || '').toLowerCase()) {
     case 'active':
@@ -593,9 +669,29 @@ const toStatusTone = (status) => {
       return 'bg-slate-200 text-slate-700';
     case 'cancelled':
       return 'bg-rose-100 text-rose-700';
+    case 'no_show':
+      return 'bg-orange-100 text-orange-700';
+    case 'expired':
+      return 'bg-amber-100 text-amber-700';
     default:
       return 'bg-blue-100 text-blue-700';
   }
+};
+
+const getTourWorkflowState = (tour) => {
+  if (CLOSED_TOUR_STATUSES.includes(String(tour?.status || '').toLowerCase())) return 'completed';
+  if (tour?.status === 'active' || tour?.startedAt) return 'started';
+  if (tour?.trackingLinkSentAt) return 'link_sent';
+  return 'idle';
+};
+
+const getTourWorkflowHint = (tour, trackingActive = false) => {
+  const workflowState = getTourWorkflowState(tour);
+  if (workflowState === 'started' && trackingActive) return tr('Tracking active', 'Suivi actif');
+  if (workflowState === 'started') return tr('Tour started', 'Tour démarré');
+  if (workflowState === 'link_sent') return tr('Ready to start', 'Prêt à démarrer');
+  if (workflowState === 'completed') return tr('Completed', 'Terminé');
+  return tr('Not started', 'Pas démarré');
 };
 
 const getScheduleCardClasses = (status) => {
@@ -607,6 +703,10 @@ const getScheduleCardClasses = (status) => {
       return 'border-2 border-violet-200 bg-white shadow-sm';
     case 'cancelled':
       return 'border-2 border-rose-200 bg-white shadow-sm';
+    case 'no_show':
+      return 'border-2 border-orange-200 bg-white shadow-sm';
+    case 'expired':
+      return 'border-2 border-amber-200 bg-white shadow-sm';
     default:
       return 'border-2 border-violet-300 bg-white shadow-sm';
   }
@@ -650,29 +750,29 @@ const TourLiveTimer = ({ startedAt, durationHours }) => {
   return (
     <div className="w-full rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between gap-3 mb-3">
-        <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-violet-500">Tour Timer</p>
+        <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-violet-500">{tr('Tour Timer', 'Minuteur du tour')}</p>
         <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          Active
+          {tr('Active', 'Actif')}
         </span>
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div className={`rounded-xl border px-3 py-3 text-center shadow-sm ${tone.elapsedCardClass}`}>
-          <p className="text-xs sm:text-sm text-gray-600 font-medium">Time Elapsed</p>
+          <p className="text-xs sm:text-sm text-gray-600 font-medium">{tr('Time Elapsed', 'Temps écoulé')}</p>
           <p className={`mt-1 text-2xl sm:text-3xl font-bold break-all ${tone.elapsedTextClass}`}>
             {formatDuration(elapsedMs)}
           </p>
           {tone.expired && (
             <p className={`mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${tone.labelClass}`}>
-              Expired
+              {tr('Expired', 'Expiré')}
             </p>
           )}
         </div>
         <div className={`rounded-xl border px-3 py-3 text-center shadow-sm ${isLate ? 'border-red-200 bg-red-50' : 'border-blue-200 bg-blue-50'}`}>
           {isLate && (
-            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-red-500">Expired</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-red-500">{tr('Expired', 'Expiré')}</p>
           )}
-          <p className="text-xs sm:text-sm text-gray-600 font-medium">Time Remaining</p>
+          <p className="text-xs sm:text-sm text-gray-600 font-medium">{tr('Time Remaining', 'Temps restant')}</p>
           <p className={`mt-1 font-bold break-all ${isLate ? 'text-lg sm:text-2xl text-red-600' : 'text-2xl sm:text-3xl text-blue-600'}`}>
             {isLate ? `+${formatDuration(Math.abs(remainingMs))}` : formatDuration(remainingMs)}
           </p>
@@ -686,6 +786,7 @@ const ToursPage = () => {
   const location = useLocation();
   const dispatch = useDispatch();
   const { userProfile } = useAuth();
+  const isFrench = isFrenchLocale();
   const vehicles = useSelector((state) => state.vehicles?.vehicles || []);
   const canSelectTourGuide = canChooseTourGuide(userProfile);
   const canManageTourPackages = canManageTourPackagesPermission(userProfile);
@@ -716,17 +817,24 @@ const ToursPage = () => {
   const [tourToComplete, setTourToComplete] = useState(null);
   const [tourReturnEntries, setTourReturnEntries] = useState([]);
   const [tourReturnSaving, setTourReturnSaving] = useState(false);
+  const [tourStartModalOpen, setTourStartModalOpen] = useState(false);
+  const [tourToStart, setTourToStart] = useState(null);
+  const [tourDepartureEntries, setTourDepartureEntries] = useState([]);
+  const [tourDepartureSaving, setTourDepartureSaving] = useState(false);
   const [tourPricingRows, setTourPricingRows] = useState([]);
   const [schedulePage, setSchedulePage] = useState(1);
   const [completedPage, setCompletedPage] = useState(1);
+  const [completedPageSize, setCompletedPageSize] = useState(10);
   const [historyCollapsed, setHistoryCollapsed] = useState(true);
   const [tourDetailsOpen, setTourDetailsOpen] = useState(false);
   const [selectedTourDetails, setSelectedTourDetails] = useState(null);
   const [tourActivityLogs, setTourActivityLogs] = useState([]);
   const [tourActivityLoading, setTourActivityLoading] = useState(false);
+  const [customerSuggestions, setCustomerSuggestions] = useState([]);
+  const [customerSuggestionsLoading, setCustomerSuggestionsLoading] = useState(false);
   const [trackedTours, setTrackedTours] = useState([]);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
-  const autoClosedGroupsRef = useRef(new Set());
+  const [openTourActionGroupId, setOpenTourActionGroupId] = useState('');
   const realtimeReloadTimerRef = useRef(null);
   const currentTimeSlot = formatTimeInputValue(new Date());
 
@@ -743,6 +851,19 @@ const ToursPage = () => {
     const userAgent = window.navigator.userAgent || '';
     setIsMobileDevice(/Android|iPhone|iPad|iPod|Mobile/i.test(userAgent));
   }, []);
+
+  useEffect(() => {
+    if (!openTourActionGroupId) return undefined;
+
+    const handleOutsideClick = (event) => {
+      if (!event.target?.closest?.('[data-tour-action-menu]')) {
+        setOpenTourActionGroupId('');
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [openTourActionGroupId]);
 
   useEffect(() => {
     dispatch(fetchVehicles());
@@ -808,26 +929,43 @@ const ToursPage = () => {
     };
 
     const loadGuides = async () => {
-          setGuidesLoading(true);
-      const { data, error } = await supabase
-        .from(TABLE_NAMES.USERS)
-        .select('id, full_name, email, role, access_enabled, phone_number')
-        .neq('access_enabled', false)
-        .order('full_name', { ascending: true });
-
-      if (error) {
-        console.error('Failed to load guides:', error);
-        setGuides([]);
-      } else {
+      setGuidesLoading(true);
+      try {
+        const data = await getUsers();
         const normalized = (data || [])
+          .filter((user) => user?.access_enabled !== false)
           .filter((user) => ['guide', 'employee', 'admin', 'owner'].includes(String(user.role || '').toLowerCase()))
           .map((user) => ({
             id: user.id,
-            name: user.full_name || user.email || 'Team Member',
+            name: user.full_name || user.name || user.email || 'Team Member',
             role: user.role || 'employee',
             phone: user.phone_number || '',
           }));
-        setGuides(normalized);
+
+        if (normalized.length > 0) {
+          setGuides(normalized);
+        } else if (userProfile?.id) {
+          setGuides([{
+            id: String(userProfile.id),
+            name: currentUserDisplayName,
+            role: userRole || 'owner',
+            phone: userProfile?.phone_number || '',
+          }]);
+        } else {
+          setGuides([]);
+        }
+      } catch (error) {
+        console.error('Failed to load guides:', error);
+        if (userProfile?.id) {
+          setGuides([{
+            id: String(userProfile.id),
+            name: currentUserDisplayName,
+            role: userRole || 'owner',
+            phone: userProfile?.phone_number || '',
+          }]);
+        } else {
+          setGuides([]);
+        }
       }
       setGuidesLoading(false);
     };
@@ -955,11 +1093,37 @@ const ToursPage = () => {
     });
 
     if (startingPrice > 0) {
-      return `From ${startingPrice} MAD`;
+      return tr(`From ${startingPrice} MAD`, `À partir de ${startingPrice} MAD`);
     }
 
     return getLegacyPackagePricingBadge(pkg);
   };
+
+  const getPackageModelPriceHighlights = useCallback((pkg) => {
+    if (!pkg) return [];
+
+    const pricedModels = (vehicleModels || [])
+      .map((model) => {
+        const price = getTourPriceForModelAndDuration({
+          rows: tourPricingRows,
+          packageId: pkg?.id,
+          vehicleModelId: model.id,
+          durationHours: pkg?.duration,
+        });
+
+        if (!(price > 0)) return null;
+
+        return {
+          modelId: String(model.id),
+          label: getVehicleModelCatalogName(model),
+          price,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.price - right.price || left.label.localeCompare(right.label));
+
+    return pricedModels;
+  }, [tourPricingRows, vehicleModels]);
   useEffect(() => {
     if (!bookingForm.packageId && packages.length > 0) {
       setBookingForm((prev) => ({ ...prev, packageId: packages[0].id }));
@@ -1038,7 +1202,11 @@ const ToursPage = () => {
             ? 'completed'
             : statuses.every((value) => value === 'cancelled')
               ? 'cancelled'
-              : 'scheduled';
+              : statuses.every((value) => value === 'no_show')
+                ? 'no_show'
+                : statuses.every((value) => value === 'expired')
+                  ? 'expired'
+                  : 'scheduled';
 
         const assignedVehicles = sortedRows.map((row) => row.vehicle).filter(Boolean);
 
@@ -1049,7 +1217,7 @@ const ToursPage = () => {
           packageName: meta.packageName || 'Tour package',
           durationHours: Number(meta.durationHours || 1),
           routeType: meta.routeType || 'mountain',
-          customerName: first.customer_name || meta.customerName || 'Guest',
+          customerName: first.customer_name || meta.customerName || tr('Guest', 'Client'),
           customerPhone: first.phone || meta.customerPhone || '',
           customerEmail: first.customer_email || meta.customerEmail || '',
           guideName: meta.guideName || 'Unassigned',
@@ -1066,7 +1234,9 @@ const ToursPage = () => {
           receiptIssuedAt: meta.receiptIssuedAt || '',
           startedAt: meta.startedAt || '',
           completedAt: meta.completedAt || '',
-          trackingUrl: meta.trackingUrl || buildTourTrackingUrl(groupId),
+          trackingLinkSentAt: meta.trackingLinkSentAt || '',
+          trackingLinkSentByName: meta.trackingLinkSentByName || '',
+          trackingUrl: buildTourTrackingUrl(groupId),
           totalAmount: sortedRows.reduce((sum, row) => sum + Number(row.total_amount || 0), 0),
           scheduledStartAt: meta.scheduledStartAt || first.rental_start_date,
           scheduledEndAt: meta.scheduledEndAt || sortedRows[sortedRows.length - 1]?.rental_end_date,
@@ -1087,50 +1257,20 @@ const ToursPage = () => {
           startedByName: meta.startedByName || '',
           cancelledAt: meta.cancelledAt || '',
           cancelledByName: meta.cancelledByName || '',
+          noShowAt: meta.noShowAt || '',
+          noShowByName: meta.noShowByName || '',
+          expiredAt: meta.expiredAt || '',
+          expiredByName: meta.expiredByName || '',
           bookingStartWithinHour: startsWithinOneHour(meta.scheduledStartAt || first.rental_start_date),
         };
       })
       .sort((a, b) => new Date(a.scheduledStartAt).getTime() - new Date(b.scheduledStartAt).getTime());
   }, [allTourRows]);
 
-  useEffect(() => {
-    const staleTours = groupedTours.filter((tour) => {
-      if (tour.status !== 'scheduled') return false;
-      if (autoClosedGroupsRef.current.has(tour.groupId)) return false;
-      const start = new Date(tour.scheduledStartAt);
-      if (Number.isNaN(start.getTime())) return false;
-      if (Date.now() - start.getTime() <= 60 * 60 * 1000) return false;
-      // Don't auto-cancel tours created within the last 10 minutes
-      const created = new Date(tour.createdAt);
-      if (!Number.isNaN(created.getTime()) && Date.now() - created.getTime() < 10 * 60 * 1000) return false;
-      return true;
-    });
-
-    if (staleTours.length === 0) return;
-
-    const autoClose = async () => {
-      for (const tour of staleTours) {
-        autoClosedGroupsRef.current.add(tour.groupId);
-        try {
-          await updateTourBookingStatus(tour.rowIds, 'cancelled');
-        } catch (error) {
-          console.error('Failed to auto-close stale tour:', error);
-        }
-      }
-
-      if (staleTours.length > 0) {
-        toast('Late scheduled tours were auto-closed after 60 minutes.', { icon: '⏱️' });
-        setRefreshKey((prev) => prev + 1);
-      }
-    };
-
-    autoClose();
-  }, [groupedTours]);
-
   const activeBlockingRows = useMemo(() => {
     return (Array.isArray(bookings) ? bookings : []).filter((row) => {
       const status = String(row.rental_status || row.status || '').toLowerCase();
-      return !['completed', 'cancelled'].includes(status);
+      return !CLOSED_TOUR_STATUSES.includes(status);
     });
   }, [bookings]);
 
@@ -1221,6 +1361,11 @@ const ToursPage = () => {
   }, [availableVehicles, vehicleModelsById, pricedModelIdsForCurrentPackage]);
 
   const displayModelGroups = useMemo(() => {
+    const hasDepartureSelection = Boolean(bookingForm.date && bookingForm.time);
+    if (hasDepartureSelection) {
+      return availableModelGroups;
+    }
+
     const grouped = new Map();
 
     (vehicleModels || []).forEach((model) => {
@@ -1242,7 +1387,7 @@ const ToursPage = () => {
     });
 
     return Array.from(grouped.values()).sort((a, b) => a.label.localeCompare(b.label));
-  }, [vehicleModels, availableModelGroups, pricedModelIdsForCurrentPackage]);
+  }, [vehicleModels, availableModelGroups, pricedModelIdsForCurrentPackage, bookingForm.date, bookingForm.time]);
 
   useEffect(() => {
     setBookingForm((prev) => {
@@ -1319,8 +1464,46 @@ const ToursPage = () => {
   );
   const activePrimaryDriver = primaryDrivers[activeDriverQuadIndex] || createEmptyDriver();
   const activeSecondaryDriver = secondaryDrivers[activeDriverQuadIndex] || createEmptyDriver();
-  const activePrimaryDriverWhatsApp = getWhatsAppAvailability(activePrimaryDriver.whatsapp);
-  const activeSecondaryDriverWhatsApp = getWhatsAppAvailability(activeSecondaryDriver.whatsapp);
+  const activePrimaryDriverSearchTerm = String(activePrimaryDriver.fullName || '').trim();
+
+  useEffect(() => {
+    if (bookingStep !== 2) {
+      setCustomerSuggestions([]);
+      setCustomerSuggestionsLoading(false);
+      return undefined;
+    }
+
+    if (activePrimaryDriverSearchTerm.length < 3) {
+      setCustomerSuggestions([]);
+      setCustomerSuggestionsLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        setCustomerSuggestionsLoading(true);
+        const matches = await searchCustomerRecords(activePrimaryDriverSearchTerm);
+        if (!cancelled) {
+          setCustomerSuggestions(Array.isArray(matches) ? matches.slice(0, 6) : []);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Customer search failed for tour booking:', error);
+          setCustomerSuggestions([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setCustomerSuggestionsLoading(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [bookingStep, activeDriverQuadIndex, activePrimaryDriverSearchTerm]);
   const secondDriverOpen =
     secondDriverOpenByQuad[activeDriverQuadIndex] ?? hasAnyDriverValue(activeSecondaryDriver);
 
@@ -1355,16 +1538,18 @@ const ToursPage = () => {
 
   const scheduledTours = useMemo(
     () => groupedTours
-      .filter((tour) => {
-        if (tour.status !== 'scheduled') return false;
-        const startTimestamp = new Date(tour.scheduledStartAt || '').getTime();
-        return Number.isFinite(startTimestamp) && startTimestamp >= Date.now();
-      })
+      .filter((tour) => tour.status === 'scheduled')
       .sort((a, b) => new Date(a.scheduledStartAt).getTime() - new Date(b.scheduledStartAt).getTime()),
     [groupedTours]
   );
   const today = localToday();
-  const upcomingTours = useMemo(() => scheduledTours, [scheduledTours]);
+  const upcomingTours = useMemo(
+    () => scheduledTours.filter((tour) => {
+      const startTimestamp = new Date(tour.scheduledStartAt || '').getTime();
+      return Number.isFinite(startTimestamp) && startTimestamp >= Date.now();
+    }),
+    [scheduledTours]
+  );
   const todayTours = useMemo(() => {
     const activeToday = activeTours.filter((tour) => getLocalDateKey(tour.startedAt || tour.scheduledStartAt) === today);
     const scheduledToday = scheduledTours.filter((tour) => getLocalDateKey(tour.scheduledStartAt) === today);
@@ -1382,11 +1567,25 @@ const ToursPage = () => {
       .sort((a, b) => new Date(b.scheduledStartAt).getTime() - new Date(a.scheduledStartAt).getTime()),
     [groupedTours]
   );
+  const noShowTours = useMemo(
+    () => groupedTours
+      .filter((tour) => tour.status === 'no_show')
+      .sort((a, b) => new Date(b.noShowAt || b.scheduledStartAt).getTime() - new Date(a.noShowAt || a.scheduledStartAt).getTime()),
+    [groupedTours]
+  );
+  const expiredTours = useMemo(
+    () => groupedTours
+      .filter((tour) => tour.status === 'expired')
+      .sort((a, b) => new Date(b.expiredAt || b.scheduledStartAt).getTime() - new Date(a.expiredAt || a.scheduledStartAt).getTime()),
+    [groupedTours]
+  );
   const operationalTours = useMemo(() => [...activeTours, ...scheduledTours], [activeTours, scheduledTours]);
   const operationalPageSize = 4;
-  const completedPageSize = 4;
   const operationalPageCount = Math.max(1, Math.ceil(operationalTours.length / operationalPageSize));
-  const completedHistoryTours = useMemo(() => [...completedTours, ...cancelledTours], [completedTours, cancelledTours]);
+  const completedHistoryTours = useMemo(
+    () => [...completedTours, ...cancelledTours, ...noShowTours, ...expiredTours],
+    [completedTours, cancelledTours, noShowTours, expiredTours]
+  );
   const completedPageCount = Math.max(1, Math.ceil(completedHistoryTours.length / completedPageSize));
   const paginatedOperationalTours = useMemo(
     () => operationalTours.slice((schedulePage - 1) * operationalPageSize, schedulePage * operationalPageSize),
@@ -1408,6 +1607,10 @@ const ToursPage = () => {
       setCompletedPage(completedPageCount);
     }
   }, [completedPage, completedPageCount]);
+
+  useEffect(() => {
+    setCompletedPage(1);
+  }, [completedPageSize]);
 
   const overviewStats = useMemo(() => {
     return {
@@ -1448,7 +1651,11 @@ const ToursPage = () => {
       ...prev,
       primaryDrivers: syncDriverSlots(prev.primaryDrivers, prev.quadCount).map((driver, driverIndex) =>
         driverIndex === index
-          ? { ...driver, [field]: field === 'whatsapp' ? formatWhatsAppPhoneNumber(value) : value }
+          ? {
+              ...driver,
+              ...(field === 'fullName' ? { customerId: '' } : {}),
+              [field]: field === 'whatsapp' ? formatWhatsAppPhoneNumber(value) : value,
+            }
           : driver
       ),
     }));
@@ -1463,6 +1670,53 @@ const ToursPage = () => {
           : driver
       ),
     }));
+  };
+
+  const applyCustomerToPrimaryDriver = (index, customer) => {
+    const resolvedName =
+      customer?.full_name ||
+      customer?.customer_name ||
+      customer?.name ||
+      '';
+    const resolvedWhatsApp =
+      customer?.phone ||
+      customer?.customer_phone ||
+      customer?.phone_number ||
+      '';
+    const resolvedEmail =
+      customer?.email ||
+      customer?.customer_email ||
+      '';
+    const resolvedLicense =
+      customer?.licence_number ||
+      customer?.license_number ||
+      customer?.customer_licence_number ||
+      '';
+    const resolvedIdNumber =
+      customer?.id_number ||
+      customer?.customer_id_number ||
+      customer?.document_number ||
+      '';
+
+    setBookingForm((prev) => ({
+      ...prev,
+      primaryDrivers: syncDriverSlots(prev.primaryDrivers, prev.quadCount).map((driver, driverIndex) =>
+        driverIndex === index
+          ? {
+              ...driver,
+              customerId: String(customer?.id || ''),
+              fullName: String(resolvedName || '').trim(),
+              whatsapp: formatWhatsAppPhoneNumber(String(resolvedWhatsApp || '').trim()),
+              email: String(resolvedEmail || '').trim(),
+              licenseNumber: String(resolvedLicense || '').trim(),
+              idNumber: String(resolvedIdNumber || '').trim(),
+              nationality: customer?.nationality || driver.nationality || '',
+              dateOfBirth: customer?.customer_dob || driver.dateOfBirth || '',
+            }
+          : driver
+      ),
+    }));
+    setCustomerSuggestions([]);
   };
 
   const clearPrimaryDriverScan = (index) => {
@@ -1503,19 +1757,70 @@ const ToursPage = () => {
   const handleGuestIDScanComplete = (scannedData, imageFile) => {
     if (scannedData.ocrSkipped) {
       setGuestIDScanOpen(false);
-      toast.success('ID image saved. You can enter the guest details manually.');
+      toast.success(tr("Image de la pièce enregistrée. Vous pouvez saisir les informations du client manuellement.", "Image de la pièce enregistrée. Vous pouvez saisir les informations du client manuellement."));
       return;
     }
 
     if (scannedData.ocrUnavailable) {
-      toast('ID image captured. OCR is unavailable, so please enter the name and ID number manually.', {
+      toast(tr("Image de la pièce capturée. L'OCR est indisponible, veuillez saisir le nom et le numéro de pièce manuellement.", "Image de la pièce capturée. L'OCR est indisponible, veuillez saisir le nom et le numéro de pièce manuellement."), {
         icon: '⚠️',
       });
       return;
     }
 
+    const savedImageUrl =
+      scannedData.publicUrl ||
+      scannedData.imageUrl ||
+      scannedData.id_scan_url ||
+      '';
+    const scannedName =
+      scannedData.customer_name ||
+      scannedData.fullName ||
+      scannedData.full_name ||
+      scannedData.name ||
+      scannedData.raw_name ||
+      '';
+    const scannedPhone =
+      scannedData.customer_phone ||
+      scannedData.phone ||
+      '';
+    const scannedEmail =
+      scannedData.customer_email ||
+      scannedData.email ||
+      '';
+    const scannedIdNumber =
+      scannedData.customer_id_number ||
+      scannedData.idNumber ||
+      scannedData.id_number ||
+      scannedData.document_number ||
+      scannedData.linked_display_id ||
+      '';
+    const scannedLicenseNumber =
+      scannedData.customer_licence_number ||
+      scannedData.driver_license_number ||
+      scannedData.licenseNumber ||
+      scannedData.license_number ||
+      scannedData.document_number ||
+      scannedData.idNumber ||
+      scannedData.id_number ||
+      scannedData.permit_number ||
+      '';
+
+    updatePrimaryDriver(0, 'fullName', String(scannedName || '').trim());
+    updatePrimaryDriver(0, 'whatsapp', String(scannedPhone || '').trim());
+    updatePrimaryDriver(0, 'email', String(scannedEmail || '').trim());
+    updatePrimaryDriver(0, 'licenseNumber', String(scannedLicenseNumber || '').trim());
+    updatePrimaryDriver(0, 'idNumber', scannedLicenseNumber ? '' : String(scannedIdNumber || '').trim());
+    updatePrimaryDriver(0, 'dateOfBirth', scannedData.date_of_birth || scannedData.dateOfBirth || '');
+    updatePrimaryDriver(0, 'nationality', scannedData.nationality || '');
+    updatePrimaryDriver(0, 'placeOfBirth', scannedData.place_of_birth || scannedData.placeOfBirth || '');
+    updatePrimaryDriver(0, 'issueDate', scannedData.issue_date || scannedData.issueDate || '');
+    updatePrimaryDriver(0, 'idFile', imageFile || null);
+    updatePrimaryDriver(0, 'idFileName', imageFile?.name || '');
+    updatePrimaryDriver(0, 'idFileUrl', String(savedImageUrl || '').trim());
+
     setGuestIDScanOpen(false);
-    toast.success('Guest ID scanned. Review the fields and continue.');
+    toast.success(tr("Pièce du client scannée. Vérifiez les champs puis continuez.", "Pièce du client scannée. Vérifiez les champs puis continuez."));
   };
 
   const handleDriverIDScanComplete = (scannedData, imageFile) => {
@@ -1534,7 +1839,7 @@ const ToursPage = () => {
 
     if (scannedData.ocrSkipped) {
       setDriverIDScanTarget(null);
-      toast.success('ID image saved. Fill the fields manually if needed.');
+      toast.success(tr("Image de la pièce enregistrée. Remplissez les champs manuellement si nécessaire.", "Image de la pièce enregistrée. Remplissez les champs manuellement si nécessaire."));
       return;
     }
 
@@ -1564,31 +1869,197 @@ const ToursPage = () => {
       '';
 
     updater(driverIDScanTarget.index, 'fullName', String(scannedName || '').trim());
+    updater(driverIDScanTarget.index, 'whatsapp', String(scannedData.customer_phone || scannedData.phone || '').trim());
+    updater(driverIDScanTarget.index, 'email', String(scannedData.customer_email || scannedData.email || '').trim());
     updater(driverIDScanTarget.index, 'licenseNumber', String(scannedLicenseNumber || '').trim());
     updater(driverIDScanTarget.index, 'idNumber', scannedLicenseNumber ? '' : String(scannedIdNumber || '').trim());
+    updater(driverIDScanTarget.index, 'dateOfBirth', scannedData.date_of_birth || scannedData.dateOfBirth || '');
+    updater(driverIDScanTarget.index, 'nationality', scannedData.nationality || '');
+    updater(driverIDScanTarget.index, 'placeOfBirth', scannedData.place_of_birth || scannedData.placeOfBirth || '');
+    updater(driverIDScanTarget.index, 'issueDate', scannedData.issue_date || scannedData.issueDate || '');
 
     if (scannedData.ocrUnavailable) {
-      toast('ID image captured. OCR is unavailable, so please enter the name and license manually.', {
+      toast(tr("Image de la pièce capturée. L'OCR est indisponible, veuillez saisir le nom et le permis manuellement.", "Image de la pièce capturée. L'OCR est indisponible, veuillez saisir le nom et le permis manuellement."), {
         icon: '⚠️',
       });
       return;
     }
 
     setDriverIDScanTarget(null);
-    toast.success('Driver ID scanned. Review the fields and continue.');
+    toast.success(tr("Pièce du conducteur scannée. Vérifiez les champs puis continuez.", "Pièce du conducteur scannée. Vérifiez les champs puis continuez."));
   };
 
   const handleOpenTourReturnModal = (tour) => {
     if (!tour?.assignedVehicles?.length) {
-      toast.error('Assign the tour vehicles before completing the return');
+      toast.error(tr('Assign the tour vehicles before completing the return', 'Attribuez les véhicules du tour avant de finaliser le retour'));
       return;
     }
 
     setTourToComplete(tour);
+    const departureMap = new Map(
+      (tour.departureEntries || []).map((entry) => [String(entry.vehicleId), entry])
+    );
     setTourReturnEntries(
-      tour.assignedVehicles.map((vehicle) => createInitialReturnEntry(vehicle))
+      tour.assignedVehicles.map((vehicle) => createInitialReturnEntry(vehicle, departureMap.get(String(vehicle.id))))
     );
     setTourReturnModalOpen(true);
+  };
+
+  const updateTourDepartureEntry = (vehicleId, field, value) => {
+    setTourDepartureEntries((current) => current.map((entry) => (
+      entry.vehicleId === vehicleId
+        ? { ...entry, [field]: value }
+        : entry
+    )));
+  };
+
+  const resolveVehiclesForTourDeparture = (tour) => {
+    const needsAssignment = (tour.assignedVehicles?.length || 0) < Number(tour.quadCount || 0);
+
+    if (!needsAssignment) {
+      return {
+        needsAssignment: false,
+        vehicles: tour.assignedVehicles || [],
+      };
+    }
+
+    const assignableVehicles = getAssignableVehiclesForTour(tour);
+    const requestedModelMix = Array.isArray(tour.selectedModelMix) ? tour.selectedModelMix : [];
+    const modelBasedSelection = requestedModelMix.length > 0
+      ? buildVehiclesForModelMix(assignableVehicles, requestedModelMix)
+      : { selectedVehicles: assignableVehicles.slice(0, Number(tour.quadCount || 1)), missingModels: [] };
+
+    if (modelBasedSelection.missingModels?.length > 0) {
+      return {
+        error: tr(`Not enough free quads for ${modelBasedSelection.missingModels[0].label}`, `Pas assez de quads libres pour ${modelBasedSelection.missingModels[0].label}`),
+      };
+    }
+
+    const availableNow = modelBasedSelection.selectedVehicles;
+    if (availableNow.length < Number(tour.quadCount || 1)) {
+      return {
+        error: tr('Not enough free quads to start this tour right now', 'Pas assez de quads libres pour démarrer ce tour maintenant'),
+      };
+    }
+
+    return {
+      needsAssignment: true,
+      vehicles: availableNow,
+    };
+  };
+
+  const handleOpenTourStartModal = async (tour) => {
+    try {
+      if (tour.requiresLicense && !tour.licenseCaptured) {
+        toast.error(tr('Driver license scan is required before departure', 'Le scan du permis conducteur est requis avant le départ'));
+        return;
+      }
+
+      const departureSetup = resolveVehiclesForTourDeparture(tour);
+      if (departureSetup.error) {
+        toast.error(departureSetup.error);
+        return;
+      }
+
+      const departureEntries = await Promise.all(
+        (departureSetup.vehicles || []).map(async (vehicle) => {
+          const fuelState = await FuelTransactionService.getVehicleFuelState(vehicle.id);
+          return createInitialDepartureEntry(vehicle, fuelState);
+        })
+      );
+
+      setTourToStart({
+        ...tour,
+        departureNeedsAssignment: Boolean(departureSetup.needsAssignment),
+        departureVehicles: departureSetup.vehicles || [],
+      });
+      setTourDepartureEntries(departureEntries);
+      setTourStartModalOpen(true);
+    } catch (error) {
+      console.error('Failed to prepare tour departure:', error);
+      toast.error(tr(`Could not prepare departure check: ${error.message}`, `Impossible de préparer le contrôle de départ : ${error.message}`));
+    }
+  };
+
+  const handleConfirmTourStart = async () => {
+    if (!tourToStart) return;
+
+    for (const entry of tourDepartureEntries) {
+      const startOdometerValue = Number(entry.startOdometer);
+      if (!Number.isFinite(startOdometerValue) || startOdometerValue <= 0) {
+        toast.error(tr(`Enter a valid departure odometer for ${entry.vehicleName}`, `Saisissez un odomètre de départ valide pour ${entry.vehicleName}`));
+        return;
+      }
+
+      if (entry.startFuelLevel === '' || entry.startFuelLevel === null || Number(entry.startFuelLevel) < 0 || Number(entry.startFuelLevel) > 8) {
+        toast.error(tr(`Choose the departure fuel level for ${entry.vehicleName}`, `Choisissez le niveau de carburant de départ pour ${entry.vehicleName}`));
+        return;
+      }
+    }
+
+    setTourDepartureSaving(true);
+    try {
+      const vehiclesForDeparture = tourToStart.departureVehicles || tourToStart.assignedVehicles || [];
+      const startedAt = new Date().toISOString();
+
+      if (tourToStart.departureNeedsAssignment) {
+        await assignTourVehicles(tourToStart.rowIds, vehiclesForDeparture.map((vehicle) => vehicle.id), 'active');
+      }
+
+      await updateTourMetadata(tourToStart, {
+        trackingUrl: buildTourTrackingUrl(tourToStart.groupId),
+        assignedVehicleIds: vehiclesForDeparture.map((vehicle) => vehicle.id),
+        assignedVehiclePlates: vehiclesForDeparture.map((vehicle) => vehicle.plate_number),
+        assignmentMode: 'assigned_now',
+        startedAt,
+        startedByUserId: userProfile?.id || null,
+        startedByName: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
+        departureEntries: tourDepartureEntries.map((entry) => ({
+          vehicleId: entry.vehicleId,
+          vehicleName: entry.vehicleName,
+          startOdometer: Number(entry.startOdometer),
+          sourceFuelLevel: entry.sourceFuelLevel !== null && entry.sourceFuelLevel !== undefined && entry.sourceFuelLevel !== ''
+            ? Number(entry.sourceFuelLevel)
+            : null,
+          startFuelLevel: Number(entry.startFuelLevel),
+          startedAt,
+        })),
+      }, 'active');
+      await upsertTourDepartureSnapshots(tourToStart, vehiclesForDeparture, tourDepartureEntries, startedAt);
+
+      await logTourActivity(
+        tourToStart,
+        'tour_started',
+        tourToStart.departureNeedsAssignment
+          ? tr(`Tour started and ${vehiclesForDeparture.length} quad(s) were assigned.`, `Tour démarré et ${vehiclesForDeparture.length} quad(s) ont été attribués.`)
+          : tr(`Tour started with ${vehiclesForDeparture.length} assigned quad(s).`, `Tour démarré avec ${vehiclesForDeparture.length} quad(s) attribués.`),
+        {
+          assigned_vehicle_ids: vehiclesForDeparture.map((vehicle) => vehicle.id),
+          started_at: startedAt,
+          departure_entries: tourDepartureEntries.map((entry) => ({
+            vehicle_id: entry.vehicleId,
+            start_odometer: Number(entry.startOdometer),
+            source_fuel_level: entry.sourceFuelLevel !== null && entry.sourceFuelLevel !== undefined && entry.sourceFuelLevel !== ''
+              ? Number(entry.sourceFuelLevel)
+              : null,
+            start_fuel_level: Number(entry.startFuelLevel),
+          })),
+        }
+      );
+
+      setTourStartModalOpen(false);
+      setTourToStart(null);
+      setTourDepartureEntries([]);
+      toast.success(tourToStart.departureNeedsAssignment
+        ? tr('Tour started and departure checks saved', 'Tour démarré et contrôles de départ enregistrés')
+        : tr('Tour started with departure checks saved', 'Tour démarré avec les contrôles de départ enregistrés'));
+      setRefreshKey((prev) => prev + 1);
+    } catch (error) {
+      console.error('Failed to start tour:', error);
+      toast.error(tr(`Could not start the tour: ${error.message}`, `Impossible de démarrer le tour : ${error.message}`));
+    } finally {
+      setTourDepartureSaving(false);
+    }
   };
 
   const updateTourReturnEntry = (vehicleId, field, value) => {
@@ -1599,6 +2070,156 @@ const ToursPage = () => {
           : entry
       )
     );
+  };
+
+  const getCurrentMainTankAverageUnitCost = async () => {
+    const normalizeWeightedAverage = (rows = []) => {
+      const totals = rows.reduce(
+        (acc, row) => {
+          const liters = Number(row.liters_added || row.liters_taken || row.liters || row.linked_fuel_consumed_liters || 0);
+          const totalCost =
+            Number(row.total_cost || row.linked_fuel_expense_total || 0) ||
+            (Number(row.unit_price || row.cost_per_liter || row.price_per_liter || row.linked_fuel_average_unit_cost || 0) * liters);
+
+          if (liters > 0 && totalCost > 0) {
+            acc.liters += liters;
+            acc.cost += totalCost;
+          }
+          return acc;
+        },
+        { liters: 0, cost: 0 }
+      );
+
+      return totals.liters > 0 ? Math.round((totals.cost / totals.liters) * 100) / 100 : 0;
+    };
+
+    try {
+      const rentalStyleAverage = Number(await FuelTransactionService.getCurrentTankAverageUnitCost());
+      if (rentalStyleAverage > 0) {
+        return Math.round(rentalStyleAverage * 100) / 100;
+      }
+
+      const { data: pricedTransfers, error: transferError } = await supabase
+        .from('fuel_withdrawals')
+        .select('liters_taken,total_cost,unit_price')
+        .or('unit_price.gt.0,total_cost.gt.0')
+        .order('withdrawal_date', { ascending: false })
+        .limit(200);
+
+      if (!transferError) {
+        const transferAverage = normalizeWeightedAverage(pricedTransfers || []);
+        if (transferAverage > 0) return transferAverage;
+      }
+
+      const { data: rentalSnapshots, error: snapshotError } = await supabase
+        .from(TABLE_NAMES.RENTALS)
+        .select('linked_fuel_consumed_liters,linked_fuel_average_unit_cost,linked_fuel_expense_total')
+        .gt('linked_fuel_average_unit_cost', 0)
+        .gt('linked_fuel_consumed_liters', 0)
+        .order('linked_fuel_synced_at', { ascending: false })
+        .limit(200);
+
+      if (!snapshotError) {
+        return normalizeWeightedAverage(rentalSnapshots || []);
+      }
+
+      return 0;
+    } catch (error) {
+      console.warn('Unable to compute main tank average fuel cost:', error);
+      return 0;
+    }
+  };
+
+  const upsertTourDepartureSnapshots = async (tour, vehiclesForDeparture, entries, startedAt) => {
+    try {
+      const averageUnitCost = await getCurrentMainTankAverageUnitCost();
+      const rows = entries.map((entry) => {
+        const vehicle = vehiclesForDeparture.find((item) => String(item.id) === String(entry.vehicleId));
+        const startFuelLevel = Number(entry.startFuelLevel);
+        return {
+          tour_group_id: tour.groupId,
+          booking_row_id: tour.rowIds?.[0] || null,
+          vehicle_id: entry.vehicleId,
+          plate_number_snapshot: vehicle?.plate_number || '',
+          model_snapshot: vehicle?.model || '',
+          start_odometer: Number(entry.startOdometer),
+          start_fuel_level: startFuelLevel,
+          start_fuel_liters: tourFuelLinesToLiters(startFuelLevel),
+          source_fuel_level: entry.sourceFuelLevel !== null && entry.sourceFuelLevel !== undefined && entry.sourceFuelLevel !== ''
+            ? Number(entry.sourceFuelLevel)
+            : null,
+          fuel_unit_cost_snapshot: averageUnitCost,
+          started_at: startedAt,
+          started_by: userProfile?.id || null,
+          updated_at: new Date().toISOString(),
+        };
+      });
+
+      const { error } = await supabase
+        .from('tour_vehicle_snapshots')
+        .upsert(rows, { onConflict: 'tour_group_id,vehicle_id' });
+
+      if (error) {
+        console.warn('Unable to save tour departure snapshots:', error);
+      }
+    } catch (error) {
+      console.warn('Unable to save tour departure snapshots:', error);
+    }
+  };
+
+  const updateTourReturnSnapshots = async (tour, entries, returnedAt) => {
+    try {
+      const fallbackUnitCost = await getCurrentMainTankAverageUnitCost();
+
+      await Promise.all(entries.map(async (entry) => {
+        const startFuelLevel = entry.startFuelLevel !== null && entry.startFuelLevel !== undefined && entry.startFuelLevel !== ''
+          ? Number(entry.startFuelLevel)
+          : null;
+        const endFuelLevel = Number(entry.fuelLevel);
+        const startLiters = startFuelLevel !== null ? tourFuelLinesToLiters(startFuelLevel) : null;
+        const endLiters = tourFuelLinesToLiters(endFuelLevel);
+        const consumedLiters = startLiters !== null ? Math.max(0, startLiters - endLiters) : 0;
+        const surplusLiters = startLiters !== null ? Math.max(0, endLiters - startLiters) : 0;
+
+        const { data: existingSnapshot } = await supabase
+          .from('tour_vehicle_snapshots')
+          .select('fuel_unit_cost_snapshot')
+          .eq('tour_group_id', tour.groupId)
+          .eq('vehicle_id', entry.vehicleId)
+          .maybeSingle();
+
+        const unitCost = Number(existingSnapshot?.fuel_unit_cost_snapshot || fallbackUnitCost || 0);
+        const payload = {
+          tour_group_id: tour.groupId,
+          booking_row_id: tour.rowIds?.[0] || null,
+          vehicle_id: entry.vehicleId,
+          start_odometer: Number(entry.startOdometer || 0) || null,
+          start_fuel_level: startFuelLevel,
+          start_fuel_liters: startLiters,
+          end_odometer: Number(entry.endOdometer),
+          end_fuel_level: endFuelLevel,
+          end_fuel_liters: endLiters,
+          fuel_consumed_liters: Math.round(consumedLiters * 1000) / 1000,
+          fuel_surplus_liters: Math.round(surplusLiters * 1000) / 1000,
+          fuel_unit_cost_snapshot: unitCost,
+          fuel_expense_total: Math.round(consumedLiters * unitCost * 100) / 100,
+          fuel_surplus_value: Math.round(surplusLiters * unitCost * 100) / 100,
+          returned_at: returnedAt,
+          returned_by: userProfile?.id || null,
+          updated_at: new Date().toISOString(),
+        };
+
+        const { error } = await supabase
+          .from('tour_vehicle_snapshots')
+          .upsert(payload, { onConflict: 'tour_group_id,vehicle_id' });
+
+        if (error) {
+          console.warn('Unable to save tour return snapshot:', error);
+        }
+      }));
+    } catch (error) {
+      console.warn('Unable to update tour return snapshots:', error);
+    }
   };
 
   const logTourReturnActivity = async (tour, entries) => {
@@ -1728,6 +2349,7 @@ const ToursPage = () => {
 
     setTourReturnSaving(true);
     try {
+      const completedAt = new Date().toISOString();
       const actor = {
         id: userProfile?.id || null,
         full_name: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
@@ -1763,7 +2385,7 @@ const ToursPage = () => {
       await updateTourMetadata(
         tourToComplete,
         {
-          completedAt: new Date().toISOString(),
+          completedAt,
           completedByUserId: userProfile?.id || null,
           completedByName: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
           returnEntries: tourReturnEntries.map((entry) => ({
@@ -1778,12 +2400,16 @@ const ToursPage = () => {
         },
         'completed'
       );
+      await updateTourReturnSnapshots(tourToComplete, tourReturnEntries, completedAt);
 
       await logTourReturnActivity(tourToComplete, tourReturnEntries);
       await logTourActivity(
         tourToComplete,
         'tour_completed',
-        `Tour completed by ${tourToComplete.guideName || 'guide'} with ${tourReturnEntries.length} vehicle return checks recorded.`,
+        tr(
+          `Tour completed by ${tourToComplete.guideName || 'guide'} with ${tourReturnEntries.length} vehicle return checks recorded.`,
+          `Tour terminé par ${tourToComplete.guideName || 'guide'} avec ${tourReturnEntries.length} contrôles de retour véhicule enregistrés.`
+        ),
         {
           completed_by: actor.full_name,
           return_entries: tourReturnEntries.map((entry) => ({
@@ -1797,11 +2423,11 @@ const ToursPage = () => {
       setTourReturnModalOpen(false);
       setTourToComplete(null);
       setTourReturnEntries([]);
-      toast.success('Tour return recorded and completed successfully');
+      toast.success(tr('Tour return recorded and completed successfully', 'Retour du tour enregistré et terminé avec succès'));
       setRefreshKey((prev) => prev + 1);
     } catch (error) {
       console.error('Failed to complete tour return:', error);
-      toast.error(`Could not complete the tour return: ${error.message}`);
+      toast.error(tr(`Could not complete the tour return: ${error.message}`, `Impossible de terminer le retour du tour : ${error.message}`));
     } finally {
       setTourReturnSaving(false);
     }
@@ -1810,81 +2436,7 @@ const ToursPage = () => {
   const handleUpdateTourStatus = async (tour, status) => {
     try {
       if (status === 'active') {
-        if (tour.requiresLicense && !tour.licenseCaptured) {
-          toast.error('Driver license scan is required before departure');
-          return;
-        }
-        const needsAssignment = (tour.assignedVehicles?.length || 0) < Number(tour.quadCount || 0);
-        if (needsAssignment) {
-          const assignableVehicles = getAssignableVehiclesForTour(tour);
-          const requestedModelMix = Array.isArray(tour.selectedModelMix) ? tour.selectedModelMix : [];
-          const modelBasedSelection = requestedModelMix.length > 0
-            ? buildVehiclesForModelMix(assignableVehicles, requestedModelMix)
-            : { selectedVehicles: assignableVehicles.slice(0, Number(tour.quadCount || 1)), missingModels: [] };
-          const availableNow = modelBasedSelection.selectedVehicles;
-
-          if (modelBasedSelection.missingModels?.length > 0) {
-            toast.error(`Not enough free quads for ${modelBasedSelection.missingModels[0].label}`);
-            return;
-          }
-          if (availableNow.length < Number(tour.quadCount || 1)) {
-            toast.error('Not enough free quads to start this tour right now');
-            return;
-          }
-          const startedAt = new Date().toISOString();
-          await assignTourVehicles(tour.rowIds, availableNow.map((vehicle) => vehicle.id), 'active');
-          await updateTourMetadata(tour, {
-            trackingUrl: buildTourTrackingUrl(tour.groupId),
-            assignedVehicleIds: availableNow.map((vehicle) => vehicle.id),
-            assignedVehiclePlates: availableNow.map((vehicle) => vehicle.plate_number),
-            assignmentMode: 'assigned_now',
-            startedAt,
-            startedByUserId: userProfile?.id || null,
-            startedByName: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
-            departureEntries: availableNow.map((vehicle) => ({
-              vehicleId: vehicle.id,
-              vehicleName: `${vehicle.plate_number || 'No plate'} • ${vehicle.name || 'SEGWAY'} ${vehicle.model || ''}`.trim(),
-              startOdometer: Number(vehicle.current_odometer || 0),
-              startedAt,
-            })),
-          });
-          await logTourActivity(
-            tour,
-            'tour_started',
-            `Tour started and ${availableNow.length} quad(s) were assigned.`,
-            {
-              assigned_vehicle_ids: availableNow.map((vehicle) => vehicle.id),
-              started_at: startedAt,
-            }
-          );
-          toast.success('Tour started and quads assigned');
-          setRefreshKey((prev) => prev + 1);
-          return;
-        }
-        const startedAt = new Date().toISOString();
-        await updateTourMetadata(tour, {
-          trackingUrl: buildTourTrackingUrl(tour.groupId),
-          startedAt,
-          startedByUserId: userProfile?.id || null,
-          startedByName: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
-          departureEntries: tour.assignedVehicles.map((vehicle) => ({
-            vehicleId: vehicle.id,
-            vehicleName: `${vehicle.plate_number || 'No plate'} • ${vehicle.name || 'SEGWAY'} ${vehicle.model || ''}`.trim(),
-            startOdometer: Number(vehicle.current_odometer || 0),
-            startedAt,
-          })),
-        }, 'active');
-        await logTourActivity(
-          tour,
-          'tour_started',
-          `Tour started with ${tour.assignedVehicles.length} assigned quad(s).`,
-          {
-            assigned_vehicle_ids: tour.assignedVehicles.map((vehicle) => vehicle.id),
-            started_at: startedAt,
-          }
-        );
-        toast.success('Tour started');
-        setRefreshKey((prev) => prev + 1);
+        await handleOpenTourStartModal(tour);
         return;
       }
 
@@ -1894,31 +2446,63 @@ const ToursPage = () => {
           receiptIssuedAt: new Date().toISOString(),
           completedAt: new Date().toISOString(),
         }, 'completed');
-        toast.success('Tour completed and receipt marked as required/shared');
+        toast.success(tr('Tour completed and receipt marked as required/shared', 'Tour terminé et reçu marqué comme requis/partagé'));
         setRefreshKey((prev) => prev + 1);
         return;
       }
 
-      if (status === 'cancelled') {
-        const confirmed = window.confirm('Are you sure you want to cancel this tour?');
+      if (['cancelled', 'no_show', 'expired'].includes(status)) {
+        const statusConfig = {
+          cancelled: {
+            confirm: tr('Are you sure you want to cancel this tour?', 'Voulez-vous vraiment annuler ce tour ?'),
+            success: tr('Tour marked cancelled', 'Tour marqué annulé'),
+            activity: 'tour_cancelled',
+            description: tr('Tour was cancelled from the schedule board.', 'Le tour a été annulé depuis le planning.'),
+            meta: {
+              cancelledAt: new Date().toISOString(),
+              cancelledByUserId: userProfile?.id || null,
+              cancelledByName: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
+            },
+          },
+          no_show: {
+            confirm: tr('Mark this tour as no-show?', 'Marquer ce tour comme no-show ?'),
+            success: tr('Tour marked no-show', 'Tour marqué no-show'),
+            activity: 'tour_no_show',
+            description: tr('Tour was marked no-show from the schedule board.', 'Le tour a été marqué no-show depuis le planning.'),
+            meta: {
+              noShowAt: new Date().toISOString(),
+              noShowByUserId: userProfile?.id || null,
+              noShowByName: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
+            },
+          },
+          expired: {
+            confirm: tr('Mark this tour as expired?', 'Marquer ce tour comme expiré ?'),
+            success: tr('Tour marked expired', 'Tour marqué expiré'),
+            activity: 'tour_expired',
+            description: tr('Tour was manually marked expired after the start window passed.', 'Le tour a été marqué expiré manuellement après le créneau de départ.'),
+            meta: {
+              expiredAt: new Date().toISOString(),
+              expiredByUserId: userProfile?.id || null,
+              expiredByName: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
+            },
+          },
+        }[status];
+        const confirmed = window.confirm(statusConfig.confirm);
         if (!confirmed) {
           return;
         }
 
-        await updateTourMetadata(tour, {
-          cancelledAt: new Date().toISOString(),
-          cancelledByUserId: userProfile?.id || null,
-          cancelledByName: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
-        }, 'cancelled');
+        await updateTourMetadata(tour, statusConfig.meta, status);
         await logTourActivity(
           tour,
-          'tour_cancelled',
-          'Tour was cancelled from the schedule board.',
+          statusConfig.activity,
+          statusConfig.description,
           {
-            cancelled_at: new Date().toISOString(),
+            status,
+            marked_at: new Date().toISOString(),
           }
         );
-        toast.success('Tour marked cancelled');
+        toast.success(statusConfig.success);
         setRefreshKey((prev) => prev + 1);
         return;
       }
@@ -1941,23 +2525,23 @@ const ToursPage = () => {
         return false;
       }
       if (!bookingForm.time || !bookingForm.date) {
-        toast.error('Choose date and departure time');
+        toast.error(tr('Choose date and departure time', "Choisissez la date et l'heure de départ"));
         return false;
       }
       if (new Date(`${bookingForm.date}T${bookingForm.time}:00`) < new Date(Date.now() - 30 * 60 * 1000)) {
-        toast.error('Departure time cannot be in the past');
+        toast.error(tr('Departure time cannot be in the past', "L'heure de départ ne peut pas être passée"));
         return false;
       }
       if (availabilitySnapshot.availableCapacity < Number(bookingForm.quadCount || 1)) {
-        toast.error('Not enough quad capacity available for this time slot');
+        toast.error(tr('Not enough quad capacity available for this time slot', 'Capacité de quads insuffisante pour ce créneau'));
         return false;
       }
       if (selectedModelCount !== Number(bookingForm.quadCount || 1)) {
-        toast.error('Select the quad model mix so it matches the number of quads');
+        toast.error(tr('Select the quad model mix so it matches the number of quads', 'Sélectionnez un mix de modèles correspondant au nombre de quads'));
         return false;
       }
       if (missingModelPricing.length > 0) {
-        toast.error(`Set tour pricing first for ${missingModelPricing[0].label}`);
+        toast.error(tr(`Set tour pricing first for ${missingModelPricing[0].label}`, `Définissez d'abord le tarif du tour pour ${missingModelPricing[0].label}`));
         return false;
       }
       return true;
@@ -1965,25 +2549,39 @@ const ToursPage = () => {
 
     if (bookingStep === 2) {
       if (canSelectTourGuide && !bookingForm.guideId) {
-        toast.error('Choose a tour guide');
+        toast.error(tr('Choose a tour guide', 'Choisissez un guide de tour'));
         return false;
       }
       if (Number(bookingForm.ridersCount || 1) > Number(bookingForm.quadCount || 1) * 2) {
-        toast.error('Maximum two riders per quad');
+        toast.error(tr('Maximum two riders per quad', 'Maximum deux passagers par quad'));
         return false;
       }
       for (let index = 0; index < primaryDrivers.length; index += 1) {
         const driver = primaryDrivers[index];
         if (!String(driver.fullName || '').trim()) {
-          toast.error(`Enter the main driver name for quad ${index + 1}`);
+          toast.error(tr(`Enter the main driver name for quad ${index + 1}`, `Saisissez le nom du conducteur principal pour le quad ${index + 1}`));
           return false;
         }
-        if (!String(driver.whatsapp || '').trim()) {
-          toast.error(`Enter the WhatsApp number for quad ${index + 1}`);
+        if (!hasDriverContactMethod(driver)) {
+          toast.error(
+            tr(
+              `Enter a WhatsApp number or email for quad ${index + 1}`,
+              `Saisissez un numéro WhatsApp ou un e-mail pour le quad ${index + 1}`
+            )
+          );
+          return false;
+        }
+        if (String(driver.email || '').trim() && !hasValidEmail(driver.email)) {
+          toast.error(
+            tr(
+              `Enter a valid email for quad ${index + 1}`,
+              `Saisissez un e-mail valide pour le quad ${index + 1}`
+            )
+          );
           return false;
         }
         if (currentPackage?.requiresLicense && !String(driver.licenseNumber || '').trim()) {
-          toast.error(`Enter the main driver license number for quad ${index + 1}`);
+          toast.error(tr(`Enter the main driver license number for quad ${index + 1}`, `Saisissez le numéro de permis du conducteur principal pour le quad ${index + 1}`));
           return false;
         }
       }
@@ -1991,15 +2589,29 @@ const ToursPage = () => {
         const driver = secondaryDrivers[index];
         if (!hasAnyDriverValue(driver)) continue;
         if (!String(driver.fullName || '').trim()) {
-          toast.error(`Enter the second driver name for quad ${index + 1}`);
+          toast.error(tr(`Enter the second driver name for quad ${index + 1}`, `Saisissez le nom du second conducteur pour le quad ${index + 1}`));
           return false;
         }
-        if (!String(driver.whatsapp || '').trim()) {
-          toast.error(`Enter the second driver WhatsApp for quad ${index + 1}`);
+        if (!hasDriverContactMethod(driver)) {
+          toast.error(
+            tr(
+              `Enter the second driver WhatsApp or email for quad ${index + 1}`,
+              `Saisissez le WhatsApp ou l'e-mail du second conducteur pour le quad ${index + 1}`
+            )
+          );
+          return false;
+        }
+        if (String(driver.email || '').trim() && !hasValidEmail(driver.email)) {
+          toast.error(
+            tr(
+              `Enter a valid email for the second driver on quad ${index + 1}`,
+              `Saisissez un e-mail valide pour le second conducteur du quad ${index + 1}`
+            )
+          );
           return false;
         }
         if (currentPackage?.requiresLicense && !String(driver.licenseNumber || '').trim()) {
-          toast.error(`Enter the second driver license number for quad ${index + 1}`);
+          toast.error(tr(`Enter the second driver license number for quad ${index + 1}`, `Saisissez le numéro de permis du second conducteur pour le quad ${index + 1}`));
           return false;
         }
       }
@@ -2036,20 +2648,20 @@ const ToursPage = () => {
     );
 
     if (availabilitySnapshot.availableCapacity < quadCount) {
-      toast.error('Not enough quad capacity available');
+      toast.error(tr('Not enough quad capacity available', 'Capacité de quads insuffisante'));
       return;
     }
 
     if (shouldAssignVehiclesNow && assignedVehicles.length < quadCount) {
-      toast.error('Not enough free quads right now');
+      toast.error(tr('Not enough free quads right now', 'Pas assez de quads libres actuellement'));
       return;
     }
     if (selectedModelCount !== quadCount) {
-      toast.error('Match the quad count with the selected model mix');
+      toast.error(tr('Match the quad count with the selected model mix', 'Faites correspondre le nombre de quads avec le mix de modèles sélectionné'));
       return;
     }
     if (missingModelPricing.length > 0) {
-      toast.error(`Missing pricing for ${missingModelPricing[0].label}`);
+      toast.error(tr(`Missing pricing for ${missingModelPricing[0].label}`, `Tarification manquante pour ${missingModelPricing[0].label}`));
       return;
     }
 
@@ -2059,8 +2671,13 @@ const ToursPage = () => {
       quadNumber: index + 1,
       fullName: String(driver.fullName || '').trim(),
       whatsapp: String(driver.whatsapp || '').trim(),
+      email: String(driver.email || '').trim(),
       idNumber: String(driver.idNumber || '').trim(),
       licenseNumber: String(driver.licenseNumber || '').trim(),
+      dateOfBirth: String(driver.dateOfBirth || '').trim(),
+      nationality: String(driver.nationality || '').trim(),
+      placeOfBirth: String(driver.placeOfBirth || '').trim(),
+      issueDate: String(driver.issueDate || '').trim(),
       idFileName: String(driver.idFileName || '').trim(),
       idFileUrl: String(driver.idFileUrl || '').trim(),
     }));
@@ -2069,8 +2686,13 @@ const ToursPage = () => {
         quadNumber: index + 1,
         fullName: String(driver.fullName || '').trim(),
         whatsapp: String(driver.whatsapp || '').trim(),
+        email: String(driver.email || '').trim(),
         idNumber: String(driver.idNumber || '').trim(),
         licenseNumber: String(driver.licenseNumber || '').trim(),
+        dateOfBirth: String(driver.dateOfBirth || '').trim(),
+        nationality: String(driver.nationality || '').trim(),
+        placeOfBirth: String(driver.placeOfBirth || '').trim(),
+        issueDate: String(driver.issueDate || '').trim(),
         idFileName: String(driver.idFileName || '').trim(),
         idFileUrl: String(driver.idFileUrl || '').trim(),
       }))
@@ -2081,6 +2703,7 @@ const ToursPage = () => {
     const bookingContactDriver = normalizedPrimaryDrivers[0] || {};
     const customerName = bookingContactDriver.fullName || `Tour ${groupId}`;
     const customerPhone = bookingContactDriver.whatsapp || '';
+    const customerEmail = bookingContactDriver.email || '';
 
     const metadata = {
       kind: 'tour_booking',
@@ -2102,7 +2725,7 @@ const ToursPage = () => {
       ridersCount: Number(bookingForm.ridersCount || bookingForm.quadCount || 1),
       customerName,
       customerPhone,
-      customerEmail: '',
+      customerEmail,
       packageLocation: currentPackage.location || '',
       primaryDrivers: normalizedPrimaryDrivers,
       secondaryDrivers: normalizedSecondaryDrivers,
@@ -2132,7 +2755,7 @@ const ToursPage = () => {
     const notes = appendMarkedJson(bookingForm.notes || '', TOUR_BOOKING_MARKER, metadata);
     const rows = Array.from({ length: quadCount }, (_, index) => ({
       customer_name: customerName,
-      customer_email: '',
+      customer_email: customerEmail,
       phone: customerPhone,
       vehicle_id: shouldAssignVehiclesNow ? assignedVehicles[index]?.id || null : null,
       rental_start_date: blockingStart.toISOString(),
@@ -2150,7 +2773,7 @@ const ToursPage = () => {
     } catch (error) {
       setBookingSaving(false);
       console.error('Failed to create tour booking:', error);
-      toast.error('Could not book this tour');
+      toast.error(tr('Could not book this tour', 'Impossible de réserver ce tour'));
       return;
     }
     setBookingSaving(false);
@@ -2162,7 +2785,7 @@ const ToursPage = () => {
         guideName: selectedGuide?.name || currentUserDisplayName,
       },
       'tour_booked',
-      `Tour booked for ${customerName} with ${quadCount} quad(s).`,
+      tr(`Tour booked for ${customerName} with ${quadCount} quad(s).`, `Tour réservé pour ${customerName} avec ${quadCount} quad(s).`),
       {
         customer_name: customerName,
         guide_name: selectedGuide?.name || currentUserDisplayName,
@@ -2174,7 +2797,7 @@ const ToursPage = () => {
       }
     );
 
-    toast.success('Tour booked successfully');
+    toast.success(tr('Tour booked successfully', 'Tour réservé avec succès'));
     setRefreshKey((prev) => prev + 1);
     setActiveTab('schedule');
     resetBookingFlow();
@@ -2201,14 +2824,14 @@ const ToursPage = () => {
 
   const buildTourReceiptHtml = (tour) => {
     const vehicleSummary = tour.assignedVehicles.length > 0
-      ? tour.assignedVehicles.map((vehicle) => `${vehicle.plate_number || 'No plate'} - ${vehicle.name || 'Vehicle'} ${vehicle.model || ''}`).join(', ')
-      : `${tour.quadCount} quad(s) assigned at departure`;
+      ? tour.assignedVehicles.map((vehicle) => `${vehicle.plate_number || tr('No plate', 'Sans plaque')} - ${vehicle.name || tr('Vehicle', 'Véhicule')} ${vehicle.model || ''}`).join(', ')
+      : tr(`${tour.quadCount} quad(s) assigned at departure`, `${tour.quadCount} quad(s) attribué(s) au départ`);
 
     return `<!DOCTYPE html>
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Tour Receipt</title>
+    <title>${tr('Tour Receipt', 'Reçu du tour')}</title>
     <style>
       body { font-family: Arial, sans-serif; padding: 32px; color: #0f172a; }
       .header { margin-bottom: 24px; }
@@ -2223,23 +2846,23 @@ const ToursPage = () => {
   </head>
   <body>
     <div class="header">
-      <h1 class="title">Tour Receipt</h1>
+      <h1 class="title">${tr('Tour Receipt', 'Reçu du tour')}</h1>
       <p class="subtitle">${tour.packageName} • ${formatDateTime(tour.completedAt || new Date().toISOString())}</p>
     </div>
     <div class="grid">
-      <div class="card"><div class="label">Customer</div><div class="value">${tour.customerName}</div></div>
-      <div class="card"><div class="label">Phone</div><div class="value">${tour.customerPhone || 'N/A'}</div></div>
-      <div class="card"><div class="label">Guide</div><div class="value">${tour.guideName}</div></div>
-      <div class="card"><div class="label">Route</div><div class="value">${tour.routeType}</div></div>
-      <div class="card"><div class="label">Departure</div><div class="value">${formatDateTime(tour.startedAt || tour.scheduledStartAt)}</div></div>
-      <div class="card"><div class="label">Riders</div><div class="value">${tour.ridersCount}</div></div>
+      <div class="card"><div class="label">${tr('Customer', 'Client')}</div><div class="value">${tour.customerName}</div></div>
+      <div class="card"><div class="label">${tr('Phone', 'Téléphone')}</div><div class="value">${tour.customerPhone || 'N/A'}</div></div>
+      <div class="card"><div class="label">${tr('Guide', 'Guide')}</div><div class="value">${tour.guideName}</div></div>
+      <div class="card"><div class="label">${tr('Route', 'Itinéraire')}</div><div class="value">${tour.routeType}</div></div>
+      <div class="card"><div class="label">${tr('Departure', 'Départ')}</div><div class="value">${formatDateTime(tour.startedAt || tour.scheduledStartAt)}</div></div>
+      <div class="card"><div class="label">${tr('Riders', 'Passagers')}</div><div class="value">${tour.ridersCount}</div></div>
     </div>
     <div class="card">
-      <div class="label">Vehicles</div>
+      <div class="label">${tr('Vehicles', 'Véhicules')}</div>
       <div class="value">${vehicleSummary}</div>
     </div>
     <div class="card">
-      <div class="label">Total Paid</div>
+      <div class="label">${tr('Total Paid', 'Total payé')}</div>
       <div class="total">${formatCurrencyMAD(tour.totalAmount)} MAD</div>
     </div>
   </body>
@@ -2249,7 +2872,7 @@ const ToursPage = () => {
   const handlePrintTourReceipt = (tour) => {
     const printWindow = window.open('', '_blank', 'width=900,height=700');
     if (!printWindow) {
-      toast.error('Allow popups to print the receipt');
+      toast.error(tr('Allow popups to print the receipt', "Autorisez les fenêtres contextuelles pour imprimer le reçu"));
       return;
     }
 
@@ -2262,18 +2885,18 @@ const ToursPage = () => {
 
   const handleShareTourReceipt = async (tour) => {
     const message = [
-      `Tour receipt`,
+      tr('Tour receipt', 'Reçu du tour'),
       `${tour.packageName}`,
-      `Customer: ${tour.customerName}`,
-      `Guide: ${tour.guideName}`,
-      `Total: ${formatCurrencyMAD(tour.totalAmount)} MAD`,
-      `Completed: ${formatDateTime(tour.completedAt || new Date().toISOString())}`,
+      tr(`Customer: ${tour.customerName}`, `Client : ${tour.customerName}`),
+      tr(`Guide: ${tour.guideName}`, `Guide : ${tour.guideName}`),
+      tr(`Total: ${formatCurrencyMAD(tour.totalAmount)} MAD`, `Total : ${formatCurrencyMAD(tour.totalAmount)} MAD`),
+      tr(`Completed: ${formatDateTime(tour.completedAt || new Date().toISOString())}`, `Terminé : ${formatDateTime(tour.completedAt || new Date().toISOString())}`),
     ].join('\n');
 
     if (navigator.share) {
       try {
         await navigator.share({
-          title: 'Tour Receipt',
+          title: tr('Tour Receipt', 'Reçu du tour'),
           text: message,
         });
         return;
@@ -2287,20 +2910,42 @@ const ToursPage = () => {
   const handleWhatsAppLocateGuide = async (tour) => {
     const assignedGuide = guides.find((guide) => String(guide.id) === String(tour.guideId));
     const cleanPhone = String(assignedGuide?.phone || '').replace(/\D/g, '');
+    const callbackPhone = String(userProfile?.phone_number || '').replace(/\D/g, '');
 
     if (!cleanPhone) {
-      toast.error('No WhatsApp number is saved for this guide.');
+      toast.error(tr('No WhatsApp number is saved for this guide.', "Aucun numéro WhatsApp n'est enregistré pour ce guide."));
       return;
     }
 
     try {
-      const trackingUrl = tour.trackingUrl || buildTourTrackingUrl(tour.groupId);
-      const shortTrackingUrl = await shortenUrl(trackingUrl, null, 'tour_tracking');
+      const trackingUrl = new URL(buildTourTrackingUrl(tour.groupId));
+      if (callbackPhone) {
+        trackingUrl.searchParams.set('callbackPhone', callbackPhone);
+        trackingUrl.searchParams.set('callbackName', currentUserDisplayName);
+        trackingUrl.searchParams.set('adminLiveMapUrl', `${trackingUrl.origin}/admin/live-map?groupId=${encodeURIComponent(tour.groupId)}`);
+      }
+      const shortTrackingUrl = await shortenUrl(trackingUrl.toString(), null, 'tour_tracking');
       const message = [
-        `Open and share location now: ${shortTrackingUrl}`,
+      tr(`Open and share location now: ${shortTrackingUrl}`, `Ouvrez et partagez votre position maintenant : ${shortTrackingUrl}`),
       ].join('\n');
 
+      await updateTourMetadata(tour, {
+        trackingUrl: buildTourTrackingUrl(tour.groupId),
+        trackingLinkSentAt: new Date().toISOString(),
+        trackingLinkSentByName: currentUserDisplayName,
+      });
+      await logTourActivity(
+        tour,
+        'tour_tracking_link_sent',
+        tr('Tracking link sent to the driver.', 'Lien de suivi envoyé au guide.'),
+        {
+          tracking_link_sent_at: new Date().toISOString(),
+          guide_phone: cleanPhone,
+        }
+      );
+
       window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+      setRefreshKey((prev) => prev + 1);
     } catch (error) {
       console.error('Unable to open guide WhatsApp:', error);
       toast.error('Could not open WhatsApp for the guide.');
@@ -2330,39 +2975,55 @@ const ToursPage = () => {
     const timeline = [
       {
         id: `${tour.groupId}-created`,
-        title: 'Tour booked',
-        description: `${tour.bookedByName} created this tour booking.`,
+        title: tr('Tour booked', 'Tour réservé'),
+        description: tr(`${tour.bookedByName} created this tour booking.`, `${tour.bookedByName} a créé cette réservation de tour.`),
         timestamp: tour.createdAt || tour.scheduledStartAt,
       },
       tour.startedAt
         ? {
             id: `${tour.groupId}-started`,
-            title: 'Tour started',
-            description: `${tour.startedByName || tour.guideName || 'Guide'} started the tour.`,
+            title: tr('Tour started', 'Tour démarré'),
+            description: tr(`${tour.startedByName || tour.guideName || 'Guide'} started the tour.`, `${tour.startedByName || tour.guideName || 'Guide'} a démarré le tour.`),
             timestamp: tour.startedAt,
           }
         : null,
       tour.completedAt
         ? {
             id: `${tour.groupId}-completed`,
-            title: 'Tour completed',
-            description: `${tour.completedByName || tour.guideName || 'Guide'} completed the tour return workflow.`,
+            title: tr('Tour completed', 'Tour terminé'),
+            description: tr(`${tour.completedByName || tour.guideName || 'Guide'} completed the tour return workflow.`, `${tour.completedByName || tour.guideName || 'Guide'} a terminé le flux de retour du tour.`),
             timestamp: tour.completedAt,
           }
         : null,
       tour.cancelledAt
         ? {
             id: `${tour.groupId}-cancelled`,
-            title: 'Tour cancelled',
-            description: `${tour.cancelledByName || 'Team Member'} cancelled this booking.`,
+            title: tr('Tour cancelled', 'Tour annulé'),
+            description: tr(`${tour.cancelledByName || 'Team Member'} cancelled this booking.`, `${tour.cancelledByName || 'Membre de l’équipe'} a annulé cette réservation.`),
             timestamp: tour.cancelledAt,
+          }
+        : null,
+      tour.noShowAt
+        ? {
+            id: `${tour.groupId}-no-show`,
+            title: tr('Tour no-show', 'Tour no-show'),
+            description: tr(`${tour.noShowByName || 'Team Member'} marked this booking as no-show.`, `${tour.noShowByName || 'Membre de l’équipe'} a marqué cette réservation comme no-show.`),
+            timestamp: tour.noShowAt,
+          }
+        : null,
+      tour.expiredAt
+        ? {
+            id: `${tour.groupId}-expired`,
+            title: tr('Tour expired', 'Tour expiré'),
+            description: tr(`${tour.expiredByName || 'Team Member'} marked this booking as expired.`, `${tour.expiredByName || 'Membre de l’équipe'} a marqué cette réservation comme expirée.`),
+            timestamp: tour.expiredAt,
           }
         : null,
       tour.receiptIssuedAt
         ? {
             id: `${tour.groupId}-receipt`,
-            title: 'Receipt issued',
-            description: 'Receipt was marked as issued/shared.',
+            title: tr('Receipt issued', 'Reçu émis'),
+            description: tr('Receipt was marked as issued/shared.', 'Le reçu a été marqué comme émis/partagé.'),
             timestamp: tour.receiptIssuedAt,
           }
         : null,
@@ -2426,6 +3087,8 @@ const ToursPage = () => {
           `${vehicle?.plate_number || 'No plate'} • ${vehicle?.name || 'SEGWAY'} ${vehicle?.model || ''}`.trim(),
         plateNumber: vehicle?.plate_number || '',
         startOdometer: departure?.startOdometer ?? returned?.startOdometer ?? null,
+        sourceFuelLevel: departure?.sourceFuelLevel ?? null,
+        startFuelLevel: departure?.startFuelLevel ?? null,
         startedAt: departure?.startedAt || selectedTourDetails.startedAt || '',
         endOdometer: returned?.endOdometer ?? null,
         fuelLevel: returned?.fuelLevel ?? null,
@@ -2458,7 +3121,7 @@ const ToursPage = () => {
                     className="inline-flex items-center rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
                   >
                     <MapPinned className="mr-2 h-4 w-4" />
-                    Open Live Map
+                    {tr('Open Live Map', 'Ouvrir la carte en direct')}
                   </Link>
                 )}
 
@@ -2468,7 +3131,7 @@ const ToursPage = () => {
                   className="inline-flex items-center rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
                 >
                   <TimerReset className="mr-2 h-4 w-4" />
-                  Refresh
+                  {tr('Refresh', 'Actualiser')}
                 </button>
 
 
@@ -2479,7 +3142,7 @@ const ToursPage = () => {
                     className="inline-flex items-center rounded-lg bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:bg-white/20"
                   >
                     <Plus className="mr-2 h-4 w-4" />
-                    Add Package
+                    {tr('Add Package', 'Ajouter un forfait')}
                   </button>
                 )}
               </div>
@@ -2506,7 +3169,7 @@ const ToursPage = () => {
                   }`}
                 >
                   <Icon className={`mr-2 h-5 w-5 transition-transform duration-200 ${active ? 'scale-110' : 'group-hover:scale-105'}`} />
-                  <span className="font-semibold">{tab.label}</span>
+                  <span className="font-semibold">{tab.id === 'schedule' ? tr('Schedule', 'Planning') : tr('Book Tour', 'Réserver un tour')}</span>
                 </button>
               );
             })}
@@ -2515,29 +3178,29 @@ const ToursPage = () => {
       </div>
 
       <div className="px-4 py-6 sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-7xl space-y-6">
+        <div className="mx-auto max-w-7xl space-y-6 pb-32 sm:pb-16">
 
       {activeTab === 'bookings' && (
-        <div className="space-y-6 pb-24">
+        <div className="space-y-6 pb-32 sm:pb-24">
           <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Book Tour</p>
+                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Book Tour', 'Réserver un tour')}</p>
                 <h1 className="mt-2 text-3xl font-bold text-slate-900">
-                  {canSelectTourGuide ? 'Fast booking' : 'Tour booking'}
+                  {canSelectTourGuide ? tr('Fast booking', 'Réservation rapide') : tr('Tour booking', 'Réservation de tour')}
                 </h1>
               </div>
               <div className="grid grid-cols-3 gap-3">
                 <div className="rounded-lg bg-gradient-to-br from-slate-100 to-white px-4 py-3 text-center ring-1 ring-slate-200/80">
-                  <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500 whitespace-nowrap">Free Now</p>
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500 whitespace-nowrap">{tr('Free Now', 'Libre maintenant')}</p>
                   <p className="mt-1 text-2xl font-semibold text-slate-900">{fleetStats.freeNow}</p>
                 </div>
                 <div className="rounded-lg bg-violet-50 px-4 py-3 text-center ring-1 ring-violet-200/80">
-                  <p className="text-[11px] font-medium uppercase tracking-wide text-violet-600 whitespace-nowrap">Capacity</p>
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-violet-600 whitespace-nowrap">{tr('Capacity', 'Capacité')}</p>
                   <p className="mt-1 text-2xl font-semibold text-violet-900">{fleetStats.total}</p>
                 </div>
                 <div className="rounded-lg bg-indigo-50 px-4 py-3 text-center ring-1 ring-indigo-200/80">
-                  <p className="text-[11px] font-medium uppercase tracking-wide text-indigo-600 whitespace-nowrap">Reserved</p>
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-indigo-600 whitespace-nowrap">{tr('Reserved', 'Réservé')}</p>
                   <p className="mt-1 text-2xl font-semibold text-indigo-900">{fleetStats.reserved}</p>
                 </div>
               </div>
@@ -2545,9 +3208,9 @@ const ToursPage = () => {
 
             <div className="mt-5 grid grid-cols-3 gap-2">
               {[
-                { id: 1, label: 'Package & Time', icon: Route },
-                { id: 2, label: 'Guest & Guide', icon: Users },
-                { id: 3, label: 'Review & Book', icon: CheckCircle2 },
+                { id: 1, label: tr('Package & Time', 'Forfait & heure'), icon: Route },
+                { id: 2, label: tr('Guest & Guide', 'Client & guide'), icon: Users },
+                { id: 3, label: tr('Review & Book', 'Vérifier & réserver'), icon: CheckCircle2 },
               ].map((step) => {
                 const Icon = step.icon;
                 const active = bookingStep === step.id;
@@ -2584,12 +3247,12 @@ const ToursPage = () => {
               <section className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Step 1</p>
-                    <h3 className="mt-2 text-xl font-semibold text-slate-900">Choose package and departure</h3>
+                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Step 1', 'Étape 1')}</p>
+                    <h3 className="mt-2 text-xl font-semibold text-slate-900">{tr('Choose package and departure', 'Choisir le forfait et le départ')}</h3>
                   </div>
                   {bookingsLoading && (
                     <div className="rounded-lg bg-slate-100 px-4 py-2 text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
-                      Loading schedule...
+                      {tr('Loading schedule...', 'Chargement du planning...')}
                     </div>
                   )}
                   {canManageTourPackages && (
@@ -2598,17 +3261,18 @@ const ToursPage = () => {
                       className="inline-flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-medium text-violet-700 transition hover:bg-violet-100"
                     >
                       <Package2 className="h-4 w-4" />
-                      Manage Packages
+                      {tr('Manage Packages', 'Gérer les forfaits')}
                     </Link>
                   )}
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {packagesLoading ? (
-                    <div className="col-span-full rounded-xl border border-slate-200 bg-slate-50 p-6 text-slate-500">Loading packages...</div>
+                    <div className="col-span-full rounded-xl border border-slate-200 bg-slate-50 p-6 text-slate-500">{tr('Loading packages...', 'Chargement des forfaits...')}</div>
                   ) : (
                     packages.map((pkg) => {
                       const selected = String(pkg.id) === String(bookingForm.packageId);
+                      const modelPriceHighlights = getPackageModelPriceHighlights(pkg);
                       return (
                         <button
                           key={pkg.id}
@@ -2639,20 +3303,37 @@ const ToursPage = () => {
                             </span>
                           </div>
                           <p className="mt-3 text-lg font-bold text-slate-900">{pkg.name}</p>
-                          <p className="mt-0.5 text-xs text-slate-500">{pkg.location || 'Main Base'}</p>
+                          <p className="mt-0.5 text-xs text-slate-500">{pkg.location || tr('Main Base', 'Base principale')}</p>
                           <div className="mt-3 space-y-1.5 border-t border-slate-100 pt-3">
                             <div className="flex items-center justify-between text-sm">
-                              <span className="text-slate-500">From</span>
-                              <span className="font-bold text-violet-700">{getPackagePricingBadge(pkg).toLocaleString('en-MA')} MAD</span>
+                              <span className="text-slate-500">{tr('From', 'À partir de')}</span>
+                              <span className="font-bold text-violet-700">{getPackagePricingBadge(pkg)}</span>
                             </div>
+                            {modelPriceHighlights.length > 0 ? (
+                              <div className="pt-1">
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                                  {tr('Model pricing', 'Tarifs par modele')}
+                                </p>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {modelPriceHighlights.map((item) => (
+                                    <span
+                                      key={`${pkg.id}-${item.modelId}`}
+                                      className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700"
+                                    >
+                                      {item.label} • {item.price.toLocaleString('en-MA')} MAD
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
                             <div className="flex items-center justify-between text-sm">
-                              <span className="text-slate-500">License</span>
+                              <span className="text-slate-500">{tr('License', 'Permis')}</span>
                               <span className={`font-medium ${pkg.requiresLicense ? 'text-indigo-700' : 'text-emerald-700'}`}>
-                                {pkg.requiresLicense ? 'Required' : 'Not needed'}
+                                {pkg.requiresLicense ? tr('Required', 'Requis') : tr('Not needed', 'Non nécessaire')}
                               </span>
                             </div>
                             <div className="flex items-center justify-between text-sm">
-                              <span className="text-slate-500">Max quads</span>
+                              <span className="text-slate-500">{tr('Max quads', 'Quads max')}</span>
                               <span className="font-medium text-slate-700">{pkg.maxQuads || 5}</span>
                             </div>
                           </div>
@@ -2664,7 +3345,7 @@ const ToursPage = () => {
 
                 <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
                   <div className="rounded-xl bg-slate-50 p-5">
-                    <label className="text-sm font-semibold text-slate-700">Tour Date</label>
+                    <label className="text-sm font-semibold text-slate-700">{tr('Tour Date', 'Date du tour')}</label>
                     <input
                       type="date"
                       value={bookingForm.date}
@@ -2676,9 +3357,9 @@ const ToursPage = () => {
 
                   <div className="rounded-xl bg-slate-50 p-5">
                     <div className="flex items-center justify-between gap-3">
-                      <label className="text-sm font-semibold text-slate-700">Departure Time</label>
+                      <label className="text-sm font-semibold text-slate-700">{tr('Departure Time', 'Heure de départ')}</label>
                       <span className="rounded-full bg-white px-3 py-1 text-xs font-medium uppercase tracking-[0.12em] text-slate-600">
-                        Current Time {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                        {tr('Current Time', 'Heure actuelle')} {new Date().toLocaleTimeString(isFrench ? 'fr-FR' : 'en-US', { hour: '2-digit', minute: '2-digit' })}
                       </span>
                     </div>
                     <div className="mt-3 grid grid-cols-3 gap-3 md:grid-cols-5">
@@ -2694,7 +3375,7 @@ const ToursPage = () => {
                             : 'bg-violet-100 text-violet-800 hover:bg-violet-200'
                         }`}
                       >
-                        Now
+                        {tr('Now', 'Maintenant')}
                       </button>
                       {timeSlots.filter((time) => bookingForm.date !== today || time >= currentTimeSlot).map((time) => (
                         <button
@@ -2711,7 +3392,7 @@ const ToursPage = () => {
                     </div>
                     {/* Custom time input */}
                     <div className="mt-3 flex items-center gap-3 rounded-lg border border-violet-200 bg-violet-50/50 px-4 py-3">
-                      <label className="shrink-0 text-xs font-semibold text-violet-600 uppercase tracking-wide">Custom</label>
+                      <label className="shrink-0 text-xs font-semibold text-violet-600 uppercase tracking-wide">{tr('Custom', 'Personnalisé')}</label>
                       <input
                         type="time"
                         value={bookingForm.time}
@@ -2728,7 +3409,7 @@ const ToursPage = () => {
                 </div>
 
                 <div className="rounded-xl bg-slate-50 p-5">
-                  <label className="text-sm font-semibold text-slate-700">How many quads?</label>
+                  <label className="text-sm font-semibold text-slate-700">{tr('How many quads?', 'Combien de quads ?')}</label>
                   <div className="mt-3 grid grid-cols-5 gap-3">
                     {Array.from({ length: Number(currentPackage?.maxQuads || 5) }, (_, index) => index + 1).map((count) => (
                       <button
@@ -2748,17 +3429,19 @@ const ToursPage = () => {
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div>
-                      <label className="text-sm font-semibold text-slate-700">Choose quad models</label>
+                      <label className="text-sm font-semibold text-slate-700">{tr('Choose quad models', 'Choisir les modèles de quad')}</label>
                     </div>
                     <div className="rounded-lg bg-white px-4 py-3 text-right">
-                      <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Selected</p>
+                      <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">{tr('Selected', 'Sélectionné')}</p>
                       <p className="mt-1 text-lg font-semibold text-slate-900">{selectedModelCount} / {bookingForm.quadCount} quads</p>
                     </div>
                   </div>
 
                   {displayModelGroups.length === 0 ? (
                     <div className="mt-4 rounded-lg bg-white px-4 py-4 text-sm text-slate-500">
-                      No active quad models are available yet.
+                      {bookingForm.time
+                        ? tr('No quads are available for the selected departure time.', "Aucun quad n'est disponible pour l'heure de départ sélectionnée.")
+                        : tr('No active quad models are available yet.', "Aucun modèle de quad actif n'est encore disponible.")}
                     </div>
                   ) : (
                     <div className="mt-4 space-y-3">
@@ -2923,12 +3606,12 @@ const ToursPage = () => {
             {bookingStep === 2 && (
               <section className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Step 2</p>
-                  <h3 className="mt-2 text-xl font-semibold text-slate-900">Drivers and guide details</h3>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Step 2', 'Étape 2')}</p>
+                  <h3 className="mt-2 text-xl font-semibold text-slate-900">{tr('Drivers and guide details', 'Détails des conducteurs et du guide')}</h3>
                 </div>
 
                 <div className="rounded-xl bg-slate-50 p-5">
-                  <label className="text-sm font-semibold text-slate-700">Total Riders</label>
+                  <label className="text-sm font-semibold text-slate-700">{tr('Total Riders', 'Total passagers')}</label>
                   <div className="mt-3 grid grid-cols-5 gap-3">
                     {Array.from({ length: Math.max(Number(bookingForm.quadCount || 1) * 2, 2) }, (_, index) => index + 1).map((count) => (
                       <button
@@ -2943,12 +3626,12 @@ const ToursPage = () => {
                       </button>
                     ))}
                   </div>
-                  <p className="mt-3 text-xs text-slate-500">Maximum two riders per quad.</p>
+                  <p className="mt-3 text-xs text-slate-500">{tr('Maximum two riders per quad.', 'Maximum deux passagers par quad.')}</p>
                 </div>
 
                 {canSelectTourGuide ? (
                   <div className="rounded-xl bg-slate-50 p-5">
-                    <label className="text-sm font-semibold text-slate-700">Choose Tour Guide</label>
+                    <label className="text-sm font-semibold text-slate-700">{tr('Choose Tour Guide', 'Choisir un guide de tour')}</label>
                     <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       {guidesLoading ? (
                         <div className="rounded-lg bg-white p-4 text-sm text-slate-500">Loading guides...</div>
@@ -2996,7 +3679,7 @@ const ToursPage = () => {
                       {primaryDrivers.map((driver, index) => {
                         const complete =
                           String(driver.fullName || '').trim()
-                          && String(driver.whatsapp || '').trim()
+                          && hasDriverContactMethod(driver)
                           && (!currentPackage?.requiresLicense || String(driver.licenseNumber || '').trim());
 
                         return (
@@ -3030,7 +3713,7 @@ const ToursPage = () => {
                         </span>
                       </div>
 
-                      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
                         <div className="rounded-lg bg-slate-50 p-4">
                           <label className="text-sm font-semibold text-slate-700">Driver Name</label>
                           <input
@@ -3040,60 +3723,111 @@ const ToursPage = () => {
                             className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
                             placeholder={`Main driver for quad ${activeDriverQuadIndex + 1}`}
                           />
-                        </div>
-                        <div className="rounded-lg bg-slate-50 p-4">
-                          <label className="text-sm font-semibold text-slate-700">WhatsApp</label>
-                          <input
-                            type="tel"
-                            value={activePrimaryDriver.whatsapp || ''}
-                            onChange={(event) => updatePrimaryDriver(activeDriverQuadIndex, 'whatsapp', event.target.value)}
-                            className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                            placeholder="+212 6XXXXXXXX"
-                          />
-                          {activePrimaryDriver.whatsapp ? (
-                            activePrimaryDriverWhatsApp.isValid ? (
-                              <div className="mt-2 flex items-center gap-2 text-xs">
-                                <span className="h-2 w-2 rounded-full bg-green-500" />
-                                <span className="font-semibold text-green-600">{activePrimaryDriverWhatsApp.helper}</span>
-                                {activePrimaryDriverWhatsApp.link && (
-                                  <>
-                                    <span className="text-slate-300">•</span>
-                                    <a
-                                      href={activePrimaryDriverWhatsApp.link}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="font-semibold text-blue-600 hover:underline"
-                                    >
-                                      Open chat
-                                    </a>
-                                  </>
-                                )}
-                              </div>
-                            ) : (
-                              <p className="mt-2 text-xs font-medium text-amber-600">{activePrimaryDriverWhatsApp.helper}</p>
-                            )
+                          {activePrimaryDriverSearchTerm.length >= 3 ? (
+                            <div className="mt-2 rounded-lg border border-slate-200 bg-white">
+                              {customerSuggestionsLoading ? (
+                                <div className="px-4 py-3 text-xs font-medium text-slate-500">
+                                  {tr('Searching customers...', 'Recherche clients...')}
+                                </div>
+                              ) : customerSuggestions.length > 0 ? (
+                                <div className="max-h-64 overflow-y-auto py-1">
+                                  {customerSuggestions.map((customer) => {
+                                    const label =
+                                      customer.full_name ||
+                                      customer.customer_name ||
+                                      customer.name ||
+                                      tr('Unnamed customer', 'Client sans nom');
+                                    const phone =
+                                      customer.phone ||
+                                      customer.customer_phone ||
+                                      customer.phone_number ||
+                                      '';
+                                    const email =
+                                      customer.email ||
+                                      customer.customer_email ||
+                                      '';
+                                    const license =
+                                      customer.licence_number ||
+                                      customer.license_number ||
+                                      customer.customer_licence_number ||
+                                      '';
+
+                                    return (
+                                      <button
+                                        key={customer.id}
+                                        type="button"
+                                        onClick={() => applyCustomerToPrimaryDriver(activeDriverQuadIndex, customer)}
+                                        className="flex w-full items-start justify-between gap-3 px-4 py-3 text-left transition hover:bg-violet-50"
+                                      >
+                                        <div className="min-w-0">
+                                          <p className="font-semibold text-slate-900">{label}</p>
+                                          <p className="mt-1 text-xs text-slate-500 break-words">
+                                            {[phone, email, license ? `${tr('License', 'Permis')}: ${license}` : ''].filter(Boolean).join(' • ')}
+                                          </p>
+                                        </div>
+                                        <span className="shrink-0 rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-700">
+                                          {tr('Use', 'Utiliser')}
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <div className="px-4 py-3 text-xs font-medium text-slate-500">
+                                  {tr('No saved customer matches that name yet.', 'Aucun client enregistré ne correspond encore à ce nom.')}
+                                </div>
+                              )}
+                            </div>
                           ) : (
-                            <p className="mt-2 text-xs text-slate-500">Saved in WhatsApp format for quick contact.</p>
+                            <p className="mt-2 text-xs text-slate-500">
+                              {tr('Type at least 3 letters to search Customer Management.', 'Saisissez au moins 3 lettres pour rechercher dans la gestion clients.')}
+                            </p>
                           )}
                         </div>
                         <div className="rounded-lg bg-slate-50 p-4">
-                          <label className="text-sm font-semibold text-slate-700">Driver License</label>
+                          <PhoneInputWithCountryCode
+                            value={activePrimaryDriver.whatsapp || ''}
+                            onChange={(value) => updatePrimaryDriver(activeDriverQuadIndex, 'whatsapp', value)}
+                            tr={tr}
+                            label={tr('WhatsApp', 'WhatsApp')}
+                          />
+                          {!activePrimaryDriver.whatsapp ? (
+                            <p className="mt-2 text-xs text-slate-500">
+                              {tr('Enter WhatsApp or email to continue.', 'Saisissez WhatsApp ou e-mail pour continuer.')}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="rounded-lg bg-slate-50 p-4">
+                          <label className="text-sm font-semibold text-slate-700">{tr('Email', 'E-mail')}</label>
+                          <input
+                            type="email"
+                            value={activePrimaryDriver.email || ''}
+                            onChange={(event) => updatePrimaryDriver(activeDriverQuadIndex, 'email', event.target.value)}
+                            className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                            placeholder="customer@example.com"
+                          />
+                          <p className="mt-2 text-xs text-slate-500">
+                            {tr('Optional if WhatsApp is entered.', "Optionnel si WhatsApp est renseigné.")}
+                          </p>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 p-4">
+                          <label className="text-sm font-semibold text-slate-700">{tr('Driver License', 'Permis conducteur')}</label>
                           <input
                             type="text"
                             value={activePrimaryDriver.licenseNumber}
                             onChange={(event) => updatePrimaryDriver(activeDriverQuadIndex, 'licenseNumber', event.target.value)}
                             className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                            placeholder={currentPackage?.requiresLicense ? 'Required for this route' : 'Optional'}
+                            placeholder={currentPackage?.requiresLicense ? tr('Required for this route', 'Requis pour cet itinéraire') : tr('Optional', 'Optionnel')}
                           />
                         </div>
                         <div className="rounded-lg bg-slate-50 p-4">
-                          <label className="text-sm font-semibold text-slate-700">ID Number</label>
+                          <label className="text-sm font-semibold text-slate-700">{tr('ID Number', "Numéro d'identité")}</label>
                           <input
                             type="text"
                             value={activePrimaryDriver.idNumber}
                             onChange={(event) => updatePrimaryDriver(activeDriverQuadIndex, 'idNumber', event.target.value)}
                             className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                            placeholder="Optional"
+                            placeholder={tr('Optional', 'Optionnel')}
                           />
                         </div>
                       </div>
@@ -3101,7 +3835,7 @@ const ToursPage = () => {
                       <div className="mt-4 rounded-lg bg-slate-50 p-4">
                         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                           <div>
-                            <p className="text-sm font-semibold text-slate-700">Main Driver Scan</p>
+                            <p className="text-sm font-semibold text-slate-700">{tr('Main Driver Scan', 'Scan du conducteur principal')}</p>
                           </div>
                           <button
                             type="button"
@@ -3109,12 +3843,12 @@ const ToursPage = () => {
                             className="inline-flex items-center justify-center gap-2 rounded-lg bg-violet-700 px-5 py-3 text-sm font-bold text-white hover:bg-violet-800"
                           >
                             <FileImage className="h-4 w-4" />
-                            {activePrimaryDriver.idFileName ? 'Rescan' : 'Scan ID (Optional)'}
+                            {activePrimaryDriver.idFileName ? tr('Rescan', 'Scanner à nouveau') : tr('Scan ID (Optional)', "Scanner la pièce (optionnel)")}
                           </button>
                         </div>
                         {activePrimaryDriver.idFileName && (
                           <div className="mt-3 flex items-center justify-between gap-3 rounded-lg bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700">
-                            <p className="min-w-0 truncate">ID captured: {activePrimaryDriver.idFileName}</p>
+                            <p className="min-w-0 truncate">{tr(`ID captured: ${activePrimaryDriver.idFileName}`, `Pièce capturée : ${activePrimaryDriver.idFileName}`)}</p>
                             <button
                               type="button"
                               onClick={() => clearPrimaryDriverScan(activeDriverQuadIndex)}
@@ -3139,85 +3873,76 @@ const ToursPage = () => {
                           className="flex w-full items-start justify-between gap-4 text-left"
                         >
                           <div>
-                            <p className="text-sm font-semibold text-slate-900">Optional second driver</p>
+                            <p className="text-sm font-semibold text-slate-900">{tr('Optional second driver', 'Second conducteur optionnel')}</p>
                             {hasAnyDriverValue(activeSecondaryDriver) && (
                               <p className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-                                {activeSecondaryDriver.fullName || 'Details added'}
+                                {activeSecondaryDriver.fullName || tr('Details added', 'Détails ajoutés')}
                               </p>
                             )}
                           </div>
                           <span className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs font-semibold text-violet-700 shadow-sm">
-                            {secondDriverOpen ? 'Hide' : 'Add second driver'}
+                            {secondDriverOpen ? tr('Hide', 'Masquer') : tr('Add second driver', 'Ajouter un second conducteur')}
                             <ChevronRight className={`h-4 w-4 transition-transform ${secondDriverOpen ? 'rotate-90' : ''}`} />
                           </span>
                         </button>
 
                         {secondDriverOpen && (
                           <>
-                            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
                               <div className="rounded-lg bg-white p-4">
-                                <label className="text-sm font-semibold text-slate-700">Second Driver Name</label>
+                                <label className="text-sm font-semibold text-slate-700">{tr('Second Driver Name', 'Nom du second conducteur')}</label>
                                 <input
                                   type="text"
                                   value={activeSecondaryDriver.fullName || ''}
                                   onChange={(event) => updateSecondaryDriver(activeDriverQuadIndex, 'fullName', event.target.value)}
                                   className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                                  placeholder="Optional"
+                                  placeholder={tr('Optional', 'Optionnel')}
                                 />
                               </div>
                               <div className="rounded-lg bg-white p-4">
-                                <label className="text-sm font-semibold text-slate-700">WhatsApp</label>
-                                <input
-                                  type="tel"
+                                <PhoneInputWithCountryCode
                                   value={activeSecondaryDriver.whatsapp || ''}
-                                  onChange={(event) => updateSecondaryDriver(activeDriverQuadIndex, 'whatsapp', event.target.value)}
-                                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                                  placeholder="+212 6XXXXXXXX"
+                                  onChange={(value) => updateSecondaryDriver(activeDriverQuadIndex, 'whatsapp', value)}
+                                  tr={tr}
+                                  label={tr('WhatsApp', 'WhatsApp')}
                                 />
-                                {activeSecondaryDriver.whatsapp ? (
-                                  activeSecondaryDriverWhatsApp.isValid ? (
-                                    <div className="mt-2 flex items-center gap-2 text-xs">
-                                      <span className="h-2 w-2 rounded-full bg-green-500" />
-                                      <span className="font-semibold text-green-600">{activeSecondaryDriverWhatsApp.helper}</span>
-                                      {activeSecondaryDriverWhatsApp.link && (
-                                        <>
-                                          <span className="text-slate-300">•</span>
-                                          <a
-                                            href={activeSecondaryDriverWhatsApp.link}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="font-semibold text-blue-600 hover:underline"
-                                          >
-                                            Open chat
-                                          </a>
-                                        </>
-                                      )}
-                                    </div>
-                                  ) : (
-                                    <p className="mt-2 text-xs font-medium text-amber-600">{activeSecondaryDriverWhatsApp.helper}</p>
-                                  )
-                                ) : (
-                                  <p className="mt-2 text-xs text-slate-500">Saved in WhatsApp format for quick contact.</p>
-                                )}
+                                {!activeSecondaryDriver.whatsapp ? (
+                                  <p className="mt-2 text-xs text-slate-500">
+                                    {tr('Enter WhatsApp or email to continue.', 'Saisissez WhatsApp ou e-mail pour continuer.')}
+                                  </p>
+                                ) : null}
                               </div>
                               <div className="rounded-lg bg-white p-4">
-                                <label className="text-sm font-semibold text-slate-700">Second Driver License</label>
+                                <label className="text-sm font-semibold text-slate-700">{tr('Email', 'E-mail')}</label>
+                                <input
+                                  type="email"
+                                  value={activeSecondaryDriver.email || ''}
+                                  onChange={(event) => updateSecondaryDriver(activeDriverQuadIndex, 'email', event.target.value)}
+                                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                                  placeholder="customer@example.com"
+                                />
+                                <p className="mt-2 text-xs text-slate-500">
+                                  {tr('Optional if WhatsApp is entered.', "Optionnel si WhatsApp est renseigné.")}
+                                </p>
+                              </div>
+                              <div className="rounded-lg bg-white p-4">
+                                <label className="text-sm font-semibold text-slate-700">{tr('Second Driver License', 'Permis du second conducteur')}</label>
                                 <input
                                   type="text"
                                   value={activeSecondaryDriver.licenseNumber || ''}
                                   onChange={(event) => updateSecondaryDriver(activeDriverQuadIndex, 'licenseNumber', event.target.value)}
                                   className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                                  placeholder={currentPackage?.requiresLicense ? 'Required if second driver is added' : 'Optional'}
+                                  placeholder={currentPackage?.requiresLicense ? tr('Required if second driver is added', 'Requis si un second conducteur est ajouté') : tr('Optional', 'Optionnel')}
                                 />
                               </div>
                               <div className="rounded-lg bg-white p-4">
-                                <label className="text-sm font-semibold text-slate-700">ID Number</label>
+                                <label className="text-sm font-semibold text-slate-700">{tr('ID Number', "Numéro d'identité")}</label>
                                 <input
                                   type="text"
                                   value={activeSecondaryDriver.idNumber || ''}
                                   onChange={(event) => updateSecondaryDriver(activeDriverQuadIndex, 'idNumber', event.target.value)}
                                   className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                                  placeholder="Optional"
+                                  placeholder={tr('Optional', 'Optionnel')}
                                 />
                               </div>
                             </div>
@@ -3323,7 +4048,7 @@ const ToursPage = () => {
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       <span className="rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 border border-slate-100">{currentPackage?.duration || 0}h</span>
                       <span className="rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 border border-slate-100 capitalize">{currentPackage?.routeType || 'mountain'}</span>
-                      <span className="rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 border border-slate-100">{currentPackage?.location || 'Main Base'}</span>
+                      <span className="rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 border border-slate-100">{currentPackage?.location || tr('Main Base', 'Base principale')}</span>
                     </div>
                   </div>
 
@@ -3376,18 +4101,18 @@ const ToursPage = () => {
                   <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
                     <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Booking Contact</p>
                     <p className="mt-1.5 text-base font-bold text-slate-900">{primaryDrivers[0]?.fullName || 'Quad 1 main driver'}</p>
-                    <p className="mt-1 text-sm text-slate-500">{primaryDrivers[0]?.whatsapp || 'No WhatsApp'}</p>
+                    <p className="mt-1 text-sm text-slate-500">{primaryDrivers[0]?.whatsapp || tr('No WhatsApp', 'Aucun WhatsApp')}</p>
                   </div>
 
                   <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
-                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Guide & Riders</p>
+                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">{tr('Guide & Riders', 'Guide et passagers')}</p>
                     <p className="mt-1.5 text-base font-bold text-slate-900">
                       {canSelectTourGuide
-                        ? guides.find((guide) => String(guide.id) === String(bookingForm.guideId))?.name || 'No guide'
+                        ? guides.find((guide) => String(guide.id) === String(bookingForm.guideId))?.name || tr('No guide', 'Aucun guide')
                         : currentUserDisplayName}
                     </p>
-                    <p className="mt-1 text-sm text-slate-500">{bookingForm.ridersCount} rider(s) · {bookingForm.quadCount} quad(s)</p>
-                    <p className="mt-0.5 text-sm text-slate-500">{bookingForm.shareContract ? 'Contract will be shared' : 'No contract'}</p>
+                    <p className="mt-1 text-sm text-slate-500">{tr(`${bookingForm.ridersCount} rider(s) · ${bookingForm.quadCount} quad(s)`, `${bookingForm.ridersCount} passager(s) · ${bookingForm.quadCount} quad(s)`)}</p>
+                    <p className="mt-0.5 text-sm text-slate-500">{bookingForm.shareContract ? tr('Contract will be shared', 'Le contrat sera partagé') : tr('No contract', 'Pas de contrat')}</p>
                   </div>
                 </div>
 
@@ -3414,7 +4139,7 @@ const ToursPage = () => {
                             </div>
                             <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
                               <span className="text-slate-400">ID Scan</span>
-                              <span className="font-medium text-slate-800 text-left break-words">{driver.idFileName ? 'Captured' : '—'}</span>
+                              <span className="font-medium text-slate-800 text-left break-words">{driver.idFileName ? tr('Captured', 'Capturé') : '—'}</span>
                             </div>
                           </div>
                           {hasAnyDriverValue(secondDriver) && (
@@ -3489,212 +4214,292 @@ const ToursPage = () => {
       )}
 
       {activeTab === 'schedule' && (
+        <button
+          type="button"
+          onClick={() => setActiveTab('bookings')}
+          className="fixed bottom-6 right-6 z-50 inline-flex items-center gap-2 rounded-[1.6rem] border border-violet-500/80 bg-gradient-to-r from-violet-600 via-violet-600 to-indigo-700 px-5 py-4 text-white shadow-[0_18px_36px_rgba(79,70,229,0.28)] transition-all duration-200 hover:scale-[1.01] hover:from-violet-700 hover:to-indigo-800 active:scale-[0.99] sm:bottom-8 sm:right-8 sm:px-6 sm:py-4"
+          aria-label={tr('Book now', 'Réserver maintenant')}
+        >
+          <span className="inline-flex h-8 w-8 items-center justify-center rounded-2xl bg-white/16 ring-1 ring-white/20">
+            <Compass className="h-5 w-5" />
+          </span>
+          <span className="text-sm font-semibold tracking-tight">
+            {tr('Book Now', 'Réserver')}
+          </span>
+        </button>
+      )}
+
+      {activeTab === 'schedule' && (
         <div className="space-y-6">
-          <section className="rounded-xl bg-violet-50 p-3">
+          <section className="rounded-3xl border border-slate-200/80 bg-white/95 p-4 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.32)] backdrop-blur sm:p-5">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">{tr("Today's Tour Board", "Tableau des tours du jour")}</p>
+                <h2 className="mt-2 text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">{tr('Schedule snapshot', 'Aperçu du planning')}</h2>
+              </div>
+              <div className="hidden rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-right sm:block">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-violet-500">Live view</p>
+                <p className="mt-1 text-sm font-semibold text-violet-900">Tours and departures</p>
+              </div>
+            </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-              <div className="rounded-lg bg-white px-3 py-2.5 shadow-sm">
-                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-violet-500">Tour Date</p>
-                <p className="mt-0.5 text-sm font-bold text-violet-900">{new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</p>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Tour Date', 'Date du tour')}</p>
+                <p className="mt-2 text-lg font-bold tracking-tight text-slate-900">{new Date().toLocaleDateString(isFrench ? 'fr-FR' : 'en-GB', { day: '2-digit', month: 'short' })}</p>
               </div>
-              <div className="rounded-lg bg-white px-3 py-2.5 shadow-sm">
-                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-violet-500">Tours Today</p>
-                <p className="mt-0.5 text-sm font-bold text-violet-900">{todayTours.length}</p>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Tours Today', "Tours aujourd'hui")}</p>
+                <p className="mt-2 text-lg font-bold tracking-tight text-slate-900">{todayTours.length}</p>
               </div>
-              <div className="rounded-lg bg-white px-3 py-2.5 shadow-sm">
-                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-violet-500">Upcoming</p>
-                <p className="mt-0.5 text-sm font-bold text-violet-900">{upcomingTours.length}</p>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Upcoming', 'À venir')}</p>
+                <p className="mt-2 text-lg font-bold tracking-tight text-slate-900">{upcomingTours.length}</p>
               </div>
-              <div className="rounded-lg bg-white px-3 py-2.5 shadow-sm">
-                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-violet-500">Guides Active</p>
-                <p className="mt-0.5 text-sm font-bold text-violet-900">{new Set(todayTours.map((tour) => tour.guideId).filter(Boolean)).size}</p>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Guides Active', 'Guides actifs')}</p>
+                <p className="mt-2 text-lg font-bold tracking-tight text-slate-900">{new Set(todayTours.map((tour) => tour.guideId).filter(Boolean)).size}</p>
               </div>
-              <div className="rounded-lg bg-white px-3 py-2.5 shadow-sm">
-                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-violet-500">Quads Reserved</p>
-                <p className="mt-0.5 text-sm font-bold text-violet-900">{todayTours.reduce((sum, tour) => sum + tour.quadCount, 0)}</p>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Quads Reserved', 'Quads réservés')}</p>
+                <p className="mt-2 text-lg font-bold tracking-tight text-slate-900">{todayTours.reduce((sum, tour) => sum + tour.quadCount, 0)}</p>
               </div>
             </div>
           </section>
 
-          <section className="rounded-xl border border-violet-100 bg-white p-4 shadow-sm">
+          <section className="rounded-3xl border border-slate-200/80 bg-white/95 p-4 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.32)] backdrop-blur sm:p-5">
             <div className="flex items-center justify-between gap-2">
-              <div className="grid grid-cols-4 gap-1 rounded-xl bg-violet-50 p-1.5 flex-1 min-w-0">
+              <div className="grid min-w-0 flex-1 grid-cols-4 gap-2 rounded-2xl border border-slate-200 bg-slate-50/90 p-2">
                 {[
                   { label: 'Act.', value: activeTours.length },
                   { label: 'Sched.', value: scheduledTours.length },
                   { label: 'Done', value: completedTours.length },
                   { label: 'Cancl.', value: cancelledTours.length },
                 ].map(({ label, value }) => (
-                  <div key={label} className="rounded-lg bg-white px-1.5 py-1.5 shadow-sm text-center">
-                    <p className="text-[8px] font-semibold uppercase tracking-tight text-violet-400 truncate">{label}</p>
-                    <p className="text-sm font-bold text-violet-900">{value}</p>
+                  <div key={label} className="rounded-xl border border-slate-200 bg-white px-2 py-2 text-center shadow-sm">
+                    <p className="truncate text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-400">{label}</p>
+                    <p className="mt-1 text-sm font-bold tracking-tight text-slate-900">{value}</p>
                   </div>
                 ))}
               </div>
               <button
                 type="button"
                 onClick={() => setRefreshKey((prev) => prev + 1)}
-                className="shrink-0 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-100"
+                className="shrink-0 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 transition-colors hover:bg-violet-100"
               >
-                Refresh
+                {tr('Refresh', 'Actualiser')}
               </button>
             </div>
 
             <div className="mt-6 space-y-4">
               {operationalTours.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-purple-200 bg-purple-50/50 p-8 text-center text-slate-500">
-                  No tours booked yet. Use the booking tab to create the first one.
+                  {tr('No tours booked yet. Use the booking tab to create the first one.', "Aucun tour réservé pour l'instant. Utilisez l’onglet réservation pour créer le premier.")}
                 </div>
               ) : (
                 <>
                   <div className={`grid gap-4 ${paginatedOperationalTours.length > 1 ? 'xl:grid-cols-2' : 'grid-cols-1'}`}>
                     {paginatedOperationalTours.map((tour) => {
                       const trackingActiveForTour = trackedTourIds.has(String(tour.groupId));
-                      const showShareLocation = tour.status === 'active' && isMobileDevice && !trackingActiveForTour;
-                      const showLiveMapLink = trackingActiveForTour;
-                      const expiredTour = isTourExpired(tour);
+                      const workflowState = getTourWorkflowState(tour);
+                      const tourStarted = workflowState === 'started';
+                      const tourFinished = workflowState === 'completed';
                       const guideHasWhatsApp = Boolean(guides.find((guide) => String(guide.id) === String(tour.guideId))?.phone);
+                      const needsReview = isTourPastReviewWindow(tour);
+                      const actionMenuOpen = openTourActionGroupId === tour.groupId;
 
                       return (
-                      <article key={tour.groupId} className={`rounded-xl overflow-hidden ${getScheduleCardClasses(tour.status)}`}>
+                      <article
+                        key={tour.groupId}
+                        onClick={() => openTourDetails(tour)}
+                        className={`cursor-pointer rounded-xl overflow-hidden transition-shadow hover:shadow-md ${getScheduleCardClasses(tour.status)} ${trackingActiveForTour ? 'ring-2 ring-emerald-300 ring-offset-2 ring-offset-white shadow-[0_0_0_1px_rgba(16,185,129,0.1)]' : ''}`}
+                      >
                         {/* Card header — KM pricing style */}
                         <div className="px-5 pt-5 pb-4">
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className="text-lg font-bold text-slate-900">{tour.packageName}</h3>
-                            <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${toStatusTone(tour.status)}`}>{tour.status}</span>
+                            <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${toStatusTone(tour.status)}`}>{getTourStatusLabel(tour.status)}</span>
+                            {needsReview ? (
+                              <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-700">
+                                {tr('Needs review', 'À vérifier')}
+                              </span>
+                            ) : null}
                             <span className="rounded-full bg-violet-50 px-2.5 py-0.5 text-xs font-semibold text-violet-700 capitalize">{tour.routeType}</span>
+                            {trackingActiveForTour ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700">
+                                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                {tr('Live GPS', 'GPS en direct')}
+                              </span>
+                            ) : null}
                           </div>
-                          <p className="mt-1 text-xs text-slate-400">Booked by {tour.bookedByName}</p>
+                          <p className="mt-1 text-xs text-slate-400">{getTourWorkflowHint(tour, trackingActiveForTour)} · {tr('Booked by', 'Réservé par')} {tour.bookedByName}</p>
                           {tour.status === 'active' && (
                             <div className="mt-3">
                               <TourLiveTimer startedAt={tour.startedAt || tour.scheduledStartAt} durationHours={tour.durationHours} />
                             </div>
                           )}
+                          {needsReview ? (
+                            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">
+                              {tr('Start time passed. Choose Start Tour, No-show, Cancel, or Expired from More.', 'L’heure de départ est dépassée. Choisissez Démarrer, No-show, Annuler ou Expiré depuis Plus.')}
+                            </div>
+                          ) : null}
                         </div>
 
                         {/* Data rows — KM pricing style */}
                         <div className="border-t border-slate-100 px-5 py-4 space-y-2.5">
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Guest</span>
+                            <span className="text-slate-500">{tr('Guest', 'Client')}</span>
                             <span className="font-semibold text-slate-900 text-left break-words">{formatGuestSummary(tour)}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Phone</span>
+                            <span className="text-slate-500">{tr('Phone', 'Téléphone')}</span>
                             <span className="font-medium text-slate-700 text-left break-words">{tour.customerPhone || '—'}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Guide</span>
+                            <span className="text-slate-500">{tr('Guide', 'Guide')}</span>
                             <span className="font-medium text-slate-700 text-left break-words">{tour.guideName}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 border-t border-dashed border-slate-100 pt-2.5 text-sm">
-                            <span className="text-slate-500">Departure</span>
+                            <span className="text-slate-500">{tr('Departure', 'Départ')}</span>
                             <span className="font-bold text-violet-700 text-left break-words">{formatDateTime(tour.scheduledStartAt)}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Ends</span>
+                            <span className="text-slate-500">{tr('Ends', 'Fin')}</span>
                             <span className="font-medium text-slate-700 text-left break-words">
                               {tour.assignmentMode === 'assign_on_arrival' && tour.status === 'scheduled'
-                                ? 'Quads assigned at departure'
+                                ? tr('Quads assigned at departure', 'Quads attribués au départ')
                                 : formatDateTime(tour.scheduledEndAt)}
                             </span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 border-t border-dashed border-slate-100 pt-2.5 text-sm">
-                            <span className="text-slate-500">Quads · Riders</span>
+                            <span className="text-slate-500">{tr('Quads · Riders', 'Quads · pilotes')}</span>
                             <span className="font-semibold text-slate-900 text-left break-words">{tour.quadCount} · {tour.ridersCount}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Vehicles</span>
+                            <span className="text-slate-500">{tr('Vehicles', 'Véhicules')}</span>
                             <span className="font-medium text-slate-700 text-left break-words">
                               {tour.assignedVehicles.length === 0
-                                ? <span className="text-slate-400 italic">Assign at departure</span>
-                                : tour.assignedVehicles.map((v) => v.plate_number || 'No plate').join(', ')}
+                                ? <span className="text-slate-400 italic">{tr('Assign at departure', 'Attribuer au départ')}</span>
+                                : tour.assignedVehicles.map((v) => v.plate_number || tr('No plate', 'Sans plaque')).join(', ')}
                             </span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Documents</span>
+                            <span className="text-slate-500">{tr('Documents', 'Documents')}</span>
                             <span className={`font-medium text-left break-words ${tour.idCaptured ? 'text-emerald-600' : 'text-rose-500'}`}>
-                              {tour.idCaptured ? 'ID captured' : 'ID optional'}
+                              {tour.idCaptured ? tr('ID captured', 'Pièce capturée') : tr('ID optional', 'Pièce facultative')}
                             </span>
                           </div>
                         </div>
 
                         {/* Action buttons */}
-                        {tour.status !== 'completed' && (
-                          <div className="border-t border-slate-100 px-5 py-4">
-                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                              <button
-                                type="button"
-                                onClick={() => openTourDetails(tour)}
-                                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
-                              >
-                                <PanelRightOpen className="h-3.5 w-3.5" />
-                                Details
-                              </button>
-                              {showShareLocation ? (
-                                <button
-                                  type="button"
-                                  onClick={() => window.open(tour.trackingUrl || buildTourTrackingUrl(tour.groupId), '_blank', 'noopener,noreferrer')}
-                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:from-violet-700 hover:to-indigo-800"
-                                >
-                                  <MapPinned className="h-3.5 w-3.5" />
-                                  Share Location
-                                </button>
-                              ) : null}
-                              {showLiveMapLink ? (
-                                <Link
-                                  to="/admin/live-map"
-                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5 text-xs font-semibold text-blue-700 shadow-sm hover:bg-blue-100"
-                                >
-                                  <MapPinned className="h-3.5 w-3.5" />
-                                  Live Map
-                                </Link>
-                              ) : null}
-                              {tour.status === 'scheduled' ? (
-                                <button
-                                  type="button"
-                                  onClick={() => handleUpdateTourStatus(tour, 'active')}
-                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
-                                >
-                                  <Route className="h-3.5 w-3.5" />
-                                  {tour.assignedVehicles.length === 0 ? 'Start + Assign' : 'Start'}
-                                </button>
-                              ) : null}
-                              {guideHasWhatsApp ? (
+                        {!tourFinished && (
+                          <div className="border-t border-slate-100 px-5 py-4" onClick={(event) => event.stopPropagation()}>
+                            {!tourStarted ? (
+                              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
                                 <button
                                   type="button"
                                   onClick={() => handleWhatsAppLocateGuide(tour)}
-                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs font-semibold text-emerald-700 shadow-sm hover:bg-emerald-100"
+                                  disabled={!guideHasWhatsApp}
+                                  className={`inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-3 text-sm font-semibold shadow-sm transition-colors ${
+                                    guideHasWhatsApp
+                                      ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white hover:from-violet-700 hover:to-indigo-800'
+                                      : 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400'
+                                  }`}
                                 >
-                                  <Share2 className="h-3.5 w-3.5" />
-                                  Locate Me
+                                  <Share2 className="h-4 w-4" />
+                                  {tour.trackingLinkSentAt ? tr('Share Link Again', 'Renvoyer le lien') : tr('Share Link', 'Partager le lien')}
                                 </button>
-                              ) : null}
-                              <button
-                                type="button"
-                                onClick={() => handleOpenTourReturnModal(tour)}
-                                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-slate-700 to-slate-900 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:from-slate-800 hover:to-black"
-                              >
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                Complete
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleUpdateTourStatus(tour, 'cancelled')}
-                                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-semibold text-rose-700 shadow-sm hover:bg-rose-100"
-                              >
-                                <X className="h-3.5 w-3.5" />
-                                Cancel
-                              </button>
-                              {tour.status === 'active' && showShareLocation && (
                                 <button
                                   type="button"
-                                  onClick={() => window.open(tour.trackingUrl || buildTourTrackingUrl(tour.groupId), '_blank', 'noopener,noreferrer')}
-                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-600 shadow-sm hover:bg-slate-100"
+                                  onClick={() => handleUpdateTourStatus(tour, 'active')}
+                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-3 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700"
                                 >
-                                  <TimerReset className="h-3.5 w-3.5" />
-                                  Share Again
+                                  <Route className="h-4 w-4" />
+                                  {tr('Start Tour', 'Démarrer le tour')}
                                 </button>
-                              )}
-                            </div>
+                                <div className="relative" data-tour-action-menu>
+                                  <button
+                                    type="button"
+                                    onClick={() => setOpenTourActionGroupId((current) => current === tour.groupId ? '' : tour.groupId)}
+                                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 sm:w-auto"
+                                  >
+                                    <MoreHorizontal className="h-4 w-4" />
+                                    {tr('More', 'Plus')}
+                                  </button>
+                                  {actionMenuOpen ? (
+                                    <div className="absolute right-0 top-full z-20 mt-2 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenTourActionGroupId('');
+                                          handleUpdateTourStatus(tour, 'no_show');
+                                        }}
+                                        className="block w-full px-4 py-3 text-left text-sm font-semibold text-orange-700 hover:bg-orange-50"
+                                      >
+                                        {tr('Mark no-show', 'Marquer no-show')}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenTourActionGroupId('');
+                                          handleUpdateTourStatus(tour, 'expired');
+                                        }}
+                                        className="block w-full px-4 py-3 text-left text-sm font-semibold text-amber-700 hover:bg-amber-50"
+                                      >
+                                        {tr('Mark expired', 'Marquer expiré')}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenTourActionGroupId('');
+                                          handleUpdateTourStatus(tour, 'cancelled');
+                                        }}
+                                        className="block w-full px-4 py-3 text-left text-sm font-semibold text-rose-700 hover:bg-rose-50"
+                                      >
+                                        {tr('Cancel tour', 'Annuler le tour')}
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {tourStarted ? (
+                              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                {trackingActiveForTour ? (
+                                  <Link
+                                    to={`/admin/live-map?groupId=${encodeURIComponent(tour.groupId)}`}
+                                    onClick={(event) => event.stopPropagation()}
+                                    className="inline-flex w-full animate-pulse items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100"
+                                  >
+                                    <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.16)]" />
+                                    <MapPinned className="h-4 w-4" />
+                                    {tr('Live Map', 'Carte live')}
+                                  </Link>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleWhatsAppLocateGuide(tour)}
+                                    disabled={!guideHasWhatsApp}
+                                    className={`inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-3 text-sm font-semibold shadow-sm transition-colors ${
+                                      guideHasWhatsApp
+                                        ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white hover:from-violet-700 hover:to-indigo-800'
+                                        : 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400'
+                                    }`}
+                                  >
+                                    <Share2 className="h-4 w-4" />
+                                    {tour.trackingLinkSentAt ? tr('Share Link Again', 'Renvoyer le lien') : tr('Share Link', 'Partager le lien')}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenTourReturnModal(tour)}
+                                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-slate-700 to-slate-900 px-3 py-3 text-sm font-semibold text-white shadow-sm hover:from-slate-800 hover:to-black"
+                                >
+                                  <CheckCircle2 className="h-4 w-4" />
+                                  {tr('End Tour', 'Terminer le tour')}
+                                </button>
+                              </div>
+                            ) : null}
                           </div>
                         )}
                       </article>
@@ -3704,7 +4509,7 @@ const ToursPage = () => {
                   {operationalPageCount > 1 && (
                     <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                       <p className="text-sm font-medium text-slate-600">
-                        Page {schedulePage} of {operationalPageCount}
+                        {tr('Page', 'Page')} {schedulePage} {tr('of', 'sur')} {operationalPageCount}
                       </p>
                       <div className="flex items-center gap-2">
                         <button
@@ -3713,7 +4518,7 @@ const ToursPage = () => {
                           disabled={schedulePage === 1}
                           className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Previous
+                          {tr('Previous', 'Précédent')}
                         </button>
                         <button
                           type="button"
@@ -3721,7 +4526,7 @@ const ToursPage = () => {
                           disabled={schedulePage === operationalPageCount}
                           className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Next
+                          {tr('Next', 'Suivant')}
                         </button>
                       </div>
                     </div>
@@ -3742,11 +4547,11 @@ const ToursPage = () => {
                   <Clock className="h-4 w-4 text-slate-500" />
                 </div>
                 <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Completed & Closed</p>
-                  <h2 className="mt-0.5 text-lg font-semibold text-slate-900">Tour history</h2>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Completed & Closed', 'Terminés & fermés')}</p>
+                  <h2 className="mt-0.5 text-lg font-semibold text-slate-900">{tr('Tour history', 'Historique des tours')}</h2>
                 </div>
                 <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600">
-                  {completedHistoryTours.length} tours
+                  {completedHistoryTours.length} {tr('tours', 'tours')}
                 </span>
               </div>
               <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform duration-200 ${historyCollapsed ? '' : 'rotate-180'}`} />
@@ -3756,10 +4561,31 @@ const ToursPage = () => {
             <div className="border-t border-slate-100 p-5 space-y-4">
               {completedHistoryTours.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">
-                  No completed or cancelled tours yet.
+                  {tr('No completed or cancelled tours yet.', "Aucun tour terminé ou annulé pour l'instant.")}
                 </div>
               ) : (
                 <>
+                  <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm font-medium text-slate-600">
+                      {tr('Rows per page', 'Lignes par page')}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      {[10, 25].map((size) => (
+                        <button
+                          key={size}
+                          type="button"
+                          onClick={() => setCompletedPageSize(size)}
+                          className={`rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${
+                            completedPageSize === size
+                              ? 'border-violet-500 bg-violet-600 text-white shadow-sm'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          {size}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div className="grid gap-4 xl:grid-cols-2">
                     {paginatedCompletedTours.map((tour) => {
                       const timing = getTourTimingSummary(tour);
@@ -3770,39 +4596,43 @@ const ToursPage = () => {
                         <div className="px-5 pt-4 pb-3">
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className="text-base font-bold text-slate-900">{tour.packageName}</h3>
-                            <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${toStatusTone(tour.status)}`}>{tour.status}</span>
+                            <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${toStatusTone(tour.status)}`}>{getTourStatusLabel(tour.status)}</span>
                           </div>
-                          <p className="mt-0.5 text-xs text-slate-400">Guide: {tour.guideName}</p>
+                          <p className="mt-0.5 text-xs text-slate-400">{tr(`Guide: ${tour.guideName}`, `Guide : ${tour.guideName}`)}</p>
                         </div>
 
                         {/* Data rows — KM pricing style */}
                         <div className="border-t border-slate-100 px-5 py-3 space-y-2">
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Guest</span>
+                            <span className="text-slate-500">{tr('Guest', 'Client')}</span>
                             <span className="font-semibold text-slate-900 text-left break-words">{formatGuestSummary(tour)}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Phone</span>
+                            <span className="text-slate-500">{tr('Phone', 'Téléphone')}</span>
                             <span className="font-medium text-slate-700 text-left break-words">{tour.customerPhone || '—'}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 border-t border-dashed border-slate-100 pt-2 text-sm">
-                            <span className="text-slate-500">Departure</span>
+                            <span className="text-slate-500">{tr('Departure', 'Départ')}</span>
                             <span className="font-bold text-violet-700 text-left break-words">{formatDateTime(tour.scheduledStartAt)}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">{tour.status === 'completed' ? 'Completed' : 'Status'}</span>
+                            <span className="text-slate-500">{tour.status === 'completed' ? tr('Completed', 'Terminé') : tr('Status', 'Statut')}</span>
                             <span className="font-medium text-slate-700 text-left break-words">
                               {tour.status === 'completed'
                                 ? formatDateTime(tour.completedAt || tour.scheduledEndAt)
-                                : 'Booking was cancelled'}
+                                : tour.status === 'no_show'
+                                  ? tr('Booking was marked no-show', 'La réservation a été marquée no-show')
+                                  : tour.status === 'expired'
+                                    ? tr('Booking expired', 'La réservation a expiré')
+                                    : tr('Booking was cancelled', 'La réservation a été annulée')}
                             </span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Quads · Riders</span>
+                            <span className="text-slate-500">{tr('Quads · Riders', 'Quads · passagers')}</span>
                             <span className="font-semibold text-slate-900 text-left break-words">{tour.quadCount} · {tour.ridersCount}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                            <span className="text-slate-500">Duration</span>
+                            <span className="text-slate-500">{tr('Duration', 'Durée')}</span>
                             <span className="font-semibold text-slate-900 text-left break-words">{timing.actualDurationLabel}</span>
                           </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
@@ -3863,7 +4693,7 @@ const ToursPage = () => {
                   {completedPageCount > 1 && (
                     <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                       <p className="text-sm font-medium text-slate-600">
-                        Page {completedPage} of {completedPageCount}
+                        {tr('Page', 'Page')} {completedPage} {tr('of', 'sur')} {completedPageCount}
                       </p>
                       <div className="flex items-center gap-2">
                         <button
@@ -3872,7 +4702,7 @@ const ToursPage = () => {
                           disabled={completedPage === 1}
                           className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Previous
+                          {tr('Previous', 'Précédent')}
                         </button>
                         <button
                           type="button"
@@ -3880,7 +4710,7 @@ const ToursPage = () => {
                           disabled={completedPage === completedPageCount}
                           className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Next
+                          {tr('Next', 'Suivant')}
                         </button>
                       </div>
                     </div>
@@ -3917,14 +4747,148 @@ const ToursPage = () => {
           onCustomerSaved={() => {}}
           title={
             driverIDScanTarget
-              ? `${driverIDScanTarget.type === 'primary' ? 'Scan Main Driver ID' : 'Scan Second Driver ID'}`
-              : 'Scan Guest ID'
+              ? `${driverIDScanTarget.type === 'primary' ? "Scanner l'identité du conducteur principal" : "Scanner l'identité du second conducteur"}`
+              : "Scanner l'identité de l'invité"
           }
           scanningForSecondDriver={driverIDScanTarget?.type === 'secondary'}
           autoProcessOnSelect={false}
           allowSaveWithoutOcr
-          saveWithoutOcrLabel="Save image only"
+          saveWithoutOcrLabel="Enregistrer l’image seulement"
         />
+      )}
+
+      {tourStartModalOpen && tourToStart && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-[1120px] overflow-y-auto rounded-[32px] border border-violet-200/80 bg-gradient-to-br from-violet-50 via-white to-slate-50 shadow-2xl">
+            <div className="sticky top-0 flex items-center justify-between border-b border-violet-200/70 bg-white/90 px-6 py-5 backdrop-blur">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">Tour Departure</p>
+                <h2 className="mt-2 text-2xl font-black text-slate-900">{tr('Confirm departure checks', 'Confirmer les contrôles de départ')}</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!tourDepartureSaving) {
+                    setTourStartModalOpen(false);
+                    setTourToStart(null);
+                    setTourDepartureEntries([]);
+                  }
+                }}
+                className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100"
+              >
+                {tr('Close', 'Fermer')}
+              </button>
+            </div>
+
+            <div className="mx-auto w-full max-w-6xl space-y-6 p-6">
+              <div className="grid gap-4 lg:grid-cols-3">
+                <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-violet-400">{tr('Guests', 'Clients')}</p>
+                  <p className="mt-2 text-lg font-black text-slate-900">{formatGuestSummary(tourToStart)}</p>
+                </div>
+                <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-violet-400">{tr('Guide', 'Guide')}</p>
+                  <p className="mt-2 text-lg font-black text-slate-900">{tourToStart.guideName}</p>
+                </div>
+                <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-violet-400">{tr('Assigned Quads', 'Quads attribués')}</p>
+                  <p className="mt-2 text-lg font-black text-slate-900">{tourDepartureEntries.length}</p>
+                </div>
+              </div>
+
+              <div
+                className={`grid gap-5 ${
+                  tourDepartureEntries.length <= 1 ? 'mx-auto max-w-[760px] grid-cols-1' : '2xl:grid-cols-2'
+                }`}
+              >
+                {tourDepartureEntries.map((entry) => (
+                  <section
+                    key={entry.vehicleId}
+                    className="rounded-[28px] border border-violet-200/90 bg-white p-5 shadow-sm shadow-violet-100/60"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Quad Departure', 'Départ quad')}</p>
+                        <h3 className="mt-2 text-xl font-black text-slate-900">{entry.vehicleName}</h3>
+                        <p className="mt-2 text-sm text-slate-500">
+                          {entry.sourceFuelLevel !== null && entry.sourceFuelLevel !== undefined
+                            ? tr(`Fleet fuel source of truth: ${entry.sourceFuelLevel}/8`, `Source de vérité carburant flotte : ${entry.sourceFuelLevel}/8`)
+                            : tr('No fleet fuel snapshot was found, so enter the departure fuel manually.', "Aucun relevé carburant flotte n'a été trouvé, saisissez le niveau de départ manuellement.")}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                      <div className="rounded-[24px] border border-violet-100 bg-violet-50/60 p-4">
+                        <label className="text-sm font-semibold text-slate-700">{tr('Departure Odometer (km)', 'Odomètre de départ (km)')}</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={entry.startOdometer}
+                          onChange={(event) => updateTourDepartureEntry(entry.vehicleId, 'startOdometer', event.target.value)}
+                          className="mt-2 w-full rounded-2xl border border-violet-200 bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
+                          placeholder={tr('Enter departure odometer', "Saisissez l'odomètre de départ")}
+                        />
+                      </div>
+
+                      <div className="rounded-[24px] border border-violet-100 bg-violet-50/60 p-4">
+                        <label className="text-sm font-semibold text-slate-700">{tr('Fuel Level Before Tour', 'Niveau de carburant avant le tour')}</label>
+                        <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
+                          {Array.from({ length: 9 }, (_, index) => index).map((level) => (
+                            <button
+                              key={level}
+                              type="button"
+                              onClick={() => updateTourDepartureEntry(entry.vehicleId, 'startFuelLevel', level)}
+                              className={`rounded-2xl px-3 py-3 text-sm font-black transition-colors ${
+                                Number(entry.startFuelLevel) === level
+                                  ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-sm'
+                                  : 'bg-white text-slate-700 ring-1 ring-violet-100 hover:bg-violet-50'
+                              }`}
+                            >
+                              {level}/8
+                            </button>
+                          ))}
+                        </div>
+                        <p className="mt-3 text-xs text-slate-500">
+                          {tr('Staff can adjust the saved fleet fuel level if the gauge is slightly above or below.', "L'équipe peut ajuster le niveau carburant flotte si la jauge est légèrement au-dessus ou au-dessous.")}
+                        </p>
+                      </div>
+                    </div>
+                  </section>
+                ))}
+              </div>
+
+              <div className="flex flex-col gap-4 border-t border-violet-200/70 pt-5 lg:flex-row lg:items-center lg:justify-between">
+                <p className="max-w-2xl text-sm text-slate-500">
+                  {tr('These departure values will be saved with the tour so fuel consumption can be compared against the return.', 'Ces valeurs de départ seront enregistrées avec le tour afin de comparer la consommation carburant au retour.')}
+                </p>
+                <div className="flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!tourDepartureSaving) {
+                        setTourStartModalOpen(false);
+                        setTourToStart(null);
+                        setTourDepartureEntries([]);
+                      }
+                    }}
+                    className="rounded-2xl border border-violet-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 hover:bg-violet-50"
+                  >
+                    {tr('Cancel', 'Annuler')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmTourStart}
+                    disabled={tourDepartureSaving}
+                    className="rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-700 px-5 py-3 text-sm font-bold text-white hover:from-emerald-700 hover:to-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {tourDepartureSaving ? tr('Saving Departure...', 'Enregistrement du départ...') : tr('Save & Start Tour', 'Enregistrer et démarrer le tour')}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {tourReturnModalOpen && tourToComplete && (
@@ -3946,22 +4910,22 @@ const ToursPage = () => {
                 }}
                 className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100"
               >
-                Close
+                {tr('Close', 'Fermer')}
               </button>
             </div>
 
             <div className="mx-auto w-full max-w-6xl space-y-6 p-6">
               <div className="grid gap-4 lg:grid-cols-3">
                 <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-violet-400">Guests</p>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-violet-400">{tr('Guests', 'Clients')}</p>
                   <p className="mt-2 text-lg font-black text-slate-900">{formatGuestSummary(tourToComplete)}</p>
                 </div>
                 <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-violet-400">Guide</p>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-violet-400">{tr('Guide', 'Guide')}</p>
                   <p className="mt-2 text-lg font-black text-slate-900">{tourToComplete.guideName}</p>
                 </div>
                 <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-sm">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-violet-400">Assigned Quads</p>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-violet-400">{tr('Assigned Quads', 'Quads attribués')}</p>
                   <p className="mt-2 text-lg font-black text-slate-900">{tourReturnEntries.length}</p>
                 </div>
               </div>
@@ -3978,27 +4942,42 @@ const ToursPage = () => {
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">Quad Return</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">{tr('Quad Return', 'Retour quad')}</p>
                         <h3 className="mt-2 text-xl font-black text-slate-900">{entry.vehicleName}</h3>
-                        <p className="mt-2 text-sm text-slate-500">Starting from current vehicle odometer: {entry.startOdometer} km</p>
+                        <p className="mt-2 text-sm text-slate-500">{tr(`Starting from current vehicle odometer: ${entry.startOdometer} km`, `À partir de l’odomètre actuel du véhicule : ${entry.startOdometer} km`)}</p>
+                        <p className="mt-1 text-sm font-semibold text-violet-700">
+                          {entry.startFuelLevel !== null && entry.startFuelLevel !== undefined
+                            ? tr(`Fuel before tour: ${entry.startFuelLevel}/8`, `Carburant avant le tour : ${entry.startFuelLevel}/8`)
+                            : tr('Fuel before tour was not recorded', "Le carburant avant le tour n'a pas été enregistré")}
+                        </p>
+                        {entry.sourceFuelLevel !== null && entry.sourceFuelLevel !== undefined ? (
+                          <p className="mt-1 text-xs text-slate-400">
+                            {tr(`Fleet source at departure: ${entry.sourceFuelLevel}/8`, `Source flotte au départ : ${entry.sourceFuelLevel}/8`)}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
 
                     <div className="mt-5 grid gap-4 lg:grid-cols-2">
                       <div className="rounded-[24px] border border-violet-100 bg-violet-50/60 p-4">
-                        <label className="text-sm font-semibold text-slate-700">Ending Odometer (km)</label>
+                        <label className="text-sm font-semibold text-slate-700">{tr('Ending Odometer (km)', 'Odomètre de retour (km)')}</label>
                         <input
                           type="number"
                           min={entry.startOdometer || 0}
                           value={entry.endOdometer}
                           onChange={(event) => updateTourReturnEntry(entry.vehicleId, 'endOdometer', event.target.value)}
                           className="mt-2 w-full rounded-2xl border border-violet-200 bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
-                          placeholder="Enter return odometer"
+                          placeholder={tr('Enter return odometer', "Saisissez l'odomètre de retour")}
                         />
                       </div>
 
                       <div className="rounded-[24px] border border-violet-100 bg-violet-50/60 p-4">
-                        <label className="text-sm font-semibold text-slate-700">Fuel Level After Tour</label>
+                        <label className="text-sm font-semibold text-slate-700">{tr('Fuel Level After Tour', 'Niveau de carburant après le tour')}</label>
+                        <p className="mt-1 text-xs font-semibold text-violet-700">
+                          {entry.startFuelLevel !== null && entry.startFuelLevel !== undefined
+                            ? tr(`Before: ${entry.startFuelLevel}/8`, `Avant : ${entry.startFuelLevel}/8`)
+                            : tr('Before: not recorded', 'Avant : non enregistré')}
+                        </p>
                         <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
                           {Array.from({ length: 9 }, (_, index) => index).map((level) => (
                             <button
@@ -4023,7 +5002,7 @@ const ToursPage = () => {
 
               <div className="flex flex-col gap-4 border-t border-violet-200/70 pt-5 lg:flex-row lg:items-center lg:justify-between">
                 <p className="max-w-2xl text-sm text-slate-500">
-                  The guide who completes this step will be recorded in the tour return activity.
+                  {tr('The guide who completes this step will be recorded in the tour return activity.', 'Le guide qui termine cette étape sera enregistré dans l’activité de retour du tour.')}
                 </p>
                 <div className="flex items-center justify-end gap-3">
                   <button
@@ -4037,7 +5016,7 @@ const ToursPage = () => {
                     }}
                     className="rounded-2xl border border-violet-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 hover:bg-violet-50"
                   >
-                    Cancel
+                    {tr('Cancel', 'Annuler')}
                   </button>
                   <button
                     type="button"
@@ -4045,7 +5024,7 @@ const ToursPage = () => {
                     disabled={tourReturnSaving}
                     className="rounded-2xl bg-gradient-to-r from-violet-700 to-indigo-800 px-5 py-3 text-sm font-bold text-white hover:from-violet-800 hover:to-indigo-900 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {tourReturnSaving ? 'Saving Return...' : 'Complete Tour Return'}
+                    {tourReturnSaving ? tr('Saving Return...', 'Enregistrement du retour...') : tr('Complete Tour Return', 'Terminer le retour du tour')}
                   </button>
                 </div>
               </div>
@@ -4067,7 +5046,7 @@ const ToursPage = () => {
                   <h2 className="mt-2 text-2xl font-semibold text-slate-900">{selectedTourDetails.packageName}</h2>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     <span className={`rounded-full px-3 py-1 text-xs font-semibold capitalize ${toStatusTone(selectedTourDetails.status)}`}>
-                      {selectedTourDetails.status}
+                      {getTourStatusLabel(selectedTourDetails.status)}
                     </span>
                     <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 capitalize">
                       {selectedTourDetails.routeType}
@@ -4079,6 +5058,31 @@ const ToursPage = () => {
                       {selectedTourDetails.ridersCount} riders
                     </span>
                   </div>
+                  {selectedTourDetails.status === 'scheduled' ? (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateTourStatus(selectedTourDetails, 'no_show')}
+                        className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-semibold text-orange-700 hover:bg-orange-100"
+                      >
+                        {tr('Mark no-show', 'Marquer no-show')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateTourStatus(selectedTourDetails, 'expired')}
+                        className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700 hover:bg-amber-100"
+                      >
+                        {tr('Mark expired', 'Marquer expiré')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateTourStatus(selectedTourDetails, 'cancelled')}
+                        className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                      >
+                        {tr('Cancel tour', 'Annuler le tour')}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
                 <button
                   type="button"
@@ -4094,34 +5098,34 @@ const ToursPage = () => {
             <div className="space-y-6 px-6 py-6">
               <section className="grid gap-4 md:grid-cols-2">
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-5">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Guests</p>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Guests', 'Clients')}</p>
                   <p className="mt-2 text-xl font-semibold text-slate-900">{formatGuestSummary(selectedTourDetails)}</p>
                   <div className="mt-3 space-y-2 text-sm text-slate-600">
-                    <p>{selectedTourDetails.customerPhone || 'No phone saved'}</p>
-                    <p>{selectedTourDetails.customerEmail || 'No email saved'}</p>
-                    <p>ID Number: {selectedTourDetails.idNumber || 'Not saved'}</p>
+                    <p>{selectedTourDetails.customerPhone || tr('No phone saved', 'Aucun téléphone enregistré')}</p>
+                    <p>{selectedTourDetails.customerEmail || tr('No email saved', 'Aucun e-mail enregistré')}</p>
+                    <p>{tr('ID Number', "Numéro d'identité")} : {selectedTourDetails.idNumber || tr('Not saved', 'Non enregistré')}</p>
                     <p>
-                      License:
+                      {tr('License', 'Permis')} :
                       {' '}
                       {selectedTourDetails.requiresLicense
-                        ? (selectedTourDetails.licenseNumber || 'Required but not saved')
-                        : 'Not needed'}
+                        ? (selectedTourDetails.licenseNumber || tr('Required but not saved', 'Requis mais non enregistré'))
+                        : tr('Not needed', 'Non nécessaire')}
                     </p>
                   </div>
                 </div>
 
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-5">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Schedule</p>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Schedule', 'Planning')}</p>
                   <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-white">
                     {[
-                      ['Departure', formatDateTime(selectedTourDetails.scheduledStartAt)],
-                      ['Expected End', formatDateTime(selectedTourDetails.scheduledEndAt)],
-                      ['Started', selectedTourDetails.startedAt ? formatDateTime(selectedTourDetails.startedAt) : 'Not started yet'],
-                      ['Completed', selectedTourDetails.completedAt ? formatDateTime(selectedTourDetails.completedAt) : 'Not completed yet'],
-                      ['Actual Duration', getTourTimingSummary(selectedTourDetails).actualDurationLabel],
-                      ['Overrun', getTourTimingSummary(selectedTourDetails).overrunLabel],
-                      ['Guide', selectedTourDetails.guideName],
-                      ['Booked By', selectedTourDetails.bookedByName],
+                      [tr('Departure', 'Départ'), formatDateTime(selectedTourDetails.scheduledStartAt)],
+                      [tr('Expected End', 'Fin prévue'), formatDateTime(selectedTourDetails.scheduledEndAt)],
+                      [tr('Started', 'Démarré'), selectedTourDetails.startedAt ? formatDateTime(selectedTourDetails.startedAt) : tr('Not started yet', 'Pas encore démarré')],
+                      [tr('Completed', 'Terminé'), selectedTourDetails.completedAt ? formatDateTime(selectedTourDetails.completedAt) : tr('Not completed yet', 'Pas encore terminé')],
+                      [tr('Actual Duration', 'Durée réelle'), getTourTimingSummary(selectedTourDetails).actualDurationLabel],
+                      [tr('Overrun', 'Dépassement'), getTourTimingSummary(selectedTourDetails).overrunLabel],
+                      [tr('Guide', 'Guide'), selectedTourDetails.guideName],
+                      [tr('Booked By', 'Réservé par'), selectedTourDetails.bookedByName],
                     ].map(([label, value], rowIndex) => (
                       <div
                         key={`${label}-${rowIndex}`}
@@ -4153,22 +5157,22 @@ const ToursPage = () => {
 
                       return (
                         <article key={`drawer-driver-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                          <p className="text-base font-semibold text-slate-900">Quad {driver.quadNumber || index + 1}</p>
+                          <p className="text-base font-semibold text-slate-900">{tr(`Quad ${driver.quadNumber || index + 1}`, `Quad ${driver.quadNumber || index + 1}`)}</p>
                           <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-white">
                             {[
-                              { label: 'Main Driver', value: driver.fullName || 'Not saved' },
-                              { label: 'Main WhatsApp', value: driver.whatsapp || 'Not saved' },
-                              { label: 'Main ID', value: driver.idNumber || 'Optional / empty' },
+                              { label: tr('Main Driver', 'Conducteur principal'), value: driver.fullName || tr('Not saved', 'Non enregistré') },
+                              { label: tr('Main WhatsApp', 'WhatsApp principal'), value: driver.whatsapp || tr('Not saved', 'Non enregistré') },
+                              { label: tr('Main ID', 'Pièce principale'), value: driver.idNumber || tr('Optional / empty', 'Optionnel / vide') },
                               {
-                                label: 'Main Scan',
-                                value: driver.idFileName ? 'Captured' : 'Optional / empty',
+                                label: tr('Main Scan', 'Scan principal'),
+                                value: driver.idFileName ? tr('Captured', 'Capturé') : tr('Optional / empty', 'Optionnel / vide'),
                                 href: driver.idFileUrl || '',
                               },
                               {
-                                label: 'Main License',
+                                label: tr('Main License', 'Permis principal'),
                                 value: selectedTourDetails.requiresLicense
-                                  ? (driver.licenseNumber || 'Required but not saved')
-                                  : (driver.licenseNumber || 'Optional / empty'),
+                                  ? (driver.licenseNumber || tr('Required but not saved', 'Requis mais non enregistré'))
+                                  : (driver.licenseNumber || tr('Optional / empty', 'Optionnel / vide')),
                               },
                             ].map(({ label, value, href }, rowIndex) => (
                               <div
@@ -4185,7 +5189,7 @@ const ToursPage = () => {
                                       rel="noreferrer"
                                       className="text-xs font-semibold text-violet-700 hover:underline"
                                     >
-                                      View scan
+                                      {tr('View scan', 'Voir le scan')}
                                     </a>
                                   )}
                                 </div>
@@ -4193,23 +5197,23 @@ const ToursPage = () => {
                             ))}
                           </div>
                           <div className="mt-4 border-t border-slate-200 pt-4 text-sm text-slate-600">
-                            <p className="font-medium text-slate-900">Optional second driver</p>
+                            <p className="font-medium text-slate-900">{tr('Optional second driver', 'Second conducteur optionnel')}</p>
                             {secondDriver ? (
                               <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-white">
                                 {[
-                                  { label: 'Name', value: secondDriver.fullName || 'Not saved' },
-                                  { label: 'WhatsApp', value: secondDriver.whatsapp || 'Not saved' },
-                                  { label: 'ID', value: secondDriver.idNumber || 'Optional / empty' },
+                                  { label: tr('Name', 'Nom'), value: secondDriver.fullName || tr('Not saved', 'Non enregistré') },
+                                  { label: tr('WhatsApp', 'WhatsApp'), value: secondDriver.whatsapp || tr('Not saved', 'Non enregistré') },
+                                  { label: tr('ID', 'Pièce'), value: secondDriver.idNumber || tr('Optional / empty', 'Optionnel / vide') },
                                   {
-                                    label: 'Scan',
-                                    value: secondDriver.idFileName ? 'Captured' : 'Optional / empty',
+                                    label: tr('Scan', 'Scan'),
+                                    value: secondDriver.idFileName ? tr('Captured', 'Capturé') : tr('Optional / empty', 'Optionnel / vide'),
                                     href: secondDriver.idFileUrl || '',
                                   },
                                   {
-                                    label: 'License',
+                                    label: tr('License', 'Permis'),
                                     value: selectedTourDetails.requiresLicense
-                                      ? (secondDriver.licenseNumber || 'Required but not saved')
-                                      : (secondDriver.licenseNumber || 'Optional / empty'),
+                                      ? (secondDriver.licenseNumber || tr('Required but not saved', 'Requis mais non enregistré'))
+                                      : (secondDriver.licenseNumber || tr('Optional / empty', 'Optionnel / vide')),
                                   },
                                 ].map(({ label, value, href }, rowIndex) => (
                                   <div
@@ -4226,7 +5230,7 @@ const ToursPage = () => {
                                           rel="noreferrer"
                                           className="text-xs font-semibold text-violet-700 hover:underline"
                                         >
-                                          View scan
+                                          {tr('View scan', 'Voir le scan')}
                                         </a>
                                       )}
                                     </div>
@@ -4254,17 +5258,17 @@ const ToursPage = () => {
                 <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-5">
                   <div className="flex items-center gap-2">
                     <ShieldCheck className="h-4 w-4 text-blue-600" />
-                    <p className="text-sm font-semibold text-slate-900">Documents</p>
+                    <p className="text-sm font-semibold text-slate-900">{tr('Documents', 'Documents')}</p>
                   </div>
                   <div className="mt-4 space-y-2 text-sm text-slate-600">
-                    <p>{selectedTourDetails.idCaptured ? 'ID captured before departure' : 'ID not captured'}</p>
+                    <p>{selectedTourDetails.idCaptured ? tr('ID captured before departure', 'Pièce capturée avant le départ') : tr('ID not captured', 'Pièce non capturée')}</p>
                     <p>
                       {selectedTourDetails.requiresLicense
-                        ? (selectedTourDetails.licenseCaptured ? 'License captured before departure' : 'License missing')
-                        : 'License not needed for this route'}
+                        ? (selectedTourDetails.licenseCaptured ? tr('License captured before departure', 'Permis capturé avant le départ') : tr('License missing', 'Permis manquant'))
+                        : tr('License not needed for this route', "Permis non nécessaire pour cet itinéraire")}
                     </p>
-                    <p>{selectedTourDetails.shareContract ? 'Contract sharing enabled' : 'Contract was optional and not shared'}</p>
-                    <p>{selectedTourDetails.receiptIssued ? 'Receipt marked issued/shared' : 'Receipt still pending'}</p>
+                    <p>{selectedTourDetails.shareContract ? tr('Contract sharing enabled', 'Partage du contrat activé') : tr("Contract was optional and not shared", "Le contrat était optionnel et n'a pas été partagé")}</p>
+                    <p>{selectedTourDetails.receiptIssued ? tr('Receipt marked issued/shared', 'Reçu marqué comme émis/partagé') : tr('Receipt still pending', 'Reçu encore en attente')}</p>
                   </div>
                 </div>
 
@@ -4288,7 +5292,7 @@ const ToursPage = () => {
                   <h3 className="text-lg font-semibold text-slate-900">Vehicle exit & return record</h3>
                 </div>
                 <p className="mt-2 text-sm text-slate-500">
-                  Odometer on exit and return, plus the fuel level entered when the guide completed the tour.
+                  Odometer and fuel on exit and return, based on fleet fuel state first and adjusted by staff when needed.
                 </p>
 
                 {selectedTourReturnRows.length === 0 ? (
@@ -4318,6 +5322,18 @@ const ToursPage = () => {
                             <p className="mt-2 text-lg font-semibold text-slate-900">
                               {entry.endOdometer !== null && entry.endOdometer !== undefined ? `${entry.endOdometer} km` : 'Pending'}
                             </p>
+                          </div>
+                          <div className="rounded-lg bg-white p-4">
+                            <div className="flex items-center gap-2">
+                              <Fuel className="h-4 w-4 text-blue-600" />
+                              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Fuel At Departure</p>
+                            </div>
+                            <p className="mt-2 text-lg font-semibold text-slate-900">
+                              {entry.startFuelLevel !== null && entry.startFuelLevel !== undefined ? `${entry.startFuelLevel}/8` : 'Not recorded'}
+                            </p>
+                            {entry.sourceFuelLevel !== null && entry.sourceFuelLevel !== undefined ? (
+                              <p className="mt-1 text-xs text-slate-400">Fleet state: {entry.sourceFuelLevel}/8</p>
+                            ) : null}
                           </div>
                           <div className="rounded-lg bg-white p-4 sm:col-span-2">
                             <div className="flex items-center gap-2">

@@ -355,6 +355,7 @@ class MaintenanceService {
   async deleteMaintenanceRecord(recordId) {
     try {
       const existingRecord = await this.getMaintenanceById(recordId);
+      const vehicleId = existingRecord?.vehicle_id || null;
       const restoreInventory = existingRecord.status === 'completed';
       const deletePartsResult = await MaintenancePartsService.deleteMaintenanceParts(recordId, {
         restoreInventory,
@@ -367,6 +368,27 @@ class MaintenanceService {
         .eq('id', recordId);
 
       if (error) throw error;
+
+      if (vehicleId) {
+        const { data: otherOpenRecords, error: openRecordsError } = await supabase
+          .from(this.table)
+          .select('id')
+          .eq('vehicle_id', vehicleId)
+          .in('status', ['scheduled', 'in_progress']);
+
+        if (openRecordsError) throw openRecordsError;
+
+        const hasOtherOpenMaintenance = (otherOpenRecords || []).length > 0;
+        const fallbackVehicleStatus = existingRecord?.vehicle?.status === 'out_of_service' ? 'out_of_service' : 'available';
+
+        await supabase
+          .from(this.vehiclesTable)
+          .update({
+            status: hasOtherOpenMaintenance ? 'maintenance' : fallbackVehicleStatus,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', vehicleId);
+      }
 
       return {
         success: true,

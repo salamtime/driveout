@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import StripeErrorHandler from '../../utils/stripeErrorHandler';
+import i18n from '../../i18n';
 
 const PaymentOptions = ({ 
   amount, 
@@ -8,6 +9,8 @@ const PaymentOptions = ({
   error = null,
   onRetry 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [selectedOption, setSelectedOption] = useState('retry');
   const [showContactForm, setShowContactForm] = useState(false);
   const [contactFormData, setContactFormData] = useState({
@@ -28,7 +31,7 @@ const PaymentOptions = ({
     e.preventDefault();
     // Handle contact form submission
     console.log('Payment contact request:', { contactFormData, amount, bookingDetails });
-    alert('Thank you! We will contact you shortly to process your payment.');
+    alert(tr('Thank you! We will contact you shortly to process your payment.', 'Merci ! Nous vous contacterons prochainement pour traiter votre paiement.'));
     setShowContactForm(false);
   };
 
@@ -190,7 +193,7 @@ const PaymentOptions = ({
               onClick={() => setShowContactForm(true)}
               className="flex-1 bg-orange-600 hover:bg-orange-700 text-white py-3 px-6 rounded-lg font-medium transition-colors"
             >
-              Schedule Payment
+              {tr('Schedule Payment', 'Programmer le paiement')}
             </button>
           )}
         </div>
@@ -201,7 +204,7 @@ const PaymentOptions = ({
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg max-w-md w-full p-6">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Schedule Payment</h3>
+              <h3 className="text-lg font-semibold">{tr('Schedule Payment', 'Programmer le paiement')}</h3>
               <button
                 onClick={() => setShowContactForm(false)}
                 className="text-gray-400 hover:text-gray-600"
@@ -215,7 +218,7 @@ const PaymentOptions = ({
             <form onSubmit={handleContactSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Full Name *
+                  {tr('Full Name', 'Nom complet')} *
                 </label>
                 <input
                   type="text"
@@ -229,7 +232,7 @@ const PaymentOptions = ({
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Email Address *
+                  {tr('Email Address', 'Adresse e-mail')} *
                 </label>
                 <input
                   type="email"
@@ -243,7 +246,7 @@ const PaymentOptions = ({
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Phone Number *
+                  {tr('Phone Number', 'Numéro de téléphone')} *
                 </label>
                 <input
                   type="tel"
@@ -257,7 +260,7 @@ const PaymentOptions = ({
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Preferred Contact Method
+                  {tr('Preferred Contact Method', 'Méthode de contact préférée')}
                 </label>
                 <select
                   name="preferredMethod"
@@ -265,8 +268,8 @@ const PaymentOptions = ({
                   onChange={handleInputChange}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="phone">Phone Call</option>
-                  <option value="email">Email</option>
+                  <option value="phone">{tr('Phone Call', 'Appel téléphonique')}</option>
+                  <option value="email">{tr('Email', 'E-mail')}</option>
                   <option value="whatsapp">WhatsApp</option>
                 </select>
               </div>

@@ -3,6 +3,7 @@ import { authenticateRequest } from './_lib/auth.js';
 
 const SETTINGS_TABLE = 'saharax_0u4w4d_settings';
 const SETTINGS_ROW_ID = 1;
+const APP_SETTINGS_TABLE = 'app_settings';
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -60,6 +61,8 @@ const getDefaultSettings = () => ({
   invoicePrefix: 'INV',
   contractFooter: 'Drive safely and report any issue immediately.',
   brandPrimaryColor: '#2563eb',
+  logoUrl: '',
+  stampUrl: '',
   showCompanyWebsiteOnPrint: true,
   showCompanyPhoneOnPrint: true,
   mapProvider: 'mapbox',
@@ -84,6 +87,8 @@ const getDefaultSettings = () => ({
 const normalizeSettings = (value = {}) => {
   const defaults = getDefaultSettings();
   const merged = { ...defaults, ...(value || {}) };
+  merged.logoUrl = String(merged.logoUrl || '');
+  merged.stampUrl = String(merged.stampUrl || '');
 
   merged.operatingHours = {
     start: String(merged.operatingHours?.start || defaults.operatingHours.start),
@@ -202,6 +207,8 @@ const toTableRow = (settings = {}) => {
     invoice_prefix: normalized.invoicePrefix,
     contract_footer: normalized.contractFooter,
     brand_primary_color: normalized.brandPrimaryColor,
+    logo_url: normalized.logoUrl || null,
+    stamp_url: normalized.stampUrl || null,
     show_company_website_on_print: normalized.showCompanyWebsiteOnPrint,
     show_company_phone_on_print: normalized.showCompanyPhoneOnPrint,
     map_provider: normalized.mapProvider,
@@ -266,6 +273,8 @@ const fromTableRow = (row = {}) => normalizeSettings({
   invoicePrefix: row.invoice_prefix,
   contractFooter: row.contract_footer,
   brandPrimaryColor: row.brand_primary_color,
+  logoUrl: row.logo_url,
+  stampUrl: row.stamp_url,
   showCompanyWebsiteOnPrint: row.show_company_website_on_print,
   showCompanyPhoneOnPrint: row.show_company_phone_on_print,
   mapProvider: row.map_provider,
@@ -287,6 +296,34 @@ const fromTableRow = (row = {}) => normalizeSettings({
   updatedAt: row.updated_at,
 });
 
+const readBrandingFromAppSettings = async (adminClient) => {
+  const { data, error } = await adminClient
+    .from(APP_SETTINGS_TABLE)
+    .select('logo_url, stamp_url')
+    .eq('id', SETTINGS_ROW_ID)
+    .maybeSingle();
+
+  if (error) throw error;
+  return {
+    logoUrl: data?.logo_url || '',
+    stampUrl: data?.stamp_url || '',
+  };
+};
+
+const writeBrandingToAppSettings = async (adminClient, settings) => {
+  const payload = {
+    id: SETTINGS_ROW_ID,
+    logo_url: settings.logoUrl || null,
+    stamp_url: settings.stampUrl || null,
+  };
+
+  const { error } = await adminClient
+    .from(APP_SETTINGS_TABLE)
+    .upsert(payload, { onConflict: 'id' });
+
+  if (error) throw error;
+};
+
 const readSettingsFromTable = async (adminClient) => {
   const { data, error } = await adminClient
     .from(SETTINGS_TABLE)
@@ -295,7 +332,13 @@ const readSettingsFromTable = async (adminClient) => {
     .maybeSingle();
 
   if (error) throw error;
-  return data ? fromTableRow(data) : getDefaultSettings();
+  const settings = data ? fromTableRow(data) : getDefaultSettings();
+  try {
+    const branding = await readBrandingFromAppSettings(adminClient);
+    return normalizeSettings({ ...settings, ...branding });
+  } catch {
+    return settings;
+  }
 };
 
 const writeSettingsToTable = async (adminClient, settings) => {
@@ -306,7 +349,16 @@ const writeSettingsToTable = async (adminClient, settings) => {
     .single();
 
   if (error) throw error;
-  return fromTableRow(data);
+  try {
+    await writeBrandingToAppSettings(adminClient, settings);
+  } catch (brandingError) {
+    console.error('system-settings branding write failed:', brandingError);
+  }
+  return normalizeSettings({
+    ...fromTableRow(data),
+    logoUrl: settings.logoUrl,
+    stampUrl: settings.stampUrl,
+  });
 };
 
 const requireAdminForWrite = async (req) => {

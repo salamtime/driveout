@@ -1,4 +1,7 @@
 import { supabase } from '../lib/supabase.js';
+import MaintenanceService from './MaintenanceService.js';
+
+const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
 
 /**
  * TransactionalRentalService - Enhanced rental management with comprehensive transaction support
@@ -29,6 +32,15 @@ import { supabase } from '../lib/supabase.js';
  * - CRITICAL BOOKING FIX: Vehicle status check is now informational only - allows multiple bookings as long as dates don't overlap
  */
 class TransactionalRentalService {
+  static isExpiredScheduledConflict(rentalLike, graceMinutes = DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES) {
+    if (String(rentalLike?.rental_status || '').toLowerCase() !== 'scheduled' || !rentalLike?.rental_start_date) {
+      return false;
+    }
+
+    const scheduledStart = new Date(rentalLike.rental_start_date);
+    if (Number.isNaN(scheduledStart.getTime())) return false;
+    return Date.now() > scheduledStart.getTime() + graceMinutes * 60 * 1000;
+  }
   
   /**
    * CRITICAL FIX: Validates UUID format for rental IDs
@@ -790,7 +802,12 @@ class TransactionalRentalService {
       delete dbRentalData.linked_display_id; // This is not a database column
       delete dbRentalData.booking_range;
       delete dbRentalData.vehicle;
-      console.log('🧹 CRITICAL FIX: Removed non-existent database fields: status, linked_display_id, booking_range, vehicle');
+      delete dbRentalData.selected_vehicle_id_snapshot;
+      delete dbRentalData.selected_vehicle_plate_snapshot;
+      delete dbRentalData.selected_vehicle_model_snapshot;
+      delete dbRentalData.selected_vehicle_selected_by;
+      delete dbRentalData.selected_vehicle_selected_at;
+      console.log('🧹 CRITICAL FIX: Removed non-existent database fields: status, linked_display_id, booking_range, vehicle, selected vehicle snapshot fields');
       
       // FINAL CRITICAL FIX: Double-check customer_id is in final payload
       if (!dbRentalData.customer_id) {
@@ -1055,12 +1072,10 @@ class TransactionalRentalService {
       // STEP 5: Update rental in database
       console.log('💾 FIXED: Updating rental in database with customer linkage...');
       
-      const { data: rental, error: updateError } = await supabase
+      const { error: updateError } = await supabase
         .from('app_4c3a7a6153_rentals')
         .update(dbRentalData)
-        .eq('id', dbRentalData.id)
-        .select()
-        .single();
+        .eq('id', dbRentalData.id);
       
       if (updateError) {
         console.error('❌ FIXED: Database update failed:', updateError);
@@ -1076,23 +1091,39 @@ class TransactionalRentalService {
         
         throw new Error(`Database update failed: ${updateError.message}`);
       }
+
+      let resolvedRental = {
+        ...dbRentalData,
+      };
+
+      const { data: fetchedRental, error: fetchError } = await supabase
+          .from('app_4c3a7a6153_rentals')
+          .select('*')
+          .eq('id', dbRentalData.id)
+          .maybeSingle();
+
+      if (fetchError) {
+        console.warn('⚠️ FIXED: Rental re-fetch failed after update, using submitted data fallback:', fetchError);
+      } else if (fetchedRental) {
+        resolvedRental = fetchedRental;
+      }
       
-      console.log('✅ FIXED: Rental updated successfully with customer linkage:', rental);
+      console.log('✅ FIXED: Rental updated successfully with customer linkage:', resolvedRental);
       
       // STEP 6: ENHANCED AUTO-STATUS UPDATE - Update vehicle status based on rental status
-      if (rental.vehicle_id) {
+      if (resolvedRental.vehicle_id) {
         try {
-          if (rental.rental_status === 'completed' || rental.rental_status === 'cancelled') {
+          if (resolvedRental.rental_status === 'completed' || resolvedRental.rental_status === 'cancelled') {
             console.log('🚗 AUTO-STATUS: Rental is completed/cancelled, updating vehicle status to "available"...');
-            await this.updateVehicleStatus(rental.vehicle_id, 'available');
+            await this.updateVehicleStatus(resolvedRental.vehicle_id, 'available');
             console.log('✅ AUTO-STATUS: Vehicle marked as available');
-          } else if (rental.rental_status === 'scheduled') {
+          } else if (resolvedRental.rental_status === 'scheduled') {
             console.log('🚗 AUTO-STATUS: Rental is scheduled, updating vehicle status to "scheduled"...');
-            await this.updateVehicleStatus(rental.vehicle_id, 'scheduled');
+            await this.updateVehicleStatus(resolvedRental.vehicle_id, 'scheduled');
             console.log('✅ AUTO-STATUS: Vehicle marked as scheduled');
-          } else if (rental.rental_status === 'active' || rental.rental_status === 'confirmed') {
+          } else if (resolvedRental.rental_status === 'active' || resolvedRental.rental_status === 'confirmed') {
             console.log('🚗 AUTO-STATUS: Rental is active, updating vehicle status to "rented"...');
-            await this.updateVehicleStatus(rental.vehicle_id, 'rented');
+            await this.updateVehicleStatus(resolvedRental.vehicle_id, 'rented');
             console.log('✅ AUTO-STATUS: Vehicle marked as rented');
           }
         } catch (statusError) {
@@ -1103,7 +1134,7 @@ class TransactionalRentalService {
       
       return {
         success: true,
-        data: rental,
+        data: resolvedRental,
         message: 'Rental updated successfully with proper validation and customer linkage'
       };
       
@@ -1238,6 +1269,9 @@ class TransactionalRentalService {
       
       // STEP 4: AVAILABILITY LOGIC FIX - Check for date conflicts with strict overlap detection
       const conflicts = existingRentals?.filter(rental => {
+        if (this.isExpiredScheduledConflict(rental)) {
+          return false;
+        }
         const existingStart = new Date(rental.rental_start_date);
         const existingEnd = new Date(rental.rental_end_date);
         const newStart = new Date(startDate);
@@ -1437,8 +1471,42 @@ class TransactionalRentalService {
         vehicle_id: rental.vehicle_id,
         rental_status: rental.rental_status
       });
+
+      // STEP 2: Delete any linked vehicle reports and maintenance records first
+      console.log('🔗 DELETE RENTAL FIX: Checking for linked vehicle reports / maintenance...');
+      const { data: linkedReports, error: reportFetchError } = await supabase
+        .from('app_4c3a7a6153_vehicle_reports')
+        .select('id, maintenance_id')
+        .eq('rental_id', id);
+
+      if (reportFetchError) {
+        console.error('❌ DELETE RENTAL FIX: Error fetching linked vehicle reports:', reportFetchError);
+        throw new Error(`Failed to fetch linked vehicle reports: ${reportFetchError.message}`);
+      }
+
+      const reportRows = Array.isArray(linkedReports) ? linkedReports : [];
+      const maintenanceIds = [...new Set(reportRows.map((row) => row?.maintenance_id).filter(Boolean))];
+
+      for (const maintenanceId of maintenanceIds) {
+        console.log('🧰 DELETE RENTAL FIX: Deleting linked maintenance record:', maintenanceId);
+        await MaintenanceService.deleteMaintenanceRecord(maintenanceId);
+      }
+
+      if (reportRows.length > 0) {
+        console.log('🧾 DELETE RENTAL FIX: Deleting linked vehicle report rows...');
+        const reportIds = reportRows.map((row) => row.id).filter(Boolean);
+        const { error: reportDeleteError } = await supabase
+          .from('app_4c3a7a6153_vehicle_reports')
+          .delete()
+          .in('id', reportIds);
+
+        if (reportDeleteError) {
+          console.error('❌ DELETE RENTAL FIX: Error deleting linked vehicle reports:', reportDeleteError);
+          throw new Error(`Failed to delete linked vehicle reports: ${reportDeleteError.message}`);
+        }
+      }
       
-      // STEP 2: Delete the rental
+      // STEP 3: Delete the rental
       console.log('🗑️ DELETE RENTAL FIX: Proceeding with rental deletion...');
       const { error: deleteError } = await supabase
         .from('app_4c3a7a6153_rentals')
@@ -1452,7 +1520,7 @@ class TransactionalRentalService {
       
       console.log('✅ DELETE RENTAL FIX: Rental deleted successfully');
       
-      // STEP 3: AUTO-STATUS UPDATE - Revert vehicle status to "available"
+      // STEP 4: AUTO-STATUS UPDATE - Revert vehicle status to "available"
       if (rental.vehicle_id) {
         try {
           console.log('🚗 DELETE RENTAL FIX: Reverting vehicle status to "available"...');
@@ -1466,7 +1534,7 @@ class TransactionalRentalService {
       
       return { 
         success: true, 
-        message: 'Rental deleted successfully and vehicle status reverted to available' 
+        message: 'Rental and linked maintenance data deleted successfully' 
       };
       
     } catch (error) {

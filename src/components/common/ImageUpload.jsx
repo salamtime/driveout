@@ -64,13 +64,13 @@ const ImageUpload = ({
       
       // Validate file type
       if (!ALLOWED_TYPES.includes(file.type)) {
-        toast.error('Invalid file type. Please select a JPG, PNG, WebP, or GIF image.');
+        toast.error('Type de fichier invalide. Veuillez sélectionner une image JPG, PNG, WebP ou GIF.');
         return;
       }
       
       // Validate file size
       if (file.size > maxSize) {
-        toast.error(`File size too large. Maximum size is ${maxSize / (1024 * 1024)}MB.`);
+        toast.error(`Fichier trop volumineux. La taille maximale est de ${maxSize / (1024 * 1024)}MB.`);
         return;
       }
       
@@ -85,7 +85,7 @@ const ImageUpload = ({
       const uploadResult = await uploadFile(file, fileName);
       
       if (!uploadResult.success) {
-        toast.error(`Upload failed: ${uploadResult.error?.message || 'Unknown error'}`);
+        toast.error(`Échec du téléversement : ${uploadResult.error?.message || 'Erreur inconnue'}`);
         return;
       }
       
@@ -95,10 +95,10 @@ const ImageUpload = ({
       // Call onChange with the file path
       handleChange(uploadResult.data.path);
       
-      toast.success('Image uploaded successfully');
+      toast.success('Image téléversée avec succès');
     } catch (error) {
       console.error('Image upload error:', error);
-      toast.error(`Upload failed: ${error.message || 'Unknown error'}`);
+      toast.error(`Échec du téléversement : ${error.message || 'Erreur inconnue'}`);
     } finally {
       setIsUploading(false);
     }
@@ -114,7 +114,7 @@ const ImageUpload = ({
       const deleteResult = await deleteFile(imageUrl);
       
       if (!deleteResult.success) {
-        toast.error(`Failed to remove image: ${deleteResult.error?.message || 'Unknown error'}`);
+        toast.error(`Échec de la suppression de l'image : ${deleteResult.error?.message || 'Erreur inconnue'}`);
         return;
       }
       

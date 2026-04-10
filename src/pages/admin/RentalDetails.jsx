@@ -28,24 +28,27 @@ import { getPaymentStatusStyle } from '../../config/statusColors';
 import { useAuth } from '../../contexts/AuthContext';
 import { isAdminOrOwner, canApprovePriceOverrides, canApproveRentalExtensions, canEditRentalPrice, canEditRentalPriceWithoutApproval, canEditExtensionHistory, canEditRentalContract } from '../../utils/permissionHelpers';
 import PricingRulesService from '../../services/PricingRulesService';
-import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench } from 'lucide-react';
+import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench, MapPin, MoreHorizontal } from 'lucide-react';
 import { FaWhatsapp, FaCheck, FaFilePdf, FaFileInvoice, FaVideo } from 'react-icons/fa';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import InvoiceTemplate from '../../components/InvoiceTemplate';
 import ContractTemplate from '../../components/ContractTemplate';
 import ReceiptTemplate from '../../components/ReceiptTemplate';
+import { encodePublicSharePayload } from '../../utils/publicSharePayload';
 import { processMedia, getMediaType, createThumbnail } from '../../utils/mediaProcessor';
 import TierPricingDisplay from '../../components/TierPricingDisplay';
 import MaintenanceService from '../../services/MaintenanceService';
 import { getUsers } from '../../services/UserService';
 import VehicleReportService from '../../services/VehicleReportService';
 import { DynamicPricingService } from '../../services/DynamicPricingService';
+import FleetLocationService from '../../services/FleetLocationService';
 import { formatMaintenanceReference } from '../../utils/maintenanceReference';
 import { getCompressedVideoRecorderOptions } from '../../utils/videoRecording';
 import { uploadFile } from '../../utils/storageUpload';
 import i18n from '../../i18n';
 import { fetchSystemSettings } from '../../services/systemSettingsApi';
+import { deriveEffectiveRentalStatus } from '../../utils/rentalLifecycle';
 
 
 // Set to true to enable verbose logging in RentalDetails
@@ -61,6 +64,38 @@ const MOBILE_FOOTER_PRIMARY_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border b
 const MOBILE_FOOTER_SUCCESS_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 hover:border-emerald-700`;
 const MOBILE_FOOTER_DISABLED_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-slate-200 bg-slate-100 text-slate-400 shadow-none`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitForPublicFile = async (publicUrl, maxAttempts = 16, delayMs = 500) => {
+  if (!publicUrl || typeof fetch === 'undefined') return publicUrl;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      const headResponse = await fetch(publicUrl, {
+        method: 'HEAD',
+        cache: 'no-store',
+      });
+
+      if (headResponse.ok) {
+        return publicUrl;
+      }
+    } catch {}
+
+    try {
+      const getResponse = await fetch(publicUrl, {
+        method: 'GET',
+        cache: 'no-store',
+      });
+
+      if (getResponse.ok) {
+        return publicUrl;
+      }
+    } catch {}
+
+    await sleep(delayMs);
+  }
+
+  return null;
+};
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
@@ -71,6 +106,7 @@ const translateRentalStatusLabel = (status) => {
     completed: tr('COMPLETED', 'TERMINÉE'),
     cancelled: tr('CANCELLED', 'ANNULÉE'),
     scheduled: tr('SCHEDULED', 'PLANIFIÉE'),
+    no_show_review: tr('NO-SHOW REVIEW', 'CONTRÔLE ABSENCE'),
     impounded: tr('IMPOUNDED', 'MIS EN FOURRIÈRE'),
     unpaid: tr('UNPAID', 'IMPAYÉE'),
     paid: tr('PAID', 'PAYÉE'),
@@ -136,6 +172,78 @@ const getRentalKilometerPackage = (rental, packageDetails) => {
 
   return hasLinkedPackage && hasKmConfig ? pkg : null;
 };
+
+const getPackageRentalDurationUnits = (rental = {}) => {
+  if (!rental?.use_package_pricing) return null;
+
+  const packageDuration = Number(
+    rental?.package?.duration_units ??
+    rental?.package_duration_units ??
+    rental?.packageDurationUnits
+  );
+
+  return Number.isFinite(packageDuration) && packageDuration > 0 ? packageDuration : null;
+};
+
+const getRentalDurationUnits = (rental = {}) => {
+  const packageDuration = getPackageRentalDurationUnits(rental);
+  if (packageDuration) return packageDuration;
+
+  return rental?.rental_type === 'hourly'
+    ? (rental?.quantity_hours ?? rental?.quantity_days ?? 1)
+    : (rental?.quantity_days ?? 1);
+};
+
+const getDisplayRentalDurationUnits = (rental = {}) => {
+  if (String(rental?.rental_type || '').toLowerCase() !== 'hourly') {
+    return Number(getRentalDurationUnits(rental));
+  }
+
+  const packageDuration = getPackageRentalDurationUnits(rental);
+  if (packageDuration) return packageDuration;
+
+  const startValue = rental?.started_at || rental?.rental_start_date;
+  const endValue = rental?.actual_end_date || rental?.rental_end_date;
+
+  if (startValue && endValue) {
+    const start = new Date(startValue);
+    const end = new Date(endValue);
+    const diffMs = end.getTime() - start.getTime();
+
+    if (Number.isFinite(diffMs) && diffMs > 0) {
+      const rawHours = diffMs / (1000 * 60 * 60);
+      const roundedHalfHours = Math.round(rawHours * 2) / 2;
+      if (roundedHalfHours > 0) {
+        return roundedHalfHours;
+      }
+    }
+  }
+
+  return Number(getRentalDurationUnits(rental));
+};
+
+const formatRentalDurationLabel = (rental = {}, isFrench = false) => {
+  const duration = getDisplayRentalDurationUnits(rental);
+  const trLocal = (en, fr) => (isFrench ? fr : en);
+
+  if (String(rental?.rental_type || '').toLowerCase() === 'hourly') {
+    if (duration === 0.5) return trLocal('30 min', '30 min');
+    if (duration === 1) return trLocal('1 hour', '1 heure');
+    if (duration === 1.5) return trLocal('1.5 hours', '1,5 heure');
+    return trLocal(`${duration} hours`, `${duration} heures`);
+  }
+
+  if (duration === 1) {
+    return trLocal('1 day', '1 jour');
+  }
+
+  return trLocal(`${duration} days`, `${duration} jours`);
+};
+
+const isFlatHourlyTierRental = (rental = {}, packageDetails = null) =>
+  !getRentalKilometerPackage(rental, packageDetails) &&
+  String(rental?.rental_type || '').toLowerCase() === 'hourly' &&
+  Number(getDisplayRentalDurationUnits(rental)) === 1.5;
 
 const hasRecordedReturnFuel = (rental, endFuelLevel) => {
   return endFuelLevel !== null && endFuelLevel !== undefined ||
@@ -237,24 +345,12 @@ const resolveDisplayedStartingOdometer = (rental, fallbackValue = null) => {
   return 0;
 };
 
-const normalizeRentalLifecycleStatus = (rental) => {
+const normalizeRentalLifecycleStatus = (
+  rental,
+  timingSettings = DEFAULT_RENTAL_TIMING_SETTINGS
+) => {
   if (!rental) return rental;
-
-  const rawStatus = String(rental.rental_status || rental.status || '').toLowerCase();
-  let nextStatus = rawStatus;
-
-  if (['cancelled', 'expired'].includes(rawStatus)) {
-    nextStatus = rawStatus;
-  } else if (rental.completed_at) {
-    nextStatus = 'completed';
-  } else if (
-    rental.started_at &&
-    !['completed', 'cancelled', 'expired', 'impounded'].includes(rawStatus)
-  ) {
-    nextStatus = 'active';
-  } else if (!nextStatus) {
-    nextStatus = 'scheduled';
-  }
+  const nextStatus = deriveEffectiveRentalStatus(rental, timingSettings);
 
   return {
     ...rental,
@@ -263,7 +359,40 @@ const normalizeRentalLifecycleStatus = (rental) => {
   };
 };
 
+const isNoShowCancellation = (rental = {}) =>
+  String(rental?.cancellation_reason || '').trim().toLowerCase() === 'no_show';
+
+const getVehicleDisplayName = (vehicle) => {
+  if (!vehicle) return 'Vehicle';
+  const parts = [
+    vehicle.name || vehicle.vehicle_model?.name || null,
+    vehicle.model || vehicle.vehicle_model?.model || null,
+  ].filter(Boolean);
+  return parts.join(' ').trim() || `Vehicle #${vehicle.id || ''}`.trim();
+};
+
 const insertSharedActivityLog = async (payload) => {
+  const modernPayload = {
+    actor_id: payload.user_id || payload.actor_id || null,
+    actor_type: payload.actor_type || 'user',
+    event_type: payload.action || payload.event_type || payload.title || 'activity',
+    entity_id: payload.entity_id || null,
+    entity_type: payload.entity_type || null,
+    user_name: payload.created_by || payload.user_name || null,
+    payload: payload.description
+      ? { description: payload.description, reason: payload.reason || null }
+      : (payload.payload || null),
+    metadata: payload.details || payload.metadata || null,
+  };
+
+  const modernAttempt = await supabase
+    .from('saharax_0u4w4d_activity_log')
+    .insert(modernPayload);
+
+  if (!modernAttempt.error) {
+    return modernAttempt;
+  }
+
   const primaryAttempt = await supabase
     .from('saharax_0u4w4d_activity_log')
     .insert(payload);
@@ -288,14 +417,63 @@ const insertSharedActivityLog = async (payload) => {
     .insert(fallbackPayload);
 };
 
+const getActivityLogAction = (log) =>
+  String(
+    log?.event_type ||
+    log?.action ||
+    log?.title ||
+    log?.action_type ||
+    ''
+  );
+
+const getActivityLogMetadata = (log) => {
+  if (log?.metadata && typeof log.metadata === 'object') return log.metadata;
+  if (log?.details && typeof log.details === 'object') return log.details;
+  return null;
+};
+
+let sharedActivityLogReadDisabled = false;
+
 const isActivityLogPermissionError = (error) => {
   const code = String(error?.code || '');
+  const status = Number(error?.status || 0);
   const message = String(error?.message || '').toLowerCase();
 
   return (
     code === '42501' ||
-    message.includes('permission denied for table saharax_0u4w4d_activity_log')
+    status === 403 ||
+    message.includes('forbidden') ||
+    message.includes('permission denied for table saharax_0u4w4d_activity_log') ||
+    message.includes('row-level security')
   );
+};
+
+const loadSharedActivityLogs = async ({ entityType = null, limit = 50 } = {}) => {
+  if (sharedActivityLogReadDisabled) {
+    return [];
+  }
+
+  let query = supabase
+    .from('saharax_0u4w4d_activity_log')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (entityType) {
+    query = query.eq('entity_type', entityType);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    if (isActivityLogPermissionError(error)) {
+      sharedActivityLogReadDisabled = true;
+      return [];
+    }
+    throw error;
+  }
+
+  return data || [];
 };
 
 const recordRentalContractPriceEditActivity = async ({
@@ -393,6 +571,13 @@ const recordSecurityHoldActivity = async ({
   }
 };
 
+const buildVehicleHistorySnapshot = (vehicle) => ({
+  vehicle_id: vehicle?.id || null,
+  plate_number_snapshot: vehicle?.plate_number || null,
+  vehicle_name_snapshot: vehicle?.name || vehicle?.vehicle_model?.name || null,
+  vehicle_model_snapshot: vehicle?.model || vehicle?.vehicle_model?.model || null,
+});
+
 const getWeekendImpoundEstimatedReleaseDate = (impoundedAt) => {
   const impoundDate = new Date(impoundedAt || '');
   if (Number.isNaN(impoundDate.getTime())) return null;
@@ -413,9 +598,9 @@ const getWeekendImpoundEstimatedReleaseDate = (impoundedAt) => {
 
 const activityLogMatchesRental = (log, rentalId) => {
   if (!log || !rentalId) return false;
-  const details = log.details;
-  if (details && typeof details === 'object') {
-    return String(details.rental_id || '') === String(rentalId);
+  const metadata = getActivityLogMetadata(log);
+  if (metadata && typeof metadata === 'object') {
+    return String(metadata.rental_id || '') === String(rentalId);
   }
   return String(log.entity_id || '') === String(rentalId);
 };
@@ -432,8 +617,8 @@ const getWeekendMinimumEstimatedDays = (impoundedAt) => {
 };
 
 const DEFAULT_RENTAL_TIMING_SETTINGS = {
-  graceMinutes: 120,
-  softLockMinutes: 90,
+  graceMinutes: 60,
+  softLockMinutes: 45,
 };
 
 const CANONICAL_PUBLIC_APP_URL =
@@ -519,6 +704,26 @@ const parseStoragePathFromPublicUrl = (url) => {
   if (firstSlash === -1) return null;
   const path = decodeURIComponent(storagePath.slice(firstSlash + 1));
   return path || null;
+};
+
+const getVerifiedStorageShareUrl = async (bucket, filePath) => {
+  if (!bucket || !filePath) return null;
+
+  try {
+    const { data: signedData, error: signedError } = await supabase.storage
+      .from(bucket)
+      .createSignedUrl(filePath, 60 * 60 * 24 * 7);
+
+    if (!signedError && signedData?.signedUrl) {
+      const verifiedSignedUrl = await waitForPublicFile(signedData.signedUrl);
+      if (verifiedSignedUrl) {
+        return verifiedSignedUrl;
+      }
+    }
+  } catch {}
+
+  const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(filePath);
+  return await waitForPublicFile(publicUrl);
 };
 
 const formatRentalScheduleDateTime = (value) => {
@@ -694,11 +899,111 @@ const getReceiptPreviewMeta = (rentalLike = {}) => {
   };
 };
 
+const formatVehicleHistoryDateTime = (value, isFrench = false) => {
+  const date = new Date(value || '');
+  if (Number.isNaN(date.getTime())) return isFrench ? 'Non enregistré' : 'Not recorded';
+  return date.toLocaleString(isFrench ? 'fr-FR' : 'en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+function StartWorkflowEffects({
+  startWorkflowStorageKey,
+  startWorkflowPendingSync,
+  setStartWorkflowPendingSync,
+  startWorkflowSteps,
+  isWorkflowOnline,
+  hasCustomerVerification,
+  hasOpeningInspectionCompleted,
+  hasOdometerReading,
+  hasStartFuelRecorded,
+  hasEffectiveContractSignature,
+  paymentStatus,
+  remainingAmount,
+  activeStartWorkflowStepKey,
+  showStartChecklistWorkflow,
+  previousActiveStartStepKeyRef,
+  startStepRefs,
+}) {
+  useEffect(() => {
+    if (!startWorkflowStorageKey || typeof window === 'undefined') return;
+
+    try {
+      const rawState = window.localStorage.getItem(startWorkflowStorageKey);
+      if (!rawState) return;
+      const parsedState = JSON.parse(rawState);
+      if (typeof parsedState?.pendingSync === 'boolean') {
+        setStartWorkflowPendingSync(parsedState.pendingSync);
+      }
+    } catch (storageError) {
+      console.warn('Failed to restore start workflow state:', storageError);
+    }
+  }, [startWorkflowStorageKey, setStartWorkflowPendingSync]);
+
+  useEffect(() => {
+    if (!startWorkflowStorageKey || typeof window === 'undefined') return;
+    const payload = {
+      pendingSync: startWorkflowPendingSync,
+      completedSteps: startWorkflowSteps.filter((step) => step.complete).map((step) => step.key),
+      updatedAt: new Date().toISOString(),
+      synced: isWorkflowOnline && !startWorkflowPendingSync,
+    };
+    window.localStorage.setItem(startWorkflowStorageKey, JSON.stringify(payload));
+  }, [
+    startWorkflowStorageKey,
+    startWorkflowPendingSync,
+    startWorkflowSteps,
+    isWorkflowOnline,
+  ]);
+
+  useEffect(() => {
+    if (!isWorkflowOnline) {
+      setStartWorkflowPendingSync(true);
+      return;
+    }
+    setStartWorkflowPendingSync(false);
+  }, [
+    isWorkflowOnline,
+    hasCustomerVerification,
+    hasOpeningInspectionCompleted,
+    hasOdometerReading,
+    hasStartFuelRecorded,
+    hasEffectiveContractSignature,
+    paymentStatus,
+    remainingAmount,
+    setStartWorkflowPendingSync,
+  ]);
+
+  useEffect(() => {
+    const currentStepKey = activeStartWorkflowStepKey;
+    if (!showStartChecklistWorkflow || !currentStepKey) return;
+    if (!previousActiveStartStepKeyRef.current) {
+      previousActiveStartStepKeyRef.current = currentStepKey;
+      return;
+    }
+    if (previousActiveStartStepKeyRef.current !== currentStepKey) {
+      previousActiveStartStepKeyRef.current = currentStepKey;
+      startStepRefs.current[currentStepKey]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [
+    activeStartWorkflowStepKey,
+    showStartChecklistWorkflow,
+    previousActiveStartStepKeyRef,
+    startStepRefs,
+  ]);
+
+  return null;
+}
+
 export default function RentalDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { userProfile } = useAuth();
   const isFrench = isFrenchLocale();
+  const startWorkflowStorageKey = id ? `rental_start_workflow_${id}` : null;
   const finishWorkflowStorageKey = id ? `rental_finish_workflow_${id}` : null;
   
   // 🔍 DEBUG: WhatsApp button click handler
@@ -706,6 +1011,53 @@ export default function RentalDetails() {
   const [linkedCustomerProfile, setLinkedCustomerProfile] = useState(null);
   const [tierPricingBreakdown, setTierPricingBreakdown] = useState(null);
   const [priceOverrideAuditMeta, setPriceOverrideAuditMeta] = useState(null);
+  const [vehicleReplacementHistory, setVehicleReplacementHistory] = useState([]);
+  const [fleetLocations, setFleetLocations] = useState([]);
+  const [selectedReturnLocationId, setSelectedReturnLocationId] = useState('');
+  const [showReplaceVehicleDialog, setShowReplaceVehicleDialog] = useState(false);
+  const [replacementVehicles, setReplacementVehicles] = useState([]);
+  const [isLoadingReplacementVehicles, setIsLoadingReplacementVehicles] = useState(false);
+  const [selectedReplacementVehicleId, setSelectedReplacementVehicleId] = useState('');
+  const [replacementReason, setReplacementReason] = useState('breakdown');
+  const [replacementNote, setReplacementNote] = useState('');
+  const [isReplacingVehicle, setIsReplacingVehicle] = useState(false);
+  const [replacementPauseStartedAt, setReplacementPauseStartedAt] = useState(null);
+  const [isMoreActionsOpen, setIsMoreActionsOpen] = useState(false);
+  const moreActionsRef = useRef(null);
+  const effectiveReplacementPauseStartedAt = rental?.replacement_pause_started_at || replacementPauseStartedAt || null;
+
+  const loadVehicleReplacementHistory = useCallback(async (rentalId) => {
+    if (!rentalId) {
+      setVehicleReplacementHistory([]);
+      return [];
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('rental_vehicle_history')
+        .select('*')
+        .eq('rental_id', rentalId)
+        .order('sequence_index', { ascending: true })
+        .order('started_at', { ascending: true });
+
+      if (error) throw error;
+      const nextHistory = data || [];
+      setVehicleReplacementHistory(nextHistory);
+      return nextHistory;
+    } catch (historyError) {
+      console.warn('⚠️ Failed to load vehicle replacement history:', historyError);
+      setVehicleReplacementHistory([]);
+      return [];
+    }
+  }, []);
+
+  const getCurrentVehicleHistoryEntry = useCallback((history = vehicleReplacementHistory) => {
+    if (!Array.isArray(history) || history.length === 0) return null;
+    const openEntry = [...history]
+      .reverse()
+      .find((entry) => !entry?.ended_at);
+    return openEntry || history[history.length - 1] || null;
+  }, [vehicleReplacementHistory]);
 
   const removeFile = async (fileUrl, fileType) => {
     try {
@@ -784,6 +1136,138 @@ export default function RentalDetails() {
   });
   const [mediaStepComplete, setMediaStepComplete] = useState(false);
   const [mediaCount, setMediaCount] = useState({ photos: 0, videos: 0 });
+  const [startWorkflowPendingSync, setStartWorkflowPendingSync] = useState(false);
+  const [isWorkflowOnline, setIsWorkflowOnline] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return window.navigator.onLine;
+  });
+  const replacementResumeWorkflowRef = useRef(null);
+  const startStepRefs = useRef({});
+  const previousActiveStartStepKeyRef = useRef(null);
+  const openReplacementResumeWorkflow = useCallback(() => {
+    replacementResumeWorkflowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+  const selectedReturnLocationName = useMemo(() => {
+    if (!selectedReturnLocationId) return '';
+    return fleetLocations.find((location) => String(location.id) === String(selectedReturnLocationId))?.name || '';
+  }, [fleetLocations, selectedReturnLocationId]);
+  const selectedReplacementVehicle = useMemo(
+    () => replacementVehicles.find((vehicle) => String(vehicle.id) === String(selectedReplacementVehicleId)) || null,
+    [replacementVehicles, selectedReplacementVehicleId]
+  );
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadFleetLocations = async () => {
+      try {
+        const locations = await FleetLocationService.listLocations(false);
+        if (!isMounted) return;
+        setFleetLocations(locations);
+      } catch (locationError) {
+        console.error('Failed to load fleet locations in rental details:', locationError);
+      }
+    };
+
+    void loadFleetLocations();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const vehicleLocationId = rental?.vehicle?.location_id;
+    const savedReturnLocationId = rental?.return_location_id;
+    const defaultLocationId = fleetLocations.find((location) => location.is_default)?.id;
+    const preferredLocationId = savedReturnLocationId || vehicleLocationId || defaultLocationId || '';
+    setSelectedReturnLocationId(preferredLocationId ? String(preferredLocationId) : '');
+  }, [fleetLocations, rental?.id, rental?.return_location_id, rental?.vehicle?.location_id]);
+
+  useEffect(() => {
+    if (!showReplaceVehicleDialog || !rental?.vehicle_id) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadReplacementVehicles = async () => {
+      try {
+        setIsLoadingReplacementVehicles(true);
+        const currentVehicleId = rental?.vehicle_id || rental?.vehicle?.id;
+        const currentVehicleModelId =
+          rental?.vehicle?.vehicle_model?.id ||
+          rental?.vehicle?.vehicle_model_id ||
+          null;
+
+        const { data, error } = await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .select(`
+            id,
+            name,
+            plate_number,
+            status,
+            capacity,
+            power_cc,
+            location_id,
+            vehicle_model_id,
+            vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(id, name, model)
+          `)
+          .eq('status', 'available')
+          .eq('vehicle_model_id', currentVehicleModelId)
+          .neq('id', currentVehicleId);
+
+        if (error) throw error;
+        if (!isMounted) return;
+
+        const sortedVehicles = [...(data || [])].sort((a, b) =>
+          String(a.plate_number || '').localeCompare(String(b.plate_number || ''))
+        );
+
+        setReplacementVehicles(sortedVehicles);
+        setSelectedReplacementVehicleId((prev) => {
+          if (prev && sortedVehicles.some((vehicle) => String(vehicle.id) === String(prev))) {
+            return prev;
+          }
+          return sortedVehicles[0]?.id ? String(sortedVehicles[0].id) : '';
+        });
+      } catch (replacementLoadError) {
+        console.error('❌ Failed to load replacement vehicles:', replacementLoadError);
+        toast.error(tr('Failed to load replacement vehicles', 'Échec du chargement des véhicules de remplacement'));
+      } finally {
+        if (isMounted) {
+          setIsLoadingReplacementVehicles(false);
+        }
+      }
+    };
+
+    void loadReplacementVehicles();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [showReplaceVehicleDialog, rental?.vehicle_id, rental?.vehicle?.id, rental?.vehicle?.vehicle_model?.id, rental?.vehicle?.vehicle_model_id]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const handleOnline = () => {
+      setIsWorkflowOnline(true);
+      setStartWorkflowPendingSync(false);
+    };
+    const handleOffline = () => {
+      setIsWorkflowOnline(false);
+      setStartWorkflowPendingSync(true);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Calculate media counts and update completion status
   const updateMediaCounts = (media) => {
@@ -823,6 +1307,38 @@ export default function RentalDetails() {
     updateMediaCounts([]);
   };
 
+  const removeStoredRentalMediaRecords = async (records) => {
+    const persistedRecords = (records || []).filter((media) => media?.id);
+    if (persistedRecords.length === 0) return;
+
+    const storagePaths = Array.from(
+      new Set(
+        persistedRecords
+          .flatMap((media) => [
+            media.storage_path,
+            parseStoragePathFromPublicUrl(media.thumbnail_url),
+          ])
+          .filter(Boolean)
+      )
+    );
+
+    if (storagePaths.length > 0) {
+      const { error: storageError } = await supabase.storage
+        .from('rental-videos')
+        .remove(storagePaths);
+      if (storageError) {
+        console.warn('Rental media storage cleanup warning:', storageError);
+      }
+    }
+
+    const { error: mediaDeleteError } = await supabase
+      .from('app_2f7bf469b0_rental_media')
+      .delete()
+      .in('id', persistedRecords.map((media) => media.id));
+
+    if (mediaDeleteError) throw mediaDeleteError;
+  };
+
   const getWorkflowResetFields = () => ({
     contract_signed: false,
     signature_url: null,
@@ -832,37 +1348,30 @@ export default function RentalDetails() {
     updated_at: new Date().toISOString(),
   });
 
+  const getVehicleSwapOpeningResetFields = () => ({
+    opening_video_url: null,
+    opening_video_thumbnail: null,
+    start_odometer: null,
+    start_fuel_level: null,
+    updated_at: new Date().toISOString(),
+  });
+
+  const clearOpeningWorkflowArtifactsForVehicleSwap = async () => {
+    await removeStoredRentalMediaRecords(openingMedia);
+
+    clearCapturedMediaState();
+    setOpeningMedia([]);
+    setStartFuelLevel(null);
+    if (rental?.vehicle?.current_odometer) {
+      setStartOdometer(String(rental.vehicle.current_odometer));
+    } else {
+      setStartOdometer('');
+    }
+  };
+
   const handleResetOpeningInspection = async () => {
     try {
-      const openingRecords = openingMedia.filter((media) => media?.id);
-      const storagePaths = Array.from(
-        new Set(
-          openingRecords
-            .flatMap((media) => [
-              media.storage_path,
-              parseStoragePathFromPublicUrl(media.thumbnail_url),
-            ])
-            .filter(Boolean)
-        )
-      );
-
-      if (storagePaths.length > 0) {
-        const { error: storageError } = await supabase.storage
-          .from('rental-videos')
-          .remove(storagePaths);
-        if (storageError) {
-          console.warn('Opening media storage cleanup warning:', storageError);
-        }
-      }
-
-      if (openingRecords.length > 0) {
-        const { error: mediaDeleteError } = await supabase
-          .from('app_2f7bf469b0_rental_media')
-          .delete()
-          .in('id', openingRecords.map((media) => media.id));
-
-        if (mediaDeleteError) throw mediaDeleteError;
-      }
+      await removeStoredRentalMediaRecords(openingMedia);
 
       const updateFields = {
         ...getWorkflowResetFields(),
@@ -1069,6 +1578,273 @@ export default function RentalDetails() {
     }
   };
 
+  const openReplaceVehicleDialog = () => {
+    setReplacementReason('breakdown');
+    setReplacementNote('');
+    setShowReplaceVehicleDialog(true);
+    setReplacementPauseStartedAt(new Date().toISOString());
+  };
+
+  const closeReplaceVehicleDialog = () => {
+    if (isReplacingVehicle) return;
+    setShowReplaceVehicleDialog(false);
+    setReplacementPauseStartedAt(null);
+    setSelectedReplacementVehicleId('');
+    setReplacementVehicles([]);
+  };
+
+  const handleReplaceVehicle = async () => {
+    if (!rental?.id || !rental?.vehicle_id || !selectedReplacementVehicleId) {
+      toast.error(tr('Please choose a replacement vehicle', 'Veuillez choisir un véhicule de remplacement'));
+      return;
+    }
+
+    const currentVehicleId = rental.vehicle_id || rental.vehicle?.id;
+    const replacementVehicle = replacementVehicles.find(
+      (vehicle) => String(vehicle.id) === String(selectedReplacementVehicleId)
+    );
+
+    if (!replacementVehicle) {
+      toast.error(tr('Replacement vehicle is no longer available', 'Le véhicule de remplacement n’est plus disponible'));
+      return;
+    }
+
+    const isReplacingActiveRental = operationalRentalStatus === 'active';
+    const pauseStartedAtValue = isReplacingActiveRental
+      ? (replacementPauseStartedAt || new Date().toISOString())
+      : null;
+    const actorName =
+      currentUser?.full_name ||
+      currentUser?.name ||
+      currentUser?.email ||
+      'Staff';
+    const currentVehicleName = getVehicleDisplayName(rental.vehicle);
+    const replacementVehicleName = getVehicleDisplayName(replacementVehicle);
+    const replacementReasonLabel = {
+      breakdown: tr('Breakdown during rental', 'Panne pendant la location'),
+      issue: tr('Issue noticed by staff', 'Problème constaté par le personnel'),
+      customer_request: tr('Customer requested replacement', 'Remplacement demandé par le client'),
+      other: tr('Other replacement reason', 'Autre raison de remplacement'),
+    }[replacementReason] || tr('Vehicle replacement', 'Remplacement de véhicule');
+
+    try {
+      setIsReplacingVehicle(true);
+
+      await clearOpeningWorkflowArtifactsForVehicleSwap();
+
+      const rentalUpdatePayload = {
+        vehicle_id: replacementVehicle.id,
+        rental_status: isReplacingActiveRental ? 'scheduled' : rental?.rental_status || 'scheduled',
+        status: isReplacingActiveRental ? 'scheduled' : rental?.status || rental?.rental_status || 'scheduled',
+        replacement_pause_started_at: pauseStartedAtValue,
+        replacement_pause_reason: replacementReason,
+        replacement_resume_context: {
+          mode: 'vehicle_replacement',
+          was_active: isReplacingActiveRental,
+          previous_vehicle_id: currentVehicleId,
+          previous_vehicle_name: currentVehicleName,
+          replacement_vehicle_id: replacementVehicle.id,
+          replacement_vehicle_name: replacementVehicleName,
+          replaced_at: new Date().toISOString(),
+          note: replacementNote.trim() || null,
+        },
+        replacement_previous_vehicle_id: currentVehicleId,
+        ...getWorkflowResetFields(),
+        ...getVehicleSwapOpeningResetFields(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const { data: updatedRental, error: rentalUpdateError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update(rentalUpdatePayload)
+        .eq('id', rental.id)
+        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float')
+        .single();
+
+      if (rentalUpdateError) throw rentalUpdateError;
+
+      const { error: replacementVehicleStatusError } = await supabase
+        .from('saharax_0u4w4d_vehicles')
+        .update({
+          status: 'scheduled',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', replacementVehicle.id);
+
+      if (replacementVehicleStatusError) throw replacementVehicleStatusError;
+
+      try {
+        const replacementStartedAt = new Date().toISOString();
+        const { data: existingHistory, error: existingHistoryError } = await supabase
+          .from('rental_vehicle_history')
+          .select('id, sequence_index, ended_at')
+          .eq('rental_id', rental.id)
+          .order('sequence_index', { ascending: true });
+
+        if (existingHistoryError) throw existingHistoryError;
+
+        const historyRows = existingHistory || [];
+        const activeHistory = [...historyRows].reverse().find((entry) => !entry?.ended_at) || null;
+        let nextSequenceIndex = historyRows.reduce((max, entry) => Math.max(max, Number(entry.sequence_index || 0)), 0);
+
+        if (activeHistory) {
+          const { error: closeHistoryError } = await supabase
+            .from('rental_vehicle_history')
+            .update({
+              ended_at: replacementStartedAt,
+            })
+            .eq('id', activeHistory.id);
+
+          if (closeHistoryError) throw closeHistoryError;
+        } else {
+          nextSequenceIndex += 1;
+          const previousVehicleStartedAt =
+            rental?.started_at ||
+            rental?.rental_start_date ||
+            rental?.created_at ||
+            replacementStartedAt;
+
+          const { error: seedHistoryError } = await supabase
+            .from('rental_vehicle_history')
+            .insert({
+              rental_id: rental.id,
+              ...buildVehicleHistorySnapshot(rental.vehicle),
+              started_at: previousVehicleStartedAt,
+              ended_at: replacementStartedAt,
+              replacement_reason: tr('Original vehicle', 'Véhicule initial'),
+              change_note: null,
+              changed_by: actorName,
+              sequence_index: nextSequenceIndex,
+            });
+
+          if (seedHistoryError) throw seedHistoryError;
+        }
+
+        const nextEntrySequence = nextSequenceIndex + 1;
+        const { error: insertHistoryError } = await supabase
+          .from('rental_vehicle_history')
+          .insert({
+            rental_id: rental.id,
+            ...buildVehicleHistorySnapshot(replacementVehicle),
+            started_at: replacementStartedAt,
+            ended_at: null,
+            replacement_reason: replacementReasonLabel,
+            change_note: replacementNote.trim() || null,
+            changed_by: actorName,
+            sequence_index: nextEntrySequence,
+          });
+
+        if (insertHistoryError) throw insertHistoryError;
+      } catch (vehicleHistoryError) {
+        console.error('❌ Failed to persist vehicle replacement history:', vehicleHistoryError);
+      }
+
+      let maintenanceRecord = null;
+      try {
+        const maintenanceResult = await MaintenanceService.createMaintenanceRecord({
+          vehicle_id: currentVehicleId,
+          maintenance_type: 'Breakdown',
+          description: `${replacementReasonLabel}. Rental ${rental.rental_id || rental.id} switched from ${currentVehicleName} to ${replacementVehicleName}.${replacementNote.trim() ? ` Note: ${replacementNote.trim()}` : ''}`,
+          status: 'scheduled',
+          scheduled_date: new Date().toISOString().split('T')[0],
+          service_date: new Date().toISOString().split('T')[0],
+          technician_name: actorName,
+          created_by: actorName,
+        });
+        maintenanceRecord = maintenanceResult?.maintenance || null;
+      } catch (maintenanceError) {
+        console.error('❌ Failed to auto-create scheduled maintenance during replacement:', maintenanceError);
+        await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .update({
+            status: 'maintenance',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', currentVehicleId);
+        toast.error(
+          tr(
+            'Vehicle replaced, but the scheduled maintenance record needs follow-up.',
+            'Véhicule remplacé, mais la fiche de maintenance planifiée nécessite un suivi.'
+          )
+        );
+      }
+
+      try {
+        await insertSharedActivityLog({
+          user_id: currentUser?.id || null,
+          created_by: actorName,
+          action: 'rental_vehicle_replaced',
+          description: `Replaced ${currentVehicleName} with ${replacementVehicleName} on rental ${rental.rental_id || rental.id}`,
+          entity_type: 'rental',
+          entity_id: rental.id,
+          reason: replacementReasonLabel,
+          details: {
+            rental_id: rental.id,
+            rental_reference: rental.rental_id || null,
+            old_vehicle_id: currentVehicleId,
+            old_vehicle_name: currentVehicleName,
+            new_vehicle_id: replacementVehicle.id,
+            new_vehicle_name: replacementVehicleName,
+            replacement_reason: replacementReason,
+            replacement_reason_label: replacementReasonLabel,
+            replacement_note: replacementNote.trim() || null,
+            pause_started_at: pauseStartedAtValue,
+            replacement_mode: isReplacingActiveRental ? 'resume_required' : 'start_required',
+            maintenance_id: maintenanceRecord?.id || null,
+            maintenance_reference: maintenanceRecord ? formatMaintenanceReference(maintenanceRecord) : null,
+          },
+        });
+      } catch (activityError) {
+        console.warn('⚠️ Failed to record replacement activity:', activityError);
+      }
+
+      setRental((prev) => prev ? ({
+        ...prev,
+        ...updatedRental,
+        vehicle_id: replacementVehicle.id,
+        rental_status: rentalUpdatePayload.rental_status,
+        status: rentalUpdatePayload.status,
+        replacement_pause_started_at: pauseStartedAtValue,
+        replacement_pause_reason: replacementReason,
+        replacement_resume_context: rentalUpdatePayload.replacement_resume_context,
+        replacement_previous_vehicle_id: currentVehicleId,
+        contract_signed: false,
+        signature_url: null,
+        contract_signed_by: null,
+        contract_signed_by_name: null,
+        contract_signed_at: null,
+        start_odometer: null,
+        start_fuel_level: null,
+        opening_video_url: null,
+        opening_video_thumbnail: null,
+      }) : updatedRental);
+
+      setShowReplaceVehicleDialog(false);
+      setReplacementPauseStartedAt(pauseStartedAtValue);
+      setSelectedReplacementVehicleId('');
+      setReplacementVehicles([]);
+      await loadRentalData(true);
+
+      toast.success(
+        tr(
+          isReplacingActiveRental
+            ? `Vehicle replaced. ${currentVehicleName} moved to scheduled maintenance. Complete the opening checks, then resume the rental.`
+            : `Vehicle replaced. ${currentVehicleName} moved to scheduled maintenance. Complete the opening checks, then start the rental.`,
+          isReplacingActiveRental
+            ? `${currentVehicleName} remplacé et envoyé en maintenance planifiée. Reprenez les contrôles d’ouverture puis relancez la location.`
+            : `${currentVehicleName} remplacé et envoyé en maintenance planifiée. Reprenez les contrôles d’ouverture puis démarrez la location.`
+        )
+      );
+    } catch (replacementError) {
+      console.error('❌ Error replacing vehicle:', replacementError);
+      toast.error(
+        `${tr('Failed to replace vehicle', 'Échec du remplacement du véhicule')} : ${replacementError.message}`
+      );
+    } finally {
+      setIsReplacingVehicle(false);
+    }
+  };
+
   // Upload a single media item
   const uploadMediaItem = async (media) => {
     const isOpening = media.isOpening !== false; // default to opening if not specified
@@ -1254,11 +2030,13 @@ export default function RentalDetails() {
   const [currentVehicleFuelLevel, setCurrentVehicleFuelLevel] = useState(null);
   const [showStartFuelModal, setShowStartFuelModal] = useState(false);
   const [showEndFuelModal, setShowEndFuelModal] = useState(false);
+  const [lateStartConfirmation, setLateStartConfirmation] = useState(null);
   const [fuelPricePerLine, setFuelPricePerLine] = useState(0);
   const [fuelCharge, setFuelCharge] = useState(0);
   const [finishRentalSteps, setFinishRentalSteps] = useState({
     showWorkflow: false,
     closingVideoComplete: false,
+    closingDocumentComplete: true,
     endOdometerComplete: false,
     endFuelComplete: false
   });
@@ -1267,6 +2045,7 @@ export default function RentalDetails() {
   const [vehicleReport, setVehicleReport] = useState(null);
   const [savingVehicleReport, setSavingVehicleReport] = useState(false);
   const [maintenanceChargeForm, setMaintenanceChargeForm] = useState({
+    enabled: false,
     days: 0,
     dailyRate: 0,
     discount: 0,
@@ -1344,7 +2123,10 @@ export default function RentalDetails() {
   const inspectionComplete = reportRequired
     ? hasClosingInspectionMedia && reportSaved && !reportHasUnsavedChanges && !requiresClosingInspectionReview
     : hasClosingInspectionMedia && !requiresClosingInspectionReview;
-  const closingInspectionStepComplete = finishRentalSteps.closingVideoComplete || inspectionComplete || reportWorkflowLocked;
+  const closingInspectionStepComplete =
+    reportWorkflowLocked ||
+    (!reportRequired && !requiresClosingInspectionReview) ||
+    (reportRequired && inspectionComplete);
 
   const scrollToVehicleReport = () => {
     vehicleReportSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1411,7 +2193,7 @@ const [pdfCache, setPdfCache] = useState({
 const [includedKilometers, setIncludedKilometers] = useState(0);
 const [extraKmRate, setExtraKmRate] = useState(0);
 const [packageDetails, setPackageDetails] = useState(null);
-const [mediaViewMode, setMediaViewMode] = useState('list');
+const [mediaViewMode, setMediaViewMode] = useState('grid');
 
 // Update fuel charge enabled state when rental data loads
 useEffect(() => {
@@ -1458,6 +2240,9 @@ const vehicleReportSectionRef = useRef(null);
 const rentalMediaSectionRef = useRef(null);
 const contractUrlRef = useRef(null);
 const receiptUrlRef = useRef(null);
+const shortContractUrlRef = useRef(null);
+const shortReceiptUrlRef = useRef(null);
+const maintenanceChargeSectionRef = useRef(null);
 const impoundReceiptInputRef = useRef(null);
 const impoundReceiptCameraInputRef = useRef(null);
 const releaseImpoundReceiptInputRef = useRef(null);
@@ -1471,23 +2256,15 @@ if (typeof window !== 'undefined') {
 // Capture template as high-res image using same method as handlePrintContract/Receipt
 // but upload to Supabase instead of saving/opening
 // Public view URLs — perfect quality, works on all devices, no upload needed
-const generateContractPDFBlob = async () => {
-  return `${getPublicAppOrigin()}/view/rental/${rental.id}?type=contract&lang=${documentLanguage}`;
-};
-
-const generateReceiptPDFBlob = async () => {
-  return `${getPublicAppOrigin()}/view/rental/${rental.id}?type=receipt&lang=${documentLanguage}`;
-};
-
 const handlePrintContract = async ({ shareOnly = false } = {}) => {
-  if (!contractTemplateRef.current) {
-    toast.error('Contract template not found');
-    return null;
-  }
-
   try {
-    // Use contractTemplateRef (modal) — always renders correctly
-    const contractRoot = contractTemplateRef.current || contractPdfRef.current;
+    await sleep(0);
+    const contractRoot = contractPdfRef.current || contractTemplateRef.current || contractShareRef.current;
+    if (!contractRoot) {
+      toast.error('Contract template not found');
+      return null;
+    }
+
     const page1 = contractRoot?.querySelector('.page-container') || contractRoot;
     const contractElement = page1;
     const A4_WIDTH = 210;
@@ -1527,9 +2304,9 @@ const handlePrintContract = async ({ shareOnly = false } = {}) => {
       .upload(filePath, pdfBlob, { contentType: 'application/pdf', upsert: true });
     let uploadedUrl = null;
     if (!upErr) {
-      const { data: { publicUrl } } = supabase.storage.from('rental-documents').getPublicUrl(filePath);
-      contractUrlRef.current = publicUrl;
-      uploadedUrl = publicUrl;
+      uploadedUrl = await getVerifiedStorageShareUrl('rental-documents', filePath);
+      contractUrlRef.current = uploadedUrl;
+      shortContractUrlRef.current = null;
     } else {
       console.error('Contract upload error:', upErr);
     }
@@ -1553,13 +2330,14 @@ const handlePrintContract = async ({ shareOnly = false } = {}) => {
 };
 
 const handlePrintReceipt = async ({ shareOnly = false } = {}) => {
-  if (!receiptTemplateRef.current) {
-    toast.error('Receipt template not found');
-    return null;
-  }
-
   try {
-    const receiptRoot = receiptTemplateRef.current || receiptPdfRef.current;
+    await sleep(0);
+    const receiptRoot = receiptPdfRef.current || receiptTemplateRef.current || receiptShareRef.current;
+    if (!receiptRoot) {
+      toast.error('Receipt template not found');
+      return null;
+    }
+
     const page1 = receiptRoot?.querySelector('.page-container') || receiptRoot?.querySelector('.receipt-container') || receiptRoot;
     const receiptElement = page1;
 
@@ -1621,9 +2399,9 @@ const handlePrintReceipt = async ({ shareOnly = false } = {}) => {
       .upload(receiptFilePath, pdfBlobReceipt, { contentType: 'application/pdf', upsert: true });
     let receiptUploadedUrl = null;
     if (!receiptUpErr) {
-      const { data: { publicUrl } } = supabase.storage.from('rental-documents').getPublicUrl(receiptFilePath);
-      receiptUrlRef.current = publicUrl;
-      receiptUploadedUrl = publicUrl;
+      receiptUploadedUrl = await getVerifiedStorageShareUrl('rental-documents', receiptFilePath);
+      receiptUrlRef.current = receiptUploadedUrl;
+      shortReceiptUrlRef.current = null;
     } else {
       console.error('Receipt upload error:', receiptUpErr);
     }
@@ -1653,6 +2431,36 @@ const handlePrintInvoice = () => {
     return; 
   }
   window.open(`/invoice/${rental.id}`, "_blank");
+};
+
+const generateAndCacheContractPDF = async () => {
+  if (!rental) return null;
+
+  setPdfCache((prev) => ({ ...prev, contractGenerating: true }));
+  try {
+    const contractUrl = await handlePrintContract({ shareOnly: true });
+    if (contractUrl) {
+      setPdfCache((prev) => ({ ...prev, contractUrl }));
+    }
+    return contractUrl;
+  } finally {
+    setPdfCache((prev) => ({ ...prev, contractGenerating: false }));
+  }
+};
+
+const generateAndCacheReceiptPDF = async () => {
+  if (!rental) return null;
+
+  setPdfCache((prev) => ({ ...prev, receiptGenerating: true }));
+  try {
+    const receiptUrl = await handlePrintReceipt({ shareOnly: true });
+    if (receiptUrl) {
+      setPdfCache((prev) => ({ ...prev, receiptUrl }));
+    }
+    return receiptUrl;
+  } finally {
+    setPdfCache((prev) => ({ ...prev, receiptGenerating: false }));
+  }
 };
 
 // ── Shared: generate PDF blob using exact same logic as print buttons ─────────
@@ -1693,8 +2501,7 @@ const uploadPDFBlob = async (blob, prefix) => {
     .from('rental-documents')
     .upload(filePath, blob, { contentType: 'application/pdf', upsert: true });
   if (error) throw error;
-  const { data: { publicUrl } } = supabase.storage.from('rental-documents').getPublicUrl(filePath);
-  return publicUrl;
+  return await getVerifiedStorageShareUrl('rental-documents', filePath);
 };
 
 const toDataURL = (url) =>
@@ -1787,32 +2594,27 @@ const calculateTierPricingBreakdown = async () => {
         return;
       }
 
-      // Use quantity_hours for hourly rentals, fallback to quantity_days
-      let duration = rental.quantity_hours ?? rental.quantity_days ?? 1;
-      
-      // Only use date calculation for SCHEDULED rentals (not started yet)
-      // Once rental is active/completed, rental_end_date includes extensions
-      if (rental.rental_status === 'scheduled' && rental.rental_start_date && rental.rental_end_date) {
-        const start = new Date(rental.rental_start_date);
-        const end = new Date(rental.rental_end_date);
-        const actualHours = Math.ceil((end - start) / (1000 * 60 * 60));
-        if (actualHours > 0) {
-          duration = actualHours;
-          if (RENTAL_DEBUG) console.log('📊 Using original scheduled duration:', duration, 'hours');
-        }
-      } else {
-        if (RENTAL_DEBUG) console.log('📊 Using quantity_hours for base duration:', duration, 'hours');
-      }
-      const tierRate = rental.unit_price || 0;
+      const duration = getDisplayRentalDurationUnits(rental);
+      if (RENTAL_DEBUG) console.log('📊 Using display duration for tier breakdown:', duration, 'hours');
+      const appliedContractTotal = Number(rental.total_amount || 0) || 0;
+      const isFlatTier = isFlatHourlyTierRental(rental, packageDetails);
+      const tierRate = isFlatTier
+        ? appliedContractTotal || Number(rental.unit_price || 0) || 0
+        : ((appliedContractTotal > 0 && duration > 0)
+            ? Number((appliedContractTotal / duration).toFixed(2))
+            : Number(rental.unit_price || 0) || 0);
       
       const standardTotal = duration * standardHourlyRate;
-      const tierTotal = duration * tierRate;
+      const tierTotal = appliedContractTotal > 0
+        ? appliedContractTotal
+        : (isFlatTier ? tierRate : duration * tierRate);
       const savings = standardTotal - tierTotal;
       const savingsPercentage = standardTotal > 0 ? (savings / standardTotal * 100).toFixed(1) : 0;
       const isDiscounted = savings > 0;
 
       const getTierDescription = () => {
         if (duration === 1) return "1-hour standard rate";
+        if (duration === 1.5) return "1.5-hour special rate";
         if (duration === 2) return "2-hour special rate";
         if (duration === 3) return "3-hour package deal";
         if (duration >= 4 && duration < 24) return `${duration}-hour bundle`;
@@ -1832,6 +2634,7 @@ const calculateTierPricingBreakdown = async () => {
         isDiscounted: isDiscounted,
         tierDescription: getTierDescription(),
         isSamePrice: savings === 0,
+        isFlatTier,
         source: priceSource // Add source tracking
       };
 
@@ -1844,7 +2647,7 @@ const calculateTierPricingBreakdown = async () => {
   };
 
   // Calculate daily tier pricing breakdown
-  const calculateDailyTierPricingBreakdown = async () => {
+const calculateDailyTierPricingBreakdown = async () => {
     // 🚨 CRITICAL: Add this null check FIRST
     if (!rental) {
       if (RENTAL_DEBUG) console.log('⏳ Rental data not loaded yet, skipping daily tier pricing');
@@ -1935,9 +2738,14 @@ const calculateTierPricingBreakdown = async () => {
         if (RENTAL_DEBUG) console.log('📊 Using quantity_days for base duration:', duration, 'days');
       }
 
-      const tierRate = rental.unit_price || 0;
+      const appliedContractTotal = Number(rental.total_amount || 0) || 0;
+      const tierRate = (appliedContractTotal > 0 && duration > 0)
+        ? Number((appliedContractTotal / duration).toFixed(2))
+        : Number(rental.unit_price || 0) || 0;
       const standardTotal = duration * standardDailyRate;
-      const tierTotal = duration * tierRate;
+      const tierTotal = appliedContractTotal > 0
+        ? appliedContractTotal
+        : duration * tierRate;
       const savings = standardTotal - tierTotal;
       const savingsPercentage = standardTotal > 0 ? (savings / standardTotal * 100).toFixed(1) : 0;
       const isDiscounted = savings > 0;
@@ -1986,7 +2794,7 @@ const calculateTierPricingBreakdown = async () => {
         calculateDailyTierPricingBreakdown();
       }
     }
-  }, [rental?.unit_price, rental?.vehicle?.id, rental?.rental_type, rental?.quantity_days, rental?.quantity_hours]); 
+  }, [rental?.unit_price, rental?.total_amount, rental?.vehicle?.id, rental?.rental_type, rental?.quantity_days, rental?.quantity_hours, rental?.approval_status, rental?.price_override_reason]); 
   // 📊 RENTAL DATA LOGGING - only on rental ID change to prevent spam
   useEffect(() => {
     if (rental) {
@@ -1997,7 +2805,9 @@ const calculateTierPricingBreakdown = async () => {
         days: rental.quantity_days,
         rate: rental.unit_price,
         total: rental.rental_type === 'hourly' 
-          ? (rental.quantity_hours ?? 1) * rental.unit_price
+          ? (isFlatHourlyTierRental(rental, packageDetails)
+              ? rental.unit_price
+              : (rental.quantity_hours ?? 1) * rental.unit_price)
           : (rental.quantity_days ?? 1) * rental.unit_price
       });
     }
@@ -2046,12 +2856,7 @@ const calculateTierPricingBreakdown = async () => {
   const loadRentalHistory = async (rentalId) => {
     if (!rentalId) return;
     try {
-      const { data } = await supabase
-        .from('saharax_0u4w4d_activity_log')
-        .select('*')
-        .eq('entity_type', 'rental')
-        .order('created_at', { ascending: false })
-        .limit(150);
+      const data = await loadSharedActivityLogs({ entityType: 'rental', limit: 150 });
       setRentalHistory((data || []).filter((log) => activityLogMatchesRental(log, rentalId)));
     } catch(e) { setRentalHistory([]); }
   };
@@ -2193,6 +2998,31 @@ const calculateTierPricingBreakdown = async () => {
     const receivedAmount = Number(rental?.damage_deposit_received_amount || 0);
     setSecurityHoldAmountInput(receivedAmount > 0 ? String(receivedAmount) : '');
   }, [rental?.id, rental?.damage_deposit_received_amount]);
+
+  useEffect(() => {
+    if (!isMoreActionsOpen) return undefined;
+
+    const handlePointerDown = (event) => {
+      if (moreActionsRef.current && !moreActionsRef.current.contains(event.target)) {
+        setIsMoreActionsOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setIsMoreActionsOpen(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isMoreActionsOpen]);
+
   const ACTION_COOLDOWN = 2000; // 2 seconds between actions
 
   const canPerformAction = () => {
@@ -2364,7 +3194,7 @@ const calculateTierPricingBreakdown = async () => {
 
 
       // Only customer website bookings auto-expire automatically.
-      let finalRentalData = normalizeRentalLifecycleStatus({ ...rentalData });
+      let finalRentalData = normalizeRentalLifecycleStatus({ ...rentalData }, rentalTimingSettings);
       if (rentalData.rental_status === 'scheduled' && rentalData.rental_start_date) {
         const timingState = getScheduledRentalTimingState(rentalData.rental_start_date, rentalTimingSettings, new Date());
         if (timingState?.isExpired && shouldAutoExpireScheduledRental(rentalData)) {
@@ -2544,6 +3374,12 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
       }
 
       try {
+        await loadVehicleReplacementHistory(rentalData.id);
+      } catch (vehicleHistoryError) {
+        console.error('❌ Non-critical vehicle history load failure:', vehicleHistoryError);
+      }
+
+      try {
         const latestVehicleReport = await VehicleReportService.getLatestReportForRental(rentalData.id);
         if (latestVehicleReport) {
           const hydratedReport = await VehicleReportService.hydrateReportWithMaintenance(latestVehicleReport);
@@ -2691,7 +3527,7 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
 
           const normalizedRealtimeRental = normalizeRentalLifecycleStatus({
             ...payload.new,
-          });
+          }, rentalTimingSettings);
 
           setRental((prev) => ({
             ...prev,
@@ -2758,6 +3594,7 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
               ...prev,
               showWorkflow: payload.showWorkflow,
               closingVideoComplete: payload?.steps?.closingVideoComplete ?? prev.closingVideoComplete,
+              closingDocumentComplete: payload?.steps?.closingDocumentComplete ?? prev.closingDocumentComplete,
               endOdometerComplete: payload?.steps?.endOdometerComplete ?? prev.endOdometerComplete,
               endFuelComplete: payload?.steps?.endFuelComplete ?? prev.endFuelComplete,
             }));
@@ -2960,13 +3797,16 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
     }
 
     if (rental.rental_type === 'hourly') {
-      const duration = rental.quantity_hours ?? rental.quantity_days ?? 1;
+      const duration = getRentalDurationUnits(rental);
+      if (rental.use_package_pricing || isFlatHourlyTierRental(rental, packageDetails)) {
+        return Number(rental.unit_price || 0) || 0;
+      }
       return (rental.unit_price || 0) * duration;
     }
 
     const duration = rental.quantity_days ?? 1;
-    return (rental.unit_price || 0) * duration;
-  }, [getStoredRentalChargeAmount, rental, totalExtensionFees]);
+    return rental.use_package_pricing ? (Number(rental.unit_price || 0) || 0) : (rental.unit_price || 0) * duration;
+  }, [getStoredRentalChargeAmount, rental, totalExtensionFees, packageDetails]);
   // Calculate late fee for completed rentals (guarded to prevent duplicate calls)
   useEffect(() => {
     const calculateLateFee = async () => {
@@ -3260,33 +4100,95 @@ Click the link above to review and approve the extension.`;
 
     if (uploadError) throw uploadError;
 
-    const { data: { publicUrl } } = supabase.storage.from(storageBucket).getPublicUrl(filePath);
-    return publicUrl;
+    return await getVerifiedStorageShareUrl(storageBucket, filePath);
   };
 
-  const generateContractPDF = async () => {
-    return `${getPublicAppOrigin()}/view/rental/${rental.id}?type=contract&lang=${documentLanguage}`;
+  const getShortenedGeneratedDocumentUrl = async (documentType) => {
+    const isContract = documentType === 'contract';
+    const currentShortUrl = isContract ? shortContractUrlRef.current : shortReceiptUrlRef.current;
+    const currentPublicUrl = isContract ? contractUrlRef.current : receiptUrlRef.current;
+    const shouldReuseExistingUrl = isContract;
+
+    if (shouldReuseExistingUrl && currentShortUrl && currentPublicUrl) {
+      return currentShortUrl;
+    }
+
+    const uploadedPublicUrl = (shouldReuseExistingUrl ? currentPublicUrl : null) || (
+      isContract
+        ? await handlePrintContract({ shareOnly: true })
+        : await handlePrintReceipt({ shareOnly: true })
+    );
+
+    if (!uploadedPublicUrl) {
+      return null;
+    }
+
+    const shortened = await shortenUrl(uploadedPublicUrl, documentType);
+    if (isContract) {
+      contractUrlRef.current = uploadedPublicUrl;
+      shortContractUrlRef.current = shortened;
+    } else {
+      receiptUrlRef.current = uploadedPublicUrl;
+      shortReceiptUrlRef.current = shortened;
+    }
+    return shortened;
   };
 
-  const generateReceiptPDF = async () => {
-    return `${getPublicAppOrigin()}/view/rental/${rental.id}?type=receipt&lang=${documentLanguage}`;
+  const getGeneratedDocumentPublicUrl = async (documentType) => {
+    const isContract = documentType === 'contract';
+    const currentPublicUrl = isContract ? contractUrlRef.current : receiptUrlRef.current;
+    const shouldReuseExistingUrl = isContract;
+
+    if (shouldReuseExistingUrl && currentPublicUrl) {
+      return currentPublicUrl;
+    }
+
+    const uploadedPublicUrl = (shouldReuseExistingUrl ? currentPublicUrl : null) || (
+      isContract
+        ? await handlePrintContract({ shareOnly: true })
+        : await handlePrintReceipt({ shareOnly: true })
+    );
+
+    if (!uploadedPublicUrl) {
+      return null;
+    }
+
+    if (isContract) {
+      contractUrlRef.current = uploadedPublicUrl;
+      shortContractUrlRef.current = null;
+    } else {
+      receiptUrlRef.current = uploadedPublicUrl;
+      shortReceiptUrlRef.current = null;
+    }
+
+    return uploadedPublicUrl;
   };
 
-  // PDF Caching Functions
-  const generateAndCacheContractPDF = async (rentalData = rental) => {
-    const url = `${getPublicAppOrigin()}/view/rental/${(rentalData || rental).id}?type=contract&lang=${documentLanguage}`;
-    window.__pdfCache = window.__pdfCache || {};
-    window.__pdfCache[`contract_${(rentalData || rental).id}`] = url;
-    setPdfCache(prev => ({ ...prev, contractUrl: url }));
-    return url;
-  };
+  const createDocumentShareRecord = async ({ shareType, payload, documentType = 'other' }) => {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+    const encodedPayload = await encodePublicSharePayload(payload);
 
-  const generateAndCacheReceiptPDF = async () => {
-    const url = `${getPublicAppOrigin()}/view/rental/${rental.id}?type=receipt&lang=${documentLanguage}`;
-    window.__pdfCache = window.__pdfCache || {};
-    window.__pdfCache[`receipt_${rental.rental_id}`] = url;
-    setPdfCache(prev => ({ ...prev, receiptUrl: url }));
-    return url;
+    const response = await fetch('/api/public-links?resource=document-shares&action=create', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify({
+        shareType,
+        rentalId: rental?.id || null,
+        ...(encodedPayload ? { payloadEncoded: encodedPayload } : { payload }),
+      }),
+    });
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body?.url) {
+      throw new Error(body?.error || 'Failed to create public share');
+    }
+
+    return body.url;
   };
 
 
@@ -3300,11 +4202,14 @@ Click the link above to review and approve the extension.`;
     setIsSendingWhatsApp(true);
     try {
       const contractUrl = await getContractWebUrl();
+      if (!contractUrl) {
+        throw new Error('Contract share was not generated');
+      }
       const message = `Here is your contract:\n${contractUrl}`;
       const encodedMessage = encodeURIComponent(message);
-      const whatsappUrl = `https://api.whatsapp.com/send?phone=${syncedCustomerPhone.replace(/[^0-9]/g, '')}&text=${encodedMessage}`;
-      
-      window.location.assign(whatsappUrl);
+      const whatsappUrl = `https://wa.me/${syncedCustomerPhone.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
+
+      openWhatsAppUrl(whatsappUrl);
     } catch (error) {
       console.error('Error sending contract:', error);
       toast.error('Failed to send contract. Please try again.');
@@ -3323,12 +4228,14 @@ Click the link above to review and approve the extension.`;
     setIsSendingWhatsApp(true);
     try {
       const receiptUrl = await getReceiptWebUrl();
+      if (!receiptUrl) {
+        throw new Error('Receipt share was not generated');
+      }
       const message = `Here is your receipt:\n${receiptUrl}`;
       const encodedMessage = encodeURIComponent(message);
-      const whatsappUrl = `https://api.whatsapp.com/send?phone=${syncedCustomerPhone.replace(/[^0-9]/g, '')}&text=${encodedMessage}`;
+      const whatsappUrl = `https://wa.me/${syncedCustomerPhone.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
 
-      
-      window.location.assign(whatsappUrl);
+      openWhatsAppUrl(whatsappUrl);
     } catch (error) {
       console.error('Error sending receipt:', error);
       toast.error('Failed to send receipt. Please try again.');
@@ -3534,51 +4441,248 @@ Click the link above to review and approve the extension.`;
     }
   };
 
-  // ✅ RADICAL OPTIMIZATION: Use web view URLs instead of PDFs for instant WhatsApp
+  // Public share URLs for interactive pages only.
+  const buildSharedDocumentUrl = async (documentType, options = {}) => {
+    const isLocalhost =
+      typeof window !== 'undefined' &&
+      ['localhost', '127.0.0.1'].includes(window.location.hostname);
+    const pdfUrl = options?.pdfUrl || null;
+    const linkedReport = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
+    const payloadOverrides = documentType === 'receipt'
+      ? {
+          deposit_amount: receiptRentalData?.deposit_amount,
+          fuel_charge: receiptRentalData?.fuel_charge,
+          payment_status: receiptRentalData?.payment_status,
+          start_fuel_level: receiptRentalData?.start_fuel_level,
+          end_fuel_level: receiptRentalData?.end_fuel_level,
+          vehicleReport: linkedReport,
+          vehicle_report: linkedReport,
+          ...(receiptRentalData?.impound_is_estimate
+            ? {
+                impound_charge_days: receiptRentalData?.impound_charge_days,
+                impound_charge_hours: receiptRentalData?.impound_charge_hours,
+                impound_rate: receiptRentalData?.impound_rate,
+                impound_manual_charge: receiptRentalData?.impound_manual_charge,
+                impound_discount: receiptRentalData?.impound_discount,
+                impound_total: receiptRentalData?.impound_total,
+                impound_live_charge_days: receiptRentalData?.impound_live_charge_days,
+                impound_live_charge_hours: receiptRentalData?.impound_live_charge_hours,
+                impound_live_rate: receiptRentalData?.impound_live_rate,
+                impound_live_discount: receiptRentalData?.impound_live_discount,
+                impound_live_total: receiptRentalData?.impound_live_total,
+                impound_is_estimate: receiptRentalData?.impound_is_estimate,
+                impound_estimated_release_at: receiptRentalData?.impound_estimated_release_at,
+                impound_estimate_note: receiptRentalData?.impound_estimate_note,
+                impound_extra_daily_charge_waived: receiptRentalData?.impound_extra_daily_charge_waived,
+                impound_estimate_weekend_carry: receiptRentalData?.impound_estimate_weekend_carry,
+                impound_estimate_pricing_label: receiptRentalData?.impound_estimate_pricing_label,
+                impound_estimated_days_total: receiptRentalData?.impound_estimated_days_total,
+                impound_estimated_hours_total: receiptRentalData?.impound_estimated_hours_total,
+                impound_estimated_rate: receiptRentalData?.impound_estimated_rate,
+                impound_estimated_discount: receiptRentalData?.impound_estimated_discount,
+                impound_estimated_total: receiptRentalData?.impound_estimated_total,
+                impound_estimated_extra_days: receiptRentalData?.impound_estimated_extra_days,
+                impound_estimated_extra_amount: receiptRentalData?.impound_estimated_extra_amount,
+              }
+            : {}),
+        }
+      : {
+          customer_name: contractRentalData?.customer_name,
+          customer_email: contractRentalData?.customer_email,
+          customer_phone: contractRentalData?.customer_phone,
+          customer_address: contractRentalData?.customer_address,
+          customer_nationality: contractRentalData?.customer_nationality,
+          customer_licence_number: contractRentalData?.customer_licence_number,
+          deposit_amount: contractRentalData?.deposit_amount,
+          fuel_charge: contractRentalData?.fuel_charge,
+        };
+    const hasOverrides = Object.values(payloadOverrides || {}).some((value) => value !== undefined && value !== null && value !== '');
+
+    if (isLocalhost) {
+      const params = new URLSearchParams({
+        type: documentType,
+        lang: documentLanguage,
+      });
+      if (pdfUrl || hasOverrides) {
+        const payload = await encodePublicSharePayload({
+          overrides: hasOverrides ? payloadOverrides : undefined,
+          settings: {
+            logoUrl,
+            stampUrl,
+          },
+          links: {
+            ...(documentType === 'receipt' ? { receiptPdf: pdfUrl } : {}),
+            ...(documentType === 'contract' ? { contractPdf: pdfUrl } : {}),
+          },
+          bundle: {
+            contract: Boolean(rental?.signature_url),
+            receipt: Boolean(dynamicPaymentState.isPaid),
+            openingMedia: openingMedia.length > 0,
+            closingMedia: closingMedia.length > 0,
+          },
+        });
+        if (payload) {
+          params.set('payload', payload);
+        }
+      }
+      return `${getPublicAppOrigin()}/view/rental/${rental.id}?${params.toString()}`;
+    }
+
+    const payload = (hasOverrides || pdfUrl) ? await encodePublicSharePayload({
+      overrides: hasOverrides ? payloadOverrides : undefined,
+      settings: {
+        logoUrl,
+        stampUrl,
+      },
+      links: pdfUrl
+        ? {
+            ...(documentType === 'receipt' ? { receiptPdf: pdfUrl } : {}),
+            ...(documentType === 'contract' ? { contractPdf: pdfUrl } : {}),
+          }
+        : undefined,
+      bundle: {
+        contract: Boolean(rental?.signature_url),
+        receipt: Boolean(dynamicPaymentState.isPaid),
+        openingMedia: openingMedia.length > 0,
+        closingMedia: closingMedia.length > 0,
+      },
+    }) : null;
+
+    const params = new URLSearchParams({
+      type: documentType,
+      lang: documentLanguage,
+    });
+
+    if (payload) {
+      params.set('payload', payload);
+    }
+
+    return `${getPublicAppOrigin()}/view/rental/${rental.id}?${params.toString()}`;
+  };
+
   const getContractWebUrl = async () => {
-    const rawUrl = `${getPublicAppOrigin()}/view/rental/${rental.id}?type=contract&lang=${documentLanguage}`;
-    return await shortenUrl(rawUrl, 'contract');
+    const pdfUrl = await getGeneratedDocumentPublicUrl('contract');
+    if (!pdfUrl) return null;
+
+    return await createDocumentShareRecord({
+      shareType: 'contract',
+      documentType: 'contract',
+      payload: {
+        language: documentLanguage,
+        rentalLookupId: rental?.id || null,
+        rentalId: rental?.rental_id || rental?.id || '',
+        customerName: contractRentalData?.customer_name || rental?.customer_name || '',
+        settings: {
+          logoUrl,
+          stampUrl,
+        },
+        overrides: {
+          customer_name: contractRentalData?.customer_name,
+          customer_email: contractRentalData?.customer_email,
+          customer_phone: contractRentalData?.customer_phone,
+          customer_address: contractRentalData?.customer_address,
+          customer_nationality: contractRentalData?.customer_nationality,
+          customer_licence_number: contractRentalData?.customer_licence_number,
+          deposit_amount: contractRentalData?.deposit_amount,
+          fuel_charge: contractRentalData?.fuel_charge,
+        },
+        pdfUrl,
+      },
+    });
   };
 
   const getReceiptWebUrl = async () => {
-    const rawUrl = `${getPublicAppOrigin()}/view/rental/${rental.id}?type=receipt&lang=${documentLanguage}`;
-    return await shortenUrl(rawUrl, 'receipt');
+    const pdfUrl = await getGeneratedDocumentPublicUrl('receipt');
+    if (!pdfUrl) return null;
+
+    return await createDocumentShareRecord({
+      shareType: 'receipt',
+      documentType: 'receipt',
+      payload: {
+        language: documentLanguage,
+        rentalLookupId: rental?.id || null,
+        rentalId: rental?.rental_id || rental?.id || '',
+        customerName: receiptRentalData?.customer_name || rental?.customer_name || '',
+        settings: {
+          logoUrl,
+          stampUrl,
+        },
+        overrides: {
+          deposit_amount: receiptRentalData?.deposit_amount,
+          fuel_charge: receiptRentalData?.fuel_charge,
+          payment_status: receiptRentalData?.payment_status,
+          start_fuel_level: receiptRentalData?.start_fuel_level,
+          end_fuel_level: receiptRentalData?.end_fuel_level,
+          impound_charge_days: receiptRentalData?.impound_charge_days,
+          impound_charge_hours: receiptRentalData?.impound_charge_hours,
+          impound_rate: receiptRentalData?.impound_rate,
+          impound_manual_charge: receiptRentalData?.impound_manual_charge,
+          impound_discount: receiptRentalData?.impound_discount,
+          impound_total: receiptRentalData?.impound_total,
+          impound_live_charge_days: receiptRentalData?.impound_live_charge_days,
+          impound_live_charge_hours: receiptRentalData?.impound_live_charge_hours,
+          impound_live_rate: receiptRentalData?.impound_live_rate,
+          impound_live_discount: receiptRentalData?.impound_live_discount,
+          impound_live_total: receiptRentalData?.impound_live_total,
+          impound_is_estimate: receiptRentalData?.impound_is_estimate,
+          impound_estimated_release_at: receiptRentalData?.impound_estimated_release_at,
+          impound_estimate_note: receiptRentalData?.impound_estimate_note,
+          impound_extra_daily_charge_waived: receiptRentalData?.impound_extra_daily_charge_waived,
+          impound_estimate_weekend_carry: receiptRentalData?.impound_estimate_weekend_carry,
+          impound_estimate_pricing_label: receiptRentalData?.impound_estimate_pricing_label,
+          impound_estimated_days_total: receiptRentalData?.impound_estimated_days_total,
+          impound_estimated_hours_total: receiptRentalData?.impound_estimated_hours_total,
+          impound_estimated_rate: receiptRentalData?.impound_estimated_rate,
+          impound_estimated_discount: receiptRentalData?.impound_estimated_discount,
+          impound_estimated_total: receiptRentalData?.impound_estimated_total,
+          impound_estimated_extra_days: receiptRentalData?.impound_estimated_extra_days,
+          impound_estimated_extra_amount: receiptRentalData?.impound_estimated_extra_amount,
+        },
+        pdfUrl,
+      },
+    });
   };
 
   const getOpeningMediaShareUrl = async () => {
-    const rawUrl = `${getPublicAppOrigin()}/view/rental/${rental.id}?type=opening-media`;
-    return await shortenUrl(rawUrl, 'opening_video');
+    return `${getPublicAppOrigin()}/view/rental/${rental.id}?type=opening-media`;
   };
 
   const getClosingMediaShareUrl = async () => {
-    const rawUrl = `${getPublicAppOrigin()}/view/rental/${rental.id}?type=closing-media`;
-    return await shortenUrl(rawUrl, 'closing_video');
+    return `${getPublicAppOrigin()}/view/rental/${rental.id}?type=closing-media`;
   };
 
   const getDocumentsHubShareUrl = async (options = {}) => {
-    const rawUrl = `${getPublicAppOrigin()}/view/rental/${rental.id}?type=documents`;
-    return await shortenUrl(rawUrl, 'documents');
+    const items = Array.isArray(options?.items) ? options.items.filter((item) => item?.key && item?.url) : [];
+    if (items.length < 2) {
+      return null;
+    }
+
+    return await createDocumentShareRecord({
+      shareType: 'hub',
+      documentType: 'documents',
+      payload: {
+        language: documentLanguage,
+        rentalId: rental?.rental_id || rental?.id || '',
+        customerName: rental?.customer_name || '',
+        settings: {
+          logoUrl,
+          stampUrl,
+        },
+        items,
+      },
+    });
   };
 
   const getBankingInfoShareUrl = async () => {
-    const rawUrl = `${getPublicAppOrigin()}/images/bank-transfer-info.png`;
-    return await shortenUrl(rawUrl, 'banking-info');
+    return `${getPublicAppOrigin()}/images/bank-transfer-info.png`;
   };
 
   const getContractUrl = async (preferWeb = true) => {
-    if (preferWeb) {
-      return await getContractWebUrl();
-    }
-    // Fallback to PDF if web view not available
-    return await generateContractPDF();
+    return await getShortenedGeneratedDocumentUrl('contract');
   };
 
   const getReceiptUrl = async (preferWeb = true) => {
-    if (preferWeb) {
-      return await getReceiptWebUrl();
-    }
-    // Fallback to PDF if web view not available
-    return await generateReceiptPDF();
+    return await getShortenedGeneratedDocumentUrl('receipt');
   };
 
   // Handle WhatsApp selection and sending - INSTANT WEB VIEW VERSION
@@ -3591,8 +4695,8 @@ Click the link above to review and approve the extension.`;
       if (RENTAL_DEBUG) console.log('📱 Starting WhatsApp send with options:', options);
       
       const hasDocuments =
-        Boolean(options.contract && rental.signature_url) ||
-        Boolean(options.receipt && dynamicPaymentState.isPaid) ||
+        Boolean(options.contract && canShareContractDocument) ||
+        Boolean(options.receipt && canShareReceiptDocument) ||
         Boolean(options.openingVideo && openingMedia.length > 0) ||
         Boolean(options.closingVideo && closingMedia.length > 0) ||
         Boolean(options.bankingInfo);
@@ -3604,39 +4708,58 @@ Click the link above to review and approve the extension.`;
         return;
       }
       const selectedItems = [];
+      let contractDocumentUrl = null;
+      let receiptDocumentUrl = null;
+      let openingMediaDocumentUrl = null;
+      let closingMediaDocumentUrl = null;
+      let bankingInfoDocumentUrl = null;
 
-      if (options.contract && rental.signature_url) {
-        selectedItems.push({
-          label: tr('Rental Contract', 'Contrat de location'),
-          url: await getContractWebUrl(),
-        });
+      if (options.contract && canShareContractDocument) {
+        contractDocumentUrl = await getContractWebUrl();
+        if (contractDocumentUrl) {
+          selectedItems.push({
+            key: 'contract',
+            label: tr('Rental Contract', 'Contrat de location'),
+            url: contractDocumentUrl,
+          });
+        }
       }
 
-      if (options.receipt && dynamicPaymentState.isPaid) {
-        selectedItems.push({
-          label: receiptPreviewMeta.listLabel,
-          url: await getReceiptWebUrl(),
-        });
+      if (options.receipt && canShareReceiptDocument) {
+        receiptDocumentUrl = await getReceiptWebUrl();
+        if (receiptDocumentUrl) {
+          selectedItems.push({
+            key: 'receipt',
+            label: receiptPreviewMeta.listLabel,
+            url: receiptDocumentUrl,
+          });
+        }
       }
 
       if (options.openingVideo && openingMedia.length > 0) {
+        openingMediaDocumentUrl = await getOpeningMediaShareUrl();
         selectedItems.push({
+          key: 'opening-media',
           label: tr('Opening Media', 'Médias de départ'),
-          url: await getOpeningMediaShareUrl(),
+          url: openingMediaDocumentUrl,
         });
       }
 
       if (options.closingVideo && closingMedia.length > 0) {
+        closingMediaDocumentUrl = await getClosingMediaShareUrl();
         selectedItems.push({
+          key: 'closing-media',
           label: tr('Closing Media', 'Médias de retour'),
-          url: await getClosingMediaShareUrl(),
+          url: closingMediaDocumentUrl,
         });
       }
 
       if (options.bankingInfo) {
+        bankingInfoDocumentUrl = await getBankingInfoShareUrl();
         selectedItems.push({
+          key: 'banking-info',
           label: tr('Banking Info', 'Informations bancaires'),
-          url: await getBankingInfoShareUrl(),
+          url: bankingInfoDocumentUrl,
         });
       }
 
@@ -3645,20 +4768,32 @@ Click the link above to review and approve the extension.`;
         `Voici les éléments de votre location ${rental.rental_id} :`
       );
 
-      const message = [
-        intro,
-        '',
-        ...selectedItems.map((item) => `${item.label}:\n${item.url}`)
-      ].join('\n');
+      const documentsHubUrl =
+        selectedItems.length > 1
+          ? await getDocumentsHubShareUrl({ items: selectedItems })
+          : null;
+
+      const shouldUseDocumentsHub = Boolean(documentsHubUrl);
+      const message = shouldUseDocumentsHub
+        ? [
+            intro,
+            '',
+            `${tr('Open all shared items here:', 'Ouvrez tous les éléments partagés ici :')}`,
+            documentsHubUrl,
+          ].join('\n')
+        : [
+            intro,
+            '',
+            ...selectedItems.map((item) => `${item.label}:\n${item.url}`),
+          ].join('\n');
 
       const phoneNumber = syncedCustomerPhone.replace(/[^0-9]/g, '');
-      const whatsappUrl = `https://api.whatsapp.com/send?phone=${phoneNumber}&text=${encodeURIComponent(message)}`;
+      const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
       
       if (RENTAL_DEBUG) console.log('📱 Opening WhatsApp with URL:', whatsappUrl);
       
-      // Use top-level navigation for WhatsApp so mobile browsers hand off reliably.
       toast.dismiss('wa-prepare');
-      window.location.assign(whatsappUrl);
+      openWhatsAppUrl(whatsappUrl);
       
     } catch (error) {
       toast.dismiss('wa-prepare');
@@ -3830,16 +4965,18 @@ Click the link above to review and approve the extension.`;
 
     const syncMaintenanceStayPricing = async () => {
       if (!vehicleReport?.id || !vehicleReport?.customer_chargeable || !vehicleReport?.maintenance) {
+        const isEnabled = vehicleReport?.maintenance_daily_enabled !== false && (vehicleReport?.maintenance_daily_days || 0) > 0;
         const fallbackTotal = calculateMaintenanceStayTotal(
           vehicleReport?.maintenance_daily_days || 0,
           vehicleReport?.maintenance_daily_rate || 0,
           vehicleReport?.maintenance_daily_discount || 0
         );
         setMaintenanceChargeForm({
+          enabled: isEnabled,
           days: vehicleReport?.maintenance_daily_days || 0,
           dailyRate: vehicleReport?.maintenance_daily_rate || 0,
           discount: vehicleReport?.maintenance_daily_discount || 0,
-          total: fallbackTotal,
+          total: isEnabled ? fallbackTotal : 0,
           source: 'none',
         });
         return;
@@ -3857,26 +4994,30 @@ Click the link above to review and approve the extension.`;
       }
 
       const discount = Number(vehicleReport.maintenance_daily_discount || 0);
+      const isEnabled = vehicleReport?.maintenance_daily_enabled !== false;
       const total = calculateMaintenanceStayTotal(suggestedDays, suggestedRate, discount);
 
       if (cancelled) return;
 
       setMaintenanceChargeForm({
+        enabled: isEnabled,
         days: suggestedDays,
         dailyRate: suggestedRate,
         discount,
-        total,
+        total: isEnabled ? total : 0,
         source: rateSource,
       });
 
       const needsSync =
+        Boolean(vehicleReport?.maintenance_daily_enabled !== false) !== isEnabled ||
         (Number(vehicleReport.maintenance_daily_days || 0) !== suggestedDays) ||
         (Number(vehicleReport.maintenance_daily_rate || 0) !== suggestedRate) ||
-        (Number(vehicleReport.maintenance_daily_total || 0) !== total);
+        (Number(vehicleReport.maintenance_daily_total || 0) !== (isEnabled ? total : 0));
 
       if (needsSync) {
         try {
           const syncedReport = await VehicleReportService.saveChargeConfig(vehicleReport.id, {
+            maintenance_daily_enabled: isEnabled,
             maintenance_daily_days: suggestedDays,
             maintenance_daily_rate: suggestedRate,
             maintenance_daily_discount: discount,
@@ -3906,6 +5047,7 @@ Click the link above to review and approve the extension.`;
     vehicleReport?.maintenance?.id,
     vehicleReport?.maintenance?.completed_date,
     vehicleReport?.maintenance?.updated_at,
+    vehicleReport?.maintenance_daily_enabled,
     vehicleReport?.maintenance_daily_days,
     vehicleReport?.maintenance_daily_rate,
     vehicleReport?.maintenance_daily_discount,
@@ -4064,6 +5206,7 @@ Click the link above to review and approve the extension.`;
     setSavingMaintenanceCharge(true);
     try {
       const nextReport = await VehicleReportService.saveChargeConfig(vehicleReport.id, {
+        maintenance_daily_enabled: maintenanceChargeForm.enabled,
         maintenance_daily_days: maintenanceChargeForm.days,
         maintenance_daily_rate: maintenanceChargeForm.dailyRate,
         maintenance_daily_discount: maintenanceChargeForm.discount,
@@ -4081,13 +5224,12 @@ Click the link above to review and approve the extension.`;
     } finally {
       setSavingMaintenanceCharge(false);
     }
-  }, [maintenanceChargeForm.dailyRate, maintenanceChargeForm.days, maintenanceChargeForm.discount, upsertVehicleReportLocally, vehicleReport]);
+  }, [maintenanceChargeForm.dailyRate, maintenanceChargeForm.days, maintenanceChargeForm.discount, maintenanceChargeForm.enabled, upsertVehicleReportLocally, vehicleReport]);
 
   const getLinkedMaintenanceChargeAmount = () => {
     const linkedReport = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
     if (!linkedReport?.customer_chargeable) return 0;
-
-    return parseFloat(linkedReport?.customer_charge_amount || 0) || 0;
+    return getLinkedMaintenanceRepairAmount() + getLinkedMaintenanceStayAmount();
   };
 
   const getLinkedMaintenanceRepairAmount = () => {
@@ -4099,6 +5241,9 @@ Click the link above to review and approve the extension.`;
   const getLinkedMaintenanceStayAmount = () => {
     const linkedReport = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
     if (!linkedReport?.customer_chargeable) return 0;
+    if (linkedReport?.maintenance) {
+      return maintenanceChargeForm.enabled ? (parseFloat(maintenanceChargeForm.total || 0) || 0) : 0;
+    }
     return parseFloat(linkedReport?.maintenance_daily_total || 0) || 0;
   };
 
@@ -4187,7 +5332,9 @@ Click the link above to review and approve the extension.`;
     const maintenanceRepairAmount = getLinkedMaintenanceRepairAmount();
     const maintenanceStayAmount = getLinkedMaintenanceStayAmount();
     const maintenanceChargeAmount = maintenanceRepairAmount + maintenanceStayAmount;
-    const maintenanceDiscountAmount = parseFloat(vehicleReport?.maintenance_daily_discount || 0) || 0;
+    const maintenanceDiscountAmount = maintenanceChargeForm.enabled
+      ? (parseFloat(maintenanceChargeForm.discount || 0) || 0)
+      : 0;
     const grandTotal = rentalChargeAmount + overageCharge + fuelChargeAmount + impoundChargeAmount + maintenanceChargeAmount;
     const rawDisplayedPaidAmount = getCorrectedDisplayedPaidAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
     const depositPaid = grandTotal > 0
@@ -4195,10 +5342,10 @@ Click the link above to review and approve the extension.`;
       : rawDisplayedPaidAmount;
     const rawBalanceDue = Math.max(0, grandTotal - depositPaid);
     const damageDepositHeld = Math.max(0, parseFloat(rental?.damage_deposit || 0));
-    const hasAutoDepositSeizure = damageDepositHeld > 0 && (maintenanceChargeAmount > 0 || impoundChargeAmount > 0);
-    const autoDepositSeizedAmount = hasAutoDepositSeizure ? Math.min(rawBalanceDue, damageDepositHeld) : 0;
-    const autoDepositReturnAmount = hasAutoDepositSeizure ? Math.max(0, damageDepositHeld - autoDepositSeizedAmount) : damageDepositHeld;
-    const balanceDue = Math.max(0, rawBalanceDue - autoDepositSeizedAmount);
+    const autoDepositSeizedAmount = 0;
+    const autoDepositReturnAmount = damageDepositHeld;
+    const hasAutoDepositSeizure = false;
+    const balanceDue = rawBalanceDue;
 
     return {
       baseAmount,
@@ -4222,7 +5369,7 @@ Click the link above to review and approve the extension.`;
       hasAutoDepositSeizure,
       balanceDue,
     };
-  }, [calculateImpoundChargeTotal, endFuelLevel, fuelCharge, fuelChargeEnabled, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.rateMode, impoundChargeForm.total, packageDetails, rental, totalExtensionFees, vehicleReport, waiveImpoundExtraDailyCharge]);
+  }, [calculateImpoundChargeTotal, endFuelLevel, fuelCharge, fuelChargeEnabled, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.rateMode, impoundChargeForm.total, maintenanceChargeForm.discount, maintenanceChargeForm.enabled, maintenanceChargeForm.total, packageDetails, rental, totalExtensionFees, vehicleReport, waiveImpoundExtraDailyCharge]);
 
   const dynamicPaymentState = useMemo(() => {
     if (!rental) {
@@ -4297,6 +5444,7 @@ Click the link above to review and approve the extension.`;
   const receiptRentalData = useMemo(() => {
     if (!rental) return null;
 
+    const linkedVehicleReport = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
     const liveImpoundSnapshot = rental?.is_impounded ? impoundChargeForm : null;
     const activeImpoundEstimate = rental?.is_impounded ? impoundEstimatePreview : null;
     const weekendImpoundPreview = activeImpoundEstimate?.weekendCarry ? activeImpoundEstimate : null;
@@ -4330,6 +5478,8 @@ Click the link above to review and approve the extension.`;
 
     return {
       ...rental,
+      vehicleReport: linkedVehicleReport,
+      vehicle_report: linkedVehicleReport,
       payment_status: dynamicPaymentState.status === 'estimate' ? rental.payment_status : dynamicPaymentState.status,
       deposit_amount: rentalBillingSummary.depositPaid,
       fuel_charge: getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled }),
@@ -4367,7 +5517,7 @@ Click the link above to review and approve the extension.`;
         }
       }
     };
-  }, [dynamicPaymentState.status, fuelPricePerLine, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, rental, rentalBillingSummary.depositPaid, waiveImpoundExtraDailyCharge, tr]);
+  }, [dynamicPaymentState.status, fuelPricePerLine, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, rental, rentalBillingSummary.depositPaid, vehicleReport, waiveImpoundExtraDailyCharge, tr]);
 
   const receiptPreviewMeta = useMemo(
     () => getReceiptPreviewMeta(receiptRentalData || rental || {}),
@@ -4481,12 +5631,20 @@ Click the link above to review and approve the extension.`;
     setIsSharing(true);
     
     try {
+      setWhatsappOptions({
+        contract: canShareContractDocument,
+        receipt: canShareReceiptDocument,
+        openingVideo: false,
+        closingVideo: false,
+        bankingInfo: false,
+      });
+
       // PDFs are generated fresh on demand when sharing
       
-      // Generate receipt PDF if paid and not already cached
-      if (dynamicPaymentState.isPaid && !pdfCache.receiptUrl && !rental.receipt_pdf_url) {
+      // Generate receipt PDF if shareable and not already cached
+      if (canShareReceiptDocument && !pdfCache.receiptUrl && !rental.receipt_pdf_url) {
         if (RENTAL_DEBUG) console.log('🔄 Generating receipt PDF before WhatsApp modal...');
-        await generateAndCacheReceiptPDF();
+        await handlePrintReceipt({ shareOnly: true });
       }
       
       // Open modal after PDFs are ready
@@ -4562,7 +5720,15 @@ const TierPricingDisplay = ({ breakdown, isMobile = false }) => {
           
           <div className="rounded-2xl border border-violet-100 bg-white p-3 shadow-sm">
             <div className="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Duration</div>
-            <div className={`${isMobile ? 'text-xs font-semibold' : 'text-sm font-semibold'} text-gray-900`}>{breakdown.duration} {breakdown.isDaily ? (breakdown.duration > 1 ? 'days' : 'day') : (breakdown.duration > 1 ? 'hours' : 'hour')}</div>
+            <div className={`${isMobile ? 'text-xs font-semibold' : 'text-sm font-semibold'} text-gray-900`}>
+              {breakdown.isDaily
+                ? `${breakdown.duration} ${breakdown.duration > 1 ? 'days' : 'day'}`
+                : breakdown.duration === 0.5
+                  ? '30 min'
+                  : breakdown.duration === 1.5
+                    ? '1.5 hours'
+                    : `${breakdown.duration} ${breakdown.duration > 1 ? 'hours' : 'hour'}`}
+            </div>
           </div>
         </div>
 
@@ -4570,7 +5736,11 @@ const TierPricingDisplay = ({ breakdown, isMobile = false }) => {
           <div className="rounded-2xl border border-emerald-100 bg-white p-3 shadow-sm">
             <div className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Your Tier Rate</div>
             <div className={`${isMobile ? 'text-xl' : 'text-2xl'} font-bold text-green-600`}>{formatCurrency(breakdown.tierRate)}</div>
-            <div className="text-green-600 text-xs">MAD per {breakdown.isDaily ? 'day' : 'hour'}</div>
+            <div className="text-green-600 text-xs">
+              {breakdown.isFlatTier
+                ? (breakdown.duration === 1.5 ? 'MAD total for 1.5 hours' : 'MAD flat total')
+                : `MAD per ${breakdown.isDaily ? 'day' : 'hour'}`}
+            </div>
             <div className="text-xs text-green-500 mt-2">{breakdown.tierDescription}</div>
           </div>
           
@@ -4908,15 +6078,9 @@ const FuelChargeToggle = ({
       const rawBalanceDue = rentalBillingSummary.rawBalanceDue;
       const balanceDue = rentalBillingSummary.balanceDue;
       const damageDeposit = parseFloat(rental.damage_deposit || 0);
-      const hasAutoDepositSeizure = rentalBillingSummary.hasAutoDepositSeizure;
-      
       // The amount that can be deducted from deposit (cannot exceed deposit)
-      const deductionAmount = hasAutoDepositSeizure
-        ? rentalBillingSummary.autoDepositSeizedAmount
-        : (deductFromDeposit ? Math.min(rawBalanceDue, damageDeposit) : 0);
-      const remainingBalance = hasAutoDepositSeizure
-        ? balanceDue
-        : (rawBalanceDue - deductionAmount);
+      const deductionAmount = deductFromDeposit ? Math.min(rawBalanceDue, damageDeposit) : 0;
+      const remainingBalance = rawBalanceDue - deductionAmount;
       const depositReturn = damageDeposit - deductionAmount;
       
       // Create detailed deduction reason
@@ -4955,7 +6119,7 @@ const FuelChargeToggle = ({
       }
       
       if (deductionAmount > 0) {
-        deductionReason = `${hasAutoDepositSeizure ? 'Automatically seized' : 'Applied'} ${formatCurrency(deductionAmount)} MAD from damage deposit to balance. ` +
+        deductionReason = `Applied ${formatCurrency(deductionAmount)} MAD from damage deposit to balance. ` +
           `Total: ${formatCurrency(rentalGrandTotal)} MAD - Deposit Paid: ${formatCurrency(depositPaid)} MAD = Balance Due: ${formatCurrency(rawBalanceDue)} MAD. ` +
           `Deposit applied: ${formatCurrency(deductionAmount)} MAD, Remaining balance: ${formatCurrency(remainingBalance)} MAD.`;
       }
@@ -5000,6 +6164,62 @@ const FuelChargeToggle = ({
       console.error('Error saving deposit signature:', err);
       toast.error(`Failed to save deposit return: ${err.message}`);
     }
+  };
+
+  const handleEditDepositReturn = async () => {
+    if (!rental?.id) return;
+
+    try {
+      const shouldReopen = window.confirm(
+        tr(
+          'Reopen this deposit return so you can edit it again?',
+          'Rouvrir cette restitution de caution pour la modifier ?'
+        )
+      );
+
+      if (!shouldReopen) return;
+
+      const resetPayload = {
+        deposit_return_signature_url: null,
+        deposit_returned_at: null,
+        deposit_return_amount: 0,
+        deposit_deduction_amount: 0,
+        deposit_deduction_reason: null,
+        final_deposit_return_amount: 0,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update(resetPayload)
+        .eq('id', rental.id);
+
+      if (error) throw error;
+
+      setDeductFromDeposit(false);
+      await loadRentalData(true);
+      toast.success(tr('Deposit return reopened for editing', 'Restitution de caution rouverte pour modification'));
+    } catch (err) {
+      console.error('Error reopening deposit return:', err);
+      toast.error(`${tr('Failed to reopen deposit return', 'Impossible de rouvrir la restitution de caution')}: ${err.message}`);
+    }
+  };
+
+  const handleEditMaintenanceStayCharge = () => {
+    if (isCompleted && currentUserRole !== 'owner') return;
+
+    setMaintenanceChargeForm((prev) => ({
+      ...prev,
+      enabled: true,
+      total: calculateMaintenanceStayTotal(prev.days, prev.dailyRate, prev.discount),
+    }));
+
+    window.setTimeout(() => {
+      maintenanceChargeSectionRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }, 80);
   };
 
   // Handle odometer save
@@ -5341,6 +6561,7 @@ const handleFuelChargeToggle = async (enabled) => {
   const buildFinishWorkflowState = () => ({
     showWorkflow: true,
     closingVideoComplete: closingInspectionStepComplete,
+    closingDocumentComplete: true,
     endOdometerComplete: !!rental?.ending_odometer,
     endFuelComplete: endFuelLevel !== null || rental?.end_fuel_level !== null,
   });
@@ -5389,6 +6610,7 @@ const handleFuelChargeToggle = async (enabled) => {
       const nextState = {
         showWorkflow: false,
         closingVideoComplete: false,
+        closingDocumentComplete: true,
         endOdometerComplete: false,
         endFuelComplete: false
       };
@@ -5441,7 +6663,7 @@ const handleFuelChargeToggle = async (enabled) => {
       throw refreshedRentalError;
     }
 
-    const normalizedRefreshedRental = normalizeRentalLifecycleStatus(refreshedRental);
+    const normalizedRefreshedRental = normalizeRentalLifecycleStatus(refreshedRental, rentalTimingSettings);
     if (
       !normalizedRefreshedRental ||
       normalizedRefreshedRental.rental_status !== 'completed' ||
@@ -5519,6 +6741,7 @@ const handleFuelChargeToggle = async (enabled) => {
         actual_end_date: completedAt,
         ending_odometer: effectiveEndingOdometer,
         end_fuel_level: effectiveEndFuelLevel,
+        return_location_id: selectedReturnLocationId ? Number(selectedReturnLocationId) : null,
         updated_at: new Date().toISOString()
       };
       
@@ -5527,12 +6750,7 @@ const handleFuelChargeToggle = async (enabled) => {
         updateData.signature_url = returnSignatureUrl;
       }
 
-      const { data: completedRental, error } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .update(updateData)
-        .eq('id', rental.id)
-        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*)')
-        .single();
+      const { data: completedRental, error } = await updateRentalWithSchemaFallback(updateData);
 
       if (error) {
         console.error('❌ Database error:', error);
@@ -5546,6 +6764,7 @@ const handleFuelChargeToggle = async (enabled) => {
           .from('saharax_0u4w4d_vehicles')
           .update({ 
             status: targetVehicleStatus,
+            location_id: selectedReturnLocationId ? Number(selectedReturnLocationId) : rental?.vehicle?.location_id || null,
             updated_at: completedAt
           })
           .eq('id', rental.vehicle_id);
@@ -5589,6 +6808,7 @@ const handleFuelChargeToggle = async (enabled) => {
           ending_odometer: effectiveEndingOdometer,
           end_fuel_level: effectiveEndFuelLevel,
           signature_url: returnSignatureUrl || rental?.signature_url || null,
+          return_location_id: selectedReturnLocationId ? Number(selectedReturnLocationId) : null,
         },
       });
 
@@ -5600,6 +6820,7 @@ const handleFuelChargeToggle = async (enabled) => {
         const closedWorkflowState = {
           showWorkflow: false,
           closingVideoComplete: false,
+          closingDocumentComplete: true,
           endOdometerComplete: false,
           endFuelComplete: false
         };
@@ -5631,6 +6852,7 @@ const handleFuelChargeToggle = async (enabled) => {
       setFinishRentalSteps({
         showWorkflow: false,
         closingVideoComplete: false,
+        closingDocumentComplete: true,
         endOdometerComplete: false,
         endFuelComplete: false
       });
@@ -5797,8 +7019,10 @@ const loadFuelChargeSettings = async () => {
       });
       
       // Preserve original price
-      const originalPrice = rental.rental_type === 'hourly'
-        ? (rental.quantity_hours ?? rental.quantity_days ?? 1) * (rental.unit_price || 0)
+      const originalPrice = rental.use_package_pricing
+        ? (rental.unit_price || rental.total_amount || 0)
+        : rental.rental_type === 'hourly'
+        ? getRentalDurationUnits(rental) * (rental.unit_price || 0)
         : rental.unit_price ? rental.unit_price * (rental.quantity_days ?? 1) : (rental.total_amount || 0);
       const extensionFees = totalExtensionFees || 0;
       const fuelChargeAmount = getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
@@ -6106,29 +7330,30 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       }
 
       if (mediaRecords && mediaRecords.length > 0) {
+        const decorateMediaRecord = (record) => ({
+          ...record,
+          url: record.public_url,
+          isImage: record.file_type?.startsWith('image/') || false,
+          isVideo: record.file_type?.startsWith('video/') || false
+        });
+
         const openingMedia = mediaRecords
           .filter(r => r.phase === 'out')
-          .map(r => ({
-            ...r,
-            url: r.public_url,
-            isImage: r.file_type?.startsWith('image/') || false,
-            isVideo: r.file_type?.startsWith('video/') || false
-          }));
+          .map(decorateMediaRecord);
         
         const closingMedia = mediaRecords
           .filter(r => r.phase === 'in')
-          .map(r => ({
-            ...r,
-            url: r.public_url,
-            isImage: r.file_type?.startsWith('image/') || false,
-            isVideo: r.file_type?.startsWith('video/') || false
-          }));
+          .map(decorateMediaRecord);
 
         setOpeningMedia(openingMedia);
         setClosingMedia(closingMedia);
         
-        const imageCount = openingMedia.filter(m => m.isImage).length + closingMedia.filter(m => m.isImage).length;
-        const videoCount = openingMedia.filter(m => m.isVideo).length + closingMedia.filter(m => m.isVideo).length;
+        const allLoadedMedia = [
+          ...openingMedia,
+          ...closingMedia,
+        ];
+        const imageCount = allLoadedMedia.filter(m => m.isImage).length;
+        const videoCount = allLoadedMedia.filter(m => m.isVideo).length;
         if (RENTAL_DEBUG) console.log(`📹 Media loaded: ${mediaRecords.length} (Images: ${imageCount}, Videos: ${videoCount})`);
       } else {
         setOpeningMedia([]);
@@ -6159,7 +7384,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
   useEffect(() => {
     if (!finishWorkflowStorageKey || typeof window === 'undefined') return;
-    const workflowRental = normalizeRentalLifecycleStatus(rental);
+    const workflowRental = normalizeRentalLifecycleStatus(rental, rentalTimingSettings);
     if (!workflowRental || workflowRental.rental_status !== 'active') {
       clearFinishWorkflowState();
       restoredFinishWorkflowRef.current = null;
@@ -6179,12 +7404,14 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
         const nextSteps = {
           showWorkflow: true,
           closingVideoComplete: inspectionComplete,
+          closingDocumentComplete: true,
           endOdometerComplete: Boolean(rental.ending_odometer),
           endFuelComplete: endFuelLevel !== null || rental?.end_fuel_level !== null
         };
         setFinishRentalSteps((prev) => (
           prev.showWorkflow === nextSteps.showWorkflow &&
           prev.closingVideoComplete === nextSteps.closingVideoComplete &&
+          prev.closingDocumentComplete === nextSteps.closingDocumentComplete &&
           prev.endOdometerComplete === nextSteps.endOdometerComplete &&
           prev.endFuelComplete === nextSteps.endFuelComplete
         ) ? prev : nextSteps);
@@ -6219,7 +7446,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
   useEffect(() => {
     if (!finishWorkflowStorageKey || typeof window === 'undefined') return;
-    const workflowRental = normalizeRentalLifecycleStatus(rental);
+    const workflowRental = normalizeRentalLifecycleStatus(rental, rentalTimingSettings);
     if (!workflowRental || workflowRental.rental_status !== 'active') return;
 
     if (!finishRentalSteps.showWorkflow) return;
@@ -6255,7 +7482,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       if (rentalData.rental_type === 'hourly' && rentalData.started_at) {
         const startDate = new Date(rentalData.started_at);
         if (!Number.isNaN(startDate.getTime())) {
-          const quantityHours = parseFloat(rentalData.quantity_hours);
+          const quantityHours = Number(getRentalDurationUnits(rentalData));
           if (!Number.isNaN(quantityHours) && quantityHours > 0) {
             endCandidates.push(new Date(startDate.getTime() + quantityHours * 60 * 60 * 1000));
           } else {
@@ -6323,14 +7550,18 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
     };
 
     // Run once immediately
-    currentTimeRef.current = Date.now();
+    currentTimeRef.current = effectiveReplacementPauseStartedAt
+      ? new Date(effectiveReplacementPauseStartedAt).getTime()
+      : Date.now();
     const tr = calcTimeRemaining(rental);
     if (tr !== null) setTimeRemaining(tr);
     setElapsedTime(calcElapsedTime(rental));
 
     // Update every second for live timer display
     timerIntervalRef.current = setInterval(() => {
-      currentTimeRef.current = Date.now();
+      currentTimeRef.current = effectiveReplacementPauseStartedAt
+        ? new Date(effectiveReplacementPauseStartedAt).getTime()
+        : Date.now();
       const newTR = calcTimeRemaining(rental);
       if (newTR !== null) setTimeRemaining(prev => prev === newTR ? prev : newTR);
       const newET = calcElapsedTime(rental);
@@ -6342,7 +7573,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
         clearInterval(timerIntervalRef.current);
       }
     };
-  }, [rental?.rental_end_date, rental?.actual_end_date, rental?.rental_status, rental?.started_at, rental?.quantity_hours, rental?.rental_start_date, extensions]);
+  }, [rental?.rental_end_date, rental?.actual_end_date, rental?.rental_status, rental?.started_at, rental?.quantity_hours, rental?.rental_start_date, extensions, effectiveReplacementPauseStartedAt]);
 
 
 
@@ -7099,60 +8330,35 @@ useEffect(() => {
       return url;
     }
   };
-  // WhatsApp URL opening helper - uses multiple methods
+  // Use a single same-tab navigation so browsers don't treat it like a popup burst.
   const openWhatsAppUrl = (url) => {
-    if (RENTAL_DEBUG) console.log('🔗 Opening WhatsApp URL with multiple methods:', url);
-    
-    // Method 1: Create and click a temporary link (most reliable)
-    const link = document.createElement('a');
-    link.href = url;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.style.cssText = 'position: fixed; left: -9999px; top: -9999px; width: 1px; height: 1px;';
-    
-    document.body.appendChild(link);
-    
+    if (RENTAL_DEBUG) console.log('🔗 Navigating to WhatsApp URL:', url);
+
     try {
-      // Native click
-      link.click();
-      if (RENTAL_DEBUG) console.log('✅ Method 1: Native click attempted');
+      window.location.assign(url);
     } catch (err) {
-      if (RENTAL_DEBUG) console.log('Native click failed, trying programmatic click');
+      if (RENTAL_DEBUG) console.log('WhatsApp navigation failed');
+      toast.error(`WhatsApp blocked by browser. Please copy this link manually: | ${url}`);
     }
-    
-    // Method 2: MouseEvent (for strict browsers)
-    setTimeout(() => {
-      try {
-        const event = new MouseEvent('click', {
-          view: window,
-          bubbles: true,
-          cancelable: true
-        });
-        link.dispatchEvent(event);
-        if (RENTAL_DEBUG) console.log('✅ Method 2: MouseEvent dispatched');
-      } catch (err) {
-        if (RENTAL_DEBUG) console.log('MouseEvent failed');
-      }
-    }, 10);
-    
-    // Method 3: window.open as fallback
-    setTimeout(() => {
-      try {
-        window.open(url, '_blank', 'noopener,noreferrer');
-        if (RENTAL_DEBUG) console.log('✅ Method 3: window.open attempted');
-      } catch (err) {
-        if (RENTAL_DEBUG) console.log('window.open failed, showing manual option');
-        // Show URL for manual copy
-        toast.error(`WhatsApp blocked by browser. Please copy this link manually: | ${url}`);
-      }
-    }, 50);
-    
-    // Cleanup
-    setTimeout(() => {
-      if (link.parentNode) {
-        document.body.removeChild(link);
-      }
-    }, 1000);
+  };
+
+  const handleContactCustomerWhatsApp = () => {
+    const rawPhone = syncedCustomerDetails.phone || rental?.customer_phone || '';
+    const cleanPhone = String(rawPhone).replace(/\D/g, '');
+
+    if (!cleanPhone) {
+      toast.error(tr('Customer phone number is not available.', 'Le numéro de téléphone du client n’est pas disponible.'));
+      return;
+    }
+
+    const customerName = syncedCustomerDetails.fullName || rental?.customer_name || '';
+    const vehicleLabel = [rental?.vehicle?.name, rental?.vehicle?.model].filter(Boolean).join(' ') || tr('your vehicle', 'votre véhicule');
+    const message = isFrench
+      ? `Bonjour ${customerName}, nous vous contactons au sujet de votre location ${rental?.rental_id || ''} pour ${vehicleLabel}.`
+      : `Hi ${customerName}, we are contacting you regarding your rental ${rental?.rental_id || ''} for ${vehicleLabel}.`;
+
+    const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
+    openWhatsAppUrl(whatsappUrl);
   };
 
 
@@ -7190,6 +8396,11 @@ useEffect(() => {
   };
 
   const saveMedia = async (type) => {
+    if (isProcessingVideo) {
+      if (RENTAL_DEBUG) console.log(`⏳ Ignoring duplicate ${type} media save while upload is already running`);
+      return;
+    }
+
     if (capturedMedia.length === 0) {
       toast.error('Please capture or select media first');
       return;
@@ -7207,16 +8418,76 @@ useEffect(() => {
         const file = capturedMedia[i];
         
         // Normalize file object - handle both File objects and our custom structure
-        const fileBlob = file.blob || file;
-        const fileName_orig = file.name || (file instanceof File ? file.name : `media_${Date.now()}`);
-        const fileType = file.type || file.mediaType || (fileBlob.type || 'application/octet-stream');
-        const isImage = fileType.startsWith('image/');
-        
-        if (RENTAL_DEBUG) console.log(`📤 Starting upload for ${type} ${isImage ? 'image' : 'video'} (${i + 1}/${totalFiles}):`, fileName_orig);
+        const originalBlob = file.blob || file;
+        const declaredMediaKind = file.type === 'video' || file.mediaType === 'video'
+          ? 'video'
+          : file.type === 'image' || file.mediaType === 'image'
+            ? 'image'
+            : '';
+        const generatedName = declaredMediaKind === 'video'
+          ? `media_${Date.now()}.mp4`
+          : declaredMediaKind === 'image'
+            ? `media_${Date.now()}.jpg`
+            : `media_${Date.now()}`;
+        const originalName = file.name || (file instanceof File ? file.name : generatedName);
+        const explicitMimeType = [originalBlob.type, file.mimeType, file.type]
+          .map((value) => String(value || '').trim())
+          .find((value) => value.includes('/'));
+        const normalizedOriginalNameForType = String(originalName || '').toLowerCase();
+        const inferredMimeType = /\.(mp4|mov|m4v|webm|avi)$/.test(normalizedOriginalNameForType)
+          ? 'video/mp4'
+          : /\.(jpe?g|png|gif|heic|heif|webp)$/.test(normalizedOriginalNameForType)
+            ? 'image/jpeg'
+            : '';
+        const declaredMimeType = declaredMediaKind === 'video'
+          ? 'video/mp4'
+          : declaredMediaKind === 'image'
+            ? 'image/jpeg'
+            : '';
+        const originalType = explicitMimeType || inferredMimeType || declaredMimeType;
+        if (!originalType) {
+          throw new Error(`Unsupported media type for ${originalName}`);
+        }
+        const mediaFile = originalBlob instanceof File && originalBlob.name && originalBlob.type
+          ? originalBlob
+          : new File([originalBlob], originalName, { type: originalType });
+        const baseProgress = (i / totalFiles) * 100;
+        const progressRange = 100 / totalFiles;
+
+        if (RENTAL_DEBUG) console.log(
+          `📤 Starting media processing for ${type} (${i + 1}/${totalFiles}):`,
+          originalName,
+          mediaFile.type,
+          `${(originalBlob.size / 1024 / 1024).toFixed(2)}MB`
+        );
+
+        const processed = await processMedia(mediaFile, (progress) => {
+          const overallProgress = Math.round(baseProgress + ((progress * 0.35) * progressRange / 100));
+          setUploadProgress(overallProgress);
+        });
+
+        const fileBlob = processed.blob;
+        const fileType = fileBlob.type || mediaFile.type;
+        const isImage = processed.mediaType === 'image' || fileType.startsWith('image/');
+        const extension = isImage ? '.jpg' : (fileType.includes('mp4') ? '.mp4' : '.webm');
+        const normalizedOriginalName = originalName.includes('.')
+          ? originalName.replace(/\.[^.]+$/, extension)
+          : `${originalName}${extension}`;
+
+        if (RENTAL_DEBUG) console.log('🗜️ Media processed:', {
+          type,
+          originalName,
+          normalizedOriginalName,
+          originalSize: originalBlob.size,
+          processedSize: fileBlob.size,
+          converted: processed.converted,
+          mediaType: processed.mediaType,
+          fileType,
+        });
 
         // Generate unique filename with timestamp
         const timestamp = Date.now();
-        const sanitizedName = fileName_orig.replace(/[^a-zA-Z0-9.-]/g, '_');
+        const sanitizedName = normalizedOriginalName.replace(/[^a-zA-Z0-9.-]/g, '_');
         const fileName = `${type}_${rental.rental_id}_${timestamp}_${sanitizedName}`;
         const mediaFolder = isImage ? 'images' : 'videos';
         const filePath = `rentals/${rental.rental_id}/${type}/${mediaFolder}/${fileName}`;
@@ -7224,10 +8495,8 @@ useEffect(() => {
         if (RENTAL_DEBUG) console.log(`📤 Upload path: ${filePath}`);
 
         // Upload with progress tracking
-        const baseProgress = (i / totalFiles) * 100;
-        const progressRange = 100 / totalFiles;
         const uploadResult = await uploadWithProgress(fileBlob, filePath, (progress) => {
-          const overallProgress = Math.round(baseProgress + (progress * progressRange / 100));
+          const overallProgress = Math.round(baseProgress + ((35 + (progress * 0.65)) * progressRange / 100));
           setUploadProgress(overallProgress);
           if (RENTAL_DEBUG) console.log(`📤 Upload progress: ${overallProgress}%`);
         });
@@ -7261,10 +8530,11 @@ useEffect(() => {
 
         const mediaRecord = {
           rental_id: rental.id,
+          rental_vehicle_history_id: getCurrentVehicleHistoryEntry()?.id || null,
           phase: phase,
           file_type: fileType,
           file_name: fileName,
-          original_filename: fileName_orig,
+          original_filename: normalizedOriginalName,
           file_size: parseInt(fileBlob.size) || 0,
           storage_path: filePath,
           public_url: uploadResult.url,
@@ -7340,6 +8610,9 @@ useEffect(() => {
       // Reload media to show the newly uploaded content
       await loadRentalMedia(rental.id);
       if (type === 'opening') {
+        if (!isWorkflowOnline) {
+          setStartWorkflowPendingSync(true);
+        }
         await broadcastRentalWorkflowUpdate('start', 'opening_media', {
           media_phase: 'out',
         });
@@ -7441,7 +8714,8 @@ useEffect(() => {
 
 
 
-  const startRental = async () => {
+  const startRental = async (options = {}) => {
+    const { skipLateConfirmation = false } = options;
     if (isStartingRental || startRentalInFlightRef.current) {
       return;
     }
@@ -7451,25 +8725,23 @@ useEffect(() => {
       return;
     }
     if (!startWorkflowStepMap.payment?.complete) { toast.error('Payment must be "Paid" before starting.'); return; }
-    if (!startWorkflowStepMap.opening_media?.complete) { handleOpenOpeningModal(); return; }
-    startRentalInFlightRef.current = true;
-    setIsStartingRental(true);
     try {
       const now = new Date();
       const scheduledStart = new Date(rental.rental_start_date);
       const rentalType = rental.rental_type || 'hourly';
-      const duration = rentalType === 'hourly'
-        ? (rental.quantity_hours ?? rental.quantity_days ?? 1)
-        : (rental.quantity_days ?? 1);
+      const duration = getRentalDurationUnits(rental);
+      const isReplacementResumeFlow = Boolean(rental?.replacement_pause_started_at);
 
-      const timingState = getScheduledRentalTimingState(rental.rental_start_date, rentalTimingSettings, now);
+      const timingState = isReplacementResumeFlow
+        ? null
+        : getScheduledRentalTimingState(rental.rental_start_date, rentalTimingSettings, now);
       const EXPIRY_MINUTES = timingState?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes;
       const SOFT_LOCK_MINUTES = timingState?.softLockMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.softLockMinutes;
       const minutesLate = timingState?.minutesLate ?? Math.floor((now - scheduledStart) / 60000);
 
       const autoExpireAllowed = shouldAutoExpireScheduledRental(rental);
 
-      if (timingState?.isExpired && autoExpireAllowed) {
+      if (!isReplacementResumeFlow && timingState?.isExpired && autoExpireAllowed) {
         const autoExpireKey = `${rental.id}:scheduled-expired`;
         await supabase.from('app_4c3a7a6153_rentals').update({ rental_status: 'expired' }).eq('id', rental.id);
         if (rental.vehicle_id) await supabase.from('saharax_0u4w4d_vehicles').update({ status: 'available' }).eq('id', rental.vehicle_id);
@@ -7486,17 +8758,30 @@ useEffect(() => {
         return;
       }
 
-      if (timingState?.isSoftLocked) {
-        const confirmed = window.confirm(
-          autoExpireAllowed
-            ? `⚠️ LATE WARNING\n\nCustomer is ${minutesLate} min late.\nAuto-expires in ${EXPIRY_MINUTES - minutesLate} min.\n\nStart now and adjust end time?`
-            : `⚠️ LATE ARRIVAL\n\nCustomer is ${minutesLate} min late.\nThis rental will stay available for staff review.\n\nStart now and adjust end time?`
-        );
-        if (!confirmed) return;
+      if (!isReplacementResumeFlow && timingState?.isSoftLocked && !skipLateConfirmation) {
+        setLateStartConfirmation({
+          minutesLate,
+          autoExpireAllowed,
+          remainingMinutes: Math.max(0, EXPIRY_MINUTES - minutesLate),
+        });
+        return;
       }
 
+      startRentalInFlightRef.current = true;
+      setIsStartingRental(true);
+
       let actualStartTime, actualEndTime;
-      if (minutesLate > 0) {
+      if (isReplacementResumeFlow) {
+        const pauseStartedAt = new Date(rental.replacement_pause_started_at);
+        const pauseDurationMs = Number.isFinite(pauseStartedAt.getTime())
+          ? Math.max(0, now.getTime() - pauseStartedAt.getTime())
+          : 0;
+        const currentEnd = rental.rental_end_date ? new Date(rental.rental_end_date) : null;
+        actualStartTime = rental.started_at || now.toISOString();
+        actualEndTime = currentEnd
+          ? new Date(currentEnd.getTime() + pauseDurationMs).toISOString()
+          : new Date(now.getTime() + duration * (rentalType === 'hourly' ? 3600000 : 86400000)).toISOString();
+      } else if (minutesLate > 0) {
         actualStartTime = now.toISOString();
         actualEndTime = new Date(now.getTime() + duration * (rentalType === 'hourly' ? 3600000 : 86400000)).toISOString();
       } else {
@@ -7510,21 +8795,87 @@ useEffect(() => {
           rental_status: 'active', status: 'active', started_at: actualStartTime,
           actual_end_date: actualEndTime, rental_end_date: actualEndTime,
           quantity_days: duration, quantity_hours: rentalType === 'hourly' ? duration : null,
-          late_start_minutes: minutesLate > 0 ? minutesLate : 0,
+          late_start_minutes: !isReplacementResumeFlow && minutesLate > 0 ? minutesLate : 0,
           started_by: currentUser?.id || null,
-          started_by_name: currentUser?.full_name || currentUser?.email || null
+          started_by_name: currentUser?.full_name || currentUser?.email || null,
+          replacement_pause_started_at: null,
+          replacement_pause_reason: null,
+          replacement_resume_context: null,
+          replacement_previous_vehicle_id: null,
         })
         .eq('id', rental.id)
         .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float')
         .single();
 
       if (rentalError) throw rentalError;
+
+      if (!isReplacementResumeFlow) {
+        try {
+          const { count, error: historyCountError } = await supabase
+            .from('rental_vehicle_history')
+            .select('id', { count: 'exact', head: true })
+            .eq('rental_id', rental.id);
+
+          if (historyCountError) throw historyCountError;
+
+          if (!count) {
+            const actorName =
+              currentUser?.full_name ||
+              currentUser?.name ||
+              currentUser?.email ||
+              'Staff';
+
+            const { error: insertHistoryError } = await supabase
+              .from('rental_vehicle_history')
+              .insert({
+                rental_id: rental.id,
+                ...buildVehicleHistorySnapshot(updatedRental?.vehicle || rental?.vehicle),
+                started_at: actualStartTime,
+                ended_at: null,
+                replacement_reason: tr('Started rental', 'Démarrage de location'),
+                change_note: null,
+                changed_by: actorName,
+                sequence_index: 1,
+              });
+
+            if (insertHistoryError) throw insertHistoryError;
+          }
+        } catch (vehicleHistoryError) {
+          console.error('❌ Failed to create initial vehicle history:', vehicleHistoryError);
+        }
+      }
+
       if (rental.vehicle_id) {
         const { error: vehicleError } = await supabase
           .from('saharax_0u4w4d_vehicles')
           .update({ status: 'rented' })
           .eq('id', rental.vehicle_id);
         if (vehicleError) throw vehicleError;
+      }
+      try {
+        const actorName =
+          currentUser?.full_name ||
+          currentUser?.name ||
+          currentUser?.email ||
+          'Staff';
+        await insertSharedActivityLog({
+          user_id: currentUser?.id || null,
+          created_by: actorName,
+          action: 'rental_started',
+          description: `Started rental ${rental.rental_id || rental.id}`,
+          entity_type: 'rental',
+          entity_id: rental.id,
+          details: {
+            rental_id: rental.id,
+            rental_reference: rental.rental_id || null,
+            customer_name: rental.customer_name || null,
+            vehicle_id: rental.vehicle_id || null,
+            started_at: actualStartTime,
+            actual_end_date: actualEndTime,
+          },
+        });
+      } catch (activityError) {
+        console.warn('⚠️ Failed to record rental start activity:', activityError);
       }
       try {
         await supabase
@@ -7550,9 +8901,18 @@ useEffect(() => {
         started_at: actualStartTime,
         actual_end_date: actualEndTime,
         rental_end_date: actualEndTime,
+        replacement_pause_started_at: null,
+        replacement_pause_reason: null,
+        replacement_resume_context: null,
+        replacement_previous_vehicle_id: null,
       }) : updatedRental);
+      setReplacementPauseStartedAt(null);
       await loadRentalData(true);
-      if (minutesLate > 0) {
+      if (isReplacementResumeFlow) {
+        toast.success(tr('Rental resumed successfully!', 'Location reprise avec succès !'), {
+          id: `start-rental-${rental.id}`,
+        });
+      } else if (minutesLate > 0) {
         toast(`⚠️ Started ${minutesLate} min late — new end: ${new Date(actualEndTime).toLocaleTimeString()}`, {
           id: `start-rental-${rental.id}`,
           icon: '⏰',
@@ -7633,6 +8993,30 @@ useEffect(() => {
           throw vehicleError;
         }
       }
+      try {
+        const actorName =
+          currentUser?.full_name ||
+          currentUser?.name ||
+          currentUser?.email ||
+          'Staff';
+        await insertSharedActivityLog({
+          user_id: currentUser?.id || null,
+          created_by: actorName,
+          action: 'rental_completed',
+          description: `Completed rental ${rental.rental_id || rental.id}`,
+          entity_type: 'rental',
+          entity_id: rental.id,
+          details: {
+            rental_id: rental.id,
+            rental_reference: rental.rental_id || null,
+            customer_name: rental.customer_name || null,
+            vehicle_id: rental.vehicle_id || null,
+            completed_at: completedAt,
+          },
+        });
+      } catch (activityError) {
+        console.warn('⚠️ Failed to record rental completion activity:', activityError);
+      }
 
       setRental((prev) => prev ? ({
         ...prev,
@@ -7673,7 +9057,12 @@ useEffect(() => {
       try {
         const { error } = await supabase
           .from('app_4c3a7a6153_rentals')
-          .update({ rental_status: 'cancelled' })
+          .update({
+            rental_status: 'cancelled',
+            status: 'cancelled',
+            cancelled_at: new Date().toISOString(),
+            cancelled_by: user?.id || null,
+          })
           .eq('id', rental.id);
 
         if (error) throw error;
@@ -7688,12 +9077,128 @@ useEffect(() => {
             console.error('Failed to update vehicle status:', vehicleError);
           }
         }
+        try {
+          const actorName =
+            currentUser?.full_name ||
+            currentUser?.name ||
+            currentUser?.email ||
+            user?.email ||
+            'Staff';
+          await insertSharedActivityLog({
+            user_id: currentUser?.id || user?.id || null,
+            created_by: actorName,
+            action: 'rental_cancelled',
+            description: `Cancelled rental ${rental.rental_id || rental.id}`,
+            entity_type: 'rental',
+            entity_id: rental.id,
+            details: {
+              rental_id: rental.id,
+              rental_reference: rental.rental_id || null,
+              customer_name: rental.customer_name || null,
+              vehicle_id: rental.vehicle_id || null,
+              cancelled_at: new Date().toISOString(),
+            },
+          });
+        } catch (activityError) {
+          console.warn('⚠️ Failed to record rental cancellation activity:', activityError);
+        }
         
         toast.success('Rental cancelled successfully!');
       } catch (err) {
         console.error('❌ Error:', err);
         toast.error('Failed to cancel rental. Please try again.');
       }
+    }
+  };
+
+  const cancelRentalAsNoShow = async () => {
+    if (!confirm(tr('Cancel this rental as a no-show and free the vehicle?', 'Annuler cette location comme absence et libérer le véhicule ?'))) {
+      return;
+    }
+
+    try {
+      const cancelledAt = new Date().toISOString();
+      const actingUser = resolvedCurrentUser || currentUser || userProfile;
+      const { error } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update({
+          rental_status: 'cancelled',
+          status: 'cancelled',
+          cancelled_at: cancelledAt,
+          cancelled_by: actingUser?.id || null,
+          cancellation_reason: 'no_show',
+          updated_at: cancelledAt,
+        })
+        .eq('id', rental.id);
+
+      if (error) throw error;
+
+      setRental((prev) => prev ? ({
+        ...prev,
+        rental_status: 'cancelled',
+        status: 'cancelled',
+        cancelled_at: cancelledAt,
+        cancelled_by: actingUser?.id || null,
+        cancellation_reason: 'no_show',
+        updated_at: cancelledAt,
+      }) : prev);
+
+      if (rental.vehicle_id) {
+        const { error: vehicleError } = await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .update({ status: 'available', updated_at: cancelledAt })
+          .eq('id', rental.vehicle_id);
+
+        if (vehicleError) throw vehicleError;
+      }
+
+      await loadRentalData(true);
+      toast.success(tr('Rental cancelled as no-show. Vehicle released.', 'Location annulée comme absence. Véhicule libéré.'));
+    } catch (err) {
+      console.error('❌ Error cancelling rental as no-show:', err);
+      toast.error(tr('Failed to cancel rental as no-show.', "Échec de l'annulation comme absence."));
+    }
+  };
+
+  const handleCustomerArrived = async () => {
+    try {
+      const arrivedAt = new Date().toISOString();
+      const actingUser = resolvedCurrentUser || currentUser || userProfile;
+      const actorName =
+        actingUser?.full_name ||
+        actingUser?.name ||
+        actingUser?.email ||
+        'Staff';
+
+      const { error } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update({
+          rental_status: 'scheduled',
+          status: 'scheduled',
+          status_changed_at: arrivedAt,
+          status_changed_by: actorName,
+          status_change_reason: 'customer_arrived',
+          updated_at: arrivedAt,
+        })
+        .eq('id', rental.id);
+
+      if (error) throw error;
+
+      setRental((prev) => prev ? ({
+        ...prev,
+        rental_status: 'scheduled',
+        status: 'scheduled',
+        status_changed_at: arrivedAt,
+        status_changed_by: actorName,
+        status_change_reason: 'customer_arrived',
+        updated_at: arrivedAt,
+      }) : prev);
+
+      await loadRentalData(true);
+      toast.success(tr('Customer arrival confirmed. Continue with the normal start flow.', "Arrivée du client confirmée. Continuez avec le démarrage normal."));
+    } catch (err) {
+      console.error('❌ Error acknowledging late arrival:', err);
+      toast.error(tr('Failed to update late-arrival status.', "Échec de la mise à jour de l'arrivée tardive."));
     }
   };
 
@@ -8180,14 +9685,9 @@ useEffect(() => {
     const currentPaidAmount = Math.max(0, parseFloat(rental.deposit_amount || 0) || 0);
     const currentPaymentStatus = String(rental.payment_status || '').toLowerCase();
     const isAlreadyPaid = currentPaymentStatus === 'paid';
-    const activeDuration = Math.max(
-      1,
-      Number(
-        rental.rental_type === 'hourly'
-          ? (rental.quantity_hours ?? rental.quantity_days ?? 1)
-          : (rental.quantity_days ?? 1)
-      ) || 1
-    );
+    const activeDuration = rental.use_package_pricing
+      ? 1
+      : Math.max(1, Number(getRentalDurationUnits(rental)) || 1);
     const derivedUnitPrice = Number((newPrice / activeDuration).toFixed(2));
 
     let updateData = {
@@ -8427,30 +9927,29 @@ useEffect(() => {
   // ============================================
   const correctedBaseAmount = useMemo(() => {
     if (!rental) return 0;
+    const duration = getRentalDurationUnits(rental);
+    const isFlatPackage = Boolean(rental.use_package_pricing);
+    const isFlatTier = isFlatHourlyTierRental(rental, packageDetails);
     
+    if (isFlatPackage || isFlatTier) {
+      return Number(rental.unit_price || 0) || 0;
+    }
+
     // For hourly rentals: use quantity_hours, fallback to quantity_days, then default 1
     if (rental.rental_type === 'hourly') {
-      const hours = rental.quantity_hours ?? rental.quantity_days ?? 1;
-      return hours * (rental.unit_price || 0);
+      return duration * (rental.unit_price || 0);
     }
     
     // For daily rentals: use quantity_days
     if (rental.rental_type === 'daily') {
-      const days = rental.quantity_days ?? 1;
-      return days * (rental.unit_price || 0);
+      return duration * (rental.unit_price || 0);
     }
     
     return (rental.unit_price || 0) * (rental.quantity_days || 1);
-  }, [rental?.rental_type, rental?.quantity_hours, rental?.quantity_days, rental?.unit_price]);
+  }, [rental?.rental_type, rental?.quantity_hours, rental?.quantity_days, rental?.unit_price, rental?.use_package_pricing, packageDetails]);
 
   // Wrapper function for backward compatibility with existing callers
   const getCorrectedBaseAmount = useCallback(() => correctedBaseAmount, [correctedBaseAmount]);
-
-  useEffect(() => {
-    if (rentalBillingSummary.hasAutoDepositSeizure) {
-      setDeductFromDeposit(true);
-    }
-  }, [rentalBillingSummary.hasAutoDepositSeizure]);
 
   useEffect(() => {
     let active = true;
@@ -8464,33 +9963,21 @@ useEffect(() => {
       }
 
       try {
-        const { data, error } = await supabase
-          .from('saharax_0u4w4d_activity_log')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(50);
-
-        if (error) {
-          if (!isActivityLogPermissionError(error)) {
-            console.warn('⚠️ Failed to load rental contract price audit log:', error);
-          }
-          if (active) setPriceOverrideAuditMeta(null);
-          return;
-        }
+        const data = await loadSharedActivityLogs({ limit: 50 });
 
         const latestLog = Array.isArray(data)
           ? data.find((log) => {
-              const logAction = String(log?.action || log?.title || log?.action_type || '');
+              const logAction = getActivityLogAction(log);
               return logAction === 'rental_contract_price_edited' && activityLogMatchesRental(log, rental.id);
             }) || null
           : null;
-        const meta = latestLog?.details || null;
+        const meta = getActivityLogMetadata(latestLog);
 
         if (active && meta) {
           setPriceOverrideAuditMeta({
             note: meta.override_note || '',
             editedById: meta.edited_by_id || null,
-            editedByName: meta.edited_by_name || latestLog?.created_by || null,
+            editedByName: meta.edited_by_name || latestLog?.user_name || null,
             previousPrice: Number(meta.previous_price || 0) || 0,
             newPrice: Number(meta.new_price || rental?.total_amount || 0) || 0,
             editedAt: meta.edited_at || latestLog?.created_at || null,
@@ -8522,29 +10009,18 @@ useEffect(() => {
       }
 
       try {
-        const { data, error } = await supabase
-          .from('saharax_0u4w4d_activity_log')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(50);
-
-        if (error) {
-          if (!isActivityLogPermissionError(error)) {
-            console.warn('⚠️ Failed to load rental security hold audit log:', error);
-          }
-          if (active) setSecurityHoldAuditMeta(null);
-          return;
-        }
+        const data = await loadSharedActivityLogs({ limit: 50 });
 
         const latestLog = Array.isArray(data)
           ? data.find((log) => {
-              const logAction = String(log?.action || log?.title || log?.action_type || '');
+              const logAction = getActivityLogAction(log);
               return ['rental_security_hold_updated', 'rental_security_hold_cleared'].includes(logAction) && activityLogMatchesRental(log, rental.id);
             }) || null
           : null;
-        const meta = latestLog?.details || null;
+        const meta = getActivityLogMetadata(latestLog);
+        const latestLogAction = getActivityLogAction(latestLog);
 
-        if (active && meta && latestLog?.action !== 'rental_security_hold_cleared') {
+        if (active && meta && latestLogAction !== 'rental_security_hold_cleared') {
           setSecurityHoldAuditMeta({
             amount: Number(meta.amount || rental?.damage_deposit_received_amount || 0) || 0,
             method: meta.method || null,
@@ -8661,8 +10137,6 @@ useEffect(() => {
   const canSendReceipt = Boolean(rental?.id);
   const canSendBoth = Boolean(rental?.id && syncedCustomerPhone);
 
-  if (!rental) return <div className="flex items-center justify-center min-h-screen"><p>{tr('Rental not found', 'Location introuvable')}</p></div>;
-
   const getStatusColor = (status) => {
     switch (status?.toLowerCase()) {
       case 'active': return 'bg-green-100 text-green-800';
@@ -8670,12 +10144,13 @@ useEffect(() => {
       case 'completed': return 'bg-blue-100 text-blue-800';
       case 'cancelled': return 'bg-red-100 text-red-800';
       case 'scheduled': return 'bg-blue-100 text-blue-800';
+      case 'no_show_review': return 'bg-amber-100 text-amber-800';
       case 'expired': return 'bg-yellow-100 text-yellow-800';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
 
-  const normalizedLifecycleRental = normalizeRentalLifecycleStatus(rental);
+  const normalizedLifecycleRental = normalizeRentalLifecycleStatus(rental, rentalTimingSettings);
   const rawDerivedRentalStatus = String(normalizedLifecycleRental?.rental_status || '').toLowerCase();
   const hasHistoricalImpoundStatus = Boolean(
     rental?.is_impounded ||
@@ -8836,8 +10311,6 @@ useEffect(() => {
     || (rental?.started_by && !isLikelyUuid(rental.started_by) ? rental.started_by : null)
     || null;
   const rentalElapsedTone = isActive ? getRentalElapsedTone(rental, currentTimeRef.current) : null;
-  const maintenanceChargeLocked = isCompleted;
-  const impoundChargeLocked = isCompleted;
   const hasOpeningVideo = openingMedia.length > 0 || capturedMedia.length > 0 || showMediaReview;
   const hasOdometerReading = !!rental.start_odometer;
   const hasStartFuelRecorded = startFuelLevel !== null || rental?.start_fuel_level !== null;
@@ -8898,11 +10371,13 @@ useEffect(() => {
   const canCancelImpound = ['owner', 'admin'].includes(resolvedCurrentUser?.role);
   const canEditImpoundDiscount = ['owner', 'admin', 'employee'].includes(resolvedCurrentUser?.role);
   const currentUserRole = String(resolvedCurrentUser?.role || '').toLowerCase();
+  const maintenanceChargeLocked = isCompleted && currentUserRole !== 'owner';
+  const impoundChargeLocked = isCompleted;
   const canEditRentalPriceOverride = canEditRentalPrice(resolvedCurrentUser);
   const rentalStatusLower = String(rental?.rental_status || '').toLowerCase();
   const canEditLifecycleRentalPrice =
-    (currentUserRole === 'owner' || canEditRentalPriceOverride) &&
-    ['active', 'completed'].includes(rentalStatusLower);
+    currentUserRole === 'owner' ||
+    (canEditRentalPriceOverride && ['active', 'completed'].includes(rentalStatusLower));
   const currentWorkflowPresenceKey = `${resolvedCurrentUser?.id || resolvedCurrentUser?.email || `anon-${id || 'rental'}`}::${workflowClientSessionKey}`;
   const canManageScheduledRental =
     isScheduled &&
@@ -8910,6 +10385,7 @@ useEffect(() => {
       currentUserRole === 'owner' ||
       canEditRentalContract(resolvedCurrentUser)
     );
+  const canOwnerAdjustCompletedRental = currentUserRole === 'owner' && isCompleted;
   const canDeleteScheduledRental = isScheduled && ['owner', 'admin'].includes(resolvedCurrentUser?.role);
   const priceOverrideMeta = parsePriceOverrideMeta(rental?.price_override_reason);
   const effectivePriceOverrideMeta = priceOverrideMeta || priceOverrideAuditMeta;
@@ -8941,6 +10417,22 @@ useEffect(() => {
     : customerVerificationMethod === 'manual_verification'
       ? tr('Verified manually', 'Vérifié manuellement')
       : null;
+  const rawContractSignaturePresent = Boolean(rental?.contract_signed || rental?.signature_url);
+  const replacementPauseStartedAtMs = effectiveReplacementPauseStartedAt
+    ? new Date(effectiveReplacementPauseStartedAt).getTime()
+    : null;
+  const contractSignedAtMs = rental?.contract_signed_at
+    ? new Date(rental.contract_signed_at).getTime()
+    : null;
+  const hasReplacementResumeSignature =
+    rawContractSignaturePresent &&
+    Number.isFinite(replacementPauseStartedAtMs) &&
+    Number.isFinite(contractSignedAtMs) &&
+    contractSignedAtMs >= replacementPauseStartedAtMs;
+  const hasEffectiveContractSignature = effectiveReplacementPauseStartedAt
+    ? hasReplacementResumeSignature
+    : rawContractSignaturePresent;
+  const hasOpeningInspectionCompleted = hasOpeningVideo;
   const startWorkflowSteps = [
     {
       key: 'customer_verification',
@@ -8950,8 +10442,8 @@ useEffect(() => {
     },
     {
       key: 'opening_media',
-      label: tr('Vehicle Inspection', 'Inspection véhicule'),
-      complete: hasOpeningVideo,
+      label: tr('Vehicle & Documents inspection', 'Inspection véhicule et documents'),
+      complete: hasOpeningInspectionCompleted,
     },
     {
       key: 'start_odometer',
@@ -8971,19 +10463,61 @@ useEffect(() => {
     {
       key: 'contract_signature',
       label: tr('Contract Signature', 'Signature du contrat'),
-      complete: Boolean(rental?.contract_signed || rental?.signature_url),
+      complete: hasEffectiveContractSignature,
     },
   ];
   const startWorkflowStepMap = Object.fromEntries(
     startWorkflowSteps.map((step) => [step.key, step])
   );
   const nextStartWorkflowStep = startWorkflowSteps.find((step) => !step.complete) || null;
+  const startWorkflowCompletedCount = startWorkflowSteps.filter((step) => step.complete).length;
+  const startWorkflowProgressPercent = Math.round((startWorkflowCompletedCount / startWorkflowSteps.length) * 100);
+  const activeStartWorkflowStepKey = nextStartWorkflowStep?.key || 'contract_signature';
+  const isStartStepActive = (stepKey) => activeStartWorkflowStepKey === stepKey;
+  const isStartStepLocked = (stepKey) => {
+    const stepIndex = startWorkflowSteps.findIndex((step) => step.key === stepKey);
+    if (stepIndex <= 0) return false;
+    return startWorkflowSteps.slice(0, stepIndex).some((step) => !step.complete);
+  };
+  const getStartStepContainerClass = (stepKey, complete) => {
+    if (complete && !isStartStepActive(stepKey)) {
+      return 'border border-emerald-200 bg-emerald-50/90';
+    }
+    if (isStartStepActive(stepKey)) {
+      return 'border-2 border-violet-300 bg-violet-50/80 shadow-[0_16px_35px_rgba(124,58,237,0.12)]';
+    }
+    if (isStartStepLocked(stepKey)) {
+      return 'border border-slate-200 bg-slate-50/80 opacity-90';
+    }
+    return 'border border-slate-200 bg-white shadow-sm';
+  };
+  const getStartStepSummary = (stepKey) => {
+    switch (stepKey) {
+      case 'customer_verification':
+        return tr('Customer Verification completed', 'Vérification client terminée');
+      case 'opening_media':
+        return tr('Vehicle & Documents inspection completed', 'Inspection véhicule et documents terminée');
+      case 'start_odometer':
+        return tr('Starting Odometer completed', 'Kilométrage de départ terminé');
+      case 'payment':
+        return tr('Payment completed', 'Paiement terminé');
+      case 'start_fuel':
+        return tr('Fuel Level completed', 'Niveau de carburant terminé');
+      case 'contract_signature':
+        return tr('Contract Signature completed', 'Signature du contrat terminée');
+      default:
+        return tr('Step completed', 'Étape terminée');
+    }
+  };
+  const notifyLockedStartStep = () => {
+    toast.error(tr('Complete previous steps first', "Complétez d'abord les étapes précédentes"));
+  };
   const startWorkflowNextStepHint = (() => {
     switch (nextStartWorkflowStep?.key) {
       case 'customer_verification':
         return tr('Customer verification is required before contract start.', 'La vérification du client est obligatoire avant le démarrage du contrat.');
       case 'opening_media':
-        return tr('Opening media is still required.', "Les médias d'ouverture sont encore requis.");
+        return tr('Vehicle media is optional.', 'Les médias du véhicule sont optionnels.');
       case 'start_odometer':
         return tr('Starting odometer reading is still required.', 'Le kilométrage de départ est encore requis.');
       case 'payment':
@@ -9014,7 +10548,7 @@ useEffect(() => {
   const finishWorkflowStepsModel = [
     {
       key: 'closing_inspection',
-      label: tr('Closing Inspection', 'Inspection de retour'),
+      label: tr('Vehicle & Documents inspection', 'Inspection véhicule et documents'),
       complete: closingInspectionStepComplete,
     },
     {
@@ -9035,7 +10569,7 @@ useEffect(() => {
   const finishWorkflowNextStepHint = (() => {
     switch (nextFinishWorkflowStep?.key) {
       case 'closing_inspection':
-        return tr('Closing media or return inspection review is still required.', "Les médias de retour ou la vérification d'inspection sont encore requis.");
+        return tr('Review or add return media if needed before continuing.', 'Vérifiez ou ajoutez des médias de retour si nécessaire avant de continuer.');
       case 'end_odometer':
         return tr('Ending odometer reading is still required.', 'Le kilométrage de retour est encore requis.');
       case 'end_fuel':
@@ -9060,6 +10594,13 @@ useEffect(() => {
   );
 
   const canStartRental = startWorkflowSteps.every((step) => step.complete);
+  const isReplacementResumeFlow = Boolean(effectiveReplacementPauseStartedAt);
+  const scheduledTimingState = getScheduledRentalTimingState(rental?.rental_start_date, rentalTimingSettings, new Date());
+  const shouldShowLateArrivalBanner =
+    !rental?.started_at &&
+    String(rental?.status_change_reason || '').toLowerCase() !== 'customer_arrived' &&
+    ['scheduled', 'no_show_review'].includes(operationalRentalStatus) &&
+    Boolean(scheduledTimingState?.isSoftLocked);
   const canSignContract =
     startWorkflowStepMap.customer_verification?.complete &&
     startWorkflowStepMap.opening_media?.complete &&
@@ -9067,9 +10608,17 @@ useEffect(() => {
     startWorkflowStepMap.payment?.complete &&
     startWorkflowStepMap.start_fuel?.complete &&
     !startWorkflowStepMap.contract_signature?.complete;
-  const canSendWhatsApp = rental.contract_signed || !!rental.signature_url;
-  const canGenerateInvoice = rental.contract_signed || !!rental.signature_url;
+  const canSendWhatsApp = hasEffectiveContractSignature;
+  const canGenerateInvoice = hasEffectiveContractSignature;
+  const canShareContractDocument = hasEffectiveContractSignature;
+  const canShareReceiptDocument = Boolean(rental);
   const rentalSourceChip = getRentalSourceChip(rental);
+  const showStartChecklistWorkflow =
+    (isScheduled && !hasEffectiveContractSignature) || isReplacementResumeFlow;
+  const hasVehicleReplacementHistory = vehicleReplacementHistory.length > 0;
+  const previousVehicleHistoryEntry = vehicleReplacementHistory.length > 1
+    ? vehicleReplacementHistory[vehicleReplacementHistory.length - 2]
+    : null;
 
   // Check if workflow should be disabled (pending approval for non-admin users)
   const isWorkflowDisabled = () => {
@@ -9080,6 +10629,8 @@ useEffect(() => {
     : isWorkflowDisabled()
       ? tr('Rental start is locked until price override is approved by admin', 'Le démarrage de la location est bloqué jusqu’à l’approbation du prix par un administrateur')
       : startWorkflowNextStepHint;
+
+  if (!rental) return <div className="flex items-center justify-center min-h-screen"><p>{tr('Rental not found', 'Location introuvable')}</p></div>;
 
   const formattedRentalForInvoice = {
     ...rental,
@@ -9116,10 +10667,28 @@ useEffect(() => {
 // ✅ Calculate extension totals before rendering
   return (
     <div className="min-h-screen bg-slate-50">
+      <StartWorkflowEffects
+        startWorkflowStorageKey={startWorkflowStorageKey}
+        startWorkflowPendingSync={startWorkflowPendingSync}
+        setStartWorkflowPendingSync={setStartWorkflowPendingSync}
+        startWorkflowSteps={startWorkflowSteps}
+        isWorkflowOnline={isWorkflowOnline}
+        hasCustomerVerification={hasCustomerVerification}
+        hasOpeningInspectionCompleted={hasOpeningInspectionCompleted}
+        hasOdometerReading={hasOdometerReading}
+        hasStartFuelRecorded={hasStartFuelRecorded}
+        hasEffectiveContractSignature={hasEffectiveContractSignature}
+        paymentStatus={rental?.payment_status}
+        remainingAmount={rental?.remaining_amount}
+        activeStartWorkflowStepKey={activeStartWorkflowStepKey}
+        showStartChecklistWorkflow={showStartChecklistWorkflow}
+        previousActiveStartStepKeyRef={previousActiveStartStepKeyRef}
+        startStepRefs={startStepRefs}
+      />
       <div className="container mx-auto max-w-6xl px-4 pb-20 pt-6 sm:pb-8 sm:pt-8">
         <div className="mb-6 rounded-[28px] border border-violet-100/90 bg-white p-4 shadow-[0_20px_55px_rgba(76,29,149,0.08)] ring-1 ring-white sm:p-6">
           <div className="flex flex-col gap-5">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex flex-col gap-4">
               <div className="flex items-start gap-4">
                 <button
                   type="button"
@@ -9129,50 +10698,98 @@ useEffect(() => {
                 >
                   <ArrowLeft className="h-5 w-5" />
                 </button>
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-violet-500">{tr('Rental Details', 'Détails de location')}</p>
+                <div className="min-w-0 flex-1">
                   <h1 className="text-2xl font-bold tracking-tight text-slate-900 lg:text-3xl">
-                    {rental.vehicle?.name} {rental.vehicle?.model ? `- ${rental.vehicle.model}` : ''}
+                    {rental.vehicle?.name} {rental.vehicle?.model ? ` ${rental.vehicle.model}` : ''}
                   </h1>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     {rental.vehicle?.plate_number && (
-                      <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold tracking-[0.2em] text-blue-900">
-                        {rental.vehicle.plate_number}
+                      <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold tracking-[0.18em] text-slate-700">
+                        [{rental.vehicle.plate_number}]
                       </span>
                     )}
                     <Badge className={`${getStatusColor(displayRentalStatus)} border px-3 py-1 text-xs font-semibold tracking-wide`}>
                       {translateRentalStatusLabel(displayRentalStatus)}
                     </Badge>
-                    {rentalAttention && (
-                      <Badge className={`${rentalAttention.className} px-3 py-1 text-xs font-semibold tracking-wide`}>
-                        {rentalAttention.text}
-                      </Badge>
-                    )}
-                    {rentalSourceChip && (
-                      <Badge className={`${rentalSourceChip.className} px-3 py-1 text-xs font-semibold tracking-wide`}>
-                        {rentalSourceChip.label}
-                      </Badge>
-                    )}
-                    {isImpounded && (
-                      <Badge className="border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold tracking-wide text-amber-800">
-                        🚨 IMPOUNDED
-                      </Badge>
-                    )}
                     <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${dynamicPaymentState.chipClass}`}>
                       {dynamicPaymentState.label}
                     </span>
+                    {rentalSourceChip && (
+                      <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${rentalSourceChip.className}`}>
+                        {rentalSourceChip.label}
+                      </span>
+                    )}
                   </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold tracking-wide text-slate-600">
-                      {tr('Rental ID:', 'ID location :')} {rental.rental_id}
-                    </span>
-                    <span className="text-slate-300">•</span>
+                  <div className="mt-3 text-sm text-slate-500">
+                    <span className="font-medium text-slate-600">{rental.rental_id}</span>
+                    <span className="mx-2 text-slate-300">·</span>
                     <span>{rental.customer_name}</span>
                   </div>
                 </div>
               </div>
+            </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+            {shouldShowLateArrivalBanner && (
+              <Button
+                type="button"
+                onClick={handleCustomerArrived}
+                className="w-full rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(79,70,229,0.24)] hover:from-violet-700 hover:to-indigo-800 sm:w-auto sm:self-start sm:px-6"
+              >
+                <CheckCircle className="mr-2 h-4 w-4" />
+                {tr('Customer arrived', 'Client arrivé')}
+              </Button>
+            )}
+
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+                {syncedCustomerPhone && (
+                  <>
+                    <Button
+                      onClick={() => setContractPreviewModal(true)}
+                      disabled={!canSendContract}
+                      variant="outline"
+                      className="rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                      title={tr('Preview contract', 'Aperçu du contrat')}
+                    >
+                      <FileText className="mr-2 h-4 w-4" />
+                      {tr('Contract', 'Contrat')}
+                    </Button>
+                    <Button
+                      onClick={async () => {
+                        if (isMobileDevice()) {
+                          await forceMobileRender();
+                          await new Promise(resolve => setTimeout(resolve, 300));
+                        }
+                        setReceiptPreviewModal(true);
+                      }}
+                      disabled={!canSendReceipt}
+                      variant="outline"
+                      className="rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                      title={tr('Preview receipt', 'Aperçu du reçu')}
+                    >
+                      <Receipt className="mr-2 h-4 w-4" />
+                      {tr('Receipt', 'Reçu')}
+                    </Button>
+                    <Button
+                      onClick={handleWhatsAppClick}
+                      onMouseEnter={ensurePDFsReady}
+                      disabled={isSharing || !canSendBoth}
+                      variant="outline"
+                      className="rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                      title={tr('Send documents via WhatsApp', 'Envoyer les documents via WhatsApp')}
+                    >
+                      {isSharing ? (
+                        <Loader className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <FaWhatsapp className="mr-2" size={16} />
+                      )}
+                      WhatsApp
+                    </Button>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between gap-2 sm:justify-end">
                 <div className="flex items-center gap-1 rounded-2xl border border-violet-100 bg-gradient-to-r from-violet-50 to-white p-1 shadow-sm">
                   <button
                     type="button"
@@ -9190,93 +10807,122 @@ useEffect(() => {
                   </button>
                 </div>
 
-                {canManageScheduledRental && (
-                  <Button onClick={handleOpenRentalEdit} className="rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] hover:scale-[1.01]">
-                    <Edit className="mr-2 h-4 w-4" />
-                    Edit
-                  </Button>
-                )}
-
-                {canDeleteScheduledRental && (
-                  <Button onClick={cancelRental} variant="destructive" className="rounded-2xl">
-                    <XCircle className="mr-2 h-4 w-4" />
-                    Delete
-                  </Button>
-                )}
-
-                {isActive && (
-                  <Button onClick={cancelRental} variant="destructive" className="rounded-2xl">
-                    <XCircle className="mr-2 h-4 w-4" />
-                    Cancel
-                  </Button>
-                )}
-
-                {isActive && !isImpounded && (
-                  <Button
-                    onClick={openImpoundModal}
-                    disabled={impoundActionLoading}
-                    className="rounded-2xl bg-amber-600 text-white hover:bg-amber-700"
+                <div className="relative" ref={moreActionsRef}>
+                  <button
+                    type="button"
+                    onClick={() => setIsMoreActionsOpen((prev) => !prev)}
+                    className="flex items-center rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
                   >
-                    <AlertTriangle className="mr-2 h-4 w-4" />
-                    {impoundActionLoading ? tr('Saving...', 'Enregistrement...') : tr('Impound', 'Mise en fourrière')}
-                  </Button>
-                )}
-
-                {isActive && isImpounded && (
-                  <Button
-                    onClick={openReleaseImpoundModal}
-                    disabled={impoundActionLoading}
-                    className="rounded-2xl bg-violet-700 text-white hover:bg-violet-800"
-                  >
-                    <CheckCircle className="mr-2 h-4 w-4" />
-                    {impoundActionLoading ? tr('Preparing...', 'Préparation...') : tr('Release Impound', 'Libérer la fourrière')}
-                  </Button>
-                )}
-
-                {syncedCustomerPhone && (
-                  <>
-                    <Button
-                      onClick={() => setContractPreviewModal(true)}
-                      disabled={!canSendContract}
-                      className={`hidden rounded-2xl sm:inline-flex ${canSendContract ? 'bg-violet-700 text-white hover:bg-violet-800' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
-                      title={tr('Preview contract', 'Aperçu du contrat')}
-                    >
-                      <FileText className="mr-2 h-4 w-4" />
-                      {tr('Contract', 'Contrat')}
-                    </Button>
-                    <Button
-                      onClick={async () => {
-                        if (isMobileDevice()) {
-                          await forceMobileRender();
-                          await new Promise(resolve => setTimeout(resolve, 300));
-                        }
-                        setReceiptPreviewModal(true);
-                      }}
-                      disabled={!canSendReceipt}
-                      className={`hidden rounded-2xl sm:inline-flex ${canSendReceipt ? 'bg-violet-700 text-white hover:bg-violet-800' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
-                      title={tr('Preview receipt', 'Aperçu du reçu')}
-                    >
-                      <Receipt className="mr-2 h-4 w-4" />
-                      {tr('Receipt', 'Reçu')}
-                    </Button>
-                    <Button
-                      onClick={handleWhatsAppClick}
-                      onMouseEnter={ensurePDFsReady}
-                      disabled={isSharing || !canSendBoth}
-                      className={`hidden rounded-2xl sm:inline-flex ${isSharing || !canSendBoth ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700 border border-emerald-600 hover:border-emerald-700'}`}
-                      title={tr('Send documents via WhatsApp', 'Envoyer les documents via WhatsApp')}
-                    >
-                      {isSharing ? (
-                        <Loader className="mr-2 h-4 w-4 animate-spin" />
-                      ) : (
-                        <FaWhatsapp className="mr-2" size={18} />
-                      )}
-                      {isSharing ? tr('Preparing...', 'Préparation...') : 'WhatsApp'}
-                    </Button>
-                  </>
-                )}
+                    <MoreHorizontal className="mr-2 h-4 w-4" />
+                    {tr('More actions', 'Plus d’actions')}
+                  </button>
+                  {isMoreActionsOpen && (
+                  <div className="absolute right-0 z-20 mt-2 w-56 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
+                    {canManageScheduledRental && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMoreActionsOpen(false);
+                          handleOpenRentalEdit();
+                        }}
+                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                      >
+                        <Edit className="mr-2 h-4 w-4" />
+                        {tr('Edit', 'Modifier')}
+                      </button>
+                    )}
+                    {canDeleteScheduledRental && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMoreActionsOpen(false);
+                          cancelRental();
+                        }}
+                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
+                      >
+                        <XCircle className="mr-2 h-4 w-4" />
+                        {tr('Delete', 'Supprimer')}
+                      </button>
+                    )}
+                    {isActive && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMoreActionsOpen(false);
+                          cancelRental();
+                        }}
+                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
+                      >
+                        <XCircle className="mr-2 h-4 w-4" />
+                        {tr('Cancel', 'Annuler')}
+                      </button>
+                    )}
+                    {isActive && !isImpounded && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMoreActionsOpen(false);
+                          openImpoundModal();
+                        }}
+                        disabled={impoundActionLoading}
+                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <AlertTriangle className="mr-2 h-4 w-4" />
+                        {tr('Impound', 'Mise en fourrière')}
+                      </button>
+                    )}
+                    {isActive && isImpounded && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMoreActionsOpen(false);
+                          openReleaseImpoundModal();
+                        }}
+                        disabled={impoundActionLoading}
+                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-violet-700 transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <CheckCircle className="mr-2 h-4 w-4" />
+                        {tr('Release Impound', 'Libérer la fourrière')}
+                      </button>
+                    )}
+                    {shouldShowLateArrivalBanner && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMoreActionsOpen(false);
+                          cancelRentalAsNoShow();
+                        }}
+                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50"
+                      >
+                        <XCircle className="mr-2 h-4 w-4" />
+                        {tr('Cancel as no-show', 'Annuler comme absence')}
+                      </button>
+                    )}
+                  </div>
+                  )}
+                </div>
               </div>
             </div>
+
+            {shouldShowLateArrivalBanner && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-900">⚠️ {tr('Late arrival', 'Arrivée tardive')}</p>
+                    <p className="mt-1 text-sm text-amber-800">{tr('Start time has passed', "L'heure de départ est dépassée")}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={cancelRentalAsNoShow}
+                    variant="outline"
+                    className="rounded-full border-amber-300 bg-white text-amber-800 hover:bg-amber-100"
+                  >
+                    <XCircle className="mr-2 h-4 w-4" />
+                    {tr('No-show', 'Absence')}
+                  </Button>
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
@@ -9335,13 +10981,19 @@ useEffect(() => {
         <Card className="overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
         <CardContent className="p-4 sm:p-6">
           {/* SCHEDULED Rental - Show Workflow Steps */}
-          {isScheduled && !rental.contract_signed && !rental.signature_url && (
-            <div className="mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-3 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6">
+          {showStartChecklistWorkflow && (
+            <div ref={replacementResumeWorkflowRef} className="mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-3 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6">
               <div className="mb-3 sm:mb-4">
                 <h3 className="mb-1 text-sm font-semibold text-slate-900 sm:text-base">
-                  {tr('Ready to Start Rental', 'Prêt à démarrer la location')}
+                  {isReplacementResumeFlow
+                    ? tr('Ready to Resume Rental', 'Prêt à reprendre la location')
+                    : tr('Ready to Start Rental', 'Prêt à démarrer la location')}
                 </h3>
-                <p className="text-xs text-slate-500">{tr('Complete these steps to begin the rental:', 'Complétez ces étapes pour démarrer la location :')}</p>
+                <p className="text-xs text-slate-500">
+                  {isReplacementResumeFlow
+                    ? tr('Complete these steps on the replacement vehicle before resuming the rental:', 'Complétez ces étapes sur le véhicule de remplacement avant de reprendre la location :')
+                    : tr('Complete these steps to begin the rental:', 'Complétez ces étapes pour démarrer la location :')}
+                </p>
               </div>
 
               {primaryStartWorkflowActor && (
@@ -9402,12 +11054,51 @@ useEffect(() => {
                 </div>
               )}
 
+              <div className="mb-3 sm:mb-4 rounded-2xl border border-violet-200 bg-white/90 p-3 shadow-sm">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">
+                      {tr('Next step', 'Prochaine étape')}
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900">
+                      {nextStartWorkflowStep?.label || tr('All steps complete', 'Toutes les étapes sont terminées')}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 self-start sm:self-auto">
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                      isWorkflowOnline && !startWorkflowPendingSync
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : 'bg-amber-100 text-amber-700'
+                    }`}>
+                      {isWorkflowOnline && !startWorkflowPendingSync
+                        ? tr('Synced ✓', 'Synchronisé ✓')
+                        : tr('Saved locally', 'Sauvegardé localement')}
+                    </span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+                      {startWorkflowCompletedCount} / {startWorkflowSteps.length} {tr('steps', 'étapes')}
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 transition-all duration-300"
+                    style={{ width: `${startWorkflowProgressPercent}%` }}
+                  />
+                </div>
+              </div>
+
               <div className="space-y-2.5 sm:space-y-4">
-                <div className={`flex items-start gap-2.5 rounded-2xl p-3 sm:gap-3 ${
-                  hasCustomerVerification ? 'border border-emerald-200 bg-emerald-50/80' : 'border border-slate-200 bg-white shadow-sm'
-                }`}>
+                <div
+                  ref={(node) => { startStepRefs.current.customer_verification = node; }}
+                  onClick={() => {
+                    if (isStartStepLocked('customer_verification')) notifyLockedStartStep();
+                  }}
+                  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
+                    getStartStepContainerClass('customer_verification', hasCustomerVerification)
+                  } ${hasCustomerVerification && !isStartStepActive('customer_verification') ? 'min-h-[46px] items-center' : ''}`}
+                >
                   <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
-                    hasCustomerVerification ? 'bg-green-500' : 'bg-gray-300'
+                    hasCustomerVerification ? 'bg-green-500' : isStartStepActive('customer_verification') ? 'bg-violet-600' : 'bg-gray-300'
                   }`}>
                     {hasCustomerVerification ? (
                       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
@@ -9419,7 +11110,11 @@ useEffect(() => {
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Customer Verification', 'Vérification client')}</h4>
-                        {hasCustomerVerification && (
+                        {hasCustomerVerification && !isStartStepActive('customer_verification') ? (
+                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                            ✓ {getStartStepSummary('customer_verification')}
+                          </p>
+                        ) : hasCustomerVerification ? (
                           <div className="mt-0.5 break-words">
                             <p className="text-xs text-gray-600">
                               {`✓ ${tr('License / ID verification completed', 'Vérification du permis / de la pièce terminée')}`}
@@ -9430,9 +11125,9 @@ useEffect(() => {
                               </p>
                             )}
                           </div>
-                        )}
+                        ) : null}
                       </div>
-                      {!hasCustomerVerification && (
+                      {!hasCustomerVerification && isStartStepActive('customer_verification') && (
                         <Button
                           onClick={openCustomerVerificationForm}
                           size="sm"
@@ -9448,29 +11143,46 @@ useEffect(() => {
                   </div>
                 </div>
 
-                {/* Step 1: Vehicle Inspection */}
-                <div className={`flex items-start gap-2.5 rounded-2xl p-3 sm:gap-3 ${
-                  (openingMedia.length > 0 || capturedMedia.length > 0 || showMediaReview) 
-                    ? 'border border-emerald-200 bg-emerald-50/80' 
-                    : 'border border-slate-200 bg-white shadow-sm'
-                }`}>
+                {/* Step 2: Vehicle Inspection */}
+                <div
+                  ref={(node) => { startStepRefs.current.opening_media = node; }}
+                  onClick={() => {
+                    if (isStartStepLocked('opening_media')) notifyLockedStartStep();
+                  }}
+                  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
+                    getStartStepContainerClass('opening_media', hasOpeningInspectionCompleted)
+                  } ${hasOpeningInspectionCompleted && !isStartStepActive('opening_media') ? 'min-h-[46px] items-center' : ''}`}
+                >
                   <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
-                    (openingMedia.length > 0 || capturedMedia.length > 0 || showMediaReview) 
-                      ? 'bg-green-500' 
-                      : 'bg-gray-300'
+                    hasOpeningInspectionCompleted
+                      ? 'bg-green-500'
+                      : isStartStepActive('opening_media')
+                        ? 'bg-violet-600'
+                        : 'bg-gray-300'
                   }`}>
-                    {(openingMedia.length > 0 || capturedMedia.length > 0 || showMediaReview) ? (
+                    {hasOpeningInspectionCompleted ? (
                       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                     ) : (
-                      <span className="text-white font-bold text-xs">1</span>
+                      <span className="text-white font-bold text-xs">2</span>
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                       <div className="flex-1 min-w-0">
-                        <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Vehicle Inspection (Optional)', 'Inspection du véhicule (optionnelle)')}</h4>
-                        {(openingMedia.length > 0 || capturedMedia.length > 0 || showMediaReview) && (
+                        <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Vehicle & Documents inspection', 'Inspection véhicule et documents')}</h4>
+                        {hasOpeningInspectionCompleted && !isStartStepActive('opening_media') ? (
+                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                            ✓ {getStartStepSummary('opening_media')}
+                          </p>
+                        ) : (
                           <p className="text-xs text-gray-600 mt-0.5 break-words">
+                            {tr('Add at least one photo to continue.', 'Ajoutez au moins une photo pour continuer.')}
+                          </p>
+                        )}
+                        {!isStartStepActive('opening_media') ? null : (
+                          <>
+                        {(openingMedia.length > 0 || capturedMedia.length > 0 || showMediaReview) && (
+                          <p className="text-xs text-gray-600 mt-1 break-words">
                             {openingMedia.length > 0 
                               ? `✓ ${openingMedia.length} ${openingMedia.length !== 1 ? tr('media items uploaded', 'éléments média téléversés') : tr('media item uploaded', 'élément média téléversé')} (${getMediaCounts(openingMedia)})` 
                               : `✓ ${capturedMedia.length} ${capturedMedia.length !== 1 ? tr('items captured, ready to upload', 'éléments capturés, prêts à être téléversés') : tr('item captured, ready to upload', 'élément capturé, prêt à être téléversé')}`
@@ -9540,9 +11252,12 @@ useEffect(() => {
                             </Button>
                           </div>
                         )}
+                          </>
+                        )}
                       </div>
                       
                       {/* Main action button */}
+                      {isStartStepActive('opening_media') && (
                       <div className="mt-2 sm:mt-0 flex w-full sm:w-auto items-center gap-2">
                         {openingMedia.length === 0 && (
                           <Button 
@@ -9572,31 +11287,42 @@ useEffect(() => {
                           </Button>
                         )}
                       </div>
+                      )}
                     </div>
                   </div>
                 </div>
 
-                {/* Step 2: Starting Odometer */}
-                <div className={`flex items-start gap-2.5 rounded-2xl p-3 sm:gap-3 ${hasOdometerReading ? 'border border-emerald-200 bg-emerald-50/80' : 'border border-slate-200 bg-white shadow-sm'}`}>
-                  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${hasOdometerReading ? 'bg-green-500' : 'bg-gray-300'}`}>
+                {/* Step 3: Starting Odometer */}
+                <div
+                  ref={(node) => { startStepRefs.current.start_odometer = node; }}
+                  onClick={() => {
+                    if (isStartStepLocked('start_odometer')) notifyLockedStartStep();
+                  }}
+                  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${getStartStepContainerClass('start_odometer', hasOdometerReading)} ${hasOdometerReading && !isStartStepActive('start_odometer') ? 'min-h-[46px] items-center' : ''}`}
+                >
+                  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${hasOdometerReading ? 'bg-green-500' : isStartStepActive('start_odometer') ? 'bg-violet-600' : 'bg-gray-300'}`}>
                     {hasOdometerReading ? (
                       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                     ) : (
-                      <span className="text-white font-bold text-xs">2</span>
+                      <span className="text-white font-bold text-xs">3</span>
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Starting Odometer', 'Kilométrage de départ')}</h4>
-                        {displayedStartingOdometer > 0 && (
+                        {hasOdometerReading && !isStartStepActive('start_odometer') ? (
+                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                            ✓ {getStartStepSummary('start_odometer')}
+                          </p>
+                        ) : displayedStartingOdometer > 0 && (
                           <p className="text-xs text-gray-600 mt-0.5 break-words">
                             {`✓ ${tr('Starting odometer:', 'Kilométrage de départ :')} ${displayedStartingOdometer} km`}
                           </p>
                         )}
                       </div>
                       <div className="mt-2 sm:mt-0 flex w-full sm:w-auto items-center gap-2">
-                        {!hasOdometerReading && !isEditingOdometer && (
+                        {!hasOdometerReading && !isEditingOdometer && isStartStepActive('start_odometer') && (
                           <Button 
                             onClick={() => setIsEditingOdometer(true)}
                             title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : isWorkflowDisabled() ? tr('Workflow locked - price approval pending', 'Workflow bloqué - approbation du prix en attente') : tr('Add Reading', 'Ajouter le relevé')}
@@ -9608,7 +11334,7 @@ useEffect(() => {
                             <span className="whitespace-nowrap">{tr('Add Reading', 'Ajouter le relevé')}</span>
                           </Button>
                         )}
-                        {hasOdometerReading && !isEditingOdometer && (
+                        {hasOdometerReading && !isEditingOdometer && isStartStepActive('start_odometer') && (
                           <Button
                             type="button"
                             size="sm"
@@ -9623,7 +11349,7 @@ useEffect(() => {
                         )}
                       </div>
                     </div>
-                    {isEditingOdometer && (
+                    {isEditingOdometer && isStartStepActive('start_odometer') && (
                       <div className="mt-2 space-y-2">
                         <input
                           type="number"
@@ -9677,28 +11403,37 @@ useEffect(() => {
                   </div>
                 </div>
 
-                {/* Step 3: Payment */}
-                <div className={`flex items-start gap-2.5 rounded-2xl p-3 sm:gap-3 ${
+                {/* Step 4: Payment */}
+                <div
+                  ref={(node) => { startStepRefs.current.payment = node; }}
+                  onClick={() => {
+                    if (isStartStepLocked('payment')) notifyLockedStartStep();
+                  }}
+                  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
                   isPaymentSufficient() ? 'border border-emerald-200 bg-emerald-50/80' : 
-                  isPendingApproval && !isAdmin ? 'border border-amber-200 bg-amber-50/80' : 'border border-slate-200 bg-white shadow-sm'
-                }`}>
+                  isPendingApproval && !isAdmin ? 'border border-amber-200 bg-amber-50/80' : getStartStepContainerClass('payment', false)
+                } ${isPaymentSufficient() && !isStartStepActive('payment') ? 'min-h-[46px] items-center' : ''}`}>
                   <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
                     isPaymentSufficient() ? 'bg-green-500' : 
-                    isPendingApproval && !isAdmin ? 'bg-yellow-500' : 'bg-gray-300'
+                    isPendingApproval && !isAdmin ? 'bg-yellow-500' : isStartStepActive('payment') ? 'bg-violet-600' : 'bg-gray-300'
                   }`}>
                     {isPaymentSufficient() ? (
                       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                     ) : isPendingApproval && !isAdmin ? (
                       <Clock className="w-3 h-3 text-white" />
                     ) : (
-                      <span className="text-white font-bold text-xs">3</span>
+                      <span className="text-white font-bold text-xs">4</span>
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Payment', 'Paiement')}</h4>
-                        {(isPendingApproval && !isAdmin) || isPaymentSufficient() ? (
+                        {isPaymentSufficient() && !isStartStepActive('payment') ? (
+                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                            ✓ {getStartStepSummary('payment')}
+                          </p>
+                        ) : (isPendingApproval && !isAdmin) || isPaymentSufficient() ? (
                           <p className="text-xs text-gray-600 mt-0.5 break-words">
                             {isPendingApproval && !isAdmin ? (
                               <span className="text-yellow-600">⏳ {tr('Price override pending approval', 'Modification de prix en attente d’approbation')}</span>
@@ -9707,7 +11442,7 @@ useEffect(() => {
                             )}
                           </p>
                         ) : null}
-                        {!isPaymentSufficient() && !(isPendingApproval && !isAdmin) && (
+                        {!isPaymentSufficient() && !(isPendingApproval && !isAdmin) && isStartStepActive('payment') && (
                           <div className="mt-2 inline-flex flex-col rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                             <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">
                               {tr('Remaining Balance', 'Solde restant')}
@@ -9727,7 +11462,7 @@ useEffect(() => {
                         )}
                       </div>
                       <div className="mt-2 sm:mt-0 flex w-full sm:w-auto items-center gap-2">
-                        {!isPaymentSufficient() && !(isPendingApproval && !isAdmin) && (
+                        {!isPaymentSufficient() && !(isPendingApproval && !isAdmin) && isStartStepActive('payment') && (
                           <Button 
                             onClick={markAsPaid}
                             size="sm"
@@ -9739,7 +11474,7 @@ useEffect(() => {
                             <span className="whitespace-nowrap">{tr('Mark Paid', 'Marquer comme payé')}</span>
                           </Button>
                         )}
-                        {isPaymentSufficient() && (
+                        {isPaymentSufficient() && isStartStepActive('payment') && (
                           <Button
                             type="button"
                             size="sm"
@@ -9760,31 +11495,40 @@ useEffect(() => {
                 {/* Emergency fix button removed - quantity_hours is now used correctly */}
 
 
-                {/* Step 4: Fuel Level - Now shown for all rental types */}
-                <div className={`flex items-start gap-2.5 rounded-2xl p-3 sm:gap-3 ${
-                    startFuelLevel !== null ? 'border border-emerald-200 bg-emerald-50/80' : 'border border-slate-200 bg-white shadow-sm'
-                  }`}>
+                {/* Step 5: Fuel Level - Now shown for all rental types */}
+                <div
+                    ref={(node) => { startStepRefs.current.start_fuel = node; }}
+                    onClick={() => {
+                      if (isStartStepLocked('start_fuel')) notifyLockedStartStep();
+                    }}
+                    className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
+                    startFuelLevel !== null ? 'border border-emerald-200 bg-emerald-50/80' : getStartStepContainerClass('start_fuel', false)
+                  } ${startFuelLevel !== null && !isStartStepActive('start_fuel') ? 'min-h-[46px] items-center' : ''}`}>
                     <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
-                      startFuelLevel !== null ? 'bg-green-500' : 'bg-gray-300'
+                      startFuelLevel !== null ? 'bg-green-500' : isStartStepActive('start_fuel') ? 'bg-violet-600' : 'bg-gray-300'
                     }`}>
                       {startFuelLevel !== null ? (
                         <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                       ) : (
-                        <span className="text-white font-bold text-xs">4</span>
+                        <span className="text-white font-bold text-xs">5</span>
                       )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                         <div className="flex-1 min-w-0">
                           <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Fuel Level', 'Niveau de carburant')}</h4>
-                          {startFuelLevel !== null && (
+                          {startFuelLevel !== null && !isStartStepActive('start_fuel') ? (
+                            <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                              ✓ {getStartStepSummary('start_fuel')}
+                            </p>
+                          ) : startFuelLevel !== null && (
                             <p className="text-xs text-gray-600 mt-0.5 break-words">
                               {`✓ ${tr('Starting fuel:', 'Carburant de départ :')} ${startFuelLevel}/8 (${startFuelLevel === 8 ? tr('Full', 'Plein') : startFuelLevel === 0 ? tr('Empty', 'Vide') : `${startFuelLevel}/8`})`}
                             </p>
                           )}
                         </div>
                         <div className="mt-2 sm:mt-0 flex w-full sm:w-auto items-center gap-2">
-                          {startFuelLevel === null && (
+                          {startFuelLevel === null && isStartStepActive('start_fuel') && (
                             <Button 
                               onClick={openStartFuelModal}
                               title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : isWorkflowDisabled() ? tr('Workflow locked - price approval pending', 'Workflow bloqué - approbation du prix en attente') : tr('Record Fuel', 'Enregistrer le carburant')}
@@ -9796,7 +11540,7 @@ useEffect(() => {
                               <span className="whitespace-nowrap">{tr('Record Fuel', 'Enregistrer le carburant')}</span>
                             </Button>
                           )}
-                          {startFuelLevel !== null && (
+                          {startFuelLevel !== null && isStartStepActive('start_fuel') && (
                             <Button
                               type="button"
                               size="sm"
@@ -9815,6 +11559,7 @@ useEffect(() => {
                   </div>
 
                 {/* Fuel Charge Toggle - Shown for both hourly and daily rentals */}
+{isStartStepActive('start_fuel') && (
 <div className="ml-8 sm:ml-11 mt-2">
   <FuelChargeToggle
     enabled={fuelChargeEnabled}
@@ -9824,14 +11569,20 @@ useEffect(() => {
     disabled={rental?.rental_status !== 'scheduled'}
   />
 </div>
+)}
 
-                {/* Step 5: Sign Contract */}
-<div className={`flex items-start gap-2.5 rounded-2xl p-3 sm:gap-3 ${(rental.contract_signed || rental.signature_url) ? 'border border-emerald-200 bg-emerald-50/80' : 'border border-slate-200 bg-white shadow-sm'}`}>
-  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${(rental.contract_signed || rental.signature_url) ? 'bg-green-500' : 'bg-gray-300'}`}>
-    {(rental.contract_signed || rental.signature_url) ? (
+                {/* Step 6: Sign Contract */}
+<div
+  ref={(node) => { startStepRefs.current.contract_signature = node; }}
+  onClick={() => {
+    if (isStartStepLocked('contract_signature')) notifyLockedStartStep();
+  }}
+  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${hasEffectiveContractSignature ? 'border border-emerald-200 bg-emerald-50/80' : getStartStepContainerClass('contract_signature', false)} ${hasEffectiveContractSignature && !isStartStepActive('contract_signature') ? 'min-h-[46px] items-center' : ''}`}>
+  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${hasEffectiveContractSignature ? 'bg-green-500' : isStartStepActive('contract_signature') ? 'bg-violet-600' : 'bg-gray-300'}`}>
+    {hasEffectiveContractSignature ? (
       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
     ) : (
-      <span className="text-white font-bold text-xs">5</span>
+      <span className="text-white font-bold text-xs">6</span>
     )}
   </div>
   <div className="flex-1 min-w-0">
@@ -9839,10 +11590,14 @@ useEffect(() => {
       <div className="flex-1 min-w-0">
         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Sign Contract', 'Signer le contrat')}</h4>
         <p className="text-xs text-gray-600 mt-0.5 break-words">
-          {(rental.contract_signed || rental.signature_url) ? `✓ ${tr('Contract signed', 'Contrat signé')}` : tr('Customer signs rental agreement', 'Le client signe le contrat de location')}
+          {hasEffectiveContractSignature
+            ? `✓ ${tr('Contract signed', 'Contrat signé')}`
+            : isStartStepActive('contract_signature')
+              ? tr('Customer signs rental agreement', 'Le client signe le contrat de location')
+              : tr('Waiting for previous steps', 'En attente des étapes précédentes')}
         </p>
       </div>
-      {!rental.contract_signed && !rental.signature_url && rental.rental_status !== 'completed' && (
+      {!hasEffectiveContractSignature && rental.rental_status !== 'completed' && isStartStepActive('contract_signature') && (
         <Button 
           onClick={openSignatureFlow}
           size="sm"
@@ -9859,6 +11614,11 @@ useEffect(() => {
         </Button>
       )}
     </div>
+    {!hasEffectiveContractSignature && (
+      <p className="mt-2 text-xs text-slate-500">
+        {tr('Complete all steps to unlock signature', 'Complétez toutes les étapes pour débloquer la signature')}
+      </p>
+    )}
   </div>
 </div>
 
@@ -9879,7 +11639,7 @@ useEffect(() => {
 
 
           {/* Contract Signed but Not Started - Show Start Button */}
-          {(rental.contract_signed || rental.signature_url) && !isCompleted && !isActive && (
+          {hasEffectiveContractSignature && !isCompleted && (!isActive || effectiveReplacementPauseStartedAt) && !isReplacementResumeFlow && (
             <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
                 <h3 className="text-base sm:text-lg font-semibold text-gray-800 flex items-center gap-2">
@@ -9909,11 +11669,11 @@ useEffect(() => {
                     </div>
                   ) : (
                     <div className="mb-4 rounded-2xl border-2 border-amber-300 bg-amber-50 p-4 text-left">
-                      <p className="text-sm font-bold text-amber-800 mb-1">⚠️ {tr('Late Arrival Warning', 'Alerte retard client')}</p>
+                      <p className="text-sm font-bold text-amber-800 mb-1">⚠️ {tr('No-show review', 'Contrôle absence')}</p>
                       <div className="text-xs text-amber-700 space-y-1">
                         <p>📅 {tr('Scheduled:', 'Planifié :')} <strong>{formatRentalScheduleDateTime(scheduledStart)}</strong></p>
                         <p>🕐 {tr('Now:', 'Maintenant :')} <strong>{formatRentalScheduleDateTime(now)}</strong> ({minutesPastGrace} {tr('min past the website grace window', 'min après le délai de grâce web')})</p>
-                        <p className="mt-1">{tr('This staff-created rental stays available. Staff can still start it manually and the end time will adjust from now.', 'Cette location créée par le personnel reste disponible. Le personnel peut toujours la démarrer manuellement et l’heure de fin sera recalculée à partir de maintenant.')}</p>
+                        <p className="mt-1">{tr('This staff-created booking missed its slot and now needs staff review before any manual restart.', 'Cette réservation créée par le personnel a manqué son créneau et nécessite maintenant une vérification du personnel avant tout redémarrage manuel.')}</p>
                       </div>
                     </div>
                   );
@@ -9935,14 +11695,14 @@ useEffect(() => {
                     )
                   );
                   if (minutesLate > 0) return (
-                    <div className="mb-4 flex gap-2 rounded-2xl border border-yellow-300 bg-yellow-50 p-3 text-left">
-                      <span>⏰</span>
+                    <div className="mb-4 flex gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-left">
+                      <span>✅</span>
                       <div>
-                        <p className="text-sm font-semibold text-yellow-800">{minutesLate} {tr('min late', 'min de retard')}</p>
-                        <p className="text-xs text-yellow-700">
+                        <p className="text-sm font-semibold text-emerald-800">{tr('Arrival window active', 'Fenêtre d’arrivée active')}</p>
+                        <p className="text-xs text-emerald-700">
                           {autoExpireAllowed
-                            ? `${tr('Scheduled for', 'Planifié pour')} ${formatRentalScheduleDateTime(scheduledStart)} · ${graceMinutes - minutesLate} ${tr('min before auto-expire', 'min avant expiration auto')}`
-                            : `${tr('Scheduled for', 'Planifié pour')} ${formatRentalScheduleDateTime(scheduledStart)} · ${tr('staff can still start it manually', 'le personnel peut toujours la démarrer manuellement')}`}
+                            ? `${tr('Scheduled for', 'Planifié pour')} ${formatRentalScheduleDateTime(scheduledStart)} · ${Math.max(0, graceMinutes - minutesLate)} ${tr('min before review', 'min avant contrôle')}`
+                            : `${tr('Scheduled for', 'Planifié pour')} ${formatRentalScheduleDateTime(scheduledStart)} · ${tr('staff can start it normally', 'le personnel peut la démarrer normalement')}`}
                         </p>
                       </div>
                     </div>
@@ -9958,10 +11718,18 @@ useEffect(() => {
                     </div>
                   );
                 })()}
-                {rental.rental_status !== 'expired' && (
+                {!['expired', 'no_show_review'].includes(String(rental.rental_status || '').toLowerCase()) && (
                   <div className="mb-4 sm:mb-6">
-                    <p className="text-sm sm:text-base text-gray-600 mb-2">{tr('Contract signed and ready to start', 'Contrat signé et prêt à démarrer')}</p>
-                    <p className="text-xs sm:text-sm text-gray-500">{tr('Click "Start Now" to begin the rental timer', 'Cliquez sur "Démarrer maintenant" pour lancer le minuteur de location')}</p>
+                    <p className="text-sm sm:text-base text-gray-600 mb-2">
+                      {effectiveReplacementPauseStartedAt
+                        ? tr('Replacement vehicle ready for resume', 'Véhicule de remplacement prêt pour la reprise')
+                        : tr('Contract signed and ready to start', 'Contrat signé et prêt à démarrer')}
+                    </p>
+                    <p className="text-xs sm:text-sm text-gray-500">
+                      {effectiveReplacementPauseStartedAt
+                        ? tr('Complete the opening checks, then click "Resume rental" to continue the paused timer.', 'Terminez les contrôles d’ouverture puis cliquez sur "Reprendre la location" pour continuer le minuteur en pause.')
+                        : tr('Click "Start Now" to begin the rental timer', 'Cliquez sur "Démarrer maintenant" pour lancer le minuteur de location')}
+                    </p>
                   </div>
                 )}
                 {primaryStartWorkflowActor && (
@@ -9979,6 +11747,8 @@ useEffect(() => {
                 )}
                 {rental.rental_status === 'expired' ? (
                   <p className="text-sm text-red-600 font-medium">❌ {tr('Expired — vehicle has been freed.', 'Expirée — le véhicule a été libéré.')}</p>
+                ) : rental.rental_status === 'no_show_review' ? (
+                  <p className="text-sm text-amber-700 font-medium">⚠️ {tr('No-show review — staff attention required before restarting.', 'Contrôle absence — vérification du personnel requise avant redémarrage.')}</p>
                 ) : (
                   <>
                     <Button
@@ -9988,7 +11758,9 @@ useEffect(() => {
                       className={`${!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental ? 'bg-gray-300 cursor-not-allowed' : 'bg-violet-700 hover:bg-violet-800'} text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg`}
                     >
                       <PlayCircle className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
-                      {isStartingRental ? tr('Starting...', 'Démarrage...') : tr('Start Now', 'Démarrer maintenant')}
+                      {isStartingRental
+                        ? (effectiveReplacementPauseStartedAt ? tr('Resuming...', 'Reprise...') : tr('Starting...', 'Démarrage...'))
+                        : (effectiveReplacementPauseStartedAt ? tr('Resume rental', 'Reprendre la location') : tr('Start Now', 'Démarrer maintenant'))}
                     </Button>
                     {!canStartRental && (
                       <div className="mt-3 space-y-1">
@@ -10017,10 +11789,10 @@ useEffect(() => {
                       <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-blue-600 flex-shrink-0" />
                       <span>{tr('Rental Timer', 'Minuteur de location')}</span>
                     </h3>
-                    <Badge className="bg-green-100 text-green-800 px-3 py-1 self-start sm:self-auto">
+                    <Badge className={`${effectiveReplacementPauseStartedAt ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800'} px-3 py-1 self-start sm:self-auto`}>
                       <div className="flex items-center gap-1">
-                        <div className="w-2 h-2 bg-green-600 rounded-full animate-pulse"></div>
-                        {tr('Active', 'Active')}
+                        <div className={`w-2 h-2 rounded-full ${effectiveReplacementPauseStartedAt ? 'bg-amber-500' : 'bg-green-600 animate-pulse'}`}></div>
+                        {effectiveReplacementPauseStartedAt ? tr('Paused for replacement', 'En pause pour remplacement') : tr('Active', 'Active')}
                       </div>
                     </Badge>
                     {isImpounded && (
@@ -10101,25 +11873,67 @@ useEffect(() => {
                     </div>
                     
                     <div className="flex flex-col sm:flex-row justify-center gap-3">
-                      <Button 
-                        onClick={() => { void openFinishWorkflow(); }}
-                        className="bg-violet-700 hover:bg-violet-800 text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg"
-                      >
-                        <StopCircle className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
-                        {tr('End Now', 'Terminer maintenant')}
-                      </Button>
-                      
-                      {closingMedia.length === 0 && (
-                        <Button 
-                          onClick={() => {
-                            setEditingExtension(null);
-                            setExtensionModalOpen(true);
-                          }}
-                          className="bg-violet-700 hover:bg-violet-800 text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg"
-                        >
-                          <Clock className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
-                          {tr('Extend Time', 'Prolonger')}
-                        </Button>
+                      {effectiveReplacementPauseStartedAt ? (
+                        <>
+                          <Button
+                            onClick={() => {
+                              if (canStartRental && !isStartWorkflowSoftLocked && !isWorkflowDisabled() && !isStartingRental) {
+                                startRental();
+                                return;
+                              }
+                              openReplacementResumeWorkflow();
+                            }}
+                            disabled={!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental}
+                            title={startWorkflowActionHint}
+                            className={`${!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental ? 'bg-gray-300 cursor-not-allowed' : 'bg-violet-700 hover:bg-violet-800'} text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg`}
+                          >
+                            <PlayCircle className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
+                            {tr('Resume rental', 'Reprendre la location')}
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={openReplaceVehicleDialog}
+                            disabled={isReplacingVehicle || showReplaceVehicleDialog}
+                            variant="outline"
+                            className="border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800 px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 rounded-lg"
+                          >
+                            <Wrench className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
+                            {tr('Replace Vehicle', 'Remplacer le véhicule')}
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button 
+                            onClick={() => { void openFinishWorkflow(); }}
+                            className="bg-violet-700 hover:bg-violet-800 text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg"
+                          >
+                            <StopCircle className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
+                            {tr('End Now', 'Terminer maintenant')}
+                          </Button>
+                          
+                          {closingMedia.length === 0 && (
+                            <Button 
+                              onClick={() => {
+                                setEditingExtension(null);
+                                setExtensionModalOpen(true);
+                              }}
+                              className="bg-violet-700 hover:bg-violet-800 text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg"
+                            >
+                              <Clock className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
+                              {tr('Extend Time', 'Prolonger')}
+                            </Button>
+                          )}
+
+                          <Button
+                            type="button"
+                            onClick={openReplaceVehicleDialog}
+                            disabled={isReplacingVehicle || showReplaceVehicleDialog}
+                            className="bg-amber-500 hover:bg-amber-600 text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg"
+                          >
+                            <Wrench className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
+                            {tr('Replace Vehicle', 'Remplacer le véhicule')}
+                          </Button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -10178,7 +11992,7 @@ useEffect(() => {
                   )}
                   
                   <div className="space-y-2.5 sm:space-y-4">
-                    {/* Step 1: Closing Vehicle Inspection */}
+                    {/* Step 1: Vehicle Inspection */}
                     <div className={`flex items-start gap-2.5 rounded-2xl p-3 sm:gap-3 ${
                       closingInspectionStepComplete ? 'border border-emerald-200 bg-emerald-50/80' : 'border border-slate-200 bg-white shadow-sm'
                     }`}>
@@ -10194,19 +12008,19 @@ useEffect(() => {
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                           <div className="flex-1 min-w-0">
-                            <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Vehicle Inspection (Optional)', 'Inspection du véhicule (optionnelle)')}</h4>
+                            <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Vehicle & Documents inspection', 'Inspection véhicule et documents')}</h4>
                             <p className="text-xs text-gray-600 mt-0.5 break-words">
                               {closingInspectionStepComplete
-                                ? `✓ ${tr('Inspection complete', 'Inspection terminée')}`
+                                ? `✓ ${tr('Inspection review is complete', "L'inspection est terminée")}`
                                 : reportWorkflowLocked
-                                  ? tr('Inspection complete and report saved', "Inspection terminée et rapport enregistré")
+                                  ? tr('Return media reviewed and report saved', 'Médias de retour vérifiés et rapport enregistré')
                                 : reportRequired && hasClosingInspectionMedia && !reportSaved
-                                  ? tr('Closing media uploaded - save the report to continue', 'Médias de retour téléversés - enregistrez le rapport pour continuer')
-                                  : reportRequired && reportHasUnsavedChanges && reportSaved
+                                  ? tr('Return media added - save the report to continue', 'Médias de retour ajoutés - enregistrez le rapport pour continuer')
+                                : reportRequired && reportHasUnsavedChanges && reportSaved
                                     ? tr('Report changed - update the saved report to continue', 'Rapport modifié - mettez à jour le rapport enregistré pour continuer')
                                 : closingMedia.length > 0 && requiresClosingInspectionReview
-                                  ? tr('Existing closing media found - review or add more before continuing', 'Des médias de retour existent déjà - vérifiez-les ou ajoutez-en avant de continuer')
-                                  : tr('Skip this unless you want return photos or a damage report', 'Ignorez ceci sauf si vous voulez des photos de retour ou un rapport de dommages')}
+                                  ? tr('Review or add return media before continuing', 'Vérifiez ou ajoutez des médias de retour avant de continuer')
+                                  : tr('Add media only if you want to document the return condition.', "Ajoutez des médias uniquement si vous souhaitez documenter l'état au retour.")}
                             </p>
                             <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
                               <div className={`rounded-md px-2.5 py-2 text-[11px] ${
@@ -10227,7 +12041,7 @@ useEffect(() => {
                               </div>
                             </div>
                           </div>
-                          {!reportWorkflowLocked && !closingInspectionStepComplete ? (
+                          {!reportWorkflowLocked ? (
                             <Button 
                               onClick={handleOpenClosingModal}
                               size="sm"
@@ -10795,6 +12609,39 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
   </div>
 </div>
 
+                    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600">
+                          <MapPin className="h-3.5 w-3.5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                            {tr('Returned to', 'Retourné à')}
+                          </p>
+                          <p className="truncate text-sm font-semibold text-slate-900">
+                            {selectedReturnLocationName || tr('Select location', 'Sélectionner un emplacement')}
+                          </p>
+                        </div>
+                        <select
+                          value={selectedReturnLocationId}
+                          onChange={(e) => setSelectedReturnLocationId(e.target.value)}
+                          disabled={fleetLocations.length === 0 || isFinishWorkflowSoftLocked}
+                          title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
+                          className="min-w-[118px] rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 outline-none transition-colors focus:border-violet-400 focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {fleetLocations.length === 0 ? (
+                            <option value="">{tr('No locations', 'Aucun emplacement')}</option>
+                          ) : (
+                            fleetLocations.map((location) => (
+                              <option key={location.id} value={location.id}>
+                                {location.name}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                      </div>
+                    </div>
+
                     {/* Complete Rental — appears inline once all 3 steps done */}
                     {closingInspectionStepComplete &&
                      finishRentalSteps.endOdometerComplete &&
@@ -10969,7 +12816,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   </div>
                 </div>
                 {vehicleReport.customer_chargeable && (
-                  <div className="space-y-3 rounded-[24px] border border-blue-200 bg-blue-50/80 p-4 shadow-[0_12px_30px_rgba(59,130,246,0.08)]">
+                  <div
+                    ref={maintenanceChargeSectionRef}
+                    className="space-y-3 rounded-[24px] border border-blue-200 bg-blue-50/80 p-4 shadow-[0_12px_30px_rgba(59,130,246,0.08)]"
+                  >
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-sm font-semibold text-blue-900">Maintenance stay charge</p>
@@ -10982,6 +12832,42 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       </Badge>
                     </div>
 
+                    <button
+                      type="button"
+                      disabled={maintenanceChargeLocked}
+                      onClick={() => {
+                        setMaintenanceChargeForm((prev) => ({
+                          ...prev,
+                          enabled: !prev.enabled,
+                          total: !prev.enabled
+                            ? calculateMaintenanceStayTotal(prev.days, prev.dailyRate, prev.discount)
+                            : 0,
+                        }));
+                      }}
+                      className={`flex w-full items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-white/85 px-4 py-3 text-left transition-colors ${
+                        maintenanceChargeLocked ? 'cursor-not-allowed opacity-60' : 'hover:bg-blue-50/70 active:scale-[0.998]'
+                      }`}
+                      aria-pressed={maintenanceChargeForm.enabled}
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-gray-900">{tr('Enable maintenance stay charge', 'Activer le séjour maintenance')}</p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          {tr('Turn this off to remove the extra maintenance day charge from the customer bill.', 'Désactivez ceci pour retirer le supplément de séjour maintenance de la facture client.')}
+                        </p>
+                      </div>
+                      <div
+                        className={`relative inline-flex h-8 w-14 flex-shrink-0 items-center rounded-full transition-colors ${
+                          maintenanceChargeForm.enabled ? 'bg-violet-600' : 'bg-slate-300'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-6 w-6 transform rounded-full bg-white shadow-sm transition-transform ${
+                            maintenanceChargeForm.enabled ? 'translate-x-7' : 'translate-x-1'
+                          }`}
+                        />
+                      </div>
+                    </button>
+
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                       <div>
                         <label className="block text-xs font-medium text-gray-700 mb-1">Days in maintenance</label>
@@ -10989,13 +12875,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                           type="number"
                           min="1"
                           value={maintenanceChargeForm.days || ''}
-                          disabled={maintenanceChargeLocked}
+                          disabled={maintenanceChargeLocked || !maintenanceChargeForm.enabled}
                           onChange={(e) => {
                             const days = Math.max(1, parseInt(e.target.value || '1', 10) || 1);
                             setMaintenanceChargeForm(prev => ({
                               ...prev,
                               days,
-                              total: calculateMaintenanceStayTotal(days, prev.dailyRate, prev.discount),
+                              total: prev.enabled ? calculateMaintenanceStayTotal(days, prev.dailyRate, prev.discount) : 0,
                               source: prev.source === 'none' ? 'manual' : prev.source,
                             }));
                           }}
@@ -11009,13 +12895,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                           min="0"
                           step="0.01"
                           value={maintenanceChargeForm.dailyRate || ''}
-                          disabled={maintenanceChargeLocked}
+                          disabled={maintenanceChargeLocked || !maintenanceChargeForm.enabled}
                           onChange={(e) => {
                             const dailyRate = Math.max(0, Number(e.target.value || 0));
                             setMaintenanceChargeForm(prev => ({
                               ...prev,
                               dailyRate,
-                              total: calculateMaintenanceStayTotal(prev.days, dailyRate, prev.discount),
+                              total: prev.enabled ? calculateMaintenanceStayTotal(prev.days, dailyRate, prev.discount) : 0,
                               source: 'manual',
                             }));
                           }}
@@ -11029,13 +12915,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                           min="0"
                           step="0.01"
                           value={maintenanceChargeForm.discount || ''}
-                          disabled={maintenanceChargeLocked}
+                          disabled={maintenanceChargeLocked || !maintenanceChargeForm.enabled}
                           onChange={(e) => {
                             const discount = Math.max(0, Number(e.target.value || 0));
                             setMaintenanceChargeForm(prev => ({
                               ...prev,
                               discount,
-                              total: calculateMaintenanceStayTotal(prev.days, prev.dailyRate, discount),
+                              total: prev.enabled ? calculateMaintenanceStayTotal(prev.days, prev.dailyRate, discount) : 0,
                             }));
                           }}
                           className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
@@ -11047,13 +12933,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       <div className="rounded-2xl border border-blue-100 bg-white/85 p-3">
                         <p className="text-xs text-gray-500">Stay subtotal</p>
                         <p className="mt-1 font-semibold text-gray-900">
-                          {formatCurrency((maintenanceChargeForm.days || 0) * (maintenanceChargeForm.dailyRate || 0))} MAD
+                          {formatCurrency(maintenanceChargeForm.enabled ? ((maintenanceChargeForm.days || 0) * (maintenanceChargeForm.dailyRate || 0)) : 0)} MAD
                         </p>
                       </div>
                       <div className="rounded-2xl border border-blue-100 bg-white/85 p-3">
                         <p className="text-xs text-gray-500">Discount</p>
                         <p className="mt-1 font-semibold text-green-700">
-                          -{formatCurrency(maintenanceChargeForm.discount || 0)} MAD
+                          -{formatCurrency(maintenanceChargeForm.enabled ? (maintenanceChargeForm.discount || 0) : 0)} MAD
                         </p>
                       </div>
                       <div className="rounded-2xl border border-blue-100 bg-white/85 p-3">
@@ -11222,10 +13108,20 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
               <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <h3 className="text-lg font-semibold text-slate-900">{tr('Customer Details', 'Détails client')}</h3>
-              <Button onClick={() => handleViewCustomerDetails(rental.customer_id)} size="sm" className="rounded-xl border border-violet-100 bg-violet-50 text-violet-700 hover:bg-violet-100">
-                <User className="mr-2 h-4 w-4" />
-                {tr('View Details', 'Voir les détails')}
-              </Button>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Button
+                    onClick={handleContactCustomerWhatsApp}
+                    size="sm"
+                    className="rounded-xl border border-emerald-100 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                  >
+                    <FaWhatsapp className="mr-2 h-4 w-4" />
+                    {tr('WhatsApp', 'WhatsApp')}
+                  </Button>
+                  <Button onClick={() => handleViewCustomerDetails(rental.customer_id)} size="sm" className="rounded-xl border border-violet-100 bg-violet-50 text-violet-700 hover:bg-violet-100">
+                    <User className="mr-2 h-4 w-4" />
+                    {tr('View Details', 'Voir les détails')}
+                  </Button>
+                </div>
               </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 mt-2 text-sm sm:text-base text-slate-700">
               <p><strong>{tr('Full Name:', 'Nom complet :')}</strong> {syncedCustomerDetails.fullName || tr('N/A', 'N/D')}</p>
@@ -11260,7 +13156,34 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           )}
           <Separator className="bg-violet-100" />
           <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
-            <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Vehicle Details', 'Détails véhicule')}</h3>
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h3 className="text-lg font-semibold text-slate-900">{tr('Vehicle Details', 'Détails véhicule')}</h3>
+              {(isScheduled || isActive) && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={openReplaceVehicleDialog}
+                  className="rounded-xl border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800"
+                >
+                  <Wrench className="mr-2 h-4 w-4" />
+                  {tr('Change vehicle', 'Changer de véhicule')}
+                </Button>
+              )}
+            </div>
+            {effectiveReplacementPauseStartedAt && (
+              <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <p className="font-semibold">
+                  {tr('Vehicle swap in progress', 'Remplacement de véhicule en cours')}
+                </p>
+                <p className="mt-1 text-xs text-amber-800">
+                  {tr(
+                    'Complete the opening checks on the replacement vehicle, then use Resume rental to continue without losing time.',
+                    'Terminez les contrôles d’ouverture sur le véhicule de remplacement, puis utilisez Reprendre la location pour continuer sans perdre de temps.'
+                  )}
+                </p>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm sm:text-base text-slate-700">
               <p><strong>{tr('Vehicle:', 'Véhicule :')}</strong> {rental.vehicle?.name}</p>
               <p><strong>{tr('Model:', 'Modèle :')}</strong> {rental.vehicle?.model}</p>
@@ -11410,6 +13333,89 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               })()}
             </div>
 
+            {previousVehicleHistoryEntry && (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">
+                <p className="font-semibold">
+                  {tr('Vehicle replaced during rental', 'Véhicule remplacé pendant la location')}
+                </p>
+                <p className="mt-1 text-xs text-amber-800">
+                  {tr('Previous vehicle:', 'Véhicule précédent :')}{' '}
+                  <strong>
+                    {[previousVehicleHistoryEntry.vehicle_name_snapshot, previousVehicleHistoryEntry.vehicle_model_snapshot, previousVehicleHistoryEntry.plate_number_snapshot]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </strong>
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h3 className="text-lg font-semibold text-slate-900">{tr('Vehicle History', 'Historique du véhicule')}</h3>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+                {vehicleReplacementHistory.length} {tr('entries', 'entrées')}
+              </span>
+            </div>
+
+            {!hasVehicleReplacementHistory ? (
+              <p className="text-sm text-slate-500">
+                {tr('Vehicle history will appear here after the rental starts or a replacement happens.', "L'historique du véhicule apparaîtra ici après le démarrage de la location ou un remplacement.")}
+              </p>
+            ) : (
+              <div className="relative pl-8">
+                <div className="absolute left-[11px] top-1 bottom-1 w-px bg-slate-200" />
+                <div className="space-y-4">
+                  {vehicleReplacementHistory.map((entry, index) => {
+                    const label = [entry.vehicle_name_snapshot, entry.vehicle_model_snapshot, entry.plate_number_snapshot]
+                      .filter(Boolean)
+                      .join(' · ');
+                    const isCurrentEntry = index === vehicleReplacementHistory.length - 1 && !entry.ended_at;
+                    const entryStartLabel = index === 0
+                      ? tr('Started rental', 'Démarrage de location')
+                      : tr('Replaced at', 'Remplacé à');
+
+                    return (
+                      <div key={entry.id || `${entry.rental_id}-${entry.sequence_index}-${index}`} className="relative rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                        <div className={`absolute -left-[26px] top-4 h-4 w-4 rounded-full border-4 ${isCurrentEntry ? 'border-violet-500 bg-violet-100' : 'border-slate-300 bg-white'}`} />
+                        <div className="flex flex-col gap-1">
+                          <p className="text-sm font-semibold text-slate-900">{label || tr('Vehicle snapshot', 'Instantané du véhicule')}</p>
+                          <p className="text-xs text-slate-500">
+                            {entryStartLabel} · {formatVehicleHistoryDateTime(entry.started_at, isFrench)}
+                          </p>
+                          {index > 0 && entry.replacement_reason && (
+                            <p className="text-xs text-slate-600">
+                              {tr('Reason:', 'Raison :')} <span className="font-medium text-slate-700">{entry.replacement_reason}</span>
+                            </p>
+                          )}
+                          {entry.changed_by && (
+                            <p className="text-xs text-slate-500">
+                              {tr('By:', 'Par :')} <span className="font-medium text-slate-700">{entry.changed_by}</span>
+                            </p>
+                          )}
+                          {entry.change_note && (
+                            <p className="text-xs text-slate-500">
+                              {tr('Note:', 'Note :')} {entry.change_note}
+                            </p>
+                          )}
+                          {entry.ended_at ? (
+                            <p className="text-xs text-slate-400">
+                              {tr('Used until', 'Utilisé jusqu’au')} {formatVehicleHistoryDateTime(entry.ended_at, isFrench)}
+                            </p>
+                          ) : (
+                            <p className="text-xs font-medium text-violet-600">
+                              {tr('Current vehicle', 'Véhicule actuel')}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
             {/* ========== PACKAGE SUMMARY - OVERRIDES TIER PRICING ========== */}
             {(rental.package || packageDetails) && (
               <div className="mt-4 p-4 bg-purple-50 rounded-xl border-2 border-purple-200">
@@ -11425,9 +13431,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   const pkg = packageDetails || rental?.package;
                   if (!pkg) return null;
                   const packageRate = parseFloat(pkg.fixed_amount) || rental.unit_price || 0;
-                  const duration = rental.rental_type === 'hourly'
-                    ? (rental.quantity_hours ?? rental.quantity_days ?? 1)
-                    : (rental.quantity_days ?? 1);
+                  const duration = getRentalDurationUnits(rental);
+                  const packageTotal = packageRate;
                   
                   return (
                     <div className="space-y-3">
@@ -11437,7 +13442,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       </div>
                       
                       <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-600">{tr('Rate per', 'Tarif par')} {rental.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour')}:</span>
+                        <span className="text-sm text-gray-600">{tr('Package price:', 'Prix du forfait :')}</span>
                         <span className="text-sm font-bold text-gray-900">{packageRate.toFixed(2)} MAD</span>
                       </div>
                       
@@ -11451,7 +13456,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       <div className="flex justify-between items-center pt-2 border-t border-purple-200">
                         <span className="text-base font-semibold text-purple-900">{tr('Package Total:', 'Total forfait :')}</span>
                         <span className="text-xl font-bold text-purple-700">
-                          {(packageRate * duration).toFixed(2)} MAD
+                          {packageTotal.toFixed(2)} MAD
                         </span>
                       </div>
 
@@ -11516,12 +13521,16 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <Info className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
                   <div>
                     <h4 className="font-medium text-blue-900">
-                        {rental.rental_type === 'daily' ? tr('Base Daily Rate Applied', 'Tarif journalier de base appliqué') : tr('Standard Rate Applied', 'Tarif standard appliqué')}
+                        {isFlatHourlyTierRental(rental, packageDetails)
+                          ? tr('Fixed 1.5-hour tier applied', 'Palier fixe 1,5 heure appliqué')
+                          : rental.rental_type === 'daily'
+                            ? tr('Base Daily Rate Applied', 'Tarif journalier de base appliqué')
+                            : tr('Standard Rate Applied', 'Tarif standard appliqué')}
                     </h4>
                     <p className="text-sm text-blue-700 mt-1">
-                      {rental.rental_type === 'hourly' ? (rental.quantity_hours ?? rental.quantity_days ?? 0) : (rental.quantity_days || 0)} {rental.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour')}{' '}
-                      {tr('rental at', 'de location à')} {rental.unit_price?.toFixed(2)} MAD
-                      {rental.rental_type === 'hourly' ? '/heure' : '/jour'}
+                      {isFlatHourlyTierRental(rental, packageDetails)
+                        ? `${formatRentalDurationLabel(rental, isFrench)} ${tr('rental with a flat tier total of', 'de location avec un total fixe de')} ${Number(rental.unit_price || 0).toFixed(0)} MAD`
+                        : `${formatRentalDurationLabel(rental, isFrench)} ${tr('rental at', 'de location à')} ${Number(rental.unit_price || 0).toFixed(0)} MAD${rental.rental_type === 'hourly' ? '/heure' : '/jour'}`}
                     </p>
                     {tierPricingBreakdown?.isSamePrice && rental.rental_type === 'daily' && (
                       <p className="text-xs text-blue-600 mt-2">
@@ -11532,7 +13541,6 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 </div>
               </div>
             )}
-          </div>
           <Separator className="bg-slate-100" />
           <div>
             <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Rental Period', 'Période de location')}</h3>
@@ -11572,6 +13580,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     }
                     {rental.rental_type || tr('daily', 'journalière')}
                   </span>
+                  {rental.rental_type === 'hourly' && (
+                    <span className="ml-2 inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm font-semibold text-violet-700">
+                      {formatRentalDurationLabel(rental, isFrench)}
+                    </span>
+                  )}
                 </p>
               <p><strong>{tr('Pickup:', 'Départ :')}</strong> {rental.pickup_location}</p>
 
@@ -11600,6 +13613,48 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <Edit className="mr-2 h-4 w-4" />
                   {tr('Edit Rental Cost', 'Modifier le coût de location')}
                 </Button>
+              </div>
+            )}
+
+            {canOwnerAdjustCompletedRental && (
+              <div className="mb-4 rounded-[24px] border border-violet-200 bg-violet-50/80 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.08)]">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-violet-900">
+                      {tr('Post-return adjustments', 'Ajustements après retour')}
+                    </p>
+                    <p className="mt-1 text-xs text-violet-700">
+                      {tr(
+                        'As owner, you can still reopen the maintenance stay charge and deposit return for final corrections on this completed contract.',
+                        'En tant que propriétaire, vous pouvez encore rouvrir le séjour maintenance et le retour de caution pour corriger ce contrat terminé.'
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="text-xs border-violet-200 text-violet-700 hover:bg-violet-100"
+                      onClick={handleEditMaintenanceStayCharge}
+                    >
+                      <Wrench className="mr-1.5 h-3.5 w-3.5" />
+                      {tr('Edit Maintenance Stay Charge', 'Modifier le séjour maintenance')}
+                    </Button>
+                    {hasMonetaryDamageDeposit && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="text-xs border-violet-200 text-violet-700 hover:bg-violet-100"
+                        onClick={handleEditDepositReturn}
+                      >
+                        <DollarSign className="mr-1.5 h-3.5 w-3.5" />
+                        {tr('Edit Deposit Return', 'Modifier le retour de caution')}
+                      </Button>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
   
@@ -11718,12 +13773,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           if (!pkg) return null;
           
           const packageRate = parseFloat(pkg.fixed_amount) || rental.unit_price || 0;
-          const duration = rental.rental_type === 'hourly'
-            ? (rental.quantity_hours ?? rental.quantity_days ?? 1)
-            : (rental.quantity_days ?? 1);
+          const duration = getRentalDurationUnits(rental);
+          const packageTotal = packageRate;
           
-          // Calculate total included kilometers for the entire duration
-          const totalIncludedKm = pkg.included_kilometers ? pkg.included_kilometers * duration : null;
+          // Package limits are fixed per selected offer.
+          const totalIncludedKm = pkg.included_kilometers || null;
           
           return (
             <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-4 mb-3">
@@ -11736,7 +13790,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {/* Rate and Duration */}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-white p-3 rounded-lg border border-purple-100">
-                    <div className="text-xs text-purple-600 mb-1">{tr('Rate per', 'Tarif par')} {rental.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour')}</div>
+                    <div className="text-xs text-purple-600 mb-1">{tr('Package price', 'Prix du forfait')}</div>
                     <div className="text-lg font-bold text-gray-900">{packageRate.toFixed(2)} MAD</div>
                   </div>
                   
@@ -11753,11 +13807,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   {pkg.included_kilometers && (
                     <div className="bg-green-50 p-3 rounded-lg border border-green-200">
                       <div className="flex flex-col">
-                        <span className="text-xs text-green-600 font-medium">{tr('Included per unit', 'Inclus par unité')}</span>
+                        <span className="text-xs text-green-600 font-medium">{tr('Included', 'Inclus')}</span>
                         <span className="text-sm font-bold text-green-700">{pkg.included_kilometers} km</span>
-                        <span className="text-xs text-gray-500 mt-1">
-                          &times; {duration} {duration > 1 ? (rental.rental_type === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')) : (rental.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour'))}
-                        </span>
                       </div>
                     </div>
                   )}
@@ -11765,11 +13816,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   {totalIncludedKm && (
                     <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
                       <div className="flex flex-col">
-                        <span className="text-xs text-blue-600 font-medium">{tr('Total included', 'Total inclus')}</span>
+                        <span className="text-xs text-blue-600 font-medium">{tr('Included limit', 'Limite incluse')}</span>
                         <span className="text-lg font-bold text-blue-700">{totalIncludedKm} km</span>
-                        <span className="text-xs text-gray-500 mt-1">
-                          {pkg.included_kilometers} km &times; {duration}
-                        </span>
                       </div>
                     </div>
                   )}
@@ -11791,11 +13839,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     <div>
                       <span className="text-sm font-medium text-purple-800">{tr('Package Total', 'Total du forfait')}</span>
                       <div className="text-xs text-purple-600 mt-1">
-                        {packageRate.toFixed(2)} MAD &times; {duration} = {(packageRate * duration).toFixed(2)} MAD
+                        {tr('Fixed package price', 'Prix du forfait fixe')}
                       </div>
                     </div>
                     <span className="text-2xl font-bold text-purple-800">
-                      {(packageRate * duration).toFixed(2)} MAD
+                      {packageTotal.toFixed(2)} MAD
                     </span>
                   </div>
                 </div>
@@ -12279,6 +14327,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {formatCurrency(rentalBillingSummary.balanceDue)} MAD
               </span>
             </div>
+
+            {rentalBillingSummary.autoDepositSeizedAmount > 0 && rentalBillingSummary.autoDepositReturnAmount > 0 && (
+              <div className="flex justify-between text-sm text-sky-700">
+                <span>{tr('Security remaining to return:', 'Caution restante à restituer :')}</span>
+                <span className="font-medium">{formatCurrency(rentalBillingSummary.autoDepositReturnAmount)} MAD</span>
+              </div>
+            )}
           </>
         )}
 
@@ -12462,8 +14517,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               {!rental.deposit_returned_at && rentalBillingSummary.autoDepositSeizedAmount > 0 && (
                 <div className="text-xs text-orange-700 mt-1">
                   {isImpounded
-                    ? `Applied to estimate: ${formatCurrency(rentalBillingSummary.autoDepositSeizedAmount)} MAD`
-                    : `Auto-seized now: ${formatCurrency(rentalBillingSummary.autoDepositSeizedAmount)} MAD`}
+                    ? `${tr('Applied to estimate:', 'Appliquée à l’estimation :')} ${formatCurrency(rentalBillingSummary.autoDepositSeizedAmount)} MAD`
+                    : `${tr('Security remaining to return:', 'Caution restante à restituer :')} ${formatCurrency(rentalBillingSummary.autoDepositReturnAmount)} MAD`}
                 </div>
               )}
               {rental.deposit_returned_at && (
@@ -12506,10 +14561,21 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         {/* Show deposit return summary if already returned */}
         {rental.deposit_returned_at && (
           <div className="mt-4 rounded-2xl border border-green-200 bg-green-50/80 p-4 shadow-[0_12px_30px_rgba(34,197,94,0.08)]">
-            <h4 className="font-semibold text-green-900 mb-3 flex items-center gap-2">
-              <DollarSign className="w-4 h-4" />
-              {isDocumentDeposit ? tr('Document Returned', 'Document rendu') : tr('Deposit Returned', 'Caution rendue')}
-            </h4>
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h4 className="font-semibold text-green-900 flex items-center gap-2">
+                <DollarSign className="w-4 h-4" />
+                {isDocumentDeposit ? tr('Document Returned', 'Document rendu') : tr('Deposit Returned', 'Caution rendue')}
+              </h4>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="text-xs"
+                onClick={handleEditDepositReturn}
+              >
+                {tr('Edit Deposit Return', 'Modifier le retour de caution')}
+              </Button>
+            </div>
             
             <div className="space-y-2">
               {isDocumentDeposit ? (
@@ -12696,11 +14762,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
   </div>
 
     {(() => {
-    // Only show on completed rentals OR when in return workflow
     const isCompleted = rental.rental_status === 'completed';
     const isInReturnWorkflow = finishRentalSteps.showWorkflow;
-    
-    if (!isCompleted && !isInReturnWorkflow) return null;
     
     let overageCharge = 0;
     let extraKm = 0;
@@ -12743,7 +14806,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     
     // Don't show if already returned
     if (rental.deposit_returned_at) return null;
-    
+
     // Don't show if no damage deposit
     if (damageDeposit <= 0) return null;
     
@@ -12808,6 +14871,41 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {formatCurrency(damageDeposit)} MAD
               </div>
             </div>
+
+            {rawBalanceDue > 0 && (
+              <div className="rounded-2xl border border-blue-100 bg-white/85 px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() => setDeductFromDeposit((prev) => !prev)}
+                  className="flex w-full items-center justify-between gap-3 text-left"
+                  aria-pressed={deductFromDeposit}
+                >
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">
+                      {tr('Apply damage deposit to balance', 'Appliquer la caution dommages au solde')}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      {balanceDue <= damageDeposit
+                        ? tr(
+                            'Enable this only if you want to deduct the remaining balance from the held damage deposit.',
+                            'Activez ceci seulement si vous souhaitez déduire le solde restant de la caution dommages retenue.'
+                          )
+                        : tr(
+                            'Enable this if you want to apply the full held damage deposit against the remaining balance.',
+                            'Activez ceci si vous souhaitez appliquer toute la caution retenue contre le solde restant.'
+                          )}
+                    </p>
+                  </div>
+                  <div
+                    className={`relative inline-flex h-7 w-12 flex-shrink-0 items-center rounded-full transition-colors ${deductFromDeposit ? 'bg-violet-600' : 'bg-slate-300'}`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${deductFromDeposit ? 'translate-x-6' : 'translate-x-1'}`}
+                    />
+                  </div>
+                </button>
+              </div>
+            )}
             
             {/* Balance Breakdown - only show if there's a balance due */}
             {rawBalanceDue > 0 && (
@@ -12977,17 +15075,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   ) : balanceDue > 0 && balanceDue <= damageDeposit ? (
                     <div className="bg-white p-4 rounded-lg border border-blue-200">
                       <div className="flex flex-col items-center gap-3">
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="checkbox"
-                            id="deductFromDeposit"
-                            checked={deductFromDeposit}
-                            onChange={(e) => setDeductFromDeposit(e.target.checked)}
-                            className="w-5 h-5 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
-                          />
-                          <label htmlFor="deductFromDeposit" className="text-sm font-medium text-gray-700">
-                            Deduct {formatCurrency(balanceDue)} MAD from deposit
-                          </label>
+                        <div className="text-sm font-medium text-gray-700">
+                          {tr('Deduct from deposit:', 'Déduire de la caution :')} {formatCurrency(balanceDue)} MAD
                         </div>
                         
                         {deductFromDeposit && (
@@ -13025,17 +15114,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       </div>
                       
                       <div className="flex flex-col items-center gap-3">
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="checkbox"
-                            id="deductFromDeposit"
-                            checked={deductFromDeposit}
-                            onChange={(e) => setDeductFromDeposit(e.target.checked)}
-                            className="w-5 h-5 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
-                          />
-                          <label htmlFor="deductFromDeposit" className="text-sm font-medium text-gray-700">
-                            Apply full deposit ({formatCurrency(damageDeposit)} MAD) to balance
-                          </label>
+                        <div className="text-sm font-medium text-gray-700">
+                          {tr('Apply full deposit to balance:', 'Appliquer toute la caution au solde :')} {formatCurrency(damageDeposit)} MAD
                         </div>
                         
                         {deductFromDeposit && (
@@ -13121,7 +15201,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       </div>
     </div>
   ) : null}
-          </div>
+        </div>
 </CardContent>
 </Card>
 
@@ -13351,11 +15431,21 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   </button>
                 </div>
 
+                <div className="rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-3 text-left">
+                  <div className="flex items-start gap-2">
+                    <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
+                    <p className="text-sm text-amber-800">
+                      Reminder: include 1 photo of the vehicle documents. 📄
+                    </p>
+                  </div>
+                </div>
+
                 {/* Save Button - Only appears after at least one capture */}
                 {capturedMedia.length > 0 && (
                   <div className="sticky bottom-0 bg-white border-t p-4 mt-4 shadow-lg">
                     <button
                       onClick={() => saveMedia('opening')}
+                      disabled={isProcessingVideo}
                       className="w-full py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold text-lg flex items-center justify-center gap-2"
                     >
                       {isProcessingVideo ? (
@@ -13879,6 +15969,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <div className="sticky bottom-0 bg-white border-t p-4 mt-4 shadow-lg">
                     <button
                       onClick={() => saveMedia('closing')}
+                      disabled={isProcessingVideo}
                       className="w-full py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold text-lg flex items-center justify-center gap-2"
                     >
                       {isProcessingVideo ? (
@@ -14793,8 +16884,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           <div className="space-y-3 px-6 py-4">
             {/* Contract Box */}
             <div 
-              className={`cursor-pointer rounded-xl border-2 p-3 transition-all ${whatsappOptions.contract ? 'border-violet-400 bg-violet-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'}`}
-              onClick={() => setWhatsappOptions({...whatsappOptions, contract: !whatsappOptions.contract})}
+              className={`rounded-xl border-2 p-3 transition-all ${canShareContractDocument ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${whatsappOptions.contract ? 'border-violet-400 bg-violet-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'}`}
+              onClick={() => {
+                if (!canShareContractDocument) return;
+                setWhatsappOptions({...whatsappOptions, contract: !whatsappOptions.contract});
+              }}
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -14803,7 +16897,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   </div>
                   <div>
                     <p className="font-medium">{tr('Rental Contract', 'Contrat de location')}</p>
-                    <p className="text-sm text-gray-500">{tr('PDF document with terms and conditions', 'Document PDF avec les termes et conditions')}</p>
+                    <p className="text-sm text-gray-500">
+                      {canShareContractDocument
+                        ? tr('PDF document with terms and conditions', 'Document PDF avec les termes et conditions')
+                        : tr('Available after signature', 'Disponible après la signature')}
+                    </p>
                   </div>
                 </div>
                 <FaFilePdf className="text-red-500" />
@@ -14812,8 +16910,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             
             {/* Receipt Box */}
             <div 
-              className={`cursor-pointer rounded-xl border-2 p-3 transition-all ${whatsappOptions.receipt ? 'border-violet-400 bg-violet-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'}`}
-              onClick={() => setWhatsappOptions({...whatsappOptions, receipt: !whatsappOptions.receipt})}
+              className={`rounded-xl border-2 p-3 transition-all ${canShareReceiptDocument ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${whatsappOptions.receipt ? 'border-violet-400 bg-violet-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'}`}
+              onClick={() => {
+                if (!canShareReceiptDocument) return;
+                setWhatsappOptions({...whatsappOptions, receipt: !whatsappOptions.receipt});
+              }}
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -14978,7 +17079,80 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </div>
         </DialogContent>
       </Dialog>
-            
+
+      <Dialog
+        open={Boolean(lateStartConfirmation)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setLateStartConfirmation(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md rounded-[28px] border border-amber-100 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.14)]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-slate-900">
+              <span aria-hidden="true">⚠️</span>
+              {lateStartConfirmation?.autoExpireAllowed
+                ? tr('Late warning', 'Alerte retard')
+                : tr('Late arrival', 'Arrivée tardive')}
+            </DialogTitle>
+            <DialogDescription className="space-y-2 text-sm leading-6 text-slate-600">
+              <span className="block">
+                {tr(
+                  `Customer is ${lateStartConfirmation?.minutesLate || 0} min late.`,
+                  `Le client a ${lateStartConfirmation?.minutesLate || 0} min de retard.`
+                )}
+              </span>
+              <span className="block">
+                {lateStartConfirmation?.autoExpireAllowed
+                  ? tr(
+                      `Auto-expires in ${lateStartConfirmation?.remainingMinutes || 0} min if not started.`,
+                      `Expiration automatique dans ${lateStartConfirmation?.remainingMinutes || 0} min si non démarrée.`
+                    )
+                  : tr(
+                      'This rental will stay available for staff review.',
+                      'Cette location restera disponible pour examen par le personnel.'
+                    )}
+              </span>
+              <span className="block">
+                {tr(
+                  'Start now and adjust the end time automatically?',
+                  "Démarrer maintenant et ajuster automatiquement l'heure de fin ?"
+                )}
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setLateStartConfirmation(null)}
+              className="rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+              disabled={isStartingRental}
+            >
+              {tr('Cancel', 'Annuler')}
+            </Button>
+            <Button
+              type="button"
+              onClick={async () => {
+                setLateStartConfirmation(null);
+                await startRental({ skipLateConfirmation: true });
+              }}
+              className="rounded-full bg-gradient-to-r from-violet-600 via-violet-600 to-indigo-600 text-white shadow-[0_16px_32px_rgba(99,102,241,0.24)] hover:from-violet-700 hover:via-violet-700 hover:to-indigo-700"
+              disabled={isStartingRental}
+            >
+              {isStartingRental ? (
+                <Loader className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <PlayCircle className="mr-2 h-4 w-4" />
+              )}
+              {tr('Start now', 'Démarrer maintenant')}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
 
       <SignaturePadModal
         isOpen={isSigning}
@@ -15087,6 +17261,156 @@ Breakdown:
         currentUser={currentUser}
         editingExtension={editingExtension}
       />
+
+      <Dialog open={showReplaceVehicleDialog} onOpenChange={(open) => { if (!open) closeReplaceVehicleDialog(); }}>
+        <DialogContent className="max-w-lg rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_28px_80px_rgba(76,29,149,0.16)]">
+          <DialogHeader className="border-b border-violet-100 px-6 py-5 text-left">
+            <DialogTitle className="flex items-center gap-2 text-xl font-semibold text-slate-900">
+              <Wrench className="h-5 w-5 text-amber-500" />
+              {tr('Replace vehicle', 'Remplacer le véhicule')}
+            </DialogTitle>
+            <DialogDescription className="pt-1 text-sm text-slate-500">
+              {tr(
+                'Pause the timer, move the current vehicle into scheduled maintenance, and continue this rental with a replacement vehicle.',
+                'Met en pause le minuteur, envoie le véhicule actuel en maintenance planifiée, puis poursuit cette location avec un véhicule de remplacement.'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 px-6 py-5">
+            <div className="rounded-2xl border border-violet-100 bg-violet-50/50 p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
+                {tr('Current rental', 'Location en cours')}
+              </p>
+              <div className="mt-2 flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-base font-semibold text-slate-900">{getVehicleDisplayName(rental?.vehicle)}</p>
+                  <p className="text-sm text-slate-500">
+                    {tr('Timer paused while this replacement is in progress.', 'Le minuteur est en pause pendant ce remplacement.')}
+                  </p>
+                </div>
+                <Badge className="border border-amber-200 bg-amber-100 text-amber-800">
+                  {tr('Paused', 'En pause')}
+                </Badge>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-700">
+                {tr('Reason', 'Raison')}
+              </label>
+              <select
+                value={replacementReason}
+                onChange={(event) => setReplacementReason(event.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
+              >
+                <option value="breakdown">{tr('Breakdown during rental', 'Panne pendant la location')}</option>
+                <option value="issue">{tr('Issue noticed by staff', 'Problème constaté par le personnel')}</option>
+                <option value="customer_request">{tr('Customer requested replacement', 'Remplacement demandé par le client')}</option>
+                <option value="other">{tr('Other', 'Autre')}</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-700">
+                {tr('Replacement vehicle', 'Véhicule de remplacement')}
+              </label>
+              <select
+                value={selectedReplacementVehicleId}
+                onChange={(event) => setSelectedReplacementVehicleId(event.target.value)}
+                disabled={isLoadingReplacementVehicles || replacementVehicles.length === 0}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+              >
+                {replacementVehicles.length === 0 ? (
+                  <option value="">{isLoadingReplacementVehicles ? tr('Loading vehicles...', 'Chargement des véhicules...') : tr('No available replacement vehicles', 'Aucun véhicule de remplacement disponible')}</option>
+                ) : (
+                  replacementVehicles.map((vehicle) => {
+                    const locationName = fleetLocations.find((location) => String(location.id) === String(vehicle.location_id))?.name;
+                    const modelLabel = vehicle.vehicle_model?.model || vehicle.name || tr('Vehicle', 'Véhicule');
+                    const optionLabel = vehicle.plate_number
+                      ? `${vehicle.plate_number} · ${modelLabel}`
+                      : modelLabel;
+                    return (
+                      <option key={vehicle.id} value={vehicle.id}>
+                        {`${optionLabel}${locationName ? ` · ${locationName}` : ''}`}
+                      </option>
+                    );
+                  })
+                )}
+              </select>
+              {selectedReplacementVehicle ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                  <p className="font-semibold text-slate-900">
+                    {selectedReplacementVehicle.plate_number
+                      ? `${selectedReplacementVehicle.plate_number} · ${selectedReplacementVehicle.vehicle_model?.model || selectedReplacementVehicle.name || tr('Vehicle', 'Véhicule')}`
+                      : getVehicleDisplayName(selectedReplacementVehicle)}
+                  </p>
+                  <p className="mt-1">
+                    {(selectedReplacementVehicle.capacity || selectedReplacementVehicle.vehicle_model?.capacity)
+                      ? `${selectedReplacementVehicle.capacity || selectedReplacementVehicle.vehicle_model?.capacity} ${tr('riders', 'places')}`
+                      : tr('Available now', 'Disponible maintenant')}
+                    {' · '}
+                    {(selectedReplacementVehicle.power_cc || selectedReplacementVehicle.vehicle_model?.power_cc || '?')}cc
+                  </p>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-700">
+                {tr('Quick note (optional)', 'Note rapide (facultative)')}
+              </label>
+              <textarea
+                rows={3}
+                value={replacementNote}
+                onChange={(event) => setReplacementNote(event.target.value)}
+                placeholder={tr('What happened?', 'Que s’est-il passé ?')}
+                className="w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
+              />
+            </div>
+
+            <Alert className="rounded-2xl border-amber-200 bg-amber-50 text-amber-900">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <AlertDescription className="text-sm leading-6">
+                {tr(
+                  'Confirming will move the current vehicle into scheduled maintenance automatically and resume the rental timer on the replacement vehicle.',
+                  'La confirmation enverra automatiquement le véhicule actuel en maintenance planifiée et relancera le minuteur sur le véhicule de remplacement.'
+                )}
+              </AlertDescription>
+            </Alert>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-violet-100 px-6 py-5 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={closeReplaceVehicleDialog}
+              disabled={isReplacingVehicle}
+              className="rounded-2xl border-slate-200 text-slate-700"
+            >
+              {tr('Cancel', 'Annuler')}
+            </Button>
+            <Button
+              type="button"
+              onClick={handleReplaceVehicle}
+              disabled={isReplacingVehicle || !selectedReplacementVehicleId}
+              className="rounded-2xl bg-amber-500 text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isReplacingVehicle ? (
+                <>
+                  <Loader className="mr-2 h-4 w-4 animate-spin" />
+                  {tr('Replacing...', 'Remplacement...')}
+                </>
+              ) : (
+                <>
+                  <Wrench className="mr-2 h-4 w-4" />
+                  {tr('Confirm replacement', 'Confirmer le remplacement')}
+                </>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <div className="fixed inset-0 pointer-events-none opacity-0 z-[-1]" aria-hidden="true">
         <div ref={contractRef}>

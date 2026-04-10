@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { X, Upload, Camera, Loader2, CheckCircle, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import geminiVisionOCR from '../../services/ocr/geminiVisionOcr';
 import unifiedCustomerService from '../../services/UnifiedCustomerService';
+import i18n from '../../i18n';
 
 /**
  * UnifiedIDScanModal - Enhanced with comprehensive debugging and raw data display
@@ -19,11 +20,13 @@ const UnifiedIDScanModal = ({
   onCustomerSaved, 
   onScanComplete,
   customerId = null,
-  title = "Scan ID Document",
+  title = "Scanner le document d'identité",
   setFormData = null,
   formData = null,
   rentalId = null
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [selectedImage, setSelectedImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -60,7 +63,7 @@ const UnifiedIDScanModal = ({
 
   const processImage = async () => {
     if (!selectedImage) {
-      setError('Please select an image first');
+      setError(tr('Please select an image first', "Veuillez d'abord sélectionner une image"));
       return;
     }
 
@@ -129,23 +132,23 @@ const UnifiedIDScanModal = ({
               console.log('✅ Form data updated successfully');
             }
             
-            setSuccess(`✅ ID document processed successfully! Customer data saved with ID: ${result.customerId}`);
+            setSuccess(tr(`✅ ID document processed successfully! Customer data saved with ID: ${result.customerId}`, `✅ Document d'identité traité avec succès ! Données client enregistrées avec l'ID : ${result.customerId}`));
           } else {
             console.warn('⚠️ Could not fetch complete customer data:', customerResult.error);
-            setSuccess(`✅ ID document processed successfully! Customer ID: ${result.customerId}`);
+            setSuccess(tr(`✅ ID document processed successfully! Customer ID: ${result.customerId}`, `✅ Document d'identité traité avec succès ! ID client : ${result.customerId}`));
           }
         } else {
-          setSuccess('✅ ID document processed successfully!');
+          setSuccess(tr('✅ ID document processed successfully!', "✅ Document d'identité traité avec succès !"));
         }
         
       } else {
-        setError(result.error || 'Failed to process ID document');
+        setError(result.error || tr('Failed to process ID document', "Impossible de traiter le document d'identité"));
         setDebugInfo(result);
       }
 
     } catch (err) {
       console.error('❌ OCR processing error:', err);
-      setError(`OCR processing failed: ${err.message}`);
+      setError(tr(`OCR processing failed: ${err.message}`, `Le traitement OCR a échoué : ${err.message}`));
       setDebugInfo({ error: err.message, stack: err.stack });
     } finally {
       setIsProcessing(false);
@@ -194,10 +197,10 @@ const UnifiedIDScanModal = ({
             <div className="text-center">
               <Camera className="h-12 w-12 text-gray-400 mx-auto mb-4" />
               <p className="text-lg font-medium text-gray-900 mb-2">
-                Upload ID Document
+                {tr('Upload ID Document', "Téléverser le document d'identité")}
               </p>
               <p className="text-sm text-gray-600 mb-4">
-                Supports Moroccan ID cards, driver's licenses, and passports
+                {tr("Supports Moroccan ID cards, driver's licenses, and passports", "Prend en charge les cartes d'identité marocaines, les permis de conduire et les passeports")}
               </p>
               
               <input
@@ -215,7 +218,7 @@ const UnifiedIDScanModal = ({
                 className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
               >
                 <Upload className="h-4 w-4 mr-2" />
-                Choose Image
+                {tr('Choose Image', 'Choisir une image')}
               </button>
             </div>
 
@@ -239,17 +242,17 @@ const UnifiedIDScanModal = ({
                 className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               >
                 <Camera className="h-5 w-5 mr-2" />
-                Process ID Document
+                {tr('Process ID Document', "Traiter le document d'identité")}
               </button>
             </div>
           )}
 
-          {/* Processing Status */}
+          {/* Statut du traitement */}
           {isProcessing && (
             <div className="text-center">
               <div className="inline-flex items-center px-6 py-3 text-blue-600">
                 <Loader2 className="h-5 w-5 animate-spin mr-2" />
-                Processing document with Google Gemini Vision...
+                {tr('Processing document with Google Gemini Vision...', 'Traitement du document avec Google Gemini Vision...')}
               </div>
             </div>
           )}
@@ -260,20 +263,20 @@ const UnifiedIDScanModal = ({
               <div className="flex">
                 <CheckCircle className="h-5 w-5 text-green-400 mt-0.5 mr-3" />
                 <div>
-                  <h3 className="text-sm font-medium text-green-800">Success!</h3>
+                  <h3 className="text-sm font-medium text-green-800">Succès !</h3>
                   <p className="text-sm text-green-700 mt-1">{success}</p>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Error Message */}
+          {/* Message d'erreur */}
           {error && (
             <div className="bg-red-50 border border-red-200 rounded-md p-4">
               <div className="flex">
                 <AlertCircle className="h-5 w-5 text-red-400 mt-0.5 mr-3" />
                 <div>
-                  <h3 className="text-sm font-medium text-red-800">Error</h3>
+                  <h3 className="text-sm font-medium text-red-800">Erreur</h3>
                   <p className="text-sm text-red-700 mt-1">{error}</p>
                 </div>
               </div>
@@ -285,45 +288,45 @@ const UnifiedIDScanModal = ({
             <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-medium text-blue-900">
-                  Extracted Information
+                  {tr('Extracted Information', 'Informations extraites')}
                 </h3>
                 <button
                   onClick={() => setShowRawData(!showRawData)}
                   className="inline-flex items-center px-3 py-1 text-sm text-blue-600 hover:text-blue-800"
                 >
                   {showRawData ? <EyeOff className="h-4 w-4 mr-1" /> : <Eye className="h-4 w-4 mr-1" />}
-                  {showRawData ? 'Hide' : 'Show'} Raw Data
+                  {showRawData ? tr('Hide', 'Masquer') : tr('Show', 'Afficher')} {tr('Raw Data', 'les données brutes')}
                 </button>
               </div>
 
               {/* Formatted Data Display */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Full Name</label>
+                  <label className="block text-sm font-medium text-gray-700">Nom complet</label>
                   <div className="mt-1 text-sm">{renderFieldValue(extractedData.full_name)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Document Number</label>
+                  <label className="block text-sm font-medium text-gray-700">Numéro du document</label>
                   <div className="mt-1 text-sm">{renderFieldValue(extractedData.document_number)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Date of Birth</label>
+                  <label className="block text-sm font-medium text-gray-700">{tr('Date of Birth', 'Date de naissance')}</label>
                   <div className="mt-1 text-sm">{renderFieldValue(extractedData.date_of_birth)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Nationality</label>
+                  <label className="block text-sm font-medium text-gray-700">{tr('Nationality', 'Nationalité')}</label>
                   <div className="mt-1 text-sm">{renderFieldValue(extractedData.nationality)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Gender</label>
+                  <label className="block text-sm font-medium text-gray-700">{tr('Gender', 'Genre')}</label>
                   <div className="mt-1 text-sm">{renderFieldValue(extractedData.gender)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Confidence</label>
+                  <label className="block text-sm font-medium text-gray-700">{tr('Confidence', 'Confiance')}</label>
                   <div className="mt-1 text-sm">
                     {extractedData.confidence_estimate ? 
                       `${Math.round(extractedData.confidence_estimate * 100)}%` : 
-                      'N/A'
+                      tr('N/A', 'N/D')
                     }
                   </div>
                 </div>
@@ -332,7 +335,7 @@ const UnifiedIDScanModal = ({
               {/* Raw Data Display */}
               {showRawData && (
                 <div className="mt-4">
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Raw Extracted Data:</h4>
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">{tr('Raw Extracted Data:', 'Données extraites brutes :')}</h4>
                   <pre className="bg-gray-100 p-3 rounded text-xs overflow-x-auto">
                     {JSON.stringify(extractedData, null, 2)}
                   </pre>
@@ -345,16 +348,16 @@ const UnifiedIDScanModal = ({
           {savedCustomer && (
             <div className="bg-green-50 border border-green-200 rounded-md p-4">
               <h3 className="text-lg font-medium text-green-900 mb-4">
-                Saved Customer Data
+                Données client enregistrées
               </h3>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Customer ID</label>
+                  <label className="block text-sm font-medium text-gray-700">ID client</label>
                   <div className="mt-1 text-sm font-mono">{savedCustomer.id}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Full Name</label>
+                  <label className="block text-sm font-medium text-gray-700">Nom complet</label>
                   <div className="mt-1 text-sm">{renderFieldValue(savedCustomer.full_name)}</div>
                 </div>
                 <div>
@@ -362,30 +365,30 @@ const UnifiedIDScanModal = ({
                   <div className="mt-1 text-sm">{renderFieldValue(savedCustomer.email)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Phone</label>
+                  <label className="block text-sm font-medium text-gray-700">Téléphone</label>
                   <div className="mt-1 text-sm">{renderFieldValue(savedCustomer.phone)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">ID Number</label>
+                  <label className="block text-sm font-medium text-gray-700">Numéro d'identité</label>
                   <div className="mt-1 text-sm">{renderFieldValue(savedCustomer.id_number)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">License Number</label>
+                  <label className="block text-sm font-medium text-gray-700">Numéro de permis</label>
                   <div className="mt-1 text-sm">{renderFieldValue(savedCustomer.licence_number)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Date of Birth</label>
+                  <label className="block text-sm font-medium text-gray-700">Date de naissance</label>
                   <div className="mt-1 text-sm">{renderFieldValue(savedCustomer.date_of_birth)}</div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Nationality</label>
+                  <label className="block text-sm font-medium text-gray-700">Nationalité</label>
                   <div className="mt-1 text-sm">{renderFieldValue(savedCustomer.nationality)}</div>
                 </div>
               </div>
 
               {showRawData && (
                 <div className="mt-4">
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Complete Database Record:</h4>
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">{tr('Complete Database Record:', 'Enregistrement complet en base de données :')}</h4>
                   <pre className="bg-gray-100 p-3 rounded text-xs overflow-x-auto">
                     {JSON.stringify(savedCustomer, null, 2)}
                   </pre>
@@ -398,7 +401,7 @@ const UnifiedIDScanModal = ({
           {debugInfo && showRawData && (
             <div className="bg-yellow-50 border border-yellow-200 rounded-md p-4">
               <h3 className="text-lg font-medium text-yellow-900 mb-4">
-                Debug Information
+                {tr('Debug Information', 'Informations de débogage')}
               </h3>
               <pre className="bg-gray-100 p-3 rounded text-xs overflow-x-auto">
                 {JSON.stringify(debugInfo, null, 2)}
@@ -413,7 +416,7 @@ const UnifiedIDScanModal = ({
               className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               disabled={isProcessing}
             >
-              {success ? 'Done' : 'Cancel'}
+              {success ? tr('Done', 'Terminé') : tr('Cancel', 'Annuler')}
             </button>
           </div>
         </div>

@@ -67,6 +67,8 @@ class SettingsService {
       // System Settings
       maxFileSize: 10485760, // 10MB
       allowedFileTypes: ['jpg', 'jpeg', 'png', 'pdf'],
+      rentalMediaRetentionEnabled: false,
+      rentalMediaRetentionDays: 30,
       
       // Notification Settings
       emailNotifications: true,

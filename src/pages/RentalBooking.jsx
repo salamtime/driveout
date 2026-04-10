@@ -104,7 +104,7 @@ const RentalBooking = () => {
         type: 'warning',
         message: t('booking.loginRequired')
       }));
-      navigate('/auth', { state: { from: '/rental-booking' } });
+      navigate('/login', { state: { from: '/rental-booking' } });
     }
   }, [currentStep, isAuthenticated, dispatch, navigate, t]);
 

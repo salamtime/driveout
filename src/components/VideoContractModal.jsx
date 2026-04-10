@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { X, Upload, Play, Download, AlertCircle, CheckCircle, FileVideo, Smartphone, Monitor } from 'lucide-react';
+import i18n from '../i18n';
 
 const VideoContractModal = ({ 
   isOpen, 
@@ -7,8 +8,11 @@ const VideoContractModal = ({
   onVideoSave, 
   rentalId, 
   phase = 'opening_inspection',
-  customerName = 'Customer' 
+  customerName = 'Customer'
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
+  const displayCustomerName = customerName || tr('Customer', 'Client');
   // Core state
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
@@ -46,14 +50,14 @@ const VideoContractModal = ({
 
     // Validate file type
     if (!file.type.startsWith('video/')) {
-      setError('Please select a valid video file.');
+      setError(tr('Please select a valid video file.', 'Veuillez sélectionner un fichier vidéo valide.'));
       return;
     }
 
     // Validate file size (max 100MB)
     const maxSize = 100 * 1024 * 1024; // 100MB
     if (file.size > maxSize) {
-      setError('File size must be less than 100MB.');
+      setError(tr('File size must be less than 100MB.', 'La taille du fichier doit être inférieure à 100 Mo.'));
       return;
     }
 
@@ -70,7 +74,7 @@ const VideoContractModal = ({
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
 
-    setSuccess(`Video selected: ${file.name} (${formatFileSize(file.size)})`);
+    setSuccess(`${tr('Video selected:', 'Vidéo sélectionnée :')} ${file.name} (${formatFileSize(file.size)})`);
   };
 
   // Open file picker
@@ -112,7 +116,7 @@ const VideoContractModal = ({
         size: selectedFile.size
       });
 
-      setSuccess('Video uploaded successfully!');
+      setSuccess(tr('Video uploaded successfully!', 'Vidéo téléversée avec succès !'));
       
       // Reset state and close modal
       setTimeout(() => {
@@ -122,7 +126,7 @@ const VideoContractModal = ({
 
     } catch (err) {
       console.error('❌ Save video failed:', err);
-      setError(`Failed to save video: ${err.message}`);
+      setError(`${tr('Failed to save video:', "Impossible d'enregistrer la vidéo :")} ${err.message}`);
     } finally {
       setUploading(false);
     }
@@ -167,16 +171,16 @@ const VideoContractModal = ({
 
   // Format file size helper
   const formatFileSize = (bytes) => {
-    if (bytes === 0) return '0 Bytes';
+    if (bytes === 0) return tr('0 Bytes', '0 octet');
     const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const sizes = isFrench ? ['octets', 'Ko', 'Mo', 'Go'] : ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
   // Format duration helper
   const formatDuration = (seconds) => {
-    if (!seconds || seconds === 0) return 'Unknown';
+    if (!seconds || seconds === 0) return tr('Unknown', 'Inconnue');
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -191,10 +195,10 @@ const VideoContractModal = ({
         <div className="flex items-center justify-between p-4 border-b">
           <div>
             <h2 className="text-xl font-semibold text-gray-900">
-              Upload Video - {phase.replace('_', ' ').toUpperCase()}
+              {tr('Upload Video', 'Téléverser la vidéo')} - {phase.replace('_', ' ').toUpperCase()}
             </h2>
             <p className="text-sm text-gray-600">
-              Customer: {customerName} | Rental ID: {rentalId}
+              {tr('Customer', 'Client')} : {displayCustomerName} | {tr('Rental ID', 'ID location')} : {rentalId}
             </p>
           </div>
           <button
@@ -210,15 +214,15 @@ const VideoContractModal = ({
           <div className="flex items-center gap-2 mb-2">
             {deviceInfo.isMobile ? <Smartphone className="h-4 w-4" /> : <Monitor className="h-4 w-4" />}
             <span className="font-medium text-sm">
-              Device: {deviceInfo.isMobile ? 'Mobile' : 'Desktop'} | 
+              {tr('Device', 'Appareil')} : {deviceInfo.isMobile ? tr('Mobile', 'Mobile') : tr('Desktop', 'Ordinateur')} | 
               {deviceInfo.browser} | 
-              {deviceInfo.isIOS ? 'iOS' : deviceInfo.isAndroid ? 'Android' : 'Other'}
+              {deviceInfo.isIOS ? 'iOS' : deviceInfo.isAndroid ? 'Android' : tr('Other', 'Autre')}
             </span>
           </div>
           
           <div className="text-xs text-gray-600">
-            <span className="font-medium">Upload Method:</span>
-            <span className="text-blue-600"> Gallery/File Picker</span>
+            <span className="font-medium">{tr('Upload Method:', 'Méthode de téléversement :')}</span>
+            <span className="text-blue-600"> {tr('Gallery/File Picker', 'Galerie / sélecteur de fichiers')}</span>
           </div>
         </div>
 
@@ -279,14 +283,14 @@ const VideoContractModal = ({
                   <div className="text-center">
                     <FileVideo className="h-12 w-12 mx-auto mb-4 text-gray-400" />
                     <p className="text-lg font-medium text-gray-600 mb-2">
-                      Select Video from Gallery
+                      {tr('Select Video from Gallery', 'Sélectionner une vidéo depuis la galerie')}
                     </p>
                     <p className="text-sm text-gray-500 mb-4">
-                      Click to browse and select a video file
+                      {tr('Click to browse and select a video file', 'Cliquez pour parcourir et sélectionner une vidéo')}
                     </p>
                     <div className="inline-flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
                       <Upload className="h-4 w-4" />
-                      Upload from Gallery
+                      {tr('Upload from Gallery', 'Téléverser depuis la galerie')}
                     </div>
                   </div>
                 </div>
@@ -303,7 +307,7 @@ const VideoContractModal = ({
                 style={{ minHeight: '48px', minWidth: '160px' }}
               >
                 <Upload className="h-5 w-5" />
-                Upload from Gallery
+                {tr('Upload from Gallery', 'Téléverser depuis la galerie')}
               </button>
             ) : (
               <>
@@ -316,12 +320,12 @@ const VideoContractModal = ({
                   {uploading ? (
                     <>
                       <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                      Uploading...
+                      {tr('Uploading...', 'Téléversement...')}
                     </>
                   ) : (
                     <>
                       <CheckCircle className="h-5 w-5" />
-                      Save Video
+                      {tr('Save Video', 'Enregistrer la vidéo')}
                     </>
                   )}
                 </button>
@@ -332,7 +336,7 @@ const VideoContractModal = ({
                   style={{ minHeight: '48px', minWidth: '120px' }}
                 >
                   <Download className="h-5 w-5" />
-                  Download
+                  {tr('Download', 'Télécharger')}
                 </button>
 
                 <button
@@ -341,7 +345,7 @@ const VideoContractModal = ({
                   style={{ minHeight: '48px', minWidth: '140px' }}
                 >
                   <Upload className="h-5 w-5" />
-                  Choose Different
+                  {tr('Choose Different', 'Choisir une autre')}
                 </button>
 
                 <button
@@ -350,7 +354,7 @@ const VideoContractModal = ({
                   style={{ minHeight: '48px', minWidth: '120px' }}
                 >
                   <X className="h-5 w-5" />
-                  Clear
+                  {tr('Clear', 'Effacer')}
                 </button>
               </>
             )}
@@ -359,26 +363,26 @@ const VideoContractModal = ({
           {/* Selected File Info */}
           {selectedFile && (
             <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-              <h3 className="text-lg font-medium text-gray-900 mb-3">Selected Video</h3>
+              <h3 className="text-lg font-medium text-gray-900 mb-3">{tr('Selected Video', 'Vidéo sélectionnée')}</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="font-medium text-gray-700">Filename:</span>
+                  <span className="font-medium text-gray-700">{tr('Filename:', 'Nom du fichier :')}</span>
                   <p className="text-gray-600 break-all">{selectedFile.name}</p>
                 </div>
                 <div>
-                  <span className="font-medium text-gray-700">File Size:</span>
+                  <span className="font-medium text-gray-700">{tr('File Size:', 'Taille du fichier :')}</span>
                   <p className="text-gray-600">{formatFileSize(selectedFile.size)}</p>
                 </div>
                 <div>
-                  <span className="font-medium text-gray-700">Type:</span>
+                  <span className="font-medium text-gray-700">{tr('Type:', 'Type :')}</span>
                   <p className="text-gray-600">{selectedFile.type}</p>
                 </div>
                 <div>
-                  <span className="font-medium text-gray-700">Duration:</span>
+                  <span className="font-medium text-gray-700">{tr('Duration:', 'Durée :')}</span>
                   <p className="text-gray-600">
                     {videoPreviewRef.current?.duration 
                       ? formatDuration(videoPreviewRef.current.duration)
-                      : 'Loading...'
+                      : tr('Loading...', 'Chargement...')
                     }
                   </p>
                 </div>
@@ -389,15 +393,15 @@ const VideoContractModal = ({
           {/* Mobile Instructions */}
           {deviceInfo.isMobile && (
             <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-              <h4 className="font-medium text-yellow-800 mb-2">📱 Mobile Upload Tips</h4>
+              <h4 className="font-medium text-yellow-800 mb-2">📱 {tr('Mobile Upload Tips', 'Conseils de téléversement mobile')}</h4>
               <ul className="text-sm text-yellow-700 space-y-1">
-                <li>• You can select videos from your gallery or camera roll</li>
-                <li>• Ensure stable internet connection for uploading</li>
-                <li>• Keep the app open during upload process</li>
-                <li>• Supported formats: MP4, MOV, AVI, WebM</li>
-                <li>• Maximum file size: 100MB</li>
+                <li>• {tr('You can select videos from your gallery or camera roll', 'Vous pouvez sélectionner des vidéos depuis votre galerie ou pellicule')}</li>
+                <li>• {tr('Ensure stable internet connection for uploading', 'Assurez-vous d’avoir une connexion internet stable pour le téléversement')}</li>
+                <li>• {tr('Keep the app open during upload process', "Gardez l'application ouverte pendant le téléversement")}</li>
+                <li>• {tr('Supported formats: MP4, MOV, AVI, WebM', 'Formats pris en charge : MP4, MOV, AVI, WebM')}</li>
+                <li>• {tr('Maximum file size: 100MB', 'Taille maximale du fichier : 100 Mo')}</li>
                 {deviceInfo.isIOS && (
-                  <li>• iOS: Videos will be automatically converted if needed</li>
+                  <li>• {tr('iOS: Videos will be automatically converted if needed', 'iOS : les vidéos seront automatiquement converties si nécessaire')}</li>
                 )}
               </ul>
             </div>

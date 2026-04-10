@@ -2,8 +2,9 @@ import React, { useRef, useState, useEffect } from 'react';
 import { X, Upload, Image as ImageIcon, FileText, Trash2, Camera, ChevronDown, ChevronUp } from 'lucide-react';
 import FuelTransactionService from '../../services/FuelTransactionService';
 import { useAuth } from '../../contexts/AuthContext';
-import { DEFAULT_VEHICLE_TANK_LITERS, litersToLines, roundTo } from '../../utils/fuelMath';
+import { DEFAULT_FUEL_LINES, DEFAULT_VEHICLE_TANK_LITERS, linesToLiters, litersToLines, roundTo } from '../../utils/fuelMath';
 import { formatVehicleLabel } from '../../utils/vehicleLabels';
+import i18n from '../../i18n';
 
 const TRANSACTION_TYPE_OPTIONS = [
   { value: 'tank_refill', label: '⛽ Tank In' },
@@ -12,9 +13,9 @@ const TRANSACTION_TYPE_OPTIONS = [
   { value: 'withdrawal', label: '🔄 Transfer' }
 ];
 
-const QUICK_LITER_PRESETS = [5, 10, 15, 20];
-
 const normalizeDecimalInput = (value = '') => value.replace(',', '.');
+const roundToHalfLiter = (value) => roundTo(Math.round((Number(value) || 0) * 2) / 2, 1);
+const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
 
 const AddFuelTransactionModal = ({
   isOpen,
@@ -62,18 +63,29 @@ const AddFuelTransactionModal = ({
     (Array.isArray(vehicleStates) ? vehicleStates : []).find((state) => String(state.id) === String(vehicleId)) || null;
 
   const loadContextData = async (vehicleId = '') => {
+    if (providedTankSummary) {
+      setTankSummary(providedTankSummary);
+    }
+
     const cachedVehicleState = vehicleId ? getCachedVehicleFuelState(vehicleId) : null;
     if (cachedVehicleState) {
       setVehicleFuelState(cachedVehicleState);
     }
 
+    const needsTankFetch = !providedTankSummary;
+    const needsVehicleFetch = Boolean(vehicleId) && !cachedVehicleState;
+
+    if (!needsTankFetch && !needsVehicleFetch) {
+      return;
+    }
+
     const [tank, vehicleState] = await Promise.all([
-      providedTankSummary ? Promise.resolve(providedTankSummary) : FuelTransactionService.getFuelTankData(),
-      vehicleId ? FuelTransactionService.getVehicleFuelState(vehicleId) : Promise.resolve(null),
+      needsTankFetch ? FuelTransactionService.getFuelTankData() : Promise.resolve(providedTankSummary),
+      needsVehicleFetch ? FuelTransactionService.getVehicleFuelState(vehicleId) : Promise.resolve(cachedVehicleState),
     ]);
 
-    setTankSummary(tank);
-    setVehicleFuelState(vehicleState || cachedVehicleState);
+    setTankSummary(tank || providedTankSummary || null);
+    setVehicleFuelState(vehicleState || cachedVehicleState || null);
   };
 
   // Populate form when editing
@@ -81,8 +93,6 @@ const AddFuelTransactionModal = ({
     if (isOpen) {
       loadContextData(editTransaction?.vehicle_id || initialVehicleId || '');
       if (editTransaction) {
-        console.log('📝 EDIT MODE: Populating form with transaction:', editTransaction);
-        
         // Extract the real ID from prefixed ID (e.g., "refill-123" -> "123")
         const realId = editTransaction.id?.replace(/^(refill|withdrawal)-/, '') || editTransaction.id;
         
@@ -106,11 +116,8 @@ const AddFuelTransactionModal = ({
         
         // Handle existing invoice image preview
         if (editTransaction.invoice_image) {
-          console.log('🖼️ Processing existing invoice image:', editTransaction.invoice_image);
-          
           // Check if it's a base64 image (has 'data' property with base64 string)
           if (editTransaction.invoice_image.data) {
-            console.log('✅ Base64 image detected, setting preview');
             setImagePreview(editTransaction.invoice_image.data);
             setExistingImageInfo({
               name: editTransaction.invoice_image.name || 'Existing invoice',
@@ -120,7 +127,6 @@ const AddFuelTransactionModal = ({
           } 
           // Check if it's a storage URL (has 'url' property)
           else if (editTransaction.invoice_image.url) {
-            console.log('✅ Storage URL detected, setting preview');
             setImagePreview(editTransaction.invoice_image.url);
             setExistingImageInfo({
               name: editTransaction.invoice_image.name || 'Existing invoice',
@@ -130,7 +136,6 @@ const AddFuelTransactionModal = ({
           }
           // Check if it's a PDF
           else if (editTransaction.invoice_image.type === 'application/pdf') {
-            console.log('✅ PDF detected');
             setImagePreview('pdf');
             setExistingImageInfo({
               name: editTransaction.invoice_image.name || 'Existing invoice.pdf',
@@ -139,7 +144,6 @@ const AddFuelTransactionModal = ({
             });
           }
           else {
-            console.log('⚠️ Unknown invoice image format');
             setImagePreview(null);
             setExistingImageInfo(null);
           }
@@ -148,7 +152,6 @@ const AddFuelTransactionModal = ({
           setExistingImageInfo(null);
         }
       } else {
-        console.log('➕ ADD MODE: Resetting form');
         // Reset form for new transaction
         setFormData({
           transaction_date: new Date().toISOString().split('T')[0],
@@ -211,6 +214,62 @@ const AddFuelTransactionModal = ({
       return;
     }
 
+    if (name === 'amount' && (formData.transaction_type === 'vehicle_refill' || formData.transaction_type === 'withdrawal')) {
+      const normalizedValue = normalizeDecimalInput(value);
+      const numericAmount = Number(normalizedValue);
+      const roundedAmount = Number.isFinite(numericAmount) ? roundToHalfLiter(numericAmount) : 0;
+      const safeAmount = maxVehicleLiters > 0 ? Math.min(roundedAmount, roundToHalfLiter(maxVehicleLiters)) : roundedAmount;
+
+      setFormData((prev) => {
+        if (prev.transaction_type === 'withdrawal') {
+          return {
+            ...prev,
+            amount: normalizedValue === '' ? '' : String(safeAmount),
+            unit_price: '',
+            cost: ''
+          };
+        }
+        const unitPrice = parseFloat(prev.unit_price) || 0;
+        const totalCost = parseFloat(normalizeDecimalInput(prev.cost)) || 0;
+        const derivedUnitPrice = safeAmount > 0 && totalCost > 0 ? (totalCost / safeAmount).toFixed(2) : '';
+        return {
+          ...prev,
+          amount: normalizedValue === '' ? '' : String(safeAmount),
+          unit_price: unitPrice > 0 ? prev.unit_price : derivedUnitPrice,
+          cost: normalizedValue !== '' && safeAmount > 0 && unitPrice > 0 ? (safeAmount * unitPrice).toFixed(2) : prev.cost
+        };
+      });
+
+      if (errors[name]) {
+        setErrors((prev) => ({
+          ...prev,
+          [name]: ''
+        }));
+      }
+      return;
+    }
+
+    if (name === 'cost') {
+      const normalizedValue = normalizeDecimalInput(value);
+      setFormData(prev => {
+        const amount = parseFloat(prev.amount) || 0;
+        const totalCost = parseFloat(normalizedValue) || 0;
+        return {
+          ...prev,
+          cost: normalizedValue,
+          unit_price: amount > 0 && totalCost > 0 ? (totalCost / amount).toFixed(2) : prev.unit_price
+        };
+      });
+
+      if (errors[name]) {
+        setErrors(prev => ({
+          ...prev,
+          [name]: ''
+        }));
+      }
+      return;
+    }
+
     setFormData(prev => ({
       ...prev,
       [name]: value
@@ -221,7 +280,7 @@ const AddFuelTransactionModal = ({
     }
 
     // Calculate total cost when amount or unit price changes
-    if (name === 'amount' || name === 'unit_price') {
+    if ((name === 'amount' || name === 'unit_price') && formData.transaction_type !== 'withdrawal') {
       const amount = name === 'amount' ? parseFloat(value) || 0 : parseFloat(formData.amount) || 0;
       const unitPrice = name === 'unit_price'
         ? parseFloat(normalizeDecimalInput(value)) || 0
@@ -253,7 +312,6 @@ const AddFuelTransactionModal = ({
       source: nextType,
       vehicle_id: '',
       fuel_station: nextType === 'vehicle_refill' ? 'Direct Fill' : nextType === 'withdrawal' ? 'Main Tank' : nextType === 'tank_out' ? 'Main Tank' : '',
-      cost: nextType === 'withdrawal' ? '' : prev.cost
     }));
 
     setVehicleFuelState(null);
@@ -378,19 +436,19 @@ const AddFuelTransactionModal = ({
     const newErrors = {};
 
     if (!formData.transaction_date) {
-      newErrors.transaction_date = 'Transaction date is required';
+      newErrors.transaction_date = 'La date de transaction est requise';
     }
 
     if (!formData.transaction_type) {
-      newErrors.transaction_type = 'Transaction type is required';
+      newErrors.transaction_type = 'Le type de transaction est requis';
     }
 
     if (formData.transaction_type === 'vehicle_refill' && !formData.vehicle_id) {
-      newErrors.vehicle_id = 'Vehicle is required for vehicle refills';
+      newErrors.vehicle_id = 'Le véhicule est requis pour les remplissages de véhicule';
     }
 
     if (formData.transaction_type === 'withdrawal' && !formData.vehicle_id) {
-      newErrors.vehicle_id = 'Vehicle is required for withdrawals';
+      newErrors.vehicle_id = 'Le véhicule est requis pour les retraits';
     }
 
     const currentFuelLines = Number(vehicleFuelState?.current_fuel_lines || 0);
@@ -405,34 +463,34 @@ const AddFuelTransactionModal = ({
       );
 
     if (isVehicleFullForTransfer) {
-      newErrors.amount = 'This vehicle fuel tank is already full. Tank transfer is blocked.';
+      newErrors.amount = 'Le réservoir de ce véhicule est déjà plein. Le transfert depuis la cuve est bloqué.';
     }
 
     if (!formData.amount || parseFloat(formData.amount) <= 0) {
-      newErrors.amount = 'Amount must be greater than 0';
+      newErrors.amount = 'La quantité doit être supérieure à 0';
     }
 
     if (formData.transaction_type === 'tank_refill' && parseFloat(formData.amount || 0) > remainingTankLiters) {
-      newErrors.amount = `Max ${remainingTankLiters}L remaining`;
+      newErrors.amount = `Maximum ${remainingTankLiters}L restants`;
     }
 
     if (formData.transaction_type === 'tank_out' && parseFloat(formData.amount || 0) > currentTankLiters) {
-      newErrors.amount = `Max ${currentTankLiters}L available`;
+      newErrors.amount = `Maximum ${currentTankLiters}L disponibles`;
     }
 
     if (
       (formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') &&
       (!formData.unit_price || parseFloat(normalizeDecimalInput(formData.unit_price)) <= 0)
     ) {
-      newErrors.unit_price = 'Price per liter must be greater than 0';
+      newErrors.unit_price = 'Le prix par litre doit être supérieur à 0';
     }
 
     if (
       (formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') &&
       formData.cost &&
-      parseFloat(formData.cost) <= 0
+      parseFloat(normalizeDecimalInput(formData.cost)) <= 0
     ) {
-      newErrors.cost = 'Cost must be greater than 0';
+      newErrors.cost = 'Le coût doit être supérieur à 0';
     }
 
     setErrors(newErrors);
@@ -455,7 +513,6 @@ const AddFuelTransactionModal = ({
       if (formData.invoice_image) {
         // Check if it's a File object (new upload) or existing data
         if (formData.invoice_image instanceof File) {
-          console.log('📤 New image file uploaded, converting to base64...');
           // New file uploaded - convert to base64
           const reader = new FileReader();
           imageData = await new Promise((resolve) => {
@@ -467,14 +524,10 @@ const AddFuelTransactionModal = ({
             });
             reader.readAsDataURL(formData.invoice_image);
           });
-          console.log('✅ Image converted to base64');
         } else {
           // Existing image data - preserve it
-          console.log('💾 Preserving existing image data');
           imageData = formData.invoice_image;
         }
-      } else {
-        console.log('🗑️ No image data (will be set to null)');
       }
 
       const transactionData = {
@@ -489,16 +542,13 @@ const AddFuelTransactionModal = ({
 
       if (isEditMode) {
         // Update existing transaction
-        console.log('🔄 Updating transaction:', formData.id, 'with image:', imageData ? 'YES' : 'NO');
         result = await FuelTransactionService.updateTransaction(formData.id, transactionData);
       } else {
         // Create new transaction
-        console.log('➕ Creating new transaction with image:', imageData ? 'YES' : 'NO');
         result = await FuelTransactionService.createTransaction(transactionData);
       }
       
       if (result.success) {
-        console.log('✅ Transaction saved successfully:', result.transaction);
         // Call onSave callback if provided
         if (onSave && typeof onSave === 'function') {
           onSave(result.transaction);
@@ -508,11 +558,11 @@ const AddFuelTransactionModal = ({
         }
         onClose();
       } else {
-        setErrors({ submit: result.error || `Failed to ${isEditMode ? 'update' : 'create'} transaction` });
+        setErrors({ submit: result.error || `Impossible de ${isEditMode ? 'mettre à jour' : 'créer'} la transaction` });
       }
     } catch (error) {
       console.error('Error saving transaction:', error);
-      setErrors({ submit: 'An unexpected error occurred' });
+      setErrors({ submit: 'Une erreur inattendue est survenue' });
     } finally {
       setIsLoading(false);
     }
@@ -538,6 +588,13 @@ const AddFuelTransactionModal = ({
     0
   );
   const remainingTankLiters = Math.max(0, roundTo(tankCapacity - currentTankLiters, 2));
+  const projectedTankAfterVehicleFuel = roundTo(
+    Math.max(0, currentTankLiters - (Number(formData.amount || 0) || 0)),
+    2
+  );
+  const projectedTankAfterVehicleFuelPercent = tankCapacity > 0
+    ? Math.max(0, Math.min(100, (projectedTankAfterVehicleFuel / tankCapacity) * 100))
+    : 0;
   const projectedTankLiters = roundTo(Math.min(tankCapacity, currentTankLiters + (Number(formData.amount || 0) || 0)), 2);
   const projectedTankPercent = tankCapacity > 0 ? Math.min(100, (projectedTankLiters / tankCapacity) * 100) : 0;
 
@@ -565,12 +622,12 @@ const AddFuelTransactionModal = ({
 
     const vehicleTankCapacity = Number(vehicleFuelState?.tank_capacity_liters || DEFAULT_VEHICLE_TANK_LITERS);
     const currentFuelLiters = Number(vehicleFuelState?.current_fuel_liters || 0);
-    const vehicleRemaining = Math.max(0, roundTo(vehicleTankCapacity - currentFuelLiters, 2));
+    const vehicleRemaining = Math.max(0, roundToHalfLiter(vehicleTankCapacity - currentFuelLiters));
     const tankAvailable =
       formData.transaction_type === 'withdrawal'
-        ? Math.max(0, roundTo(Number(tankSummary?.current_volume_liters || 0), 2))
+        ? Math.max(0, roundToHalfLiter(Number(tankSummary?.current_volume_liters || 0)))
         : vehicleRemaining;
-    const maxLiters = Math.max(0, roundTo(Math.min(vehicleRemaining, tankAvailable), 2));
+    const maxLiters = Math.max(0, roundToHalfLiter(Math.min(vehicleRemaining, tankAvailable)));
 
     if (maxLiters <= 0) {
       return [];
@@ -578,7 +635,7 @@ const AddFuelTransactionModal = ({
 
     const options = [];
     for (let value = 0.5; value <= maxLiters; value += 0.5) {
-      options.push(roundTo(value, 2));
+      options.push(roundToHalfLiter(value));
     }
 
     if (!options.includes(maxLiters)) {
@@ -589,6 +646,33 @@ const AddFuelTransactionModal = ({
   })();
 
   const maxVehicleLiters = litersPickerOptions.length ? Number(litersPickerOptions[litersPickerOptions.length - 1]) : 0;
+  const currentVehicleLines = Number(vehicleFuelState?.current_fuel_lines || 0);
+  const currentVehicleLiters = Number(vehicleFuelState?.current_fuel_liters || 0);
+  const currentVehicleTankCapacity = Number(vehicleFuelState?.tank_capacity_liters || DEFAULT_VEHICLE_TANK_LITERS);
+  const maxReachableTransferLines = maxVehicleLiters > 0
+    ? litersToLines(roundTo(currentVehicleLiters + maxVehicleLiters, 3), currentVehicleTankCapacity, DEFAULT_FUEL_LINES)
+    : currentVehicleLines;
+  const selectedTransferTargetLines = formData.amount
+    ? litersToLines(roundTo(currentVehicleLiters + Number(formData.amount || 0), 3), currentVehicleTankCapacity, DEFAULT_FUEL_LINES)
+    : null;
+  const selectedAddedLinesApprox = formData.amount && currentVehicleTankCapacity > 0
+    ? roundTo((Number(formData.amount || 0) / currentVehicleTankCapacity) * DEFAULT_FUEL_LINES, 1)
+    : 0;
+  const applyTransferTargetLine = (targetLines) => {
+    const safeTargetLines = Math.max(0, Math.min(DEFAULT_FUEL_LINES, Number(targetLines) || 0));
+    const targetLiters = linesToLiters(safeTargetLines, currentVehicleTankCapacity, DEFAULT_FUEL_LINES);
+    const litersNeeded = Math.max(0, roundToHalfLiter(targetLiters - currentVehicleLiters));
+    const maxAllowedLiters = maxVehicleLiters > 0 ? Math.min(roundToHalfLiter(maxVehicleLiters), litersNeeded) : litersNeeded;
+
+    setFormData((prev) => ({
+      ...prev,
+      amount: maxAllowedLiters > 0 ? String(maxAllowedLiters) : '',
+    }));
+
+    if (errors.amount) {
+      setErrors((prev) => ({ ...prev, amount: '' }));
+    }
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -602,44 +686,26 @@ const AddFuelTransactionModal = ({
     }));
   }, [isOpen, editTransaction, formData.transaction_type, formData.vehicle_id, maxVehicleLiters]);
 
-  const quickLiterOptions = (() => {
-    if (formData.transaction_type !== 'vehicle_refill' && formData.transaction_type !== 'withdrawal') {
-      return [];
-    }
-
-    const filtered = QUICK_LITER_PRESETS.filter((value) => value <= maxVehicleLiters);
-    if (maxVehicleLiters > 0 && !filtered.includes(maxVehicleLiters)) {
-      filtered.push(maxVehicleLiters);
-    }
-    return Array.from(new Set(filtered)).sort((a, b) => a - b);
-  })();
-
-  // Log for debugging
-  console.log('🔍 MODAL: Render', {
-    isEditMode,
-    editTransaction: editTransaction?.id,
-    formData: formData,
-    imagePreview: imagePreview ? (imagePreview === 'pdf' ? 'PDF' : 'Image') : null,
-    existingImageInfo,
-    hasInvoiceImage: !!formData.invoice_image,
-    invoiceImageType: formData.invoice_image instanceof File ? 'File' : (formData.invoice_image ? 'Data' : 'null'),
-    vehiclesCount: safeVehicles.length
-  });
-
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className={`bg-white rounded-lg shadow-xl w-full max-h-[90vh] overflow-y-auto ${
+    <div
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className={`bg-white rounded-lg shadow-xl w-full max-h-[90vh] overflow-y-auto ${
         formData.transaction_type === 'vehicle_refill' ? 'max-w-2xl' : 'max-w-md'
-      }`}>
+      }`}
+      >
         <div className="flex items-center justify-between p-6 border-b">
           <h2 className="text-xl font-semibold text-gray-900">
             {modalTitle} {formData.transaction_type === 'tank_refill'
-              ? '⛽ Tank In'
+              ? `⛽ ${tr('Tank In', 'Entrée réservoir')}`
               : formData.transaction_type === 'tank_out'
-                ? '🛢️ Tank Out'
+                ? `🛢️ ${tr('Tank Out', 'Sortie réservoir')}`
               : formData.transaction_type === 'vehicle_refill'
-                ? '🚗 Direct Fill'
-                : '🔄 Transfer'}
+                ? `🚗 ${tr('Direct Fill', 'Remplissage direct')}`
+                : `🔄 ${tr('Transfer', 'Transfert')}`}
           </h2>
           <button
             onClick={onClose}
@@ -660,7 +726,7 @@ const AddFuelTransactionModal = ({
           {formData.transaction_type !== 'vehicle_refill' && formData.transaction_type !== 'tank_out' && (
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              {formData.transaction_type === 'withdrawal' ? 'Withdrawal' : 'Refill'} Date *
+              {formData.transaction_type === 'withdrawal' ? tr('Withdrawal', 'Retrait') : tr('Refill', 'Remplissage')} {tr('Date', 'Date')} *
             </label>
             <input
               type="date"
@@ -708,9 +774,9 @@ const AddFuelTransactionModal = ({
               </div>
               {Number(formData.amount || 0) > 0 && (
                 <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                  {formData.transaction_type === 'tank_refill'
-                    ? `After refill: ${projectedTankLiters}L (${projectedTankPercent.toFixed(0)}%)`
-                    : `After removal: ${roundTo(Math.max(0, currentTankLiters - (Number(formData.amount || 0) || 0)), 2)}L (${tankCapacity > 0 ? Math.max(0, ((Math.max(0, currentTankLiters - (Number(formData.amount || 0) || 0))) / tankCapacity) * 100).toFixed(0) : 0}%)`}
+                      {formData.transaction_type === 'tank_refill'
+                    ? `${tr('After refill:', 'Après remplissage :')} ${projectedTankLiters}L (${projectedTankPercent.toFixed(0)}%)`
+                    : `${tr('After withdrawal:', 'Après retrait :')} ${roundTo(Math.max(0, currentTankLiters - (Number(formData.amount || 0) || 0)), 2)}L (${tankCapacity > 0 ? Math.max(0, ((Math.max(0, currentTankLiters - (Number(formData.amount || 0) || 0))) / tankCapacity) * 100).toFixed(0) : 0}%)`}
                 </div>
               )}
             </div>
@@ -725,7 +791,7 @@ const AddFuelTransactionModal = ({
               {selectedVehicle?.plate_number && (
                 <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                    Selected vehicle
+                    {tr('Selected vehicle', 'Véhicule sélectionné')}
                   </p>
                   <div className="mt-2 flex items-center justify-between gap-3">
                     <div>
@@ -738,7 +804,7 @@ const AddFuelTransactionModal = ({
                       </p>
                     </div>
                     <span className="rounded-full bg-white px-3 py-1 text-xs font-bold uppercase tracking-[0.14em] text-blue-700 shadow-sm">
-                      {formData.transaction_type === 'vehicle_refill' ? 'Direct Fill' : 'Transfer'}
+                      {formData.transaction_type === 'vehicle_refill' ? tr('Direct Fill', 'Remplissage direct') : tr('Transfer', 'Transfert')}
                     </span>
                   </div>
                 </div>
@@ -747,10 +813,12 @@ const AddFuelTransactionModal = ({
                 <div className="mb-2 flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-900">
-                      {formData.transaction_type === 'vehicle_refill' ? 'Select vehicle' : 'Select destination vehicle'}
+                      {formData.transaction_type === 'vehicle_refill'
+                        ? tr('Select a vehicle', 'Sélectionner un véhicule')
+                        : tr('Select the destination vehicle', 'Sélectionner le véhicule de destination')}
                     </p>
                   </div>
-                  <p className="text-xs text-gray-500">{safeVehicles.length} vehicles</p>
+                  <p className="text-xs text-gray-500">{safeVehicles.length} {tr('vehicles', 'véhicules')}</p>
                 </div>
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {safeVehicles.map((vehicle) => {
@@ -765,6 +833,7 @@ const AddFuelTransactionModal = ({
                             ...prev,
                             vehicle_id: String(vehicle.id),
                             odometer_reading: getVehicleCurrentOdometer(vehicle.id),
+                            amount: '',
                           }));
                           setVehicleFuelState(cachedState);
                           loadContextData(vehicle.id);
@@ -779,11 +848,11 @@ const AddFuelTransactionModal = ({
                         }`}
                       >
                         <p className={`font-mono text-xs font-semibold tracking-wide ${isActive ? 'text-blue-100' : 'text-blue-700'}`}>
-                          {vehicle.plate_number || 'No Plate'}
+                          {vehicle.plate_number || tr('No plate', 'Sans plaque')}
                         </p>
                         <p className="mt-1 text-sm font-semibold">{vehicle.name}</p>
                         <div className={`mt-1 flex items-center gap-2 text-xs ${isActive ? 'text-blue-100' : 'text-gray-500'}`}>
-                          <span>{vehicle.model || 'No model'}</span>
+                          <span>{vehicle.model || tr('No model', 'Sans modèle')}</span>
                           {(() => {
                             const state = getCachedVehicleFuelState(vehicle.id);
                             if (!state) return null;
@@ -794,7 +863,7 @@ const AddFuelTransactionModal = ({
                                   {Number(state.current_fuel_lines || 0)}/8
                                 </span>
                                 <span>
-                                  {roundTo(Number(state.current_fuel_liters || 0), 2)}L
+                                  {roundToHalfLiter(Number(state.current_fuel_liters || 0)).toFixed(1)}L
                                 </span>
                               </>
                             );
@@ -837,7 +906,7 @@ const AddFuelTransactionModal = ({
                 <p className="text-red-500 text-sm mt-1">{errors.vehicle_id}</p>
               )}
               {safeVehicles.length === 0 && (
-                <p className="text-yellow-600 text-sm mt-1">⚠️ No vehicles available. Please add vehicles first.</p>
+                <p className="text-yellow-600 text-sm mt-1">⚠️ {tr('No vehicles available. Please add vehicles first.', "Aucun véhicule disponible. Veuillez d'abord ajouter des véhicules.")}</p>
               )}
             </div>
           )}
@@ -845,7 +914,7 @@ const AddFuelTransactionModal = ({
           {formData.transaction_type === 'withdrawal' && tankSummary && (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div className="mb-3 flex items-center justify-between">
-                <p className="text-sm font-semibold text-slate-900">Main Tank Available</p>
+                <p className="text-sm font-semibold text-slate-900">{tr('Main tank available', 'Cuve principale disponible')}</p>
                 <p className="text-sm font-semibold text-slate-700">
                   {roundTo(Number(tankSummary.current_volume_liters || 0), 2)}L / {tankCapacity}L
                 </p>
@@ -860,18 +929,83 @@ const AddFuelTransactionModal = ({
               </div>
               <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
                 <div className="rounded-lg bg-white px-3 py-2">
-                  <p className="text-xs text-slate-500">Current</p>
+                  <p className="text-xs text-slate-500">{tr('Current', 'Actuel')}</p>
                   <p className="font-semibold text-slate-900">{roundTo(Number(tankSummary.current_volume_liters || 0), 2)}L</p>
                 </div>
                 <div className="rounded-lg bg-white px-3 py-2">
-                  <p className="text-xs text-slate-500">Capacity</p>
+                  <p className="text-xs text-slate-500">{tr('Capacity', 'Capacité')}</p>
                   <p className="font-semibold text-slate-900">{tankCapacity}L</p>
                 </div>
                 <div className="rounded-lg bg-white px-3 py-2">
-                  <p className="text-xs text-slate-500">Remaining</p>
+                  <p className="text-xs text-slate-500">{tr('Remaining', 'Restant')}</p>
                   <p className="font-semibold text-slate-900">{roundTo(Number(tankSummary.current_volume_liters || 0), 2)}L</p>
                 </div>
               </div>
+              {Number(formData.amount || 0) > 0 && (
+                <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="font-semibold">{tr('After transfer', 'Après transfert')}</span>
+                    <span className="font-semibold">
+                      {projectedTankAfterVehicleFuel}L ({projectedTankAfterVehicleFuelPercent.toFixed(0)}%)
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-blue-100">
+                    <div
+                      className="h-2 rounded-full bg-blue-500 transition-all duration-300"
+                      style={{ width: `${projectedTankAfterVehicleFuelPercent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {formData.transaction_type === 'vehicle_refill' && tankSummary && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-900">{tr('Main tank available', 'Cuve principale disponible')}</p>
+                <p className="text-sm font-semibold text-slate-700">
+                  {roundTo(Number(tankSummary.current_volume_liters || 0), 2)}L / {tankCapacity}L
+                </p>
+              </div>
+              <div className="h-3 overflow-hidden rounded-full bg-slate-200">
+                <div
+                  className="h-3 rounded-full bg-indigo-500 transition-all duration-300"
+                  style={{
+                    width: `${tankCapacity > 0 ? Math.min(100, (Number(tankSummary.current_volume_liters || 0) / tankCapacity) * 100) : 0}%`
+                  }}
+                />
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+                <div className="rounded-lg bg-white px-3 py-2">
+                  <p className="text-xs text-slate-500">{tr('Current', 'Actuel')}</p>
+                  <p className="font-semibold text-slate-900">{roundTo(Number(tankSummary.current_volume_liters || 0), 2)}L</p>
+                </div>
+                <div className="rounded-lg bg-white px-3 py-2">
+                  <p className="text-xs text-slate-500">{tr('Capacity', 'Capacité')}</p>
+                  <p className="font-semibold text-slate-900">{tankCapacity}L</p>
+                </div>
+                <div className="rounded-lg bg-white px-3 py-2">
+                  <p className="text-xs text-slate-500">{tr('Remaining', 'Restant')}</p>
+                  <p className="font-semibold text-slate-900">{roundTo(Number(tankSummary.current_volume_liters || 0), 2)}L</p>
+                </div>
+              </div>
+              {Number(formData.amount || 0) > 0 && (
+                <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="font-semibold">{tr('After direct fill', 'Après remplissage direct')}</span>
+                    <span className="font-semibold">
+                      {projectedTankAfterVehicleFuel}L ({projectedTankAfterVehicleFuelPercent.toFixed(0)}%)
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-indigo-100">
+                    <div
+                      className="h-2 rounded-full bg-indigo-500 transition-all duration-300"
+                      style={{ width: `${projectedTankAfterVehicleFuelPercent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -879,12 +1013,12 @@ const AddFuelTransactionModal = ({
             <div>
               <div className="mb-1 flex items-center justify-between gap-3">
                 <label className="block text-sm font-medium text-gray-700">
-                  Odometer (km)
+                  {tr('Odometer (km)', 'Odomètre (km)')}
                 </label>
                 <span className="text-xs font-medium text-slate-500">
-                  Fleet: {selectedVehicle?.current_odometer !== null && selectedVehicle?.current_odometer !== undefined && selectedVehicle?.current_odometer !== ''
+                  {tr('Fleet:', 'Fleet:')} {selectedVehicle?.current_odometer !== null && selectedVehicle?.current_odometer !== undefined && selectedVehicle?.current_odometer !== ''
                     ? `${selectedVehicle.current_odometer} km`
-                    : 'Not set'}
+                    : tr('Not set', 'Non défini')}
                 </span>
               </div>
               <input
@@ -894,7 +1028,7 @@ const AddFuelTransactionModal = ({
                 onChange={handleInputChange}
                 min="0"
                 className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Vehicle odometer"
+                placeholder={tr('Vehicle odometer', 'Odomètre du véhicule')}
               />
             </div>
           )}
@@ -903,61 +1037,155 @@ const AddFuelTransactionModal = ({
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               {formData.transaction_type === 'withdrawal'
-                ? 'Liters Transferred to Vehicle'
+                ? tr('Fuel level after transfer', 'Niveau de carburant après transfert')
                 : formData.transaction_type === 'tank_out'
-                  ? 'Liters Removed'
-                  : 'Liters'} *
+                  ? tr('Liters removed', 'Litres retirés')
+                  : tr('Liters', 'Litres')} *
             </label>
-            {(formData.transaction_type === 'vehicle_refill' || formData.transaction_type === 'withdrawal') ? (
+            {formData.transaction_type === 'withdrawal' ? (
               <>
                 <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-                    {quickLiterOptions.map((liters) => {
-                      const isActive = Number(formData.amount) === Number(liters);
-                      return (
-                        <button
-                          key={liters}
-                          type="button"
-                          disabled={isVehicleFullForTransfer || litersPickerOptions.length === 0}
-                          onClick={() => {
-                            setFormData((prev) => ({ ...prev, amount: String(liters) }));
-                            if (errors.amount) {
-                              setErrors((prev) => ({ ...prev, amount: '' }));
-                            }
-                          }}
-                          className={`rounded-xl border px-4 py-3 text-base font-bold transition ${
-                            isActive
-                              ? 'border-blue-600 bg-blue-600 text-white shadow-sm'
-                              : 'border-gray-300 bg-white text-gray-800 hover:border-blue-300 hover:bg-blue-50'
-                          } disabled:cursor-not-allowed disabled:opacity-50`}
-                        >
-                          {liters}L
-                        </button>
-                      );
-                    })}
-                    {maxVehicleLiters > 0 && (
-                      <button
-                        type="button"
-                        disabled={isVehicleFullForTransfer || litersPickerOptions.length === 0}
-                        onClick={() => {
-                          setFormData((prev) => ({ ...prev, amount: String(maxVehicleLiters) }));
-                          if (errors.amount) {
-                            setErrors((prev) => ({ ...prev, amount: '' }));
-                          }
-                        }}
-                        className={`rounded-xl border px-4 py-3 text-base font-bold transition ${
-                          Number(formData.amount) === Number(maxVehicleLiters)
-                            ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
-                            : 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
-                        } disabled:cursor-not-allowed disabled:opacity-50`}
-                      >
-                        Full
-                      </button>
-                    )}
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                    <div className="mb-3 flex items-center justify-between text-sm">
+                      <span className="font-semibold text-slate-900">{tr('Select the vehicle final fuel line', 'Sélectionnez la ligne finale de carburant du véhicule')}</span>
+                      <span className="text-slate-500">
+                        {tr('Current:', 'Actuel :')} {currentVehicleLines}/8
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2">
+                      {Array.from({ length: DEFAULT_FUEL_LINES }, (_, index) => index + 1).map((line) => {
+                        const isDisabled = isVehicleFullForTransfer || line <= currentVehicleLines || line > maxReachableTransferLines;
+                        const isActive = selectedTransferTargetLines === line;
+
+                        return (
+                          <button
+                            key={line}
+                            type="button"
+                            disabled={isDisabled}
+                            onClick={() => applyTransferTargetLine(line)}
+                            className={`rounded-xl border px-3 py-3 text-base font-bold transition ${
+                              isActive
+                                ? 'border-violet-600 bg-violet-600 text-white shadow-sm'
+                                : 'border-gray-300 bg-white text-gray-800 hover:border-violet-300 hover:bg-violet-50'
+                            } disabled:cursor-not-allowed disabled:opacity-40`}
+                          >
+                            <span className="block">{line}/8</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isVehicleFullForTransfer || maxVehicleLiters <= 0}
+                      onClick={() => applyTransferTargetLine(DEFAULT_FUEL_LINES)}
+                      className={`mt-3 w-full rounded-xl border px-4 py-3 text-base font-bold transition ${
+                        selectedTransferTargetLines === DEFAULT_FUEL_LINES
+                          ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
+                          : 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      Full
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Current', 'Actuel')}</p>
+                      <p className="mt-2 text-lg font-black text-slate-900">{currentVehicleLines}/8</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Added', 'Ajouté')}</p>
+                      <p className="mt-2 text-lg font-black text-violet-700">
+                        {formData.amount ? `+${selectedAddedLinesApprox}/8` : tr('Not set', 'Non défini')}
+                      </p>
+                      <p className="mt-1 text-xs font-medium text-slate-500">
+                        {formData.amount ? `${roundToHalfLiter(Number(formData.amount || 0)).toFixed(1)}L` : '0.0L'}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Final', 'Final')}</p>
+                      <p className="mt-2 text-lg font-black text-slate-900">
+                        {selectedTransferTargetLines ? `${selectedTransferTargetLines}/8` : `${currentVehicleLines}/8`}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                {isVehicleFullForTransfer && (
+                  <p className="mt-2 text-xs font-medium text-red-600">{tr('The vehicle tank is already full.', 'Le réservoir du véhicule est déjà plein.')}</p>
+                )}
+              </>
+            ) : formData.transaction_type === 'vehicle_refill' ? (
+              <>
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                    <div className="mb-3 flex items-center justify-between text-sm">
+                      <span className="font-semibold text-slate-900">
+                        {tr('Select the final fuel line after direct fill', 'Sélectionnez la ligne finale de carburant après remplissage direct')}
+                      </span>
+                      <span className="text-slate-500">
+                        {tr('Current:', 'Actuel :')} {currentVehicleLines}/8
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2">
+                      {Array.from({ length: DEFAULT_FUEL_LINES }, (_, index) => index + 1).map((line) => {
+                        const isDisabled = isVehicleFullForTransfer || line <= currentVehicleLines || line > maxReachableTransferLines;
+                        const isActive = selectedTransferTargetLines === line;
+
+                        return (
+                          <button
+                            key={line}
+                            type="button"
+                            disabled={isDisabled}
+                            onClick={() => applyTransferTargetLine(line)}
+                            className={`rounded-xl border px-3 py-3 text-base font-bold transition ${
+                              isActive
+                                ? 'border-indigo-600 bg-indigo-600 text-white shadow-sm'
+                                : 'border-gray-300 bg-white text-gray-800 hover:border-indigo-300 hover:bg-indigo-50'
+                            } disabled:cursor-not-allowed disabled:opacity-40`}
+                          >
+                            <span className="block">{line}/8</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isVehicleFullForTransfer || maxVehicleLiters <= 0}
+                      onClick={() => applyTransferTargetLine(DEFAULT_FUEL_LINES)}
+                      className={`mt-3 w-full rounded-xl border px-4 py-3 text-base font-bold transition ${
+                        selectedTransferTargetLines === DEFAULT_FUEL_LINES
+                          ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
+                          : 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      {tr('Full', 'Plein')}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Current', 'Actuel')}</p>
+                      <p className="mt-2 text-lg font-black text-slate-900">{currentVehicleLines}/8</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Added', 'Ajouté')}</p>
+                      <p className="mt-2 text-lg font-black text-indigo-700">
+                        {formData.amount ? `+${selectedAddedLinesApprox}/8` : tr('Not set', 'Non défini')}
+                      </p>
+                      <p className="mt-1 text-xs font-medium text-slate-500">
+                        {formData.amount ? `${roundToHalfLiter(Number(formData.amount || 0)).toFixed(1)}L` : '0.0L'}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Final', 'Final')}</p>
+                      <p className="mt-2 text-lg font-black text-slate-900">
+                        {selectedTransferTargetLines ? `${selectedTransferTargetLines}/8` : `${currentVehicleLines}/8`}
+                      </p>
+                    </div>
                   </div>
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                     <label className="block text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">
-                      Custom liters
+                      {tr('Custom liters', 'Litres personnalisés')}
                     </label>
                     <input
                       type="number"
@@ -966,18 +1194,18 @@ const AddFuelTransactionModal = ({
                       onChange={handleInputChange}
                       step="0.5"
                       min="0.5"
-                      max={maxVehicleLiters || undefined}
+                      max={roundToHalfLiter(maxVehicleLiters) || undefined}
                       disabled={isVehicleFullForTransfer || litersPickerOptions.length === 0}
                       className={`mt-2 w-full rounded-xl border px-4 py-4 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                         errors.amount ? 'border-red-300' : 'border-gray-300'
                       }`}
-                      placeholder={isVehicleFullForTransfer || litersPickerOptions.length === 0 ? 'Tank full' : 'Enter liters'}
+                      placeholder={isVehicleFullForTransfer || litersPickerOptions.length === 0 ? tr('Tank full', 'Réservoir plein') : tr('Enter liters', 'Entrez les litres')}
                       required
                     />
                   </div>
                 </div>
                 {(isVehicleFullForTransfer || litersPickerOptions.length === 0) && (
-                  <p className="mt-2 text-xs font-medium text-red-600">Vehicle tank is full.</p>
+                  <p className="mt-2 text-xs font-medium text-red-600">{tr('Vehicle tank is full.', 'Le réservoir du véhicule est plein.')}</p>
                 )}
               </>
             ) : (
@@ -1007,7 +1235,8 @@ const AddFuelTransactionModal = ({
             <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Price per Liter (MAD) *
+                  {tr('Price per liter (MAD)', 'Prix par litre (MAD)')}
+                  {' *'}
                 </label>
                 <input
                   type="text"
@@ -1025,21 +1254,26 @@ const AddFuelTransactionModal = ({
                   <p className="text-red-500 text-sm mt-1">{errors.unit_price}</p>
                 )}
               </div>
+            </>
+          )}
+
+          {(formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') && (
+            <>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Total Cost (MAD)
+                  {tr('Total cost (MAD)', 'Coût total (MAD)')}
                 </label>
                 <input
                   type="text"
                   name="cost"
                   value={formData.cost}
+                  onChange={handleInputChange}
                   inputMode="decimal"
                   className={`w-full rounded-xl border px-4 py-4 text-lg font-semibold [appearance:textfield] focus:outline-none focus:ring-2 focus:ring-blue-500 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${
                     errors.cost ? 'border-red-300' : 'border-gray-300'
                   }`}
                   placeholder="0.00 MAD"
-                  readOnly
                 />
                 {errors.cost && (
                   <p className="text-red-500 text-sm mt-1">{errors.cost}</p>
@@ -1051,7 +1285,7 @@ const AddFuelTransactionModal = ({
           {formData.transaction_type === 'tank_out' && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Reason
+                {tr('Reason', 'Raison')}
               </label>
               <input
                 type="text"
@@ -1059,7 +1293,7 @@ const AddFuelTransactionModal = ({
                 value={formData.purpose || ''}
                 onChange={handleInputChange}
                 className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Reason"
+                placeholder={tr('Reason', 'Raison')}
               />
             </div>
           )}
@@ -1068,7 +1302,7 @@ const AddFuelTransactionModal = ({
           {(formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                {formData.transaction_type === 'tank_refill' ? 'Invoice Image' : 'Receipt / Fuel Photo'}
+                {formData.transaction_type === 'tank_refill' ? tr('Invoice image', 'Image de facture') : tr('Receipt / fuel photo', 'Reçu / photo carburant')}
               </label>
               
               {!hasImageToShow ? (
@@ -1092,7 +1326,7 @@ const AddFuelTransactionModal = ({
                         className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
                       >
                         <Camera className="h-4 w-4" />
-                        Camera
+                        {tr('Camera', 'Caméra')}
                       </button>
                       <button
                         type="button"
@@ -1100,7 +1334,7 @@ const AddFuelTransactionModal = ({
                         className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-gray-800"
                       >
                         <Upload className="h-4 w-4" />
-                        Import
+                        {tr('Import', 'Importer')}
                       </button>
                     </div>
                     <input
@@ -1119,7 +1353,7 @@ const AddFuelTransactionModal = ({
                       onChange={handleFileInputChange}
                     />
                     <p className="text-gray-500 text-sm mt-3">
-                      or drag and drop
+                      {tr('or drag and drop', 'ou glissez-déposez')}
                     </p>
                   </div>
                   <p className="text-xs text-gray-400 mt-2">
@@ -1137,7 +1371,7 @@ const AddFuelTransactionModal = ({
                       )}
                       <div>
                         <p className="text-sm font-medium text-gray-900">
-                          {formData.invoice_image?.name || existingImageInfo?.name || 'Existing invoice'}
+                          {formData.invoice_image?.name || existingImageInfo?.name || tr('Existing invoice', 'Facture existante')}
                         </p>
                         {(formData.invoice_image?.size || existingImageInfo?.size) && (
                           <p className="text-xs text-gray-500">
@@ -1150,7 +1384,7 @@ const AddFuelTransactionModal = ({
                       type="button"
                       onClick={removeImage}
                       className="text-red-500 hover:text-red-700 transition-colors"
-                      title="Remove image"
+                      title={tr('Remove image', "Supprimer l'image")}
                     >
                       <Trash2 className="h-5 w-5" />
                     </button>
@@ -1160,7 +1394,7 @@ const AddFuelTransactionModal = ({
                     <div className="mt-3">
                       <img
                         src={imagePreview}
-                        alt="Invoice preview"
+                        alt={tr('Invoice preview', 'Aperçu de la facture')}
                         className="max-w-full h-32 object-contain rounded border"
                       />
                     </div>
@@ -1181,8 +1415,8 @@ const AddFuelTransactionModal = ({
               className="flex w-full items-center justify-between px-4 py-3 text-left"
             >
               <div>
-                <p className="text-sm font-semibold text-gray-900">More Details</p>
-                <p className="text-xs text-gray-500">Operator, location, and notes</p>
+                <p className="text-sm font-semibold text-gray-900">{tr('More Details', 'Plus de détails')}</p>
+                <p className="text-xs text-gray-500">{tr('Operator, location, and notes', 'Opérateur, lieu et notes')}</p>
               </div>
               {showAdvancedDetails ? (
                 <ChevronUp className="h-4 w-4 text-gray-500" />
@@ -1197,7 +1431,7 @@ const AddFuelTransactionModal = ({
                   <>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Direct Fill Date
+                        {tr('Direct Fill Date', 'Date du remplissage direct')}
                       </label>
                       <input
                         type="date"
@@ -1214,7 +1448,7 @@ const AddFuelTransactionModal = ({
                 {formData.transaction_type !== 'withdrawal' && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Fuel Station
+                      {tr('Fuel station', 'Station-service')}
                     </label>
                     <input
                       type="text"
@@ -1222,14 +1456,14 @@ const AddFuelTransactionModal = ({
                       value={formData.fuel_station}
                       onChange={handleInputChange}
                       className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="Station name"
+                      placeholder={tr('Station name', 'Nom de la station')}
                     />
                   </div>
                 )}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Filled By
+                    {tr('Filled By', 'Rempli par')}
                   </label>
                   <input
                     type="text"
@@ -1237,13 +1471,13 @@ const AddFuelTransactionModal = ({
                     value={formData.filled_by}
                     onChange={handleInputChange}
                     className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Operator name"
+                    placeholder={tr('Operator name', "Nom de l'opérateur")}
                   />
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Location
+                    {tr('Location', 'Lieu')}
                   </label>
                   <input
                     type="text"
@@ -1251,13 +1485,13 @@ const AddFuelTransactionModal = ({
                     value={formData.location}
                     onChange={handleInputChange}
                     className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Location"
+                    placeholder={tr('Location', 'Lieu')}
                   />
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Notes
+                    {tr('Notes', 'Notes')}
                   </label>
                   <textarea
                     name="notes"
@@ -1265,7 +1499,7 @@ const AddFuelTransactionModal = ({
                     onChange={handleInputChange}
                     rows={3}
                     className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Optional notes about this transaction..."
+                    placeholder={tr('Optional notes about this transaction...', 'Notes facultatives sur cette transaction...')}
                   />
                 </div>
               </div>
@@ -1280,7 +1514,7 @@ const AddFuelTransactionModal = ({
               className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
               disabled={isLoading}
             >
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </button>
             <button
               type="submit"
@@ -1292,10 +1526,10 @@ const AddFuelTransactionModal = ({
               disabled={isLoading || isVehicleFullForTransfer}
             >
               {isLoading
-                ? 'Saving...'
+                ? tr('Saving...', 'Enregistrement...')
                 : formData.transaction_type === 'vehicle_refill'
-                  ? (isEditMode ? 'Update Direct Fill' : 'Refill Vehicle Now')
-                  : `${isEditMode ? 'Update' : 'Save'} ${formData.transaction_type === 'withdrawal' ? 'Withdrawal' : 'Refill'}`}
+                  ? (isEditMode ? tr('Update Direct Fill', 'Mettre à jour le remplissage direct') : tr('Refill Vehicle Now', 'Remplir le véhicule maintenant'))
+                  : `${isEditMode ? tr('Update', 'Mettre à jour') : tr('Save', 'Enregistrer')} ${formData.transaction_type === 'withdrawal' ? tr('Withdrawal', 'retrait') : tr('Refill', 'remplissage')}`}
             </button>
           </div>
         </form>

@@ -2,8 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { XIcon, CalendarIcon, UserIcon, WrenchIcon, DollarSignIcon, PackageIcon, PlusIcon, TrashIcon } from 'lucide-react';
 import InventoryService from '../../../services/InventoryService';
 import MaintenanceService from '../../../services/MaintenanceService';
+import i18n from '../../../i18n';
 
 const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onSave }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [formData, setFormData] = useState({
     vehicle_id: '',
     maintenance_type: '',
@@ -401,7 +404,7 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
         <div className="p-6">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl font-semibold text-gray-900">
-              {maintenance ? 'Edit Maintenance Record' : 'Create Maintenance Record'}
+              {maintenance ? tr('Edit Maintenance Record', 'Modifier la fiche de maintenance') : tr('Create Maintenance Record', 'Créer une fiche de maintenance')}
             </h2>
             <button
               onClick={onClose}
@@ -416,7 +419,7 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Vehicle *
+                  Véhicule *
                 </label>
                 <select
                   name="vehicle_id"
@@ -425,7 +428,7 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   required
                 >
-                  <option value="">Select Vehicle</option>
+                  <option value="">Sélectionner un véhicule</option>
                   {vehicles.map(vehicle => (
                     <option key={vehicle.id} value={vehicle.id}>
                       {vehicle.plate_number || vehicle.license_plate} - {vehicle.name || vehicle.model}
@@ -436,7 +439,7 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Maintenance Type *
+                  Type de maintenance *
                 </label>
                 <select
                   name="maintenance_type"
@@ -457,7 +460,7 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
               {formData.maintenance_type === 'other' && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    New Maintenance Type *
+                    Nouveau type de maintenance *
                   </label>
                   <input
                     type="text"
@@ -529,14 +532,14 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
                   disabled={inventoryItems.length === 0}
                 >
                   <PlusIcon className="h-4 w-4 mr-1" />
-                  Add Part
+                  Ajouter une pièce
                 </button>
               </div>
 
               {inventoryItems.length === 0 && (
                 <div className="text-center py-4 bg-yellow-50 rounded-lg border border-yellow-200">
                   <PackageIcon className="h-8 w-8 text-yellow-400 mx-auto mb-2" />
-                  <p className="text-yellow-800 font-medium">Loading inventory items...</p>
+                  <p className="text-yellow-800 font-medium">Chargement des articles d'inventaire...</p>
                   <p className="text-sm text-yellow-600 mt-1">Please wait while we load available parts</p>
                 </div>
               )}
@@ -544,8 +547,8 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
               {partsUsed.length === 0 && inventoryItems.length > 0 ? (
                 <div className="text-center py-6 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
                   <PackageIcon className="h-12 w-12 text-gray-400 mx-auto mb-2" />
-                  <p className="text-gray-600">No parts added yet</p>
-                  <p className="text-sm text-gray-500 mt-1">Click "Add Part" to select from {inventoryItems.length} available inventory items</p>
+                  <p className="text-gray-600">Aucune pièce ajoutée pour le moment</p>
+                  <p className="text-sm text-gray-500 mt-1">Cliquez sur "Ajouter une pièce" pour choisir parmi {inventoryItems.length} articles d'inventaire disponibles</p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -764,7 +767,7 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
                 className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
                 disabled={loading}
               >
-                Cancel
+                Annuler
               </button>
               
               <button
@@ -772,7 +775,7 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                 disabled={loading}
               >
-                {loading ? 'Saving...' : (maintenance ? 'Update Maintenance' : 'Create Maintenance')}
+                {loading ? tr('Saving...', 'Enregistrement...') : (maintenance ? tr('Update Maintenance', 'Mettre à jour la maintenance') : tr('Create Maintenance', 'Créer la maintenance'))}
               </button>
 
               {maintenance && maintenance.status === 'scheduled' && partsUsed.length > 0 && (
@@ -782,7 +785,7 @@ const MaintenanceFormModal = ({ isOpen, onClose, maintenance, vehicles = [], onS
                   className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
                   disabled={loading}
                 >
-                  {loading ? 'Completing...' : 'Complete Maintenance'}
+                  {loading ? 'Finalisation...' : 'Terminer la maintenance'}
                 </button>
               )}
             </div>

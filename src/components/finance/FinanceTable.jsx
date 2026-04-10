@@ -154,7 +154,7 @@ const FinanceTable = ({
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <Input
-                  placeholder="Search..."
+                  placeholder="Rechercher..."
                   value={searchTerm}
                   onChange={(e) => {
                     setSearchTerm(e.target.value);
@@ -172,7 +172,7 @@ const FinanceTable = ({
                 className="flex items-center space-x-2"
               >
                 <Download className="h-4 w-4" />
-                <span>Export</span>
+                <span>Exporter</span>
               </Button>
             )}
           </div>
@@ -182,9 +182,9 @@ const FinanceTable = ({
         {paginatedData.length === 0 ? (
           <div className="flex items-center justify-center h-32 text-gray-500">
             <div className="text-center">
-              <p className="text-lg font-medium">No data found</p>
+              <p className="text-lg font-medium">Aucune donnée trouvée</p>
               <p className="text-sm">
-                {searchTerm ? 'Try adjusting your search terms' : 'No records available'}
+                {searchTerm ? 'Essayez de modifier vos termes de recherche' : 'Aucun enregistrement disponible'}
               </p>
             </div>
           </div>
@@ -233,7 +233,7 @@ const FinanceTable = ({
             {totalPages > 1 && (
               <div className="flex items-center justify-between mt-6">
                 <div className="text-sm text-gray-600">
-                  Showing {startIndex + 1} to {Math.min(startIndex + pageSize, sortedData.length)} of {sortedData.length} results
+                  Affichage de {startIndex + 1} à {Math.min(startIndex + pageSize, sortedData.length)} sur {sortedData.length} résultats
                 </div>
                 <div className="flex items-center space-x-2">
                   <Button
@@ -245,7 +245,7 @@ const FinanceTable = ({
                     <ChevronLeft className="h-4 w-4" />
                   </Button>
                   <span className="text-sm text-gray-600">
-                    Page {currentPage} of {totalPages}
+                    Page {currentPage} sur {totalPages}
                   </span>
                   <Button
                     variant="outline"

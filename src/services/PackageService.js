@@ -15,28 +15,28 @@ const PackageService = {
         included_kilometers: packageData.included_kilometers,
         extra_km_rate: packageData.extra_km_rate,
         fixed_amount: packageData.fixed_amount,
-        is_active: packageData.is_active !== undefined ? packageData.is_active : true
+        is_active: packageData.is_active !== undefined ? packageData.is_active : true,
+        show_on_print: packageData.show_on_print === true || packageData.showOnPrint === true
       };
 
-      // Validate all three fields are present
-      if (!dataToInsert.fixed_amount || !dataToInsert.included_kilometers || !dataToInsert.extra_km_rate) {
-        throw new Error('Fixed amount, included kilometers, and overage rate are all required');
+      // Fixed amount is always required. Kilometer fields are optional for unlimited packages.
+      if (!dataToInsert.fixed_amount) {
+        throw new Error('Fixed amount is required');
       }
 
       console.log('📦 Inserting data:', dataToInsert);
 
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('app_4c3a7a6153_rental_km_packages')
-        .insert([dataToInsert])
-        .select();
+        .insert([dataToInsert]);
 
       if (error) {
         console.error('❌ Supabase error:', error);
         throw error;
       }
 
-      console.log('✅ Package created successfully:', data);
-      return data;
+      console.log('✅ Package created successfully');
+      return true;
     } catch (error) {
       console.error('❌ Error in createPackage:', error);
       throw error;
@@ -56,27 +56,27 @@ const PackageService = {
         extra_km_rate: packageData.extra_km_rate,
         fixed_amount: packageData.fixed_amount,
         is_active: packageData.is_active,
+        show_on_print: packageData.show_on_print === true || packageData.showOnPrint === true,
         updated_at: new Date().toISOString()
       };
 
-      // Validate all three fields are present
-      if (!dataToUpdate.fixed_amount || !dataToUpdate.included_kilometers || !dataToUpdate.extra_km_rate) {
-        throw new Error('Fixed amount, included kilometers, and overage rate are all required');
+      // Fixed amount is always required. Kilometer fields are optional for unlimited packages.
+      if (!dataToUpdate.fixed_amount) {
+        throw new Error('Fixed amount is required');
       }
 
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('app_4c3a7a6153_rental_km_packages')
         .update(dataToUpdate)
-        .eq('id', id)
-        .select();
+        .eq('id', id);
 
       if (error) {
         console.error('❌ Supabase error:', error);
         throw error;
       }
 
-      console.log('✅ Package updated successfully:', data);
-      return data;
+      console.log('✅ Package updated successfully');
+      return true;
     } catch (error) {
       console.error('❌ Error in updatePackage:', error);
       throw error;

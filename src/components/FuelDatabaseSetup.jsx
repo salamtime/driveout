@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import { Database, AlertTriangle, CheckCircle, Loader, Copy } from 'lucide-react';
+import i18n from '../i18n';
 
 const FuelDatabaseSetup = ({ onSetupComplete, onCancel }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [isSettingUp, setIsSettingUp] = useState(false);
   const [setupStatus, setSetupStatus] = useState('');
   const [error, setError] = useState('');
@@ -70,7 +73,7 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
   const copyToClipboard = async () => {
     try {
       await navigator.clipboard.writeText(sqlScript);
-      setSetupStatus('SQL script copied to clipboard!');
+      setSetupStatus(tr('SQL script copied to clipboard!', 'Script SQL copie dans le presse-papiers !'));
       setTimeout(() => setSetupStatus(''), 3000);
     } catch (err) {
       console.error('Failed to copy:', err);
@@ -80,22 +83,22 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
   const setupDatabase = async () => {
     setIsSettingUp(true);
     setError('');
-    setSetupStatus('Checking database setup...');
+    setSetupStatus(tr('Checking database setup...', 'Verification de la configuration...'));
 
     try {
       // Since we can't create tables directly, we'll simulate the setup
       // and provide instructions for manual setup
-      setSetupStatus('Database setup requires manual configuration...');
+      setSetupStatus(tr('Database setup requires manual configuration...', 'La base de donnees requiert une configuration manuelle...'));
       
       setTimeout(() => {
         setShowManualInstructions(true);
-        setSetupStatus('Please follow the manual setup instructions below.');
+        setSetupStatus(tr('Please follow the manual setup instructions below.', 'Veuillez suivre les instructions manuelles ci-dessous.'));
         setIsSettingUp(false);
       }, 2000);
 
     } catch (err) {
       console.error('Database setup error:', err);
-      setError(err.message || 'Failed to setup database. Please try again.');
+      setError(err.message || tr('Failed to setup database. Please try again.', "Echec de la configuration. Veuillez reessayer."));
       setIsSettingUp(false);
       setShowManualInstructions(true);
     }
@@ -113,29 +116,29 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
         <div className="p-6 border-b border-gray-200">
           <div className="flex items-center gap-3">
             <Database className="w-6 h-6 text-blue-600" />
-            <h3 className="text-lg font-semibold text-gray-900">Fuel Management Database Setup</h3>
+            <h3 className="text-lg font-semibold text-gray-900">{tr('Fuel Management Database Setup', 'Configuration base de donnees carburant')}</h3>
           </div>
         </div>
         
         <div className="p-6">
           <div className="mb-6">
-            <h4 className="text-md font-medium text-gray-900 mb-3">Setup Required Tables:</h4>
+            <h4 className="text-md font-medium text-gray-900 mb-3">{tr('Setup Required Tables:', 'Tables requises :')}</h4>
             <ul className="space-y-2 text-sm text-gray-600">
               <li className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                <strong>fuel_tank</strong> - Main tank management
+                <strong>fuel_tank</strong> - {tr('Main tank management', 'Gestion du reservoir principal')}
               </li>
               <li className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                <strong>fuel_refills</strong> - Refill logging with costs
+                <strong>fuel_refills</strong> - {tr('Refill logging with costs', 'Journal des reapprovisionnements avec couts')}
               </li>
               <li className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                <strong>fuel_withdrawals</strong> - Vehicle fuel tracking
+                <strong>fuel_withdrawals</strong> - {tr('Vehicle fuel tracking', 'Suivi carburant vehicule')}
               </li>
             </ul>
             <p className="text-sm text-gray-500 mt-3">
-              This setup is safe to run multiple times. Existing data will be preserved.
+              {tr('This setup is safe to run multiple times. Existing data will be preserved.', 'Cette configuration peut etre executee plusieurs fois sans risque. Les donnees existantes seront conservees.')}
             </p>
           </div>
 
@@ -159,7 +162,7 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
               <div className="flex items-start gap-2">
                 <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
                 <div>
-                  <h5 className="text-sm font-medium text-red-800 mb-1">Setup Error:</h5>
+                  <h5 className="text-sm font-medium text-red-800 mb-1">{tr('Setup Error:', 'Erreur de configuration :')}</h5>
                   <p className="text-sm text-red-700">{error}</p>
                 </div>
               </div>
@@ -169,9 +172,9 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
           {/* Manual Setup Instructions */}
           {showManualInstructions && (
             <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-              <h5 className="text-sm font-medium text-yellow-800 mb-3">Manual Database Setup Required</h5>
+              <h5 className="text-sm font-medium text-yellow-800 mb-3">{tr('Manual Database Setup Required', 'Configuration manuelle requise')}</h5>
               <p className="text-sm text-yellow-700 mb-4">
-                Please copy the SQL script below and run it in your Supabase SQL Editor:
+                {tr('Please copy the SQL script below and run it in your Supabase SQL Editor:', "Veuillez copier le script SQL ci-dessous et l'executer dans l'editeur SQL Supabase :")}
               </p>
               
               <div className="relative">
@@ -181,7 +184,7 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
                 <button
                   onClick={copyToClipboard}
                   className="absolute top-2 right-2 p-2 bg-gray-800 hover:bg-gray-700 text-white rounded transition-colors"
-                  title="Copy to clipboard"
+                  title={tr('Copy to clipboard', 'Copier dans le presse-papiers')}
                 >
                   <Copy className="w-4 h-4" />
                 </button>
@@ -189,14 +192,14 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
               
               <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded">
                 <p className="text-sm text-blue-800">
-                  <strong>Steps:</strong>
+                  <strong>{tr('Steps:', 'Etapes :')}</strong>
                 </p>
                 <ol className="text-sm text-blue-700 mt-2 space-y-1 list-decimal list-inside">
-                  <li>Go to your Supabase project dashboard</li>
-                  <li>Navigate to the "SQL Editor" section</li>
-                  <li>Create a new query and paste the copied SQL script</li>
-                  <li>Run the script to create the required tables</li>
-                  <li>Return here and click "Continue" to proceed</li>
+                  <li>{tr('Go to your Supabase project dashboard', 'Accedez au tableau de bord de votre projet Supabase')}</li>
+                  <li>{tr('Navigate to the "SQL Editor" section', 'Ouvrez la section "SQL Editor"')}</li>
+                  <li>{tr('Create a new query and paste the copied SQL script', 'Creez une nouvelle requete puis collez le script SQL copie')}</li>
+                  <li>{tr('Run the script to create the required tables', 'Executez le script pour creer les tables requises')}</li>
+                  <li>{tr('Return here and click "Continue" to proceed', 'Revenez ici puis cliquez sur "Continuer" pour poursuivre')}</li>
                 </ol>
               </div>
             </div>
@@ -210,14 +213,14 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
               disabled={isSettingUp}
               className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50"
             >
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </button>
             {showManualInstructions && (
               <button
                 onClick={handleSkipSetup}
                 className="px-4 py-2 text-orange-700 bg-orange-100 hover:bg-orange-200 rounded-lg transition-colors"
               >
-                Skip Setup (Use Demo Mode)
+                {tr('Skip Setup (Use Demo Mode)', 'Ignorer (mode demo)')}
               </button>
             )}
           </div>
@@ -232,12 +235,12 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
                 {isSettingUp ? (
                   <>
                     <Loader className="w-4 h-4 animate-spin" />
-                    Setting up...
+                    {tr('Setting up...', 'Configuration...')}
                   </>
                 ) : (
                   <>
                     <Database className="w-4 h-4" />
-                    Setup Database
+                    {tr('Setup Database', 'Configurer la base')}
                   </>
                 )}
               </button>
@@ -247,7 +250,7 @@ CREATE POLICY "Allow authenticated users to view fuel_withdrawals" ON fuel_withd
                 className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors flex items-center gap-2"
               >
                 <CheckCircle className="w-4 h-4" />
-                Continue to Fuel Management
+                {tr('Continue to Fuel Management', 'Continuer vers la gestion carburant')}
               </button>
             )}
           </div>

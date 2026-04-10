@@ -28,14 +28,14 @@ const QuadFuelingLog = () => {
 
   const handleAddFuelingLog = () => {
     if (!selectedVehicle || !fuelAmount || !fuelCost) {
-      toast.error('Please fill in all required fields');
+      toast.error(t('admin.fuel.fill_required', 'Veuillez remplir tous les champs obligatoires'));
       return;
     }
 
     const newLog = {
       id: Date.now(),
       vehicleId: selectedVehicle,
-      vehicleName: vehicles.find(v => v.id === parseInt(selectedVehicle))?.name || 'Unknown',
+      vehicleName: vehicles.find(v => v.id === parseInt(selectedVehicle))?.name || t('admin.fuel.unknown_vehicle', 'Véhicule inconnu'),
       fuelAmount: parseFloat(fuelAmount),
       fuelCost: parseFloat(fuelCost),
       fuelingDate: new Date(fuelingDate),
@@ -52,12 +52,12 @@ const QuadFuelingLog = () => {
     setFuelingDate(new Date().toISOString().slice(0, 16));
     setNotes('');
     
-    toast.success('Fueling log added successfully');
+    toast.success(t('admin.fuel.log_added', 'Entrée de ravitaillement ajoutée avec succès'));
   };
 
   const handleDeleteLog = (logId) => {
     setFuelingLogs(prev => prev.filter(log => log.id !== logId));
-    toast.success('Fueling log deleted');
+    toast.success(t('admin.fuel.log_deleted', 'Entrée de ravitaillement supprimée'));
   };
 
   const handleAddVehicle = () => {
@@ -76,7 +76,7 @@ const QuadFuelingLog = () => {
     }
     
     setIsVehicleModalOpen(false);
-    toast.success('Vehicle added successfully');
+    toast.success(t('admin.fuel.vehicle_added', 'Véhicule ajouté avec succès'));
   };
 
   const handleVehicleModalCancel = () => {
@@ -110,28 +110,28 @@ const QuadFuelingLog = () => {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold text-gray-900">
-          {t('admin.fuel.title', 'Quad Fueling Log')}
+          {t('admin.fuel.title', 'Journal de ravitaillement des quads')}
         </h2>
       </div>
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-          <h3 className="text-sm font-medium text-blue-800">Total Fuel Cost</h3>
+          <h3 className="text-sm font-medium text-blue-800">{t('admin.fuel.total_cost', 'Coût total du carburant')}</h3>
           <p className="text-2xl font-bold text-blue-900">
             {formatCurrency(getTotalFuelCost())}
           </p>
         </div>
         
         <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-          <h3 className="text-sm font-medium text-green-800">Total Fuel Amount</h3>
+          <h3 className="text-sm font-medium text-green-800">{t('admin.fuel.total_amount', 'Quantité totale de carburant')}</h3>
           <p className="text-2xl font-bold text-green-900">
             {getTotalFuelAmount().toFixed(2)} L
           </p>
         </div>
         
         <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
-          <h3 className="text-sm font-medium text-purple-800">Total Entries</h3>
+          <h3 className="text-sm font-medium text-purple-800">{t('admin.fuel.total_entries', 'Total des entrées')}</h3>
           <p className="text-2xl font-bold text-purple-900">
             {fuelingLogs.length}
           </p>
@@ -140,12 +140,12 @@ const QuadFuelingLog = () => {
 
       {/* Add New Fueling Log Form */}
       <div className="bg-white p-6 rounded-lg shadow border">
-        <h3 className="text-lg font-semibold mb-4">Add New Fueling Log</h3>
+        <h3 className="text-lg font-semibold mb-4">{t('admin.fuel.add_log', 'Ajouter une nouvelle entrée de ravitaillement')}</h3>
         
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Vehicle *
+              {t('admin.fuel.vehicle', 'Véhicule')} *
             </label>
             <div className="flex space-x-2">
               <select
@@ -153,17 +153,17 @@ const QuadFuelingLog = () => {
                 onChange={(e) => setSelectedVehicle(e.target.value)}
                 className="flex-1 border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <option value="">Select Vehicle</option>
+                <option value="">Sélectionner un véhicule</option>
                 {vehicles.map(vehicle => (
                   <option key={vehicle.id} value={vehicle.id}>
-                    {vehicle.name} ({vehicle.plate_number || 'No Plate'})
+                    {vehicle.name} ({vehicle.plate_number || t('admin.fuel.no_plate', 'Aucune plaque')})
                   </option>
                 ))}
               </select>
               <button
                 onClick={handleAddVehicle}
                 className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                title="Add New Vehicle"
+                title={t('admin.fuel.add_vehicle', 'Ajouter un nouveau véhicule')}
               >
                 <PlusIcon className="h-5 w-5" />
               </button>
@@ -172,7 +172,7 @@ const QuadFuelingLog = () => {
           
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Fuel Amount (Liters) *
+              {t('admin.fuel.fuel_amount', 'Quantité de carburant (litres)')} *
             </label>
             <input
               type="number"
@@ -187,7 +187,7 @@ const QuadFuelingLog = () => {
           
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Fuel Cost (MAD) *
+              {t('admin.fuel.fuel_cost', 'Coût du carburant (MAD)')} *
             </label>
             <input
               type="number"
@@ -202,7 +202,7 @@ const QuadFuelingLog = () => {
           
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Fueling Date & Time *
+              {t('admin.fuel.fueling_date', 'Date et heure du ravitaillement')} *
             </label>
             <input
               type="datetime-local"
@@ -214,14 +214,14 @@ const QuadFuelingLog = () => {
           
           <div className="md:col-span-2">
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Notes
+              {t('admin.fuel.notes', 'Notes')}
             </label>
             <input
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Optional notes about this fueling..."
+              placeholder={t('admin.fuel.notes_placeholder', 'Notes facultatives sur ce ravitaillement...')}
             />
           </div>
         </div>
@@ -232,7 +232,7 @@ const QuadFuelingLog = () => {
             disabled={!selectedVehicle || !fuelAmount || !fuelCost}
             className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            Add Fueling Log
+            {t('admin.fuel.add_log_button', 'Ajouter l’entrée de ravitaillement')}
           </button>
         </div>
       </div>
@@ -240,13 +240,13 @@ const QuadFuelingLog = () => {
       {/* Fueling Logs Table */}
       <div className="bg-white rounded-lg shadow border">
         <div className="px-6 py-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold">Fueling History</h3>
+          <h3 className="text-lg font-semibold">{t('admin.fuel.history', 'Historique des ravitaillements')}</h3>
         </div>
         
         {fuelingLogs.length === 0 ? (
           <div className="p-8 text-center text-gray-500">
-            <p>No fueling logs recorded yet.</p>
-            <p className="text-sm mt-1">Add your first fueling log using the form above.</p>
+            <p>{t('admin.fuel.no_logs', 'Aucune entrée de ravitaillement enregistrée pour le moment.')}</p>
+            <p className="text-sm mt-1">{t('admin.fuel.no_logs_hint', 'Ajoutez votre première entrée de ravitaillement en utilisant le formulaire ci-dessus.')}</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -254,22 +254,22 @@ const QuadFuelingLog = () => {
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Vehicle
+                    {t('admin.fuel.vehicle', 'Véhicule')}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Fuel Amount
+                    {t('admin.fuel.fuel_amount_short', 'Quantité de carburant')}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Cost
+                    {t('admin.fuel.cost', 'Coût')}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Date
+                    {t('admin.fuel.date', 'Date')}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Notes
+                    {t('admin.fuel.notes', 'Notes')}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
+                    {t('admin.fuel.actions', 'Actions')}
                   </th>
                 </tr>
               </thead>
@@ -306,7 +306,7 @@ const QuadFuelingLog = () => {
                         onClick={() => handleDeleteLog(log.id)}
                         className="text-red-600 hover:text-red-900 focus:outline-none"
                       >
-                        Delete
+                        {t('admin.fuel.delete', 'Supprimer')}
                       </button>
                     </td>
                   </tr>

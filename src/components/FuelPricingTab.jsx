@@ -1,8 +1,11 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Save, Loader, AlertCircle, CheckCircle, Fuel, Search, Droplets } from 'lucide-react';
+import i18n from '../i18n';
 
 const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [fuelPricing, setFuelPricing] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState(null); // track which row is saving
@@ -36,7 +39,7 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
       setEdits(initial);
     } catch (err) {
       console.error('Error fetching fuel pricing:', err);
-      setError('Failed to load fuel pricing');
+      setError(tr('Failed to load fuel pricing', 'Impossible de charger la tarification carburant'));
     } finally {
       setLoading(false);
     }
@@ -81,13 +84,13 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
 
       if (error) throw error;
 
-      setSuccess('✅ Fuel pricing saved!');
+      setSuccess(`✅ ${tr('Fuel pricing saved!', 'Tarification carburant enregistrée !')}`);
       setTimeout(() => setSuccess(null), 3000);
       fetchFuelPricing();
       if (onRefresh) onRefresh();
     } catch (err) {
       console.error('Error saving fuel pricing:', err);
-      setError(`Failed to save: ${err.message}`);
+      setError(`${tr('Failed to save:', "Impossible d'enregistrer :")} ${err.message}`);
     } finally {
       setSavingId(null);
     }
@@ -112,12 +115,12 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
       if (error) throw error;
 
       setEdits(prev => ({ ...prev, [modelId]: { hourly: 0, daily: 0 } }));
-      setSuccess('✅ Reset to 0');
+      setSuccess(`✅ ${tr('Reset to 0', 'Réinitialisé à 0')}`);
       setTimeout(() => setSuccess(null), 2000);
       fetchFuelPricing();
       if (onRefresh) onRefresh();
     } catch (err) {
-      setError(`Failed to reset: ${err.message}`);
+      setError(`${tr('Failed to reset:', 'Impossible de réinitialiser :')} ${err.message}`);
     } finally {
       setSavingId(null);
     }
@@ -146,7 +149,7 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader className="w-6 h-6 animate-spin text-orange-500" />
-        <span className="ml-2 text-gray-600">Loading fuel pricing...</span>
+        <span className="ml-2 text-gray-600">{tr('Loading fuel pricing...', 'Chargement de la tarification carburant...')}</span>
       </div>
     );
   }
@@ -174,7 +177,7 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
               <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search by vehicle model..."
+                placeholder={tr('Search by vehicle model...', 'Rechercher par modèle de véhicule...')}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full rounded-xl border border-gray-300 py-2.5 pl-10 pr-4 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-500/20"
@@ -186,7 +189,7 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
               onChange={(e) => setSelectedVehicleId(e.target.value)}
               className="rounded-xl border border-gray-300 px-4 py-2.5 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-500/20"
             >
-              <option value="">All Vehicle Models</option>
+              <option value="">{tr('All Vehicle Models', 'Tous les modèles de véhicules')}</option>
               {vehicleModels.map((model) => (
                 <option key={model.id} value={model.id}>
                   {model.name}
@@ -199,32 +202,32 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
               onChange={(e) => setStatusFilter(e.target.value)}
               className="rounded-xl border border-gray-300 px-4 py-2.5 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-500/20"
             >
-              <option value="all">All Status</option>
-              <option value="configured">Configured</option>
-              <option value="not-configured">Not Configured</option>
+              <option value="all">{tr('All Status', 'Tous les statuts')}</option>
+              <option value="configured">{tr('Configured', 'Configuré')}</option>
+              <option value="not-configured">{tr('Not Configured', 'Non configuré')}</option>
             </select>
           </div>
 
           <div className="mt-5 grid gap-3 md:grid-cols-3">
             <div className="rounded-2xl border border-orange-100 bg-orange-50 px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-orange-600">Configured models</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-orange-600">{tr('Configured models', 'Modèles configurés')}</p>
               <p className="mt-2 text-2xl font-bold text-slate-900">{configuredCount}</p>
-              <p className="mt-1 text-sm text-slate-500">Vehicle models already have fuel rules saved.</p>
+              <p className="mt-1 text-sm text-slate-500">{tr('Vehicle models already have fuel rules saved.', 'Les modèles de véhicules ont déjà des règles carburant enregistrées.')}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Fuel included</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Fuel included', 'Carburant inclus')}</p>
               <p className="mt-2 text-2xl font-bold text-slate-900">
                 {visibleModels.filter((model) => {
                   const editsForModel = edits[model.id] || { hourly: 0, daily: 0 };
                   return (parseFloat(editsForModel.hourly) || 0) === 0 && (parseFloat(editsForModel.daily) || 0) === 0;
                 }).length}
               </p>
-              <p className="mt-1 text-sm text-slate-500">Models that currently treat fuel as included.</p>
+              <p className="mt-1 text-sm text-slate-500">{tr('Models that currently treat fuel as included.', 'Modèles qui considèrent actuellement le carburant comme inclus.')}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">How to use</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('How to use', 'Mode d’emploi')}</p>
               <p className="mt-2 text-sm text-slate-600">
-                Set the amount charged per missing fuel line for hourly and daily rentals. Keep it at zero when fuel is included.
+                {tr('Set the amount charged per missing fuel line for hourly and daily rentals. Keep it at zero when fuel is included.', 'Définissez le montant facturé par barre de carburant manquante pour les locations horaires et journalières. Laissez à zéro lorsque le carburant est inclus.')}
               </p>
             </div>
           </div>
@@ -233,8 +236,8 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
         <div className="p-6">
           {visibleModels.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center">
-              <p className="text-sm font-semibold text-slate-900">No fuel pricing rows found</p>
-              <p className="mt-1 text-sm text-slate-500">Adjust the filters or add vehicle models first.</p>
+              <p className="text-sm font-semibold text-slate-900">{tr('No fuel pricing rows found', 'Aucune ligne de tarification carburant trouvée')}</p>
+              <p className="mt-1 text-sm text-slate-500">{tr('Adjust the filters or add vehicle models first.', 'Ajustez les filtres ou ajoutez d’abord des modèles de véhicules.')}</p>
             </div>
           ) : (
             <div className="grid gap-4 xl:grid-cols-2">
@@ -257,15 +260,15 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
                               ? 'border-green-200 bg-green-50 text-green-700'
                               : 'border-slate-200 bg-white text-slate-600'
                           }`}>
-                            {isConfigured ? 'Configured' : 'Draft'}
+                            {isConfigured ? tr('Configured', 'Configuré') : tr('Draft', 'Brouillon')}
                           </span>
                         </div>
-                        <p className="mt-1 text-sm text-slate-500">{model.model || 'Vehicle model'}</p>
+                        <p className="mt-1 text-sm text-slate-500">{model.model || tr('Vehicle model', 'Modèle de véhicule')}</p>
                       </div>
                       <div className="rounded-xl border border-orange-100 bg-orange-50 px-3 py-2 text-right">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-orange-600">Current rule</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-orange-600">{tr('Current rule', 'Règle actuelle')}</p>
                         <p className="mt-2 text-sm font-semibold text-slate-900">
-                          {hourlyVal === 0 && dailyVal === 0 ? 'Fuel included' : 'Fuel charge active'}
+                          {hourlyVal === 0 && dailyVal === 0 ? tr('Fuel included', 'Carburant inclus') : tr('Fuel charge active', 'Facturation carburant active')}
                         </p>
                       </div>
                     </div>
@@ -275,7 +278,7 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
                         <div className="rounded-2xl border border-blue-100 bg-white p-4">
                           <div className="flex items-center gap-2">
                             <span className="inline-block h-2.5 w-2.5 rounded-full bg-blue-400" />
-                            <p className="text-sm font-semibold text-slate-900">Hourly price per line</p>
+                            <p className="text-sm font-semibold text-slate-900">{tr('Hourly price per line', 'Prix horaire par barre')}</p>
                           </div>
                           <div className="mt-3 flex items-center gap-2">
                             <input
@@ -291,15 +294,15 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
                           </div>
                           <p className="mt-3 text-sm text-slate-500">
                             {hourlyVal === 0
-                              ? 'Leave at zero when hourly rentals include fuel.'
-                              : `2 missing lines = ${(2 * hourlyVal).toFixed(0)} MAD`}
+                              ? tr('Leave at zero when hourly rentals include fuel.', 'Laissez à zéro lorsque les locations horaires incluent le carburant.')
+                              : (isFrench ? `2 barres manquantes = ${(2 * hourlyVal).toFixed(0)} MAD` : `2 missing lines = ${(2 * hourlyVal).toFixed(0)} MAD`)}
                           </p>
                         </div>
 
                         <div className="rounded-2xl border border-emerald-100 bg-white p-4">
                           <div className="flex items-center gap-2">
                             <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-400" />
-                            <p className="text-sm font-semibold text-slate-900">Daily price per line</p>
+                            <p className="text-sm font-semibold text-slate-900">{tr('Daily price per line', 'Prix journalier par barre')}</p>
                           </div>
                           <div className="mt-3 flex items-center gap-2">
                             <input
@@ -315,25 +318,25 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
                           </div>
                           <p className="mt-3 text-sm text-slate-500">
                             {dailyVal === 0
-                              ? 'Leave at zero when daily rentals include fuel.'
-                              : `3 missing lines = ${(3 * dailyVal).toFixed(0)} MAD`}
+                              ? tr('Leave at zero when daily rentals include fuel.', 'Laissez à zéro lorsque les locations journalières incluent le carburant.')
+                              : (isFrench ? `3 barres manquantes = ${(3 * dailyVal).toFixed(0)} MAD` : `3 missing lines = ${(3 * dailyVal).toFixed(0)} MAD`)}
                           </p>
                         </div>
                       </div>
 
                       <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Preview</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Preview', 'Aperçu')}</p>
                         <div className="mt-4 space-y-3">
                           <div className="rounded-xl bg-slate-50 px-3 py-3">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Hourly example</p>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Hourly example', 'Exemple horaire')}</p>
                             <p className="mt-2 text-base font-bold text-slate-900">
-                              {hourlyVal > 0 ? `${(2 * hourlyVal).toFixed(0)} MAD for 2 lines` : 'Fuel included'}
+                              {hourlyVal > 0 ? (isFrench ? `${(2 * hourlyVal).toFixed(0)} MAD pour 2 barres` : `${(2 * hourlyVal).toFixed(0)} MAD for 2 lines`) : tr('Fuel included', 'Carburant inclus')}
                             </p>
                           </div>
                           <div className="rounded-xl bg-slate-50 px-3 py-3">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Daily example</p>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Daily example', 'Exemple journalier')}</p>
                             <p className="mt-2 text-base font-bold text-slate-900">
-                              {dailyVal > 0 ? `${(3 * dailyVal).toFixed(0)} MAD for 3 lines` : 'Fuel included'}
+                              {dailyVal > 0 ? (isFrench ? `${(3 * dailyVal).toFixed(0)} MAD pour 3 barres` : `${(3 * dailyVal).toFixed(0)} MAD for 3 lines`) : tr('Fuel included', 'Carburant inclus')}
                             </p>
                           </div>
                         </div>
@@ -343,7 +346,7 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
                     <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                       <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">
                         <Droplets className="h-3.5 w-3.5 text-orange-500" />
-                        Fuel line pricing updates rental totals automatically.
+                        {tr('Fuel line pricing updates rental totals automatically.', 'La tarification par barre met automatiquement à jour les totaux de location.')}
                       </div>
 
                       <div className="flex items-center gap-3">
@@ -353,7 +356,7 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
                             disabled={isSaving}
                             className="rounded-xl border border-red-200 px-4 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50 disabled:opacity-50"
                           >
-                            Reset
+                            {tr('Reset', 'Réinitialiser')}
                           </button>
                         )}
                         <button
@@ -364,12 +367,12 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
                           {isSaving ? (
                             <>
                               <Loader className="h-4 w-4 animate-spin" />
-                              Saving...
+                              {tr('Saving...', 'Enregistrement...')}
                             </>
                           ) : (
                             <>
                               <Save className="h-4 w-4" />
-                              Save Fuel Pricing
+                              {tr('Save Fuel Pricing', 'Enregistrer la tarification carburant')}
                             </>
                           )}
                         </button>
@@ -387,8 +390,8 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
       {vehicleModels.length === 0 && (
         <div className="text-center py-12 text-gray-500">
           <Fuel className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-          <p className="font-medium text-gray-600">No vehicle models found</p>
-          <p className="text-sm text-gray-500 mt-1">Add vehicle models first to configure fuel pricing</p>
+          <p className="font-medium text-gray-600">{tr('No vehicle models found', 'Aucun modèle de véhicule trouvé')}</p>
+          <p className="text-sm text-gray-500 mt-1">{tr('Add vehicle models first to configure fuel pricing', "Ajoutez d'abord des modèles de véhicules pour configurer la tarification carburant")}</p>
         </div>
       )}
     </div>

@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { DollarSign, Clock, Calculator, AlertTriangle } from 'lucide-react';
+import i18n from '../../i18n';
 
 const PricingCalculator = ({ booking, actualDuration, isOnTour }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [pricing, setPricing] = useState({
     basePrice: 150, // Base price for 4-hour tour
     baseDurationHours: 4,
@@ -47,7 +50,7 @@ const PricingCalculator = ({ booking, actualDuration, isOnTour }) => {
     <div className="bg-gray-50 rounded-lg p-4 space-y-4">
       <div className="flex items-center">
         <Calculator className="h-5 w-5 text-blue-600 mr-2" />
-        <h4 className="font-medium text-gray-900">Pricing Summary</h4>
+        <h4 className="font-medium text-gray-900">{tr('Pricing Summary', 'Résumé tarifaire')}</h4>
       </div>
 
       {/* Base Pricing */}
@@ -55,7 +58,7 @@ const PricingCalculator = ({ booking, actualDuration, isOnTour }) => {
         <div className="flex justify-between items-center">
           <div className="flex items-center text-sm text-gray-600">
             <Clock className="h-4 w-4 mr-1" />
-            Base Tour ({pricing.baseDurationHours}h)
+            {tr('Base Tour', 'Tour de base')} ({pricing.baseDurationHours}h)
           </div>
           <span className="font-medium text-gray-900">
             {formatCurrency(pricing.basePrice)}
@@ -66,10 +69,10 @@ const PricingCalculator = ({ booking, actualDuration, isOnTour }) => {
         {(isOnTour || actualDuration) && (
           <div className="flex justify-between items-center">
             <div className="text-sm text-gray-600">
-              Actual Duration
+              {tr('Actual Duration', 'Durée réelle')}
             </div>
             <span className="font-medium text-gray-900">
-              {actualDuration ? formatDuration(actualDuration) : 'In progress...'}
+              {actualDuration ? formatDuration(actualDuration) : tr('In progress...', 'En cours...')}
             </span>
           </div>
         )}
@@ -81,7 +84,7 @@ const PricingCalculator = ({ booking, actualDuration, isOnTour }) => {
               <div className="flex justify-between items-center">
                 <div className="flex items-center text-sm text-orange-600">
                   <AlertTriangle className="h-4 w-4 mr-1" />
-                  Extra Time Charges
+                  {tr('Extra Time Charges', 'Frais de temps supplémentaire')}
                 </div>
                 <span className="font-medium text-orange-600">
                   {formatCurrency(pricing.extraCharges)}
@@ -93,14 +96,14 @@ const PricingCalculator = ({ booking, actualDuration, isOnTour }) => {
             <div className="bg-orange-50 border border-orange-200 rounded p-3">
               <div className="flex justify-between items-center">
                 <span className="font-medium text-orange-900">
-                  Additional Balance Due
+                  {tr('Additional Balance Due', 'Solde additionnel dû')}
                 </span>
                 <span className="text-lg font-bold text-orange-900">
                   {formatCurrency(pricing.balance)}
                 </span>
               </div>
               <p className="text-xs text-orange-700 mt-1">
-                To be collected after tour completion
+                {tr('To be collected after tour completion', 'À encaisser après la fin du tour')}
               </p>
             </div>
           </>
@@ -110,7 +113,7 @@ const PricingCalculator = ({ booking, actualDuration, isOnTour }) => {
       {/* Total */}
       <div className="border-t border-gray-200 pt-3">
         <div className="flex justify-between items-center">
-          <span className="font-semibold text-gray-900">Total Amount</span>
+          <span className="font-semibold text-gray-900">{tr('Total Amount', 'Montant total')}</span>
           <span className="text-xl font-bold text-blue-600">
             {formatCurrency(pricing.totalPrice)}
           </span>
@@ -120,14 +123,14 @@ const PricingCalculator = ({ booking, actualDuration, isOnTour }) => {
       {/* Payment Status */}
       <div className="text-xs text-gray-500 space-y-1">
         <div className="flex justify-between">
-          <span>Reservation Paid:</span>
+          <span>{tr('Reservation Paid:', 'Réservation payée :')}</span>
           <span className="text-green-600 font-medium">
             {formatCurrency(pricing.basePrice)}
           </span>
         </div>
         {hasOvertime && (
           <div className="flex justify-between">
-            <span>Outstanding Balance:</span>
+            <span>{tr('Outstanding Balance:', 'Solde restant :')}</span>
             <span className="text-orange-600 font-medium">
               {formatCurrency(pricing.balance)}
             </span>
@@ -137,11 +140,11 @@ const PricingCalculator = ({ booking, actualDuration, isOnTour }) => {
 
       {/* Pricing Notes */}
       <div className="text-xs text-gray-500 bg-white rounded p-2">
-        <p className="font-medium mb-1">Pricing Policy:</p>
+        <p className="font-medium mb-1">{tr('Pricing Policy:', 'Politique tarifaire :')}</p>
         <ul className="space-y-1">
-          <li>• Base rate: {formatCurrency(pricing.basePrice)} for {pricing.baseDurationHours} hours</li>
-          <li>• Overtime: {formatCurrency(pricing.overtimeRate)}/hour (rounded up)</li>
-          <li>• Payment accepted: Cash, Card, Transfer</li>
+          <li>• {tr('Base rate:', 'Tarif de base :')} {formatCurrency(pricing.basePrice)} {tr('for', 'pour')} {pricing.baseDurationHours} {tr('hours', 'heures')}</li>
+          <li>• {tr('Overtime:', 'Heures supplémentaires :')} {formatCurrency(pricing.overtimeRate)}/{tr('hour', 'heure')} ({tr('rounded up', 'arrondi au supérieur')})</li>
+          <li>• {tr('Payment accepted:', 'Paiement accepté :')} {tr('Cash, Card, Transfer', 'Espèces, carte, virement')}</li>
         </ul>
       </div>
     </div>

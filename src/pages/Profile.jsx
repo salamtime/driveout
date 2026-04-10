@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSelector } from 'react-redux';
+import i18n from '../i18n';
 
 const Profile = () => {
   const { t } = useTranslation();
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { user } = useSelector(state => state.auth);
   const [activeTab, setActiveTab] = useState('personal');
   const [isEditing, setIsEditing] = useState(false);
@@ -15,7 +18,7 @@ const Profile = () => {
     dateOfBirth: user?.user_metadata?.date_of_birth || '',
     address: user?.user_metadata?.address || '',
     city: user?.user_metadata?.city || '',
-    country: user?.user_metadata?.country || 'Morocco',
+    country: user?.user_metadata?.country || tr('Morocco', 'Maroc'),
     emergencyContact: user?.user_metadata?.emergency_contact || '',
     emergencyPhone: user?.user_metadata?.emergency_phone || ''
   });
@@ -29,17 +32,15 @@ const Profile = () => {
 
   const handleSave = () => {
     // Handle profile update
-    console.log('Saving profile:', formData);
     setIsEditing(false);
-    // Show success message
-    alert('Profile updated successfully!');
+    alert(tr('Profile updated successfully!', 'Profil mis a jour avec succes !'));
   };
 
   const tabs = [
-    { id: 'personal', name: 'Personal Info', icon: 'user' },
-    { id: 'bookings', name: 'My Bookings', icon: 'calendar' },
-    { id: 'preferences', name: 'Preferences', icon: 'settings' },
-    { id: 'security', name: 'Security', icon: 'shield' }
+    { id: 'personal', name: tr('Personal Info', 'Infos personnelles'), icon: 'user' },
+    { id: 'bookings', name: tr('My Bookings', 'Mes reservations'), icon: 'calendar' },
+    { id: 'preferences', name: tr('Preferences', 'Préférences'), icon: 'settings' },
+    { id: 'security', name: tr('Security', 'Sécurité'), icon: 'shield' }
   ];
 
   const getTabIcon = (iconType) => {
@@ -97,7 +98,7 @@ const Profile = () => {
               onClick={() => setIsEditing(!isEditing)}
               className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
             >
-              {isEditing ? 'Cancel' : 'Edit Profile'}
+              {isEditing ? tr('Cancel', 'Annuler') : tr('Edit Profile', 'Modifier le profil')}
             </button>
           </div>
         </div>
@@ -133,13 +134,13 @@ const Profile = () => {
               {activeTab === 'personal' && (
                 <div>
                   <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-xl font-bold text-gray-800">Personal Information</h2>
+                    <h2 className="text-xl font-bold text-gray-800">{tr('Personal Information', 'Informations personnelles')}</h2>
                     {isEditing && (
                       <button
                         onClick={handleSave}
                         className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition-colors"
                       >
-                        Save Changes
+                        {tr('Save Changes', 'Enregistrer les modifications')}
                       </button>
                     )}
                   </div>
@@ -147,7 +148,7 @@ const Profile = () => {
                   <div className="grid md:grid-cols-2 gap-6">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        First Name
+                        {tr('First Name', 'Prénom')}
                       </label>
                       <input
                         type="text"
@@ -160,7 +161,7 @@ const Profile = () => {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Last Name
+                        {tr('Last Name', 'Nom')}
                       </label>
                       <input
                         type="text"
@@ -173,7 +174,7 @@ const Profile = () => {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Email Address
+                        {tr('Email Address', 'Adresse e-mail')}
                       </label>
                       <input
                         type="email"
@@ -186,7 +187,7 @@ const Profile = () => {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Phone Number
+                        {tr('Phone Number', 'Numéro de téléphone')}
                       </label>
                       <input
                         type="tel"
@@ -199,7 +200,7 @@ const Profile = () => {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Date of Birth
+                        {tr('Date of Birth', 'Date de naissance')}
                       </label>
                       <input
                         type="date"
@@ -212,7 +213,7 @@ const Profile = () => {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Country
+                        {tr('Country', 'Pays')}
                       </label>
                       <select
                         name="country"
@@ -221,19 +222,19 @@ const Profile = () => {
                         disabled={!isEditing}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
                       >
-                        <option value="Morocco">Morocco</option>
-                        <option value="France">France</option>
-                        <option value="Spain">Spain</option>
-                        <option value="Germany">Germany</option>
-                        <option value="United Kingdom">United Kingdom</option>
-                        <option value="United States">United States</option>
-                        <option value="Canada">Canada</option>
-                        <option value="Other">Other</option>
+                        <option value="Morocco">{tr('Morocco', 'Maroc')}</option>
+                        <option value="France">{tr('France', 'France')}</option>
+                        <option value="Spain">{tr('Spain', 'Espagne')}</option>
+                        <option value="Germany">{tr('Germany', 'Allemagne')}</option>
+                        <option value="United Kingdom">{tr('United Kingdom', 'Royaume-Uni')}</option>
+                        <option value="United States">{tr('United States', 'États-Unis')}</option>
+                        <option value="Canada">{tr('Canada', 'Canada')}</option>
+                        <option value="Other">{tr('Other', 'Autre')}</option>
                       </select>
                     </div>
                     <div className="md:col-span-2">
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Address
+                        {tr('Address', 'Adresse')}
                       </label>
                       <input
                         type="text"
@@ -246,7 +247,7 @@ const Profile = () => {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Emergency Contact
+                        {tr('Emergency Contact', 'Contact d urgence')}
                       </label>
                       <input
                         type="text"
@@ -259,7 +260,7 @@ const Profile = () => {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Emergency Phone
+                        {tr('Emergency Phone', 'Telephone d urgence')}
                       </label>
                       <input
                         type="tel"
@@ -276,15 +277,15 @@ const Profile = () => {
 
               {activeTab === 'bookings' && (
                 <div>
-                  <h2 className="text-xl font-bold text-gray-800 mb-6">My Bookings</h2>
+                  <h2 className="text-xl font-bold text-gray-800 mb-6">{tr('My Bookings', 'Mes reservations')}</h2>
                   <div className="text-center py-12">
                     <svg className="w-16 h-16 text-gray-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
-                    <h3 className="text-lg font-medium text-gray-900 mb-2">No bookings yet</h3>
-                    <p className="text-gray-500 mb-4">You haven't made any bookings yet. Start your adventure today!</p>
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">{tr('No bookings yet', 'Aucune reservation pour le moment')}</h3>
+                    <p className="text-gray-500 mb-4">{tr("You haven't made any bookings yet. Start your adventure today!", "Vous n'avez encore fait aucune reservation. Lancez votre aventure aujourd'hui !")}</p>
                     <button className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 transition-colors">
-                      Browse Tours & Rentals
+                      {tr('Browse Tours & Rentals', 'Voir les tours et locations')}
                     </button>
                   </div>
                 </div>
@@ -292,42 +293,42 @@ const Profile = () => {
 
               {activeTab === 'preferences' && (
                 <div>
-                  <h2 className="text-xl font-bold text-gray-800 mb-6">Preferences</h2>
+                  <h2 className="text-xl font-bold text-gray-800 mb-6">{tr('Preferences', 'Préférences')}</h2>
                   <div className="space-y-6">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Language
+                        {tr('Language', 'Langue')}
                       </label>
                       <select className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <option value="en">English</option>
+                        <option value="en">{tr('English', 'Anglais')}</option>
                         <option value="fr">Français</option>
                         <option value="ar">العربية</option>
                       </select>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Currency
+                        {tr('Currency', 'Devise')}
                       </label>
                       <select className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <option value="MAD">Moroccan Dirham (MAD)</option>
-                        <option value="EUR">Euro (EUR)</option>
-                        <option value="USD">US Dollar (USD)</option>
+                        <option value="MAD">{tr('Moroccan Dirham (MAD)', 'Dirham marocain (MAD)')}</option>
+                        <option value="EUR">{tr('Euro (EUR)', 'Euro (EUR)')}</option>
+                        <option value="USD">{tr('US Dollar (USD)', 'Dollar americain (USD)')}</option>
                       </select>
                     </div>
                     <div>
-                      <h3 className="text-lg font-medium text-gray-800 mb-4">Notifications</h3>
+                      <h3 className="text-lg font-medium text-gray-800 mb-4">{tr('Notifications', 'Notifications')}</h3>
                       <div className="space-y-3">
                         <label className="flex items-center">
                           <input type="checkbox" className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50" />
-                          <span className="ml-2 text-sm text-gray-700">Email notifications for bookings</span>
+                          <span className="ml-2 text-sm text-gray-700">{tr('Email notifications for bookings', 'Notifications e-mail pour les reservations')}</span>
                         </label>
                         <label className="flex items-center">
                           <input type="checkbox" className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50" />
-                          <span className="ml-2 text-sm text-gray-700">SMS notifications for reminders</span>
+                          <span className="ml-2 text-sm text-gray-700">{tr('SMS notifications for reminders', 'Notifications SMS pour les rappels')}</span>
                         </label>
                         <label className="flex items-center">
                           <input type="checkbox" className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50" />
-                          <span className="ml-2 text-sm text-gray-700">Marketing emails and promotions</span>
+                          <span className="ml-2 text-sm text-gray-700">{tr('Marketing emails and promotions', 'E-mails marketing et promotions')}</span>
                         </label>
                       </div>
                     </div>
@@ -337,14 +338,14 @@ const Profile = () => {
 
               {activeTab === 'security' && (
                 <div>
-                  <h2 className="text-xl font-bold text-gray-800 mb-6">Security Settings</h2>
+                  <h2 className="text-xl font-bold text-gray-800 mb-6">{tr('Security Settings', 'Parametres de securite')}</h2>
                   <div className="space-y-6">
                     <div>
-                      <h3 className="text-lg font-medium text-gray-800 mb-4">Change Password</h3>
+                      <h3 className="text-lg font-medium text-gray-800 mb-4">{tr('Change Password', 'Changer le mot de passe')}</h3>
                       <div className="space-y-4">
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Current Password
+                            {tr('Current Password', 'Mot de passe actuel')}
                           </label>
                           <input
                             type="password"
@@ -353,7 +354,7 @@ const Profile = () => {
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">
-                            New Password
+                            {tr('New Password', 'Nouveau mot de passe')}
                           </label>
                           <input
                             type="password"
@@ -362,7 +363,7 @@ const Profile = () => {
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Confirm New Password
+                            {tr('Confirm New Password', 'Confirmer le nouveau mot de passe')}
                           </label>
                           <input
                             type="password"
@@ -370,15 +371,15 @@ const Profile = () => {
                           />
                         </div>
                         <button className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors">
-                          Update Password
+                          {tr('Update Password', 'Mettre a jour le mot de passe')}
                         </button>
                       </div>
                     </div>
                     <div>
-                      <h3 className="text-lg font-medium text-gray-800 mb-4">Account Actions</h3>
+                      <h3 className="text-lg font-medium text-gray-800 mb-4">{tr('Account Actions', 'Actions du compte')}</h3>
                       <div className="space-y-3">
                         <button className="text-red-600 hover:text-red-700 font-medium">
-                          Delete Account
+                          {tr('Delete Account', 'Supprimer le compte')}
                         </button>
                       </div>
                     </div>

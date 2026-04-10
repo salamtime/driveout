@@ -6,46 +6,111 @@
  * maintaining full flexibility for users.
  */
 
-// Maintenance Type to Category Mapping
+export const INVENTORY_LABELS = [
+  'oil',
+  'engine_oil',
+  'gear_oil',
+  'brake_fluid',
+  'coolant',
+  'grease',
+  'fuel',
+  'oil_filter',
+  'air_filter',
+  'fuel_filter',
+  'cabin_filter',
+  'engine',
+  'spark_plug',
+  'belt',
+  'cvt_belt',
+  'battery',
+  'starter',
+  'alternator',
+  'brake',
+  'brake_pad',
+  'brake_disc',
+  'transmission',
+  'cvt',
+  'gearbox',
+  'clutch',
+  'tire',
+  'wheel',
+  'rim',
+  'body',
+  'plastic',
+  'fairing',
+  'light',
+  'mirror',
+  'accessory'
+];
+
+export const formatInventoryLabel = (label = '') => String(label || '')
+  .replace(/_/g, ' ')
+  .replace(/\b\w/g, (char) => char.toUpperCase());
+
+export const normalizeInventoryLabel = (label = '') => String(label || '')
+  .trim()
+  .toLowerCase()
+  .replace(/[\s-]+/g, '_')
+  .replace(/[^a-z0-9_]/g, '');
+
+export const normalizeInventoryLabels = (labels = []) => {
+  const values = Array.isArray(labels)
+    ? labels
+    : String(labels || '').split(',');
+
+  return [...new Set(values.map(normalizeInventoryLabel).filter(Boolean))];
+};
+
+// Maintenance Type to Category/Label Mapping
 export const MAINTENANCE_INVENTORY_MAPPING = {
   'Oil Change': {
-    categories: ['Fluids', 'Engine Parts', 'Filters'],
+    categories: ['fluid', 'engine', 'filter'],
+    labels: ['oil', 'engine_oil', 'oil_filter'],
     description: 'Engine oil, oil filters, and related fluids'
   },
   'Brake Service': {
-    categories: ['Brake System', 'Fluids', 'Safety'],
+    categories: ['brake', 'fluid', 'safety'],
+    labels: ['brake', 'brake_pad', 'brake_disc', 'brake_fluid'],
     description: 'Brake pads, brake fluid, and brake components'
   },
   'Tire Service': {
-    categories: ['Tires', 'Accessories', 'Tools'],
+    categories: ['tire', 'accessory'],
+    labels: ['tire', 'wheel'],
     description: 'Tires, valve stems, and tire service tools'
   },
   'Filter Replacement': {
-    categories: ['Filters', 'Engine Parts', 'Fluids'],
+    categories: ['filter', 'engine', 'fluid'],
+    labels: ['oil_filter', 'air_filter', 'fuel_filter', 'cabin_filter'],
     description: 'Air filters, oil filters, fuel filters'
   },
   'Engine Service': {
-    categories: ['Engine Parts', 'Fluids', 'Filters', 'Tools'],
+    categories: ['engine', 'fluid', 'filter'],
+    labels: ['engine', 'spark_plug', 'belt', 'battery', 'starter', 'alternator'],
     description: 'Engine components, fluids, and service parts'
   },
   'Transmission Service': {
-    categories: ['Transmission', 'Fluids', 'Filters'],
+    categories: ['transmission', 'fluid', 'filter'],
+    labels: ['transmission', 'cvt', 'gear_oil'],
     description: 'Transmission fluid, filters, and components'
   },
   'Electrical Service': {
-    categories: ['Electrical', 'Lighting', 'Accessories'],
+    categories: ['electrical', 'light', 'accessory'],
+    labels: ['battery', 'starter', 'alternator', 'light'],
     description: 'Electrical components, bulbs, and wiring'
   },
   'Body Work': {
-    categories: ['Body Parts', 'Paint', 'Accessories', 'Tools'],
+    categories: ['body', 'accessory'],
+    labels: ['body', 'plastic', 'fairing', 'light', 'mirror', 'accessory'],
     description: 'Body panels, paint, and repair materials'
   },
   'General Inspection': {
-    categories: ['Lighting', 'Suspension', 'Engine Parts', 'Accessories', 'Safety'],
+    categories: ['light', 'suspension', 'engine', 'accessory', 'safety'],
+    labels: ['light', 'mirror', 'brake', 'tire', 'oil', 'battery'],
     description: 'General inspection and maintenance items'
   },
   'Other': {
     categories: [], // Show all categories for "Other"
+    labels: [],
     description: 'All inventory categories available'
   }
 };
@@ -58,6 +123,99 @@ export const MAINTENANCE_INVENTORY_MAPPING = {
 export const getSuggestedCategories = (maintenanceType) => {
   const mapping = MAINTENANCE_INVENTORY_MAPPING[maintenanceType];
   return mapping ? mapping.categories : [];
+};
+
+export const getSuggestedLabels = (maintenanceType) => {
+  const mapping = MAINTENANCE_INVENTORY_MAPPING[maintenanceType];
+  return mapping ? mapping.labels || [] : [];
+};
+
+export const getSuggestedLabelsForTypes = (maintenanceTypes = []) => {
+  const types = Array.isArray(maintenanceTypes) ? maintenanceTypes : [maintenanceTypes].filter(Boolean);
+  return [...new Set(types.flatMap((type) => getSuggestedLabels(type)).map(normalizeInventoryLabel).filter(Boolean))];
+};
+
+export const itemMatchesInventoryLabels = (item, labels = []) => {
+  const suggestedLabels = normalizeInventoryLabels(labels);
+  if (!suggestedLabels.length) return true;
+
+  const itemLabels = normalizeInventoryLabels(item?.labels || []);
+  if (itemLabels.some((label) => suggestedLabels.includes(label))) return true;
+
+  // Backward-compatible fallback for inventory rows that do not have labels yet.
+  const category = normalizeInventoryLabel(item?.category || '');
+  return category ? suggestedLabels.includes(category) : false;
+};
+
+const normalizeVehicleType = (value = '') => String(value || '')
+  .trim()
+  .toUpperCase()
+  .replace(/\s+/g, '');
+
+export const VEHICLE_TYPE_MAINTENANCE_DEFAULTS = [
+  {
+    vehicle_type: 'AT6',
+    maintenance_type: 'Oil Change',
+    default_labels: ['oil', 'engine_oil', 'oil_filter'],
+    default_items: ['MOTUL_7100_10W_40_4T', 'MOTUL_7100'],
+    default_quantities: {
+      MOTUL_7100_10W_40_4T: 2,
+      MOTUL_7100: 2,
+      engine_oil: 2,
+      oil: 2,
+      oil_filter: 1
+    }
+  },
+  {
+    vehicle_type: 'AT5',
+    maintenance_type: 'Oil Change',
+    default_labels: ['oil', 'engine_oil', 'oil_filter'],
+    default_items: ['MOTUL_7100_10W_40_4T', 'MOTUL_7100'],
+    default_quantities: {
+      MOTUL_7100_10W_40_4T: 2,
+      MOTUL_7100: 2,
+      engine_oil: 2,
+      oil: 2,
+      oil_filter: 1
+    }
+  }
+];
+
+export const getVehicleMaintenanceDefaults = (vehicleType, maintenanceType) => {
+  const normalizedVehicleType = normalizeVehicleType(vehicleType);
+  return VEHICLE_TYPE_MAINTENANCE_DEFAULTS.find((entry) => (
+    normalizeVehicleType(entry.vehicle_type) === normalizedVehicleType &&
+    entry.maintenance_type === maintenanceType
+  )) || null;
+};
+
+export const getRecommendedInventoryItems = (items = [], vehicleType, maintenanceType) => {
+  const defaults = getVehicleMaintenanceDefaults(vehicleType, maintenanceType);
+  if (!defaults || !Array.isArray(items)) return [];
+
+  const labels = normalizeInventoryLabels(defaults.default_labels || []);
+  const itemKeys = (defaults.default_items || []).map((value) => String(value).toLowerCase());
+
+  return items
+    .filter((item) => {
+      const sku = String(item?.sku || '').toLowerCase();
+      const id = String(item?.id || '').toLowerCase();
+      return itemKeys.includes(sku) || itemKeys.includes(id) || itemMatchesInventoryLabels(item, labels);
+    })
+    .map((item) => {
+      const itemLabels = normalizeInventoryLabels(item.labels || []);
+      const sku = String(item.sku || '');
+      const id = String(item.id || '');
+      const labelQuantity = itemLabels.find((label) => defaults.default_quantities?.[label] !== undefined);
+      const quantity = defaults.default_quantities?.[sku] ??
+        defaults.default_quantities?.[id] ??
+        (labelQuantity ? defaults.default_quantities[labelQuantity] : 1);
+
+      return {
+        item,
+        quantity: Number(quantity) || 1
+      };
+    });
 };
 
 /**

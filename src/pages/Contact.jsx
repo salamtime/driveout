@@ -20,9 +20,7 @@ const Contact = () => {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    // Handle form submission
-    console.log('Form submitted:', formData);
-    alert('Thank you for your message! We will get back to you soon.');
+    alert(t('contact.successMessage', 'Merci pour votre message ! Nous vous recontacterons bientot.'));
     setFormData({
       name: '',
       email: '',
@@ -38,10 +36,10 @@ const Contact = () => {
       <section className="bg-gradient-to-r from-blue-600 to-blue-800 text-white py-20">
         <div className="container mx-auto px-4 text-center">
           <h1 className="text-4xl md:text-5xl font-bold mb-6">
-            Contact Us
+            {t('contact.title', 'Contactez-nous')}
           </h1>
           <p className="text-xl md:text-2xl max-w-3xl mx-auto">
-            Get in touch with us for your next desert adventure
+            {t('contact.subtitle', 'Contactez-nous pour votre prochaine aventure dans le desert')}
           </p>
         </div>
       </section>
@@ -53,7 +51,7 @@ const Contact = () => {
             {/* Contact Information */}
             <div>
               <h2 className="text-3xl font-bold text-gray-800 mb-8">
-                Get In Touch
+                {t('contact.getInTouch', 'Entrer en contact')}
               </h2>
               
               <div className="space-y-6">
@@ -65,7 +63,7 @@ const Contact = () => {
                     </svg>
                   </div>
                   <div>
-                    <h3 className="text-lg font-semibold text-gray-800 mb-1">Address</h3>
+                    <h3 className="text-lg font-semibold text-gray-800 mb-1">{t('contact.address', 'Adresse')}</h3>
                     <p className="text-gray-600">
                       123 Desert Road<br />
                       Marrakech, Morocco<br />
@@ -81,7 +79,7 @@ const Contact = () => {
                     </svg>
                   </div>
                   <div>
-                    <h3 className="text-lg font-semibold text-gray-800 mb-1">Phone</h3>
+                    <h3 className="text-lg font-semibold text-gray-800 mb-1">{t('contact.phone', 'Telephone')}</h3>
                     <p className="text-gray-600">
                       +212 123 456 789<br />
                       +212 987 654 321
@@ -96,7 +94,7 @@ const Contact = () => {
                     </svg>
                   </div>
                   <div>
-                    <h3 className="text-lg font-semibold text-gray-800 mb-1">Email</h3>
+                    <h3 className="text-lg font-semibold text-gray-800 mb-1">{t('contact.email', 'E-mail')}</h3>
                     <p className="text-gray-600">
                       info@saharax.com<br />
                       bookings@saharax.com
@@ -111,10 +109,10 @@ const Contact = () => {
                     </svg>
                   </div>
                   <div>
-                    <h3 className="text-lg font-semibold text-gray-800 mb-1">Business Hours</h3>
+                    <h3 className="text-lg font-semibold text-gray-800 mb-1">{t('contact.businessHours', "Heures d'ouverture")}</h3>
                     <p className="text-gray-600">
-                      Monday - Friday: 8:00 AM - 6:00 PM<br />
-                      Saturday - Sunday: 9:00 AM - 5:00 PM
+                      {t('contact.weekdaysHours', 'Lundi - Vendredi : 8:00 - 18:00')}<br />
+                      {t('contact.weekendHours', 'Samedi - Dimanche : 9:00 - 17:00')}
                     </p>
                   </div>
                 </div>
@@ -122,7 +120,7 @@ const Contact = () => {
 
               {/* Social Media */}
               <div className="mt-8">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4">Follow Us</h3>
+                <h3 className="text-lg font-semibold text-gray-800 mb-4">{t('contact.followUs', 'Suivez-nous')}</h3>
                 <div className="flex space-x-4">
                   <a href="#" className="bg-blue-600 text-white p-3 rounded-full hover:bg-blue-700 transition-colors">
                     <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -146,14 +144,14 @@ const Contact = () => {
             {/* Contact Form */}
             <div className="bg-white p-8 rounded-lg shadow-lg">
               <h2 className="text-2xl font-bold text-gray-800 mb-6">
-                Send us a Message
+                {t('contact.sendMessage', 'Envoyez-nous un message')}
               </h2>
               
               <form onSubmit={handleSubmit} className="space-y-6">
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-2">
-                      Full Name *
+                      {t('contact.fullName', 'Nom complet')} *
                     </label>
                     <input
                       type="text"
@@ -163,12 +161,12 @@ const Contact = () => {
                       onChange={handleChange}
                       required
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="Your full name"
+                      placeholder={t('contact.fullNamePlaceholder', 'Votre nom complet')}
                     />
                   </div>
                   <div>
                     <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
-                      Email Address *
+                      {t('contact.emailAddress', 'Adresse e-mail')} *
                     </label>
                     <input
                       type="email"
@@ -178,7 +176,7 @@ const Contact = () => {
                       onChange={handleChange}
                       required
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="your@email.com"
+                      placeholder={t('contact.emailPlaceholder', 'votre@email.com')}
                     />
                   </div>
                 </div>
@@ -186,7 +184,7 @@ const Contact = () => {
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="phone" className="block text-sm font-medium text-gray-700 mb-2">
-                      Phone Number
+                      {t('contact.phoneNumber', 'Numéro de téléphone')}
                     </label>
                     <input
                       type="tel"
@@ -195,12 +193,12 @@ const Contact = () => {
                       value={formData.phone}
                       onChange={handleChange}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="+212 123 456 789"
+                      placeholder={t('contact.phonePlaceholder', '+212 123 456 789')}
                     />
                   </div>
                   <div>
                     <label htmlFor="subject" className="block text-sm font-medium text-gray-700 mb-2">
-                      Subject *
+                      {t('contact.subject', 'Sujet')} *
                     </label>
                     <select
                       id="subject"
@@ -210,20 +208,20 @@ const Contact = () => {
                       required
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
-                      <option value="">Select a subject</option>
-                      <option value="booking">Booking Inquiry</option>
-                      <option value="rental">ATV Rental</option>
-                      <option value="tour">Guided Tour</option>
-                      <option value="group">Group Booking</option>
-                      <option value="support">Customer Support</option>
-                      <option value="other">Other</option>
+                      <option value="">{t('contact.selectSubject', 'Choisissez un sujet')}</option>
+                      <option value="booking">{t('contact.subjectBooking', 'Demande de reservation')}</option>
+                      <option value="rental">{t('contact.subjectRental', 'Location ATV')}</option>
+                      <option value="tour">{t('contact.subjectTour', 'Guide de tour')}</option>
+                      <option value="group">{t('contact.subjectGroup', 'Reservation de groupe')}</option>
+                      <option value="support">{t('contact.subjectSupport', 'Support client')}</option>
+                      <option value="other">{t('contact.subjectOther', 'Autre')}</option>
                     </select>
                   </div>
                 </div>
 
                 <div>
                   <label htmlFor="message" className="block text-sm font-medium text-gray-700 mb-2">
-                    Message *
+                    {t('contact.message', 'Message')} *
                   </label>
                   <textarea
                     id="message"
@@ -233,7 +231,7 @@ const Contact = () => {
                     required
                     rows={6}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Tell us about your adventure plans or ask any questions..."
+                    placeholder={t('contact.messagePlaceholder', 'Parlez-nous de vos projets d aventure ou posez vos questions...')}
                   ></textarea>
                 </div>
 
@@ -241,7 +239,7 @@ const Contact = () => {
                   type="submit"
                   className="w-full bg-blue-600 text-white py-3 px-6 rounded-md hover:bg-blue-700 transition-colors font-medium"
                 >
-                  Send Message
+                  {t('contact.sendButton', 'Envoyer le message')}
                 </button>
               </form>
             </div>
@@ -253,10 +251,10 @@ const Contact = () => {
       <section className="py-16 bg-white">
         <div className="container mx-auto px-4">
           <h2 className="text-3xl font-bold text-center text-gray-800 mb-8">
-            Find Us
+            {t('contact.findUs', 'Nous trouver')}
           </h2>
           <div className="bg-gray-200 h-96 rounded-lg flex items-center justify-center">
-            <span className="text-gray-500">Interactive Map Coming Soon</span>
+            <span className="text-gray-500">{t('contact.mapSoon', 'Carte interactive bientot disponible')}</span>
           </div>
         </div>
       </section>

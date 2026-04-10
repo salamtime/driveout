@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, File, X, AlertCircle, CheckCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import i18n from '../i18n';
 
 const DocumentUpload = ({ 
   vehicleId, 
@@ -9,13 +10,25 @@ const DocumentUpload = ({
   disabled = false, 
   className = "" 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
   const [error, setError] = useState(null);
+  const [documentCategory, setDocumentCategory] = useState('legal');
   const fileInputRef = useRef(null);
 
   // FIXED: Use existing vehicle-documents bucket instead of vehicle-media
   const BUCKET_NAME = 'vehicle-documents';
+  const DOCUMENT_CATEGORIES = [
+    { value: 'legal', label: tr('Legal file', 'Document légal') },
+    { value: 'purchase-invoice', label: tr('Purchase invoice', "Facture d'achat") },
+    { value: 'registration', label: tr('Registration', 'Immatriculation') },
+    { value: 'annual-tax', label: tr('Annual vehicle tax receipt', 'Reçu de taxe annuelle véhicule') },
+    { value: 'insurance', label: tr('Insurance', 'Assurance') },
+    { value: 'maintenance', label: tr('Maintenance', 'Maintenance') },
+    { value: 'other', label: tr('Other', 'Autre') },
+  ];
 
   console.log('🔍 DocumentUpload Debug:', {
     vehicleId,
@@ -32,7 +45,7 @@ const DocumentUpload = ({
 
   const uploadFiles = async (files) => {
     if (!vehicleId) {
-      setError('Vehicle ID is required for document upload');
+      setError(tr('Vehicle ID is required for document upload', "L'identifiant du véhicule est requis pour téléverser un document"));
       return;
     }
 
@@ -51,8 +64,8 @@ const DocumentUpload = ({
         
         try {
           // FIXED: Vehicle-scoped storage path using existing bucket
-          const fileExtension = file.name.split('.').pop();
-          const storagePath = `${vehicleId}/${fileId}.${fileExtension}`;
+          const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+          const storagePath = `${vehicleId}/${documentCategory}__${fileId}_${safeFileName}`;
           
           console.log(`📁 Uploading file ${i + 1}/${totalFiles}: ${file.name}`);
           console.log(`📍 Storage path: ${storagePath}`);
@@ -93,7 +106,8 @@ const DocumentUpload = ({
             storagePath: storagePath,
             uploadedAt: new Date().toISOString(),
             uploadedBy: 'Current User',
-            category: getCategoryFromType(file.type),
+            category: DOCUMENT_CATEGORIES.find((category) => category.value === documentCategory)?.label || getCategoryFromType(file.type),
+            categoryKey: documentCategory,
             vehicleId: vehicleId
           };
 
@@ -128,7 +142,7 @@ const DocumentUpload = ({
 
     } catch (error) {
       console.error('❌ Upload process error:', error);
-      setError(`Upload failed: ${error.message}`);
+      setError(`${tr('Upload failed:', 'Échec du téléversement :')} ${error.message}`);
     } finally {
       setUploading(false);
       // Clear progress after a delay
@@ -167,6 +181,25 @@ const DocumentUpload = ({
 
   return (
     <div className={`space-y-4 ${className}`}>
+      {!disabled && (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <label className="text-sm font-medium text-gray-700">
+            {tr('Document type', 'Type de document')}
+          </label>
+          <select
+            value={documentCategory}
+            onChange={(event) => setDocumentCategory(event.target.value)}
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          >
+            {DOCUMENT_CATEGORIES.map((category) => (
+              <option key={category.value} value={category.value}>
+                {category.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {/* Upload Area */}
       <div
         className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${

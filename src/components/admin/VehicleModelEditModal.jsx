@@ -2,8 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { X, Save, AlertCircle } from 'lucide-react';
 import VehicleModelService from '../../services/VehicleModelService';
 import { resolveTankCapacityLiters } from '../../utils/vehicleModelSpecs';
+import i18n from '../../i18n';
 
 const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [formData, setFormData] = useState({
     name: '',
     model: '',
@@ -101,8 +104,8 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
         {/* Modal Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <div>
-            <h2 className="text-xl font-semibold text-gray-900">Edit Vehicle Model</h2>
-            <p className="text-sm text-gray-600">Update vehicle model information</p>
+            <h2 className="text-xl font-semibold text-gray-900">Modifier le modèle de véhicule</h2>
+            <p className="text-sm text-gray-600">Mettez à jour les informations du modèle de véhicule</p>
           </div>
           <button
             onClick={onClose}
@@ -117,7 +120,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
           <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-200 rounded-md flex items-start gap-2">
             <AlertCircle className="w-5 h-5 text-red-600 mt-0.5" />
             <div>
-              <p className="text-sm text-red-600 font-medium">Error updating model</p>
+              <p className="text-sm text-red-600 font-medium">Erreur lors de la mise à jour du modèle</p>
               <p className="text-sm text-red-600">{error}</p>
             </div>
           </div>
@@ -128,35 +131,35 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Model Name <span className="text-red-500">*</span>
+                Nom du modèle <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({...formData, name: e.target.value})}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="e.g., Segway AT6"
+                placeholder="ex. Segway AT6"
                 required
               />
             </div>
             
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Model Identifier <span className="text-red-500">*</span>
+                Identifiant du modèle <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
                 value={formData.model}
                 onChange={(e) => setFormData({...formData, model: e.target.value})}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="e.g., AT6"
+                placeholder="ex. AT6"
                 required
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Fuel Tank Capacity (L)</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Capacité du réservoir (L)</label>
             <input
               type="number"
               value={formData.tank_capacity_liters}
@@ -164,15 +167,15 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               min="1"
               step="0.1"
-              placeholder="e.g., 19"
+              placeholder="ex. 19"
             />
-            <p className="mt-1 text-xs text-gray-500">Shared fuel capacity used across fuel, rentals, and tours.</p>
+            <p className="mt-1 text-xs text-gray-500">Capacité partagée utilisée pour le carburant, les locations et les tours.</p>
           </div>
 
           {/* Vehicle Type and Status */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Vehicle Type</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Type de véhicule</label>
               <select
                 value={formData.vehicle_type}
                 onChange={(e) => setFormData({...formData, vehicle_type: e.target.value})}
@@ -180,20 +183,28 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
               >
                 <option value="quad">Quad</option>
                 <option value="ATV">ATV</option>
+                <option value="UTV">UTV</option>
+                <option value="buggy">Buggy</option>
+                <option value="car">Car</option>
+                <option value="motorhome">Motorhome</option>
+                <option value="jet_ski">Jet Ski</option>
+                <option value="electric_bike">Electric Bike</option>
+                <option value="electric_motorbike">Electric Motorbike</option>
+                <option value="electric_motorcycle">Electric Motorcycle</option>
                 <option value="motorcycle">Motorcycle</option>
                 <option value="scooter">Scooter</option>
               </select>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Statut</label>
               <select
                 value={formData.is_active}
                 onChange={(e) => setFormData({...formData, is_active: e.target.value === 'true'})}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option value="true">Active</option>
-                <option value="false">Inactive</option>
+                <option value="true">Actif</option>
+                <option value="false">Inactif</option>
               </select>
             </div>
           </div>
@@ -201,7 +212,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
           {/* Power Range */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Min Power (CC)</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Puissance min. (CC)</label>
               <input
                 type="number"
                 value={formData.power_cc_min}
@@ -212,7 +223,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
             </div>
             
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Max Power (CC)</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Puissance max. (CC)</label>
               <input
                 type="number"
                 value={formData.power_cc_max}
@@ -226,7 +237,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
           {/* Capacity Range */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Min Capacity</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Capacité min.</label>
               <input
                 type="number"
                 value={formData.capacity_min}
@@ -237,7 +248,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
             </div>
             
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Max Capacity</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Capacité max.</label>
               <input
                 type="number"
                 value={formData.capacity_max}
@@ -256,13 +267,13 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
               onChange={(e) => setFormData({...formData, description: e.target.value})}
               rows={3}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Optional description of the vehicle model"
+              placeholder="Description facultative du modèle de véhicule"
             />
           </div>
 
           {/* Features */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Features</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Caractéristiques</label>
             <div className="flex flex-wrap gap-2 mb-2">
               {formData.features.map((feature, index) => (
                 <span
@@ -277,7 +288,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
             </div>
             <input
               type="text"
-              placeholder="Add feature and press Enter"
+              placeholder="Ajouter une caractéristique puis appuyer sur Entrée"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               onKeyPress={(e) => {
                 if (e.key === 'Enter') {
@@ -296,7 +307,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
               onClick={onClose}
               className="px-6 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors font-medium"
             >
-              Cancel
+              Annuler
             </button>
             <button
               type="submit"
@@ -310,12 +321,12 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
               {loading ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  Updating...
+                  {tr('Updating...', 'Mise à jour...')}
                 </>
               ) : (
                 <>
                   <Save className="w-4 h-4" />
-                  Update Model
+                  {tr('Update Model', 'Mettre à jour le modèle')}
                 </>
               )}
             </button>

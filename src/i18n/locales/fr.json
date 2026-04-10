@@ -6,6 +6,7 @@
     "success": "Succès",
     "cancel": "Annuler",
     "save": "Enregistrer",
+    "saving": "Enregistrement...",
     "edit": "Modifier",
     "delete": "Supprimer",
     "confirm": "Confirmer",
@@ -55,7 +56,9 @@
     "logout": "Déconnexion",
     "profile": "Profil",
     "dashboard": "Tableau de bord",
-    "myBookings": "Mes Réservations"
+    "myBookings": "Mes Réservations",
+    "never": "Jamais",
+    "comingSoon": "Bientôt disponible"
   },
   "navigation": {
     "home": "Accueil",
@@ -152,6 +155,108 @@
       "privacy": "Politique de Confidentialité",
       "terms": "Conditions d'Utilisation",
       "cookies": "Politique des Cookies"
+    }
+  },
+  "profile": {
+    "title": "Mon profil",
+    "notAuthenticated": "Vous n'êtes pas connecté",
+    "pleaseLogin": "Veuillez vous connecter pour voir votre profil.",
+    "changePassword": "Changer le mot de passe",
+    "personalInformation": "Informations personnelles",
+    "contactDetails": "Coordonnées",
+    "roleBasedAccess": "Accès selon le rôle",
+    "lastUpdated": "Dernière mise à jour",
+    "updateSuccess": "Profil mis à jour avec succès.",
+    "rolePermissions": "Autorisations du profil",
+    "yourRole": "Votre rôle",
+    "availableFields": "Champs disponibles",
+    "fieldsCount": "champs",
+    "idFile": "Pièce d'identité",
+    "idFiles": "Pièces d'identité",
+    "saveHint": "Vérifiez vos informations avant d'enregistrer.",
+    "fullAccess": "Vous pouvez modifier tous les champs du profil pour ce rôle.",
+    "limitedAccess": "Certains champs du profil sont limités par votre rôle.",
+    "tabs": {
+      "profile": "Profil",
+      "security": "Sécurité",
+      "preferences": "Préférences",
+      "activity": "Activité"
+    },
+    "fields": {
+      "username": "Nom d'utilisateur",
+      "firstName": "Prénom",
+      "lastName": "Nom",
+      "phone": "Téléphone",
+      "address": "Adresse",
+      "dateOfBirth": "Date de naissance",
+      "emergencyContact": "Contact d'urgence",
+      "emergencyPhone": "Téléphone d'urgence"
+    },
+    "placeholders": {
+      "username": "Choisir un nom d'utilisateur",
+      "firstName": "Saisir le prénom",
+      "lastName": "Saisir le nom",
+      "phone": "Saisir le téléphone",
+      "address": "Saisir l'adresse",
+      "emergencyContact": "Saisir le contact d'urgence",
+      "emergencyPhone": "Saisir le téléphone d'urgence"
+    },
+    "errors": {
+      "loadFailed": "Impossible de charger le profil",
+      "updateFailed": "Impossible de mettre à jour le profil"
+    },
+    "password": {
+      "updatedDescription": "Mot de passe mis à jour avec succès.",
+      "updateFailed": "Échec de la mise à jour du mot de passe",
+      "new": "Nouveau mot de passe",
+      "newPlaceholder": "Saisir le nouveau mot de passe",
+      "confirm": "Confirmer le mot de passe",
+      "confirmPlaceholder": "Confirmer le nouveau mot de passe",
+      "requirements": "Exigences du mot de passe",
+      "required": "Saisissez un nouveau mot de passe",
+      "confirmRequired": "Confirmez le nouveau mot de passe",
+      "mismatch": "Les mots de passe ne correspondent pas",
+      "minLength": "Au moins 8 caractères",
+      "lowercase": "Une lettre minuscule",
+      "uppercase": "Une lettre majuscule",
+      "number": "Un chiffre",
+      "special": "Un caractère spécial (@$!%*?&)",
+      "strength": {
+        "veryWeak": "Très faible",
+        "weak": "Faible",
+        "fair": "Correct",
+        "good": "Bon",
+        "strong": "Fort",
+        "veryStrong": "Très fort"
+      }
+    },
+    "security": {
+      "title": "Sécurité",
+      "password": "Mot de passe",
+      "passwordDescription": "Mettez à jour le mot de passe de votre compte.",
+      "twoFactor": "Authentification à deux facteurs",
+      "twoFactorDescription": "Ajoutez une couche de protection supplémentaire à votre compte."
+    },
+    "preferences": {
+      "title": "Préférences",
+      "notifications": "Notifications",
+      "notificationsDescription": "Choisissez comment recevoir les mises à jour du compte."
+    },
+    "activity": {
+      "title": "Activité",
+      "noActivity": "Aucune activité enregistrée pour le moment."
+    },
+    "picture": {
+      "alt": "Photo de profil",
+      "change": "Changer la photo",
+      "delete": "Supprimer la photo",
+      "instructions": "Touchez pour téléverser une photo de profil.",
+      "formats": "Formats acceptés : JPG, PNG, GIF, WEBP jusqu'à 5 Mo.",
+      "invalidType": "Veuillez choisir un format d'image pris en charge.",
+      "tooLarge": "L'image sélectionnée est trop volumineuse.",
+      "uploadError": "Impossible de téléverser la photo de profil.",
+      "deleteError": "Impossible de supprimer la photo de profil.",
+      "userFallback": "Utilisateur"
     }
   }
 }

@@ -1,7 +1,10 @@
 import React from 'react';
 import { X, Clock, User, MapPin, Phone, Mail, Calendar, Play, Square, Edit } from 'lucide-react';
+import i18n from '../../i18n';
 
 const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEdit }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   if (!isOpen || !booking) return null;
 
   const getStatusColor = (status) => {
@@ -42,7 +45,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
             <div>
               <h2 className="text-2xl font-black text-gray-900">{booking.tourName}</h2>
               <div className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-bold ${getStatusColor(booking.status)}`}>
-                Status: {booking.status.replace('_', ' ').toUpperCase()}
+                {tr('Status:', 'Statut :')} {booking.status.replace('_', ' ').toUpperCase()}
               </div>
             </div>
           </div>
@@ -59,13 +62,13 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
           {/* Tour Details */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-4">
-              <h3 className="text-lg font-bold text-gray-900 border-b pb-2">📅 Tour Information</h3>
+              <h3 className="text-lg font-bold text-gray-900 border-b pb-2">📅 {tr('Tour Information', 'Informations du tour')}</h3>
               
               <div className="flex items-center space-x-3">
                 <Calendar className="h-5 w-5 text-blue-600" />
                 <div>
-                  <div className="font-semibold">Date & Time</div>
-                  <div className="text-gray-600">{booking.selectedDate} at {booking.selectedTime}</div>
+                  <div className="font-semibold">{tr('Date & Time', 'Date et heure')}</div>
+                  <div className="text-gray-600">{booking.selectedDate} {tr('at', 'à')} {booking.selectedTime}</div>
                 </div>
               </div>
 
@@ -73,7 +76,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
                 <div className="flex items-center space-x-3">
                   <Clock className="h-5 w-5 text-green-600" />
                   <div>
-                    <div className="font-semibold">Duration</div>
+                    <div className="font-semibold">{tr('Duration', 'Durée')}</div>
                     <div className="text-gray-600">{formatDuration(booking.duration)}</div>
                   </div>
                 </div>
@@ -83,7 +86,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
                 <div className="flex items-center space-x-3">
                   <User className="h-5 w-5 text-purple-600" />
                   <div>
-                    <div className="font-semibold">Assigned Guide</div>
+                    <div className="font-semibold">{tr('Assigned Guide', 'Guide assigné')}</div>
                     <div className="text-gray-600">{booking.assignedGuide}</div>
                   </div>
                 </div>
@@ -91,7 +94,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
             </div>
 
             <div className="space-y-4">
-              <h3 className="text-lg font-bold text-gray-900 border-b pb-2">👥 Participants</h3>
+              <h3 className="text-lg font-bold text-gray-900 border-b pb-2">👥 {tr('Participants', 'Participants')}</h3>
               
               {booking.participants && booking.participants.length > 0 ? (
                 <div className="space-y-3">
@@ -99,19 +102,19 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
                     <div key={index} className="bg-gray-50 p-3 rounded-lg">
                       <div className="font-semibold">{participant.name}</div>
                       <div className="text-sm text-gray-600">
-                        Age: {participant.age}
+                        {tr('Age:', 'Âge :')} {participant.age}
                         {participant.email && <span className="ml-2">• {participant.email}</span>}
                       </div>
                       {participant.emergencyContact && (
                         <div className="text-sm text-gray-600">
-                          Emergency: {participant.emergencyContact}
+                          {tr('Emergency:', 'Urgence :')} {participant.emergencyContact}
                         </div>
                       )}
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-gray-500 italic">No participant details available</div>
+                <div className="text-gray-500 italic">{tr('No participant details available', 'Aucun détail participant disponible')}</div>
               )}
             </div>
           </div>
@@ -119,11 +122,11 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
           {/* Vehicle Information */}
           {booking.quadSelection && (
             <div className="space-y-4">
-              <h3 className="text-lg font-bold text-gray-900 border-b pb-2">🏍️ Vehicle Assignment</h3>
+              <h3 className="text-lg font-bold text-gray-900 border-b pb-2">🏍️ {tr('Vehicle Assignment', 'Attribution du véhicule')}</h3>
               <div className="bg-blue-50 p-4 rounded-lg">
                 <div className="font-semibold">{booking.quadSelection.quadName}</div>
                 <div className="text-sm text-gray-600">
-                  Vehicle ID: {booking.quadSelection.quadId}
+                  {tr('Vehicle ID:', 'ID véhicule :')} {booking.quadSelection.quadId}
                 </div>
               </div>
             </div>
@@ -132,11 +135,11 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
           {/* Timing Information */}
           {(booking.startTime || booking.endTime) && (
             <div className="space-y-4">
-              <h3 className="text-lg font-bold text-gray-900 border-b pb-2">⏱️ Tour Timing</h3>
+              <h3 className="text-lg font-bold text-gray-900 border-b pb-2">⏱️ {tr('Tour Timing', 'Chronologie du tour')}</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {booking.startTime && (
                   <div className="bg-green-50 p-3 rounded-lg">
-                    <div className="font-semibold text-green-800">Started At</div>
+                    <div className="font-semibold text-green-800">{tr('Started At', 'Commencé à')}</div>
                     <div className="text-sm text-green-600">
                       {new Date(booking.startTime).toLocaleString()}
                     </div>
@@ -144,7 +147,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
                 )}
                 {booking.endTime && (
                   <div className="bg-gray-50 p-3 rounded-lg">
-                    <div className="font-semibold text-gray-800">Finished At</div>
+                    <div className="font-semibold text-gray-800">{tr('Finished At', 'Terminé à')}</div>
                     <div className="text-sm text-gray-600">
                       {new Date(booking.endTime).toLocaleString()}
                     </div>
@@ -153,7 +156,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
               </div>
               {booking.actualDuration && (
                 <div className="bg-blue-50 p-3 rounded-lg">
-                  <div className="font-semibold text-blue-800">Actual Duration</div>
+                  <div className="font-semibold text-blue-800">{tr('Actual Duration', 'Durée réelle')}</div>
                   <div className="text-sm text-blue-600">
                     {formatDuration(booking.actualDuration)}
                   </div>
@@ -164,21 +167,21 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
 
           {/* Additional Information */}
           <div className="space-y-4">
-            <h3 className="text-lg font-bold text-gray-900 border-b pb-2">ℹ️ Additional Details</h3>
+            <h3 className="text-lg font-bold text-gray-900 border-b pb-2">ℹ️ {tr('Additional Details', 'Détails supplémentaires')}</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
               <div>
-                <span className="font-semibold">Booking ID:</span>
+                <span className="font-semibold">{tr('Booking ID:', 'ID réservation :')}</span>
                 <span className="ml-2 text-gray-600">{booking.id}</span>
               </div>
               <div>
-                <span className="font-semibold">Created:</span>
+                <span className="font-semibold">{tr('Created:', 'Créé le :')}</span>
                 <span className="ml-2 text-gray-600">
                   {new Date(booking.createdAt).toLocaleDateString()}
                 </span>
               </div>
               {booking.totalPrice && (
                 <div>
-                  <span className="font-semibold">Total Price:</span>
+                  <span className="font-semibold">{tr('Total Price:', 'Prix total :')}</span>
                   <span className="ml-2 text-gray-600">${booking.totalPrice}</span>
                 </div>
               )}
@@ -194,7 +197,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
               className="flex items-center space-x-2 px-6 py-3 bg-green-500 text-white rounded-lg font-bold hover:bg-green-600 transition-colors"
             >
               <Play className="h-5 w-5" />
-              <span>START TOUR</span>
+              <span>{tr('START TOUR', 'COMMENCER LE TOUR')}</span>
             </button>
           )}
           
@@ -204,7 +207,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
               className="flex items-center space-x-2 px-6 py-3 bg-red-500 text-white rounded-lg font-bold hover:bg-red-600 transition-colors"
             >
               <Square className="h-5 w-5" />
-              <span>FINISH TOUR</span>
+              <span>{tr('FINISH TOUR', 'TERMINER LE TOUR')}</span>
             </button>
           )}
           
@@ -214,7 +217,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
               className="flex items-center space-x-2 px-6 py-3 bg-blue-500 text-white rounded-lg font-bold hover:bg-blue-600 transition-colors"
             >
               <Edit className="h-5 w-5" />
-              <span>EDIT BOOKING</span>
+              <span>{tr('EDIT BOOKING', 'MODIFIER LA RÉSERVATION')}</span>
             </button>
           )}
           
@@ -223,7 +226,7 @@ const BookingDetailsModal = ({ booking, isOpen, onClose, onStart, onFinish, onEd
             className="flex items-center space-x-2 px-6 py-3 bg-gray-500 text-white rounded-lg font-bold hover:bg-gray-600 transition-colors ml-auto"
           >
             <X className="h-5 w-5" />
-            <span>CLOSE</span>
+            <span>{tr('CLOSE', 'FERMER')}</span>
           </button>
         </div>
       </div>

@@ -7,6 +7,7 @@ import toast from 'react-hot-toast';
 
 const TourBooking = () => {
   const { t } = useTranslation();
+  const tr = (en, fr) => t(en, fr);
   const navigate = useNavigate();
   
   // Booking state
@@ -34,10 +35,10 @@ const TourBooking = () => {
     extraPassengerFee: 15,
     maxPassengersPerQuad: 2,
     tourTypes: {
-      standard: { name: 'Standard Tour', duration: '2 hours', multiplier: 1 },
-      extended: { name: 'Extended Tour', duration: '4 hours', multiplier: 1.8 },
-      sunset: { name: 'Sunset Tour', duration: '3 hours', multiplier: 1.5 },
-      adventure: { name: 'Adventure Tour', duration: '6 hours', multiplier: 2.5 }
+      standard: { name: tr('Standard Tour', 'Tour standard'), duration: tr('2 hours', '2 heures'), multiplier: 1 },
+      extended: { name: tr('Extended Tour', 'Tour prolongé'), duration: tr('4 hours', '4 heures'), multiplier: 1.8 },
+      sunset: { name: tr('Sunset Tour', 'Tour au coucher du soleil'), duration: tr('3 hours', '3 heures'), multiplier: 1.5 },
+      adventure: { name: tr('Adventure Tour', "Tour d'aventure"), duration: tr('6 hours', '6 heures'), multiplier: 2.5 }
     }
   });
 
@@ -171,7 +172,7 @@ const TourBooking = () => {
       setAvailableTimeSlots(timeSlots);
     } catch (error) {
       console.error('Error loading availability:', error);
-      toast.error('Failed to load available time slots');
+      toast.error(tr('Failed to load available time slots', 'Impossible de charger les créneaux disponibles'));
     } finally {
       setIsLoadingAvailability(false);
     }
@@ -223,7 +224,7 @@ const TourBooking = () => {
     if (validateStep(currentStep)) {
       setCurrentStep(prev => Math.min(prev + 1, 5));
     } else {
-      toast.error('Please fill in all required fields');
+      toast.error(tr('Please fill in all required fields', 'Veuillez remplir tous les champs obligatoires'));
     }
   };
 
@@ -233,7 +234,7 @@ const TourBooking = () => {
 
   const handleSubmitBooking = async () => {
     if (!validateStep(4)) {
-      toast.error('Please complete all required fields');
+      toast.error(tr('Please complete all required fields', 'Veuillez compléter tous les champs obligatoires'));
       return;
     }
 
@@ -287,12 +288,12 @@ const TourBooking = () => {
 
       if (participantsError) throw participantsError;
 
-      toast.success('Booking created successfully!');
+      toast.success(tr('Booking created successfully!', 'Réservation créée avec succès !'));
       setCurrentStep(5); // Move to confirmation step
       
     } catch (error) {
       console.error('Error creating booking:', error);
-      toast.error('Failed to create booking. Please try again.');
+      toast.error(tr('Failed to create booking. Please try again.', 'Impossible de créer la réservation. Veuillez réessayer.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -300,11 +301,11 @@ const TourBooking = () => {
 
   const renderStep1 = () => (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">Select Your Tour</h2>
+      <h2 className="text-2xl font-bold text-gray-900 mb-6">{tr('Select Your Tour', 'Choisissez votre tour')}</h2>
       
       {/* Tour Type Selection */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-3">Tour Type</label>
+        <label className="block text-sm font-medium text-gray-700 mb-3">{tr('Tour Type', 'Type de tour')}</label>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {Object.entries(pricingConfig.tourTypes).map(([key, tour]) => (
             <div
@@ -319,7 +320,7 @@ const TourBooking = () => {
               <h3 className="font-semibold text-gray-900">{tour.name}</h3>
               <p className="text-sm text-gray-600">{tour.duration}</p>
               <p className="text-lg font-bold text-blue-600 mt-2">
-                ${(pricingConfig.basePricePerQuad * tour.multiplier).toFixed(0)} per quad
+                ${(pricingConfig.basePricePerQuad * tour.multiplier).toFixed(0)} {tr('per quad', 'par quad')}
               </p>
             </div>
           ))}
@@ -328,7 +329,7 @@ const TourBooking = () => {
 
       {/* Number of Quads */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-3">Number of Quads</label>
+        <label className="block text-sm font-medium text-gray-700 mb-3">{tr('Number of Quads', 'Nombre de quads')}</label>
         <div className="flex items-center space-x-4">
           <button
             onClick={() => handleInputChange('numberOfQuads', Math.max(1, bookingData.numberOfQuads - 1))}
@@ -349,7 +350,7 @@ const TourBooking = () => {
       {/* Total Participants */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-3">
-          Total Participants (Max {bookingData.numberOfQuads * pricingConfig.maxPassengersPerQuad})
+          {tr('Total Participants', 'Participants au total')} ({tr('Max', 'Max')} {bookingData.numberOfQuads * pricingConfig.maxPassengersPerQuad})
         </label>
         <div className="flex items-center space-x-4">
           <button
@@ -373,54 +374,54 @@ const TourBooking = () => {
 
       {/* Updated Pricing Preview with Configurable Tax */}
       <div className="bg-gray-50 p-4 rounded-lg">
-        <h3 className="font-semibold text-gray-900 mb-3">Pricing Breakdown</h3>
+        <h3 className="font-semibold text-gray-900 mb-3">{tr('Pricing Breakdown', 'Détail du tarif')}</h3>
         <div className="space-y-2 text-sm">
           <div className="flex justify-between">
-            <span>Base Price per Quad:</span>
+            <span>{tr('Base Price per Quad:', 'Prix de base par quad :')}</span>
             <span>${(pricingConfig.basePricePerQuad * pricingConfig.tourTypes[bookingData.tourType].multiplier).toFixed(0)}</span>
           </div>
           <div className="flex justify-between">
-            <span>Number of Quads:</span>
+            <span>{tr('Number of Quads:', 'Nombre de quads :')}</span>
             <span>× {bookingData.numberOfQuads}</span>
           </div>
           <div className="flex justify-between font-medium">
-            <span>Quad Total:</span>
+            <span>{tr('Quad Total:', 'Total des quads :')}</span>
             <span>${pricing.basePrice.toFixed(2)}</span>
           </div>
           <div className="flex justify-between">
-            <span>Participants:</span>
-            <span>{bookingData.totalParticipants} people</span>
+            <span>{tr('Participants:', 'Participants :')}</span>
+            <span>{bookingData.totalParticipants} {tr('people', 'personnes')}</span>
           </div>
           <div className="flex justify-between text-xs text-gray-600">
-            <span>• Included: {bookingData.numberOfQuads} passenger{bookingData.numberOfQuads !== 1 ? 's' : ''}</span>
-            <span>• Extra: {pricing.extraPassengers} passenger{pricing.extraPassengers !== 1 ? 's' : ''}</span>
+            <span>• {tr('Included:', 'Inclus :')} {bookingData.numberOfQuads} {tr(bookingData.numberOfQuads !== 1 ? 'passengers' : 'passenger', bookingData.numberOfQuads !== 1 ? 'passagers' : 'passager')}</span>
+            <span>• {tr('Extra:', 'Extra :')} {pricing.extraPassengers} {tr(pricing.extraPassengers !== 1 ? 'passengers' : 'passenger', pricing.extraPassengers !== 1 ? 'passagers' : 'passager')}</span>
           </div>
           {pricing.extraPassengers > 0 && (
             <div className="flex justify-between font-medium">
-              <span>Extra Passenger Fees:</span>
+              <span>{tr('Extra Passenger Fees:', 'Frais passager supplémentaire :')}</span>
               <span>{pricing.extraPassengers} × ${pricingConfig.extraPassengerFee} = ${pricing.extraPassengerFees.toFixed(2)}</span>
             </div>
           )}
           <div className="border-t pt-2 flex justify-between font-medium">
-            <span>Subtotal:</span>
+            <span>{tr('Subtotal:', 'Sous-total :')}</span>
             <span>${pricing.subtotal.toFixed(2)}</span>
           </div>
           {pricing.taxApplied && (
             <div className="flex justify-between">
-              <span>Tax ({pricing.taxPercentage.toFixed(1)}%):</span>
+              <span>{tr('Tax', 'Taxe')} ({pricing.taxPercentage.toFixed(1)}%) :</span>
               <span>${pricing.taxAmount.toFixed(2)}</span>
             </div>
           )}
           <div className="border-t pt-2 flex justify-between text-lg font-bold text-blue-600">
-            <span>Total:</span>
+            <span>{tr('Total:', 'Total :')}</span>
             <span>${pricing.total.toFixed(2)}</span>
           </div>
         </div>
         
         {/* Calculation Verification */}
         <div className="mt-3 p-2 bg-blue-50 rounded text-xs text-blue-800">
-          <strong>Calculation:</strong> ${pricing.subtotal.toFixed(2)} (subtotal) 
-          {pricing.taxApplied && ` + ${pricing.taxAmount.toFixed(2)} (tax)`} = ${pricing.total.toFixed(2)}
+          <strong>{tr('Calculation:', 'Calcul :')}</strong> ${pricing.subtotal.toFixed(2)} ({tr('subtotal', 'sous-total')})
+          {pricing.taxApplied && ` + ${pricing.taxAmount.toFixed(2)} (${tr('tax', 'taxe')})`} = ${pricing.total.toFixed(2)}
         </div>
       </div>
     </div>
@@ -428,11 +429,11 @@ const TourBooking = () => {
 
   const renderStep2 = () => (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">Select Date & Time</h2>
+      <h2 className="text-2xl font-bold text-gray-900 mb-6">{tr('Select Date & Time', "Choisissez la date et l'heure")}</h2>
       
       {/* Date Selection */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-3">Select Date</label>
+        <label className="block text-sm font-medium text-gray-700 mb-3">{tr('Select Date', 'Choisissez la date')}</label>
         <input
           type="date"
           value={bookingData.selectedDate}
@@ -445,11 +446,11 @@ const TourBooking = () => {
       {/* Time Selection */}
       {bookingData.selectedDate && (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-3">Select Time</label>
+          <label className="block text-sm font-medium text-gray-700 mb-3">{tr('Select Time', "Choisissez l'heure")}</label>
           {isLoadingAvailability ? (
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-              <span className="ml-2">Loading available times...</span>
+              <span className="ml-2">{tr('Loading available times...', 'Chargement des créneaux disponibles...')}</span>
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -475,61 +476,61 @@ const TourBooking = () => {
 
   const renderStep3 = () => (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">Customer Information</h2>
+      <h2 className="text-2xl font-bold text-gray-900 mb-6">{tr('Customer Information', 'Informations client')}</h2>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Full Name *</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{tr('Full Name', 'Nom complet')} *</label>
           <input
             type="text"
             value={bookingData.customerInfo.name}
             onChange={(e) => handleCustomerInfoChange('name', e.target.value)}
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Enter your full name"
+            placeholder={tr('Enter your full name', 'Entrez votre nom complet')}
           />
         </div>
         
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Email Address *</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{tr('Email Address', 'Adresse e-mail')} *</label>
           <input
             type="email"
             value={bookingData.customerInfo.email}
             onChange={(e) => handleCustomerInfoChange('email', e.target.value)}
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Enter your email"
+            placeholder={tr('Enter your email', 'Entrez votre e-mail')}
           />
         </div>
         
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Phone Number *</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{tr('Phone Number', 'Numéro de téléphone')} *</label>
           <input
             type="tel"
             value={bookingData.customerInfo.phone}
             onChange={(e) => handleCustomerInfoChange('phone', e.target.value)}
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Enter your phone number"
+            placeholder={tr('Enter your phone number', 'Entrez votre numéro de téléphone')}
           />
         </div>
         
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Emergency Contact</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{tr('Emergency Contact', "Contact d'urgence")}</label>
           <input
             type="text"
             value={bookingData.customerInfo.emergencyContact}
             onChange={(e) => handleCustomerInfoChange('emergencyContact', e.target.value)}
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Emergency contact name"
+            placeholder={tr('Emergency contact name', "Nom du contact d'urgence")}
           />
         </div>
         
         <div className="md:col-span-2">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Emergency Phone</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{tr('Emergency Phone', "Téléphone d'urgence")}</label>
           <input
             type="tel"
             value={bookingData.customerInfo.emergencyPhone}
             onChange={(e) => handleCustomerInfoChange('emergencyPhone', e.target.value)}
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Emergency contact phone"
+            placeholder={tr('Emergency contact phone', "Téléphone du contact d'urgence")}
           />
         </div>
       </div>
@@ -538,25 +539,25 @@ const TourBooking = () => {
 
   const renderStep4 = () => (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">Participant Details</h2>
+      <h2 className="text-2xl font-bold text-gray-900 mb-6">{tr('Participant Details', 'Détails des participants')}</h2>
       
       {bookingData.participants.map((participant, index) => (
         <div key={index} className="bg-gray-50 p-4 rounded-lg">
-          <h3 className="font-semibold text-gray-900 mb-4">Participant {index + 1}</h3>
+          <h3 className="font-semibold text-gray-900 mb-4">{tr('Participant', 'Participant')} {index + 1}</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Name *</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">{tr('Name', 'Nom')} *</label>
               <input
                 type="text"
                 value={participant.name}
                 onChange={(e) => handleParticipantChange(index, 'name', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Participant name"
+                placeholder={tr('Participant name', 'Nom du participant')}
               />
             </div>
             
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Age *</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">{tr('Age', 'Âge')} *</label>
               <input
                 type="number"
                 value={participant.age}
@@ -564,20 +565,20 @@ const TourBooking = () => {
                 min="16"
                 max="80"
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Age"
+                placeholder={tr('Age', 'Âge')}
               />
             </div>
             
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Experience Level</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">{tr('Experience Level', "Niveau d'expérience")}</label>
               <select
                 value={participant.experience}
                 onChange={(e) => handleParticipantChange(index, 'experience', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <option value="beginner">Beginner</option>
-                <option value="intermediate">Intermediate</option>
-                <option value="advanced">Advanced</option>
+                <option value="beginner">{tr('Beginner', 'Débutant')}</option>
+                <option value="intermediate">{tr('Intermediate', 'Intermédiaire')}</option>
+                <option value="advanced">{tr('Advanced', 'Avancé')}</option>
               </select>
             </div>
           </div>
@@ -586,13 +587,13 @@ const TourBooking = () => {
       
       {/* Special Requirements */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Special Requirements</label>
+        <label className="block text-sm font-medium text-gray-700 mb-2">{tr('Special Requirements', 'Exigences particulières')}</label>
         <textarea
           value={bookingData.specialRequirements}
           onChange={(e) => handleInputChange('specialRequirements', e.target.value)}
           rows={3}
           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder="Any special requirements or notes..."
+          placeholder={tr('Any special requirements or notes...', 'Exigences particulières ou notes...')}
         />
       </div>
       
@@ -606,13 +607,13 @@ const TourBooking = () => {
           className="mt-1 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
         />
         <label htmlFor="terms" className="text-sm text-gray-700">
-          I accept the{' '}
+          {tr('I accept the', "J'accepte les")}{' '}
           <a href="#" className="text-blue-600 hover:text-blue-500">
-            Terms and Conditions
+            {tr('Terms and Conditions', 'Conditions générales')}
           </a>{' '}
-          and{' '}
+          {tr('and', 'et')}{' '}
           <a href="#" className="text-blue-600 hover:text-blue-500">
-            Privacy Policy
+            {tr('Privacy Policy', 'Politique de confidentialité')}
           </a>
         </label>
       </div>
@@ -627,32 +628,32 @@ const TourBooking = () => {
         </svg>
       </div>
       
-      <h2 className="text-2xl font-bold text-gray-900">Booking Confirmed!</h2>
+      <h2 className="text-2xl font-bold text-gray-900">{tr('Booking Confirmed!', 'Réservation confirmée !')}</h2>
       <p className="text-gray-600">
-        Your tour booking has been successfully created. You will receive a confirmation email shortly.
+        {tr('Your tour booking has been successfully created. You will receive a confirmation email shortly.', 'Votre réservation de tour a bien été créée. Vous recevrez bientôt un e-mail de confirmation.')}
       </p>
       
       <div className="bg-gray-50 p-6 rounded-lg text-left max-w-md mx-auto">
-        <h3 className="font-semibold text-gray-900 mb-4">Booking Summary</h3>
+        <h3 className="font-semibold text-gray-900 mb-4">{tr('Booking Summary', 'Résumé de la réservation')}</h3>
         <div className="space-y-2 text-sm">
           <div className="flex justify-between">
-            <span>Tour:</span>
+            <span>{tr('Tour:', 'Tour :')}</span>
             <span>{pricingConfig.tourTypes[bookingData.tourType].name}</span>
           </div>
           <div className="flex justify-between">
-            <span>Date:</span>
+            <span>{tr('Date:', 'Date :')}</span>
             <span>{bookingData.selectedDate}</span>
           </div>
           <div className="flex justify-between">
-            <span>Time:</span>
+            <span>{tr('Time:', 'Heure :')}</span>
             <span>{bookingData.selectedTime}</span>
           </div>
           <div className="flex justify-between">
-            <span>Participants:</span>
+            <span>{tr('Participants:', 'Participants :')}</span>
             <span>{bookingData.totalParticipants}</span>
           </div>
           <div className="border-t pt-2 flex justify-between font-semibold">
-            <span>Total:</span>
+            <span>{tr('Total:', 'Total :')}</span>
             <span>${pricing.total.toFixed(2)}</span>
           </div>
         </div>
@@ -662,7 +663,7 @@ const TourBooking = () => {
         onClick={() => navigate('/')}
         className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 transition-colors"
       >
-        Return to Home
+        {tr('Return to Home', "Retour à l'accueil")}
       </button>
     </div>
   );
@@ -710,10 +711,10 @@ const TourBooking = () => {
               ))}
             </div>
             <div className="flex justify-between mt-2 text-xs text-gray-600">
-              <span>Tour Details</span>
-              <span>Date & Time</span>
-              <span>Customer Info</span>
-              <span>Participants</span>
+              <span>{tr('Tour Details', 'Détails du tour')}</span>
+              <span>{tr('Date & Time', 'Date et heure')}</span>
+              <span>{tr('Customer Info', 'Infos client')}</span>
+              <span>{tr('Participants', 'Participants')}</span>
             </div>
           </div>
         )}
@@ -730,7 +731,7 @@ const TourBooking = () => {
                 disabled={currentStep === 1}
                 className="px-6 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                Previous
+                {tr('Previous', 'Précédent')}
               </button>
               
               {currentStep < 4 ? (
@@ -739,7 +740,7 @@ const TourBooking = () => {
                   disabled={!validateStep(currentStep)}
                   className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  Next
+                  {tr('Next', 'Suivant')}
                 </button>
               ) : (
                 <button
@@ -750,10 +751,10 @@ const TourBooking = () => {
                   {isSubmitting ? (
                     <>
                       <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                      Creating Booking...
+                      {tr('Creating Booking...', 'Création de la réservation...')}
                     </>
                   ) : (
-                    'Confirm Booking'
+                    tr('Confirm Booking', 'Confirmer la réservation')
                   )}
                 </button>
               )}
@@ -765,64 +766,64 @@ const TourBooking = () => {
         {currentStep < 5 && (
           <div className="hidden lg:block fixed right-8 top-1/2 transform -translate-y-1/2 w-80">
             <div className="bg-white rounded-lg shadow-lg p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Payment Information</h3>
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">{tr('Payment Information', 'Informations de paiement')}</h3>
               
               <div className="space-y-3 text-sm">
                 <div className="flex justify-between">
-                  <span>Payment Type</span>
-                  <span className="font-medium">Credit Card</span>
+                  <span>{tr('Payment Type', 'Type de paiement')}</span>
+                  <span className="font-medium">{tr('Credit Card', 'Carte bancaire')}</span>
                 </div>
                 
                 <div className="border-t pt-3">
                   <div className="flex justify-between">
-                    <span>Base Price per Quad:</span>
+                    <span>{tr('Base Price per Quad:', 'Prix de base par quad :')}</span>
                     <span>${(pricingConfig.basePricePerQuad * pricingConfig.tourTypes[bookingData.tourType].multiplier).toFixed(0)}</span>
                   </div>
                   
                   <div className="flex justify-between">
-                    <span>Number of Quads:</span>
+                    <span>{tr('Number of Quads:', 'Nombre de quads :')}</span>
                     <span>× {bookingData.numberOfQuads}</span>
                   </div>
                   
                   <div className="flex justify-between font-medium">
-                    <span>Quad Total:</span>
+                    <span>{tr('Quad Total:', 'Total des quads :')}</span>
                     <span>${pricing.basePrice.toFixed(2)}</span>
                   </div>
                   
                   <div className="flex justify-between mt-2">
-                    <span>Participants:</span>
-                    <span>{bookingData.totalParticipants} people</span>
+                    <span>{tr('Participants:', 'Participants :')}</span>
+                    <span>{bookingData.totalParticipants} {tr('people', 'personnes')}</span>
                   </div>
                   
                   {pricing.extraPassengers > 0 && (
                     <div className="flex justify-between font-medium">
-                      <span>Extra Passenger Fees:</span>
+                      <span>{tr('Extra Passenger Fees:', 'Frais passager supplémentaire :')}</span>
                       <span>{pricing.extraPassengers} × ${pricingConfig.extraPassengerFee}</span>
                     </div>
                   )}
                   
                   <div className="flex justify-between font-medium mt-2">
-                    <span>Subtotal:</span>
+                    <span>{tr('Subtotal:', 'Sous-total :')}</span>
                     <span>${pricing.subtotal.toFixed(2)}</span>
                   </div>
                   
                   {pricing.taxApplied && (
                     <div className="flex justify-between">
-                      <span>Tax ({pricing.taxPercentage.toFixed(1)}%):</span>
+                      <span>{tr('Tax', 'Taxe')} ({pricing.taxPercentage.toFixed(1)}%) :</span>
                       <span>${pricing.taxAmount.toFixed(2)}</span>
                     </div>
                   )}
                 </div>
                 
                 <div className="border-t pt-3 flex justify-between text-lg font-bold text-blue-600">
-                  <span>Total:</span>
+                  <span>{tr('Total:', 'Total :')}</span>
                   <span>${pricing.total.toFixed(2)}</span>
                 </div>
               </div>
               
               <div className="mt-4 p-3 bg-green-50 rounded-lg">
                 <p className="text-xs text-green-800 font-medium">
-                  ✓ Transparent Pricing - No Hidden Fees
+                  ✓ {tr('Transparent Pricing - No Hidden Fees', 'Tarification transparente - Aucun frais caché')}
                 </p>
                 <p className="text-xs text-green-600 mt-1">
                   ${pricing.subtotal.toFixed(2)} + ${pricing.taxAmount.toFixed(2)} = ${pricing.total.toFixed(2)}
@@ -831,10 +832,10 @@ const TourBooking = () => {
               
               <div className="mt-3 p-3 bg-blue-50 rounded-lg">
                 <p className="text-xs text-blue-800">
-                  💳 Secure payment processing with Stripe
+                  💳 {tr('Secure payment processing with Stripe', 'Paiement sécurisé avec Stripe')}
                 </p>
                 <p className="text-xs text-blue-600 mt-1">
-                  Your payment information is encrypted and secure
+                  {tr('Your payment information is encrypted and secure', 'Vos informations de paiement sont chiffrées et sécurisées')}
                 </p>
               </div>
             </div>

@@ -270,12 +270,12 @@ const AdvancedBookingCard = ({
         {/* Booking Form */}
         {currentStep === 1 && (
           <div className="space-y-4">
-            <h4 className="font-semibold text-lg">Select Date & Time</h4>
+            <h4 className="font-semibold text-lg">{t('booking.selectDateTime', 'Choisir la date et l’heure')}</h4>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Tour Date
+                  {t('booking.tourDate', 'Date du tour')}
                 </label>
                 <input
                   type="date"
@@ -288,14 +288,14 @@ const AdvancedBookingCard = ({
               
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Start Time
+                  {t('booking.startTime', 'Heure de départ')}
                 </label>
                 <select
                   value={selectedTime}
                   onChange={(e) => setSelectedTime(e.target.value)}
                   className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
-                  <option value="">Select time</option>
+                  <option value="">{t('booking.selectTimePlaceholder', "Choisir l'heure")}</option>
                   {(() => {
                     const timeSlots = [];
                     for (let hour = 7; hour <= 22; hour++) {
@@ -409,14 +409,14 @@ const AdvancedBookingCard = ({
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Full Name *
+                        {t('booking.fullName', 'Nom complet')} *
                       </label>
                       <input
                         type="text"
                         value={participant.name}
                         onChange={(e) => handleParticipantChange(participant.id, 'name', e.target.value)}
                         className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="Enter full name"
+                        placeholder={t('booking.enterFullName', 'Entrez le nom complet')}
                         required
                       />
                     </div>

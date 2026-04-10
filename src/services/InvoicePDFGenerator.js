@@ -38,7 +38,7 @@ class InvoicePDFGenerator {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Invoice ${invoiceNumber}</title>
+    <title>Facture ${invoiceNumber}</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         .header { text-align: center; margin-bottom: 30px; }
@@ -52,52 +52,52 @@ class InvoicePDFGenerator {
 </head>
 <body>
     <div class="header">
-        <h1>RENTAL INVOICE</h1>
-        <h2>Invoice #${invoiceNumber}</h2>
-        <p>Issue Date: ${issueDate}</p>
+        <h1>FACTURE DE LOCATION</h1>
+        <h2>Facture n°${invoiceNumber}</h2>
+        <p>Date d'émission : ${issueDate}</p>
     </div>
     
     <div class="invoice-details">
         <div class="row">
-            <span><strong>Rental ID:</strong> ${rentalId}</span>
-            <span><strong>Date:</strong> ${issueDate}</span>
+            <span><strong>ID location :</strong> ${rentalId}</span>
+            <span><strong>Date :</strong> ${issueDate}</span>
         </div>
     </div>
     
     <div class="section">
-        <h3>Customer Information</h3>
-        <div class="row"><span><strong>Name:</strong></span><span>${customer.name}</span></div>
-        <div class="row"><span><strong>Email:</strong></span><span>${customer.email}</span></div>
-        <div class="row"><span><strong>Phone:</strong></span><span>${customer.phone}</span></div>
-        <div class="row"><span><strong>Address:</strong></span><span>${customer.address}</span></div>
+        <h3>Informations client</h3>
+        <div class="row"><span><strong>Nom :</strong></span><span>${customer.name}</span></div>
+        <div class="row"><span><strong>E-mail :</strong></span><span>${customer.email}</span></div>
+        <div class="row"><span><strong>Téléphone :</strong></span><span>${customer.phone}</span></div>
+        <div class="row"><span><strong>Adresse :</strong></span><span>${customer.address}</span></div>
     </div>
     
     <div class="section">
-        <h3>Rental Details</h3>
-        <div class="row"><span><strong>Vehicle:</strong></span><span>${rental.vehicle}</span></div>
-        <div class="row"><span><strong>Model:</strong></span><span>${rental.model}</span></div>
-        <div class="row"><span><strong>Type:</strong></span><span>${rental.type}</span></div>
-        <div class="row"><span><strong>Start Date:</strong></span><span>${rental.startDate}</span></div>
-        <div class="row"><span><strong>End Date:</strong></span><span>${rental.endDate}</span></div>
-        <div class="row"><span><strong>Pickup Location:</strong></span><span>${rental.pickupLocation}</span></div>
-        <div class="row"><span><strong>Dropoff Location:</strong></span><span>${rental.dropoffLocation}</span></div>
+        <h3>Détails de la location</h3>
+        <div class="row"><span><strong>Véhicule :</strong></span><span>${rental.vehicle}</span></div>
+        <div class="row"><span><strong>Modèle :</strong></span><span>${rental.model}</span></div>
+        <div class="row"><span><strong>Type :</strong></span><span>${rental.type}</span></div>
+        <div class="row"><span><strong>Date de début :</strong></span><span>${rental.startDate}</span></div>
+        <div class="row"><span><strong>Date de fin :</strong></span><span>${rental.endDate}</span></div>
+        <div class="row"><span><strong>Lieu de prise en charge :</strong></span><span>${rental.pickupLocation}</span></div>
+        <div class="row"><span><strong>Lieu de restitution :</strong></span><span>${rental.dropoffLocation}</span></div>
     </div>
     
     <div class="section">
-        <h3>Pricing Breakdown</h3>
-        <div class="row"><span><strong>Unit Price:</strong></span><span>${rental.unitPrice} MAD</span></div>
-        <div class="row"><span><strong>Quantity:</strong></span><span>${rental.quantity}</span></div>
-        <div class="row"><span><strong>Subtotal:</strong></span><span>${rental.subtotal} MAD</span></div>
-        <div class="row"><span><strong>Transport Fee:</strong></span><span>${rental.transportFee} MAD</span></div>
-        <div class="row total"><span><strong>Total Amount:</strong></span><span>${rental.totalAmount} MAD</span></div>
+        <h3>Détail des prix</h3>
+        <div class="row"><span><strong>Prix unitaire :</strong></span><span>${rental.unitPrice} MAD</span></div>
+        <div class="row"><span><strong>Quantité :</strong></span><span>${rental.quantity}</span></div>
+        <div class="row"><span><strong>Sous-total :</strong></span><span>${rental.subtotal} MAD</span></div>
+        <div class="row"><span><strong>Frais de transport :</strong></span><span>${rental.transportFee} MAD</span></div>
+        <div class="row total"><span><strong>Montant total :</strong></span><span>${rental.totalAmount} MAD</span></div>
     </div>
     
     <div class="section">
-        <h3>Payment Information</h3>
-        <div class="row"><span><strong>Payment Status:</strong></span><span>${payment.status}</span></div>
-        <div class="row"><span><strong>Deposit Amount:</strong></span><span>${payment.depositAmount} MAD</span></div>
-        <div class="row"><span><strong>Remaining Balance:</strong></span><span>${payment.remaining} MAD</span></div>
-        <div class="row"><span><strong>Damage Deposit:</strong></span><span>${payment.damageDeposit} MAD</span></div>
+        <h3>Informations de paiement</h3>
+        <div class="row"><span><strong>Statut du paiement :</strong></span><span>${payment.status}</span></div>
+        <div class="row"><span><strong>Montant de l’acompte :</strong></span><span>${payment.depositAmount} MAD</span></div>
+        <div class="row"><span><strong>Solde restant :</strong></span><span>${payment.remaining} MAD</span></div>
+        <div class="row"><span><strong>Caution dommages :</strong></span><span>${payment.damageDeposit} MAD</span></div>
     </div>
     
     ${notes ? `
@@ -109,14 +109,14 @@ class InvoicePDFGenerator {
     
     ${specialRequirements ? `
     <div class="section">
-        <h3>Special Requirements</h3>
+        <h3>Exigences particulières</h3>
         <p>${specialRequirements}</p>
     </div>
     ` : ''}
     
     <div class="footer">
-        <p>Thank you for your business!</p>
-        <p>This invoice was generated on ${new Date().toLocaleString()}</p>
+        <p>Merci pour votre confiance !</p>
+        <p>Cette facture a été générée le ${new Date().toLocaleString()}</p>
     </div>
 </body>
 </html>

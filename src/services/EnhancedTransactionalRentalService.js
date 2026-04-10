@@ -11,6 +11,73 @@
  */
 
 import { supabase } from '../lib/supabase';
+import TransactionalRentalService from './TransactionalRentalService';
+
+const getRawStorageValue = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'object') {
+    return (
+      value.url ||
+      value.publicUrl ||
+      value.path ||
+      value.storage_path ||
+      ''
+    );
+  }
+  return '';
+};
+
+const getStorageLocation = (value) => {
+  const rawValue = getRawStorageValue(value);
+  if (!rawValue) return null;
+
+  if (
+    !rawValue.startsWith('http://') &&
+    !rawValue.startsWith('https://') &&
+    !rawValue.startsWith('blob:') &&
+    !rawValue.startsWith('data:')
+  ) {
+    const cleanedPath = rawValue.replace(/^\/+/, '');
+    const bucketName =
+      cleanedPath.startsWith('customers_ocr/') ||
+      cleanedPath.startsWith('second_drivers_ocr/') ||
+      cleanedPath.startsWith('damage-deposits/')
+        ? 'rental-documents'
+        : 'id_scans';
+
+    return { bucketName, storagePath: cleanedPath };
+  }
+
+  try {
+    const parsedUrl = new URL(rawValue);
+    const match = parsedUrl.pathname.match(
+      /\/storage\/v1\/object\/(?:public|sign)\/([^/]+)\/(.+)/
+    );
+
+    if (!match) return null;
+
+    return {
+      bucketName: match[1],
+      storagePath: decodeURIComponent(match[2]),
+    };
+  } catch (error) {
+    return null;
+  }
+};
+
+const collectStorageLocations = (...values) => {
+  const locations = [];
+
+  values.flat().forEach((value) => {
+    const location = getStorageLocation(value);
+    if (location?.bucketName && location?.storagePath) {
+      locations.push(location);
+    }
+  });
+
+  return locations;
+};
 
 class EnhancedTransactionalRentalService {
   constructor() {
@@ -154,6 +221,118 @@ class EnhancedTransactionalRentalService {
     
     console.log('🧼 [Sanitizer V2] FINAL SANITIZED DATA:', JSON.stringify(sanitized, null, 2));
     return sanitized;
+  }
+
+  async _removeStorageLocations(locations = []) {
+    const uniqueLocations = Array.from(
+      new Map(
+        locations
+          .filter((location) => location?.bucketName && location?.storagePath)
+          .map((location) => [
+            `${location.bucketName}:${location.storagePath}`,
+            location,
+          ])
+      ).values()
+    );
+
+    const locationsByBucket = uniqueLocations.reduce((accumulator, location) => {
+      if (!accumulator[location.bucketName]) {
+        accumulator[location.bucketName] = [];
+      }
+      accumulator[location.bucketName].push(location.storagePath);
+      return accumulator;
+    }, {});
+
+    const results = await Promise.all(
+      Object.entries(locationsByBucket).map(async ([bucketName, storagePaths]) => {
+        const { error } = await supabase.storage
+          .from(bucketName)
+          .remove(storagePaths);
+
+        return { bucketName, storagePaths, error };
+      })
+    );
+
+    results.forEach(({ bucketName, storagePaths, error }) => {
+      if (error) {
+        console.warn(
+          `⚠️ Failed to remove storage objects from ${bucketName}:`,
+          storagePaths,
+          error
+        );
+      }
+    });
+  }
+
+  async _cleanupOrphanCustomer(customerId, deletedRental = null) {
+    if (!this.validateCustomerId(customerId)) {
+      return {
+        cleaned: false,
+        skipped: true,
+        reason: 'No valid linked customer',
+      };
+    }
+
+    const { count, error: countError } = await supabase
+      .from(this.tableName)
+      .select('id', { count: 'exact', head: true })
+      .eq('customer_id', customerId);
+
+    if (countError) {
+      throw new Error(`Failed to verify remaining rentals: ${countError.message}`);
+    }
+
+    if ((count || 0) > 0) {
+      return {
+        cleaned: false,
+        skipped: true,
+        reason: 'Customer still has linked rentals',
+        remainingRentals: count,
+      };
+    }
+
+    const { data: customer, error: customerError } = await supabase
+      .from(this.customersTableName)
+      .select('*')
+      .eq('id', customerId)
+      .maybeSingle();
+
+    if (customerError) {
+      throw new Error(`Failed to load customer for cleanup: ${customerError.message}`);
+    }
+
+    if (!customer) {
+      return {
+        cleaned: false,
+        skipped: true,
+        reason: 'Customer record already missing',
+      };
+    }
+
+    const storageLocations = collectStorageLocations(
+      customer.id_scan_url,
+      customer.customer_id_image,
+      customer.extra_images,
+      deletedRental?.customer_id_image,
+      deletedRental?.extra_images
+    );
+
+    await this._removeStorageLocations(storageLocations);
+
+    const { error: deleteCustomerError } = await supabase
+      .from(this.customersTableName)
+      .delete()
+      .eq('id', customerId);
+
+    if (deleteCustomerError) {
+      throw new Error(`Failed to delete orphan customer: ${deleteCustomerError.message}`);
+    }
+
+    return {
+      cleaned: true,
+      customerId,
+      removedFiles: storageLocations.length,
+    };
   }
 
   /**
@@ -446,14 +625,44 @@ class EnhancedTransactionalRentalService {
       if (!this.validateRentalId(rentalId)) {
         throw new Error(`Invalid rental ID format: ${rentalId}`);
       }
-      const { error } = await supabase
+      const { data: rental, error: rentalError } = await supabase
         .from(this.tableName)
-        .delete()
-        .eq('id', rentalId);
-      if (error) {
-        throw new Error(`Failed to delete rental: ${error.message}`);
+        .select('*')
+        .eq('id', rentalId)
+        .single();
+
+      if (rentalError) {
+        throw new Error(`Failed to fetch rental before delete: ${rentalError.message}`);
       }
-      return { success: true, message: 'Rental deleted successfully' };
+
+      const deleteResult = await TransactionalRentalService.deleteRental(rentalId);
+      if (!deleteResult?.success) {
+        throw new Error(deleteResult?.error || 'Failed to delete rental with linked cleanup');
+      }
+
+      let cleanupResult = null;
+      try {
+        cleanupResult = await this._cleanupOrphanCustomer(
+          rental.customer_id,
+          rental
+        );
+      } catch (cleanupError) {
+        console.error('⚠️ ORPHAN CUSTOMER CLEANUP FAILED:', cleanupError);
+        return {
+          success: true,
+          message:
+            'Rental deleted, but customer cleanup needs attention. Please review orphan customers.',
+          warning: cleanupError.message,
+        };
+      }
+
+      return {
+        success: true,
+        message: cleanupResult?.cleaned
+          ? 'Rental, linked maintenance data, and orphan customer deleted successfully'
+          : (deleteResult?.message || 'Rental deleted successfully'),
+        cleanup: cleanupResult,
+      };
     } catch (error) {
       console.error('❌ DELETE RENTAL FAILED:', error);
       return { success: false, error: error.message };

@@ -4,13 +4,16 @@ import { Progress } from '../ui/progress';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
+import i18n from '../../i18n';
 
 const ExportProgressModal = ({ job, onClose }) => {
   if (!job) return null;
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
 
   const progress = job.progress || {};
   const {
-    currentStep = 'Initializing...',
+    currentStep = tr('Initializing...', 'Initialisation...'),
     totalSteps = 4,
     currentStepProgress = 0,
     filesProcessed = 0,
@@ -35,10 +38,10 @@ const ExportProgressModal = ({ job, onClose }) => {
 
   const getStatusBadge = () => {
     const statusConfig = {
-      pending: { variant: 'secondary', label: 'Pending' },
-      processing: { variant: 'default', label: 'Processing' },
-      completed: { variant: 'success', label: 'Completed' },
-      failed: { variant: 'destructive', label: 'Failed' }
+      pending: { variant: 'secondary', label: tr('Pending', 'En attente') },
+      processing: { variant: 'default', label: tr('Processing', 'En cours') },
+      completed: { variant: 'success', label: tr('Completed', 'Terminé') },
+      failed: { variant: 'destructive', label: tr('Failed', 'Échoué') }
     };
 
     const config = statusConfig[job.status] || statusConfig.pending;
@@ -59,7 +62,7 @@ const ExportProgressModal = ({ job, onClose }) => {
       <DialogContent className="sm:max-w-md" hideCloseButton={!canClose}>
         <DialogHeader>
           <DialogTitle className="flex items-center justify-between">
-            <span>Project Export Progress</span>
+            <span>{tr('Project Export Progress', "Progression de l'export projet")}</span>
             {getStatusBadge()}
           </DialogTitle>
         </DialogHeader>
@@ -69,9 +72,9 @@ const ExportProgressModal = ({ job, onClose }) => {
           <div className="flex items-center justify-center space-x-3">
             {getStatusIcon()}
             <span className="text-lg font-medium">
-              {job.status === 'completed' ? 'Export Complete!' :
-               job.status === 'failed' ? 'Export Failed' :
-               'Generating Export...'}
+              {job.status === 'completed' ? tr('Export Complete!', 'Export terminé !') :
+               job.status === 'failed' ? tr('Export Failed', "Échec de l'export") :
+               tr('Generating Export...', "Génération de l'export...")}
             </span>
           </div>
 
@@ -80,9 +83,9 @@ const ExportProgressModal = ({ job, onClose }) => {
             <div className="space-y-3">
               <Progress value={overallProgress} className="w-full" />
               <div className="flex justify-between text-sm text-muted-foreground">
-                <span>{overallProgress}% complete</span>
+                <span>{isFrench ? `${overallProgress}% terminé` : `${overallProgress}% complete`}</span>
                 {estimatedTimeRemaining > 0 && (
-                  <span>~{formatTime(estimatedTimeRemaining)} remaining</span>
+                  <span>{isFrench ? `~${formatTime(estimatedTimeRemaining)} restantes` : `~${formatTime(estimatedTimeRemaining)} remaining`}</span>
                 )}
               </div>
             </div>
@@ -91,9 +94,9 @@ const ExportProgressModal = ({ job, onClose }) => {
           {/* Current Step */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="font-medium">Current Step:</span>
+              <span className="font-medium">{tr('Current Step:', 'Étape actuelle :')}</span>
               <span className="text-sm text-muted-foreground">
-                Step {Math.ceil(currentStepProgress)} of {totalSteps}
+                {isFrench ? `Étape ${Math.ceil(currentStepProgress)} sur ${totalSteps}` : `Step ${Math.ceil(currentStepProgress)} of ${totalSteps}`}
               </span>
             </div>
             <p className="text-sm bg-muted p-3 rounded">
@@ -105,7 +108,7 @@ const ExportProgressModal = ({ job, onClose }) => {
           {totalFiles > 0 && (
             <div className="space-y-2">
               <div className="flex items-center justify-between text-sm">
-                <span>Files Processed:</span>
+                <span>{tr('Files Processed:', 'Fichiers traités :')}</span>
                 <span className="font-mono">
                   {filesProcessed.toLocaleString()} / {totalFiles.toLocaleString()}
                 </span>
@@ -120,7 +123,7 @@ const ExportProgressModal = ({ job, onClose }) => {
           {/* Error Message */}
           {job.status === 'failed' && job.error_message && (
             <div className="p-3 bg-red-50 border border-red-200 rounded">
-              <p className="text-sm font-medium text-red-800 mb-1">Error Details:</p>
+              <p className="text-sm font-medium text-red-800 mb-1">{tr('Error Details:', "Détails de l'erreur :")}</p>
               <p className="text-sm text-red-700">{job.error_message}</p>
             </div>
           )}
@@ -128,13 +131,13 @@ const ExportProgressModal = ({ job, onClose }) => {
           {/* Success Message */}
           {job.status === 'completed' && (
             <div className="p-3 bg-green-50 border border-green-200 rounded">
-              <p className="text-sm font-medium text-green-800 mb-1">Export Ready!</p>
+              <p className="text-sm font-medium text-green-800 mb-1">{tr('Export Ready!', 'Export prêt !')}</p>
               <p className="text-sm text-green-700">
-                Your project archive has been generated successfully. You can now download it from the export history.
+                {tr('Your project archive has been generated successfully. You can now download it from the export history.', "L'archive du projet a été générée avec succès. Vous pouvez maintenant la télécharger depuis l'historique des exports.")}
               </p>
               {job.file_size && (
                 <p className="text-xs text-green-600 mt-1">
-                  Archive size: {Math.round(job.file_size / 1024)} KB
+                  {tr('Archive size:', "Taille de l'archive :")} {Math.round(job.file_size / 1024)} KB
                 </p>
               )}
             </div>
@@ -145,13 +148,13 @@ const ExportProgressModal = ({ job, onClose }) => {
             {job.status === 'processing' && (
               <Button variant="outline" disabled>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Processing...
+                {tr('Processing...', 'Traitement...')}
               </Button>
             )}
             
             {canClose && (
               <Button onClick={onClose}>
-                {job.status === 'completed' ? 'Continue' : 'Close'}
+                {job.status === 'completed' ? tr('Continue', 'Continuer') : tr('Close', 'Fermer')}
               </Button>
             )}
           </div>

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, Calendar, Car, Check, Clock3, DollarSign, Edit, FileText, Gauge, Shield, StickyNote, Wrench, X, Fuel, ExternalLink } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Calendar, Car, Check, Clock3, DollarSign, Edit, FileText, Gauge, Shield, StickyNote, Wrench, X, Fuel, ExternalLink, MapPin } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { TBL } from '../../config/tables';
 import DocumentUpload from '../../components/DocumentUpload';
@@ -10,6 +10,8 @@ import FuelTransactionService from '../../services/FuelTransactionService';
 import MaintenanceTrackingService from '../../services/MaintenanceTrackingService';
 import VehicleReportService from '../../services/VehicleReportService';
 import VehicleDispositionService from '../../services/VehicleDispositionService';
+import VehicleAnnualTaxService from '../../services/VehicleAnnualTaxService';
+import { financeApiV2 } from '../../services/financeApiV2';
 import { formatRentalReference } from '../../utils/rentalReference';
 import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
 import { getFleetAlertsForVehicle } from '../../utils/fleetAlerts';
@@ -28,6 +30,7 @@ const scheduleBackgroundTask = (callback) => {
 };
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+const FLEET_LOCATIONS_TABLE = 'saharax_0u4w4d_locations';
 
 const formatDate = (value) => {
   if (!value) return tr('Not set', 'Non défini');
@@ -42,6 +45,26 @@ const formatDateTime = (value) => {
 const formatMoney = (value) => {
   const amount = Number(value || 0);
   return `${amount.toLocaleString()} MAD`;
+};
+
+const attachLocationName = async (vehicleData) => {
+  if (!vehicleData?.location_id) {
+    return {
+      ...vehicleData,
+      location_name: null,
+    };
+  }
+
+  const { data: locationData } = await supabase
+    .from(FLEET_LOCATIONS_TABLE)
+    .select('name')
+    .eq('id', vehicleData.location_id)
+    .maybeSingle();
+
+  return {
+    ...vehicleData,
+    location_name: locationData?.name || null,
+  };
 };
 
 const formatStatus = (value) => {
@@ -243,6 +266,11 @@ const VehicleProfile = () => {
   const [vehicleFuelSummary, setVehicleFuelSummary] = useState(null);
   const [vehicleImageUrl, setVehicleImageUrl] = useState('');
   const [vehicleDocuments, setVehicleDocuments] = useState([]);
+  const [annualTaxRecords, setAnnualTaxRecords] = useState([]);
+  const [vehicleFinanceOverview, setVehicleFinanceOverview] = useState(null);
+  const [vehicleFinanceLoading, setVehicleFinanceLoading] = useState(false);
+  const [vehicleFinanceDrawerOpen, setVehicleFinanceDrawerOpen] = useState(false);
+  const [fleetLocations, setFleetLocations] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
@@ -256,11 +284,13 @@ const VehicleProfile = () => {
     status: 'available',
     current_odometer: '',
     engine_hours: '',
+    location_id: '',
     purchase_cost_mad: '',
     purchase_date: '',
     purchase_supplier: '',
     purchase_invoice_url: '',
     registration_number: '',
+    registration_date: '',
     registration_expiry_date: '',
     insurance_policy_number: '',
     insurance_provider: '',
@@ -273,11 +303,27 @@ const VehicleProfile = () => {
   const [dispositionRecord, setDispositionRecord] = useState(null);
   const [dispositionEditing, setDispositionEditing] = useState(false);
   const [dispositionSaving, setDispositionSaving] = useState(false);
+  const [activeProfileTab, setActiveProfileTab] = useState('overview');
   const [dispositionForm, setDispositionForm] = useState({
     event_type: 'sold',
     event_date: '',
     sale_price_mad: '',
     buyer_name: '',
+    proof_url: '',
+    proof_name: '',
+    notes: '',
+  });
+  const [taxEditing, setTaxEditing] = useState(false);
+  const [taxSaving, setTaxSaving] = useState(false);
+  const [taxForm, setTaxForm] = useState({
+    id: '',
+    tax_year: new Date().getFullYear().toString(),
+    amount_mad: '',
+    payment_date: new Date().toISOString().split('T')[0],
+    valid_from: '',
+    valid_until: '',
+    proof_url: '',
+    proof_name: '',
     notes: '',
   });
   const [fuelAdjustOpen, setFuelAdjustOpen] = useState(false);
@@ -302,11 +348,13 @@ const VehicleProfile = () => {
       status: vehicleData?.status || 'available',
       current_odometer: vehicleData?.current_odometer?.toString?.() || '',
       engine_hours: vehicleData?.engine_hours?.toString?.() || '',
+      location_id: vehicleData?.location_id?.toString?.() || '',
       purchase_cost_mad: vehicleData?.purchase_cost_mad?.toString?.() || '',
       purchase_date: vehicleData?.purchase_date || '',
       purchase_supplier: vehicleData?.purchase_supplier || '',
       purchase_invoice_url: vehicleData?.purchase_invoice_url || '',
       registration_number: vehicleData?.registration_number || '',
+      registration_date: vehicleData?.registration_date || '',
       registration_expiry_date: vehicleData?.registration_expiry_date || '',
       insurance_policy_number: vehicleData?.insurance_policy_number || '',
       insurance_provider: vehicleData?.insurance_provider || '',
@@ -323,6 +371,22 @@ const VehicleProfile = () => {
       event_date: record?.event_date || new Date().toISOString().split('T')[0],
       sale_price_mad: record?.sale_price_mad?.toString?.() || '',
       buyer_name: record?.buyer_name || '',
+      proof_url: record?.proof_url || '',
+      proof_name: record?.proof_name || '',
+      notes: record?.notes || '',
+    });
+  };
+
+  const resetTaxForm = (record = null) => {
+    setTaxForm({
+      id: record?.id || '',
+      tax_year: record?.tax_year?.toString?.() || new Date().getFullYear().toString(),
+      amount_mad: record?.amount_mad?.toString?.() || '',
+      payment_date: record?.payment_date || new Date().toISOString().split('T')[0],
+      valid_from: record?.valid_from || '',
+      valid_until: record?.valid_until || '',
+      proof_url: record?.proof_url || '',
+      proof_name: record?.proof_name || '',
       notes: record?.notes || '',
     });
   };
@@ -335,6 +399,15 @@ const VehicleProfile = () => {
       setError(null);
 
       try {
+        const { data: locationRows } = await supabase
+          .from(FLEET_LOCATIONS_TABLE)
+          .select('id, name, is_active, display_order')
+          .eq('is_active', true)
+          .order('display_order', { ascending: true })
+          .order('name', { ascending: true });
+
+        setFleetLocations(Array.isArray(locationRows) ? locationRows : []);
+
         const { data: vehicleData, error: vehicleError } = await supabase
           .from(TBL.VEHICLES)
           .select('*')
@@ -345,10 +418,14 @@ const VehicleProfile = () => {
           throw vehicleError;
         }
 
-        setVehicle(vehicleData);
-        syncFormData(vehicleData);
-        setVehicleDocuments(vehicleData?.documents || []);
+        const enrichedVehicleData = await attachLocationName(vehicleData);
+
+        setVehicle(enrichedVehicleData);
+        syncFormData(enrichedVehicleData);
+        setVehicleDocuments(enrichedVehicleData?.documents || []);
         syncDispositionForm(VehicleDispositionService.getVehicleDisposition(vehicleId));
+        setAnnualTaxRecords(await VehicleAnnualTaxService.listForVehicle(vehicleId));
+        setVehicleFinanceLoading(true);
         setLoading(false);
 
         scheduleBackgroundTask(async () => {
@@ -385,6 +462,7 @@ const VehicleProfile = () => {
               reportRowsResult,
               rentalRowsResult,
               vehicleFuelStateResult,
+              financeOverviewResult,
             ] = await Promise.allSettled([
               supabase
                 .from(MaintenanceTrackingService.MAINTENANCE_RECORDS_TABLE)
@@ -400,6 +478,7 @@ const VehicleProfile = () => {
                 .eq('vehicle_id', vehicleId)
                 .order('created_at', { ascending: false }),
               FuelTransactionService.getVehicleFuelState(vehicleId),
+              financeApiV2.getVehicleFinanceData([vehicleId], {}),
             ]);
 
             const maintenanceRecords = Array.isArray(maintenanceResult.value?.data)
@@ -473,8 +552,11 @@ const VehicleProfile = () => {
             setVehicleFuelState(vehicleFuelStateResult.status === 'fulfilled' ? vehicleFuelStateResult.value : null);
             setVehicleFuelSummary(fuelSummaryResult.status === 'fulfilled' ? fuelSummaryResult.value?.summary || null : null);
             setVehicleReports(hydratedReports.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)));
+            setVehicleFinanceOverview(financeOverviewResult.status === 'fulfilled' ? financeOverviewResult.value : null);
           } catch (backgroundError) {
             console.error('Failed to hydrate vehicle profile history panels:', backgroundError);
+          } finally {
+            setVehicleFinanceLoading(false);
           }
         });
       } catch (loadError) {
@@ -533,6 +615,51 @@ const VehicleProfile = () => {
     }));
   };
 
+  const handleTaxChange = (field, value) => {
+    setTaxForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+  };
+
+  const refreshTaxRecords = async () => {
+    if (!vehicleId) return;
+    setAnnualTaxRecords(await VehicleAnnualTaxService.listForVehicle(vehicleId));
+  };
+
+  const handleSaveTaxRecord = async () => {
+    if (!vehicleId) return;
+    setTaxSaving(true);
+    try {
+      const linkedTaxDocument = getAnnualTaxDocumentForRecord(taxForm);
+      await VehicleAnnualTaxService.upsert(vehicleId, {
+        id: taxForm.id || undefined,
+        tax_year: taxForm.tax_year,
+        amount_mad: taxForm.amount_mad,
+        payment_date: taxForm.payment_date || null,
+        valid_from: taxForm.valid_from || null,
+        valid_until: taxForm.valid_until || null,
+        proof_url: taxForm.proof_url || linkedTaxDocument?.url || null,
+        proof_name: taxForm.proof_name || linkedTaxDocument?.name || null,
+        notes: taxForm.notes,
+      });
+      await refreshTaxRecords();
+      resetTaxForm();
+      setTaxEditing(false);
+    } catch (taxError) {
+      console.error('Failed to save annual tax record:', taxError);
+      window.alert(`Failed to save annual vehicle tax: ${taxError.message || 'Unknown error'}`);
+    } finally {
+      setTaxSaving(false);
+    }
+  };
+
+  const handleDeleteTaxRecord = async (recordId) => {
+    if (!recordId || !window.confirm(tr('Delete this annual tax payment record?', 'Supprimer ce paiement annuel ?'))) return;
+    await VehicleAnnualTaxService.remove(recordId);
+    await refreshTaxRecords();
+  };
+
   const handleSaveDisposition = async () => {
     if (!vehicleId) return;
     setDispositionSaving(true);
@@ -542,8 +669,36 @@ const VehicleProfile = () => {
         event_date: dispositionForm.event_date || new Date().toISOString().split('T')[0],
         sale_price_mad: dispositionForm.sale_price_mad,
         buyer_name: dispositionForm.buyer_name,
+        proof_url: dispositionForm.proof_url,
+        proof_name: dispositionForm.proof_name,
         notes: dispositionForm.notes,
       });
+      if (savedRecord.event_type === 'sold' && vehicle?.id) {
+        const saleSnapshotPayload = {
+          status: 'sold',
+          sold_date: savedRecord.event_date || null,
+          sale_price_mad: savedRecord.sale_price_mad || 0,
+          sold_buyer_name: savedRecord.buyer_name || null,
+          sale_proof_url: savedRecord.proof_url || null,
+          sale_proof_name: savedRecord.proof_name || null,
+          sale_notes: savedRecord.notes || null,
+          updated_at: new Date().toISOString(),
+        };
+        const { error: saleSnapshotError } = await supabase
+          .from(TBL.VEHICLES)
+          .update(saleSnapshotPayload)
+          .eq('id', vehicle.id);
+
+        if (saleSnapshotError?.message?.includes('sold_date') || saleSnapshotError?.message?.includes('sale_') || saleSnapshotError?.message?.includes('sold_buyer')) {
+          await supabase
+            .from(TBL.VEHICLES)
+            .update({ status: 'sold', updated_at: new Date().toISOString() })
+            .eq('id', vehicle.id);
+        }
+
+        setVehicle((current) => current ? { ...current, ...saleSnapshotPayload } : current);
+        setFormData((current) => ({ ...current, status: 'sold' }));
+      }
       syncDispositionForm(savedRecord);
       setDispositionEditing(false);
     } finally {
@@ -616,12 +771,14 @@ const VehicleProfile = () => {
         status: formData.status,
         current_odometer: formData.current_odometer === '' ? null : parseFloat(formData.current_odometer) || null,
         engine_hours: formData.engine_hours === '' ? null : parseFloat(formData.engine_hours) || null,
+        location_id: formData.location_id === '' ? null : parseInt(formData.location_id, 10) || null,
         purchase_cost_mad: formData.purchase_cost_mad === '' ? null : parseFloat(formData.purchase_cost_mad) || null,
         purchase_date: formData.purchase_date || null,
         purchase_supplier: formData.purchase_supplier.trim() || null,
         purchase_invoice_url: formData.purchase_invoice_url.trim() || null,
         image_url: vehicleImageUrl || null,
         registration_number: formData.registration_number.trim(),
+        registration_date: formData.registration_date || null,
         registration_expiry_date: formData.registration_expiry_date || null,
         insurance_policy_number: formData.insurance_policy_number.trim(),
         insurance_provider: formData.insurance_provider.trim(),
@@ -631,19 +788,37 @@ const VehicleProfile = () => {
         updated_at: new Date().toISOString(),
       };
 
-      const { data, error: updateError } = await supabase
+      let { data, error: updateError } = await supabase
         .from(TBL.VEHICLES)
         .update(payload)
         .eq('id', vehicle.id)
         .select('*')
         .single();
 
+      if (updateError?.message?.includes('registration_date')) {
+        const { registration_date, ...fallbackPayload } = payload;
+        window.alert(tr(
+          'Registration Date needs the vehicle lifecycle SQL migration before it can be saved. I will save the other vehicle fields now.',
+          "La date d'immatriculation nécessite la migration SQL du cycle de vie véhicule avant d'être enregistrée. Les autres champs du véhicule seront sauvegardés."
+        ));
+        const fallbackResult = await supabase
+          .from(TBL.VEHICLES)
+          .update(fallbackPayload)
+          .eq('id', vehicle.id)
+          .select('*')
+          .single();
+        data = fallbackResult.data;
+        updateError = fallbackResult.error;
+      }
+
       if (updateError) {
         throw updateError;
       }
 
-      setVehicle(data);
-      syncFormData(data);
+      const enrichedVehicleData = await attachLocationName(data);
+
+      setVehicle(enrichedVehicleData);
+      syncFormData(enrichedVehicleData);
       setIsEditing(false);
     } catch (saveError) {
       console.error('Failed to save vehicle profile:', saveError);
@@ -842,6 +1017,80 @@ const VehicleProfile = () => {
     return Number(vehicle?.document_count || 0);
   }, [vehicle?.document_count, vehicle?.documents, vehicleDocuments]);
 
+  const purchaseInvoiceDocument = useMemo(() => {
+    const documents = Array.isArray(vehicleDocuments) ? vehicleDocuments : [];
+    return documents.find((document) => {
+      const haystack = [
+        document?.categoryKey,
+        document?.category,
+        document?.name,
+        document?.storagePath,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes('purchase-invoice') || haystack.includes('purchase invoice') || haystack.includes("facture d'achat");
+    }) || null;
+  }, [vehicleDocuments]);
+
+  const annualTaxDocuments = useMemo(() => {
+    const documents = Array.isArray(vehicleDocuments) ? vehicleDocuments : [];
+    return documents.filter((document) => {
+      const haystack = [
+        document?.categoryKey,
+        document?.category,
+        document?.name,
+        document?.storagePath,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes('annual-tax')
+        || haystack.includes('annual vehicle tax')
+        || haystack.includes('vehicle tax')
+        || haystack.includes('vignette');
+    });
+  }, [vehicleDocuments]);
+
+  const getAnnualTaxDocumentForRecord = (record) => {
+    const taxYear = String(record?.tax_year || '').trim();
+    if (!annualTaxDocuments.length) return null;
+
+    if (taxYear) {
+      const matchingYearDocument = annualTaxDocuments.find((document) => {
+        const haystack = [
+          document?.name,
+          document?.storagePath,
+          document?.uploadedAt,
+        ].filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(taxYear);
+      });
+
+      if (matchingYearDocument) return matchingYearDocument;
+    }
+
+    return annualTaxDocuments[0] || null;
+  };
+
+  const insuranceExpiryDate = vehicle?.insurance_expiry_date ? new Date(vehicle.insurance_expiry_date) : null;
+  const hasValidInsuranceExpiry = insuranceExpiryDate && !Number.isNaN(insuranceExpiryDate.getTime());
+  const insuranceExpired = hasValidInsuranceExpiry && insuranceExpiryDate < new Date();
+  const latestTaxRecord = annualTaxRecords[0] || null;
+  const vehicleFinanceCostRows = useMemo(() => {
+    if (!vehicleFinanceOverview) return [];
+
+    const acquisition = Number(vehicleFinanceOverview.lifetimeAcquisitionCosts || 0);
+    const otherWithoutAcquisition = Math.max(0, Number(vehicleFinanceOverview.lifetimeOtherCosts || 0) - acquisition);
+
+    return [
+      { key: 'acquisition', label: tr('Acquisition', 'Acquisition'), value: acquisition },
+      { key: 'maintenance', label: tr('Maintenance', 'Maintenance'), value: Number(vehicleFinanceOverview.lifetimeMaintenanceCosts || 0) },
+      { key: 'fuel', label: tr('Fuel', 'Carburant'), value: Number(vehicleFinanceOverview.lifetimeFuelCosts || 0) },
+      { key: 'parts', label: tr('Parts / inventory', 'Pièces / stock'), value: Number(vehicleFinanceOverview.lifetimeInventoryCosts || 0) },
+      { key: 'other', label: tr('Other', 'Autres'), value: otherWithoutAcquisition },
+    ].filter((row) => row.value > 0);
+  }, [vehicleFinanceOverview]);
+  const profileTabs = [
+    { key: 'overview', label: tr('Overview', "Vue d'ensemble"), icon: Car },
+    { key: 'documents', label: tr('Documents', 'Documents'), icon: FileText },
+    { key: 'legal', label: tr('Legal', 'Juridique'), icon: Shield },
+    { key: 'finance', label: tr('Finance', 'Finance'), icon: DollarSign },
+  ];
+
   if (loading) {
     return (
       <div className="p-6 space-y-6">
@@ -893,8 +1142,8 @@ const VehicleProfile = () => {
         description={vehicle.plate_number ? `${vehicle.plate_number} • ${vehicle.model || tr('Vehicle Profile', 'Profil véhicule')}` : tr('Vehicle profile', 'Profil véhicule')}
       />
 
-      <div className="mx-auto max-w-7xl space-y-6 p-4 lg:p-6">
-      <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_18px_45px_rgba(76,29,149,0.08)] sm:p-5">
+      <div className="mx-auto max-w-7xl space-y-4 p-3 sm:p-4 lg:p-6">
+      <div className="sticky top-0 z-30 rounded-xl border border-violet-100 bg-white/95 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.08)] backdrop-blur sm:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-4">
             <button
@@ -907,10 +1156,10 @@ const VehicleProfile = () => {
             </button>
             <div>
               <p className="text-sm font-medium text-violet-700">{tr('Vehicle Profile', 'Profil véhicule')}</p>
-              <h1 className="text-2xl font-bold text-slate-900 lg:text-3xl">{vehicle.name}</h1>
+              <h1 className="text-3xl font-black tracking-tight text-slate-900 lg:text-4xl">{vehicle.plate_number || vehicle.name}</h1>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold tracking-[0.2em] text-blue-900">
-                  {vehicle.plate_number || tr('NO PLATE', 'SANS PLAQUE')}
+                  {vehicle.name || tr('Vehicle', 'Véhicule')}
                 </span>
                 <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusClasses[operationalVehicleStatus] || 'bg-slate-100 text-slate-800'}`}>
                   {formatStatus(operationalVehicleStatus)}
@@ -918,6 +1167,31 @@ const VehicleProfile = () => {
                 <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
                       {vehicle.model || tr('Model not set', 'Modèle non défini')}
                 </span>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 font-semibold text-slate-700">
+                  <FileText className="h-3.5 w-3.5 text-violet-500" />
+                  {liveDocumentCount} {tr('docs', 'docs')}
+                </span>
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-semibold ${
+                  insuranceExpired ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                }`}>
+                  <Shield className="h-3.5 w-3.5" />
+                  {insuranceExpired ? tr('Insurance expired', 'Assurance expirée') : tr('Insurance OK', 'Assurance OK')}
+                  {hasValidInsuranceExpiry ? ` • ${formatDate(vehicle.insurance_expiry_date)}` : ''}
+                </span>
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-semibold ${
+                  fleetAlerts.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'
+                }`}>
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  {fleetAlerts.length} {tr('alerts', 'alertes')}
+                </span>
+                {latestTaxRecord ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 font-semibold text-emerald-700">
+                    <DollarSign className="h-3.5 w-3.5" />
+                    {tr('Tax', 'Taxe')} {latestTaxRecord.tax_year}
+                  </span>
+                ) : null}
               </div>
             </div>
           </div>
@@ -939,7 +1213,7 @@ const VehicleProfile = () => {
                 className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01] disabled:opacity-60"
               >
                 <Check className="w-4 h-4" />
-                {saving ? 'Enregistrement...' : 'Enregistrer les modifications'}
+                {saving ? tr('Saving...', 'Enregistrement...') : tr('Save Changes', 'Enregistrer les modifications')}
               </button>
             </>
           ) : (
@@ -953,11 +1227,36 @@ const VehicleProfile = () => {
             </button>
           )}
         </div>
+        </div>
       </div>
+
+      <div className="sticky top-[148px] z-20 -mx-3 overflow-x-auto border-y border-violet-100 bg-slate-50/95 px-3 py-2 backdrop-blur sm:top-[154px] sm:mx-0 sm:rounded-2xl sm:border sm:bg-white/95">
+        <div className="flex min-w-max gap-2">
+          {profileTabs.map((tab) => {
+            const TabIcon = tab.icon;
+            const active = activeProfileTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveProfileTab(tab.key)}
+                className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  active
+                    ? 'bg-violet-600 text-white shadow-[0_10px_24px_rgba(124,58,237,0.22)]'
+                    : 'border border-slate-200 bg-white text-slate-600 hover:border-violet-200 hover:text-violet-700'
+                }`}
+              >
+                <TabIcon className="h-4 w-4" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 space-y-6">
+          {activeProfileTab === 'overview' ? (
           <SectionCard
             title={tr('Overview', "Vue d'ensemble")}
             description={tr('A quick operational snapshot for this vehicle.', 'Un aperçu opérationnel rapide de ce véhicule.')}
@@ -1003,6 +1302,13 @@ const VehicleProfile = () => {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Current Location', 'Emplacement actuel')}</p>
+                    <div className="mt-2 inline-flex items-center gap-2 text-base font-semibold text-slate-900">
+                      <MapPin className="h-4 w-4 text-violet-500" />
+                      <span>{vehicle.location_name || tr('Not set', 'Non défini')}</span>
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Model', 'Modèle')}</p>
                     <p className="mt-2 text-base font-semibold text-slate-900">{vehicle.model || tr('Not set', 'Non défini')}</p>
                   </div>
@@ -1046,7 +1352,9 @@ const VehicleProfile = () => {
               </div>
             </div>
           </SectionCard>
+          ) : null}
 
+          {activeProfileTab === 'overview' ? (
           <SectionCard title={tr('Basic Information', 'Informations de base')} description={tr('Core vehicle details used in rentals and fleet operations.', 'Informations principales du véhicule utilisées dans les locations et opérations de flotte.')} icon={FileText}>
             <dl>
               <EditableRow label={tr('Vehicle Name', 'Nom du véhicule')} editing={isEditing} viewValue={vehicle.name}>
@@ -1082,6 +1390,17 @@ const VehicleProfile = () => {
                   <option value="tour">{tr('tour', 'tour')}</option>
                   <option value="maintenance">{tr('maintenance', 'maintenance')}</option>
                   <option value="out_of_service">{tr('out of service', 'hors service')}</option>
+                  <option value="sold">{tr('sold', 'vendu')}</option>
+                </select>
+              </EditableRow>
+              <EditableRow label={tr('Current Location', 'Emplacement actuel')} editing={isEditing} viewValue={vehicle.location_name || tr('Not set', 'Non défini')}>
+                <select value={formData.location_id} onChange={(e) => handleChange('location_id', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2">
+                  <option value="">{tr('Not set', 'Non défini')}</option>
+                  {fleetLocations.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))}
                 </select>
               </EditableRow>
               <EditableRow label={tr('Current Odometer', 'Kilométrage actuel')} editing={isEditing} viewValue={vehicle.current_odometer ? `${vehicle.current_odometer} km` : tr('Not set', 'Non défini')}>
@@ -1092,8 +1411,45 @@ const VehicleProfile = () => {
               </EditableRow>
             </dl>
           </SectionCard>
+          ) : null}
 
+          {activeProfileTab === 'finance' ? (
           <SectionCard title={tr('Acquisition', 'Acquisition')} description={tr('Purchase and sourcing information for this vehicle.', 'Informations d’achat et d’approvisionnement pour ce véhicule.')} icon={DollarSign}>
+            <button
+              type="button"
+              onClick={() => vehicleFinanceOverview && setVehicleFinanceDrawerOpen(true)}
+              disabled={!vehicleFinanceOverview}
+              className="mb-5 w-full rounded-2xl border border-violet-100 bg-violet-50/70 p-4 text-left transition hover:border-violet-200 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-600">{tr('Vehicle lifetime finance overview', 'Aperçu finance véhicule à vie')}</p>
+                  <h3 className="mt-1 text-lg font-semibold text-slate-900">
+                    {vehicleFinanceLoading
+                      ? tr('Loading lifetime finance...', 'Chargement de la finance à vie...')
+                      : vehicleFinanceOverview
+                        ? tr('Tap to open the detailed vehicle breakdown', 'Touchez pour ouvrir le détail financier du véhicule')
+                        : tr('Lifetime finance is not available yet', 'La finance à vie n’est pas encore disponible')}
+                  </h3>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center sm:min-w-[420px]">
+                  <div className="rounded-xl bg-white px-3 py-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">{tr('Revenue', 'Revenus')}</p>
+                    <p className="mt-1 text-sm font-bold text-emerald-700">{formatMoney(vehicleFinanceOverview?.lifetimeRevenue || 0)}</p>
+                  </div>
+                  <div className="rounded-xl bg-white px-3 py-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">{tr('Costs', 'Coûts')}</p>
+                    <p className="mt-1 text-sm font-bold text-rose-700">{formatMoney(vehicleFinanceOverview?.lifetimeTotalCosts || 0)}</p>
+                  </div>
+                  <div className="rounded-xl bg-white px-3 py-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">{tr('Net', 'Net')}</p>
+                    <p className={`mt-1 text-sm font-bold ${(vehicleFinanceOverview?.grossProfit || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {(vehicleFinanceOverview?.grossProfit || 0) >= 0 ? '+' : ''}{formatMoney(vehicleFinanceOverview?.grossProfit || 0)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </button>
             <dl>
               <EditableRow label={tr('Purchase Cost', 'Coût d’achat')} editing={isEditing} viewValue={vehicle.purchase_cost_mad ? formatMoney(vehicle.purchase_cost_mad) : tr('Not set', 'Non défini')}>
                 <input type="number" value={formData.purchase_cost_mad} onChange={(e) => handleChange('purchase_cost_mad', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
@@ -1107,17 +1463,33 @@ const VehicleProfile = () => {
               <EditableRow
                 label={tr('Purchase Invoice', 'Facture d’achat')}
                 editing={isEditing}
-                viewValue={vehicle.purchase_invoice_url ? <a href={vehicle.purchase_invoice_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-700 underline">{tr('Open invoice', 'Ouvrir la facture')}</a> : tr('Not uploaded', 'Non téléversée')}
+                viewValue={purchaseInvoiceDocument?.url || vehicle.purchase_invoice_url ? (
+                  <a href={purchaseInvoiceDocument?.url || vehicle.purchase_invoice_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-700 underline">
+                    {tr('Open purchase invoice', 'Ouvrir la facture d’achat')}
+                  </a>
+                ) : tr('Not uploaded', 'Non téléversée')}
               >
-                <input value={formData.purchase_invoice_url} onChange={(e) => handleChange('purchase_invoice_url', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" placeholder="https://..." />
+                <div className="space-y-2 text-left">
+                  <input value={formData.purchase_invoice_url} onChange={(e) => handleChange('purchase_invoice_url', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" placeholder="https://..." />
+                  <p className="text-xs text-slate-500">
+                    {purchaseInvoiceDocument
+                      ? tr('Linked from Documents & Media.', 'Lié depuis Documents et médias.')
+                      : tr('Preferred: upload it in Documents & Media using document type “Purchase invoice”.', 'Préféré : importez-la dans Documents et médias avec le type « Facture d’achat ».')}
+                  </p>
+                </div>
               </EditableRow>
             </dl>
           </SectionCard>
+          ) : null}
 
+          {activeProfileTab === 'legal' ? (
           <SectionCard title={tr('Legal & Administrative', 'Juridique et administratif')} description={tr('Registration and insurance information.', 'Informations d’immatriculation et d’assurance.')} icon={Shield}>
             <dl>
               <EditableRow label={tr('Registration Number', "Numéro d'immatriculation administratif")} editing={isEditing} viewValue={vehicle.registration_number}>
                 <input value={formData.registration_number} onChange={(e) => handleChange('registration_number', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+              </EditableRow>
+              <EditableRow label={tr('Registration Date', "Date d'immatriculation")} editing={isEditing} viewValue={formatDate(vehicle.registration_date)}>
+                <input type="date" value={formData.registration_date} onChange={(e) => handleChange('registration_date', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
               </EditableRow>
               <EditableRow label={tr('Registration Expiry', "Expiration de l'immatriculation")} editing={isEditing} viewValue={formatDate(vehicle.registration_expiry_date)}>
                 <input type="date" value={formData.registration_expiry_date} onChange={(e) => handleChange('registration_expiry_date', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
@@ -1133,7 +1505,212 @@ const VehicleProfile = () => {
               </EditableRow>
             </dl>
           </SectionCard>
+          ) : null}
 
+          {activeProfileTab === 'legal' ? (
+          <SectionCard
+            title={tr('Annual Vehicle Tax / Vignette', 'Taxe annuelle véhicule / vignette')}
+            description={tr('Track yearly road tax payments and proof documents for this vehicle.', 'Suivez les paiements annuels de vignette et les justificatifs de ce véhicule.')}
+            icon={Shield}
+            action={(
+              <button
+                type="button"
+                onClick={() => {
+                  resetTaxForm();
+                  setTaxEditing(true);
+                }}
+                className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+              >
+                <DollarSign className="w-3.5 h-3.5" />
+                {tr('Add Tax Payment', 'Ajouter paiement')}
+              </button>
+            )}
+          >
+            {taxEditing && (
+              <div className="mb-5 space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="grid gap-4 md:grid-cols-3">
+                  <label className="space-y-2 text-sm text-slate-600">
+                    <span className="font-medium text-slate-900">{tr('Year', 'Année')}</span>
+                    <input
+                      type="number"
+                      value={taxForm.tax_year}
+                      onChange={(event) => handleTaxChange('tax_year', event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                    />
+                  </label>
+                  <label className="space-y-2 text-sm text-slate-600">
+                    <span className="font-medium text-slate-900">{tr('Amount Paid', 'Montant payé')} (MAD)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={taxForm.amount_mad}
+                      onChange={(event) => handleTaxChange('amount_mad', event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                    />
+                  </label>
+                  <label className="space-y-2 text-sm text-slate-600">
+                    <span className="font-medium text-slate-900">{tr('Payment Date', 'Date de paiement')}</span>
+                    <input
+                      type="date"
+                      value={taxForm.payment_date}
+                      onChange={(event) => handleTaxChange('payment_date', event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                    />
+                  </label>
+                  <label className="space-y-2 text-sm text-slate-600">
+                    <span className="font-medium text-slate-900">{tr('Valid From', 'Valide depuis')}</span>
+                    <input
+                      type="date"
+                      value={taxForm.valid_from}
+                      onChange={(event) => handleTaxChange('valid_from', event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                    />
+                  </label>
+                  <label className="space-y-2 text-sm text-slate-600">
+                    <span className="font-medium text-slate-900">{tr('Valid Until', "Valide jusqu'au")}</span>
+                    <input
+                      type="date"
+                      value={taxForm.valid_until}
+                      onChange={(event) => handleTaxChange('valid_until', event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                    />
+                  </label>
+                  <div className="space-y-2 text-sm text-slate-600">
+                    <span className="font-medium text-slate-900">{tr('Receipt Media', 'Média du reçu')}</span>
+                    <div className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-600">
+                      <p>
+                        {getAnnualTaxDocumentForRecord(taxForm)
+                          ? tr('Linked from Documents & Media.', 'Lié depuis Documents et médias.')
+                          : tr('Upload the receipt in Documents & Media using “Annual vehicle tax receipt”.', 'Téléversez le reçu dans Documents et médias avec « Reçu de taxe annuelle véhicule ».')}
+                      </p>
+                      {getAnnualTaxDocumentForRecord(taxForm)?.url ? (
+                        <a
+                          href={getAnnualTaxDocumentForRecord(taxForm).url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          {getAnnualTaxDocumentForRecord(taxForm).name || tr('Open linked receipt', 'Ouvrir le reçu lié')}
+                        </a>
+                      ) : (
+                        <a href="#vehicle-documents-media" className="mt-1 inline-flex text-xs font-semibold text-emerald-700 hover:text-emerald-800">
+                          {tr('Go to Documents & Media', 'Aller à Documents et médias')}
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <label className="block space-y-2 text-sm text-slate-600">
+                  <span className="font-medium text-slate-900">{tr('Notes', 'Notes')}</span>
+                  <textarea
+                    rows={2}
+                    value={taxForm.notes}
+                    onChange={(event) => handleTaxChange('notes', event.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                  />
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveTaxRecord}
+                    disabled={taxSaving}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                  >
+                    <Check className="w-4 h-4" />
+                    {taxSaving ? tr('Saving...', 'Enregistrement...') : tr('Save Tax Payment', 'Enregistrer paiement')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetTaxForm();
+                      setTaxEditing(false);
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <X className="w-4 h-4" />
+                    {tr('Cancel', 'Annuler')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {annualTaxRecords.length > 0 ? (
+              <div className="space-y-3">
+                {annualTaxRecords.map((record) => {
+                  const linkedTaxDocument = getAnnualTaxDocumentForRecord(record);
+                  const proofUrl = record.proof_url || linkedTaxDocument?.url;
+                  const proofName = record.proof_name || linkedTaxDocument?.name;
+
+                  return (
+                  <div key={record.id} className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                            {tr('Tax year', 'Année')} {record.tax_year}
+                          </span>
+                          <span className="text-sm font-semibold text-slate-900">{formatMoney(record.amount_mad)}</span>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-600">
+                          {tr('Paid', 'Payé')} {formatDate(record.payment_date)}
+                          {record.valid_until ? ` • ${tr('Valid until', 'Valide jusqu’au')} ${formatDate(record.valid_until)}` : ''}
+                        </p>
+                        {proofName ? (
+                          <p className="mt-1 text-xs font-medium text-emerald-700">
+                            {tr('Receipt', 'Reçu')}: {proofName}
+                          </p>
+                        ) : null}
+                        {record.notes ? <p className="mt-1 text-sm text-slate-500">{record.notes}</p> : null}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {proofUrl ? (
+                          <a
+                            href={proofUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                            {tr('Open receipt', 'Ouvrir reçu')}
+                          </a>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resetTaxForm(record);
+                            setTaxEditing(true);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                        >
+                          <Edit className="h-3.5 w-3.5" />
+                          {tr('Edit', 'Modifier')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTaxRecord(record.id)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100"
+                        >
+                          {tr('Delete', 'Supprimer')}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <HistoryEmptyState
+                title={tr('No annual tax payments recorded yet', 'Aucun paiement annuel enregistré')}
+                description={tr('Add the yearly vignette / road tax payment so the legal lifecycle stays complete.', 'Ajoutez la vignette / taxe routière annuelle pour compléter le cycle légal.')}
+              />
+            )}
+          </SectionCard>
+          ) : null}
+
+          {activeProfileTab === 'documents' ? (
+          <div id="vehicle-documents-media">
           <SectionCard title={tr('Documents & Media', 'Documents et médias')} description={tr('Vehicle image, legal files, and uploaded documents.', 'Photo du véhicule, documents légaux et fichiers téléversés.')} icon={FileText}>
             {isEditing ? (
               <div className="space-y-6">
@@ -1171,7 +1748,10 @@ const VehicleProfile = () => {
               onDeleteDocument={handleDeleteDocument}
             />
           </SectionCard>
+          </div>
+          ) : null}
 
+          {activeProfileTab === 'overview' ? (
           <SectionCard title={tr('Notes', 'Notes')} description={tr('Operational notes and internal system notes for the team.', "Notes opérationnelles et notes internes de l'équipe.")} icon={StickyNote}>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="rounded-xl border border-violet-100 p-4">
@@ -1202,9 +1782,11 @@ const VehicleProfile = () => {
               </div>
             </div>
           </SectionCard>
+          ) : null}
         </div>
 
         <div className="space-y-6">
+          {activeProfileTab === 'overview' ? (
           <SectionCard title={tr('Maintenance History', 'Historique maintenance')} description={tr('Recent work logged against this vehicle.', 'Travaux récents enregistrés sur ce véhicule.')} icon={Wrench}>
             {maintenanceHistory.length === 0 ? (
               <HistoryEmptyState title={tr('No maintenance records yet', 'Aucun entretien enregistré pour le moment')} description={tr('Maintenance history will appear here as records are added.', "L'historique de maintenance apparaîtra ici au fur et à mesure des enregistrements.")} />
@@ -1282,7 +1864,9 @@ const VehicleProfile = () => {
               </div>
             )}
           </SectionCard>
+          ) : null}
 
+          {activeProfileTab === 'overview' ? (
           <SectionCard
             title={tr('Rental History', 'Historique locations')}
             description={tr('Open linked rentals for this vehicle.', 'Ouvrez les locations liées à ce véhicule.')}
@@ -1331,7 +1915,9 @@ const VehicleProfile = () => {
               </div>
             )}
           </SectionCard>
+          ) : null}
 
+          {activeProfileTab === 'finance' ? (
           <SectionCard
             title={tr('Fuel Status', 'État du carburant')}
             description={tr('Current fuel, usage, and cost for this vehicle.', "Carburant actuel, consommation et coût pour ce véhicule.")}
@@ -1431,8 +2017,9 @@ const VehicleProfile = () => {
               </div>
             </div>
           </SectionCard>
+          ) : null}
 
-          {fuelAdjustOpen ? (
+          {activeProfileTab === 'finance' && fuelAdjustOpen ? (
             <section className="rounded-xl border border-emerald-100 bg-white p-5 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -1539,6 +2126,7 @@ const VehicleProfile = () => {
             </section>
           ) : null}
 
+          {activeProfileTab === 'overview' ? (
           <SectionCard
             title={tr('Activity Log', "Journal d'activité")}
             description={tr('A combined timeline of profile, maintenance, and fuel activity.', "Chronologie combinée du profil, de la maintenance et du carburant.")}
@@ -1572,7 +2160,9 @@ const VehicleProfile = () => {
               </div>
             )}
           </SectionCard>
+          ) : null}
 
+          {activeProfileTab === 'overview' ? (
           <SectionCard title={tr('Vehicle Report', 'Rapports véhicule')} description={tr('Inspection reports captured from rental return workflow.', "Rapports d'inspection enregistrés pendant le retour de location.")} icon={FileText}>
             {vehicleReportOverview.length === 0 ? (
               <HistoryEmptyState title={tr('No vehicle reports yet', 'Aucun rapport véhicule pour le moment')} description={tr('Damage, accident, and issue reports will appear here when staff log them during rental inspection.', "Les rapports de dommages, d'accident et d'incident apparaîtront ici lorsque l'équipe les enregistrera pendant l'inspection de retour.")} />
@@ -1648,7 +2238,9 @@ const VehicleProfile = () => {
               </div>
             )}
           </SectionCard>
+          ) : null}
 
+          {activeProfileTab === 'finance' ? (
           <SectionCard
             title={tr('Sold History', 'Historique de vente')}
             description={tr('Track sale or disposal events so finance can include resale and write-off lifecycle data.', 'Suivez les ventes et mises au rebut afin que la finance intègre le cycle de revente et de sortie d’actif.')}
@@ -1740,7 +2332,7 @@ const VehicleProfile = () => {
                     className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
                   >
                     <Check className="w-4 h-4" />
-                    {dispositionSaving ? 'Enregistrement...' : 'Enregistrer la fiche'}
+                    {dispositionSaving ? tr('Saving...', 'Enregistrement...') : tr('Save Record', 'Enregistrer la fiche')}
                   </button>
                   <button
                     type="button"
@@ -1801,8 +2393,115 @@ const VehicleProfile = () => {
               <HistoryEmptyState title="No sale or disposal recorded yet" description="Add a sale or disposal event here so vehicle lifecycle finance stays complete." />
             )}
           </SectionCard>
+          ) : null}
         </div>
       </div>
+      {vehicleFinanceDrawerOpen && vehicleFinanceOverview ? (
+        <div
+          className="fixed inset-0 z-[80] bg-slate-950/35 backdrop-blur-sm"
+          onClick={() => setVehicleFinanceDrawerOpen(false)}
+        >
+          <aside
+            className="ml-auto flex h-full w-full max-w-xl flex-col overflow-y-auto bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-600">{tr('Vehicle lifetime finance', 'Finance véhicule à vie')}</p>
+                  <h2 className="mt-1 text-xl font-bold text-slate-900">{vehicle?.plate_number || vehicle?.name || tr('Vehicle', 'Véhicule')}</h2>
+                  <p className="mt-1 text-sm text-slate-500">{tr('Acquisition, revenue, costs, and sale impact from the full vehicle lifecycle.', 'Acquisition, revenus, coûts et impact de vente sur tout le cycle de vie du véhicule.')}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setVehicleFinanceDrawerOpen(false)}
+                  className="rounded-2xl border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5 px-5 py-5">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-700">{tr('Revenue', 'Revenus')}</p>
+                  <p className="mt-2 text-lg font-bold text-emerald-700">{formatMoney(vehicleFinanceOverview.lifetimeRevenue)}</p>
+                </div>
+                <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-rose-700">{tr('Costs', 'Coûts')}</p>
+                  <p className="mt-2 text-lg font-bold text-rose-700">{formatMoney(vehicleFinanceOverview.lifetimeTotalCosts)}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{tr('Net', 'Net')}</p>
+                  <p className={`mt-2 text-lg font-bold ${vehicleFinanceOverview.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    {vehicleFinanceOverview.grossProfit >= 0 ? '+' : ''}{formatMoney(vehicleFinanceOverview.grossProfit)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <h3 className="font-semibold text-slate-900">{tr('Cost breakdown', 'Répartition des coûts')}</h3>
+                <div className="mt-3 space-y-2">
+                  {vehicleFinanceCostRows.length > 0 ? vehicleFinanceCostRows.map((row) => (
+                    <div key={row.key} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
+                      <span className="text-sm font-medium text-slate-600">{row.label}</span>
+                      <span className="text-sm font-bold text-rose-700">{formatMoney(row.value)}</span>
+                    </div>
+                  )) : (
+                    <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                      {tr('No lifetime costs have been recorded for this vehicle yet.', 'Aucun coût à vie n’a encore été enregistré pour ce véhicule.')}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <h3 className="font-semibold text-slate-900">{tr('Recent finance events', 'Événements financiers récents')}</h3>
+                <div className="mt-3 space-y-3">
+                  {(vehicleFinanceOverview.events || []).slice(0, 8).map((event, index) => (
+                    <div key={`${event.source}-${event.date}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{event.eventType}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                            <span>{formatDate(event.date)}</span>
+                            <span>•</span>
+                            {event.href ? (
+                              <button
+                                type="button"
+                                onClick={() => navigate(event.href)}
+                                className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 font-semibold text-violet-700 transition hover:bg-violet-200 hover:text-violet-900"
+                              >
+                                {event.source}
+                                <ExternalLink className="h-3 w-3" />
+                              </button>
+                            ) : (
+                              <span>{event.source}</span>
+                            )}
+                          </div>
+                        </div>
+                        <p className={`text-sm font-bold ${(event.net || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                          {(event.net || 0) >= 0 ? '+' : ''}{formatMoney(event.net || 0)}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => navigate(`/admin/finance?tab=vehicle-finance&vehicleId=${vehicleId}&detail=1`)}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white hover:bg-violet-700"
+              >
+                <ExternalLink className="h-4 w-4" />
+                {tr('Open Finance Management', 'Ouvrir la gestion financière')}
+              </button>
+            </div>
+          </aside>
+        </div>
+      ) : null}
       </div>
     </div>
   );

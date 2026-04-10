@@ -10,7 +10,7 @@ interface Vehicle {
   vehicle_type: string;
   power_cc: number;
   capacity: number;
-  status: 'available' | 'rented' | 'tour' | 'maintenance' | 'out_of_service';
+  status: 'available' | 'rented' | 'impounded' | 'tour' | 'maintenance' | 'out_of_service';
   image_url: string;
   plate_number: string;
   current_odometer: string | null;
@@ -19,6 +19,7 @@ interface Vehicle {
   next_oil_change_odometer: string | null;
   last_oil_change_odometer: string | null;
   document_count?: number;
+  location_name?: string | null;
 }
 
 interface VehicleGridViewProps {
@@ -133,6 +134,11 @@ const VehicleGridView: React.FC<VehicleGridViewProps> = ({
                     {vehicle.model || 'Model not set'}
                   </span>
                   <span className="text-sm font-medium text-gray-500">{vehicle.vehicle_type || 'Vehicle'}</span>
+                  {vehicle.location_name ? (
+                    <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-sm font-semibold text-emerald-700">
+                      {vehicle.location_name}
+                    </span>
+                  ) : null}
                 </div>
               </div>
               <div className="flex gap-1">

@@ -192,8 +192,6 @@ class MaintenanceTrackingService {
 
   static async getVehiclesInMaintenance() {
     try {
-      console.log('🔧 Loading vehicles in maintenance from:', this.MAINTENANCE_RECORDS_TABLE);
-      
       const { data: maintenanceRecords, error: maintenanceError } = await supabase
         .from(this.MAINTENANCE_RECORDS_TABLE)
         .select('id, vehicle_id, status, maintenance_type, service_date, description, labor_rate_mad, parts_cost_mad, tax_mad, cost, created_at, updated_at')
@@ -209,22 +207,35 @@ class MaintenanceTrackingService {
         return [];
       }
 
-      const { data: vehicles, error: vehiclesError } = await supabase
-        .from(this.VEHICLES_TABLE)
-        .select('id, name, model, plate_number, vehicle_type, status');
+      const safeMaintenanceRecords = maintenanceRecords || [];
+      const vehicleIds = Array.from(
+        new Set(
+          safeMaintenanceRecords
+            .map((record) => record?.vehicle_id)
+            .filter(Boolean)
+        )
+      );
 
-      if (vehiclesError) {
+      if (vehicleIds.length === 0) {
+        return [];
+      }
+
+      const { data: vehiclesData, error: filteredVehiclesError } = await supabase
+        .from(this.VEHICLES_TABLE)
+        .select('id, name, model, plate_number, vehicle_type, status')
+        .in('id', vehicleIds);
+
+      if (filteredVehiclesError) {
         console.error({
-            message: vehiclesError?.message,
-            details: vehiclesError?.details,
-            hint: vehiclesError?.hint,
-            code: vehiclesError?.code
+            message: filteredVehiclesError?.message,
+            details: filteredVehiclesError?.details,
+            hint: filteredVehiclesError?.hint,
+            code: filteredVehiclesError?.code
         });
         return [];
       }
 
-      const safeMaintenanceRecords = maintenanceRecords || [];
-      const safeVehicles = vehicles || [];
+      const safeVehicles = vehiclesData || [];
 
       const vehiclesInMaintenance = [];
       const vehicleMap = new Map(safeVehicles.map(v => [v.id, v]));
@@ -256,7 +267,6 @@ class MaintenanceTrackingService {
         }
       });
 
-      console.log('✅ Vehicles in maintenance:', vehiclesInMaintenance.length);
       return vehiclesInMaintenance;
     } catch (err) {
       console.error({
@@ -271,8 +281,6 @@ class MaintenanceTrackingService {
 
   static async getUpcomingMaintenance() {
     try {
-      console.log('🔧 Loading upcoming maintenance from:', this.MAINTENANCE_RECORDS_TABLE);
-      
       const { data: maintenanceRecords, error } = await supabase
         .from(this.MAINTENANCE_RECORDS_TABLE)
         .select('*')
@@ -346,7 +354,6 @@ class MaintenanceTrackingService {
         return new Date(a.service_date) - new Date(b.service_date);
       });
 
-      console.log('✅ Upcoming maintenance loaded:', sortedRecords.length);
       return sortedRecords;
     } catch (err) {
       console.error({
@@ -361,8 +368,6 @@ class MaintenanceTrackingService {
 
   static async getMaintenanceHistory(options = {}) {
     try {
-      console.log('🔧 Loading maintenance history from:', this.MAINTENANCE_RECORDS_TABLE);
-      
       let query = supabase
         .from(this.MAINTENANCE_RECORDS_TABLE)
         .select('*')
@@ -400,7 +405,6 @@ class MaintenanceTrackingService {
         maintenance_type: this.TYPE_MAPPING[record.maintenance_type] || record.maintenance_type || 'Unknown Type'
       }));
 
-      console.log('✅ Maintenance history loaded:', historyWithVehicles.length);
       return historyWithVehicles;
     } catch (err) {
       console.error({
@@ -480,10 +484,7 @@ class MaintenanceTrackingService {
 
   static async getMaintenanceStatistics() {
     try {
-      console.log('🔧 Loading maintenance statistics from:', this.MAINTENANCE_RECORDS_TABLE);
-      
       const monthBoundaries = this.getCurrentMonthBoundaries();
-      console.log('📅 Current month boundaries (Casablanca):', monthBoundaries);
 
       const { data: allRecords, error: allRecordsError } = await supabase
         .from(this.MAINTENANCE_RECORDS_TABLE)
@@ -500,8 +501,6 @@ class MaintenanceTrackingService {
       }
 
       const safeAllRecords = allRecords || [];
-      console.log('📊 Total maintenance records:', safeAllRecords.length);
-
       const includeScheduled = this.SYSTEM_SETTINGS.include_scheduled_in_monthly_cost;
       const validStatusesForCost = includeScheduled 
         ? ['scheduled', 'in_progress', 'completed']
@@ -524,13 +523,6 @@ class MaintenanceTrackingService {
       const totalCostThisMonth = monthlyRecords.reduce((sum, record) => {
         return sum + this.safeCostToNumber(record.cost);
       }, 0);
-
-      console.log('💰 Monthly cost calculation:', {
-        monthlyRecords: monthlyRecords.length,
-        totalCostThisMonth,
-        includeScheduled,
-        validStatuses: validStatusesForCost
-      });
 
       const openRecords = safeAllRecords.filter(record => 
         ['scheduled', 'in_progress'].includes(record.status)
@@ -587,15 +579,6 @@ class MaintenanceTrackingService {
         monthName: monthBoundaries.monthName,
         includeScheduledInCost: includeScheduled
       };
-
-      console.log('✅ Maintenance statistics calculated:', {
-        totalRecords: statistics.totalRecords,
-        monthlyRecords: monthlyRecords.length,
-        totalCostThisMonth: statistics.totalCostThisMonth,
-        vehiclesInMaintenance: statistics.vehiclesInMaintenance,
-        overdueCount: statistics.overdueCount,
-        dueSoonCount: statistics.dueSoonCount
-      });
 
       return statistics;
     } catch (err) {

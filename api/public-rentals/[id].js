@@ -15,7 +15,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { anonClient } = createSupabaseClients();
+    const { adminClient } = createSupabaseClients();
 
     // Only join tables accessible to the anon role
     const rentalSelect = `
@@ -25,13 +25,15 @@ export default async function handler(req, res) {
       vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
         *,
         vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
-      )
+      ),
+      extensions:rental_extensions!rental_extensions_rental_id_fkey(*),
+      package:app_4c3a7a6153_rental_km_packages!package_id(*)
     `;
 
     let rental = null;
     let rentalError = null;
 
-    const byInternalId = await anonClient
+    const byInternalId = await adminClient
       .from('app_4c3a7a6153_rentals')
       .select(rentalSelect)
       .eq('id', rentalId)
@@ -41,10 +43,10 @@ export default async function handler(req, res) {
     rentalError = byInternalId.error;
 
     if (!rental) {
-      const byContractId = await anonClient
+      const byContractId = await adminClient
         .from('app_4c3a7a6153_rentals')
         .select(rentalSelect)
-        .eq('rental_id', rentalId)
+        .ilike('rental_id', rentalId)
         .maybeSingle();
 
       rental = byContractId.data;
@@ -56,7 +58,7 @@ export default async function handler(req, res) {
     }
 
     // app_settings is restricted — return null gracefully
-    const { data: settings } = await anonClient
+    const { data: settings } = await adminClient
       .from('app_settings')
       .select('logo_url, stamp_url')
       .eq('id', 1)
@@ -64,7 +66,7 @@ export default async function handler(req, res) {
       .then(r => r)
       .catch(() => ({ data: null }));
 
-    const { data: mediaRows, error: mediaError } = await anonClient
+    const { data: mediaRows, error: mediaError } = await adminClient
       .from('app_2f7bf469b0_rental_media')
       .select('*')
       .eq('rental_id', rental.id)
@@ -74,8 +76,44 @@ export default async function handler(req, res) {
       return json(res, 500, { error: mediaError.message || 'Failed to load media' });
     }
 
+    const { data: reportRows } = await adminClient
+      .from('app_4c3a7a6153_vehicle_reports')
+      .select('*')
+      .eq('rental_id', rental.id)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    const latestVehicleReport = reportRows?.[0] || null;
+    let linkedMaintenance = null;
+
+    if (latestVehicleReport?.maintenance_id) {
+      const { data: maintenanceRow } = await adminClient
+        .from('app_687f658e98_maintenance')
+        .select('*')
+        .eq('id', latestVehicleReport.maintenance_id)
+        .maybeSingle();
+
+      linkedMaintenance = maintenanceRow || null;
+    }
+
+    const hydratedRental = {
+      ...rental,
+      vehicle_report: latestVehicleReport
+        ? {
+            ...latestVehicleReport,
+            maintenance: linkedMaintenance,
+          }
+        : null,
+      vehicleReport: latestVehicleReport
+        ? {
+            ...latestVehicleReport,
+            maintenance: linkedMaintenance,
+          }
+        : null,
+    };
+
     return json(res, 200, {
-      rental,
+      rental: hydratedRental,
       settings: settings || null,
       media: mediaRows || [],
     });

@@ -6,8 +6,11 @@ import { Label } from "../ui/label";
 import { Trash2, Truck, AlertTriangle, CheckCircle, Loader2, Save, RefreshCw } from "lucide-react";
 import OptimizedTransportFeeService from "../../services/OptimizedTransportFeeService";
 import { useAuth } from "../../contexts/AuthContext";
+import i18n from "../../i18n";
 
 const TransportFeeManager = ({ onUpdate }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { user } = useAuth();
   const [transportFees, setTransportFees] = useState({
     pickup_fee: 0,
@@ -50,7 +53,7 @@ const TransportFeeManager = ({ onUpdate }) => {
       setSuccess("");
     } catch (error) {
       console.error("❌ Error loading transport fees:", error);
-      setError("Failed to load transport fees: " + error.message);
+      setError(`${tr('Failed to load transport fees', 'Echec du chargement des frais de transport')} : ${error.message}`);
       
       // Set fallback data
       const fallbackFees = OptimizedTransportFeeService.getDefaultTransportFees();
@@ -76,7 +79,7 @@ const TransportFeeManager = ({ onUpdate }) => {
       const dropoffFee = parseFloat(editForm.dropoff_fee) || 0;
       
       if (pickupFee < 0 || dropoffFee < 0) {
-        setError("Fees must be 0 or greater");
+        setError(tr('Fees must be 0 or greater', 'Les frais doivent etre egaux ou superieurs a 0'));
         return;
       }
 
@@ -99,13 +102,13 @@ const TransportFeeManager = ({ onUpdate }) => {
         currency: savedFees.currency || 'MAD'
       });
       
-      setSuccess("Transport fees saved successfully!");
+      setSuccess(tr('Transport fees saved successfully!', 'Frais de transport enregistres avec succes !'));
       onUpdate?.();
       
       console.log('✅ Transport fees saved successfully:', savedFees);
     } catch (error) {
       console.error("❌ Error saving transport fees:", error);
-      setError("Error saving transport fees: " + error.message);
+      setError(`${tr('Error saving transport fees', "Erreur lors de l'enregistrement des frais de transport")} : ${error.message}`);
     } finally {
       setSaving(false);
     }
@@ -113,11 +116,11 @@ const TransportFeeManager = ({ onUpdate }) => {
 
   const deleteTransportFees = async () => {
     if (!transportFees.id) {
-      setError("No transport fees to delete");
+      setError(tr('No transport fees to delete', 'Aucun frais de transport a supprimer'));
       return;
     }
 
-    if (confirm("Are you sure you want to delete the current transport fees?")) {
+    if (confirm(tr('Are you sure you want to delete the current transport fees?', 'Voulez-vous vraiment supprimer les frais de transport actuels ?'))) {
       try {
         setError("");
         setSaving(true);
@@ -127,11 +130,11 @@ const TransportFeeManager = ({ onUpdate }) => {
         // Reload data after deletion
         await loadTransportFees();
         
-        setSuccess("Transport fees deleted successfully!");
+        setSuccess(tr('Transport fees deleted successfully!', 'Frais de transport supprimes avec succes !'));
         onUpdate?.();
       } catch (error) {
         console.error("❌ Error deleting transport fees:", error);
-        setError("Error deleting transport fees: " + error.message);
+        setError(`${tr('Error deleting transport fees', 'Erreur lors de la suppression des frais de transport')} : ${error.message}`);
       } finally {
         setSaving(false);
       }
@@ -151,7 +154,7 @@ const TransportFeeManager = ({ onUpdate }) => {
     return (
       <div className="flex justify-center items-center p-8">
         <Loader2 className="w-6 h-6 animate-spin mr-2" />
-        <span>Loading transport fees...</span>
+        <span>{tr('Loading transport fees...', 'Chargement des frais de transport...')}</span>
       </div>
     );
   }
@@ -162,7 +165,7 @@ const TransportFeeManager = ({ onUpdate }) => {
         <div className="flex justify-between items-center">
           <CardTitle className="flex items-center gap-2">
             <Truck className="w-5 h-5 text-blue-600" />
-            Transport Fee Management
+            {tr('Transport Fee Management', 'Gestion des frais de transport')}
           </CardTitle>
           <Button 
             onClick={loadTransportFees} 
@@ -171,7 +174,7 @@ const TransportFeeManager = ({ onUpdate }) => {
             size="sm"
           >
             <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh
+            {tr('Refresh', 'Actualiser')}
           </Button>
         </div>
       </CardHeader>
@@ -193,16 +196,16 @@ const TransportFeeManager = ({ onUpdate }) => {
         {/* Current Transport Fees Display */}
         <Card className="mb-6 bg-blue-50 border-blue-200">
           <CardContent className="pt-6">
-            <h3 className="text-lg font-semibold text-blue-900 mb-4">Current Transport Fees</h3>
+            <h3 className="text-lg font-semibold text-blue-900 mb-4">{tr('Current Transport Fees', 'Frais de transport actuels')}</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="bg-white p-4 rounded-lg border">
-                <div className="text-sm text-gray-600 font-medium">Pickup Fee</div>
+                <div className="text-sm text-gray-600 font-medium">{tr('Pickup Fee', 'Frais de prise en charge')}</div>
                 <div className="text-2xl font-bold text-green-600">
                   {formatFeeDisplay(transportFees.pickup_fee, transportFees.currency)}
                 </div>
               </div>
               <div className="bg-white p-4 rounded-lg border">
-                <div className="text-sm text-gray-600 font-medium">Dropoff Fee</div>
+                <div className="text-sm text-gray-600 font-medium">{tr('Dropoff Fee', 'Frais de depot')}</div>
                 <div className="text-2xl font-bold text-blue-600">
                   {formatFeeDisplay(transportFees.dropoff_fee, transportFees.currency)}
                 </div>
@@ -210,7 +213,7 @@ const TransportFeeManager = ({ onUpdate }) => {
             </div>
             {transportFees.updated_at && (
               <div className="mt-3 text-xs text-gray-500">
-                Last updated: {new Date(transportFees.updated_at).toLocaleString()}
+                {tr('Last updated', 'Derniere mise a jour')} : {new Date(transportFees.updated_at).toLocaleString()}
               </div>
             )}
           </CardContent>
@@ -219,10 +222,10 @@ const TransportFeeManager = ({ onUpdate }) => {
         {/* Edit Transport Fees Form */}
         <Card className="border-dashed border-2 border-green-300 bg-green-50">
           <CardContent className="pt-6">
-            <h3 className="text-lg font-semibold text-green-900 mb-4">Update Transport Fees</h3>
+            <h3 className="text-lg font-semibold text-green-900 mb-4">{tr('Update Transport Fees', 'Mettre a jour les frais de transport')}</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <Label htmlFor="pickup-fee">Pickup Fee *</Label>
+                <Label htmlFor="pickup-fee">{tr('Pickup Fee *', 'Frais de prise en charge *')}</Label>
                 <Input
                   id="pickup-fee"
                   type="number"
@@ -235,7 +238,7 @@ const TransportFeeManager = ({ onUpdate }) => {
               </div>
               
               <div>
-                <Label htmlFor="dropoff-fee">Dropoff Fee *</Label>
+                <Label htmlFor="dropoff-fee">{tr('Dropoff Fee *', 'Frais de depot *')}</Label>
                 <Input
                   id="dropoff-fee"
                   type="number"
@@ -248,7 +251,7 @@ const TransportFeeManager = ({ onUpdate }) => {
               </div>
               
               <div>
-                <Label htmlFor="currency">Currency</Label>
+                <Label htmlFor="currency">{tr('Currency', 'Devise')}</Label>
                 <Input
                   id="currency"
                   type="text"
@@ -271,7 +274,7 @@ const TransportFeeManager = ({ onUpdate }) => {
                 ) : (
                   <Save className="w-4 h-4 mr-2" />
                 )}
-                Save Transport Fees
+                {tr('Save Transport Fees', 'Enregistrer les frais de transport')}
               </Button>
               
               {transportFees.id && (
@@ -282,7 +285,7 @@ const TransportFeeManager = ({ onUpdate }) => {
                   className="text-red-600 hover:text-red-700 hover:bg-red-50"
                 >
                   <Trash2 className="w-4 h-4 mr-2" />
-                  Delete
+                  {tr('Delete', 'Supprimer')}
                 </Button>
               )}
             </div>
@@ -297,17 +300,17 @@ const TransportFeeManager = ({ onUpdate }) => {
             </div>
             <div className="ml-3">
               <h3 className="text-sm font-medium text-blue-800">
-                Transport Fee Information
+                {tr('Transport Fee Information', 'Informations sur les frais de transport')}
               </h3>
               <div className="mt-1 text-sm text-blue-700">
                 <ul className="list-disc list-inside space-y-1">
-                  <li>Transport fees are organization-wide and stored in the database</li>
-                  <li>Pickup fee: Applied when vehicles are picked up from customer location</li>
-                  <li>Dropoff fee: Applied when vehicles are delivered to customer location</li>
-                  <li>Fees must be 0 or greater, formatted to 2 decimal places</li>
-                  <li>Only one active fee configuration per organization</li>
-                  <li>Changes are immediately applied to new rentals</li>
-                  <li>Data is cached for 30 seconds to improve performance</li>
+                  <li>{tr('Transport fees are organization-wide and stored in the database', "Les frais de transport sont definis pour toute l'organisation et stockes en base de donnees")}</li>
+                  <li>{tr('Pickup fee: Applied when vehicles are picked up from customer location', "Frais de prise en charge : appliques lorsque les vehicules sont recuperes chez le client")}</li>
+                  <li>{tr('Dropoff fee: Applied when vehicles are delivered to customer location', "Frais de depot : appliques lorsque les vehicules sont livres chez le client")}</li>
+                  <li>{tr('Fees must be 0 or greater, formatted to 2 decimal places', 'Les frais doivent etre egaux ou superieurs a 0, avec 2 decimales')}</li>
+                  <li>{tr('Only one active fee configuration per organization', "Une seule configuration active par organisation")}</li>
+                  <li>{tr('Changes are immediately applied to new rentals', 'Les modifications sont appliquees immediatement aux nouvelles locations')}</li>
+                  <li>{tr('Data is cached for 30 seconds to improve performance', 'Les donnees sont mises en cache pendant 30 secondes pour ameliorer les performances')}</li>
                 </ul>
               </div>
             </div>

@@ -21,6 +21,13 @@ export const getFuelTransactionVisual = (type) => {
         label: 'Transfer',
         badgeClass: 'bg-blue-100 text-blue-800',
       };
+    case 'tank_out':
+      return {
+        emoji: '🛢️',
+        shortLabel: 'Tank Out',
+        label: 'Tank Out',
+        badgeClass: 'bg-amber-100 text-amber-800',
+      };
     case 'rental_opening_level':
       return {
         emoji: '🟦',

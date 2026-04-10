@@ -7,7 +7,27 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { Loader2, ArrowLeft, Shield, CheckSquare, Square } from 'lucide-react';
-import { ALL_PERMISSION_KEYS, MODULE_PERMISSION_KEYS, PERMISSION_GROUPS } from '../../../utils/permissionCatalog';
+import { ALL_PERMISSION_KEYS, MODULE_PERMISSION_KEYS, PERMISSION_GROUPS, normalizePermissionMap as normalizeCatalogPermissionMap } from '../../../utils/permissionCatalog';
+import { updateUserProfile } from '../../../services/UserService';
+
+const buildPermissionsForRole = (role) => {
+  const normalizedRole = String(role || 'employee').toLowerCase();
+
+  return ALL_PERMISSION_KEYS.reduce((acc, permissionKey) => {
+    if (normalizedRole === 'owner') {
+      acc[permissionKey] = true;
+      return acc;
+    }
+
+    acc[permissionKey] = false;
+
+    if (permissionKey === 'Require Extension Approval') {
+      acc[permissionKey] = true;
+    }
+
+    return acc;
+  }, {});
+};
 
 const UserPermissions = () => {
   const { id } = useParams();
@@ -33,16 +53,17 @@ const UserPermissions = () => {
 
         if (error && error.code !== 'PGRST116') throw error;
 
-        const dbPermissions = data?.permissions || {};
-        const merged = {};
+        const dbPermissions = normalizeCatalogPermissionMap(data?.permissions || {});
+        const merged = buildPermissionsForRole(user.role);
         ALL_PERMISSION_KEYS.forEach(m => {
-          merged[m] = dbPermissions[m] === true;
+          if (Object.prototype.hasOwnProperty.call(dbPermissions, m)) {
+            merged[m] = dbPermissions[m] === true;
+          }
         });
         setPermissions(merged);
       } catch (err) {
         toast.error(`Failed to load permissions: ${err.message}`);
-        const defaultPerms = {};
-        ALL_PERMISSION_KEYS.forEach(m => { defaultPerms[m] = false; });
+        const defaultPerms = buildPermissionsForRole(user.role);
         setPermissions(defaultPerms);
       } finally {
         setIsLoading(false);
@@ -71,10 +92,12 @@ const UserPermissions = () => {
           };
           setUserData(user);
 
-          const dbPermissions = data.permissions || {};
-          const merged = {};
+          const dbPermissions = normalizeCatalogPermissionMap(data.permissions || {});
+          const merged = buildPermissionsForRole(data.role);
           ALL_PERMISSION_KEYS.forEach(m => {
-            merged[m] = dbPermissions[m] === true;
+            if (Object.prototype.hasOwnProperty.call(dbPermissions, m)) {
+              merged[m] = dbPermissions[m] === true;
+            }
           });
           setPermissions(merged);
         } catch (err) {
@@ -128,29 +151,12 @@ const UserPermissions = () => {
         completePermissions[module] = permissions[module] === true;
       });
 
-      // Preserve existing phone/whatsapp data
-      const { data: currentData } = await supabase
-        .from(TABLE_NAMES.USERS)
-        .select('phone_number, whatsapp_notifications')
-        .eq('id', userData.id)
-        .maybeSingle();
-
-      const upsertPayload = {
-        id: userData.id,
+      await updateUserProfile(userData.id, {
         email: userData.email,
-        full_name: userData.name,
+        name: userData.name,
         role: userData.role,
-        access_enabled: true,
         permissions: completePermissions,
-        phone_number: currentData?.phone_number || null,
-        whatsapp_notifications: currentData?.whatsapp_notifications || false,
-      };
-
-      const { error } = await supabase
-        .from(TABLE_NAMES.USERS)
-        .upsert(upsertPayload, { onConflict: 'id' });
-
-      if (error) throw error;
+      });
 
       toast.success(`Permissions updated for ${userData.name}`);
       navigate('/admin/users');
@@ -165,7 +171,7 @@ const UserPermissions = () => {
     return (
       <div className="flex items-center justify-center h-96">
         <Loader2 className="h-8 w-8 animate-spin" />
-        <p className="ml-2">Loading permissions...</p>
+        <p className="ml-2">Chargement des autorisations...</p>
       </div>
     );
   }
@@ -179,12 +185,12 @@ const UserPermissions = () => {
       <div className="flex items-center gap-4 mb-6">
         <Button variant="ghost" size="sm" onClick={() => navigate('/admin/users')}>
           <ArrowLeft className="h-4 w-4 mr-1" />
-          Back
+          Retour
         </Button>
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Shield className="h-6 w-6 text-blue-600" />
-            Module Permissions
+            Autorisations des modules
           </h1>
           <p className="text-sm text-muted-foreground">
             {userData?.name} &mdash; {userData?.email}
@@ -197,19 +203,19 @@ const UserPermissions = () => {
         {/* Summary + select all */}
         <div className="flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            <span className="font-semibold text-foreground">{enabledCount}</span> of {ALL_PERMISSION_KEYS.length} permissions enabled
+            <span className="font-semibold text-foreground">{enabledCount}</span> autorisations activées sur {ALL_PERMISSION_KEYS.length}
           </p>
           <Button variant="outline" size="sm" onClick={handleSelectAll}>
             {allSelected ? (
-              <><Square className="h-4 w-4 mr-1" />Deselect All</>
+              <><Square className="h-4 w-4 mr-1" />Tout désélectionner</>
             ) : (
-              <><CheckSquare className="h-4 w-4 mr-1" />Select All</>
+              <><CheckSquare className="h-4 w-4 mr-1" />Tout sélectionner</>
             )}
           </Button>
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-          Module access opens the page. Extra actions control which sensitive buttons appear inside that module.
+          L’accès au module ouvre la page. Les actions supplémentaires contrôlent quels boutons sensibles apparaissent à l’intérieur du module.
         </div>
 
         {/* Grouped permission cards */}
@@ -266,9 +272,9 @@ const UserPermissions = () => {
           </Button>
           <Button onClick={handleSave} disabled={isSubmitting}>
             {isSubmitting ? (
-              <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving...</>
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Enregistrement...</>
             ) : (
-              <><Shield className="mr-2 h-4 w-4" />Save Permissions</>
+              <><Shield className="mr-2 h-4 w-4" />Enregistrer les autorisations</>
             )}
           </Button>
         </div>

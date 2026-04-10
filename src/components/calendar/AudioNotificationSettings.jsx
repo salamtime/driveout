@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import audioNotificationSystem from '../../utils/audioNotifications';
+import i18n from '../../i18n';
 
 const AudioNotificationSettings = ({ isOpen, onClose }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [isEnabled, setIsEnabled] = useState(audioNotificationSystem.isNotificationEnabled());
   const [volume, setVolume] = useState(audioNotificationSystem.getVolume());
   const [notificationPermission, setNotificationPermission] = useState(
@@ -42,11 +45,11 @@ const AudioNotificationSettings = ({ isOpen, onClose }) => {
     <div className="audio-settings-overlay">
       <div className="audio-settings-modal">
         <div className="audio-settings-header">
-          <h2>🔔 Audio Notification Settings</h2>
+          <h2>🔔 {tr('Audio Notification Settings', 'Paramètres des notifications audio')}</h2>
           <button 
             className="audio-settings-close"
             onClick={onClose}
-            aria-label="Close settings"
+            aria-label={tr('Close settings', 'Fermer les paramètres')}
           >
             ✕
           </button>
@@ -56,9 +59,9 @@ const AudioNotificationSettings = ({ isOpen, onClose }) => {
           {/* Enable/Disable Toggle */}
           <div className="audio-setting-item">
             <div className="audio-setting-label">
-              <span>🔊 Enable Audio Alerts</span>
+              <span>🔊 {tr('Enable Audio Alerts', 'Activer les alertes audio')}</span>
               <p className="audio-setting-description">
-                Play sound notifications at tour milestones (15, 30, 45, 60, 90, 120 minutes)
+                {tr('Play sound notifications at tour milestones (15, 30, 45, 60, 90, 120 minutes)', 'Jouer des notifications sonores aux jalons du tour (15, 30, 45, 60, 90, 120 minutes)')}
               </p>
             </div>
             <label className="audio-toggle-switch">
@@ -74,9 +77,9 @@ const AudioNotificationSettings = ({ isOpen, onClose }) => {
           {/* Volume Control */}
           <div className="audio-setting-item">
             <div className="audio-setting-label">
-              <span>🎚️ Volume Level</span>
+              <span>🎚️ {tr('Volume Level', 'Niveau de volume')}</span>
               <p className="audio-setting-description">
-                Adjust the volume of milestone notifications
+                {tr('Adjust the volume of milestone notifications', 'Ajuster le volume des notifications de jalons')}
               </p>
             </div>
             <div className="audio-volume-control">
@@ -99,9 +102,9 @@ const AudioNotificationSettings = ({ isOpen, onClose }) => {
           {/* Test Sound */}
           <div className="audio-setting-item">
             <div className="audio-setting-label">
-              <span>🎵 Test Sound</span>
+              <span>🎵 {tr('Test Sound', 'Tester le son')}</span>
               <p className="audio-setting-description">
-                Play a sample notification sound
+                {tr('Play a sample notification sound', 'Jouer un son de notification de test')}
               </p>
             </div>
             <button
@@ -109,31 +112,31 @@ const AudioNotificationSettings = ({ isOpen, onClose }) => {
               onClick={handleTestSound}
               disabled={!isEnabled}
             >
-              Play Test Sound
+              {tr('Play Test Sound', 'Jouer le son de test')}
             </button>
           </div>
 
           {/* Browser Notifications */}
           <div className="audio-setting-item">
             <div className="audio-setting-label">
-              <span>🔔 Browser Notifications</span>
+              <span>🔔 {tr('Browser Notifications', 'Notifications navigateur')}</span>
               <p className="audio-setting-description">
-                Show visual notifications alongside audio alerts
+                {tr('Show visual notifications alongside audio alerts', 'Afficher des notifications visuelles en plus des alertes audio')}
               </p>
             </div>
             <div className="audio-notification-status">
               {notificationPermission === 'granted' && (
-                <span className="audio-permission-granted">✅ Enabled</span>
+                <span className="audio-permission-granted">✅ {tr('Enabled', 'Activé')}</span>
               )}
               {notificationPermission === 'denied' && (
-                <span className="audio-permission-denied">❌ Denied</span>
+                <span className="audio-permission-denied">❌ {tr('Denied', 'Refusé')}</span>
               )}
               {notificationPermission === 'default' && (
                 <button
                   className="audio-permission-request"
                   onClick={handleRequestPermission}
                 >
-                  Enable Notifications
+                  {tr('Enable Notifications', 'Activer les notifications')}
                 </button>
               )}
             </div>
@@ -141,31 +144,31 @@ const AudioNotificationSettings = ({ isOpen, onClose }) => {
 
           {/* Milestone Information */}
           <div className="audio-milestone-info">
-            <h3>📊 Notification Milestones</h3>
+            <h3>📊 {tr('Notification Milestones', 'Jalons de notification')}</h3>
             <div className="audio-milestone-list">
               <div className="audio-milestone-item">
                 <span className="milestone-time">15 min</span>
-                <span className="milestone-sound">🔔 Single beep</span>
+                <span className="milestone-sound">🔔 {tr('Single beep', 'Bip simple')}</span>
               </div>
               <div className="audio-milestone-item">
                 <span className="milestone-time">30 min</span>
-                <span className="milestone-sound">🔔🔔 Double beep</span>
+                <span className="milestone-sound">🔔🔔 {tr('Double beep', 'Double bip')}</span>
               </div>
               <div className="audio-milestone-item">
                 <span className="milestone-time">45 min</span>
-                <span className="milestone-sound">🎵 Triangle wave</span>
+                <span className="milestone-sound">🎵 {tr('Triangle wave', 'Onde triangulaire')}</span>
               </div>
               <div className="audio-milestone-item">
                 <span className="milestone-time">60 min</span>
-                <span className="milestone-sound">🔔🔔🔔 Triple beep</span>
+                <span className="milestone-sound">🔔🔔🔔 {tr('Triple beep', 'Triple bip')}</span>
               </div>
               <div className="audio-milestone-item">
                 <span className="milestone-time">90 min</span>
-                <span className="milestone-sound">🎵🎵 Double triangle</span>
+                <span className="milestone-sound">🎵🎵 {tr('Double triangle', 'Double triangle')}</span>
               </div>
               <div className="audio-milestone-item">
                 <span className="milestone-time">120 min</span>
-                <span className="milestone-sound">🔊🔊🔊🔊 Quad beep</span>
+                <span className="milestone-sound">🔊🔊🔊🔊 {tr('Quad beep', 'Quadruple bip')}</span>
               </div>
             </div>
           </div>
@@ -173,7 +176,7 @@ const AudioNotificationSettings = ({ isOpen, onClose }) => {
 
         <div className="audio-settings-footer">
           <button className="audio-settings-save" onClick={onClose}>
-            Save Settings
+            {tr('Save Settings', 'Enregistrer les paramètres')}
           </button>
         </div>
       </div>

@@ -1,0 +1,119 @@
+const CERTIFIED_FLEET_CITY_PROVIDERS = {
+  tangier: {
+    city: 'Tangier',
+    providerName: 'SaharaX',
+    providerMark: 'SX',
+  },
+};
+
+const safeText = (value, fallback = '') => {
+  if (value === null || value === undefined) return fallback;
+  const text = String(value).trim();
+  return text || fallback;
+};
+
+const getPackageDurationRank = (pkg = {}) => {
+  const name = safeText(pkg.name).toLowerCase();
+  const durationUnits = Number(pkg.durationUnits || 0);
+  if (name.includes('half hour') || name.includes('30 min') || durationUnits === 0.5) return 0;
+  if (name.includes('hour') || durationUnits === 1) return 1;
+  if (name.includes('half day') || durationUnits === 4) return 2;
+  if (name.includes('day')) return 3;
+  return 9;
+};
+
+export const getMarketingPrintPackages = (packages = [], limit = 5) => {
+  const activePackages = Array.isArray(packages) ? packages.filter(Boolean) : [];
+  const selectedPackages = activePackages.filter((pkg) => pkg.showOnPrint === true || pkg.show_on_print === true);
+  const sourcePackages = selectedPackages.length > 0 ? selectedPackages : activePackages;
+
+  return [...sourcePackages]
+    .sort((left, right) =>
+      getPackageDurationRank(left) - getPackageDurationRank(right) ||
+      Number(left.fixedAmount || left.fixed_amount || 0) - Number(right.fixedAmount || right.fixed_amount || 0) ||
+      safeText(left.name).localeCompare(safeText(right.name))
+    )
+    .slice(0, Math.max(1, Math.min(Number(limit) || 5, 5)));
+};
+
+const getCertifiedFleetProviderByCity = (city) => {
+  const normalizedCity = safeText(city, 'Tangier').toLowerCase();
+  return (
+    CERTIFIED_FLEET_CITY_PROVIDERS[normalizedCity] || {
+      city: safeText(city, 'Tangier'),
+      providerName: 'Certified Fleet',
+      providerMark: 'CF',
+    }
+  );
+};
+
+class PublicCatalogService {
+  static catalogCache = new Map();
+  static cacheTtlMs = 60 * 1000;
+
+  static async fetchServerCatalog(action = 'catalog', params = {}) {
+    if (typeof fetch !== 'function') {
+      throw new Error('Fetch is not available');
+    }
+
+    const search = new URLSearchParams();
+    search.set('action', action);
+
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === '') return;
+      search.set(key, String(value));
+    });
+
+    const response = await fetch(`/api/public-catalog?${search.toString()}`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body?.error || 'Failed to load public catalog');
+    }
+
+    return body;
+  }
+
+  static async fetchCertifiedFleet() {
+    const body = await this.fetchServerCatalog('catalog', {
+      flow: 'instant',
+      source: 'certified_fleet',
+    });
+    return Array.isArray(body?.listings) ? body.listings : [];
+  }
+
+  static async fetchMarketplaceListings() {
+    const body = await this.fetchServerCatalog('catalog', {
+      flow: 'request',
+      source: 'marketplace',
+    });
+    return Array.isArray(body?.listings) ? body.listings : [];
+  }
+
+  static async getCatalog(filters = {}) {
+    return this.fetchServerCatalog('catalog', filters);
+  }
+
+  static async getListingById(listingId, cityOverride) {
+    const body = await this.fetchServerCatalog('listing', {
+      listingId,
+      city: cityOverride || '',
+    });
+    return body?.listing || null;
+  }
+
+  static getCertifiedFleetProviderByCity(city) {
+    return getCertifiedFleetProviderByCity(city);
+  }
+
+  static getMarketingPrintPackages(packages = [], limit = 5) {
+    return getMarketingPrintPackages(packages, limit);
+  }
+}
+
+export default PublicCatalogService;

@@ -1,5 +1,23 @@
 import React from 'react';
 
+const CHUNK_ERROR_RELOAD_FLAG = 'saharax-chunk-reload-attempted';
+const CURRENT_ERROR_BOUNDARY_BUILD = (() => {
+  try {
+    return new URL(import.meta.url).pathname;
+  } catch {
+    return 'unknown-build';
+  }
+})();
+
+function isDynamicImportFailure(error) {
+  const message = String(error?.message || error || '');
+  return (
+    message.includes('Failed to fetch dynamically imported module') ||
+    message.includes('Importing a module script failed') ||
+    message.includes('ChunkLoadError')
+  );
+}
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -11,6 +29,16 @@ class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, errorInfo) {
+    if (isDynamicImportFailure(error)) {
+      const lastRetriedBuild = window.sessionStorage.getItem(CHUNK_ERROR_RELOAD_FLAG);
+      const hasRetried = lastRetriedBuild === CURRENT_ERROR_BOUNDARY_BUILD;
+      if (!hasRetried) {
+        window.sessionStorage.setItem(CHUNK_ERROR_RELOAD_FLAG, CURRENT_ERROR_BOUNDARY_BUILD);
+        window.location.reload();
+        return;
+      }
+    }
+
     console.error('🚨 ERROR BOUNDARY CAUGHT ERROR:', {
       error: error,
       errorInfo: errorInfo,
@@ -35,6 +63,7 @@ class ErrorBoundary extends React.Component {
 
   render() {
     if (this.state.hasError) {
+      const isChunkError = isDynamicImportFailure(this.state.error);
       // Safe access to error and errorInfo with fallbacks
       const errorMessage = this.state.error ? this.state.error.toString() : 'Unknown error occurred';
       const componentStack = this.state.errorInfo?.componentStack || 'Component stack not available';
@@ -78,10 +107,15 @@ class ErrorBoundary extends React.Component {
               
               <div className="flex gap-2">
                 <button
-                  onClick={() => window.location.reload()}
+                  onClick={() => {
+                    if (isChunkError) {
+                      window.sessionStorage.removeItem(CHUNK_ERROR_RELOAD_FLAG);
+                    }
+                    window.location.reload();
+                  }}
                   className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
                 >
-                  Reload Application
+                  {isChunkError ? 'Refresh Latest Version' : 'Reload Application'}
                 </button>
                 <button
                   onClick={() => {

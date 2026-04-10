@@ -2,8 +2,11 @@ import React, { useState } from 'react';
 import { X, Calendar, Car, Fuel, DollarSign, FileText, Image as ImageIcon, Truck, Database, Download, User, History } from 'lucide-react';
 import { formatVehicleLabel } from '../../utils/vehicleLabels';
 import { getFuelTransactionVisual } from '../../utils/fuelVisuals';
+import i18n from '../../i18n';
 
 const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 'vehicle' }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [imageError, setImageError] = useState(false);
 
   if (!isOpen || !transaction) return null;
@@ -14,8 +17,6 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
       console.error('❌ No URL provided for download');
       return;
     }
-
-    console.log('📥 [DEBUG] Downloading image from:', url);
     
     // Open in new tab and trigger download
     const link = document.createElement('a');
@@ -87,41 +88,29 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
   // Get invoice URL - STANDARDIZED to use ONLY invoice_image
   const getInvoiceUrl = () => {
     const imageData = transaction.receipt_media || transaction.invoice_image;
-    
-    console.log('📋 [DEBUG] Reading from invoice_image only:', {
-      id: transaction.id,
-      invoice_image: imageData
-    });
 
     if (!imageData) {
-      console.log('❌ [DEBUG] No invoice_image found');
       return null;
     }
 
     // Handle JSONB object format
     if (typeof imageData === 'object') {
-      console.log('📦 [DEBUG] JSONB format detected:', imageData);
-      
       // Any saved object with inline data should render directly.
       if (imageData.data) {
-        console.log('🔤 [DEBUG] Base64 data found');
         return imageData.data;
       }
       
       // Any saved object with a URL should render directly.
       if (imageData.url) {
-        console.log('💾 [DEBUG] Storage URL found:', imageData.url);
         return imageData.url;
       }
     }
 
     // Handle legacy string URL (for backward compatibility)
     if (typeof imageData === 'string') {
-      console.log('📝 [DEBUG] Legacy string URL detected:', imageData);
       return imageData;
     }
 
-    console.log('❌ [DEBUG] Unable to extract URL from invoice_image');
     return null;
   };
 
@@ -144,9 +133,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             src={imageUrl}
             alt="Invoice"
             className="max-w-full h-48 object-contain rounded border cursor-pointer hover:opacity-90 transition-opacity"
-            onError={(e) => {
-              console.error('❌ [DEBUG] Image failed to load:', imageUrl);
-              console.error('❌ [DEBUG] Error event:', e);
+            onError={() => {
               setImageError(true);
             }}
             onClick={() => window.open(imageUrl, '_blank')}
@@ -174,18 +161,18 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
 
   // Get modal title based on type
   const getTitle = () => {
-    if (transaction.transaction_type === 'withdrawal') return 'Transfer Details';
-    if (transaction.transaction_type === 'rental_opening_level') return 'Rental Opening Fuel';
-    if (transaction.transaction_type === 'rental_closing_level') return 'Rental Return Fuel';
-    if (transaction.transaction_type === 'manual_adjustment') return 'Manual Fuel Adjustment';
-    if (modalType === 'tank') return 'Tank In Details';
-    return 'Direct Fill Details';
+    if (transaction.transaction_type === 'withdrawal') return tr('Transfer Details', 'Détails du transfert');
+    if (transaction.transaction_type === 'rental_opening_level') return tr('Rental Opening Fuel', "Carburant d'ouverture de location");
+    if (transaction.transaction_type === 'rental_closing_level') return tr('Rental Return Fuel', 'Carburant au retour de location');
+    if (transaction.transaction_type === 'manual_adjustment') return tr('Manual Fuel Adjustment', 'Ajustement manuel du carburant');
+    if (modalType === 'tank') return tr('Tank In Details', "Détails d'entrée cuve");
+    return tr('Direct Fill Details', 'Détails du remplissage direct');
   };
 
   const getMediaLabel = () => {
-    if (transaction.transaction_type === 'vehicle_refill') return 'Receipt / Fuel Photo';
-    if (transaction.transaction_type === 'tank_refill') return 'Invoice Image';
-    return 'Attachment';
+    if (transaction.transaction_type === 'vehicle_refill') return tr('Receipt / Fuel Photo', 'Reçu / photo carburant');
+    if (transaction.transaction_type === 'tank_refill') return tr('Invoice Image', 'Image de facture');
+    return tr('Attachment', 'Pièce jointe');
   };
 
   const invoiceUrl = getInvoiceUrl();
@@ -215,7 +202,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
           <div className="flex items-start gap-3">
             <Calendar className="h-5 w-5 text-gray-400 mt-0.5" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-700">Date</p>
+              <p className="text-sm font-medium text-gray-700">{tr('Date', 'Date')}</p>
               <p className="text-sm text-gray-900">{formatDate(getDate())}</p>
             </div>
           </div>
@@ -225,15 +212,15 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             <div className="flex items-start gap-3">
               <Database className="h-5 w-5 text-gray-400 mt-0.5" />
               <div className="flex-1">
-                <p className="text-sm font-medium text-gray-700">Target Tank</p>
-                <p className="text-sm text-gray-900">Main Storage Tank</p>
+                <p className="text-sm font-medium text-gray-700">{tr('Target Tank', 'Cuve cible')}</p>
+                <p className="text-sm text-gray-900">{tr('Main Storage Tank', 'Cuve de stockage principale')}</p>
               </div>
             </div>
           ) : (
             <div className="flex items-start gap-3">
               <Car className="h-5 w-5 text-gray-400 mt-0.5" />
               <div className="flex-1">
-                <p className="text-sm font-medium text-gray-700">Vehicle</p>
+                <p className="text-sm font-medium text-gray-700">{tr('Vehicle', 'Véhicule')}</p>
                 <p className="text-sm text-gray-900">{getVehicleName()}</p>
               </div>
             </div>
@@ -243,7 +230,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
           <div className="flex items-start gap-3">
             <Fuel className="h-5 w-5 text-gray-400 mt-0.5" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-700">Quantity</p>
+              <p className="text-sm font-medium text-gray-700">{tr('Quantity', 'Quantité')}</p>
               <p className="text-sm text-gray-900">{getQuantity()} L</p>
             </div>
           </div>
@@ -252,7 +239,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
           <div className="flex items-start gap-3">
             <DollarSign className="h-5 w-5 text-gray-400 mt-0.5" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-700">Price per Liter</p>
+              <p className="text-sm font-medium text-gray-700">{tr('Price per Liter', 'Prix par litre')}</p>
               <p className="text-sm text-gray-900">{calculatePricePerLiter()} MAD</p>
             </div>
           </div>
@@ -261,7 +248,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
           <div className="flex items-start gap-3">
             <DollarSign className="h-5 w-5 text-gray-400 mt-0.5" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-700">Total Cost</p>
+              <p className="text-sm font-medium text-gray-700">{tr('Total Cost', 'Coût total')}</p>
               <p className="text-sm text-gray-900 font-semibold">{getTotalCost()} MAD</p>
             </div>
           </div>
@@ -269,8 +256,8 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
           <div className="flex items-start gap-3">
             <User className="h-5 w-5 text-gray-400 mt-0.5" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-gray-700">Performed By</p>
-              <p className="text-sm text-gray-900">{transaction.performed_by_name || transaction.filled_by || 'System'}</p>
+              <p className="text-sm font-medium text-gray-700">{tr('Performed By', 'Effectué par')}</p>
+              <p className="text-sm text-gray-900">{transaction.performed_by_name || transaction.filled_by || tr('System', 'Système')}</p>
             </div>
           </div>
 
@@ -279,7 +266,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             <div className="flex items-start gap-3">
               <History className="h-5 w-5 text-gray-400 mt-0.5" />
               <div className="flex-1">
-                <p className="text-sm font-medium text-gray-700">Fuel State Change</p>
+                <p className="text-sm font-medium text-gray-700">{tr('Fuel State Change', "Changement de niveau carburant")}</p>
                 <p className="text-sm text-gray-900">
                   {transaction.fuel_lines_before ?? '—'}/8 lines {'->'} {transaction.fuel_lines_after ?? '—'}/8 lines
                 </p>
@@ -300,7 +287,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
                     className="flex items-center gap-1 px-3 py-1 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-md transition-colors"
                   >
                     <Download className="h-4 w-4" />
-                    Download
+                    {tr('Download', 'Télécharger')}
                   </button>
                 )}
               </div>
@@ -312,11 +299,11 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
           {/* Metadata */}
           <div className="pt-4 border-t">
             <p className="text-xs text-gray-500">
-              Created: {formatDate(transaction.created_at)}, {formatTime(transaction.created_at)}
+              {tr('Created', 'Créé')} : {formatDate(transaction.created_at)}, {formatTime(transaction.created_at)}
             </p>
             {transaction.id && (
               <p className="text-xs text-gray-500 mt-1">
-                Transaction ID: {transaction.transaction_id || `refill-${transaction.id}`}
+                {tr('Transaction ID', 'ID transaction')} : {transaction.transaction_id || `refill-${transaction.id}`}
               </p>
             )}
           </div>
@@ -328,7 +315,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             onClick={onClose}
             className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors"
           >
-            Close
+            Fermer
           </button>
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { supabase } from '../utils/supabaseClient';
+import { normalizeInventoryLabels } from '../config/maintenanceInventoryMapping';
 
 class InventoryService {
   constructor() {
@@ -6,6 +7,7 @@ class InventoryService {
     this.movementsTable = 'saharax_0u4w4d_inventory_movements';
     this.purchasesTable = 'saharax_0u4w4d_inventory_purchases';
     this.purchaseLinesTable = 'saharax_0u4w4d_inventory_purchase_lines';
+    this.vehiclesTable = 'saharax_0u4w4d_vehicles';
     this.storageBucket = 'inventory-images';
   }
 
@@ -99,6 +101,8 @@ class InventoryService {
         sanitized[field] = isNaN(numValue) ? null : numValue;
       }
     });
+
+    sanitized.labels = normalizeInventoryLabels(sanitized.labels || []);
     
     // Remove imageFile from sanitized data as it's not a database field
     delete sanitized.imageFile;
@@ -106,6 +110,232 @@ class InventoryService {
     
     console.log('🔍 SANITIZED ITEM DATA:', sanitized);
     return sanitized;
+  }
+
+  formatStorageDocumentType(type = 'document') {
+    const normalized = String(type || 'document').toLowerCase();
+    if (normalized.includes('invoice')) return 'invoice';
+    if (normalized.includes('image')) return 'image';
+    return 'document';
+  }
+
+  async getItemOperationalStock(itemId) {
+    try {
+      const item = await this.getItemById(itemId);
+      const currentStock = parseFloat(item?.stock_on_hand || 0) || 0;
+      const usage = await this.getItemMaintenanceUsage(itemId);
+
+      return {
+        item,
+        currentStock,
+        reservedQuantity: usage.reservedQuantity,
+        consumedQuantity: usage.consumedQuantity,
+        availableStock: Math.max(0, currentStock - usage.reservedQuantity),
+        reservedLines: usage.reservedLines,
+        consumedLines: usage.consumedLines
+      };
+    } catch (error) {
+      console.error('Error getting item operational stock:', error);
+      return {
+        item: null,
+        currentStock: 0,
+        reservedQuantity: 0,
+        consumedQuantity: 0,
+        availableStock: 0,
+        reservedLines: [],
+        consumedLines: []
+      };
+    }
+  }
+
+  async getItemMaintenanceUsage(itemId) {
+    const usageByItem = await this.getMaintenanceUsageByItemIds([itemId]);
+    return usageByItem[itemId] || {
+      reservedQuantity: 0,
+      consumedQuantity: 0,
+      reservedLines: [],
+      consumedLines: []
+    };
+  }
+
+  async getMaintenanceUsageByItemIds(itemIds = []) {
+    try {
+      const safeItemIds = [...new Set((Array.isArray(itemIds) ? itemIds : []).map((id) => parseInt(id, 10)).filter(Boolean))];
+      if (safeItemIds.length === 0) return {};
+
+      const { data: parts, error: partsError } = await supabase
+        .from('app_687f658e98_maintenance_parts')
+        .select('id, item_id, quantity, part_name, part_number, maintenance_id')
+        .in('item_id', safeItemIds);
+
+      if (partsError) throw partsError;
+      const safeParts = Array.isArray(parts) ? parts : [];
+      const maintenanceIds = [...new Set(safeParts.map((part) => part.maintenance_id).filter(Boolean))];
+
+      let maintenanceById = {};
+      if (maintenanceIds.length > 0) {
+        const { data: maintenanceRows, error: maintenanceError } = await supabase
+          .from('app_687f658e98_maintenance')
+          .select('id, maintenance_type, status, scheduled_date, service_date, completed_date, vehicle_id')
+          .in('id', maintenanceIds);
+
+        if (maintenanceError) throw maintenanceError;
+        maintenanceById = (maintenanceRows || []).reduce((acc, row) => {
+          acc[row.id] = row;
+          return acc;
+        }, {});
+      }
+
+      const vehicleIds = [
+        ...new Set(
+          Object.values(maintenanceById)
+            .map((maintenance) => maintenance?.vehicle_id)
+            .filter(Boolean)
+        )
+      ];
+
+      let vehiclesById = {};
+      if (vehicleIds.length > 0) {
+        const { data: vehicleRows, error: vehicleError } = await supabase
+          .from(this.vehiclesTable)
+          .select('id, plate_number, name, model')
+          .in('id', vehicleIds);
+
+        if (vehicleError) throw vehicleError;
+        vehiclesById = (vehicleRows || []).reduce((acc, row) => {
+          acc[row.id] = row;
+          return acc;
+        }, {});
+      }
+
+      const reservedStatuses = new Set(['scheduled', 'pending', 'in_progress', 'in-progress']);
+      const consumedStatuses = new Set(['completed', 'done']);
+      const usageByItemId = safeItemIds.reduce((acc, itemId) => {
+        acc[itemId] = {
+          reservedQuantity: 0,
+          consumedQuantity: 0,
+          reservedLines: [],
+          consumedLines: []
+        };
+        return acc;
+      }, {});
+
+      safeParts.forEach((part) => {
+        const itemId = parseInt(part.item_id, 10);
+        if (!usageByItemId[itemId]) return;
+
+        const maintenance = maintenanceById[part.maintenance_id] || {};
+        const status = String(maintenance.status || '').toLowerCase();
+        const quantity = parseFloat(part.quantity || 0) || 0;
+        const line = {
+          ...part,
+          quantity,
+          maintenance: {
+            ...maintenance,
+            vehicle: vehiclesById[maintenance.vehicle_id] || null
+          }
+        };
+
+        if (consumedStatuses.has(status)) {
+          usageByItemId[itemId].consumedLines.push(line);
+          usageByItemId[itemId].consumedQuantity += quantity;
+        } else if (reservedStatuses.has(status)) {
+          usageByItemId[itemId].reservedLines.push(line);
+          usageByItemId[itemId].reservedQuantity += quantity;
+        }
+      });
+
+      return usageByItemId;
+    } catch (error) {
+      console.error('Error getting item maintenance usage:', error);
+      return {};
+    }
+  }
+
+  async enrichItemsWithOperationalStock(items = []) {
+    const safeItems = Array.isArray(items) ? items : [];
+    const usageByItemId = await this.getMaintenanceUsageByItemIds(safeItems.map((item) => item.id));
+
+    return safeItems.map((item) => {
+      const usage = usageByItemId[item.id] || {
+        reservedQuantity: 0,
+        consumedQuantity: 0,
+        reservedLines: [],
+        consumedLines: []
+      };
+      const currentStock = parseFloat(item.stock_on_hand || 0) || 0;
+      const reservedQuantity = usage.reservedQuantity || 0;
+
+      return {
+        ...item,
+        current_stock: currentStock,
+        reserved_quantity: reservedQuantity,
+        consumed_quantity: usage.consumedQuantity || 0,
+        available_stock: Math.max(0, currentStock - reservedQuantity),
+        reserved_maintenance_lines: usage.reservedLines || [],
+        consumed_maintenance_lines: usage.consumedLines || []
+      };
+    });
+  }
+
+  async getItemDocuments(itemId) {
+    try {
+      if (!itemId) return [];
+      const folderPath = `inventory-items/${itemId}/documents`;
+      const { data: files, error } = await supabase.storage
+        .from(this.storageBucket)
+        .list(folderPath, { limit: 100, offset: 0 });
+
+      if (error) throw error;
+
+      return (files || [])
+        .filter((file) => file?.name && !file.name.endsWith('/'))
+        .map((file) => {
+          const storagePath = `${folderPath}/${file.name}`;
+          const { data: urlData } = supabase.storage
+            .from(this.storageBucket)
+            .getPublicUrl(storagePath);
+          const originalName = String(file.name || '').replace(/^[a-z-]+__\d+_[a-z0-9]+_/i, '');
+          const typeKey = String(file.name || '').split('__')[0] || 'document';
+          const extension = originalName.split('.').pop()?.toLowerCase() || '';
+          const mimeType = file.metadata?.mimetype
+            || (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(extension) ? `image/${extension === 'jpg' ? 'jpeg' : extension}` : extension === 'pdf' ? 'application/pdf' : 'application/octet-stream');
+
+          return {
+            id: storagePath,
+            name: originalName,
+            type: mimeType,
+            typeKey,
+            size: file.metadata?.size || 0,
+            url: urlData.publicUrl,
+            storagePath,
+            uploadedAt: file.created_at || file.updated_at || null
+          };
+        });
+    } catch (error) {
+      console.error('Error getting inventory item documents:', error);
+      return [];
+    }
+  }
+
+  async uploadItemDocument(file, itemId, documentType = 'document') {
+    if (!file) throw new Error('File is required');
+    if (!itemId) throw new Error('Inventory item ID is required');
+
+    const safeType = this.formatStorageDocumentType(documentType);
+    const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const fileId = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const storagePath = `inventory-items/${itemId}/documents/${safeType}__${fileId}_${safeFileName}`;
+
+    const { error } = await supabase.storage
+      .from(this.storageBucket)
+      .upload(storagePath, file, {
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (error) throw error;
+    return this.getItemDocuments(itemId);
   }
 
   /**
@@ -254,21 +484,21 @@ class InventoryService {
       const currentItem = await this.getItemById(item_id);
       if (!currentItem) throw new Error(`Item with ID ${item_id} not found`);
       
-      const currentStock = currentItem.stock_on_hand || 0;
+      const movementQuantity = parseFloat(quantity) || 0;
+      const currentStock = parseFloat(currentItem.stock_on_hand || 0) || 0;
       console.log(`🔍 STOCK: Current stock for item ${item_id}: ${currentStock}`);
       
       let newStock;
-      if (movement_type === 'in') {
-        newStock = currentStock + quantity;
-      } else if (movement_type === 'out') {
-        newStock = currentStock - quantity;
+      if (movement_type === 'in' || movement_type === 'adjustment_in') {
+        newStock = currentStock + movementQuantity;
+      } else if (movement_type === 'out' || movement_type === 'adjustment_out') {
+        newStock = currentStock - movementQuantity;
         if (newStock < 0) console.warn(`⚠️ WARNING: Stock will go negative for item ${item_id}: ${newStock}`);
       } else {
         throw new Error(`Invalid movement type: ${movement_type}`);
       }
       
       const itemUnitCost = parseFloat(unit_cost ?? currentItem.cost_mad ?? 0) || 0;
-      const movementQuantity = parseFloat(quantity) || 0;
       const totalCost = movementQuantity * itemUnitCost;
       
       const { data: movement, error: movementError } = await supabase
@@ -331,7 +561,7 @@ class InventoryService {
     try {
       let query = supabase
         .from(this.movementsTable)
-        .select(`*, item:${this.itemsTable}(id, name, sku)`)
+        .select(`*, item:${this.itemsTable}(id, name, sku, unit, cost_mad, price_mad)`)
         .order('created_at', { ascending: false });
 
       if (filters.itemId) query = query.eq('item_id', filters.itemId);

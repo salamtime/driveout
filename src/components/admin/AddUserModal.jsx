@@ -9,6 +9,7 @@ import { Badge } from "../ui/badge";
 import { Copy, Eye, EyeOff, RefreshCw, UserPlus, CheckCircle, AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { createUser } from '../../store/slices/usersSlice';
+import i18n from '../../i18n';
 
 const ROLES = ['customer', 'guide', 'employee', 'admin', 'owner'];
 
@@ -38,6 +39,8 @@ const getPasswordStrength = (password) => {
 };
 
 const AddUserModal = ({ isOpen, onClose, onUserCreated }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const dispatch = useDispatch();
   const { user: currentUser } = useSelector(state => state.auth);
   const { isCreating } = useSelector(state => state.users);
@@ -69,27 +72,36 @@ const AddUserModal = ({ isOpen, onClose, onUserCreated }) => {
       password: newPassword,
       confirmPassword: newPassword
     }));
-    toast.success('Secure password generated');
+    toast.success(tr('Secure password generated', 'Mot de passe sécurisé généré'));
   };
 
   const copyToClipboard = (text, label) => {
     navigator.clipboard.writeText(text);
-    toast.success(`${label} copied to clipboard`);
+    toast.success(tr(`${label} copied to clipboard`, `${label} copié dans le presse-papiers`));
   };
 
   const copyAllCredentials = () => {
     if (!createdUser) return;
     
     const credentials = `
-Account Created Successfully!
+${tr('Account Created Successfully!', 'Compte créé avec succès !')}
 
 Email: ${createdUser.email}
 Password: ${formData.password}
-Full Name: ${createdUser.full_name}
-Role: ${createdUser.role}
-Created: ${new Date().toLocaleDateString()}
+${tr('Full Name', 'Nom complet')}: ${createdUser.full_name}
+${tr('Role', 'Rôle')}: ${tr(
+  createdUser.role,
+  ({
+    customer: 'Client',
+    guide: 'Guide',
+    employee: 'Employé',
+    admin: 'Admin',
+    owner: 'Propriétaire',
+  }[createdUser.role] || createdUser.role)
+)}
+${tr('Created', 'Créé')}: ${new Date().toLocaleDateString()}
 
-Please save these credentials securely.
+${tr('Please save these credentials securely.', 'Veuillez enregistrer ces identifiants en lieu sûr.')}
     `.trim();
     
     copyToClipboard(credentials, 'All credentials');
@@ -106,23 +118,23 @@ Please save these credentials securely.
     
     // Validation
     if (!formData.email || !formData.full_name || !formData.password) {
-      toast.error('Please fill in all required fields');
+      toast.error(tr('Please fill in all required fields', 'Veuillez remplir tous les champs obligatoires'));
       return;
     }
     
     if (formData.password !== formData.confirmPassword) {
-      toast.error('Passwords do not match');
+      toast.error(tr('Passwords do not match', 'Les mots de passe ne correspondent pas'));
       return;
     }
     
     const strength = getPasswordStrength(formData.password);
     if (strength.strength === 'weak') {
-      toast.error('Password is too weak. Please use a stronger password.');
+      toast.error(tr('Password is too weak. Please use a stronger password.', 'Le mot de passe est trop faible. Veuillez utiliser un mot de passe plus fort.'));
       return;
     }
     
     if (!canAssignRole(formData.role)) {
-      toast.error('You cannot assign this role');
+      toast.error(tr('You cannot assign this role', "Vous ne pouvez pas attribuer ce rôle"));
       return;
     }
 
@@ -130,7 +142,7 @@ Please save these credentials securely.
       const result = await dispatch(createUser(formData)).unwrap();
       setCreatedUser(result);
       setShowSuccess(true);
-      toast.success('User created successfully!');
+      toast.success(tr('User created successfully!', 'Utilisateur créé avec succès !'));
       
       // Notify parent component
       if (onUserCreated) {
@@ -138,7 +150,7 @@ Please save these credentials securely.
       }
     } catch (error) {
       console.error('User creation failed:', error);
-      toast.error(`User creation failed: ${error}`);
+      toast.error(tr(`User creation failed: ${error}`, `La création de l'utilisateur a échoué : ${error}`));
     }
   };
 
@@ -164,7 +176,7 @@ Please save these credentials securely.
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <UserPlus className="h-5 w-5" />
-            {showSuccess ? 'User Created Successfully!' : 'Add New User'}
+            {showSuccess ? tr('User Created Successfully!', 'Utilisateur créé avec succès !') : tr('Add New User', 'Ajouter un nouvel utilisateur')}
           </DialogTitle>
         </DialogHeader>
 
@@ -174,25 +186,25 @@ Please save these credentials securely.
             <div className="text-center p-6 bg-green-50 rounded-lg">
               <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
               <h3 className="text-lg font-semibold text-green-800 mb-2">
-                Account Created Successfully!
+                {tr('Account Created Successfully!', 'Compte créé avec succès !')}
               </h3>
               <p className="text-green-600">
-                The user account has been created and can now access the system.
+                {tr("The user account has been created and can now access the system.", "Le compte utilisateur a été créé et peut maintenant accéder au système.")}
               </p>
             </div>
 
             <div className="space-y-4">
-              <h4 className="font-medium">Account Details:</h4>
+              <h4 className="font-medium">{tr('Account Details:', 'Détails du compte :')}</h4>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Email</Label>
+                  <Label>{tr('Email', 'E-mail')}</Label>
                   <div className="flex items-center gap-2">
                     <Input value={createdUser.email} disabled />
                     <Button 
                       variant="outline" 
                       size="sm" 
-                      onClick={() => copyToClipboard(createdUser.email, 'Email')}
+                      onClick={() => copyToClipboard(createdUser.email, tr('Email', 'E-mail'))}
                     >
                       <Copy className="h-4 w-4" />
                     </Button>
@@ -200,7 +212,7 @@ Please save these credentials securely.
                 </div>
                 
                 <div className="space-y-2">
-                  <Label>Password</Label>
+                  <Label>{tr('Password', 'Mot de passe')}</Label>
                   <div className="flex items-center gap-2">
                     <Input 
                       type={showPassword ? "text" : "password"}
@@ -217,7 +229,7 @@ Please save these credentials securely.
                     <Button 
                       variant="outline" 
                       size="sm" 
-                      onClick={() => copyToClipboard(formData.password, 'Password')}
+                      onClick={() => copyToClipboard(formData.password, tr('Password', 'Mot de passe'))}
                     >
                       <Copy className="h-4 w-4" />
                     </Button>
@@ -225,12 +237,12 @@ Please save these credentials securely.
                 </div>
                 
                 <div className="space-y-2">
-                  <Label>Full Name</Label>
+                  <Label>{tr('Full Name', 'Nom complet')}</Label>
                   <Input value={createdUser.full_name} disabled />
                 </div>
                 
                 <div className="space-y-2">
-                  <Label>Role</Label>
+                  <Label>{tr('Role', 'Rôle')}</Label>
                   <Input value={createdUser.role.charAt(0).toUpperCase() + createdUser.role.slice(1)} disabled />
                 </div>
               </div>
@@ -239,10 +251,9 @@ Please save these credentials securely.
                 <div className="flex items-start gap-2">
                   <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5" />
                   <div>
-                    <h4 className="font-medium text-yellow-800">Important:</h4>
+                    <h4 className="font-medium text-yellow-800">{tr('Important:', 'Important :')}</h4>
                     <p className="text-sm text-yellow-700 mt-1">
-                      Please save these credentials securely and share them with the user. 
-                      The password cannot be recovered later.
+                      {tr('Please save these credentials securely and share them with the user. The password cannot be recovered later.', "Veuillez enregistrer ces identifiants en lieu sûr et les partager avec l'utilisateur. Le mot de passe ne pourra pas être récupéré plus tard.")}
                     </p>
                   </div>
                 </div>
@@ -252,11 +263,11 @@ Please save these credentials securely.
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={copyAllCredentials}>
                 <Copy className="h-4 w-4 mr-2" />
-                Copy All Details
+                {tr('Copy All Details', 'Copier tous les détails')}
               </Button>
               <Button onClick={handleClose}>
                 <CheckCircle className="h-4 w-4 mr-2" />
-                Done
+                {tr('Done', 'Terminé')}
               </Button>
             </div>
           </div>
@@ -265,30 +276,30 @@ Please save these credentials securely.
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="email">Email *</Label>
+                <Label htmlFor="email">{tr('Email', 'E-mail')} *</Label>
                 <Input
                   id="email"
                   type="email"
                   value={formData.email}
                   onChange={(e) => handleInputChange('email', e.target.value)}
-                  placeholder="user@example.com"
+                  placeholder={tr('user@example.com', 'utilisateur@exemple.com')}
                   required
                 />
               </div>
               
               <div className="space-y-2">
-                <Label htmlFor="full_name">Full Name *</Label>
+                <Label htmlFor="full_name">{tr('Full Name', 'Nom complet')} *</Label>
                 <Input
                   id="full_name"
                   value={formData.full_name}
                   onChange={(e) => handleInputChange('full_name', e.target.value)}
-                  placeholder="John Doe"
+                  placeholder={tr('John Doe', 'Jean Dupont')}
                   required
                 />
               </div>
               
               <div className="space-y-2">
-                <Label htmlFor="role">Role *</Label>
+                <Label htmlFor="role">{tr('Role', 'Rôle')} *</Label>
                 <Select 
                   value={formData.role} 
                   onValueChange={(value) => handleInputChange('role', value)}
@@ -304,7 +315,7 @@ Please save these credentials securely.
                         disabled={!canAssignRole(role)}
                       >
                         {role.charAt(0).toUpperCase() + role.slice(1)}
-                        {!canAssignRole(role) && ' (Restricted)'}
+                        {!canAssignRole(role) && tr(' (Restricted)', ' (Restreint)')}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -312,7 +323,7 @@ Please save these credentials securely.
               </div>
               
               <div className="space-y-2">
-                <Label htmlFor="phone">Phone</Label>
+                <Label htmlFor="phone">{tr('Phone', 'Téléphone')}</Label>
                 <Input
                   id="phone"
                   value={formData.phone}
@@ -324,18 +335,18 @@ Please save these credentials securely.
 
             {/* Password Section */}
             <div className="space-y-4">
-              <Label className="text-base font-medium">Password *</Label>
+              <Label className="text-base font-medium">{tr('Password', 'Mot de passe')} *</Label>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
+                  <Label htmlFor="password">{tr('Password', 'Mot de passe')}</Label>
                   <div className="relative">
                     <Input
                       id="password"
                       type={showPassword ? "text" : "password"}
                       value={formData.password}
                       onChange={(e) => handleInputChange('password', e.target.value)}
-                      placeholder="Enter password"
+                      placeholder={tr('Enter password', 'Saisir le mot de passe')}
                       required
                     />
                     <Button
@@ -371,17 +382,17 @@ Please save these credentials securely.
                 </div>
                 
                 <div className="space-y-2">
-                  <Label htmlFor="confirmPassword">Confirm Password</Label>
+                  <Label htmlFor="confirmPassword">{tr('Confirm Password', 'Confirmer le mot de passe')}</Label>
                   <Input
                     id="confirmPassword"
                     type="password"
                     value={formData.confirmPassword}
                     onChange={(e) => handleInputChange('confirmPassword', e.target.value)}
-                    placeholder="Confirm password"
+                    placeholder={tr('Confirm password', 'Confirmer le mot de passe')}
                     required
                   />
                   {formData.confirmPassword && formData.password !== formData.confirmPassword && (
-                    <p className="text-xs text-red-500">Passwords do not match</p>
+                    <p className="text-xs text-red-500">{tr('Passwords do not match', 'Les mots de passe ne correspondent pas')}</p>
                   )}
                 </div>
               </div>
@@ -393,7 +404,7 @@ Please save these credentials securely.
                   onClick={generatePassword}
                 >
                   <RefreshCw className="h-4 w-4 mr-2" />
-                  Generate Secure Password
+                  {tr('Generate Secure Password', 'Générer un mot de passe sécurisé')}
                 </Button>
                 
                 {formData.password && (
@@ -403,7 +414,7 @@ Please save these credentials securely.
                     onClick={() => copyToClipboard(formData.password, 'Password')}
                   >
                     <Copy className="h-4 w-4 mr-2" />
-                    Copy Password
+                    {tr('Copy Password', 'Copier le mot de passe')}
                   </Button>
                 )}
               </div>
@@ -412,18 +423,18 @@ Please save these credentials securely.
             {/* Action Buttons */}
             <div className="flex justify-end gap-2 pt-4 border-t">
               <Button type="button" variant="outline" onClick={handleClose}>
-                Cancel
+                {tr('Cancel', 'Annuler')}
               </Button>
               <Button type="submit" disabled={isCreating}>
                 {isCreating ? (
                   <>
                     <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                    Creating User...
+                    {tr('Creating User...', "Création de l'utilisateur...")}
                   </>
                 ) : (
                   <>
                     <UserPlus className="h-4 w-4 mr-2" />
-                    Create User
+                    {tr('Create User', "Créer l'utilisateur")}
                   </>
                 )}
               </Button>

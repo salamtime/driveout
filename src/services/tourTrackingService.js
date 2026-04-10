@@ -3,12 +3,25 @@ import { adminApiRequest } from './adminApi';
 export const TOUR_TRACKING_ACTION = 'tour_location_ping';
 export const TOUR_TRACKING_START_ACTION = 'tour_tracking_started';
 export const TOUR_TRACKING_STOP_ACTION = 'tour_tracking_stopped';
+export const TOUR_TRACKING_OWNER_CONFLICT = 'tour_tracking_owner_conflict';
+export const TOUR_TRACKING_NOT_STARTED = 'tour_tracking_not_started';
+
+const CANONICAL_PUBLIC_APP_URL =
+  import.meta.env.VITE_PUBLIC_APP_URL ||
+  import.meta.env.VITE_APP_URL ||
+  'https://www.saharax.co';
+
+export const getPublicTourTrackingOrigin = () => {
+  try {
+    return new URL(CANONICAL_PUBLIC_APP_URL).origin;
+  } catch {
+    return CANONICAL_PUBLIC_APP_URL;
+  }
+};
 
 export const buildTourTrackingUrl = (groupId) => {
-  if (typeof window === 'undefined') {
-    return `/track/tour/${groupId}`;
-  }
-  return `${window.location.origin}/track/tour/${groupId}`;
+  if (!groupId) return `${getPublicTourTrackingOrigin()}/track/tour`;
+  return `${getPublicTourTrackingOrigin()}/track/tour/${groupId}`;
 };
 
 const parseJsonResponse = async (response) => {
@@ -18,8 +31,16 @@ const parseJsonResponse = async (response) => {
     : await response.text();
 
   if (!response.ok) {
-    const message = typeof data === 'string' ? data : data?.error || data?.message || response.statusText;
-    throw new Error(message || 'Request failed');
+    const error = new Error(
+      (typeof data === 'string' ? data : data?.error || data?.message || response.statusText) || 'Request failed'
+    );
+    if (typeof data === 'object' && data) {
+      error.code = data.code || null;
+      error.details = data.details || null;
+      error.status = response.status;
+      error.payload = data;
+    }
+    throw error;
   }
 
   return data;
@@ -44,6 +65,7 @@ export const logTourTrackingEvent = async ({
   user,
   description,
   actionType,
+  sessionId,
   metadata = {},
 }) => {
   if (!groupId) return { success: false };
@@ -54,6 +76,7 @@ export const logTourTrackingEvent = async ({
       groupId,
       description,
       actionType,
+      sessionId,
       userEmail: user?.email || '',
       metadata,
     }),
@@ -64,6 +87,7 @@ export const logTourLocationPing = async ({
   groupId,
   user,
   position,
+  sessionId,
   metadata = {},
 }) => {
   const coords = position?.coords;
@@ -74,6 +98,7 @@ export const logTourLocationPing = async ({
   return logTourTrackingEvent({
     groupId,
     user,
+    sessionId,
     actionType: TOUR_TRACKING_ACTION,
     description: 'Guide location updated',
     metadata: {

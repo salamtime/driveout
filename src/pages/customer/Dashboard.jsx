@@ -1,50 +1,36 @@
 import React from 'react';
+import { Navigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { isBusinessAccountType, isBusinessOwnerAccountType, isPlatformOwnerEmail } from '../../utils/accountType';
 
 /**
- * CustomerDashboard - Dashboard for customer role users
+ * CustomerDashboard - Redirects customer users into the single workspace page.
  */
 const CustomerDashboard = () => {
-  const { user } = useAuth();
+  const { user, getBusinessOwnerHomePath } = useAuth();
+  const accountType = user?.user_metadata?.account_type || '';
+  const platformOwnerOverride = isPlatformOwnerEmail(user?.email);
+  const businessOwnerFreezeRedirect = !platformOwnerOverride && isBusinessOwnerAccountType(accountType)
+    ? getBusinessOwnerHomePath({
+        account_type: accountType,
+        verification_status: user?.user_metadata?.verification_status || user?.app_metadata?.verification_status,
+        subscription_status: user?.user_metadata?.subscription_status || user?.app_metadata?.subscription_status,
+      })
+    : null;
 
-  return (
-    <div className="p-6">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">
-          My Account
-        </h1>
-        <p className="text-gray-600 mt-2">
-          Welcome, {user?.email} - Self-Service Portal
-        </p>
-      </div>
+  if (platformOwnerOverride) {
+    return <Navigate to="/admin/dashboard" replace />;
+  }
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <div className="bg-white p-6 rounded-lg shadow-sm border">
-          <h2 className="text-lg font-semibold mb-2">Book a Vehicle</h2>
-          <p className="text-gray-600 mb-4">Browse available vehicles and make a booking.</p>
-          <button className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
-            Browse Vehicles
-          </button>
-        </div>
+  if (businessOwnerFreezeRedirect) {
+    return <Navigate to={businessOwnerFreezeRedirect} replace />;
+  }
 
-        <div className="bg-white p-6 rounded-lg shadow-sm border">
-          <h2 className="text-lg font-semibold mb-2">My Rentals</h2>
-          <p className="text-gray-600 mb-4">View your rental history and current bookings.</p>
-          <button className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
-            View Rentals
-          </button>
-        </div>
+  if (isBusinessAccountType(accountType)) {
+    return <Navigate to="/customer/profile" replace />;
+  }
 
-        <div className="bg-white p-6 rounded-lg shadow-sm border">
-          <h2 className="text-lg font-semibold mb-2">Profile Settings</h2>
-          <p className="text-gray-600 mb-4">Update your personal information and preferences.</p>
-          <button className="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700">
-            Edit Profile
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  return <Navigate to="/customer/profile" replace />;
 };
 
 export default CustomerDashboard;

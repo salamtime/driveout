@@ -46,6 +46,8 @@ class VehicleDispositionService {
       event_date: payload.event_date || new Date().toISOString().split('T')[0],
       sale_price_mad: Number(payload.sale_price_mad || 0) || 0,
       buyer_name: payload.buyer_name || '',
+      proof_url: payload.proof_url || '',
+      proof_name: payload.proof_name || '',
       notes: payload.notes || '',
       updated_at: new Date().toISOString(),
       created_at: existingIndex >= 0 ? records[existingIndex].created_at : new Date().toISOString()

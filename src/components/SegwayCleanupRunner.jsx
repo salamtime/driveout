@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
+import i18n from '../i18n';
 
 const SegwayCleanupRunner = ({ onComplete }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState(null);
 
@@ -25,7 +28,7 @@ const SegwayCleanupRunner = ({ onComplete }) => {
       if (modelsToCleanup.length === 0) {
         setResults({
           success: true,
-          message: 'No cleanup needed - no duplicate Segway models found',
+          message: tr('No cleanup needed - no duplicate Segway models found', 'Aucun nettoyage necessaire - aucun modele Segway en double trouve'),
           modelsRemoved: 0
         });
         return;
@@ -45,7 +48,7 @@ const SegwayCleanupRunner = ({ onComplete }) => {
 
       setResults({
         success: true,
-        message: 'Cleanup completed successfully',
+        message: tr('Cleanup completed successfully', 'Nettoyage termine avec succes'),
         modelsRemoved: modelsToCleanup.length
       });
 
@@ -55,7 +58,7 @@ const SegwayCleanupRunner = ({ onComplete }) => {
       console.error('❌ Cleanup failed:', error);
       setResults({
         success: false,
-        message: `Cleanup failed: ${error.message}`,
+        message: `${tr('Cleanup failed', 'Echec du nettoyage')} : ${error.message}`,
         modelsRemoved: 0
       });
     } finally {
@@ -70,8 +73,8 @@ const SegwayCleanupRunner = ({ onComplete }) => {
     <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-6">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold text-orange-800">🧹 Segway Model Cleanup</h3>
-          <p className="text-sm text-orange-700">Remove duplicate or incorrect Segway models</p>
+          <h3 className="text-lg font-semibold text-orange-800">🧹 {tr('Segway Model Cleanup', 'Nettoyage des modeles Segway')}</h3>
+          <p className="text-sm text-orange-700">{tr('Remove duplicate or incorrect Segway models', 'Supprimer les modeles Segway en double ou incorrects')}</p>
         </div>
         <button
           onClick={runCleanup}
@@ -82,7 +85,7 @@ const SegwayCleanupRunner = ({ onComplete }) => {
               : 'bg-orange-600 hover:bg-orange-700 text-white'
           }`}
         >
-          {running ? 'Cleaning...' : 'Run Cleanup'}
+          {running ? tr('Cleaning...', 'Nettoyage...') : tr('Run Cleanup', 'Lancer le nettoyage')}
         </button>
       </div>
 
@@ -92,7 +95,7 @@ const SegwayCleanupRunner = ({ onComplete }) => {
         }`}>
           <p className="font-medium">{results.message}</p>
           {results.modelsRemoved > 0 && (
-            <p className="text-sm mt-1">Removed {results.modelsRemoved} duplicate models</p>
+            <p className="text-sm mt-1">{tr('Removed', 'Suppression de')} {results.modelsRemoved} {tr('duplicate models', 'modeles en double')}</p>
           )}
         </div>
       )}

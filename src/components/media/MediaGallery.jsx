@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import VideoModal from '../video/VideoModal';
 import MobileVideoPlayer from '../video/MobileVideoPlayer';
-import { 
+import {
   getVideoFormat, 
   formatFileSize, 
   formatDuration,
@@ -21,6 +21,7 @@ import {
   createVideoThumbnail,
   getVideoMetadata
 } from '../../utils/videoUtils';
+import i18n from '../../i18n';
 
 const MediaGallery = ({ 
   media = [], 
@@ -33,6 +34,8 @@ const MediaGallery = ({
   allowSearch = true,
   viewMode: initialViewMode = 'grid' // 'grid' or 'list'
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [selectedMedia, setSelectedMedia] = useState(null);
   const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
   const [isMobile] = useState(isMobileDevice());
@@ -170,8 +173,8 @@ const MediaGallery = ({
       <div className={`media-gallery-empty ${className}`}>
         <div className="text-center py-12 text-gray-500">
           <ImageIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No media files</h3>
-          <p className="text-gray-600">No media files have been uploaded yet.</p>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">{tr('No media files', 'Aucun fichier média')}</h3>
+          <p className="text-gray-600">{tr('No media files have been uploaded yet.', "Aucun fichier média n'a encore été téléversé.")}</p>
         </div>
       </div>
     );
@@ -195,7 +198,7 @@ const MediaGallery = ({
                       ? 'bg-white text-gray-900 shadow-sm' 
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
-                  title="Grid view"
+                  title={tr('Grid view', 'Vue grille')}
                 >
                   <Grid3X3 className="w-4 h-4" />
                 </button>
@@ -206,7 +209,7 @@ const MediaGallery = ({
                       ? 'bg-white text-gray-900 shadow-sm' 
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
-                  title="List view"
+                  title={tr('List view', 'Vue liste')}
                 >
                   <List className="w-4 h-4" />
                 </button>
@@ -226,7 +229,7 @@ const MediaGallery = ({
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
                 <input
                   type="text"
-                  placeholder="Search media files..."
+                  placeholder={tr('Search media files...', 'Rechercher des fichiers média...')}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
@@ -244,10 +247,10 @@ const MediaGallery = ({
                 onChange={(e) => setFilter(e.target.value)}
                 className="border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               >
-                <option value="all">All Types</option>
-                <option value="video">Videos</option>
-                <option value="image">Images</option>
-                <option value="document">Documents</option>
+                <option value="all">{tr('All Types', 'Tous les types')}</option>
+                <option value="video">{tr('Videos', 'Vidéos')}</option>
+                <option value="image">{tr('Images', 'Images')}</option>
+                <option value="document">{tr('Documents', 'Documents')}</option>
               </select>
             </div>
           )}
@@ -257,8 +260,8 @@ const MediaGallery = ({
       {/* Results Count */}
       {(searchQuery || filter !== 'all') && (
         <div className="mb-4 text-sm text-gray-600">
-          Showing {displayMedia.length} of {media.length} files
-          {searchQuery && ` matching "${searchQuery}"`}
+          {isFrench ? `Affichage de ${displayMedia.length} sur ${media.length} fichiers` : `Showing ${displayMedia.length} of ${media.length} files`}
+          {searchQuery && (isFrench ? ` correspondant à "${searchQuery}"` : ` matching "${searchQuery}"`)}
         </div>
       )}
 
@@ -291,11 +294,11 @@ const MediaGallery = ({
       ) : (
         <div className="text-center py-8 text-gray-500">
           <Search className="w-12 h-12 mx-auto mb-4 opacity-50" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No results found</h3>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">{tr('No results found', 'Aucun résultat trouvé')}</h3>
           <p className="text-gray-600">
             {searchQuery 
-              ? `No files match "${searchQuery}"`
-              : `No ${filter} files found`
+              ? (isFrench ? `Aucun fichier ne correspond à "${searchQuery}"` : `No files match "${searchQuery}"`)
+              : (isFrench ? `Aucun fichier de type ${filter} trouvé` : `No ${filter} files found`)
             }
           </p>
         </div>
@@ -305,13 +308,13 @@ const MediaGallery = ({
       {maxItems && media.length > maxItems && (
         <div className="text-center mt-6">
           <p className="text-sm text-gray-600 mb-3">
-            Showing {maxItems} of {media.length} items
+            {isFrench ? `Affichage de ${maxItems} sur ${media.length} éléments` : `Showing ${maxItems} of ${media.length} items`}
           </p>
           <button
             onClick={() => {/* Implement load more */}}
             className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
-            Load More
+            {tr('Load More', 'Charger plus')}
           </button>
         </div>
       )}
@@ -321,17 +324,17 @@ const MediaGallery = ({
         isOpen={isVideoModalOpen}
         onClose={closeVideoModal}
         videoSrc={selectedMedia?.url}
-        title={selectedMedia?.name || 'Video Player'}
+        title={selectedMedia?.name || tr('Video Player', 'Lecteur vidéo')}
         description={selectedMedia?.description || ''}
         metadata={{
           file_size: selectedMedia?.size || 0,
-          created_at: selectedMedia?.createdAt ? new Date(selectedMedia.createdAt).toLocaleDateString() : 'Unknown',
-          type: selectedMedia?.type || 'Video',
-          phase: selectedMedia?.phase || 'Media',
+          created_at: selectedMedia?.createdAt ? new Date(selectedMedia.createdAt).toLocaleDateString() : tr('Unknown', 'Inconnu'),
+          type: selectedMedia?.type || tr('Video', 'Vidéo'),
+          phase: selectedMedia?.phase || tr('Media', 'Média'),
           duration: videoMetadata[selectedMedia?.url]?.duration || 0,
           format: getVideoFormat(selectedMedia?.url || ''),
           dimensions: videoMetadata[selectedMedia?.url] ? 
-            `${videoMetadata[selectedMedia.url].width}x${videoMetadata[selectedMedia.url].height}` : 'Unknown'
+            `${videoMetadata[selectedMedia.url].width}x${videoMetadata[selectedMedia.url].height}` : tr('Unknown', 'Inconnu')
         }}
       />
     </div>
@@ -371,7 +374,7 @@ const MediaItem = ({
         {/* Content */}
         <div className="flex-1 min-w-0" onClick={onMediaClick}>
           <h4 className="font-medium text-gray-900 truncate">
-            {mediaItem.name || 'Untitled'}
+            {mediaItem.name || tr('Untitled', 'Sans titre')}
           </h4>
           
           <div className="flex items-center space-x-4 text-sm text-gray-500 mt-1">
@@ -399,7 +402,7 @@ const MediaItem = ({
           <button
             onClick={onDownload}
             className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
-            title="Download"
+            title={tr('Download', 'Télécharger')}
           >
             <Download className="w-5 h-5" />
           </button>
@@ -470,14 +473,14 @@ const MediaItem = ({
               <button
                 onClick={onMediaClick}
                 className="p-2 bg-black bg-opacity-50 text-white rounded-full hover:bg-opacity-75 transition-all"
-                title="View"
+                title={tr('View', 'Voir')}
               >
                 <Eye className="w-4 h-4" />
               </button>
               <button
                 onClick={onDownload}
                 className="p-2 bg-black bg-opacity-50 text-white rounded-full hover:bg-opacity-75 transition-all"
-                title="Download"
+                title={tr('Download', 'Télécharger')}
               >
                 <Download className="w-4 h-4" />
               </button>
@@ -489,7 +492,7 @@ const MediaItem = ({
       {/* Media Info */}
       <div className="p-4" onClick={onMediaClick}>
         <h4 className="font-medium text-gray-900 truncate mb-2">
-          {mediaItem.name || 'Untitled'}
+          {mediaItem.name || tr('Untitled', 'Sans titre')}
         </h4>
         
         <div className="flex items-center justify-between text-sm text-gray-500 mb-2">
@@ -502,7 +505,7 @@ const MediaItem = ({
         {mediaType === 'video' && metadata && (
           <div className="text-xs text-gray-500 mb-2">
             {metadata.duration && (
-              <span>Duration: {formatDuration(metadata.duration)} • </span>
+              <span>{tr('Duration:', 'Durée :')} {formatDuration(metadata.duration)} • </span>
             )}
             {metadata.width && metadata.height && (
               <span>{metadata.width}x{metadata.height}</span>

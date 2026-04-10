@@ -3,17 +3,21 @@ import { Loader2, Wifi, WifiOff, AlertCircle, CheckCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import PerformanceMonitor from '../../utils/PerformanceMonitor';
 import CacheService from '../../services/CacheService';
+import i18n from '../../i18n';
 
 const PerformanceAwareLoader = ({ 
   isLoading, 
   error, 
   children, 
-  loadingText = 'Loading...', 
-  errorText = 'Something went wrong',
+  loadingText,
+  errorText,
   showPerformanceInfo = false,
   cacheService = null,
   className = ''
 }) => {
+  const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
+  const resolvedLoadingText = loadingText ?? tr('Loading...', 'Chargement...');
+  const resolvedErrorText = errorText ?? tr('Something went wrong', "Une erreur s'est produite");
   const [connectionStatus, setConnectionStatus] = useState('connected');
   const [performanceData, setPerformanceData] = useState(null);
   const [loadingStartTime] = useState(Date.now());
@@ -72,9 +76,9 @@ const PerformanceAwareLoader = ({
 
   const getConnectionText = () => {
     switch (connectionStatus) {
-      case 'connected': return 'Connected';
-      case 'disconnected': return 'Offline';
-      default: return 'Unknown';
+      case 'connected': return tr('Connected', 'Connecté');
+      case 'disconnected': return tr('Offline', 'Hors ligne');
+      default: return tr('Unknown', 'Inconnu');
     }
   };
 
@@ -97,22 +101,22 @@ const PerformanceAwareLoader = ({
       >
         <div className="text-center">
           <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">Error</h3>
-          <p className="text-gray-600 mb-4">{errorText}</p>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">{tr('Error', 'Erreur')}</h3>
+          <p className="text-gray-600 mb-4">{resolvedErrorText}</p>
           
           {showPerformanceInfo && (
             <div className="bg-gray-50 rounded-lg p-4 text-left max-w-md">
-              <h4 className="font-medium text-gray-900 mb-2">Debug Information</h4>
+              <h4 className="font-medium text-gray-900 mb-2">{tr('Debug Information', 'Informations de débogage')}</h4>
               <div className="space-y-1 text-sm text-gray-600">
                 <div className="flex items-center justify-between">
-                  <span>Connection:</span>
+                    <span>{tr('Connection:', 'Connexion :')}</span>
                   <div className="flex items-center gap-1">
                     {getConnectionIcon()}
                     <span>{getConnectionText()}</span>
                   </div>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span>Error Time:</span>
+                    <span>{tr("Error Time:", "Heure de l'erreur :")}</span>
                   <span>{new Date().toLocaleTimeString()}</span>
                 </div>
                 {error.message && (
@@ -128,7 +132,7 @@ const PerformanceAwareLoader = ({
             onClick={() => window.location.reload()}
             className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
-            Retry
+            {tr('Retry', 'Réessayer')}
           </button>
         </div>
       </motion.div>
@@ -185,23 +189,23 @@ const PerformanceAwareLoader = ({
           </div>
           
           <h3 className="text-lg font-semibold text-gray-900 mb-2">
-            {loadingText}
+            {resolvedLoadingText}
           </h3>
           
           {estimatedTime && (
             <p className="text-sm text-gray-600 mb-4">
-              Estimated time: {Math.ceil(estimatedTime / 1000)}s
+              {tr('Estimated time:', 'Temps estimé :')} {Math.ceil(estimatedTime / 1000)}s
             </p>
           )}
           
           {showPerformanceInfo && (
             <div className="bg-gray-50 rounded-lg p-4 text-left max-w-md mx-auto">
-              <h4 className="font-medium text-gray-900 mb-3">Performance Info</h4>
+              <h4 className="font-medium text-gray-900 mb-3">{tr('Performance Info', 'Informations de performance')}</h4>
               
               <div className="space-y-2 text-sm">
                 {/* Connection Status */}
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-600">Connection:</span>
+                  <span className="text-gray-600">{tr('Connection:', 'Connexion :')}</span>
                   <div className="flex items-center gap-1">
                     {getConnectionIcon()}
                     <span className="text-gray-900">{getConnectionText()}</span>
@@ -213,7 +217,7 @@ const PerformanceAwareLoader = ({
                   const cacheStatus = getCacheStatus();
                   return cacheStatus && (
                     <div className="flex items-center justify-between">
-                      <span className="text-gray-600">Cache Hit Rate:</span>
+                      <span className="text-gray-600">{tr('Cache Hit Rate:', 'Taux de succès du cache :')}</span>
                       <span className="text-gray-900">{cacheStatus.hitRate}</span>
                     </div>
                   );
@@ -223,14 +227,14 @@ const PerformanceAwareLoader = ({
                 {performanceData && (
                   <>
                     <div className="flex items-center justify-between">
-                      <span className="text-gray-600">Avg Query Time:</span>
+                      <span className="text-gray-600">{tr('Avg Query Time:', 'Temps moyen des requêtes :')}</span>
                       <span className="text-gray-900">
                         {performanceData.queries.averageDuration || 0}ms
                       </span>
                     </div>
                     
                     <div className="flex items-center justify-between">
-                      <span className="text-gray-600">Total Queries:</span>
+                      <span className="text-gray-600">{tr('Total Queries:', 'Nombre total de requêtes :')}</span>
                       <span className="text-gray-900">
                         {performanceData.overall.totalQueries}
                       </span>
@@ -240,7 +244,7 @@ const PerformanceAwareLoader = ({
                 
                 {/* Loading Duration */}
                 <div className="flex items-center justify-between pt-2 border-t">
-                  <span className="text-gray-600">Loading Time:</span>
+                  <span className="text-gray-600">{tr('Loading Time:', 'Temps de chargement :')}</span>
                   <span className="text-gray-900">
                     {Math.round((Date.now() - loadingStartTime) / 1000)}s
                   </span>
@@ -259,7 +263,7 @@ const PerformanceAwareLoader = ({
               <div className="flex items-center gap-2 text-yellow-800">
                 <WifiOff className="h-4 w-4" />
                 <span className="text-sm">
-                  You're offline. Some features may not work properly.
+                  {tr("You're offline. Some features may not work properly.", 'Vous êtes hors ligne. Certaines fonctionnalités peuvent ne pas fonctionner correctement.')}
                 </span>
               </div>
             </motion.div>

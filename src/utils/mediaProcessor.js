@@ -11,6 +11,19 @@ import { fetchFile, toBlobURL } from '@ffmpeg/util';
 let ffmpegInstance = null;
 let isFFmpegLoaded = false;
 
+const getSafeFileName = (file) =>
+  String(file?.name || file?.fileName || file?.filename || '');
+
+const getSafeFileType = (file) =>
+  String(file?.type || file?.mimeType || '');
+
+const inferTypeFromName = (name = '') => {
+  const normalizedName = String(name || '').toLowerCase();
+  if (/\.(jpe?g|png|gif|heic|heif|webp)$/.test(normalizedName)) return 'image/';
+  if (/\.(mp4|mov|m4v|webm|avi)$/.test(normalizedName)) return 'video/';
+  return '';
+};
+
 // ==================== FFmpeg Setup ====================
 
 /**
@@ -46,7 +59,10 @@ const getFFmpeg = async () => {
  * Detect if video needs conversion
  */
 export const needsVideoConversion = async (file) => {
-  if (file.name.toLowerCase().endsWith('.mov')) {
+  const name = getSafeFileName(file).toLowerCase();
+  const type = getSafeFileType(file).toLowerCase();
+
+  if (name.endsWith('.mov')) {
     console.log('📹 iOS .MOV detected, conversion required');
     return true;
   }
@@ -63,8 +79,7 @@ export const needsVideoConversion = async (file) => {
         URL.revokeObjectURL(url);
         resolve(isHEVC);
       } else {
-        const isLikelyiOS = file.type === 'video/quicktime' || 
-                           file.name.toLowerCase().endsWith('.mov');
+        const isLikelyiOS = type === 'video/quicktime' || name.endsWith('.mov');
         URL.revokeObjectURL(url);
         resolve(isLikelyiOS);
       }
@@ -94,7 +109,7 @@ export const convertToMp4 = async (file, onProgress = () => {}) => {
       onProgress(percent);
     });
 
-    const inputName = 'input' + (file.name.match(/\.[^.]+$/) || ['.mov'])[0];
+    const inputName = 'input' + (getSafeFileName(file).match(/\.[^.]+$/) || ['.mov'])[0];
     const outputName = 'output.mp4';
     
     await ffmpeg.writeFile(inputName, await fetchFile(file));
@@ -155,8 +170,8 @@ export const needsConversion = needsVideoConversion;
  * Check if image needs conversion (HEIC/HEIF)
  */
 export const needsImageConversion = (file) => {
-  const name = file.name.toLowerCase();
-  const type = file.type.toLowerCase();
+  const name = getSafeFileName(file).toLowerCase();
+  const type = getSafeFileType(file).toLowerCase();
   return name.endsWith('.heic') || name.endsWith('.heif') || 
          type === 'image/heic' || type === 'image/heif';
 };
@@ -455,8 +470,8 @@ export const createThumbnail = async (blob, type, size = 200) => {
  * Detect media type from file
  */
 export const getMediaType = (file) => {
-  const type = file.type.toLowerCase();
-  const name = file.name.toLowerCase();
+  const type = (getSafeFileType(file) || inferTypeFromName(getSafeFileName(file))).toLowerCase();
+  const name = getSafeFileName(file).toLowerCase();
   
   if (type.startsWith('image/') || 
       name.endsWith('.jpg') || name.endsWith('.jpeg') || 
@@ -487,6 +502,6 @@ export const processMedia = async (file, onProgress = () => {}) => {
   } else if (mediaType === 'video') {
     return { ...await processVideo(file, onProgress), mediaType: 'video' };
   } else {
-    throw new Error(`Unsupported media type: ${file.type}`);
+    throw new Error(`Unsupported media type: ${getSafeFileType(file) || getSafeFileName(file) || 'unknown'}`);
   }
 };

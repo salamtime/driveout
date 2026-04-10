@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, Calendar, Users, MapPin, Clock } from 'lucide-react';
+import i18n from '../../i18n';
 
 const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [formData, setFormData] = useState({
     customerName: '',
     selectedDate: '',
@@ -68,7 +71,7 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
         <div className="bg-blue-500 text-white p-6 rounded-t-3xl">
           <div className="flex items-center justify-between">
             <h2 className="text-3xl font-black">
-              ✏️ EDIT BOOKING
+              ✏️ {tr('EDIT BOOKING', 'MODIFIER LA RÉSERVATION')}
             </h2>
             <button
               onClick={onClose}
@@ -88,7 +91,7 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
           {/* Customer Name */}
           <div className="bg-green-50 p-4 rounded-2xl">
             <label className="block text-lg font-bold text-green-800 mb-3">
-              👤 CUSTOMER NAME
+              👤 {tr('CUSTOMER NAME', 'NOM DU CLIENT')}
             </label>
             <input
               type="text"
@@ -96,14 +99,14 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
               onChange={(e) => handleInputChange('customerName', e.target.value)}
               className="w-full p-4 text-xl font-semibold border-2 border-green-300 rounded-2xl focus:border-green-500 focus:outline-none"
               style={{ minHeight: '60px' }}
-              placeholder="Enter customer name..."
+              placeholder={tr('Enter customer name...', 'Entrez le nom du client...')}
             />
           </div>
 
           {/* Tour Type */}
           <div className="bg-blue-50 p-4 rounded-2xl">
             <label className="block text-lg font-bold text-blue-800 mb-3">
-              🏍️ TOUR TYPE
+              🏍️ {tr('TOUR TYPE', 'TYPE DE TOUR')}
             </label>
             <select
               value={formData.tourName}
@@ -111,10 +114,10 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
               className="w-full p-4 text-xl font-semibold border-2 border-blue-300 rounded-2xl focus:border-blue-500 focus:outline-none"
               style={{ minHeight: '60px' }}
             >
-              <option value="Desert Adventure">Desert Adventure</option>
-              <option value="Mountain Trail">Mountain Trail</option>
-              <option value="Beach Explorer">Beach Explorer</option>
-              <option value="City Tour">City Tour</option>
+              <option value="Desert Adventure">{tr('Desert Adventure', 'Aventure désert')}</option>
+              <option value="Mountain Trail">{tr('Mountain Trail', 'Sentier montagne')}</option>
+              <option value="Beach Explorer">{tr('Beach Explorer', 'Exploration plage')}</option>
+              <option value="City Tour">{tr('City Tour', 'Tour de ville')}</option>
             </select>
           </div>
 
@@ -122,7 +125,7 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-purple-50 p-4 rounded-2xl">
               <label className="block text-lg font-bold text-purple-800 mb-3">
-                📅 DATE
+                📅 {tr('DATE', 'DATE')}
               </label>
               <input
                 type="date"
@@ -135,7 +138,7 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
 
             <div className="bg-orange-50 p-4 rounded-2xl">
               <label className="block text-lg font-bold text-orange-800 mb-3">
-                🕒 TIME
+                🕒 {tr('TIME', 'HEURE')}
               </label>
               <select
                 value={formData.selectedTime}
@@ -143,10 +146,10 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
                 className="w-full p-4 text-xl font-semibold border-2 border-orange-300 rounded-2xl focus:border-orange-500 focus:outline-none"
                 style={{ minHeight: '60px' }}
               >
-                <option value="09:00">09:00 AM</option>
-                <option value="11:00">11:00 AM</option>
-                <option value="14:00">02:00 PM</option>
-                <option value="16:00">04:00 PM</option>
+                <option value="09:00">{tr('09:00 AM', '09:00')}</option>
+                <option value="11:00">{tr('11:00 AM', '11:00')}</option>
+                <option value="14:00">{tr('02:00 PM', '14:00')}</option>
+                <option value="16:00">{tr('04:00 PM', '16:00')}</option>
               </select>
             </div>
           </div>
@@ -154,7 +157,7 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
           {/* Status */}
           <div className="bg-yellow-50 p-4 rounded-2xl">
             <label className="block text-lg font-bold text-yellow-800 mb-3">
-              🏷️ STATUS
+              🏷️ {tr('STATUS', 'STATUT')}
             </label>
             <select
               value={formData.status}
@@ -162,11 +165,11 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
               className="w-full p-4 text-xl font-semibold border-2 border-yellow-300 rounded-2xl focus:border-yellow-500 focus:outline-none"
               style={{ minHeight: '60px' }}
             >
-              <option value="confirmed">✅ CONFIRMED</option>
-              <option value="pending">⏳ PENDING</option>
-              <option value="on_tour">🚀 ON TOUR</option>
-              <option value="completed">🏁 COMPLETED</option>
-              <option value="cancelled">❌ CANCELLED</option>
+              <option value="confirmed">✅ {tr('CONFIRMED', 'CONFIRMÉ')}</option>
+              <option value="pending">⏳ {tr('PENDING', 'EN ATTENTE')}</option>
+              <option value="on_tour">🚀 {tr('ON TOUR', 'EN TOUR')}</option>
+              <option value="completed">🏁 {tr('COMPLETED', 'TERMINÉ')}</option>
+              <option value="cancelled">❌ {tr('CANCELLED', 'ANNULÉ')}</option>
             </select>
           </div>
 
@@ -174,7 +177,7 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
           {formData.participants.length > 0 && (
             <div className="bg-pink-50 p-4 rounded-2xl">
               <label className="block text-lg font-bold text-pink-800 mb-3">
-                👥 PARTICIPANT DETAILS
+                👥 {tr('PARTICIPANT DETAILS', 'DÉTAILS DES PARTICIPANTS')}
               </label>
               <div className="space-y-3">
                 {formData.participants.map((participant, index) => (
@@ -184,14 +187,14 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
                         type="text"
                         value={participant.name || ''}
                         onChange={(e) => handleParticipantChange(index, 'name', e.target.value)}
-                        placeholder="Name"
+                        placeholder={tr('Name', 'Nom')}
                         className="p-3 text-lg font-semibold border border-pink-300 rounded-xl focus:border-pink-500 focus:outline-none"
                       />
                       <input
                         type="number"
                         value={participant.age || ''}
                         onChange={(e) => handleParticipantChange(index, 'age', e.target.value)}
-                        placeholder="Age"
+                        placeholder={tr('Age', 'Âge')}
                         className="p-3 text-lg font-semibold border border-pink-300 rounded-xl focus:border-pink-500 focus:outline-none"
                       />
                     </div>
@@ -210,7 +213,7 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
             style={{ minHeight: '80px' }}
           >
             <Save className="h-8 w-8 mr-3 inline" />
-            SAVE CHANGES
+            {tr('SAVE CHANGES', 'ENREGISTRER LES MODIFICATIONS')}
           </button>
 
           <button
@@ -218,7 +221,7 @@ const EditBookingModal = ({ booking, isOpen, onClose, onSave }) => {
             className="w-full bg-gray-400 hover:bg-gray-500 active:bg-gray-600 text-white py-4 px-8 rounded-2xl transition-all duration-200 shadow-md font-bold text-xl"
             style={{ minHeight: '60px' }}
           >
-            CANCEL
+            {tr('CANCEL', 'ANNULER')}
           </button>
         </div>
       </div>

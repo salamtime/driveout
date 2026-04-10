@@ -1,16 +1,19 @@
 import React from 'react';
 import { CheckCircle, X } from 'lucide-react';
+import i18n from '../../i18n';
 
 const SimpleConfirmation = ({ 
   isOpen, 
   title, 
   message, 
-  confirmText = "YES, DO IT", 
-  cancelText = "NO, CANCEL", 
+  confirmText = i18n.resolvedLanguage === 'fr' ? "OUI, FAIRE" : "YES, DO IT", 
+  cancelText = i18n.resolvedLanguage === 'fr' ? "NON, ANNULER" : "NO, CANCEL", 
   onConfirm, 
   onCancel,
   type = "default" // "default", "danger", "success"
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   if (!isOpen) return null;
 
   const getColors = () => {
@@ -102,7 +105,7 @@ const SimpleConfirmation = ({
         {/* Helpful Text */}
         <div className="p-4 bg-gray-50 rounded-b-3xl text-center">
           <p className="text-lg font-bold text-gray-600">
-            👆 Tap your choice above
+              {tr('👆 Tap your choice above', '👆 Touchez votre choix ci-dessus')}
           </p>
         </div>
       </div>

@@ -327,7 +327,7 @@ const SimpleCameraTest = () => {
 
       {/* Instructions */}
       <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-        <h3 className="text-sm font-medium text-blue-800 mb-1">Test Instructions:</h3>
+        <h3 className="text-sm font-medium text-blue-800 mb-1">Instructions de test :</h3>
         <ol className="text-xs text-blue-700 space-y-1">
           <li>1. Click "Start Camera"</li>
           <li>2. Allow camera permission when prompted</li>

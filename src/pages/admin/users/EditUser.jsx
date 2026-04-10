@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../../../services/supabaseClient';
 import { useAuth } from '../../../contexts/AuthContext';
+import i18n from '../../../i18n';
 import { updateUserProfile } from '../../../services/UserService';
 import { TABLE_NAMES } from '../../../config/tableNames';
 import { Button } from '@/components/ui/button';
@@ -10,6 +11,8 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { Loader2, ArrowLeft, Save } from 'lucide-react';
+
+const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
 
 const EditUser = () => {
   const { id } = useParams();
@@ -88,7 +91,7 @@ const EditUser = () => {
 
   const handleSave = async () => {
     if (!form.email || !form.name || !form.role) {
-      toast.error('Please fill in all required fields: Full Name, Email, and Role.');
+      toast.error('Veuillez remplir tous les champs obligatoires : nom complet, e-mail et rôle.');
       return;
     }
 
@@ -145,13 +148,13 @@ const EditUser = () => {
         .eq('id', id);
 
       if (updateError) {
-        toast.warning('User updated but failed to save phone/WhatsApp preferences.');
+        toast.warning('Utilisateur mis à jour, mais impossible d’enregistrer les préférences téléphone/WhatsApp.');
       }
 
-      toast.success('User updated successfully!');
+      toast.success('Utilisateur mis à jour avec succès !');
       navigate('/admin/users');
     } catch (error) {
-      toast.error(`Error updating user: ${error.message || 'Unknown error occurred'}`);
+      toast.error(`Erreur lors de la mise à jour de l’utilisateur : ${error.message || 'Une erreur inconnue est survenue'}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -183,10 +186,10 @@ const EditUser = () => {
       {/* Form */}
       <div className="border rounded-lg p-6 bg-card space-y-5">
         <div className="space-y-2">
-          <Label htmlFor="name">Full Name <span className="text-red-500">*</span></Label>
+          <Label htmlFor="name">Nom complet <span className="text-red-500">*</span></Label>
           <Input
             id="name"
-            placeholder="Full Name"
+            placeholder="Nom complet"
             value={form.name}
             onChange={(e) => setForm(p => ({ ...p, name: e.target.value }))}
           />
@@ -204,7 +207,7 @@ const EditUser = () => {
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="phone">Phone Number</Label>
+          <Label htmlFor="phone">Numéro de téléphone</Label>
           <Input
             id="phone"
             type="tel"
@@ -286,9 +289,9 @@ const EditUser = () => {
           </Button>
           <Button onClick={handleSave} disabled={isSubmitting}>
             {isSubmitting ? (
-              <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving...</>
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" />{tr('Saving...', 'Enregistrement...')}</>
             ) : (
-              <><Save className="mr-2 h-4 w-4" />Save Changes</>
+              <><Save className="mr-2 h-4 w-4" />{tr('Save Changes', 'Enregistrer les modifications')}</>
             )}
           </Button>
         </div>

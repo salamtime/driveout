@@ -18,8 +18,11 @@ import {
 import ExportProgressModal from './ExportProgressModal';
 import ExportHistoryList from './ExportHistoryList';
 import { Download, FileArchive, Trash2, RefreshCw } from 'lucide-react';
+import i18n from '../../i18n';
 
 const ProjectExportManager = () => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const dispatch = useDispatch();
   const { 
     currentJob, 
@@ -86,7 +89,7 @@ const ProjectExportManager = () => {
   };
 
   const handleDelete = async (jobId) => {
-    if (window.confirm('Are you sure you want to delete this export? This action cannot be undone.')) {
+    if (window.confirm(tr('Are you sure you want to delete this export? This action cannot be undone.', 'Voulez-vous vraiment supprimer cet export ? Cette action est irréversible.'))) {
       try {
         await dispatch(deleteExport(jobId)).unwrap();
         dispatch(listExports()); // Refresh list
@@ -107,11 +110,11 @@ const ProjectExportManager = () => {
 
   const getStatusBadge = (status) => {
     const statusConfig = {
-      pending: { variant: 'secondary', label: 'Pending' },
-      processing: { variant: 'default', label: 'Processing' },
-      completed: { variant: 'success', label: 'Completed' },
-      failed: { variant: 'destructive', label: 'Failed' },
-      expired: { variant: 'outline', label: 'Expired' }
+      pending: { variant: 'secondary', label: tr('Pending', 'En attente') },
+      processing: { variant: 'default', label: tr('Processing', 'En cours') },
+      completed: { variant: 'success', label: tr('Completed', 'Terminé') },
+      failed: { variant: 'destructive', label: tr('Failed', 'Échoué') },
+      expired: { variant: 'outline', label: tr('Expired', 'Expiré') }
     };
 
     const config = statusConfig[status] || statusConfig.pending;
@@ -119,14 +122,14 @@ const ProjectExportManager = () => {
   };
 
   const formatFileSize = (bytes) => {
-    if (!bytes) return 'Unknown';
+    if (!bytes) return tr('Unknown', 'Inconnu');
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(1024));
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   };
 
   const formatDate = (dateString) => {
-    if (!dateString) return 'Unknown';
+    if (!dateString) return tr('Unknown', 'Inconnu');
     return new Date(dateString).toLocaleString();
   };
 
@@ -135,9 +138,9 @@ const ProjectExportManager = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">Project Export</h2>
+          <h2 className="text-2xl font-bold tracking-tight">{tr('Project Export', 'Export projet')}</h2>
           <p className="text-muted-foreground">
-            Generate and download complete project archives for local development
+            {tr('Generate and download complete project archives for local development', 'Générez et téléchargez des archives complètes du projet pour le développement local')}
           </p>
         </div>
         <Button
@@ -147,7 +150,7 @@ const ProjectExportManager = () => {
           disabled={isLoading || isGenerating}
         >
           <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
-          Refresh
+          {tr('Refresh', 'Actualiser')}
         </Button>
       </div>
 
@@ -162,7 +165,7 @@ const ProjectExportManager = () => {
               onClick={() => dispatch(clearError())}
               className="ml-2 p-0 h-auto"
             >
-              Dismiss
+              {tr('Dismiss', 'Fermer')}
             </Button>
           </AlertDescription>
         </Alert>
@@ -173,22 +176,22 @@ const ProjectExportManager = () => {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <FileArchive className="h-5 w-5" />
-            Generate New Export
+            {tr('Generate New Export', 'Générer un nouvel export')}
           </CardTitle>
           <CardDescription>
-            Create a compressed archive containing the complete project structure
+            {tr('Create a compressed archive containing the complete project structure', 'Créer une archive compressée contenant toute la structure du projet')}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
             <div className="flex items-center justify-between p-4 border rounded-lg">
               <div>
-                <h4 className="font-medium">Full Project Archive</h4>
+                <h4 className="font-medium">{tr('Full Project Archive', 'Archive complète du projet')}</h4>
                 <p className="text-sm text-muted-foreground">
-                  Includes all source files, configurations, and documentation
+                  {tr('Includes all source files, configurations, and documentation', 'Inclut tous les fichiers source, configurations et la documentation')}
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Format: .tar.gz • Excludes: node_modules, .git, dist, logs
+                  {tr('Format: .tar.gz • Excludes: node_modules, .git, dist, logs', 'Format : .tar.gz • Exclut : node_modules, .git, dist, logs')}
                 </p>
               </div>
               <Button
@@ -199,12 +202,12 @@ const ProjectExportManager = () => {
                 {isGenerating ? (
                   <>
                     <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                    Generating...
+                    {tr('Generating...', 'Génération...')}
                   </>
                 ) : (
                   <>
                     <Download className="h-4 w-4 mr-2" />
-                    Generate Export
+                    {tr('Generate Export', "Générer l'export")}
                   </>
                 )}
               </Button>
@@ -216,15 +219,15 @@ const ProjectExportManager = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium">Current Export</span>
+                      <span className="font-medium">{tr('Current Export', 'Export en cours')}</span>
                       {getStatusBadge(currentJob.status)}
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      Created: {formatDate(currentJob.created_at)}
+                      Créé : {formatDate(currentJob.created_at)}
                     </p>
                     {currentJob.file_size && (
                       <p className="text-sm text-muted-foreground">
-                        Size: {formatFileSize(currentJob.file_size)}
+                        Taille : {formatFileSize(currentJob.file_size)}
                       </p>
                     )}
                   </div>
@@ -235,7 +238,7 @@ const ProjectExportManager = () => {
                         size="sm"
                       >
                         <Download className="h-4 w-4 mr-2" />
-                        Download
+                        Télécharger
                       </Button>
                     )}
                     <Button

@@ -3,6 +3,7 @@ import { Button } from './button';
 import { Input } from './input';
 import { Popover, PopoverContent, PopoverTrigger } from './popover';
 import { Calendar } from 'lucide-react';
+import i18n from '../../i18n';
 
 /**
  * DateRangePicker - Date range selection component
@@ -20,6 +21,8 @@ export const DateRangePicker = ({
   className = '', 
   placeholder = 'Select date range' 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [isOpen, setIsOpen] = useState(false);
   const [tempStartDate, setTempStartDate] = useState(startDate);
   const [tempEndDate, setTempEndDate] = useState(endDate);
@@ -30,7 +33,7 @@ export const DateRangePicker = ({
     try {
       const date = new Date(dateString);
       if (isNaN(date.getTime())) return '';
-      return date.toLocaleDateString('en-US', {
+      return date.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', {
         month: 'short',
         day: 'numeric',
         year: 'numeric'
@@ -104,7 +107,7 @@ export const DateRangePicker = ({
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-sm font-medium text-gray-700 block mb-1">
-                Start Date
+                {tr('Start Date', 'Date de début')}
               </label>
               <Input
                 type="date"
@@ -115,7 +118,7 @@ export const DateRangePicker = ({
             </div>
             <div>
               <label className="text-sm font-medium text-gray-700 block mb-1">
-                End Date
+                {tr('End Date', 'Date de fin')}
               </label>
               <Input
                 type="date"
@@ -128,10 +131,10 @@ export const DateRangePicker = ({
           
           <div className="flex gap-2 justify-end">
             <Button variant="outline" size="sm" onClick={resetDates}>
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </Button>
             <Button size="sm" onClick={applyDateRange}>
-              Apply
+              {tr('Apply', 'Appliquer')}
             </Button>
           </div>
         </div>

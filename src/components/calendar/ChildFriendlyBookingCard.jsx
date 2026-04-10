@@ -3,6 +3,10 @@ import { Calendar, Clock, Users, MapPin, Play, Square, Edit, X, CheckCircle, Che
 import GiantActionButtons from './GiantActionButtons';
 import LiveTourTimer from './LiveTourTimer';
 import { isTimerActive, getTimerStartTime } from '../../utils/timerUtils';
+import i18n from '../../i18n';
+
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel }) => {
   const [showDetails, setShowDetails] = useState(false);
@@ -13,7 +17,7 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
 
   const formatDate = (dateStr) => {
     const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { 
+    return date.toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US', {
       weekday: 'long', 
       month: 'long', 
       day: 'numeric' 
@@ -38,13 +42,13 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
   const getStatusText = (status) => {
     switch (status) {
       case 'on_tour':
-        return '🚀 ON TOUR';
+        return tr('🚀 ON TOUR', '🚀 EN TOUR');
       case 'confirmed':
-        return '✅ CONFIRMED';
+        return tr('✅ CONFIRMED', '✅ CONFIRMEE');
       case 'completed':
-        return '🏁 COMPLETED';
+        return tr('🏁 COMPLETED', '🏁 TERMINEE');
       case 'cancelled':
-        return '❌ CANCELLED';
+        return tr('❌ CANCELLED', '❌ ANNULEE');
       default:
         return status?.toUpperCase();
     }
@@ -69,15 +73,15 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
         {shouldShowTimer && (
           <div className="absolute top-2 right-2 bg-red-500 text-white px-3 py-1 rounded-full text-sm font-bold animate-pulse">
             <Play className="h-4 w-4 inline mr-1" />
-            LIVE
+            {tr('LIVE', 'LIVE')}
           </div>
         )}
         <div className="text-2xl font-black">
-          {shouldShowTimer ? '🚀 ON TOUR' : getStatusText(booking.status)}
+          {shouldShowTimer ? tr('🚀 ON TOUR', '🚀 EN TOUR') : getStatusText(booking.status)}
         </div>
         {shouldShowTimer && (
           <div className="text-lg font-bold text-white opacity-90 mt-1">
-            Timer Running • {booking.tourName}
+            {tr('Timer Running', 'Chrono en cours')} • {booking.tourName}
           </div>
         )}
       </div>
@@ -87,7 +91,7 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
         {/* Customer Name - MASSIVE */}
         <div className="text-center">
           <h2 className="text-3xl font-black text-gray-900 mb-2">
-            {booking.participants?.[0]?.name || 'GUEST BOOKING'}
+            {booking.participants?.[0]?.name || tr('GUEST BOOKING', 'RESERVATION INVITE')}
           </h2>
           <div className="text-lg font-bold text-gray-500 bg-gray-100 px-4 py-2 rounded-2xl inline-block">
             ID: {booking.id?.substring(0, 8)}...
@@ -101,7 +105,7 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
               <MapPin className="h-8 w-8 text-white" />
             </div>
             <div>
-              <div className="text-sm font-semibold text-blue-600 uppercase">Tour Type</div>
+              <div className="text-sm font-semibold text-blue-600 uppercase">{tr('Tour Type', 'Type de tour')}</div>
               <div className="text-2xl font-bold text-blue-900">
                 {booking.tourName}
               </div>
@@ -113,12 +117,12 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
               <Calendar className="h-8 w-8 text-white" />
             </div>
             <div>
-              <div className="text-sm font-semibold text-green-600 uppercase">Date & Time</div>
+              <div className="text-sm font-semibold text-green-600 uppercase">{tr('Date & Time', 'Date et heure')}</div>
               <div className="text-xl font-bold text-green-900">
                 {formatDate(booking.selectedDate)}
               </div>
               <div className="text-lg font-semibold text-green-700">
-                at {booking.selectedTime}
+                {tr('at', 'a')} {booking.selectedTime}
               </div>
             </div>
           </div>
@@ -128,9 +132,9 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
               <Users className="h-8 w-8 text-white" />
             </div>
             <div>
-              <div className="text-sm font-semibold text-purple-600 uppercase">Participants</div>
+              <div className="text-sm font-semibold text-purple-600 uppercase">{tr('Participants', 'Participants')}</div>
               <div className="text-2xl font-bold text-purple-900">
-                {booking.participants?.length || 0} People
+                {booking.participants?.length || 0} {tr('People', 'personnes')}
               </div>
             </div>
           </div>
@@ -144,7 +148,7 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
         >
           <div className="flex items-center justify-center">
             <span className="text-lg font-bold text-gray-700 mr-2">
-              {showDetails ? 'HIDE DETAILS' : 'SHOW MORE DETAILS'}
+              {showDetails ? tr('HIDE DETAILS', 'MASQUER LES DETAILS') : tr('SHOW MORE DETAILS', 'VOIR PLUS DE DETAILS')}
             </span>
             {showDetails ? (
               <ChevronUp className="h-6 w-6 text-gray-700" />
@@ -160,7 +164,7 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
             {booking.participants?.map((participant, index) => (
               <div key={index} className="bg-yellow-50 p-4 rounded-2xl">
                 <div className="text-lg font-bold text-yellow-900">
-                  👤 {participant.name} ({participant.age} years old)
+                  👤 {participant.name} ({participant.age} {tr('years old', 'ans')})
                 </div>
               </div>
             ))}
@@ -168,7 +172,7 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
             {booking.quadSelection?.selectedQuads?.map((quad, index) => (
               <div key={index} className="bg-orange-50 p-4 rounded-2xl">
                 <div className="text-lg font-bold text-orange-900">
-                  🏍️ {quad.quadName} - {quad.participantCount} riders
+                  🏍️ {quad.quadName} - {quad.participantCount} {tr('riders', 'pilotes')}
                 </div>
               </div>
             ))}
@@ -176,7 +180,7 @@ const ChildFriendlyBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel
             {booking.status === 'on_tour' && booking.startTime && (
               <div className="bg-blue-50 border-2 border-blue-300 p-4 rounded-2xl">
                 <div className="text-lg font-bold text-blue-900">
-                  🕒 Started: {new Date(booking.startTime).toLocaleTimeString()}
+                  🕒 {tr('Started', 'Demarre')} : {new Date(booking.startTime).toLocaleTimeString(isFrenchLocale() ? 'fr-FR' : 'en-US')}
                 </div>
               </div>
             )}

@@ -181,40 +181,40 @@ const MobileOptimizedBooking = ({ onComplete, onCancel }) => {
     switch (step.id) {
       case 'tour-selection':
         if (!bookingData.tour_type) {
-          newErrors.tour_type = t('validation.tourTypeRequired', 'Please select a tour type');
+          newErrors.tour_type = t('validation.tourTypeRequired', 'Veuillez sélectionner un type de tour');
         }
         break;
       
       case 'vehicle-selection':
         if (!bookingData.vehicle_id) {
-          newErrors.vehicle_id = t('validation.vehicleRequired', 'Please select a vehicle');
+          newErrors.vehicle_id = t('validation.vehicleRequired', 'Veuillez sélectionner un véhicule');
         }
         break;
       
       case 'datetime-selection':
         if (!bookingData.date) {
-          newErrors.date = t('validation.dateRequired', 'Please select a date');
+          newErrors.date = t('validation.dateRequired', 'Veuillez sélectionner une date');
         }
         if (!bookingData.time) {
-          newErrors.time = t('validation.timeRequired', 'Please select a time');
+          newErrors.time = t('validation.timeRequired', 'Veuillez sélectionner une heure');
         }
         break;
       
       case 'group-details':
         if (!bookingData.group_size || bookingData.group_size < 1) {
-          newErrors.group_size = t('validation.groupSizeRequired', 'Please specify group size');
+          newErrors.group_size = t('validation.groupSizeRequired', 'Veuillez indiquer la taille du groupe');
         }
         break;
       
       case 'customer-info':
         if (!bookingData.customer_name) {
-          newErrors.customer_name = t('validation.nameRequired', 'Name is required');
+          newErrors.customer_name = t('validation.nameRequired', 'Le nom est requis');
         }
         if (!bookingData.customer_email) {
-          newErrors.customer_email = t('validation.emailRequired', 'Email is required');
+          newErrors.customer_email = t('validation.emailRequired', "L'e-mail est requis");
         }
         if (!bookingData.customer_phone) {
-          newErrors.customer_phone = t('validation.phoneRequired', 'Phone is required');
+          newErrors.customer_phone = t('validation.phoneRequired', 'Le téléphone est requis');
         }
         break;
     }
@@ -387,7 +387,7 @@ const MobileOptimizedBooking = ({ onComplete, onCancel }) => {
                   {t('booking.submitting', 'Submitting...')}
                 </>
               ) : (
-                t('booking.confirmBooking', 'Confirm Booking')
+                t('booking.confirmBooking', 'Confirmer la réservation')
               )}
             </button>
           )}
@@ -412,26 +412,26 @@ const TourSelectionStep = ({ bookingData, updateBookingData, errors }) => {
   const tourTypes = [
     {
       id: 'desert_adventure',
-      name: t('tours.desertAdventure', 'Desert Adventure'),
-      description: t('tours.desertDescription', 'Explore vast desert landscapes'),
-      duration: '2-3 hours',
-      difficulty: 'Moderate',
+      name: t('tours.desertAdventure', 'Aventure dans le désert'),
+      description: t('tours.desertDescription', 'Explorez de vastes paysages désertiques'),
+      duration: '2-3 heures',
+      difficulty: 'Modéré',
       image: '/images/desert-tour.jpg'
     },
     {
       id: 'mountain_trail',
-      name: t('tours.mountainTrail', 'Mountain Trail'),
-      description: t('tours.mountainDescription', 'Scenic mountain paths and views'),
-      duration: '3-4 hours',
-      difficulty: 'Challenging',
+      name: t('tours.mountainTrail', 'Sentier de montagne'),
+      description: t('tours.mountainDescription', 'Sentiers de montagne pittoresques et belles vues'),
+      duration: '3-4 heures',
+      difficulty: 'Difficile',
       image: '/images/mountain-tour.jpg'
     },
     {
       id: 'sunset_tour',
-      name: t('tours.sunsetTour', 'Sunset Tour'),
-      description: t('tours.sunsetDescription', 'Beautiful sunset views'),
-      duration: '2 hours',
-      difficulty: 'Easy',
+      name: t('tours.sunsetTour', 'Tour au coucher du soleil'),
+      description: t('tours.sunsetDescription', 'Magnifiques vues au coucher du soleil'),
+      duration: '2 heures',
+      difficulty: 'Facile',
       image: '/images/sunset-tour.jpg'
     }
   ];
@@ -440,10 +440,10 @@ const TourSelectionStep = ({ bookingData, updateBookingData, errors }) => {
     <div className="space-y-4">
       <div className="text-center mb-6">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">
-          {t('booking.selectTourType', 'Choose Your Adventure')}
+          {t('booking.selectTourType', 'Choisissez votre aventure')}
         </h2>
         <p className="text-gray-600">
-          {t('booking.selectTourDescription', 'Select the tour that matches your adventure level')}
+          {t('booking.selectTourDescription', "Sélectionnez le tour qui correspond à votre niveau d'aventure")}
         </p>
       </div>
 
@@ -504,7 +504,7 @@ const VehicleSelectionStep = ({ bookingData, updateBookingData, errors, vehicles
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
-        <span className="ml-3 text-gray-600">{t('common.loading', 'Loading...')}</span>
+        <span className="ml-3 text-gray-600">{t('common.loading', 'Chargement...')}</span>
       </div>
     );
   }
@@ -515,10 +515,10 @@ const VehicleSelectionStep = ({ bookingData, updateBookingData, errors, vehicles
     <div className="space-y-4">
       <div className="text-center mb-6">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">
-          {t('booking.selectVehicle', 'Choose Your Ride')}
+          {t('booking.selectVehicle', 'Choisissez votre véhicule')}
         </h2>
         <p className="text-gray-600">
-          {t('booking.selectVehicleDescription', 'Pick the perfect vehicle for your adventure')}
+          {t('booking.selectVehicleDescription', 'Choisissez le véhicule parfait pour votre aventure')}
         </p>
       </div>
 
@@ -692,7 +692,7 @@ const GroupDetailsStep = ({ bookingData, updateBookingData, errors }) => {
       {/* Duration */}
       <div className="space-y-3">
         <label className="block text-sm font-medium text-gray-700">
-          {t('booking.duration', 'Duration (hours)')}
+          {t('booking.duration', 'Durée (heures)')}
         </label>
         <div className="grid grid-cols-3 gap-2">
           {[1, 2, 3, 4].map((hours) => (
@@ -715,12 +715,12 @@ const GroupDetailsStep = ({ bookingData, updateBookingData, errors }) => {
       {/* Special Requests */}
       <div className="space-y-3">
         <label className="block text-sm font-medium text-gray-700">
-          {t('booking.specialRequests', 'Special Requests (Optional)')}
+          {t('booking.specialRequests', 'Demandes spéciales (optionnel)')}
         </label>
         <textarea
           value={bookingData.special_requests}
           onChange={(e) => updateBookingData('special_requests', e.target.value)}
-          placeholder={t('booking.specialRequestsPlaceholder', 'Any special requirements or requests...')}
+          placeholder={t('booking.specialRequestsPlaceholder', 'Exigences ou demandes particulières...')}
           className="w-full p-3 border border-gray-300 rounded-lg resize-none"
           rows={3}
         />
@@ -736,10 +736,10 @@ const CustomerInfoStep = ({ bookingData, updateBookingData, errors }) => {
     <div className="space-y-6">
       <div className="text-center mb-6">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">
-          {t('booking.customerInfo', 'Your Information')}
+          {t('booking.customerInfo', 'Vos informations')}
         </h2>
         <p className="text-gray-600">
-          {t('booking.customerInfoDescription', 'We need your details to confirm the booking')}
+          {t('booking.customerInfoDescription', 'Nous avons besoin de vos coordonnées pour confirmer la réservation')}
         </p>
       </div>
 
@@ -747,7 +747,7 @@ const CustomerInfoStep = ({ bookingData, updateBookingData, errors }) => {
         {/* Name */}
         <div className="space-y-2">
           <label className="block text-sm font-medium text-gray-700">
-            {t('booking.fullName', 'Full Name')}
+            {t('booking.fullName', 'Nom complet')}
           </label>
           <input
             type="text"
@@ -756,7 +756,7 @@ const CustomerInfoStep = ({ bookingData, updateBookingData, errors }) => {
             className={`w-full p-3 border rounded-lg ${
               errors.customer_name ? 'border-red-500' : 'border-gray-300'
             }`}
-            placeholder={t('booking.fullNamePlaceholder', 'Enter your full name')}
+            placeholder={t('booking.fullNamePlaceholder', 'Entrez votre nom complet')}
           />
           {errors.customer_name && (
             <div className="text-red-600 text-sm flex items-center gap-2">
@@ -769,7 +769,7 @@ const CustomerInfoStep = ({ bookingData, updateBookingData, errors }) => {
         {/* Email */}
         <div className="space-y-2">
           <label className="block text-sm font-medium text-gray-700">
-            {t('booking.email', 'Email Address')}
+            {t('booking.email', 'Adresse e-mail')}
           </label>
           <input
             type="email"
@@ -778,7 +778,7 @@ const CustomerInfoStep = ({ bookingData, updateBookingData, errors }) => {
             className={`w-full p-3 border rounded-lg ${
               errors.customer_email ? 'border-red-500' : 'border-gray-300'
             }`}
-            placeholder={t('booking.emailPlaceholder', 'Enter your email address')}
+            placeholder={t('booking.emailPlaceholder', 'Entrez votre adresse e-mail')}
           />
           {errors.customer_email && (
             <div className="text-red-600 text-sm flex items-center gap-2">
@@ -791,7 +791,7 @@ const CustomerInfoStep = ({ bookingData, updateBookingData, errors }) => {
         {/* Phone */}
         <div className="space-y-2">
           <label className="block text-sm font-medium text-gray-700">
-            {t('booking.phone', 'Phone Number')}
+            {t('booking.phone', 'Numéro de téléphone')}
           </label>
           <input
             type="tel"
@@ -800,7 +800,7 @@ const CustomerInfoStep = ({ bookingData, updateBookingData, errors }) => {
             className={`w-full p-3 border rounded-lg ${
               errors.customer_phone ? 'border-red-500' : 'border-gray-300'
             }`}
-            placeholder={t('booking.phonePlaceholder', 'Enter your phone number')}
+            placeholder={t('booking.phonePlaceholder', 'Entrez votre numéro de téléphone')}
           />
           {errors.customer_phone && (
             <div className="text-red-600 text-sm flex items-center gap-2">
@@ -818,18 +818,18 @@ const PaymentStep = ({ bookingData, updateBookingData }) => {
   const { t } = useTranslation();
 
   const paymentMethods = [
-    { id: 'card', name: t('payment.creditCard', 'Credit Card'), icon: CreditCard },
-    { id: 'cash', name: t('payment.cash', 'Pay on Arrival'), icon: Users }
+    { id: 'card', name: t('payment.creditCard', 'Carte bancaire'), icon: CreditCard },
+    { id: 'cash', name: t('payment.cash', "Paiement à l'arrivée"), icon: Users }
   ];
 
   return (
     <div className="space-y-6">
       <div className="text-center mb-6">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">
-          {t('booking.payment', 'Payment Method')}
+          {t('booking.payment', 'Méthode de paiement')}
         </h2>
         <p className="text-gray-600">
-          {t('booking.paymentDescription', 'Choose how you would like to pay')}
+          {t('booking.paymentDescription', 'Choisissez comment vous souhaitez payer')}
         </p>
       </div>
 
@@ -862,7 +862,7 @@ const PaymentStep = ({ bookingData, updateBookingData }) => {
       {/* Booking Summary */}
       <div className="bg-gray-50 p-4 rounded-lg">
         <h3 className="font-semibold text-gray-900 mb-3">
-          {t('booking.summary', 'Booking Summary')}
+          {t('booking.summary', 'Résumé de la réservation')}
         </h3>
         <div className="space-y-2 text-sm">
           <div className="flex justify-between">
@@ -874,21 +874,21 @@ const PaymentStep = ({ bookingData, updateBookingData }) => {
             <span className="font-medium">{bookingData.date}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">{t('booking.time', 'Time')}:</span>
+            <span className="text-gray-600">{t('booking.time', 'Heure')}:</span>
             <span className="font-medium">{bookingData.time}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">{t('booking.groupSize', 'Group Size')}:</span>
-            <span className="font-medium">{bookingData.group_size} people</span>
+            <span className="text-gray-600">{t('booking.groupSize', 'Taille du groupe')}:</span>
+            <span className="font-medium">{bookingData.group_size} {t('booking.people', 'personnes')}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">{t('booking.duration', 'Duration')}:</span>
-            <span className="font-medium">{bookingData.duration} hours</span>
+            <span className="text-gray-600">{t('booking.duration', 'Durée')}:</span>
+            <span className="font-medium">{bookingData.duration} {t('booking.hours', 'heures')}</span>
           </div>
           <div className="border-t pt-2 mt-2">
             <div className="flex justify-between font-semibold">
               <span>{t('booking.total', 'Total')}:</span>
-              <span>${(bookingData.group_size * bookingData.duration * 50).toFixed(2)}</span>
+              <span>{(bookingData.group_size * bookingData.duration * 50).toFixed(2)} MAD</span>
             </div>
           </div>
         </div>
@@ -908,24 +908,24 @@ const ConfirmationStep = ({ bookingData }) => {
       
       <div>
         <h2 className="text-2xl font-bold text-gray-900 mb-2">
-          {t('booking.confirmed', 'Booking Confirmed!')}
+          {t('booking.confirmed', 'Réservation confirmée !')}
         </h2>
         <p className="text-gray-600">
-          {t('booking.confirmationMessage', 'Your adventure is booked. We\'ll send you a confirmation email shortly.')}
+          {t('booking.confirmationMessage', "Votre aventure est réservée. Nous vous enverrons bientôt un e-mail de confirmation.")}
         </p>
       </div>
 
       <div className="bg-gray-50 p-4 rounded-lg text-left">
         <h3 className="font-semibold text-gray-900 mb-3">
-          {t('booking.bookingDetails', 'Booking Details')}
+          {t('booking.bookingDetails', 'Détails de la réservation')}
         </h3>
         <div className="space-y-2 text-sm">
           <div className="flex justify-between">
-            <span className="text-gray-600">{t('booking.customer', 'Customer')}:</span>
+            <span className="text-gray-600">{t('booking.customer', 'Client')}:</span>
             <span className="font-medium">{bookingData.customer_name}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">{t('booking.email', 'Email')}:</span>
+            <span className="text-gray-600">{t('booking.email', 'E-mail')}:</span>
             <span className="font-medium">{bookingData.customer_email}</span>
           </div>
           <div className="flex justify-between">
@@ -933,8 +933,8 @@ const ConfirmationStep = ({ bookingData }) => {
             <span className="font-medium">{bookingData.tour_type?.replace('_', ' ')}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600">{t('booking.dateTime', 'Date & Time')}:</span>
-            <span className="font-medium">{bookingData.date} at {bookingData.time}</span>
+            <span className="text-gray-600">{t('booking.dateTime', 'Date et heure')}:</span>
+            <span className="font-medium">{bookingData.date} {t('booking.at', 'à')} {bookingData.time}</span>
           </div>
         </div>
       </div>

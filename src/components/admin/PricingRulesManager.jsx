@@ -190,12 +190,12 @@ const AddModelModal = React.memo(({ isOpen, onClose, onSubmit }) => {
               {loading ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  Creating...
+                  {t('common.creating', 'Création...')}
                 </>
               ) : (
                 <>
                   <Plus className="h-4 w-4" />
-                  Add Model
+                  {t('pricing.addModel', 'Ajouter un modèle')}
                 </>
               )}
             </button>

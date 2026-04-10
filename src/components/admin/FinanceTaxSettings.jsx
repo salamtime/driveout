@@ -361,7 +361,7 @@ const FinanceTaxSettings = ({ currentUser }) => {
               ) : (
                 <Save className="h-4 w-4" />
               )}
-              {saving ? 'Saving...' : 'Save Settings'}
+              {saving ? 'Enregistrement...' : 'Enregistrer les paramètres'}
             </button>
             
             <button

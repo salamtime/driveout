@@ -131,7 +131,7 @@ const EnhancedUserManagement = () => {
       setUsers(allUsers || []);
     } catch (error) {
       console.error('❌ Error fetching users:', error);
-      toast.error('Failed to load users');
+      toast.error(t('admin.users.failedToLoadUsers', 'Impossible de charger les utilisateurs'));
       
       // Emergency fallback - ensure salamtime2016@gmail.com is available
       setUsers([{
@@ -182,7 +182,7 @@ const EnhancedUserManagement = () => {
   const handleDeleteClick = (user) => {
     // Prevent self-deletion
     if (user.id === currentUser?.id || user.email === currentUser?.email) {
-      toast.error('You cannot delete your own account');
+      toast.error(t('admin.users.cannotDeleteOwnAccount', 'Vous ne pouvez pas supprimer votre propre compte'));
       return;
     }
     
@@ -246,7 +246,7 @@ const EnhancedUserManagement = () => {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" aria-label={t('common.loading', 'Chargement')}></div>
       </div>
     );
   }
@@ -271,7 +271,7 @@ const EnhancedUserManagement = () => {
             className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center space-x-2"
           >
             <Plus className="h-4 w-4" />
-            <span>Add New User</span>
+            <span>{t('admin.users.addNewUser', 'Ajouter un nouvel utilisateur')}</span>
           </button>
         )}
       </div>
@@ -284,7 +284,7 @@ const EnhancedUserManagement = () => {
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search users by name or email..."
+                placeholder={t('admin.users.searchPlaceholder', 'Rechercher des utilisateurs par nom ou e-mail...')}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -299,11 +299,11 @@ const EnhancedUserManagement = () => {
               onChange={(e) => setRoleFilter(e.target.value)}
               className="border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
-              <option value="all">All Roles</option>
-              <option value="owner">Owner</option>
-              <option value="admin">Admin</option>
-              <option value="guide">Guide</option>
-              <option value="employee">Employee</option>
+              <option value="all">{t('admin.users.allRoles', 'Tous les rôles')}</option>
+              <option value="owner">{t('roles.owner', 'Propriétaire')}</option>
+              <option value="admin">{t('roles.admin', 'Admin')}</option>
+              <option value="guide">{t('roles.guide', 'Guide')}</option>
+              <option value="employee">{t('roles.employee', 'Employé')}</option>
             </select>
           </div>
         </div>
@@ -311,7 +311,7 @@ const EnhancedUserManagement = () => {
 
       {/* User Count */}
       <div className="text-sm text-gray-600">
-        Showing {filteredUsers.length} of {users.length} users
+        {t('admin.users.showingUsers', { defaultValue: 'Affichage de {{filtered}} sur {{total}} utilisateurs', filtered: filteredUsers.length, total: users.length })}
       </div>
 
       {/* Users List */}
@@ -330,16 +330,16 @@ const EnhancedUserManagement = () => {
                   
                   <div>
                     <h3 className="text-lg font-semibold text-gray-900">
-                      {user.full_name || 'No Name Set'}
+                      {user.full_name || t('admin.users.noNameSet', 'Aucun nom défini')}
                     </h3>
                     <p className="text-sm text-gray-600">{user.email}</p>
                     <div className="flex items-center space-x-2 mt-1">
                       <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getRoleBadgeColor(user.role)}`}>
-                        {user.role?.charAt(0)?.toUpperCase() + user.role?.slice(1) || 'No Role'}
+                        {user.role?.charAt(0)?.toUpperCase() + user.role?.slice(1) || t('admin.users.noRole', 'Aucun rôle')}
                       </span>
                       {user.id === currentUser?.id && (
                         <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
-                          You
+                          {t('admin.users.you', 'You')}
                         </span>
                       )}
                     </div>
@@ -350,12 +350,12 @@ const EnhancedUserManagement = () => {
                   {user.status === 'active' ? (
                     <div className="flex items-center text-green-600">
                       <UserCheck className="h-4 w-4 mr-1" />
-                      <span className="text-sm font-medium">Active</span>
+                      <span className="text-sm font-medium">{t('common.active', 'Actif')}</span>
                     </div>
                   ) : (
                     <div className="flex items-center text-red-600">
                       <UserX className="h-4 w-4 mr-1" />
-                      <span className="text-sm font-medium">Inactive</span>
+                      <span className="text-sm font-medium">{t('common.inactive', 'Inactif')}</span>
                     </div>
                   )}
                   
@@ -364,7 +364,7 @@ const EnhancedUserManagement = () => {
                     className="flex items-center space-x-1 px-3 py-2 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors"
                   >
                     <Shield className="h-4 w-4" />
-                    <span>{expandedUsers.has(user.id) ? 'Hide' : 'Manage'} Permissions</span>
+                    <span>{expandedUsers.has(user.id) ? t('common.hide', 'Masquer') : t('admin.users.manage', 'Gérer')} {t('admin.users.permissions', 'Permissions')}</span>
                   </button>
                   
                   {canManageUsers && (
@@ -374,7 +374,7 @@ const EnhancedUserManagement = () => {
                         className="flex items-center space-x-1 px-3 py-2 text-sm text-green-600 hover:text-green-800 hover:bg-green-50 rounded-lg transition-colors"
                       >
                         <Edit className="h-4 w-4" />
-                        <span>Edit</span>
+                        <span>{t('common.edit', 'Modifier')}</span>
                       </button>
                       
                       {user.id !== currentUser?.id && user.email !== currentUser?.email && (
@@ -383,7 +383,7 @@ const EnhancedUserManagement = () => {
                           className="flex items-center space-x-1 px-3 py-2 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors"
                         >
                           <Trash2 className="h-4 w-4" />
-                          <span>Delete</span>
+                          <span>{t('common.delete', 'Supprimer')}</span>
                         </button>
                       )}
                     </>
@@ -394,13 +394,13 @@ const EnhancedUserManagement = () => {
               {/* User Details */}
               <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-600">
                 <div>
-                  <span className="font-medium">Created:</span> {new Date(user.created_at).toLocaleDateString()}
+                  <span className="font-medium">{t('common.created', 'Créé')}:</span> {new Date(user.created_at).toLocaleDateString('fr-FR')}
                 </div>
                 <div>
-                  <span className="font-medium">Last Login:</span> {user.last_sign_in_at ? new Date(user.last_sign_in_at).toLocaleDateString() : 'Never'}
+                  <span className="font-medium">{t('admin.users.lastLogin', 'Dernière connexion')}:</span> {user.last_sign_in_at ? new Date(user.last_sign_in_at).toLocaleDateString('fr-FR') : t('common.never', 'Jamais')}
                 </div>
                 <div>
-                  <span className="font-medium">ID:</span> {user.id.slice(0, 8)}...
+                  <span className="font-medium">{t('common.id', 'ID')}:</span> {user.id.slice(0, 8)}...
                 </div>
               </div>
             </div>
@@ -422,11 +422,11 @@ const EnhancedUserManagement = () => {
       {filteredUsers.length === 0 && (
         <div className="text-center py-12">
           <Users className="mx-auto h-12 w-12 text-gray-400" />
-          <h3 className="mt-2 text-sm font-medium text-gray-900">No users found</h3>
+          <h3 className="mt-2 text-sm font-medium text-gray-900">{t('admin.users.noUsersFound', 'Aucun utilisateur trouvé')}</h3>
           <p className="mt-1 text-sm text-gray-500">
             {searchTerm || roleFilter !== 'all' 
-              ? 'Try adjusting your search or filters'
-              : 'Get started by adding your first user'
+              ? t('admin.users.adjustSearch', 'Essayez de modifier votre recherche ou vos filtres')
+              : t('admin.users.getStarted', 'Commencez par ajouter votre premier utilisateur')
             }
           </p>
         </div>

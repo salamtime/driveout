@@ -10,6 +10,7 @@ const DOCUMENT_TYPES = new Set([
   'documents',
   'opening_video',
   'closing_video',
+  'banking-info',
   'tour_tracking',
   'other',
 ]);
@@ -57,6 +58,24 @@ export const shortenUrl = async (url, rentalId = null, documentType = 'other') =
   const normalizedRentalId = normalizedArgs.rentalId;
   const normalizedDocumentType = normalizedArgs.documentType;
   const isPdf = ['contract', 'receipt'].includes(normalizedDocumentType);
+  const isLocalhost =
+    typeof window !== 'undefined' &&
+    ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const isTargetLocalhost = (() => {
+    try {
+      const parsed = new URL(url);
+      return ['localhost', '127.0.0.1'].includes(parsed.hostname);
+    } catch {
+      return false;
+    }
+  })();
+
+  // Local dev commonly runs without the short_links table/server envs.
+  // Only bypass shortening for true localhost targets.
+  // Public/canonical URLs should still be shortened even during local testing.
+  if (isLocalhost && isTargetLocalhost) {
+    return url;
+  }
 
   if (!isPdf) {
     const cached = getCached(url, normalizedDocumentType);
@@ -67,7 +86,7 @@ export const shortenUrl = async (url, rentalId = null, documentType = 'other') =
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData?.session?.access_token;
 
-    const response = await fetch('/api/short-links/create', {
+    const response = await fetch('/api/public-links?resource=short-links&action=create', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

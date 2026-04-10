@@ -1,8 +1,11 @@
 import React, { useState } from 'react';
 import { Calendar, Clock, Users, MapPin, ChevronDown, ChevronUp, Play, Square, Edit, X } from 'lucide-react';
 import MobileActionButtons from './MobileActionButtons';
+import i18n from '../../i18n';
 
 const MobileBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [isExpanded, setIsExpanded] = useState(false);
 
   const formatDate = (dateStr) => {
@@ -32,13 +35,13 @@ const MobileBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel }) => 
   const getStatusText = (status) => {
     switch (status) {
       case 'on_tour':
-        return 'On Tour';
+        return tr('On Tour', 'En tour');
       case 'confirmed':
-        return 'Confirmed';
+        return tr('Confirmed', 'Confirmé');
       case 'completed':
-        return 'Completed';
+        return tr('Completed', 'Terminé');
       case 'cancelled':
-        return 'Cancelled';
+        return tr('Cancelled', 'Annulé');
       default:
         return status;
     }
@@ -56,7 +59,7 @@ const MobileBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel }) => 
             </div>
             <div>
               <h3 className="font-semibold text-gray-900 text-lg">
-                {booking.participants?.[0]?.name || 'Guest Booking'}
+                {booking.participants?.[0]?.name || tr('Guest Booking', 'Réservation invitée')}
               </h3>
               <p className="text-sm text-gray-500 font-mono">
                 ID: {booking.id?.substring(0, 8)}...
@@ -72,26 +75,26 @@ const MobileBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel }) => 
         {/* Tour Info */}
         <div className="space-y-2 mb-4">
           <div className="bg-gray-50 p-2 rounded-lg mb-1">
-            <h4 className="text-sm font-medium text-gray-800 mb-1">Tour Details</h4>
+            <h4 className="text-sm font-medium text-gray-800 mb-1">{tr('Tour Details', 'Détails du tour')}</h4>
             <div className="flex items-center text-gray-700">
               <MapPin className="h-4 w-4 mr-2 text-blue-600" />
-              <span className="font-medium">{booking.tourName || "Unknown Tour"}</span>
+              <span className="font-medium">{booking.tourName || tr('Unknown Tour', 'Tour inconnu')}</span>
             </div>
             {booking.tourLocation && (
               <div className="flex items-center text-gray-700 mt-1 ml-6">
-                <span className="text-sm">Location: {booking.tourLocation}</span>
+                <span className="text-sm">{tr('Location:', 'Lieu :')} {booking.tourLocation}</span>
               </div>
             )}
           </div>
           
           <div className="flex items-center text-gray-600">
             <Clock className="h-4 w-4 mr-2 text-blue-600" />
-            <span>{formatDate(booking.selectedDate)} at {booking.selectedTime}</span>
+            <span>{formatDate(booking.selectedDate)} {tr('at', 'à')} {booking.selectedTime}</span>
           </div>
           
           <div className="flex items-center text-gray-600">
             <Users className="h-4 w-4 mr-2 text-blue-600" />
-            <span>{booking.participants?.length || 0} participants</span>
+            <span>{booking.participants?.length || 0} {tr('participants', 'participants')}</span>
           </div>
         </div>
 
@@ -99,11 +102,11 @@ const MobileBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel }) => 
         {isExpanded && (
           <div className="border-t border-gray-100 pt-4 space-y-3">
             <div>
-              <h4 className="font-medium text-gray-900 mb-2">Participants</h4>
+              <h4 className="font-medium text-gray-900 mb-2">{tr('Participants', 'Participants')}</h4>
               <div className="space-y-1">
                 {booking.participants?.map((participant, index) => (
                   <div key={index} className="text-sm text-gray-600">
-                    {participant.name} ({participant.age} years)
+                    {participant.name} ({participant.age} {tr('years', 'ans')})
                   </div>
                 ))}
               </div>
@@ -111,11 +114,11 @@ const MobileBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel }) => 
             
             {booking.quadSelection?.selectedQuads && (
               <div>
-                <h4 className="font-medium text-gray-900 mb-2">Assigned Vehicles</h4>
+                <h4 className="font-medium text-gray-900 mb-2">{tr('Assigned Vehicles', 'Véhicules attribués')}</h4>
                 <div className="space-y-1">
                   {booking.quadSelection.selectedQuads.map((quad, index) => (
                     <div key={index} className="text-sm text-gray-600 bg-gray-50 px-2 py-1 rounded">
-                      {quad.quadName} - {quad.participantCount} riders
+                      {quad.quadName} - {quad.participantCount} {tr('riders', 'pilotes')}
                     </div>
                   ))}
                 </div>
@@ -124,9 +127,9 @@ const MobileBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel }) => 
 
             {booking.status === 'on_tour' && booking.startTime && (
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <h4 className="font-medium text-blue-900 mb-1">Tour in Progress</h4>
+                <h4 className="font-medium text-blue-900 mb-1">{tr('Tour in Progress', 'Tour en cours')}</h4>
                 <p className="text-sm text-blue-700">
-                  Started: {new Date(booking.startTime).toLocaleTimeString()}
+                  {tr('Started:', 'Démarré à :')} {new Date(booking.startTime).toLocaleTimeString()}
                 </p>
               </div>
             )}
@@ -139,7 +142,7 @@ const MobileBookingCard = ({ booking, onStart, onFinish, onEdit, onCancel }) => 
           className="w-full flex items-center justify-center py-2 text-blue-600 hover:text-blue-800 transition-colors"
         >
           <span className="text-sm font-medium mr-1">
-            {isExpanded ? 'Less Details' : 'More Details'}
+            {isExpanded ? tr('Less Details', 'Moins de détails') : tr('More Details', 'Plus de détails')}
           </span>
           {isExpanded ? (
             <ChevronUp className="h-4 w-4" />

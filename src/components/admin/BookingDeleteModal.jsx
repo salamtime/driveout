@@ -3,9 +3,12 @@ import { useDispatch } from 'react-redux';
 import { Trash2, AlertTriangle, X } from 'lucide-react';
 import { deleteBooking } from '../../store/slices/bookingsSlice';
 import toast from 'react-hot-toast';
+import i18n from '../../i18n';
 
 const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
   const dispatch = useDispatch();
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmText, setConfirmText] = useState('');
 
@@ -13,19 +16,19 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
 
   const handleDelete = async () => {
     if (confirmText.toLowerCase() !== 'delete') {
-      toast.error('Please type "DELETE" to confirm deletion');
+      toast.error(tr('Veuillez taper "DELETE" pour confirmer la suppression', 'Veuillez taper "DELETE" pour confirmer la suppression'));
       return;
     }
 
     setIsDeleting(true);
     try {
       await dispatch(deleteBooking(booking.id)).unwrap();
-      toast.success('Booking deleted successfully');
+      toast.success(tr('Réservation supprimée avec succès', 'Réservation supprimée avec succès'));
       onSuccess?.();
       onClose();
     } catch (error) {
       console.error('Error deleting booking:', error);
-      toast.error('Failed to delete booking: ' + error.message);
+      toast.error(`${tr('Échec de la suppression de la réservation :', 'Échec de la suppression de la réservation :')} ${error.message}`);
     } finally {
       setIsDeleting(false);
     }
@@ -39,13 +42,13 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
 
   const getWarningMessage = () => {
     if (booking.status === 'confirmed') {
-      return 'This booking is confirmed. Please cancel it first before deletion.';
+      return tr("Cette réservation est confirmée. Veuillez d'abord l'annuler avant de la supprimer.", "Cette réservation est confirmée. Veuillez d'abord l'annuler avant de la supprimer.");
     }
     if (booking.status === 'on_tour') {
-      return 'Cannot delete an active tour. Please finish the tour first.';
+      return tr("Impossible de supprimer un tour actif. Veuillez d'abord terminer le tour.", "Impossible de supprimer un tour actif. Veuillez d'abord terminer le tour.");
     }
     if (booking.status === 'completed') {
-      return 'Completed bookings cannot be deleted for record keeping purposes.';
+      return tr('Les réservations terminées ne peuvent pas être supprimées pour des raisons de conservation des dossiers.', 'Les réservations terminées ne peuvent pas être supprimées pour des raisons de conservation des dossiers.');
     }
     return null;
   };
@@ -59,7 +62,7 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
             <div className="p-2 bg-red-100 rounded-lg">
               <Trash2 className="h-6 w-6 text-red-600" />
             </div>
-            <h2 className="text-xl font-semibold text-gray-900">Delete Booking</h2>
+            <h2 className="text-xl font-semibold text-gray-900">{tr('Supprimer la réservation', 'Supprimer la réservation')}</h2>
           </div>
           <button
             onClick={onClose}
@@ -74,15 +77,15 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
           <div className="flex items-start gap-3">
             <AlertTriangle className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
             <div>
-              <h3 className="font-medium text-red-800 mb-1">Warning: This action cannot be undone</h3>
+              <h3 className="font-medium text-red-800 mb-1">{tr('Attention : cette action est irréversible', 'Attention : cette action est irréversible')}</h3>
               <p className="text-sm text-red-700">
-                Deleting this booking will permanently remove all associated data including:
+                {tr('La suppression de cette réservation retirera définitivement toutes les données associées, notamment :', 'La suppression de cette réservation retirera définitivement toutes les données associées, notamment :')}
               </p>
               <ul className="text-sm text-red-700 mt-2 list-disc list-inside">
-                <li>Customer information and contact details</li>
-                <li>Tour assignments and quad allocations</li>
-                <li>Payment records and transaction history</li>
-                <li>All notes and special requests</li>
+                <li>{tr('Les informations client et les coordonnées', 'Les informations client et les coordonnées')}</li>
+                <li>{tr('Les affectations de tour et allocations de quads', 'Les affectations de tour et allocations de quads')}</li>
+                <li>{tr('Les paiements et l’historique des transactions', 'Les paiements et l’historique des transactions')}</li>
+                <li>{tr('Toutes les notes et demandes spéciales', 'Toutes les notes et demandes spéciales')}</li>
               </ul>
             </div>
           </div>
@@ -90,28 +93,28 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
 
         {/* Booking Details */}
         <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-          <h4 className="font-medium text-gray-900 mb-3">Booking Details</h4>
+          <h4 className="font-medium text-gray-900 mb-3">{tr('Détails de la réservation', 'Détails de la réservation')}</h4>
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
-              <span className="text-gray-600">Booking ID:</span>
+              <span className="text-gray-600">{tr('ID réservation', 'ID réservation')} :</span>
               <span className="font-mono text-gray-900">{booking.id}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-600">Customer:</span>
+              <span className="text-gray-600">{tr('Client', 'Client')} :</span>
               <span className="text-gray-900">{booking.customerName}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-600">Tour:</span>
+              <span className="text-gray-600">{tr('Tour', 'Tour')} :</span>
               <span className="text-gray-900">{booking.tourName}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-600">Date:</span>
+              <span className="text-gray-600">{tr('Date', 'Date')} :</span>
               <span className="text-gray-900">
-                {new Date(booking.selectedDate).toLocaleDateString()} at {booking.selectedTime}
+                {new Date(booking.selectedDate).toLocaleDateString()} {tr('à', 'à')} {booking.selectedTime}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-600">Status:</span>
+              <span className="text-gray-600">{tr('Statut', 'Statut')} :</span>
               <span className={`px-2 py-1 rounded text-xs font-medium ${
                 booking.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
                 booking.status === 'confirmed' ? 'bg-blue-100 text-blue-800' :
@@ -123,7 +126,7 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-600">Total Amount:</span>
+              <span className="text-gray-600">{tr('Montant total', 'Montant total')} :</span>
               <span className="text-gray-900 font-medium">
                 ${booking.totalAmount?.toFixed(2) || '0.00'}
               </span>
@@ -137,7 +140,7 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
             <div className="flex items-start gap-3">
               <AlertTriangle className="h-5 w-5 text-yellow-500 mt-0.5 flex-shrink-0" />
               <div>
-                <h4 className="font-medium text-yellow-800 mb-1">Cannot Delete Booking</h4>
+                <h4 className="font-medium text-yellow-800 mb-1">{tr('Suppression impossible', 'Suppression impossible')}</h4>
                 <p className="text-sm text-yellow-700">{getWarningMessage()}</p>
               </div>
             </div>
@@ -148,13 +151,13 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
         {canDelete() && (
           <div className="mb-6">
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Type "DELETE" to confirm deletion:
+              {tr('Tapez "DELETE" pour confirmer la suppression :', 'Tapez "DELETE" pour confirmer la suppression :')}
             </label>
             <input
               type="text"
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
-              placeholder="Type DELETE here"
+              placeholder={tr('Tapez DELETE ici', 'Tapez DELETE ici')}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500"
               disabled={isDeleting}
             />
@@ -168,7 +171,7 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
             className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
             disabled={isDeleting}
           >
-            Cancel
+            {tr('Annuler', 'Annuler')}
           </button>
           {canDelete() && (
             <button
@@ -179,12 +182,12 @@ const BookingDeleteModal = ({ booking, isOpen, onClose, onSuccess }) => {
               {isDeleting ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
-                  Deleting...
+                  {tr('Suppression...', 'Suppression...')}
                 </>
               ) : (
                 <>
                   <Trash2 className="h-4 w-4" />
-                  Delete Booking
+                  {tr('Supprimer la réservation', 'Supprimer la réservation')}
                 </>
               )}
             </button>

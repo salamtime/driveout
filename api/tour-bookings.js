@@ -1,4 +1,6 @@
 import { authenticateRequest } from './_lib/auth.js';
+import { handleTourPackages } from './_lib/tourPackagesShared.js';
+import { handleTourTracking } from './_lib/tourTrackingShared.js';
 
 const TOUR_BOOKINGS_TABLE = 'app_687f658e98_tour_bookings';
 const TOUR_BOOKING_MARKER = '[tour_booking]';
@@ -206,6 +208,15 @@ const updateBookingRows = async (adminClient, updates = []) => {
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
+
+  const resource = String(req.query?.resource || '').trim().toLowerCase();
+  if (resource === 'packages') {
+    return handleTourPackages(req, res, json);
+  }
+
+  if (resource === 'tracking') {
+    return handleTourTracking(req, res, json);
+  }
 
   if (!['GET', 'POST', 'PATCH'].includes(req.method)) {
     return json(res, 405, { error: 'Method not allowed' });

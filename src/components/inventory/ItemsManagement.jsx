@@ -1,19 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useTranslation } from 'react-i18next';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import InventoryService from '../../services/InventoryService';
 import ItemDetailsModal from './ItemDetailsModal';
 import { getInventoryCategoryVisual } from '../../utils/inventoryVisuals';
 import {
+  INVENTORY_LABELS,
+  formatInventoryLabel,
+  normalizeInventoryLabels
+} from '../../config/maintenanceInventoryMapping';
+import {
   Package, 
   Plus, 
   Search, 
   Filter, 
-  Edit, 
   Trash2, 
   AlertTriangle,
-  Eye,
   Download,
   Upload,
   RefreshCw,
@@ -22,6 +26,9 @@ import {
 } from 'lucide-react';
 
 const INVENTORY_CATEGORY_OPTIONS = [
+  'consumable',
+  'part',
+  'equipment',
   'engine',
   'transmission',
   'brake',
@@ -37,6 +44,9 @@ const INVENTORY_CATEGORY_OPTIONS = [
 const normalizeInventoryCategory = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return '';
+  if (normalized.includes('consumable')) return 'consumable';
+  if (normalized.includes('equipment')) return 'equipment';
+  if (normalized === 'part' || normalized.includes('parts')) return 'part';
   if (normalized.includes('transmission') || normalized.includes('cvt') || normalized.includes('clutch')) return 'transmission';
   if (normalized.includes('engine')) return 'engine';
   if (normalized.includes('brake')) return 'brake';
@@ -56,6 +66,12 @@ const formatInventoryCategoryLabel = (value = '') => {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 };
 
+const getAvailableStockForItem = (item) => (
+  item?.available_stock !== undefined && item?.available_stock !== null
+    ? item.available_stock
+    : (item?.stock_on_hand || 0)
+);
+
 /**
  * ItemsManagement - Enhanced inventory items management with image upload
  * 
@@ -68,6 +84,10 @@ const formatInventoryCategoryLabel = (value = '') => {
  * - Bulk operations
  */
 const ItemsManagement = ({ initialParams, action }) => {
+  const { i18n } = useTranslation();
+  const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
+  const primaryActionButtonClass = 'rounded-2xl bg-violet-600 text-white shadow-sm hover:bg-violet-700';
+  const softActionButtonClass = 'rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900';
   const dispatch = useDispatch();
   const { user } = useSelector(state => state.auth);
   
@@ -86,7 +106,6 @@ const ItemsManagement = ({ initialParams, action }) => {
   
   // Modal states
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
   
@@ -107,6 +126,7 @@ const ItemsManagement = ({ initialParams, action }) => {
     max_stock_level: '',
     price_mad: '',
     cost_mad: '',
+    labels: [],
     active: true
   });
 
@@ -139,7 +159,8 @@ const ItemsManagement = ({ initialParams, action }) => {
       setError(null);
       
       const itemsData = await InventoryService.getItems();
-      setItems(itemsData);
+      const operationalItems = await InventoryService.enrichItemsWithOperationalStock(itemsData);
+      setItems(operationalItems);
     } catch (err) {
       console.error('Error loading items:', err);
       setError(err.message);
@@ -168,7 +189,8 @@ const ItemsManagement = ({ initialParams, action }) => {
         item.name.toLowerCase().includes(term) ||
         (item.sku && item.sku.toLowerCase().includes(term)) ||
         (item.description && item.description.toLowerCase().includes(term)) ||
-        normalizeInventoryCategory(item.category).includes(term)
+        normalizeInventoryCategory(item.category).includes(term) ||
+        normalizeInventoryLabels(item.labels || []).some((label) => formatInventoryLabel(label).toLowerCase().includes(term) || label.includes(term))
       );
     }
 
@@ -178,10 +200,10 @@ const ItemsManagement = ({ initialParams, action }) => {
 
     if (stockFilter === 'low_stock') {
       filtered = filtered.filter(item => 
-        (item.stock_on_hand || 0) <= (item.reorder_level || 0) && (item.stock_on_hand || 0) > 0
+        getAvailableStockForItem(item) <= (item.reorder_level || 0) && getAvailableStockForItem(item) > 0
       );
     } else if (stockFilter === 'out_of_stock') {
-      filtered = filtered.filter(item => (item.stock_on_hand || 0) === 0);
+      filtered = filtered.filter(item => getAvailableStockForItem(item) === 0);
     }
 
     if (activeFilter === 'active') {
@@ -205,6 +227,7 @@ const ItemsManagement = ({ initialParams, action }) => {
       max_stock_level: '',
       price_mad: '',
       cost_mad: '',
+      labels: [],
       active: true
     });
     setImageFile(null);
@@ -222,6 +245,30 @@ const ItemsManagement = ({ initialParams, action }) => {
     }));
   };
 
+  const toggleFormLabel = (label) => {
+    const normalizedLabel = normalizeInventoryLabels([label])[0];
+    if (!normalizedLabel) return;
+
+    setFormData((prev) => {
+      const labels = normalizeInventoryLabels(prev.labels || []);
+      const nextLabels = labels.includes(normalizedLabel)
+        ? labels.filter((item) => item !== normalizedLabel)
+        : [...labels, normalizedLabel];
+
+      return {
+        ...prev,
+        labels: nextLabels
+      };
+    });
+  };
+
+  const handleCustomLabelsChange = (event) => {
+    setFormData((prev) => ({
+      ...prev,
+      labels: normalizeInventoryLabels(event.target.value)
+    }));
+  };
+
   // Handle image file selection
   const handleImageChange = (e) => {
     const file = e.target.files[0];
@@ -230,14 +277,14 @@ const ItemsManagement = ({ initialParams, action }) => {
     // Validate file type
     const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
     if (!allowedTypes.includes(file.type)) {
-      setError('Invalid file type. Only JPG, PNG, GIF, and WebP are allowed.');
+      setError(tr('Invalid file type. Only JPG, PNG, GIF, and WebP are allowed.', "Type de fichier invalide. Seuls JPG, PNG, GIF et WebP sont autorisés."));
       return;
     }
 
     // Validate file size (5MB max)
     const maxSize = 5 * 1024 * 1024;
     if (file.size > maxSize) {
-      setError('File size exceeds 5MB limit.');
+      setError(tr('File size exceeds 5MB limit.', 'La taille du fichier dépasse la limite de 5 Mo.'));
       return;
     }
 
@@ -288,37 +335,13 @@ const ItemsManagement = ({ initialParams, action }) => {
     setShowAddModal(true);
   };
 
-  const handleEditItem = (item) => {
-    setFormData({
-      name: item.name || '',
-      sku: item.sku || '',
-      category: normalizeInventoryCategory(item.category) || '',
-      description: item.description || '',
-      unit: item.unit || 'piece',
-      stock_on_hand: item.stock_on_hand?.toString() || '',
-      reorder_level: item.reorder_level?.toString() || '',
-      max_stock_level: item.max_stock_level?.toString() || '',
-      price_mad: item.price_mad?.toString() || '',
-      cost_mad: item.cost_mad?.toString() || '',
-      active: item.active !== false
-    });
-    
-    // Set existing image preview if available
-    if (item.image_url) {
-      setImagePreview(item.image_url);
-    }
-    
-    setSelectedItem(item);
-    setShowEditModal(true);
-  };
-
   const handleViewDetails = (item) => {
     setSelectedItem(item);
     setShowDetailsModal(true);
   };
 
   const handleDeleteItem = async (item) => {
-    if (!window.confirm(`Are you sure you want to delete "${item.name}"? This will also delete its image.`)) {
+    if (!window.confirm(tr(`Are you sure you want to delete "${item.name}"? This will also delete its image.`, `Voulez-vous vraiment supprimer "${item.name}" ? Son image sera également supprimée.`))) {
       return;
     }
 
@@ -351,16 +374,11 @@ const ItemsManagement = ({ initialParams, action }) => {
 
       console.log('Submitting item data:', sanitizedData);
 
-      if (selectedItem) {
-        await InventoryService.updateItem(selectedItem.id, sanitizedData);
-      } else {
-        await InventoryService.createItem(sanitizedData);
-      }
+      await InventoryService.createItem(sanitizedData);
 
       await loadItems();
       await loadCategories();
       setShowAddModal(false);
-      setShowEditModal(false);
       resetForm();
     } catch (err) {
       console.error('Error saving item:', err);
@@ -372,15 +390,15 @@ const ItemsManagement = ({ initialParams, action }) => {
   };
 
   const getStockStatus = (item) => {
-    const stock = item.stock_on_hand || 0;
+    const stock = getAvailableStockForItem(item);
     const reorderLevel = item.reorder_level || 0;
     
     if (stock === 0) {
-      return { status: 'Out of Stock', color: 'text-red-600 bg-red-50', icon: AlertTriangle };
+      return { status: tr('Out of Stock', 'Rupture de stock'), color: 'text-red-600 bg-red-50', icon: AlertTriangle };
     } else if (stock <= reorderLevel) {
-      return { status: 'Low Stock', color: 'text-yellow-600 bg-yellow-50', icon: AlertTriangle };
+      return { status: tr('Low Stock', 'Stock faible'), color: 'text-yellow-600 bg-yellow-50', icon: AlertTriangle };
     } else {
-      return { status: 'In Stock', color: 'text-green-600 bg-green-50', icon: Package };
+      return { status: tr('In Stock', 'En stock'), color: 'text-green-600 bg-green-50', icon: Package };
     }
   };
 
@@ -392,13 +410,18 @@ const ItemsManagement = ({ initialParams, action }) => {
     }).format(amount || 0);
   };
 
+  const formatQuantity = (value) => {
+    const number = parseFloat(value || 0) || 0;
+    return Number.isInteger(number) ? number.toString() : number.toFixed(2).replace(/\.?0+$/, '');
+  };
+
   return (
     <div className="p-4 lg:p-6 space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">Items Management</h1>
-          <p className="text-gray-600 mt-1">Manage your inventory items and stock levels</p>
+          <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">{tr('Items Management', 'Gestion des articles')}</h1>
+          <p className="text-gray-600 mt-1">{tr('Manage your inventory items and stock levels', "Gérez vos articles d'inventaire et vos niveaux de stock")}</p>
         </div>
         <div className="flex gap-2">
           <Button
@@ -406,30 +429,30 @@ const ItemsManagement = ({ initialParams, action }) => {
             variant="outline"
             size="sm"
             disabled={loading}
-            className="flex items-center gap-2"
+            className={`flex items-center gap-2 ${softActionButtonClass}`}
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
+            {tr('Refresh', 'Actualiser')}
           </Button>
           <Button
             onClick={handleAddItem}
-            className="flex items-center gap-2"
+            className={`flex items-center gap-2 ${primaryActionButtonClass}`}
           >
             <Plus className="w-4 h-4" />
-            Add Item
+            {tr('Add Item', 'Ajouter un article')}
           </Button>
         </div>
       </div>
 
       {/* Filters */}
-      <Card>
+      <Card className="rounded-[2rem] border-slate-200 bg-white shadow-sm">
         <CardContent className="p-4">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
               <input
                 type="text"
-                placeholder="Search items..."
+                placeholder={tr('Search items...', 'Rechercher des articles...')}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
@@ -441,7 +464,7 @@ const ItemsManagement = ({ initialParams, action }) => {
               onChange={(e) => setSelectedCategory(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
-              <option value="">All Categories</option>
+              <option value="">{tr('All Categories', 'Toutes les catégories')}</option>
               {allCategoryOptions.map(category => (
                 <option key={category} value={category}>{formatInventoryCategoryLabel(category)}</option>
               ))}
@@ -452,9 +475,9 @@ const ItemsManagement = ({ initialParams, action }) => {
               onChange={(e) => setStockFilter(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
-              <option value="all">All Stock Levels</option>
-              <option value="low_stock">Low Stock</option>
-              <option value="out_of_stock">Out of Stock</option>
+              <option value="all">{tr('All Stock Levels', 'Tous les niveaux de stock')}</option>
+              <option value="low_stock">{tr('Low Stock', 'Stock faible')}</option>
+              <option value="out_of_stock">{tr('Out of Stock', 'Rupture de stock')}</option>
             </select>
 
             <select
@@ -462,9 +485,9 @@ const ItemsManagement = ({ initialParams, action }) => {
               onChange={(e) => setActiveFilter(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
-              <option value="all">All Items</option>
-              <option value="active">Active Only</option>
-              <option value="inactive">Inactive Only</option>
+              <option value="all">{tr('All Items', 'Tous les articles')}</option>
+              <option value="active">{tr('Active Only', 'Actifs uniquement')}</option>
+              <option value="inactive">{tr('Inactive Only', 'Inactifs uniquement')}</option>
             </select>
 
             <Button
@@ -475,10 +498,10 @@ const ItemsManagement = ({ initialParams, action }) => {
                 setActiveFilter('all');
               }}
               variant="outline"
-              className="flex items-center gap-2"
+              className={`flex items-center gap-2 ${softActionButtonClass}`}
             >
               <Filter className="w-4 h-4" />
-              Clear
+              {tr('Clear', 'Effacer')}
             </Button>
           </div>
         </CardContent>
@@ -486,24 +509,24 @@ const ItemsManagement = ({ initialParams, action }) => {
 
       {/* Error Display */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-md p-4">
+        <div className="rounded-[1.5rem] border border-red-200 bg-red-50 p-4 shadow-sm">
           <p className="text-red-800">{error}</p>
         </div>
       )}
 
       {/* Items List */}
-      <Card>
-        <CardHeader>
+      <Card className="rounded-[2rem] border-slate-200 bg-white shadow-sm">
+        <CardHeader className="rounded-t-[2rem] border-b border-slate-100 bg-slate-50/70">
           <CardTitle className="flex items-center justify-between">
-            <span>Items ({filteredItems.length})</span>
+            <span>{tr('Items', 'Articles')} ({filteredItems.length})</span>
             <div className="flex gap-2">
-              <Button variant="outline" size="sm" className="flex items-center gap-2">
+              <Button variant="outline" size="sm" className={`flex items-center gap-2 ${softActionButtonClass}`}>
                 <Download className="w-4 h-4" />
-                Export
+                {tr('Export', 'Exporter')}
               </Button>
-              <Button variant="outline" size="sm" className="flex items-center gap-2">
+              <Button variant="outline" size="sm" className={`flex items-center gap-2 ${softActionButtonClass}`}>
                 <Upload className="w-4 h-4" />
-                Import
+                {tr('Import', 'Importer')}
               </Button>
             </div>
           </CardTitle>
@@ -512,24 +535,24 @@ const ItemsManagement = ({ initialParams, action }) => {
           {loading && (
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-              <span className="ml-2">Loading items...</span>
+              <span className="ml-2">{tr('Loading items...', 'Chargement des articles...')}</span>
             </div>
           )}
 
           {!loading && filteredItems.length === 0 && (
             <div className="text-center py-8">
               <Package className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No items found</h3>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">{tr('No items found', 'Aucun article trouvé')}</h3>
               <p className="text-gray-600 mb-4">
                 {searchTerm || selectedCategory || stockFilter !== 'all' || activeFilter !== 'all'
-                  ? 'Try adjusting your filters or search terms.'
-                  : 'Get started by adding your first inventory item.'
+                  ? tr('Try adjusting your filters or search terms.', 'Essayez de modifier vos filtres ou vos termes de recherche.')
+                  : tr('Get started by adding your first inventory item.', "Commencez par ajouter votre premier article d'inventaire.")
                 }
               </p>
               {!searchTerm && !selectedCategory && stockFilter === 'all' && activeFilter === 'all' && (
-                <Button onClick={handleAddItem} className="flex items-center gap-2">
+                <Button onClick={handleAddItem} className={`flex items-center gap-2 ${primaryActionButtonClass}`}>
                   <Plus className="w-4 h-4" />
-                  Add First Item
+                  {tr('Add First Item', 'Ajouter le premier article')}
                 </Button>
               )}
             </div>
@@ -540,8 +563,23 @@ const ItemsManagement = ({ initialParams, action }) => {
               {filteredItems.map(item => {
                 const stockStatus = getStockStatus(item);
                 const categoryVisual = getInventoryCategoryVisual(item.category);
+                const currentStock = item.current_stock ?? item.stock_on_hand ?? 0;
+                const reservedQuantity = item.reserved_quantity || 0;
+                const availableStock = getAvailableStockForItem(item);
                 return (
-                  <div key={item.id} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
+                  <div
+                    key={item.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleViewDetails(item)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        handleViewDetails(item);
+                      }
+                    }}
+                    className="cursor-pointer rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:border-violet-200 hover:bg-white hover:shadow-md focus:outline-none focus:ring-2 focus:ring-violet-200"
+                  >
                     {/* Item Image */}
                     {item.image_url && (
                       <div className="mb-3 rounded-md overflow-hidden bg-gray-100 flex items-center justify-center h-32">
@@ -581,11 +619,21 @@ const ItemsManagement = ({ initialParams, action }) => {
                     {/* Stock Info */}
                     <div className="space-y-2 mb-4">
                       <div className="flex justify-between text-sm">
-                        <span className="text-gray-600">Stock on Hand:</span>
-                        <span className="font-medium">{item.stock_on_hand || 0} {item.unit}</span>
+                        <span className="text-gray-600">{tr('Available:', 'Disponible :')}</span>
+                        <span className="font-semibold text-emerald-700">{formatQuantity(availableStock)} {item.unit}</span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-gray-600">Reorder Level:</span>
+                        <span className="text-gray-600">{tr('Current Stock:', 'Stock actuel :')}</span>
+                        <span className="font-medium">{formatQuantity(currentStock)} {item.unit}</span>
+                      </div>
+                      {reservedQuantity > 0 && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600">{tr('Allocated:', 'Alloué :')}</span>
+                        <span className="font-medium text-amber-700">{formatQuantity(reservedQuantity)} {item.unit}</span>
+                      </div>
+                      )}
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600">{tr('Reorder Threshold:', 'Seuil de réapprovisionnement :')}</span>
                         <span className="font-medium">{item.reorder_level || 0} {item.unit}</span>
                       </div>
                       <div className="flex justify-between text-sm">
@@ -593,35 +641,21 @@ const ItemsManagement = ({ initialParams, action }) => {
                         <span className="font-medium">{formatCurrency(item.price_mad)}</span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-gray-600">Cost:</span>
+                        <span className="text-gray-600">{tr('Cost per Unit:', 'Coût par unité :')}</span>
                         <span className="font-medium">{formatCurrency(item.cost_mad)}</span>
                       </div>
                     </div>
 
                     {/* Actions */}
-                    <div className="flex justify-between items-center pt-3 border-t">
-                      <div className="flex space-x-2">
-                        <Button
-                          onClick={() => handleViewDetails(item)}
-                          size="sm"
-                          variant="outline"
-                          className="flex items-center gap-1"
-                        >
-                          <Eye className="w-3 h-3" />
-                          Details
-                        </Button>
-                        <Button
-                          onClick={() => handleEditItem(item)}
-                          size="sm"
-                          variant="outline"
-                          className="flex items-center gap-1"
-                        >
-                          <Edit className="w-3 h-3" />
-                          Edit
-                        </Button>
-                      </div>
+                    <div className="flex justify-between items-center pt-3 border-t border-slate-100">
+                      <span className="text-xs font-medium text-slate-500">
+                        {tr('Tap card to view or edit', 'Touchez la carte pour voir ou modifier')}
+                      </span>
                       <Button
-                        onClick={() => handleDeleteItem(item)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleDeleteItem(item);
+                        }}
                         size="sm"
                         variant="outline"
                         className="text-red-600 hover:text-red-700 hover:bg-red-50"
@@ -654,22 +688,27 @@ const ItemsManagement = ({ initialParams, action }) => {
           setSelectedItem(null);
         }}
         formatCurrency={formatCurrency}
+        onItemSaved={async (updatedItem) => {
+          const [enrichedItem] = await InventoryService.enrichItemsWithOperationalStock([updatedItem]);
+          setSelectedItem(enrichedItem || updatedItem);
+          await loadItems();
+          await loadCategories();
+        }}
       />
 
-      {/* Add/Edit Item Modal */}
-      {(showAddModal || showEditModal) && (
+      {/* Add Item Modal */}
+      {showAddModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between p-6 border-b">
               <h2 className="text-xl font-semibold">
-                {selectedItem ? 'Edit Item' : 'Add New Item'}
+                {tr('Add New Item', 'Ajouter un nouvel article')}
               </h2>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => {
                   setShowAddModal(false);
-                  setShowEditModal(false);
                   resetForm();
                 }}
               >
@@ -710,7 +749,7 @@ const ItemsManagement = ({ initialParams, action }) => {
                         className="cursor-pointer inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
                       >
                         <Upload className="w-4 h-4 mr-2" />
-                        Upload Image
+                        {tr('Upload Image', "Téléverser l'image")}
                       </label>
                       <input
                         id="image-upload"
@@ -722,7 +761,7 @@ const ItemsManagement = ({ initialParams, action }) => {
                       />
                     </div>
                     <p className="mt-1 text-xs text-gray-500">
-                      JPG, PNG, GIF, WebP up to 5MB
+                      {tr('JPG, PNG, GIF, WebP up to 5MB', "JPG, PNG, GIF, WebP jusqu'à 5 Mo")}
                     </p>
                   </div>
                 )}
@@ -731,7 +770,7 @@ const ItemsManagement = ({ initialParams, action }) => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Item Name *
+                    {tr('Item Name *', "Nom de l'article *")}
                   </label>
                   <input
                     type="text"
@@ -758,7 +797,7 @@ const ItemsManagement = ({ initialParams, action }) => {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Category *
+                    {tr('Item Type / Category *', "Type d'article / catégorie *")}
                   </label>
                   <select
                     name="category"
@@ -767,16 +806,48 @@ const ItemsManagement = ({ initialParams, action }) => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     required
                   >
-                    <option value="">Select category</option>
+                    <option value="">{tr('Select item type', "Sélectionnez le type d'article")}</option>
                     {allCategoryOptions.map(category => (
                       <option key={category} value={category}>{formatInventoryCategoryLabel(category)}</option>
                     ))}
                   </select>
                 </div>
 
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    {tr('Smart Labels', 'Etiquettes intelligentes')}
+                  </label>
+                  <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    {INVENTORY_LABELS.map((label) => {
+                      const selected = normalizeInventoryLabels(formData.labels || []).includes(label);
+                      return (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => toggleFormLabel(label)}
+                          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                            selected
+                              ? 'border-blue-500 bg-blue-600 text-white'
+                              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          {formatInventoryLabel(label)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <input
+                    type="text"
+                    value={normalizeInventoryLabels(formData.labels || []).join(', ')}
+                    onChange={handleCustomLabelsChange}
+                    placeholder={tr('Optional custom labels, separated by commas', 'Etiquettes personnalisees optionnelles, separees par des virgules')}
+                    className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Unit *
+                    {tr('Unit *', 'Unité *')}
                   </label>
                   <select
                     name="unit"
@@ -785,19 +856,16 @@ const ItemsManagement = ({ initialParams, action }) => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     required
                   >
-                    <option value="piece">Piece</option>
-                    <option value="liter">Liter</option>
-                    <option value="kilogram">Kilogram</option>
-                    <option value="meter">Meter</option>
-                    <option value="set">Set</option>
-                    <option value="box">Box</option>
-                    <option value="pack">Pack</option>
+                    <option value="piece">{tr('Piece', 'Pièce')}</option>
+                    <option value="liter">{tr('Liter', 'Litre')}</option>
+                    <option value="box">{tr('Box', 'Boîte')}</option>
+                    <option value="pack">{tr('Pack', 'Paquet')}</option>
                   </select>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Stock on Hand
+                    {tr('Current Stock', 'Stock actuel')}
                   </label>
                   <input
                     type="number"
@@ -813,7 +881,7 @@ const ItemsManagement = ({ initialParams, action }) => {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Reorder Level
+                    {tr('Reorder Threshold', 'Seuil de réapprovisionnement')}
                   </label>
                   <input
                     type="number"
@@ -829,7 +897,7 @@ const ItemsManagement = ({ initialParams, action }) => {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Max Stock Level
+                    {tr('Max Capacity', 'Capacité maximale')}
                   </label>
                   <input
                     type="number"
@@ -845,7 +913,7 @@ const ItemsManagement = ({ initialParams, action }) => {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Selling Price (MAD)
+                    {tr('Selling Price (MAD)', 'Prix de vente (MAD)')}
                   </label>
                   <input
                     type="number"
@@ -861,7 +929,7 @@ const ItemsManagement = ({ initialParams, action }) => {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Cost Price (MAD)
+                    {tr('Cost per Unit (MAD)', 'Coût par unité (MAD)')}
                   </label>
                   <input
                     type="number"
@@ -878,7 +946,7 @@ const ItemsManagement = ({ initialParams, action }) => {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Description
+                  {tr('Description', 'Description')}
                 </label>
                 <textarea
                   name="description"
@@ -898,7 +966,7 @@ const ItemsManagement = ({ initialParams, action }) => {
                   className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                 />
                 <label className="ml-2 block text-sm text-gray-700">
-                  Active
+                  {tr('Active', 'Actif')}
                 </label>
               </div>
 
@@ -908,11 +976,10 @@ const ItemsManagement = ({ initialParams, action }) => {
                   variant="outline"
                   onClick={() => {
                     setShowAddModal(false);
-                    setShowEditModal(false);
                     resetForm();
                   }}
                 >
-                  Cancel
+                  {tr('Cancel', 'Annuler')}
                 </Button>
                 <Button
                   type="submit"
@@ -920,8 +987,8 @@ const ItemsManagement = ({ initialParams, action }) => {
                   className="flex items-center gap-2"
                 >
                   {loading && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>}
-                  {uploadingImage && <span>Uploading...</span>}
-                  {!uploadingImage && (selectedItem ? 'Update Item' : 'Create Item')}
+                  {uploadingImage && <span>{tr('Uploading...', 'Téléversement...')}</span>}
+                  {!uploadingImage && tr('Create Item', "Créer l'article")}
                 </Button>
               </div>
             </form>

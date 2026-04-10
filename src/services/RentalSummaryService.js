@@ -165,7 +165,7 @@ class RentalSummaryService {
           if (!vehicleId) return;
           if (status === 'active') {
             activeVehicleIds.add(vehicleId);
-          } else if (status === 'scheduled' || status === 'confirmed') {
+          } else if (status === 'scheduled' || status === 'confirmed' || status === 'no_show_review') {
             scheduledVehicleIds.add(vehicleId);
           }
         });

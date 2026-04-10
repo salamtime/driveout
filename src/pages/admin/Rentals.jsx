@@ -10,7 +10,7 @@ import EnhancedTransactionalRentalService from '../../services/EnhancedTransacti
 import PricingRulesService from '../../services/PricingRulesService';
 import appWarmupService from '../../services/AppWarmupService';
 import rentalSummaryService from '../../services/RentalSummaryService';
-import { deriveEffectiveRentalStatus, normalizeRentalLifecycle } from '../../utils/rentalLifecycle';
+import { DEFAULT_RENTAL_TIMING_SETTINGS, deriveEffectiveRentalStatus, getScheduledRentalTimingState, normalizeRentalLifecycle } from '../../utils/rentalLifecycle';
 import { getPaymentStatusStyle } from '../../config/statusColors';
 import { roundTo } from '../../utils/fuelMath';
 import { Plus, Clock, ClipboardList, List, Grid, LayoutGrid, CheckCircle, XCircle, Calendar, MessageCircle, RectangleHorizontal } from 'lucide-react';
@@ -18,6 +18,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import i18n from '../../i18n';
 import { canEditRentalContract } from '../../utils/permissionHelpers';
+import { fetchSystemSettings } from '../../services/systemSettingsApi';
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
@@ -36,6 +37,185 @@ const buildVehicleReminderLabel = (rental) => {
   const plateNumber = rental?.vehicle?.plate_number || '';
 
   return [vehicleName, vehicleModel].filter(Boolean).join(' - ') || plateNumber || tr('your vehicle', 'votre véhicule');
+};
+
+const openWhatsAppContact = (url) => {
+  window.location.assign(url);
+};
+
+const isAbortLikeError = (error) => {
+  const message = String(error?.message || error || '').toLowerCase();
+  const name = String(error?.name || '').toLowerCase();
+
+  return (
+    name === 'aborterror' ||
+    message.includes('aborterror') ||
+    message.includes('signal is aborted') ||
+    message.includes('signal has been aborted') ||
+    message.includes('the operation was aborted') ||
+    message.includes('body stream already read')
+  );
+};
+
+const insertSharedRentalActivityLog = async (payload) => {
+  const modernPayload = {
+    actor_id: payload.user_id || null,
+    actor_type: 'user',
+    event_type: payload.action || 'rental_activity',
+    entity_id: payload.entity_id || null,
+    entity_type: payload.entity_type || 'rental',
+    user_name: payload.created_by || null,
+    payload: payload.description ? { description: payload.description, reason: payload.reason || null } : null,
+    metadata: payload.details || payload.metadata || null,
+  };
+
+  const modernAttempt = await supabase
+    .from('saharax_0u4w4d_activity_log')
+    .insert(modernPayload);
+
+  if (!modernAttempt.error) return modernAttempt;
+
+  return supabase
+    .from('saharax_0u4w4d_activity_log')
+    .insert(payload);
+};
+
+const formatRentalWhatsAppDate = (value) => {
+  const parsed = value ? new Date(value) : null;
+  if (!(parsed instanceof Date) || Number.isNaN(parsed.getTime())) {
+    return tr('your scheduled time', 'votre horaire prévu');
+  }
+
+  return parsed.toLocaleString(isFrenchLocale() ? 'fr-FR' : 'en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+};
+
+const buildRentalWhatsAppOptions = (rental, effectiveRentalStatus, paymentSnapshot) => {
+  const cleanPhone = String(rental?.customer_phone || '').replace(/\D/g, '');
+  if (!cleanPhone) return [];
+
+  const now = new Date();
+  const startDate = rental?.rental_start_date ? new Date(rental.rental_start_date) : null;
+  const endDate = rental?.rental_end_date ? new Date(rental.rental_end_date) : null;
+  const vehicleLabel = buildVehicleReminderLabel(rental);
+  const customerName = rental?.customer_name || tr('there', 'bonjour');
+  const rentalId = rental?.rental_id || '';
+  const formattedStart = formatRentalWhatsAppDate(rental?.rental_start_date);
+  const formattedEnd = formatRentalWhatsAppDate(rental?.rental_end_date);
+  const hasValidStart = startDate instanceof Date && !Number.isNaN(startDate.getTime());
+  const hasValidEnd = endDate instanceof Date && !Number.isNaN(endDate.getTime());
+  const startsWithin24Hours =
+    hasValidStart && startDate.getTime() > now.getTime() && startDate.getTime() - now.getTime() <= 24 * 60 * 60 * 1000;
+  const isLateForPickup =
+    effectiveRentalStatus === 'scheduled' &&
+    hasValidStart &&
+    startDate.getTime() <= now.getTime();
+  const nearReturn =
+    effectiveRentalStatus === 'active' &&
+    hasValidEnd &&
+    endDate.getTime() >= now.getTime() &&
+    endDate.getTime() - now.getTime() <= 24 * 60 * 60 * 1000;
+  const balanceDue = Number(paymentSnapshot?.balanceDue || 0);
+
+  const templates = [
+    {
+      id: 'general',
+      priority: 1,
+      label: tr('General contact', 'Contact général'),
+      preview: tr('General message about this rental.', 'Message général à propos de cette location.'),
+      message: isFrenchLocale()
+        ? `Bonjour ${customerName}, nous vous contactons au sujet de votre location ${rentalId} pour ${vehicleLabel}.`
+        : `Hi ${customerName}, we are contacting you regarding your rental ${rentalId} for ${vehicleLabel}.`,
+    },
+    {
+      id: 'upcoming',
+      priority: startsWithin24Hours ? 0 : 3,
+      hidden: !startsWithin24Hours && effectiveRentalStatus !== 'scheduled',
+      label: tr('Upcoming reminder', 'Rappel à venir'),
+      preview: tr('Reminder for the upcoming rental time.', "Rappel pour l'heure de location à venir."),
+      message: isFrenchLocale()
+        ? `Bonjour ${customerName}, rappel amical : votre location ${rentalId} pour ${vehicleLabel} est prévue le ${formattedStart}. Répondez-nous ici si vous avez besoin d'aide ou d'un ajustement.`
+        : `Hi ${customerName}, friendly reminder: your rental ${rentalId} for ${vehicleLabel} is scheduled for ${formattedStart}. Reply here if you need any help or adjustment.`,
+    },
+    {
+      id: 'late',
+      priority: isLateForPickup ? 0 : 4,
+      hidden: !isLateForPickup,
+      label: tr('Customer late', 'Client en retard'),
+      preview: tr('Quick check-in when the customer is late.', 'Vérification rapide lorsque le client est en retard.'),
+      message: isFrenchLocale()
+        ? `Bonjour ${customerName}, nous vous attendons pour votre location ${rentalId} prévue à ${formattedStart}. Êtes-vous en route ?`
+        : `Hi ${customerName}, we are waiting for your rental ${rentalId} scheduled at ${formattedStart}. Are you on your way?`,
+    },
+    {
+      id: 'arrived',
+      priority: isLateForPickup ? 1 : 5,
+      hidden: !isLateForPickup,
+      label: tr('Customer arrived', 'Client arrivé'),
+      preview: tr('Confirm arrival and next step.', "Confirmer l'arrivée et la prochaine étape."),
+      message: isFrenchLocale()
+        ? `Bonjour ${customerName}, merci. Une fois arrivé(e), présentez-vous à l'équipe SaharaX et nous terminerons votre départ pour ${vehicleLabel}.`
+        : `Hi ${customerName}, thank you. Once you arrive, please check in with the SaharaX team and we will complete your departure for ${vehicleLabel}.`,
+    },
+    {
+      id: 'no_show',
+      priority: isLateForPickup ? 2 : 6,
+      hidden: !isLateForPickup,
+      label: tr('No-show warning', 'Avertissement absence'),
+      preview: tr('Last warning before marking no-show.', "Dernier avertissement avant marquage en absence."),
+      message: isFrenchLocale()
+        ? `Bonjour ${customerName}, sans réponse rapide de votre part, votre location ${rentalId} pourra être marquée comme absence et le véhicule sera remis à disposition.`
+        : `Hi ${customerName}, if we do not hear from you shortly, your rental ${rentalId} may be marked as a no-show and the vehicle will be released.`,
+    },
+    {
+      id: 'documents',
+      priority: 4,
+      label: tr('Documents sent', 'Documents envoyés'),
+      preview: tr('Tell the customer their documents were sent.', 'Informer le client que ses documents ont été envoyés.'),
+      message: isFrenchLocale()
+        ? `Bonjour ${customerName}, nous venons de vous envoyer les documents de votre location ${rentalId}. Dites-nous si vous avez besoin d'autre chose.`
+        : `Hi ${customerName}, we have just sent the documents for your rental ${rentalId}. Let us know if you need anything else.`,
+    },
+    {
+      id: 'payment',
+      priority: balanceDue > 0 ? 0 : 5,
+      hidden: balanceDue <= 0,
+      label: tr('Payment reminder', 'Rappel de paiement'),
+      preview: tr('Follow up on the remaining balance.', 'Suivi du solde restant.'),
+      message: isFrenchLocale()
+        ? `Bonjour ${customerName}, il reste ${balanceDue.toFixed(0)} MAD à régler pour votre location ${rentalId}. Merci de nous confirmer votre mode de paiement.`
+        : `Hi ${customerName}, there is still ${balanceDue.toFixed(0)} MAD due for your rental ${rentalId}. Please confirm how you would like to settle it.`,
+    },
+    {
+      id: 'extension',
+      priority: effectiveRentalStatus === 'active' ? 3 : 6,
+      hidden: effectiveRentalStatus !== 'active',
+      label: tr('Extension follow-up', 'Suivi extension'),
+      preview: tr('Ask whether the customer wants more time.', "Demander si le client souhaite plus de temps."),
+      message: isFrenchLocale()
+        ? `Bonjour ${customerName}, souhaitez-vous prolonger votre location ${rentalId} pour ${vehicleLabel} ? Nous pouvons vous confirmer les options ici sur WhatsApp.`
+        : `Hi ${customerName}, would you like to extend your rental ${rentalId} for ${vehicleLabel}? We can confirm the options here on WhatsApp.`,
+    },
+    {
+      id: 'return',
+      priority: nearReturn ? 0 : 5,
+      hidden: effectiveRentalStatus !== 'active',
+      label: tr('Return reminder', 'Rappel de retour'),
+      preview: tr('Reminder about the upcoming return time.', "Rappel de l'heure de retour à venir."),
+      message: isFrenchLocale()
+        ? `Bonjour ${customerName}, votre location ${rentalId} pour ${vehicleLabel} se termine le ${formattedEnd}. Merci de nous informer si vous êtes en route pour le retour.`
+        : `Hi ${customerName}, your rental ${rentalId} for ${vehicleLabel} ends on ${formattedEnd}. Please let us know when you are on your way back.`,
+    },
+  ];
+
+  return templates
+    .filter((template) => !template.hidden)
+    .sort((a, b) => a.priority - b.priority);
 };
 
 const recalculateAutoRentalPrice = async (rental) => {
@@ -126,14 +306,117 @@ const getBookingSourceBadge = (rental) => {
   return null;
 };
 
+const isNoShowCancellation = (rental = {}) =>
+  String(rental?.cancellation_reason || '').trim().toLowerCase() === 'no_show';
+
+const BUSINESS_DAY_START_HOUR = 10;
+const BUSINESS_DAY_END_HOUR = 3;
+const RENTALS_WORKSPACE_PREF_KEY = 'saharax:rentals:workspace';
+
+const getStoredRentalsWorkspace = () => {
+  if (typeof window === 'undefined') return null;
+  const stored = window.localStorage.getItem(RENTALS_WORKSPACE_PREF_KEY);
+  return ['today', 'upcoming', 'past'].includes(stored) ? stored : null;
+};
+const STATUS_TAB_KEYS = ['all', 'active', 'scheduled', 'completed', 'no_show_review', 'cancelled', 'maintenance', 'impounded'];
+
+const toSafeDate = (value) => {
+  const parsed = value ? new Date(value) : null;
+  return parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed : null;
+};
+
+const getBusinessDayWindow = (now = new Date()) => {
+  const current = new Date(now);
+  const start = new Date(current);
+  const hour = current.getHours();
+
+  if (hour < BUSINESS_DAY_END_HOUR) {
+    start.setDate(start.getDate() - 1);
+  }
+
+  start.setHours(BUSINESS_DAY_START_HOUR, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  end.setHours(BUSINESS_DAY_END_HOUR, 0, 0, 0);
+
+  return { start, end };
+};
+
+const getBusinessWeekWindow = (now = new Date()) => {
+  const { start: businessDayStart } = getBusinessDayWindow(now);
+  const start = new Date(businessDayStart);
+  const dayOfWeek = start.getDay();
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  start.setDate(start.getDate() + mondayOffset);
+  start.setHours(BUSINESS_DAY_START_HOUR, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setDate(end.getDate() + 7);
+  end.setHours(BUSINESS_DAY_START_HOUR, 0, 0, 0);
+
+  return { start, end };
+};
+
+const getDateFocusWindow = (focus, workspace, now = new Date()) => {
+  if (focus === 'day') {
+    return getBusinessDayWindow(now);
+  }
+
+  if (focus === 'week') {
+    const { start: businessDayStart, end: businessDayEnd } = getBusinessDayWindow(now);
+
+    if (workspace === 'past') {
+      const start = new Date(businessDayStart);
+      start.setDate(start.getDate() - 7);
+      return { start, end: businessDayStart };
+    }
+
+    if (workspace === 'upcoming') {
+      const end = new Date(businessDayEnd);
+      end.setDate(end.getDate() + 7);
+      return { start: businessDayEnd, end };
+    }
+
+    return getBusinessWeekWindow(now);
+  }
+
+  return null;
+};
+
+const getDefaultDateFocusForWorkspace = (workspace) => {
+  if (workspace === 'today') return 'day';
+  return 'all';
+};
+
+const getPackageRentalDurationUnits = (rental = {}) => {
+  if (rental?.use_package_pricing) {
+    const packageDuration = Number(
+      rental?.package?.duration_units ??
+      rental?.package_duration_units ??
+      rental?.packageDurationUnits
+    );
+
+    if (Number.isFinite(packageDuration) && packageDuration > 0) {
+      return packageDuration;
+    }
+  }
+
+  const storedDuration = rental?.rental_type === 'hourly'
+    ? Number(rental?.quantity_hours ?? rental?.quantity_days)
+    : Number(rental?.quantity_days);
+
+  return Number.isFinite(storedDuration) && storedDuration > 0 ? storedDuration : null;
+};
+
 const getRentalFinancialSnapshot = (rental) => {
   const hasReturnFuel =
     rental?.end_fuel_level !== null &&
     rental?.end_fuel_level !== undefined;
-  const quantity = rental?.rental_type === 'hourly'
-    ? (Number(rental?.quantity_hours) || Number(rental?.quantity_days) || 1)
-    : (Number(rental?.quantity_days) || 1);
-  const baseTotal = (Number(rental?.unit_price) || 0) * quantity;
+  const quantity = getPackageRentalDurationUnits(rental) || 1;
+  const baseTotal = rental?.use_package_pricing
+    ? (Number(rental?.unit_price) || Number(rental?.package_rate_per_unit) || 0)
+    : (Number(rental?.unit_price) || 0) * quantity;
   const storedTotal = parseFloat(rental?.total_amount) || 0;
   const fuelCharge = parseFloat(rental?.fuel_charge || 0) || 0;
   const grandTotal = hasReturnFuel || String(rental?.rental_status || '').toLowerCase() === 'completed'
@@ -191,6 +474,53 @@ const getEffectiveRentalWindow = (rental) => {
   }
 
   return { startDate, endDate };
+};
+
+const getRentalOperationalWindow = (rental) => {
+  const { startDate, endDate } = getEffectiveRentalWindow(rental);
+  const completedAt = toSafeDate(rental?.completed_at || rental?.actual_end_date);
+  const updatedAt = toSafeDate(rental?.updated_at);
+  const createdAt = toSafeDate(rental?.created_at);
+
+  const start = startDate && !Number.isNaN(startDate.getTime()) ? startDate : createdAt;
+  const end = completedAt || endDate || updatedAt || start;
+
+  return { start, end };
+};
+
+const doesRentalIntersectWindow = (rental, windowStart, windowEnd) => {
+  const { start, end } = getRentalOperationalWindow(rental);
+
+  if (!start && !end) return false;
+
+  const effectiveStart = start || end;
+  const effectiveEnd = end || start;
+
+  if (!effectiveStart || !effectiveEnd) return false;
+
+  return effectiveStart < windowEnd && effectiveEnd >= windowStart;
+};
+
+const getRentalWorkspaceBucket = (rental, now = new Date()) => {
+  const { start, end } = getRentalOperationalWindow(rental);
+  const { start: businessStart, end: businessEnd } = getBusinessDayWindow(now);
+
+  if (doesRentalIntersectWindow(rental, businessStart, businessEnd)) {
+    return 'today';
+  }
+
+  const effectiveStart = start || end;
+  const effectiveEnd = end || start;
+
+  if (effectiveStart && effectiveStart >= businessEnd) {
+    return 'upcoming';
+  }
+
+  if (effectiveEnd && effectiveEnd < businessStart) {
+    return 'past';
+  }
+
+  return 'today';
 };
 
 // ✅ FIXED: Calculate time remaining to match RentalDetails.jsx exactly
@@ -379,10 +709,14 @@ const getDurationBadge = (rental) => {
     startDate.setHours(startHours, startMinutes);
     endDate.setHours(endHours, endMinutes);
     
-    const diffHours = Math.round((endDate - startDate) / (1000 * 60 * 60));
+    const packageAwareHours = getPackageRentalDurationUnits(rental);
+    const diffHours = Number.isFinite(packageAwareHours) && packageAwareHours > 0
+      ? packageAwareHours
+      : Math.max(0.5, Math.round(((endDate - startDate) / (1000 * 60 * 60)) * 2) / 2);
+    const durationLabel = diffHours === 0.5 ? '30m' : `${diffHours}h`;
     return (
       <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-purple-50 text-purple-700 border border-purple-200">
-        {diffHours}h
+        {durationLabel}
       </span>
     );
   }
@@ -425,9 +759,14 @@ const Rentals = () => {
     return phone;
   };
 
-  const getEffectiveRentalStatus = useCallback((rental) => deriveEffectiveRentalStatus(rental), []);
+  const [rentalTimingSettings, setRentalTimingSettings] = useState(DEFAULT_RENTAL_TIMING_SETTINGS);
 
-  const handleSendReminder = (rental, event) => {
+  const getEffectiveRentalStatus = useCallback(
+    (rental) => deriveEffectiveRentalStatus(rental, rentalTimingSettings),
+    [rentalTimingSettings]
+  );
+
+  const handleContactCustomerWhatsApp = (rental, event) => {
     event?.stopPropagation?.();
 
     const cleanPhone = String(rental?.customer_phone || '').replace(/\D/g, '');
@@ -435,24 +774,12 @@ const Rentals = () => {
       alert(tr('Customer phone number is missing for this rental.', 'Le numéro de téléphone du client est manquant pour cette location.'));
       return;
     }
-
-    const startDate = rental?.rental_start_date ? new Date(rental.rental_start_date) : null;
-    const formattedStart = startDate && !Number.isNaN(startDate.getTime())
-      ? startDate.toLocaleString(isFrench ? 'fr-FR' : 'en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: 'numeric',
-          minute: '2-digit',
-        })
-      : tr('your scheduled time', 'votre horaire prévu');
-    const vehicleLabel = buildVehicleReminderLabel(rental);
-    const message = `Bonjour ${rental?.customer_name || ''}, rappel amical : vous avez une location à venir pour ${vehicleLabel} le ${formattedStart}. Merci de nous contacter sur WhatsApp si vous avez besoin d'aide ou d'un ajustement.`;
-
-    window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+    setWhatsAppCustomMessage('');
+    setWhatsAppSheetRental(rental);
   };
 
-const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || []);
+  const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || []);
+  const [rentalUniverse, setRentalUniverse] = useState(() => warmRentalsSnapshot?.rentalUniverse || []);
   const [rentalReportMap, setRentalReportMap] = useState(() => warmRentalsSnapshot?.rentalReportMap || {});
 
     const [searchTerm, setSearchTerm] = useState('');
@@ -471,8 +798,10 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
   
   const [statusFilter, setStatusFilter] = useState('all');
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('all');
+  const initialWorkspaceTab = warmRentalsSnapshot?.workspaceTab || getStoredRentalsWorkspace() || 'today';
+  const [workspaceTab, setWorkspaceTab] = useState(initialWorkspaceTab);
   const [availabilityQuickFilter, setAvailabilityQuickFilter] = useState('all');
-  const [dateFocusFilter, setDateFocusFilter] = useState('all');
+  const [dateFocusFilter, setDateFocusFilter] = useState(() => getDefaultDateFocusForWorkspace(initialWorkspaceTab));
   const [dateFocusCounts, setDateFocusCounts] = useState(() => warmRentalsSnapshot?.dateFocusCounts || { day: 0, week: 0 });
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 640 : false
@@ -488,12 +817,70 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     activeVehicleIds: [],
     scheduledVehicleIds: [],
   });
+  const [whatsAppSheetRental, setWhatsAppSheetRental] = useState(null);
+  const [whatsAppCustomMessage, setWhatsAppCustomMessage] = useState('');
   const [viewMode, setViewMode] = useState('grid'); // 'list', 'table', or 'grid'
   const [showFilters, setShowFilters] = useState(false); // Mobile filter collapse
   const deferredSearchTerm = useDeferredValue(searchTerm);
   const rentalRefreshTimeoutRef = useRef(null);
   const isFetchingRentalsRef = useRef(false);
   const activeRentalsFetchRef = useRef(null);
+  const userSelectedWorkspaceRef = useRef(false);
+
+  const matchesWorkspaceTab = useCallback((rental, targetTab = workspaceTab) => {
+    if (!targetTab || targetTab === 'all') return true;
+    return getRentalWorkspaceBucket(rental) === targetTab;
+  }, [workspaceTab]);
+
+  const closeWhatsAppSheet = useCallback(() => {
+    setWhatsAppSheetRental(null);
+    setWhatsAppCustomMessage('');
+  }, []);
+
+  const handleSendWhatsAppTemplate = useCallback((rental, message) => {
+    const cleanPhone = String(rental?.customer_phone || '').replace(/\D/g, '');
+    if (!cleanPhone) {
+      alert(tr('Customer phone number is missing for this rental.', 'Le numéro de téléphone du client est manquant pour cette location.'));
+      return;
+    }
+
+    openWhatsAppContact(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`);
+    closeWhatsAppSheet();
+  }, [closeWhatsAppSheet]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadRentalTimingSettings = async () => {
+      try {
+        const data = await fetchSystemSettings();
+        if (cancelled || !data) return;
+
+        setRentalTimingSettings({
+          graceMinutes: Number(
+            data.rentalGracePeriodMinutes ??
+            data.rental_grace_period_minutes ??
+            DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes
+          ),
+          softLockMinutes: Number(
+            data.rentalSoftLockMinutes ??
+            data.rental_soft_lock_minutes ??
+            DEFAULT_RENTAL_TIMING_SETTINGS.softLockMinutes
+          ),
+        });
+      } catch {
+        if (!cancelled) {
+          setRentalTimingSettings(DEFAULT_RENTAL_TIMING_SETTINGS);
+        }
+      }
+    };
+
+    loadRentalTimingSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -586,12 +973,10 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
       try {
         isFetchingRentalsRef.current = true;
         const normalizedStatusFilter = String(currentStatusFilter || '').toLowerCase();
-        const isImpoundedStatusFilter = normalizedStatusFilter === 'impounded';
 
         // Calculate range for pagination
         const from = (page - 1) * limit;
         const to = from + limit - 1;
-        const shouldFilterClientSide = normalizedStatusFilter && normalizedStatusFilter !== 'all';
 
         // Now fetch paginated data
         let query = supabase
@@ -603,6 +988,9 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
             customer_name,
             customer_email,
             customer_phone,
+            booking_source,
+            inventory_source,
+            booking_mode,
             rental_type,
             rental_status,
             rental_start_date,
@@ -625,6 +1013,11 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
             unit_price,
             quantity_days,
             quantity_hours,
+            package_id,
+            package_name,
+            package_rate_per_unit,
+            package_total_included_km,
+            use_package_pricing,
             signature_url,
             contract_signed,
             opening_video_url,
@@ -643,6 +1036,14 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
               status,
               vehicle_type
             ),
+            package:app_4c3a7a6153_rental_km_packages!package_id(
+              id,
+              name,
+              duration_units,
+              fixed_amount,
+              included_kilometers,
+              extra_km_rate
+            ),
             extensions:rental_extensions!rental_extensions_rental_id_fkey(
               id,
               extension_hours,
@@ -651,10 +1052,6 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
               created_at
             )
           `, { count: 'planned' });
-
-        if (!shouldFilterClientSide) {
-          query = query.range(from, to);
-        }
 
         if (currentPaymentStatusFilter && currentPaymentStatusFilter !== 'all') {
           query = query.eq('payment_status', currentPaymentStatusFilter);
@@ -669,14 +1066,17 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
           throw error;
         }
 
-        let nextRentals = (data || []).map(normalizeRentalLifecycle);
-        let nextTotalCount = count || 0;
+        let normalizedRentals = (data || []).map(normalizeRentalLifecycle);
+        setRentalUniverse(normalizedRentals);
 
-        if (shouldFilterClientSide) {
-          const filteredRentals = nextRentals.filter((rental) => getEffectiveRentalStatus(rental) === normalizedStatusFilter);
-          nextTotalCount = filteredRentals.length;
-          nextRentals = filteredRentals.slice(from, to + 1);
-        }
+        let nextRentals = normalizedRentals;
+        const workspaceFilteredRentals = nextRentals.filter((rental) => matchesWorkspaceTab(rental));
+        const statusFilteredRentals =
+          normalizedStatusFilter && normalizedStatusFilter !== 'all'
+            ? workspaceFilteredRentals.filter((rental) => getEffectiveRentalStatus(rental) === normalizedStatusFilter)
+            : workspaceFilteredRentals;
+        const nextTotalCount = statusFilteredRentals.length;
+        nextRentals = statusFilteredRentals.slice(from, to + 1);
 
         setTotalCount(nextTotalCount);
         setTotalPages(Math.ceil(nextTotalCount / limit));
@@ -691,6 +1091,10 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
           });
 
       } catch (err) {
+        if (isAbortLikeError(err)) {
+          console.warn('Ignoring aborted rental fetch:', err);
+          return;
+        }
         console.error('❌ Supabase Error', { message: err.message, details: err.details, hint: err.hint, code: err.code });
         setError(err.message);
       } finally {
@@ -763,6 +1167,26 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
           .eq('id', rental.vehicle_id);
       }
 
+      try {
+        await insertSharedRentalActivityLog({
+          user_id: user?.id || null,
+          created_by: actorName,
+          action: 'rental_started',
+          description: `Started rental ${rental.rental_id || rental.id}`,
+          entity_type: 'rental',
+          entity_id: rental.id,
+          details: {
+            rental_id: rental.id,
+            rental_reference: rental.rental_id || null,
+            customer_name: rental.customer_name || null,
+            vehicle_id: rental.vehicle_id || null,
+            started_at: actualStartTime,
+          },
+        });
+      } catch (activityError) {
+        console.warn('⚠️ Failed to write rental start activity log:', activityError);
+      }
+
       // Show success message
       alert(`✅ Rental ${rental.rental_id} started successfully! Timer is now active.`);
       
@@ -778,6 +1202,141 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     }
   };
 
+  const handleCancelAsNoShow = async (rental) => {
+    if (!confirm(tr('Cancel this rental as a no-show and free the vehicle?', 'Annuler cette location comme absence et libérer le véhicule ?'))) {
+      return;
+    }
+
+    try {
+      const cancelledAt = new Date().toISOString();
+
+      const { error: rentalError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update({
+          rental_status: 'cancelled',
+          status: 'cancelled',
+          cancelled_at: cancelledAt,
+          cancelled_by: user?.id || null,
+          cancellation_reason: 'no_show',
+          updated_at: cancelledAt,
+        })
+        .eq('id', rental.id);
+
+      if (rentalError) throw rentalError;
+
+      if (rental.vehicle_id) {
+        const { error: vehicleError } = await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .update({ status: 'available', updated_at: cancelledAt })
+          .eq('id', rental.vehicle_id);
+
+        if (vehicleError) throw vehicleError;
+      }
+
+      try {
+        const actorName =
+          user?.user_metadata?.full_name ||
+          user?.email ||
+          null;
+        await insertSharedRentalActivityLog({
+          user_id: user?.id || null,
+          created_by: actorName,
+          action: 'rental_cancelled_no_show',
+          description: `Cancelled rental ${rental.rental_id || rental.id} as no-show`,
+          entity_type: 'rental',
+          entity_id: rental.id,
+          reason: 'no_show',
+          details: {
+            rental_id: rental.id,
+            rental_reference: rental.rental_id || null,
+            customer_name: rental.customer_name || null,
+            vehicle_id: rental.vehicle_id || null,
+            cancelled_at: cancelledAt,
+            cancellation_reason: 'no_show',
+          },
+        });
+      } catch (activityError) {
+        console.warn('⚠️ Failed to write no-show activity log:', activityError);
+      }
+
+      alert(`⚠️ ${tr('Rental cancelled as no-show. Vehicle is available again.', 'Location annulée comme absence. Le véhicule est de nouveau disponible.')}`);
+      appWarmupService.invalidateModule('rentals');
+      fetchRentals(statusFilter, paymentStatusFilter);
+      void fetchRentalOverviewSnapshot();
+      appWarmupService.invalidateModule('finance');
+    } catch (err) {
+      console.error('❌ Error cancelling rental as no-show:', err);
+      alert(`${tr('Failed to cancel rental as no-show:', "Échec de l'annulation comme absence :")} ${err.message}`);
+    }
+  };
+
+  const handleCustomerArrived = async (rental) => {
+    try {
+      const arrivedAt = new Date().toISOString();
+      const actorName =
+        user?.user_metadata?.full_name ||
+        user?.email ||
+        null;
+
+      const { error } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update({
+          rental_status: 'scheduled',
+          status: 'scheduled',
+          status_changed_at: arrivedAt,
+          status_changed_by: actorName,
+          status_change_reason: 'customer_arrived',
+          updated_at: arrivedAt,
+        })
+        .eq('id', rental.id);
+
+      if (error) throw error;
+
+      try {
+        await insertSharedRentalActivityLog({
+          user_id: user?.id || null,
+          created_by: actorName,
+          action: 'rental_customer_arrived',
+          description: `Marked customer arrived for rental ${rental.rental_id || rental.id}`,
+          entity_type: 'rental',
+          entity_id: rental.id,
+          reason: 'customer_arrived',
+          details: {
+            rental_id: rental.id,
+            rental_reference: rental.rental_id || null,
+            customer_name: rental.customer_name || null,
+            arrived_at: arrivedAt,
+          },
+        });
+      } catch (activityError) {
+        console.warn('⚠️ Failed to write customer arrived activity log:', activityError);
+      }
+
+      alert(`✅ ${tr('Customer arrival confirmed. Continue with the normal start flow.', "Arrivée du client confirmée. Continuez avec le démarrage normal.")}`);
+      appWarmupService.invalidateModule('rentals');
+      fetchRentals(statusFilter, paymentStatusFilter);
+      void fetchRentalOverviewSnapshot();
+    } catch (err) {
+      console.error('❌ Error acknowledging late arrival:', err);
+      alert(`${tr('Failed to update late-arrival status:', "Échec de la mise à jour de l'arrivée tardive :")} ${err.message}`);
+    }
+  };
+
+  const shouldShowLateArrivalRecovery = (rental, effectiveRentalStatus) => {
+    const timingState = getScheduledRentalTimingState(
+      rental?.rental_start_date,
+      rentalTimingSettings,
+      new Date()
+    );
+
+    return (
+      !rental?.started_at &&
+      String(rental?.status_change_reason || '').toLowerCase() !== 'customer_arrived' &&
+      ['scheduled', 'no_show_review'].includes(String(effectiveRentalStatus || '').toLowerCase()) &&
+      Number(timingState?.minutesLate || -1) >= 0
+    );
+  };
+
   const fetchVehicles = async () => {
     try {
       const { data, error } = await supabase
@@ -791,6 +1350,10 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
       }
       setVehicles(data || []);
     } catch (err) {
+      if (isAbortLikeError(err)) {
+        console.warn('Ignoring aborted vehicle fetch:', err);
+        return;
+      }
       console.error('❌ Supabase Error', { message: err.message, details: err.details, hint: err.hint, code: err.code });
       setError(err.message);
     }
@@ -853,21 +1416,10 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
   const fetchDateFocusCounts = useCallback(async (currentStatusFilter = statusFilter, currentPaymentStatusFilter = paymentStatusFilter) => {
     try {
       const now = new Date();
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const endOfToday = new Date(startOfToday);
-      endOfToday.setDate(endOfToday.getDate() + 1);
-
-      const dayOfWeek = startOfToday.getDay();
-      const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-      const startOfWeek = new Date(startOfToday);
-      startOfWeek.setDate(startOfWeek.getDate() + mondayOffset);
-      const endOfWeek = new Date(startOfWeek);
-      endOfWeek.setDate(endOfWeek.getDate() + 7);
+      const { start: startOfToday, end: endOfToday } = getBusinessDayWindow(now);
+      const { start: startOfWeek, end: endOfWeek } = getBusinessWeekWindow(now);
 
       const buildCountQuery = (fromDate, toDate) => {
-        const normalizedStatusFilter = String(currentStatusFilter || '').toLowerCase();
-        const isImpoundedStatusFilter = normalizedStatusFilter === 'impounded';
-
         let query = supabase
           .from('app_4c3a7a6153_rentals')
           .select(`
@@ -882,7 +1434,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
             vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
               status
             )
-          `, { count: 'exact', head: !normalizedStatusFilter || normalizedStatusFilter === 'all' })
+          `, { count: 'exact' })
           .gte('rental_start_date', fromDate.toISOString())
           .lt('rental_start_date', toDate.toISOString());
 
@@ -904,15 +1456,19 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
       if (dayError) throw dayError;
       if (weekError) throw weekError;
 
-      const normalizedStatusFilter = String(currentStatusFilter || '').toLowerCase();
       const resolveCount = (rawCount, rawRows) => {
-        if (!normalizedStatusFilter || normalizedStatusFilter === 'all') {
-          return rawCount || 0;
+        if ((!rawRows || rawRows.length === 0) && rawCount) {
+          return rawCount;
         }
 
         return (rawRows || [])
           .map(normalizeRentalLifecycle)
-          .filter((rental) => getEffectiveRentalStatus(rental) === normalizedStatusFilter)
+          .filter((rental) => {
+            const normalizedStatusFilter = String(currentStatusFilter || '').toLowerCase();
+            return !normalizedStatusFilter || normalizedStatusFilter === 'all'
+              ? true
+              : getEffectiveRentalStatus(rental) === normalizedStatusFilter;
+          })
           .length;
       };
 
@@ -934,17 +1490,20 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     void fetchRentalOverviewSnapshot();
   };
 
-  const doesRentalMatchFilters = useCallback((rental, status = statusFilter, payment = paymentStatusFilter) => {
+  const doesRentalMatchFilters = useCallback((rental, status = statusFilter, payment = paymentStatusFilter, targetTab = workspaceTab) => {
     if (!rental) return false;
 
     const rentalStatus = getEffectiveRentalStatus(rental);
     const rentalPaymentStatus = String(rental?.payment_status || '').toLowerCase();
+    const matchesWorkspace = !targetTab || targetTab === 'all'
+      ? true
+      : matchesWorkspaceTab(rental, targetTab);
 
     const matchesStatus = !status || status === 'all' || rentalStatus === String(status).toLowerCase();
     const matchesPayment = !payment || payment === 'all' || rentalPaymentStatus === String(payment).toLowerCase();
 
-    return matchesStatus && matchesPayment;
-  }, [getEffectiveRentalStatus, paymentStatusFilter, statusFilter]);
+    return matchesWorkspace && matchesStatus && matchesPayment;
+  }, [getEffectiveRentalStatus, matchesWorkspaceTab, paymentStatusFilter, statusFilter, workspaceTab]);
 
   const scheduleRentalRefresh = useCallback(() => {
     if (rentalRefreshTimeoutRef.current) {
@@ -1006,10 +1565,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
         setRefreshing(true);
       }
 
-      const shouldUseSummarySource =
-        currentPage === 1 &&
-        itemsPerPage === 10 &&
-        String(statusFilter || '').toLowerCase() !== 'impounded';
+      const shouldUseSummarySource = false;
 
       if (shouldUseSummarySource) {
         try {
@@ -1035,7 +1591,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
       setHasLoadedOnce(true);
     };
     loadRentals();
-  }, [statusFilter, paymentStatusFilter, currentPage, itemsPerPage, fetchDateFocusCounts, applyRentalSummarySnapshot]);
+  }, [statusFilter, paymentStatusFilter, currentPage, itemsPerPage, fetchDateFocusCounts, applyRentalSummarySnapshot, workspaceTab]);
 
   useEffect(() => {
     if (
@@ -1049,6 +1605,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
 
     appWarmupService.setWarmRentalsSnapshot({
       rentals,
+      rentalUniverse,
       rentalReportMap,
       totalCount,
       totalPages,
@@ -1060,6 +1617,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
       vehicles,
       vehicleFuelStateMap,
       rentalOverviewSnapshot,
+      workspaceTab,
     });
   }, [
     currentPage,
@@ -1068,12 +1626,14 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     paymentStatusFilter,
     rentalOverviewSnapshot,
     rentalReportMap,
+    rentalUniverse,
     rentals,
     statusFilter,
     totalCount,
     totalPages,
     vehicleFuelStateMap,
     vehicles,
+    workspaceTab,
   ]);
 
   // Refresh list when tab becomes visible again (e.g. returning from RentalDetails)
@@ -1238,7 +1798,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
       supabase.removeChannel(rentalSubscription);
       supabase.removeChannel(vehicleSubscription);
     };
-  }, [doesRentalMatchFilters, fetchDateFocusCounts, statusFilter, paymentStatusFilter, scheduleRentalRefresh]);
+  }, [doesRentalMatchFilters, fetchDateFocusCounts, statusFilter, paymentStatusFilter, scheduleRentalRefresh, workspaceTab]);
 
   useEffect(() => {
     return () => {
@@ -1379,12 +1939,14 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     }
 
     try {
+      const completedAt = new Date().toISOString();
       let { data, error } = await supabase
         .from('app_4c3a7a6153_rentals')
         .update({ 
           rental_status: 'completed',
-          completed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          status: 'completed',
+          completed_at: completedAt,
+          updated_at: completedAt
         })
         .eq('id', rental.id)
         .select()
@@ -1393,6 +1955,21 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
       if (error) {
         console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
         throw error;
+      }
+
+      if (rental?.vehicle_id) {
+        const { error: vehicleError } = await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .update({
+            status: 'available',
+            updated_at: completedAt
+          })
+          .eq('id', rental.vehicle_id);
+
+        if (vehicleError) {
+          console.error('❌ Vehicle status reset failed', { message: vehicleError.message, details: vehicleError.details, hint: vehicleError.hint, code: vehicleError.code });
+          throw vehicleError;
+        }
       }
 
       alert('✅ Rental completed successfully!');
@@ -1424,6 +2001,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
   const getStatusBadge = (status) => {
     const configs = {
       'scheduled': { text: 'Scheduled', className: 'bg-blue-100 text-blue-800' },
+      'no_show_review': { text: 'No-show Review', className: 'bg-amber-100 text-amber-800' },
       'active': { text: 'Active', className: 'bg-green-100 text-green-800' },
       'impounded': { text: 'Impounded', className: 'bg-amber-100 text-amber-800' },
       'completed': { text: 'Completed', className: 'bg-gray-100 text-gray-800' },
@@ -1435,6 +2013,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     const config = configs[status] || configs['scheduled'];
     const translatedText = {
       Scheduled: tr('Scheduled', 'Planifiée'),
+      'No-show Review': tr('No-show review', 'Contrôle absence'),
       Active: tr('Active', 'Active'),
       Impounded: tr('Impounded', 'Mis en fourrière'),
       Completed: tr('Completed', 'Terminée'),
@@ -1512,30 +2091,33 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     return `RNT-${year}-${idPart}`;
   };
 
-  const filteredRentals = useMemo(() => {
-    const normalizedSearch = deferredSearchTerm.trim().toLowerCase();
+  const matchesDateFocusFilter = useCallback((rental, focus = dateFocusFilter) => {
+    if (!focus || focus === 'all') {
+      return true;
+    }
+
     const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const endOfToday = new Date(startOfToday);
-    endOfToday.setDate(endOfToday.getDate() + 1);
+    const window = getDateFocusWindow(focus, workspaceTab, now);
 
-    const dayOfWeek = startOfToday.getDay();
-    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-    const startOfWeek = new Date(startOfToday);
-    startOfWeek.setDate(startOfWeek.getDate() + mondayOffset);
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(endOfWeek.getDate() + 7);
+    return window ? doesRentalIntersectWindow(rental, window.start, window.end) : true;
+  }, [dateFocusFilter, workspaceTab]);
 
-    return rentals.filter((rental) => {
-      const rentalStartDate = rental?.rental_start_date ? new Date(rental.rental_start_date) : null;
-      const matchesDateFocus =
-        dateFocusFilter === 'day'
-          ? rentalStartDate && rentalStartDate >= startOfToday && rentalStartDate < endOfToday
-          : dateFocusFilter === 'week'
-            ? rentalStartDate && rentalStartDate >= startOfWeek && rentalStartDate < endOfWeek
-            : true;
+  const isDateFocusScoped = Boolean(dateFocusFilter && dateFocusFilter !== 'all');
 
-      if (!matchesDateFocus) {
+  const dateFocusRentalSource = useMemo(
+    () => (isDateFocusScoped && rentalUniverse.length > 0 ? rentalUniverse : rentals),
+    [isDateFocusScoped, rentalUniverse, rentals]
+  );
+
+  const baseVisibleRentals = useMemo(() => {
+    const normalizedSearch = deferredSearchTerm.trim().toLowerCase();
+
+    return dateFocusRentalSource.filter((rental) => {
+      if (!matchesWorkspaceTab(rental)) {
+        return false;
+      }
+
+      if (!matchesDateFocusFilter(rental)) {
         return false;
       }
 
@@ -1556,7 +2138,136 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
         rentalContractSuffix.includes(normalizedSearch)
       );
     });
-  }, [rentals, deferredSearchTerm, dateFocusFilter]);
+  }, [dateFocusRentalSource, deferredSearchTerm, matchesDateFocusFilter, matchesWorkspaceTab]);
+
+  const filteredRentals = useMemo(() => {
+    const normalizedStatus = String(statusFilter || 'all').toLowerCase();
+
+    return baseVisibleRentals.filter((rental) => {
+      if (normalizedStatus !== 'all') {
+        const effectiveStatus = getEffectiveRentalStatus(rental);
+        const attentionState = getRentalAttentionState(rental);
+
+        if (normalizedStatus === 'maintenance') {
+          if (attentionState?.text !== tr('Under Maintenance', 'En maintenance')) {
+            return false;
+          }
+        } else if (effectiveStatus !== normalizedStatus) {
+          return false;
+        }
+      }
+
+      if (paymentStatusFilter && paymentStatusFilter !== 'all') {
+        const rentalPaymentStatus = String(rental?.payment_status || '').toLowerCase();
+        if (rentalPaymentStatus !== String(paymentStatusFilter).toLowerCase()) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [baseVisibleRentals, getEffectiveRentalStatus, getRentalAttentionState, paymentStatusFilter, statusFilter]);
+
+  const statusTabCounts = useMemo(() => {
+    const counts = STATUS_TAB_KEYS.reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
+
+    baseVisibleRentals.forEach((rental) => {
+      const effectiveStatus = getEffectiveRentalStatus(rental);
+      const attentionState = getRentalAttentionState(rental);
+
+      counts.all += 1;
+      if (counts[effectiveStatus] !== undefined) {
+        counts[effectiveStatus] += 1;
+      }
+      if (attentionState?.text === tr('Under Maintenance', 'En maintenance')) {
+        counts.maintenance += 1;
+      }
+    });
+
+    return counts;
+  }, [baseVisibleRentals, getEffectiveRentalStatus, getRentalAttentionState]);
+
+  const workspaceTabCounts = useMemo(() => {
+    return rentalUniverse.reduce((acc, rental) => {
+      const bucket = getRentalWorkspaceBucket(rental);
+      acc[bucket] = (acc[bucket] || 0) + 1;
+      return acc;
+    }, { today: 0, upcoming: 0, past: 0 });
+  }, [rentalUniverse]);
+
+  useEffect(() => {
+    if (userSelectedWorkspaceRef.current || !hasLoadedOnce || rentalUniverse.length === 0) {
+      return;
+    }
+
+    const nextWorkspaceTab =
+      workspaceTabCounts.today > 0
+        ? 'today'
+        : workspaceTabCounts.past > 0
+          ? 'past'
+          : workspaceTabCounts.upcoming > 0
+            ? 'upcoming'
+            : 'today';
+
+    if (workspaceTab === nextWorkspaceTab) {
+      return;
+    }
+
+    setWorkspaceTab(nextWorkspaceTab);
+    setDateFocusFilter(getDefaultDateFocusForWorkspace(nextWorkspaceTab));
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(RENTALS_WORKSPACE_PREF_KEY, nextWorkspaceTab);
+    }
+  }, [hasLoadedOnce, rentalUniverse.length, workspaceTab, workspaceTabCounts]);
+
+  const localDateFocusCounts = useMemo(() => {
+    const scopedRentals = rentalUniverse.length > 0 ? rentalUniverse : rentals;
+    const workspaceRentals = scopedRentals.filter((rental) => matchesWorkspaceTab(rental));
+    const dayCount = workspaceRentals.filter((rental) => matchesDateFocusFilter(rental, 'day')).length;
+    const weekCount = workspaceRentals.filter((rental) => matchesDateFocusFilter(rental, 'week')).length;
+    return { day: dayCount, week: weekCount };
+  }, [matchesDateFocusFilter, matchesWorkspaceTab, rentalUniverse, rentals]);
+
+  const hasActiveUiFilters = useMemo(() => {
+    const defaultDateFocus = getDefaultDateFocusForWorkspace(workspaceTab);
+    return Boolean(
+      searchTerm.trim() ||
+      statusFilter !== 'all' ||
+      paymentStatusFilter !== 'all' ||
+      dateFocusFilter !== defaultDateFocus
+    );
+  }, [dateFocusFilter, paymentStatusFilter, searchTerm, statusFilter, workspaceTab]);
+
+  const summaryPeriodRentals = useMemo(() => {
+    return dateFocusRentalSource.filter((rental) => {
+      if (!matchesDateFocusFilter(rental)) {
+        return false;
+      }
+
+      return doesRentalMatchFilters(rental, statusFilter, paymentStatusFilter, 'all');
+    });
+  }, [dateFocusRentalSource, doesRentalMatchFilters, matchesDateFocusFilter, paymentStatusFilter, statusFilter]);
+
+  const footerSummaryRentals = summaryPeriodRentals;
+  const footerSummaryRentalCount = footerSummaryRentals.length;
+  const footerSummaryRevenue = footerSummaryRentals.reduce((sum, rental) => {
+    const paymentSnapshot = getRentalFinancialSnapshot(rental);
+    const displayAmount = rental?.pending_total_request
+      ? parseFloat(rental.pending_total_request) || 0
+      : paymentSnapshot.grandTotal;
+    return sum + (Number.isFinite(displayAmount) ? displayAmount : 0);
+  }, 0);
+
+  const todayOperationalRentals = useMemo(
+    () => (rentalUniverse.length > 0 ? rentalUniverse : rentals).filter((rental) => doesRentalIntersectWindow(rental, getBusinessDayWindow().start, getBusinessDayWindow().end)),
+    [rentalUniverse, rentals]
+  );
+  const todayCashIn = useMemo(() => {
+    return todayOperationalRentals.reduce((sum, rental) => {
+      const paid = Number(getRentalFinancialSnapshot(rental).amountPaid || 0);
+      return sum + (Number.isFinite(paid) ? paid : 0);
+    }, 0);
+  }, [todayOperationalRentals]);
 
   const formatDate = (dateString) => {
     if (!dateString) return tr('N/A', 'N/D');
@@ -1697,10 +2408,14 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     
     if (rental.rental_type === 'hourly') {
       const diffMs = Math.max(0, endDate - startDate);
-      const diffHours = Math.max(1, Math.round(diffMs / (1000 * 60 * 60)));
+      const packageAwareHours = getPackageRentalDurationUnits(rental);
+      const diffHours = Number.isFinite(packageAwareHours) && packageAwareHours > 0
+        ? packageAwareHours
+        : Math.max(0.5, Math.round((diffMs / (1000 * 60 * 60)) * 2) / 2);
+      const durationLabel = diffHours === 0.5 ? '30m' : `${diffHours}h`;
       return (
         <span className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-800 text-xs font-medium rounded-full border border-gray-300">
-          <span className="font-bold">{diffHours}h</span>
+          <span className="font-bold">{durationLabel}</span>
           <span>{tr('duration', 'durée')}</span>
         </span>
       );
@@ -1770,6 +2485,22 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
   const handleDateFocusToggle = (nextFilter) => {
     setCurrentPage(1);
     setDateFocusFilter((prev) => (prev === nextFilter ? 'all' : nextFilter));
+  };
+
+  const handleWorkspaceTabChange = (nextTab) => {
+    userSelectedWorkspaceRef.current = true;
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(RENTALS_WORKSPACE_PREF_KEY, nextTab);
+    }
+    setWorkspaceTab(nextTab);
+    setStatusFilter('all');
+    setAvailabilityQuickFilter('all');
+    setDateFocusFilter(getDefaultDateFocusForWorkspace(nextTab));
+    setCurrentPage(1);
+
+    const newParams = new URLSearchParams(location.search);
+    newParams.delete('status');
+    navigate(`${location.pathname}?${newParams.toString()}`, { replace: true });
   };
 
   // Pagination handlers
@@ -1915,6 +2646,20 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     );
   }
 
+  const whatsAppSheetEffectiveStatus = whatsAppSheetRental
+    ? getEffectiveRentalStatus(whatsAppSheetRental)
+    : null;
+  const whatsAppSheetPaymentSnapshot = whatsAppSheetRental
+    ? getRentalFinancialSnapshot(whatsAppSheetRental)
+    : null;
+  const whatsAppTemplateOptions = whatsAppSheetRental
+    ? buildRentalWhatsAppOptions(
+        whatsAppSheetRental,
+        whatsAppSheetEffectiveStatus,
+        whatsAppSheetPaymentSnapshot
+      )
+    : [];
+
   return (
     <div className="min-h-screen bg-gray-50">
       <AdminModuleHero
@@ -1934,7 +2679,70 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
         }
       />
 
-      <div className="max-w-7xl mx-auto p-6">
+      <div className="max-w-7xl mx-auto p-6 pb-32 sm:pb-8">
+
+        <div className="mb-4 mt-4 flex flex-col gap-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
+                {isFrench ? 'Vue opérationnelle' : 'Operations View'}
+              </p>
+              <h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
+                {workspaceTab === 'upcoming'
+                  ? (isFrench ? 'Locations à venir' : 'Upcoming Rentals')
+                  : workspaceTab === 'past'
+                    ? (isFrench ? 'Historique récent' : 'Past Rentals')
+                    : (isFrench ? "Locations du jour" : 'Today Rentals')}
+              </h2>
+            </div>
+            <div className="inline-flex items-center rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
+              {[
+                { key: 'today', label: isFrench ? "Aujourd'hui" : 'Today' },
+                { key: 'upcoming', label: isFrench ? 'À venir' : 'Upcoming' },
+                { key: 'past', label: isFrench ? 'Passé' : 'Past' },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => handleWorkspaceTabChange(key)}
+                  className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all ${
+                    workspaceTab === key
+                      ? 'bg-violet-600 text-white shadow-[0_10px_20px_rgba(79,70,229,0.2)]'
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {label}
+                  <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] ${
+                    workspaceTab === key ? 'bg-white/15 text-white' : 'bg-violet-50 text-violet-600'
+                  }`}>
+                    {workspaceTabCounts[key] || 0}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-violet-100/80 bg-white px-3 py-2 shadow-[0_10px_24px_rgba(76,29,149,0.06)]">
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+              {tr('Available', 'Disponibles')}: {vehicleAvailabilitySummary.available}
+            </span>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+              {tr('Active', 'Actives')}: {statusTabCounts.active}
+            </span>
+            <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+              {tr('Scheduled', 'Planifiées')}: {statusTabCounts.scheduled}
+            </span>
+            <span className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700">
+              {tr('Maintenance', 'Maintenance')}: {vehicleAvailabilitySummary.maintenance}
+            </span>
+            <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+              {tr('Cash In Today', "Entrées aujourd'hui")}: {todayCashIn.toFixed(0)} MAD
+            </span>
+            <span className="ml-auto text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">
+              {tr('Business Day: 10:00 → 03:00', 'Journée: 10:00 → 03:00')}
+            </span>
+          </div>
+        </div>
 
         {/* Mobile Floating Action Button */}
         <button
@@ -1948,113 +2756,16 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
           <span className="text-sm font-semibold tracking-tight">{isFrench ? 'Créer une location' : 'Create New Rental'}</span>
         </button>
 
-        {vehicleAvailabilitySummary.total > 0 && (
-          <div className="mb-6 mt-6">
-            <div className="mb-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{isFrench ? 'Vue d’ensemble des locations' : 'Rental Overview'}</p>
-              <h2 className="mt-2 text-2xl font-bold text-slate-900">{isFrench ? 'Disponibilité des véhicules' : 'Vehicle Availability'}</h2>
-            </div>
-            <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
-              {[
-                {
-                  key: 'available',
-                  label: isFrench ? 'Disponibles à la location' : 'Available for Rent',
-                  icon: <CheckCircle className="h-5 w-5 text-emerald-700" />,
-                  iconTone: 'bg-emerald-50',
-                  badgeTone: 'bg-emerald-50 text-emerald-600',
-                  tooltip: 'Vehicles ready for immediate rental'
-                },
-                {
-                  key: 'rented',
-                  label: isFrench ? 'Actuellement loués' : 'Currently Rented',
-                  icon: <Clock className="h-5 w-5 text-blue-700" />,
-                  iconTone: 'bg-blue-50',
-                  badgeTone: 'bg-blue-50 text-blue-600',
-                  tooltip: 'Vehicles currently on active rentals'
-                },
-                {
-                  key: 'scheduled',
-                  label: isFrench ? 'Planifiés' : 'Scheduled',
-                  icon: <Calendar className="h-5 w-5 text-amber-700" />,
-                  iconTone: 'bg-amber-50',
-                  badgeTone: 'bg-amber-50 text-amber-700',
-                  tooltip: 'Vehicles with upcoming/scheduled rentals'
-                },
-                {
-                  key: 'maintenance',
-                  label: isFrench ? 'En maintenance' : 'Under Maintenance',
-                  icon: <XCircle className="h-5 w-5 text-slate-700" />,
-                  iconTone: 'bg-slate-100',
-                  badgeTone: 'bg-slate-100 text-slate-600',
-                  tooltip: 'Vehicles undergoing service/repairs'
-                }
-              ].map(({ key, label, icon, iconTone, badgeTone, tooltip }) => {
-                const count = vehicleAvailabilitySummary[key] || 0;
-                const total = Math.max(
-                  (vehicleAvailabilitySummary.total || 0) - (vehicleAvailabilitySummary.out_of_service || 0),
-                  0
-                );
-                const percentage = total > 0 ? Math.round((count / total) * 100) : 0;
-                const isActive = availabilityQuickFilter === key;
-
-                return (
-                  <button
-                    type="button"
-                    key={key} 
-                    onClick={() => handleAvailabilityCardClick(key)}
-                    aria-pressed={isActive}
-                    className={`group w-full rounded-xl border bg-white p-4 text-left shadow-[0_18px_45px_rgba(76,29,149,0.08)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_50px_rgba(76,29,149,0.12)] ${
-                      isActive
-                        ? 'border-violet-300 ring-2 ring-violet-200/80'
-                        : 'border-violet-100 hover:border-violet-200'
-                    }`}
-                    title={tooltip}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className={`rounded-2xl p-3 ${iconTone}`}>
-                        {icon}
-                      </div>
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${badgeTone}`}>
-                        {percentage}%
-                      </span>
-                    </div>
-                    <p className="mt-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{label}</p>
-                    <div className="mt-2 flex items-end justify-between gap-3">
-                      <p className="text-3xl font-bold text-slate-900">{count}</p>
-                      <p className="text-sm font-medium text-slate-500">{isFrench ? 'véhicules' : 'vehicles'}</p>
-                    </div>
-                    <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
-                      <div 
-                        className={`h-full transition-all duration-300 ${
-                          key === 'available'
-                            ? 'bg-emerald-500'
-                            : key === 'rented'
-                              ? 'bg-blue-500'
-                              : key === 'scheduled'
-                                ? 'bg-amber-500'
-                                : 'bg-slate-500'
-                        }`}
-                        style={{ width: `${percentage}%` }}
-                      />
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        <div className="mb-6 p-1">
-          {/* Mobile Search Bar - Always Visible */}
-          <div className="flex flex-col gap-4">
-            <div className="flex-1">
-              <div className="relative">
+        <div className="mb-4 rounded-2xl border border-violet-100/70 bg-white p-3 shadow-[0_12px_32px_rgba(76,29,149,0.06)]">
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+              <div className="relative min-w-0 flex-1">
             <input
               type="text"
               placeholder={isFrench ? 'Rechercher par ID, nom, téléphone, email, plaque...' : 'Search by ID, name, phone, email, plate...'}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full rounded-xl border border-violet-100 bg-white px-4 py-3 text-base text-slate-900 shadow-sm transition-colors placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+              className="w-full rounded-xl border border-violet-100 bg-slate-50 px-4 py-3 text-sm text-slate-900 shadow-sm transition-colors placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500"
             />
             {searchTerm && (
               <button
@@ -2065,26 +2776,10 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                 ✕
               </button>
             )}
-          </div>
-            </div>
-            
-            {/* Mobile Filter Toggle Button */}
-            <div className="flex items-center justify-between gap-2">
-              <button
-                onClick={() => setShowFilters(!showFilters)}
-                className="sm:hidden flex items-center gap-2 rounded-xl border border-violet-100 bg-white px-4 py-3 font-medium text-slate-700 shadow-sm transition-colors hover:bg-violet-50"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-                </svg>
-                <span>{isFrench ? 'Filtres' : 'Filters'}</span>
-                <svg className={`w-4 h-4 transition-transform ${showFilters ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-              
-              {/* View Mode Toggles - Always Visible */}
-              <div className="flex items-center gap-1 rounded-2xl border border-violet-100/80 bg-gradient-to-r from-white via-slate-50 to-violet-50/70 p-1 shadow-[0_12px_28px_rgba(76,29,149,0.08)]">
+              </div>
+
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 rounded-2xl border border-violet-100/80 bg-gradient-to-r from-white via-slate-50 to-violet-50/70 p-1 shadow-[0_12px_28px_rgba(76,29,149,0.08)]">
                 {isMobileViewport ? (
                   <>
                     <button
@@ -2136,103 +2831,74 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                     </button>
                   </>
                 )}
-              </div>
-            </div>
-            
-            <div className="hidden items-center gap-2 overflow-x-auto pb-1 sm:flex">
-              {[
-              { key: 'day', label: isFrench ? 'Jour' : 'Day', count: dateFocusCounts.day },
-                { key: 'week', label: isFrench ? 'Semaine' : 'Week', count: dateFocusCounts.week },
-              ].map(({ key, label, count }) => {
-                const active = dateFocusFilter === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => handleDateFocusToggle(key)}
-                    className={`shrink-0 inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-all ${
-                      active
-                        ? 'border-violet-500 bg-violet-600 text-white shadow-[0_10px_20px_rgba(79,70,229,0.18)]'
-                        : 'border-violet-100 bg-white text-slate-600 hover:border-violet-200 hover:text-slate-900'
-                    }`}
-                  >
-                    <span>{label}</span>
-                    <span className={`inline-flex min-w-[18px] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${
-                      active
-                        ? 'bg-white/20 text-white'
-                        : 'bg-violet-50 text-violet-600'
-                    }`}>
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
-              {dateFocusFilter !== 'all' && (
-                <button
-                  type="button"
-                  onClick={() => setDateFocusFilter('all')}
-                  className="shrink-0 px-1 text-xs font-medium text-slate-500 hover:text-slate-700"
-                >
-                  {isFrench ? 'Effacer' : 'Clear'}
-                </button>
-              )}
-            </div>
+                </div>
 
-            {/* Collapsible Filters Section */}
-            <div className={`${showFilters ? 'flex' : 'hidden'} sm:flex flex-col sm:flex-row gap-3 sm:gap-4`}>
-              <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:hidden">
-                {[
-                  { key: 'day', label: isFrench ? 'Jour' : 'Day', count: dateFocusCounts.day },
-                  { key: 'week', label: isFrench ? 'Semaine' : 'Week', count: dateFocusCounts.week },
-                ].map(({ key, label, count }) => {
-                  const active = dateFocusFilter === key;
-                  return (
+                <div className="inline-flex items-center rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
+                  {[
+                    { key: 'day', label: isFrench ? 'Jour' : 'Day', count: localDateFocusCounts.day },
+                    { key: 'week', label: isFrench ? 'Semaine' : 'Week', count: localDateFocusCounts.week },
+                  ].map(({ key, label, count }) => (
                     <button
                       key={key}
                       type="button"
-                      onClick={() => handleDateFocusToggle(key)}
-                      className={`shrink-0 inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-all ${
-                        active
-                          ? 'border-violet-500 bg-violet-600 text-white shadow-[0_10px_20px_rgba(79,70,229,0.18)]'
-                          : 'border-violet-100 bg-white text-slate-600 hover:border-violet-200 hover:text-slate-900'
+                      onClick={() => setDateFocusFilter(key)}
+                      className={`rounded-xl px-3 py-2 text-sm font-semibold transition-all ${
+                        dateFocusFilter === key
+                          ? 'bg-violet-600 text-white shadow-[0_10px_20px_rgba(79,70,229,0.18)]'
+                          : 'text-slate-600 hover:bg-slate-50'
                       }`}
                     >
-                      <span>{label}</span>
-                      <span className={`inline-flex min-w-[18px] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${
-                        active
-                          ? 'bg-white/20 text-white'
-                          : 'bg-violet-50 text-violet-600'
+                      {label}
+                      <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] ${
+                        dateFocusFilter === key ? 'bg-white/15 text-white' : 'bg-violet-50 text-violet-600'
                       }`}>
                         {count}
                       </span>
                     </button>
-                  );
-                })}
-                {dateFocusFilter !== 'all' && (
-                  <button
-                    type="button"
-                    onClick={() => setDateFocusFilter('all')}
-                    className="shrink-0 px-1 text-xs font-medium text-slate-500 hover:text-slate-700"
-                  >
-                    {isFrench ? 'Effacer' : 'Clear'}
-                  </button>
-                )}
-              </div>
-              <div className="flex-1">
-                <select
-                  value={statusFilter}
-                  onChange={(e) => handleFilterChange(setStatusFilter, 'status', e.target.value)}
-                  className="w-full rounded-xl border border-violet-100 bg-white px-4 py-3 text-base text-slate-900 shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  ))}
+                </div>
+
+                <button
+                  onClick={() => setShowFilters(!showFilters)}
+                  className="flex items-center gap-2 rounded-xl border border-violet-100 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-violet-50"
                 >
-	                <option value="all">{isFrench ? 'Tous les statuts' : 'All Status'}</option>
-	                <option value="scheduled">{isFrench ? 'Planifié' : 'Scheduled'}</option>
-	                <option value="active">{isFrench ? 'Actif' : 'Active'}</option>
-	                <option value="impounded">{isFrench ? 'Mis en fourrière' : 'Impounded'}</option>
-	                <option value="completed">{isFrench ? 'Terminé' : 'Completed'}</option>
-	                <option value="cancelled">{isFrench ? 'Annulé' : 'Cancelled'}</option>
-	                <option value="expired">{isFrench ? 'Expiré' : 'Expired'}</option>
-              </select>
+                  <span>{isFrench ? 'Plus' : 'More'}</span>
+                </button>
               </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 overflow-x-auto pb-1">
+              {[
+                ['all', isFrench ? 'Tous' : 'All'],
+                ['active', isFrench ? 'Actives' : 'Active'],
+                ['scheduled', isFrench ? 'Planifiées' : 'Scheduled'],
+                ['completed', isFrench ? 'Terminées' : 'Completed'],
+                ['no_show_review', isFrench ? 'Absence' : 'No-show'],
+                ['cancelled', isFrench ? 'Annulées' : 'Cancelled'],
+                ['maintenance', isFrench ? 'Maintenance' : 'Maintenance'],
+                ['impounded', isFrench ? 'Fourrière' : 'Impounded'],
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setStatusFilter(key)}
+                  className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition-all ${
+                    statusFilter === key
+                      ? 'border-violet-500 bg-violet-600 text-white shadow-[0_10px_18px_rgba(79,70,229,0.18)]'
+                      : 'border-violet-100 bg-white text-slate-600 hover:border-violet-200 hover:text-slate-900'
+                  }`}
+                >
+                  {label}
+                  <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] ${
+                    statusFilter === key ? 'bg-white/15 text-white' : 'bg-violet-50 text-violet-600'
+                  }`}>
+                    {statusTabCounts[key] || 0}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <div className={`${showFilters ? 'flex' : 'hidden'} flex-col gap-3 sm:flex-row`}>
               <div className="flex-1">
                 <select
                   value={paymentStatusFilter}
@@ -2246,6 +2912,23 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                 <option value="overdue">{isFrench ? 'En retard' : 'Overdue'}</option>
                 </select>
               </div>
+              <div className="flex-1">
+                <select
+                  value={statusFilter}
+                  onChange={(e) => handleFilterChange(setStatusFilter, 'status', e.target.value)}
+                  className="w-full rounded-xl border border-violet-100 bg-white px-4 py-3 text-base text-slate-900 shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500"
+                >
+                  <option value="all">{isFrench ? 'Tous les statuts' : 'All Status'}</option>
+                  <option value="active">{isFrench ? 'Actif' : 'Active'}</option>
+                  <option value="scheduled">{isFrench ? 'Planifié' : 'Scheduled'}</option>
+                  <option value="completed">{isFrench ? 'Terminé' : 'Completed'}</option>
+                  <option value="no_show_review">{isFrench ? 'Contrôle absence' : 'No-show review'}</option>
+                  <option value="cancelled">{isFrench ? 'Annulé' : 'Cancelled'}</option>
+                  <option value="maintenance">{isFrench ? 'Maintenance' : 'Maintenance'}</option>
+                  <option value="impounded">{isFrench ? 'Mis en fourrière' : 'Impounded'}</option>
+                </select>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -2257,28 +2940,37 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                 <div className="text-4xl mb-4">📝</div>
                 <p className="text-gray-600 mb-2">
                   {rentals.length === 0
-                    ? (isFrench ? 'Aucune location trouvée' : 'No rentals found')
-                    : (isFrench ? 'Aucune location ne correspond à vos filtres' : 'No rentals match your filters')}
+                    ? (workspaceTab === 'upcoming'
+                        ? (isFrench ? 'Aucune location à venir trouvée' : 'No upcoming rentals found')
+                        : workspaceTab === 'past'
+                          ? (isFrench ? 'Aucun historique trouvé' : 'No past rentals found')
+                          : (isFrench ? 'Aucune location du jour trouvée' : 'No rentals found for today'))
+                    : (workspaceTab === 'upcoming'
+                        ? (isFrench ? 'Aucune location à venir ne correspond à vos filtres' : 'No upcoming rentals match your filters')
+                        : workspaceTab === 'past'
+                          ? (isFrench ? "Aucun historique ne correspond à vos filtres" : 'No past rentals match your filters')
+                          : (isFrench ? "Aucune location du jour ne correspond à vos filtres" : 'No today rentals match your filters'))}
                 </p>
-                {(searchTerm || statusFilter !== 'all' || paymentStatusFilter !== 'all' || dateFocusFilter !== 'all') && (
+                {hasActiveUiFilters && (
                   <button
                     onClick={() => {
                       setSearchTerm('');
                       setStatusFilter('all');
                       setPaymentStatusFilter('all');
-                      setDateFocusFilter('all');
+                      setDateFocusFilter(getDefaultDateFocusForWorkspace(workspaceTab));
                       setCurrentPage(1);
                       navigate('/admin/rentals', { replace: true });
                     }}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 mb-2"
+                    className="inline-flex items-center gap-2 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(79,70,229,0.18)] transition-all duration-200 hover:-translate-y-0.5 hover:from-violet-700 hover:to-indigo-700 hover:shadow-[0_18px_34px_rgba(79,70,229,0.24)]"
                   >
-                    {isFrench ? 'Effacer les filtres' : 'Clear Filters'}
+                    <XCircle className="h-4 w-4" />
+                    {isFrench ? 'Effacer les filtres' : 'Clear filters'}
                   </button>
                 )}
-                {rentals.length === 0 && !searchTerm && statusFilter === 'all' && paymentStatusFilter === 'all' && dateFocusFilter === 'all' && (
+                {rentals.length === 0 && !searchTerm && statusFilter === 'all' && paymentStatusFilter === 'all' && dateFocusFilter === getDefaultDateFocusForWorkspace(workspaceTab) && (
                   <button
                     onClick={() => setShowStepperForm(true)}
-                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                    className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-[0_14px_35px_rgba(124,58,237,0.22)] transition-all duration-200 hover:-translate-y-0.5 hover:from-violet-700 hover:to-indigo-700 hover:shadow-[0_18px_42px_rgba(124,58,237,0.28)]"
                   >
                     {isFrench ? 'Créer la première location' : 'Create First Rental'}
                   </button>
@@ -2324,6 +3016,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                       const canStartContract = isPaymentSufficientForStart(rental);
                       const isImmutable = effectiveRentalStatus === 'active' || effectiveRentalStatus === 'completed';
                       const rentalAttention = getRentalAttentionState(rental);
+                      const showLateArrivalRecovery = shouldShowLateArrivalRecovery(rental, effectiveRentalStatus);
                       
                       return (
                         <tr 
@@ -2332,6 +3025,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                           effectiveRentalStatus === 'active' ? 'bg-green-50 hover:bg-green-100' :
                           effectiveRentalStatus === 'impounded' ? 'bg-amber-50 hover:bg-amber-100' :
                           effectiveRentalStatus === 'scheduled' ? 'bg-blue-50 hover:bg-blue-100' :
+                          effectiveRentalStatus === 'no_show_review' ? 'bg-amber-50 hover:bg-amber-100' :
                           effectiveRentalStatus === 'completed' ? 'bg-gray-50 hover:bg-gray-100' :
                           effectiveRentalStatus === 'cancelled' ? 'bg-red-50 hover:bg-red-100' :
                           effectiveRentalStatus === 'expired' ? 'bg-yellow-50 hover:bg-yellow-100' :
@@ -2362,6 +3056,13 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                               {getBookingSourceBadge(rental) && (
                                 <div className="mt-2">
                                   {getBookingSourceBadge(rental)}
+                                </div>
+                              )}
+                              {isNoShowCancellation(rental) && (
+                                <div className="mt-2">
+                                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">
+                                    ⚠️ {tr('No-show', 'Absence')}
+                                  </span>
                                 </div>
                               )}
                               <div className="mt-1">
@@ -2587,14 +3288,38 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     Start
   </button>
 )}
-{effectiveRentalStatus === 'scheduled' && (
+<button
+  onClick={(e) => handleContactCustomerWhatsApp(rental, e)}
+  className="inline-flex items-center gap-1 text-emerald-600 hover:text-emerald-900"
+  title={tr('Contact customer on WhatsApp', 'Contacter le client sur WhatsApp')}
+>
+  <MessageCircle className="h-4 w-4" />
+  <span>{tr('WhatsApp', 'WhatsApp')}</span>
+</button>
+{showLateArrivalRecovery && (
   <button
-    onClick={(e) => handleSendReminder(rental, e)}
-    className="inline-flex items-center gap-1 text-emerald-600 hover:text-emerald-900"
-    title={tr('Send WhatsApp reminder', 'Envoyer un rappel WhatsApp')}
+    onClick={(e) => {
+      e.stopPropagation();
+      handleCustomerArrived(rental);
+    }}
+    className="inline-flex items-center gap-1 text-violet-700 hover:text-violet-900"
+    title={tr('Customer arrived and should continue through normal start flow', 'Le client est arrivé et doit reprendre le démarrage normal')}
   >
-    <MessageCircle className="h-4 w-4" />
-    <span>{tr('Reminder', 'Rappel')}</span>
+    <CheckCircle className="h-4 w-4" />
+    <span>{tr('Arrived', 'Arrivé')}</span>
+  </button>
+)}
+{showLateArrivalRecovery && (
+  <button
+    onClick={(e) => {
+      e.stopPropagation();
+      handleCancelAsNoShow(rental);
+    }}
+    className="inline-flex items-center gap-1 text-amber-700 hover:text-amber-900"
+    title={tr('Cancel this missed booking as a no-show', 'Annuler cette réservation manquée comme absence')}
+  >
+    <XCircle className="h-4 w-4" />
+    <span>{tr('No-show', 'Absence')}</span>
   </button>
 )}
 {effectiveRentalStatus === 'scheduled' && !rental.pending_total_request && !canStartFromList(rental) && (
@@ -2660,27 +3385,38 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
               <div className="text-center py-12">
                 <div className="text-4xl mb-4">📝</div>
                 <p className="text-gray-600 mb-2">
-                  {rentals.length === 0 ? 'No rentals found' : 'No rentals match your filters'}
+                  {rentals.length === 0
+                    ? (workspaceTab === 'upcoming'
+                        ? 'No upcoming rentals found'
+                        : workspaceTab === 'past'
+                          ? 'No past rentals found'
+                          : 'No rentals found for today')
+                    : (workspaceTab === 'upcoming'
+                        ? 'No upcoming rentals match your filters'
+                        : workspaceTab === 'past'
+                          ? 'No past rentals match your filters'
+                          : 'No today rentals match your filters')}
                 </p>
-                {(searchTerm || statusFilter !== 'all' || paymentStatusFilter !== 'all' || dateFocusFilter !== 'all') && (
+                {hasActiveUiFilters && (
                   <button
                     onClick={() => {
                       setSearchTerm('');
                       setStatusFilter('all');
                       setPaymentStatusFilter('all');
-                      setDateFocusFilter('all');
+                      setDateFocusFilter(getDefaultDateFocusForWorkspace(workspaceTab));
                       setCurrentPage(1);
                       navigate('/admin/rentals', { replace: true });
                     }}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 mb-2"
+                    className="inline-flex items-center gap-2 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(79,70,229,0.18)] transition-all duration-200 hover:-translate-y-0.5 hover:from-violet-700 hover:to-indigo-700 hover:shadow-[0_18px_34px_rgba(79,70,229,0.24)]"
                   >
-                    {tr('Clear Filters', 'Effacer les filtres')}
+                    <XCircle className="h-4 w-4" />
+                    {tr('Clear filters', 'Effacer les filtres')}
                   </button>
                 )}
                 {rentals.length === 0 && !searchTerm && statusFilter === 'all' && paymentStatusFilter === 'all' && dateFocusFilter === 'all' && (
                   <button
                     onClick={() => setShowStepperForm(true)}
-                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                    className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-[0_14px_35px_rgba(124,58,237,0.22)] transition-all duration-200 hover:-translate-y-0.5 hover:from-violet-700 hover:to-indigo-700 hover:shadow-[0_18px_42px_rgba(124,58,237,0.28)]"
                   >
                     {tr('Create First Rental', 'Créer la première location')}
                   </button>
@@ -2697,6 +3433,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                   const canStartContract = isPaymentSufficientForStart(rental);
                   const isImmutable = effectiveRentalStatus === 'active' || effectiveRentalStatus === 'completed';
                   const rentalAttention = getRentalAttentionState(rental);
+                  const showLateArrivalRecovery = shouldShowLateArrivalRecovery(rental, effectiveRentalStatus);
                   const isCompactMobileCard = isMobileViewport && viewMode === 'grid';
                   const paymentSnapshot = getRentalFinancialSnapshot(rental);
                   const paymentLabel = {
@@ -2718,6 +3455,8 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                               ? 'border-amber-200 shadow-[0_18px_45px_rgba(245,158,11,0.12)] hover:border-amber-300 hover:shadow-[0_20px_50px_rgba(245,158,11,0.16)]'
                             : effectiveRentalStatus === 'scheduled'
                               ? 'border-blue-200 shadow-[0_18px_45px_rgba(59,130,246,0.12)] hover:border-blue-300 hover:shadow-[0_20px_50px_rgba(59,130,246,0.16)]'
+                              : effectiveRentalStatus === 'no_show_review'
+                                ? 'border-amber-200 shadow-[0_18px_45px_rgba(245,158,11,0.12)] hover:border-amber-300 hover:shadow-[0_20px_50px_rgba(245,158,11,0.16)]'
                               : effectiveRentalStatus === 'completed'
                                 ? 'border-slate-200 shadow-[0_18px_45px_rgba(100,116,139,0.10)] hover:border-slate-300 hover:shadow-[0_20px_50px_rgba(100,116,139,0.14)]'
                                 : effectiveRentalStatus === 'cancelled'
@@ -2731,6 +3470,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                           effectiveRentalStatus === 'active' ? 'border-emerald-100' :
                           effectiveRentalStatus === 'impounded' ? 'border-amber-100' :
                           effectiveRentalStatus === 'scheduled' ? 'border-blue-100' :
+                          effectiveRentalStatus === 'no_show_review' ? 'border-amber-100' :
                           effectiveRentalStatus === 'completed' ? 'border-slate-100' :
                           effectiveRentalStatus === 'cancelled' ? 'border-rose-100' :
                           effectiveRentalStatus === 'expired' ? 'border-amber-100' :
@@ -2751,6 +3491,11 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                             {rental?.is_impounded && effectiveRentalStatus !== 'impounded' && (
                               <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-800">
                                 🚨 {tr('Impounded', 'Mis en fourrière')}
+                              </span>
+                            )}
+                            {isNoShowCancellation(rental) && (
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-800">
+                                ⚠️ {tr('No-show', 'Absence')}
                               </span>
                             )}
                             {rentalAttention && (
@@ -2827,24 +3572,40 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
 
                           {renderFuelProgressBar(rental, true)}
 
-                          {/* Payment Info */}
-<div className={`flex items-center justify-between gap-2 ${isCompactMobileCard ? 'pt-2' : 'pt-2.5'}`}>
-  <div className="flex items-center gap-1">
-    <span className={`${paymentSnapshot.className} ${isCompactMobileCard ? 'text-[10px]' : ''}`}>
-      {paymentLabel}
-    </span>
-  </div>
-  <div className={`${isCompactMobileCard ? 'text-[11px]' : 'text-xs'} font-bold text-slate-900 whitespace-nowrap`}>
-    {rental.pending_total_request ? (
-        <div className="flex items-center gap-1">
-          <span className="text-yellow-600">{rental.pending_total_request} MAD</span>
-          <span className="text-[8px] text-gray-400 line-through">{paymentSnapshot.grandTotal.toFixed(0)} MAD</span>
-        </div>
-      ) : (
-        <span>{paymentSnapshot.grandTotal.toFixed(0)} MAD</span>
-      )}
-  </div>
-</div>
+                          <div className={`grid grid-cols-2 gap-2 rounded-xl border border-slate-100 bg-slate-50/90 ${isCompactMobileCard ? 'mt-1 p-2' : 'mt-2 p-2.5'}`}>
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                {tr('Paid', 'Payé')}
+                              </div>
+                              <div className={`${isCompactMobileCard ? 'text-[12px]' : 'text-sm'} font-bold text-emerald-700`}>
+                                {paymentSnapshot.amountPaid.toFixed(0)} MAD
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                {tr('Remaining', 'Restant')}
+                              </div>
+                              <div className={`${isCompactMobileCard ? 'text-[12px]' : 'text-sm'} font-bold ${paymentSnapshot.balanceDue > 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                                {paymentSnapshot.balanceDue.toFixed(0)} MAD
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`${paymentSnapshot.className} ${isCompactMobileCard ? 'text-[10px]' : ''}`}>
+                              {paymentLabel}
+                            </span>
+                            <div className={`${isCompactMobileCard ? 'text-[11px]' : 'text-xs'} font-bold text-slate-900 whitespace-nowrap`}>
+                              {rental.pending_total_request ? (
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-yellow-600">{rental.pending_total_request} MAD</span>
+                                    <span className="text-[8px] text-gray-400 line-through">{paymentSnapshot.grandTotal.toFixed(0)} MAD</span>
+                                  </div>
+                                ) : (
+                                  <span>{paymentSnapshot.grandTotal.toFixed(0)} MAD</span>
+                                )}
+                            </div>
+                          </div>
 
 {/* Only show pending badge here, remove approved/declined badges */}
 {rental.approval_status === 'pending' && rental.pending_total_request && (
@@ -2859,7 +3620,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
 
                         {/* Compact Actions */}
                         {!isCompactMobileCard && (
-                        <div className="flex flex-wrap gap-2 mt-auto pt-2.5">
+                        <div className="mt-auto flex flex-wrap gap-2 border-t border-slate-100 pt-2.5">
                           
                           {/* Admin Approval Button for Pending Price Overrides */}
 {effectiveRentalStatus === 'scheduled' && rental.approval_status === 'pending' && rental.pending_total_request && user?.role === 'owner' && (
@@ -2975,16 +3736,38 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
     {tr('Start', 'Démarrer')}
   </button>
 )}
-{effectiveRentalStatus === 'scheduled' && (
+{showLateArrivalRecovery && (
   <button
-    onClick={(e) => handleSendReminder(rental, e)}
-    className="inline-flex items-center justify-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-100"
-    title={tr('Send WhatsApp reminder', 'Envoyer un rappel WhatsApp')}
+    onClick={(e) => {
+      e.stopPropagation();
+      handleCustomerArrived(rental);
+    }}
+    className="w-full rounded-md border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-800 transition-colors hover:bg-violet-100"
+    title={tr('Customer arrived and should continue through normal start flow', 'Le client est arrivé et doit reprendre le démarrage normal')}
   >
-    <MessageCircle className="w-3.5 h-3.5" />
-    <span>{tr('WhatsApp Reminder', 'Rappel WhatsApp')}</span>
+    {tr('Customer arrived', 'Client arrivé')}
   </button>
 )}
+{showLateArrivalRecovery && (
+  <button
+    onClick={(e) => {
+      e.stopPropagation();
+      handleCancelAsNoShow(rental);
+    }}
+    className="w-full rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-100"
+    title={tr('Cancel this missed booking as a no-show', 'Annuler cette réservation manquée comme absence')}
+  >
+    {tr('Cancel as no-show', 'Annuler comme absence')}
+  </button>
+)}
+<button
+  onClick={(e) => handleContactCustomerWhatsApp(rental, e)}
+  className="inline-flex items-center justify-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-100"
+  title={tr('Contact customer on WhatsApp', 'Contacter le client sur WhatsApp')}
+>
+  <MessageCircle className="w-3.5 h-3.5" />
+  <span>{tr('WhatsApp', 'WhatsApp')}</span>
+</button>
                           
                           {effectiveRentalStatus === 'active' && (
                     <button
@@ -2998,6 +3781,17 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
                                 {tr('Close', 'Clôturer')}
                               </button>
                   )}
+
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(`/admin/rentals/${rental.id}`);
+                            }}
+                            className="px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50 border border-violet-200 rounded-lg transition-colors"
+                            title={tr('Open quick actions and rental details', 'Ouvrir les actions rapides et les détails')}
+                          >
+                            {tr('Open', 'Ouvrir')}
+                          </button>
                           
                           {canDelete() && !isImmutable && (
                             <button
@@ -3047,7 +3841,7 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
         )}
 
         {/* Pagination Controls */}
-        {totalCount > 0 && (
+        {!isDateFocusScoped && totalCount > 0 && (
           <div className="mt-8 rounded-[1.75rem] border border-violet-100/80 bg-white p-4 shadow-[0_18px_40px_rgba(76,29,149,0.08)] sm:p-5">
             {/* Results info */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -3120,44 +3914,112 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
           </div>
         )}
 
-        <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 sm:gap-6 xl:grid-cols-6">
-          <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
-            <div className="text-2xl font-bold text-violet-600 sm:text-3xl">{totalCount || rentals.length}</div>
-            <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Total locations' : 'Total Rentals'}</div>
-          </div>
-          <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
-            <div className="text-2xl font-bold text-emerald-600 sm:text-3xl">
-              {rentals.filter(r => getEffectiveRentalStatus(r) === 'active').length}
-            </div>
-            <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Locations actives' : 'Active Rentals'}</div>
-          </div>
-          <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
-            <div className="text-2xl font-bold text-amber-600 sm:text-3xl">
-              {rentals.filter(r => getEffectiveRentalStatus(r) === 'scheduled').length}
-            </div>
-            <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Locations planifiées' : 'Scheduled Rentals'}</div>
-          </div>
-          <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
-            <div className="text-2xl font-bold text-violet-600 sm:text-3xl">
-              {rentals.filter(r => getEffectiveRentalStatus(r) === 'completed').length}
-            </div>
-            <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Locations terminées' : 'Completed Rentals'}</div>
-          </div>
-          <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
-            <div className="text-2xl font-bold text-orange-500 sm:text-3xl">
-              {rentals.filter(r => getEffectiveRentalStatus(r) === 'expired').length}
-            </div>
-            <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Locations expirées' : 'Expired Rentals'}</div>
-          </div>
-          <div className="rounded-[1.5rem] border border-violet-100/80 bg-white p-4 text-center shadow-[0_16px_36px_rgba(76,29,149,0.07)] transition-all hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(76,29,149,0.11)] sm:p-6">
-            <div className="text-2xl font-bold text-indigo-600 sm:text-3xl">
-              {rentals.filter(r => getEffectiveRentalStatus(r) === 'completed').reduce((sum, r) => sum + (parseFloat(r.total_amount) || 0), 0).toFixed(2)}
-            </div>
-            <div className="mt-1 text-xs text-slate-500 sm:text-sm">{isFrench ? 'Revenu total (MAD)' : 'Total Revenue (MAD)'}</div>
-          </div>
+        <div className="mt-6 flex flex-wrap items-center gap-2 rounded-2xl border border-violet-100/80 bg-white px-3 py-3 shadow-[0_12px_28px_rgba(76,29,149,0.06)]">
+          <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+            {tr('Contracts', 'Contrats')}: {footerSummaryRentalCount}
+          </span>
+          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+            {tr('Active', 'Actives')}: {footerSummaryRentals.filter(r => getEffectiveRentalStatus(r) === 'active').length}
+          </span>
+          <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+            {tr('Scheduled', 'Planifiées')}: {footerSummaryRentals.filter(r => getEffectiveRentalStatus(r) === 'scheduled').length}
+          </span>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+            {tr('Completed', 'Terminées')}: {footerSummaryRentals.filter(r => getEffectiveRentalStatus(r) === 'completed').length}
+          </span>
+          <span className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700">
+            {tr('Expired', 'Expirées')}: {footerSummaryRentals.filter(r => getEffectiveRentalStatus(r) === 'expired').length}
+          </span>
+          <span className="ml-auto rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
+            {tr('Revenue', 'Revenu')}: {footerSummaryRevenue.toFixed(0)} MAD
+          </span>
         </div>
       </div>
 
+      {whatsAppSheetRental && (
+        <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/45 backdrop-blur-[2px] sm:items-center" onClick={closeWhatsAppSheet}>
+          <div
+            className="w-full max-w-xl rounded-t-[2rem] border border-violet-100 bg-white p-5 shadow-[0_-18px_40px_rgba(76,29,149,0.18)] sm:rounded-[2rem] sm:p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-slate-200 sm:hidden" />
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-400">
+                  {tr('Choose message', 'Choisir un message')}
+                </p>
+                <h3 className="mt-2 text-2xl font-bold text-slate-900">
+                  {tr('WhatsApp customer', 'WhatsApp client')}
+                </h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  {whatsAppSheetRental.customer_name} • {whatsAppSheetRental.rental_id}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeWhatsAppSheet}
+                className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                aria-label={tr('Close message picker', 'Fermer le sélecteur de messages')}
+              >
+                <XCircle className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {whatsAppTemplateOptions.map((option, index) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => handleSendWhatsAppTemplate(whatsAppSheetRental, option.message)}
+                  className={`w-full rounded-[1.4rem] border px-4 py-4 text-left transition ${
+                    index === 0
+                      ? 'border-violet-300 bg-violet-50 shadow-[0_10px_30px_rgba(124,58,237,0.12)]'
+                      : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/60'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">
+                        {option.label}
+                        {index === 0 ? (
+                          <span className="ml-2 rounded-full bg-violet-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white">
+                            {tr('Suggested', 'Suggéré')}
+                          </span>
+                        ) : null}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-500">{option.preview}</p>
+                      <p className="mt-2 line-clamp-2 text-xs text-slate-400">{option.message}</p>
+                    </div>
+                    <MessageCircle className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500" />
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-5 rounded-[1.4rem] border border-slate-200 bg-slate-50 p-4">
+              <p className="text-sm font-semibold text-slate-900">{tr('Custom message', 'Message personnalisé')}</p>
+              <textarea
+                value={whatsAppCustomMessage}
+                onChange={(event) => setWhatsAppCustomMessage(event.target.value)}
+                rows={3}
+                placeholder={tr('Write your own WhatsApp message…', 'Écrivez votre propre message WhatsApp…')}
+                className="mt-3 w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:ring-2 focus:ring-violet-100"
+              />
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => handleSendWhatsAppTemplate(whatsAppSheetRental, whatsAppCustomMessage.trim())}
+                  disabled={!whatsAppCustomMessage.trim()}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  <MessageCircle className="h-4 w-4" />
+                  {tr('Send custom message', 'Envoyer le message personnalisé')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {videoContractModal.isOpen && (
         <VideoContractModal
@@ -3174,7 +4036,6 @@ const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || [])
         customerId={customerDetailsDrawer.customerId}
         rental={customerDetailsDrawer.rental}
       />
-    </div>
     </div>
   );
 };

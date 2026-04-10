@@ -2,6 +2,7 @@ import React from 'react';
 import { useSelector } from 'react-redux';
 import { usePermissions } from '../../hooks/usePermissions';
 import { useAuth } from '../../contexts/AuthContext';
+import i18n from '../../i18n';
 
 /**
  * Enhanced Protected Route Component with secure role handling
@@ -14,6 +15,8 @@ const EnhancedProtectedRoute = ({
   fallbackRoles = [],
   fallback = null 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   console.log('🔒 === ENHANCED PROTECTED ROUTE ===');
   console.log('🔍 Required Module:', requiredModule);
   console.log('🔍 Required Role:', requiredRole);
@@ -48,16 +51,16 @@ const EnhancedProtectedRoute = ({
             <svg className="mx-auto h-12 w-12 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
-            <h2 className="mt-2 text-lg font-medium text-gray-900">Authentication Required</h2>
+            <h2 className="mt-2 text-lg font-medium text-gray-900">{tr('Authentication Required', 'Authentification requise')}</h2>
             <p className="mt-1 text-sm text-gray-600">
-              Please log in to access this page.
+              {tr('Please log in to access this page.', 'Veuillez vous connecter pour accéder à cette page.')}
             </p>
             <div className="mt-6">
               <button
                 onClick={() => window.location.href = '/login'}
                 className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               >
-                Go to Login
+                {tr('Go to Login', 'Aller à la connexion')}
               </button>
             </div>
           </div>
@@ -76,20 +79,20 @@ const EnhancedProtectedRoute = ({
             <svg className="mx-auto h-12 w-12 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
             </svg>
-            <h2 className="mt-2 text-lg font-medium text-gray-900">Role Assignment Required</h2>
+            <h2 className="mt-2 text-lg font-medium text-gray-900">{tr('Role Assignment Required', 'Attribution de rôle requise')}</h2>
             <p className="mt-1 text-sm text-gray-600">
-              Your account doesn't have a role assigned. Please contact your administrator.
+              {tr("Your account doesn't have a role assigned. Please contact your administrator.", "Aucun rôle n'est attribué à votre compte. Veuillez contacter votre administrateur.")}
             </p>
             <div className="mt-3 text-xs text-gray-500 space-y-1">
-              <p>User: <span className="font-medium">{email}</span></p>
-              <p>Metadata Role: <span className="font-medium">Not assigned</span></p>
+              <p>{tr('User:', 'Utilisateur :')} <span className="font-medium">{email}</span></p>
+              <p>{tr('Metadata Role:', 'Rôle dans les métadonnées :')} <span className="font-medium">{tr('Not assigned', 'Non attribué')}</span></p>
             </div>
             <div className="mt-6">
               <button
                 onClick={() => window.history.back()}
                 className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               >
-                Go Back
+                {tr('Go Back', 'Retour')}
               </button>
             </div>
           </div>
@@ -114,21 +117,21 @@ const EnhancedProtectedRoute = ({
               <svg className="mx-auto h-12 w-12 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636m12.728 12.728L5.636 5.636" />
               </svg>
-              <h2 className="mt-2 text-lg font-medium text-gray-900">Dashboard Access Denied</h2>
+              <h2 className="mt-2 text-lg font-medium text-gray-900">{tr('Dashboard Access Denied', 'Accès au tableau de bord refusé')}</h2>
               <p className="mt-1 text-sm text-gray-600">
-                You don't have sufficient permissions to access the admin dashboard.
+                {tr("You don't have sufficient permissions to access the admin dashboard.", "Vous n'avez pas les autorisations suffisantes pour accéder au tableau de bord d'administration.")}
               </p>
               <div className="mt-3 text-xs text-gray-500 space-y-1">
-                <p>Required Roles: <span className="font-medium">owner, admin, employee, guide</span></p>
-                <p>Your Role: <span className="font-medium">{userRole}</span></p>
-                <p>User: <span className="font-medium">{email}</span></p>
-              </div>
+                <p>{tr('Required Roles:', 'Rôles requis :')} <span className="font-medium">owner, admin, employee, guide</span></p>
+                <p>{tr('Your Role:', 'Votre rôle :')} <span className="font-medium">{userRole}</span></p>
+                <p>{tr('User:', 'Utilisateur :')} <span className="font-medium">{email}</span></p>
+            </div>
               <div className="mt-6">
                 <button
                   onClick={() => window.location.href = '/'}
                   className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
                 >
-                  Go to Home
+                  {tr('Go to Home', "Aller à l'accueil")}
                 </button>
               </div>
             </div>
@@ -156,21 +159,21 @@ const EnhancedProtectedRoute = ({
               <svg className="mx-auto h-12 w-12 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636m12.728 12.728L5.636 5.636" />
               </svg>
-              <h2 className="mt-2 text-lg font-medium text-gray-900">Access Denied</h2>
+              <h2 className="mt-2 text-lg font-medium text-gray-900">{tr('Access Denied', 'Accès refusé')}</h2>
               <p className="mt-1 text-sm text-gray-600">
-                You don't have the required role to access this page.
+                {tr("You don't have the required role to access this page.", "Vous n'avez pas le rôle requis pour accéder à cette page.")}
               </p>
               <div className="mt-3 text-xs text-gray-500 space-y-1">
-                <p>Required Role: <span className="font-medium">{rolesArray.join(', ')}</span></p>
-                <p>Your Role: <span className="font-medium">{userRole}</span></p>
-                <p>User: <span className="font-medium">{email}</span></p>
+                <p>{tr('Required Role:', 'Rôle requis :')} <span className="font-medium">{rolesArray.join(', ')}</span></p>
+                <p>{tr('Your Role:', 'Votre rôle :')} <span className="font-medium">{userRole}</span></p>
+                <p>{tr('User:', 'Utilisateur :')} <span className="font-medium">{email}</span></p>
               </div>
               <div className="mt-6">
                 <button
                   onClick={() => window.history.back()}
                   className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
                 >
-                  Go Back
+                  {tr('Go Back', 'Retour')}
                 </button>
               </div>
             </div>
@@ -198,21 +201,21 @@ const EnhancedProtectedRoute = ({
               <svg className="mx-auto h-12 w-12 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
               </svg>
-              <h2 className="mt-2 text-lg font-medium text-gray-900">Module Access Required</h2>
+              <h2 className="mt-2 text-lg font-medium text-gray-900">{tr('Module Access Required', "Accès au module requis")}</h2>
               <p className="mt-1 text-sm text-gray-600">
-                You don't have permission to access this module. Contact your administrator to request access.
+                {tr("You don't have permission to access this module. Contact your administrator to request access.", "Vous n'avez pas l'autorisation d'accéder à ce module. Contactez votre administrateur pour demander l'accès.")}
               </p>
               <div className="mt-3 text-xs text-gray-500 space-y-1">
-                <p>Module: <span className="font-medium">{requiredModule}</span></p>
-                <p>Current Role: <span className="font-medium">{userRole}</span></p>
-                <p>User: <span className="font-medium">{email}</span></p>
+                <p>{tr('Module:', 'Module :')} <span className="font-medium">{requiredModule}</span></p>
+                <p>{tr('Current Role:', 'Rôle actuel :')} <span className="font-medium">{userRole}</span></p>
+                <p>{tr('User:', 'Utilisateur :')} <span className="font-medium">{email}</span></p>
               </div>
               <div className="mt-6">
                 <button
                   onClick={() => window.history.back()}
                   className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
                 >
-                  Go Back
+                  {tr('Go Back', 'Retour')}
                 </button>
               </div>
             </div>

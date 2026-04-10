@@ -7,14 +7,19 @@ import BookingDeleteModal from '../components/admin/BookingDeleteModal';
 import BookingDetailsModal from '../components/admin/BookingDetailsModal';
 import DebugAuthState from '../components/DebugAuthState';
 import toast from 'react-hot-toast';
+import i18n from '../i18n';
 
 const Bookings = () => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const dispatch = useDispatch();
   const { bookings, loading } = useSelector(state => state.bookings || { bookings: [], loading: false });
   const authState = useSelector(state => state.auth);
   const [viewMode, setViewMode] = useState('list'); // 'list' or 'calendar'
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [filter, setFilter] = useState('all'); // 'all', 'upcoming', 'past', 'active'
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   
   // Modal states
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -144,6 +149,19 @@ const Bookings = () => {
     }
   }).sort((a, b) => new Date(a.selectedDate + 'T' + a.selectedTime) - new Date(b.selectedDate + 'T' + b.selectedTime));
 
+  const pageCount = Math.max(1, Math.ceil(filteredBookings.length / pageSize));
+  const paginatedBookings = filteredBookings.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filter, pageSize, viewMode]);
+
+  useEffect(() => {
+    if (currentPage > pageCount) {
+      setCurrentPage(pageCount);
+    }
+  }, [currentPage, pageCount]);
+
   // Get bookings for selected date in calendar view
   const dailyBookings = bookings.filter(booking => 
     booking.selectedDate === selectedDate
@@ -164,7 +182,7 @@ const Bookings = () => {
         }
       }
       
-      toast.success('Tour started successfully!');
+      toast.success(tr('Tour started successfully!', 'Tour démarré avec succès !'));
     } catch (error) {
       toast.error('Failed to start tour: ' + error.message);
     }
@@ -193,7 +211,7 @@ const Bookings = () => {
         }
       }
       
-      toast.success(`Tour completed! Duration: ${actualDuration} hours`);
+      toast.success(`${tr('Tour completed! Duration:', 'Tour terminé ! Durée :')} ${actualDuration} ${tr('hours', 'heures')}`);
     } catch (error) {
       toast.error('Failed to finish tour: ' + error.message);
     }
@@ -233,12 +251,12 @@ const Bookings = () => {
 
   const getStatusText = (status) => {
     switch (status) {
-      case 'confirmed': return 'Confirmed';
-      case 'on_tour': return 'On Tour';
-      case 'completed': return 'Completed';
-      case 'cancelled': return 'Cancelled';
-      case 'pending': return 'Pending';
-      default: return 'Unknown';
+      case 'confirmed': return tr('Confirmed', 'Confirmée');
+      case 'on_tour': return tr('On Tour', 'En tour');
+      case 'completed': return tr('Completed', 'Terminée');
+      case 'cancelled': return tr('Cancelled', 'Annulée');
+      case 'pending': return tr('Pending', 'En attente');
+      default: return tr('Unknown', 'Inconnu');
     }
   };
 
@@ -259,12 +277,12 @@ const Bookings = () => {
       <div className="container mx-auto px-4 py-8">
         <DebugAuthState />
         <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-          <h2 className="text-xl font-semibold text-red-800 mb-2">Access Denied</h2>
-          <p className="text-red-600">You need employee, guide, admin, or owner access to view bookings.</p>
+          <h2 className="text-xl font-semibold text-red-800 mb-2">{tr('Access Denied', 'Accès refusé')}</h2>
+          <p className="text-red-600">{tr('You need employee, guide, admin, or owner access to view bookings.', "Vous devez avoir un accès employé, guide, admin ou propriétaire pour voir les réservations.")}</p>
           <div className="mt-4 text-sm text-gray-600">
-            <p>Current user: {authState?.user?.email}</p>
-            <p>User roles: {JSON.stringify(authState?.userRoles)}</p>
-            <p>Has booking access: {permissions.hasBookingAccess ? 'Yes' : 'No'}</p>
+            <p>{tr('Current user', 'Utilisateur actuel')}: {authState?.user?.email}</p>
+            <p>{tr('User roles', 'Rôles utilisateur')}: {JSON.stringify(authState?.userRoles)}</p>
+            <p>{tr('Has booking access', "A l'accès réservations")}: {permissions.hasBookingAccess ? tr('Yes', 'Oui') : tr('No', 'Non')}</p>
           </div>
         </div>
       </div>
@@ -279,13 +297,13 @@ const Bookings = () => {
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Tours & Bookings Management</h1>
-          <p className="text-gray-600">Track and manage all tour bookings and fleet assignments</p>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">{tr('Tours & Bookings Management', 'Gestion des tours et reservations')}</h1>
+          <p className="text-gray-600">{tr('Track and manage all tour bookings and fleet assignments', 'Suivez et gerez toutes les reservations de tours et les affectations de flotte')}</p>
           {/* Debug info for admin users */}
           {permissions.hasAdminAccess && (
             <div className="mt-2 text-sm text-blue-600 bg-blue-50 p-2 rounded">
-              Admin Access: Owner={permissions.isOwner ? 'Yes' : 'No'} | Admin={permissions.isAdmin ? 'Yes' : 'No'} | User: {authState?.user?.email}
-              <br />Deletable Statuses: pending, cancelled, confirmed
+              {tr('Admin Access', 'Acces admin')}: {tr('Owner', 'Proprietaire')}={permissions.isOwner ? tr('Yes', 'Oui') : tr('No', 'Non')} | {tr('Admin', 'Admin')}={permissions.isAdmin ? tr('Yes', 'Oui') : tr('No', 'Non')} | {tr('User', 'Utilisateur')}: {authState?.user?.email}
+              <br />{tr('Deletable Statuses', 'Statuts supprimables')}: {tr('pending, cancelled, confirmed', 'en attente, annule, confirme')}
             </div>
           )}
         </div>
@@ -302,7 +320,7 @@ const Bookings = () => {
               }`}
             >
               <List size={18} />
-              List
+              {tr('List', 'Liste')}
             </button>
             <button
               onClick={() => setViewMode('calendar')}
@@ -313,7 +331,7 @@ const Bookings = () => {
               }`}
             >
               <Calendar size={18} />
-              Calendar
+              {tr('Calendar', 'Calendrier')}
             </button>
           </div>
         </div>
@@ -326,10 +344,10 @@ const Bookings = () => {
           onChange={(e) => setFilter(e.target.value)}
           className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
         >
-          <option value="all">All Bookings</option>
-          <option value="upcoming">Upcoming</option>
-          <option value="active">Active Tours</option>
-          <option value="past">Past Bookings</option>
+          <option value="all">{tr('All Bookings', 'Toutes les reservations')}</option>
+          <option value="upcoming">{tr('Upcoming', 'A venir')}</option>
+          <option value="active">{tr('Active Tours', 'Tours actifs')}</option>
+          <option value="past">{tr('Past Bookings', 'Reservations passees')}</option>
         </select>
         
         {viewMode === 'calendar' && (
@@ -340,13 +358,24 @@ const Bookings = () => {
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           />
         )}
+
+        {viewMode === 'list' && (
+          <select
+            value={String(pageSize)}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="10">{tr('Show 10', 'Afficher 10')}</option>
+            <option value="25">{tr('Show 25', 'Afficher 25')}</option>
+          </select>
+        )}
       </div>
 
       {/* Loading State */}
       {loading && (
         <div className="text-center py-8">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-2 text-gray-600">Loading bookings...</p>
+          <p className="mt-2 text-gray-600">{tr('Loading bookings...', 'Chargement des reservations...')}</p>
         </div>
       )}
 
@@ -356,11 +385,11 @@ const Bookings = () => {
           {filteredBookings.length === 0 ? (
             <div className="text-center py-12 bg-gray-50 rounded-lg">
               <Calendar size={48} className="mx-auto text-gray-400 mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No bookings found</h3>
-              <p className="text-gray-600">No bookings match your current filter criteria.</p>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">{tr('No bookings found', 'Aucune reservation trouvee')}</h3>
+              <p className="text-gray-600">{tr('No bookings match your current filter criteria.', 'Aucune reservation ne correspond a vos filtres actuels.')}</p>
             </div>
           ) : (
-            filteredBookings.map((booking) => (
+            paginatedBookings.map((booking) => (
               <div key={booking.id} className="bg-white rounded-lg shadow-md border hover:shadow-lg transition-shadow">
                 <div className="p-6">
                   <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
@@ -368,7 +397,7 @@ const Bookings = () => {
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-3">
                         <h3 className="text-xl font-semibold text-gray-900">
-                          {booking.tourName || 'ATV Tour'}
+                          {booking.tourName || tr('ATV Tour', 'Tour ATV')}
                         </h3>
                         <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(booking.status)}`}>
                           {getStatusText(booking.status)}
@@ -386,7 +415,7 @@ const Bookings = () => {
                         </div>
                         <div className="flex items-center gap-2">
                           <Users size={16} />
-                          <span>{booking.participants?.length || 0} participants</span>
+                          <span>{booking.participants?.length || 0} {tr('participants', 'participants')}</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <Car size={16} />
@@ -396,7 +425,7 @@ const Bookings = () => {
 
                       {/* Customer Info */}
                       <div className="mt-3 text-sm text-gray-600">
-                        <span className="font-medium">Customer:</span> {booking.customerName}
+                          <span className="font-medium">{tr('Customer', 'Client')}:</span> {booking.customerName}
                         {booking.customerEmail && (
                           <span className="ml-4">
                             <span className="font-medium">Email:</span> {booking.customerEmail}
@@ -407,7 +436,7 @@ const Bookings = () => {
                       {/* Debug info for admin users */}
                       {permissions.hasAdminAccess && (
                         <div className="mt-2 text-xs text-blue-600">
-                          Can Edit: {canEditBooking(booking) ? 'Yes' : 'No'} | Can Delete: {canDeleteBooking(booking) ? 'Yes' : 'No'}
+                          {tr('Can Edit', 'Peut modifier')}: {canEditBooking(booking) ? tr('Yes', 'Oui') : tr('No', 'Non')} | {tr('Can Delete', 'Peut supprimer')}: {canDeleteBooking(booking) ? tr('Yes', 'Oui') : tr('No', 'Non')}
                         </div>
                       )}
                     </div>
@@ -422,7 +451,7 @@ const Bookings = () => {
                             className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
                           >
                             <Play size={16} />
-                            START
+                            {tr('START', 'DÉMARRER')}
                           </button>
                         )}
                         
@@ -432,7 +461,7 @@ const Bookings = () => {
                             className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium"
                           >
                             <Square size={16} />
-                            FINISH
+                            {tr('FINISH', 'TERMINER')}
                           </button>
                         )}
                       </div>
@@ -444,7 +473,7 @@ const Bookings = () => {
                           className="flex items-center gap-2 px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
                         >
                           <Eye size={14} />
-                          View
+                          {tr('View', 'Voir')}
                         </button>
 
                         {/* Edit Button - Show for admin/owner users */}
@@ -454,7 +483,7 @@ const Bookings = () => {
                             className="flex items-center gap-2 px-3 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors text-sm"
                           >
                             <Edit size={14} />
-                            Edit
+                            {tr('Edit', 'Modifier')}
                           </button>
                         )}
 
@@ -465,7 +494,7 @@ const Bookings = () => {
                             className="flex items-center gap-2 px-3 py-2 border border-red-300 text-red-700 rounded-lg hover:bg-red-50 transition-colors text-sm"
                           >
                             <Trash2 size={14} />
-                            Delete
+                            {tr('Delete', 'Supprimer')}
                           </button>
                         )}
                       </div>
@@ -475,6 +504,32 @@ const Bookings = () => {
               </div>
             ))
           )}
+
+          {filteredBookings.length > 0 && pageCount > 1 && (
+            <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+              <p className="text-sm font-medium text-gray-600">
+                {tr('Page', 'Page')} {currentPage} {tr('of', 'sur')} {pageCount}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1}
+                  className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {tr('Previous', 'Précédent')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.min(pageCount, prev + 1))}
+                  disabled={currentPage === pageCount}
+                  className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {tr('Next', 'Suivant')}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -483,7 +538,7 @@ const Bookings = () => {
         <div className="bg-white rounded-lg shadow-md border">
           <div className="p-6 border-b">
             <h3 className="text-lg font-semibold text-gray-900">
-              Bookings for {new Date(selectedDate).toLocaleDateString('en-US', { 
+              {tr('Bookings for', 'Réservations du')} {new Date(selectedDate).toLocaleDateString('fr-FR', { 
                 weekday: 'long', 
                 year: 'numeric', 
                 month: 'long', 
@@ -496,7 +551,7 @@ const Bookings = () => {
             {dailyBookings.length === 0 ? (
               <div className="text-center py-8">
                 <Calendar size={48} className="mx-auto text-gray-400 mb-4" />
-                <p className="text-gray-600">No bookings scheduled for this date.</p>
+                <p className="text-gray-600">{tr('No bookings scheduled for this date.', 'Aucune réservation prévue pour cette date.')}</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -509,7 +564,7 @@ const Bookings = () => {
                           {booking.selectedTime}
                         </div>
                         <div>
-                          <div className="font-medium text-gray-900">{booking.tourName || 'ATV Tour'}</div>
+                          <div className="font-medium text-gray-900">{booking.tourName || tr('ATV Tour', 'Tour ATV')}</div>
                           <div className="text-sm text-gray-600">
                             {booking.customerName} • {booking.participants?.length || 0} participants • {booking.quadSelection?.totalQuads || 0} quads
                           </div>
@@ -525,7 +580,7 @@ const Bookings = () => {
                           className="flex items-center gap-2 px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
                         >
                           <Eye size={14} />
-                          View
+                          {tr('View', 'Voir')}
                         </button>
 
                         {/* Edit Button - Show for admin/owner users */}
@@ -535,7 +590,7 @@ const Bookings = () => {
                             className="flex items-center gap-2 px-3 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors text-sm"
                           >
                             <Edit size={14} />
-                            Edit
+                            {tr('Edit', 'Modifier')}
                           </button>
                         )}
 
@@ -545,7 +600,7 @@ const Bookings = () => {
                             className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
                           >
                             <Play size={16} />
-                            START
+                            {tr('START', 'DÉMARRER')}
                           </button>
                         )}
                         
@@ -555,7 +610,7 @@ const Bookings = () => {
                             className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
                           >
                             <Square size={16} />
-                            FINISH
+                            {tr('FINISH', 'TERMINER')}
                           </button>
                         )}
 
@@ -566,7 +621,7 @@ const Bookings = () => {
                             className="flex items-center gap-2 px-3 py-2 border border-red-300 text-red-700 rounded-lg hover:bg-red-50 transition-colors text-sm"
                           >
                             <Trash2 size={14} />
-                            Delete
+                            {tr('Delete', 'Supprimer')}
                           </button>
                         )}
                       </div>

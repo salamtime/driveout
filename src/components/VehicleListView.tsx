@@ -8,7 +8,7 @@ interface Vehicle {
   name: string;
   model: string;
   vehicle_type: string;
-  status: 'available' | 'rented' | 'tour' | 'maintenance' | 'out_of_service';
+  status: 'available' | 'rented' | 'impounded' | 'tour' | 'maintenance' | 'out_of_service';
   plate_number: string;
   image_url?: string;
   current_odometer?: string | null;
@@ -16,6 +16,7 @@ interface Vehicle {
   next_oil_change_due?: string | null;
   registration_expiry_date?: string | null;
   insurance_expiry_date?: string | null;
+  location_name?: string | null;
 }
 
 interface VehicleListViewProps {
@@ -81,6 +82,11 @@ const VehicleListView: React.FC<VehicleListViewProps> = ({
                             {vehicle.model || 'Model not set'}
                           </span>
                           <span className="text-xs font-medium text-gray-500">{vehicle.vehicle_type || 'Vehicle'}</span>
+                          {vehicle.location_name ? (
+                            <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                              {vehicle.location_name}
+                            </span>
+                          ) : null}
                         </div>
                         {vehicleAlerts.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-1.5">

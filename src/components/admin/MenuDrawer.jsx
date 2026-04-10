@@ -38,7 +38,7 @@ const MenuDrawer = ({
       { name: 'Rental-Management', href: '/admin/rentals', icon: TruckIcon, moduleId: 'Fleet Management' },
       { name: 'Fleet Management', href: '/admin/fleet', icon: TruckIcon, moduleId: 'Fleet Management' },
       { name: 'Pricing Management', href: '/admin/pricing', icon: DollarSignIcon, moduleId: 'Pricing Management' },
-      { name: 'Quad Maintenance', href: '/admin/maintenance', icon: SettingsIcon, moduleId: 'Quad Maintenance' },
+      { name: 'Maintenance', href: '/admin/maintenance', icon: SettingsIcon, moduleId: 'Quad Maintenance' },
       { name: 'Fuel Logs', href: '/admin/fuel', icon: DropletIcon, moduleId: 'Fuel Records' },
       { name: 'Inventory', href: '/admin/inventory', icon: MapIcon, moduleId: 'Inventory' },
       { name: 'Finance Management', href: '/admin/finance', icon: UsersIcon, moduleId: 'Finance Management' },

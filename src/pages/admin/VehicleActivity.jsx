@@ -13,12 +13,12 @@ const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
 const PAGE_SIZE = 20;
 
 const formatDate = (value) => {
-  if (!value) return 'Not set';
+  if (!value) return 'Non défini';
   return new Date(value).toLocaleDateString();
 };
 
 const formatDateTime = (value) => {
-  if (!value) return 'Not set';
+  if (!value) return 'Non défini';
   return new Date(value).toLocaleString();
 };
 
@@ -31,20 +31,20 @@ const formatStatus = (value) => String(value || 'unknown').replace(/_/g, ' ');
 
 const formatFuelEventLabel = (record) => {
   const type = String(record?.transaction_type || '').toLowerCase();
-  if (type === 'rental_opening_level') return 'Rental fuel at departure';
-  if (type === 'rental_closing_level') return 'Rental fuel at return';
-  if (type === 'vehicle_refill') return 'Direct refill';
-  if (type === 'tank_refill') return 'Tank refill';
-  if (type === 'withdrawal') return 'Tank transfer';
-  if (type === 'manual_adjustment') return 'Manual fuel adjustment';
+  if (type === 'rental_opening_level') return 'Carburant location au départ';
+  if (type === 'rental_closing_level') return 'Carburant location au retour';
+  if (type === 'vehicle_refill') return 'Remplissage direct';
+  if (type === 'tank_refill') return 'Remplissage cuve';
+  if (type === 'withdrawal') return 'Transfert cuve';
+  if (type === 'manual_adjustment') return 'Ajustement manuel carburant';
   return formatStatus(record?.transaction_type || 'fuel event');
 };
 
 const formatReportLabel = (report) => {
   const type = String(report?.report_type || '').toLowerCase();
-  if (type === 'damage') return 'Damage report';
-  if (type === 'accident') return 'Accident report';
-  if (type === 'mechanical_issue' || type === 'mechanical') return 'Mechanical report';
+  if (type === 'damage') return 'Rapport de dommage';
+  if (type === 'accident') return 'Rapport d’accident';
+  if (type === 'mechanical_issue' || type === 'mechanical') return 'Rapport mécanique';
   return formatStatus(report?.report_type || 'report');
 };
 
@@ -171,7 +171,7 @@ const VehicleActivityPage = () => {
         setVehicleReports(Array.isArray(reportRows) ? reportRows : []);
       } catch (loadError) {
         console.error('Failed to load vehicle activity:', loadError);
-        setError(loadError.message || 'Failed to load vehicle activity');
+        setError(loadError.message || 'Impossible de charger l’activité du véhicule');
       } finally {
         setLoading(false);
       }
@@ -187,14 +187,14 @@ const VehicleActivityPage = () => {
       {
         id: `vehicle-created-${vehicle.id}`,
         type: 'vehicle',
-        title: 'Vehicle added to fleet',
+        title: 'Véhicule ajouté à la flotte',
         timestamp: vehicle.created_at,
-        detail: vehicle.purchase_supplier ? `Supplier: ${vehicle.purchase_supplier}` : 'Vehicle record created',
+        detail: vehicle.purchase_supplier ? `Fournisseur : ${vehicle.purchase_supplier}` : 'Fiche véhicule créée',
       },
       ...maintenanceHistory.map((record) => ({
         id: `maintenance-${record.id}`,
         type: 'maintenance',
-        title: `${formatStatus(record.maintenance_type)} maintenance`,
+        title: `Maintenance ${formatStatus(record.maintenance_type)}`,
         timestamp: record.updated_at || record.service_date || record.created_at,
         detail: `${formatStatus(record.status)} • ${formatMoney(record.cost || 0)}`,
       })),
@@ -205,7 +205,7 @@ const VehicleActivityPage = () => {
         timestamp: record.transaction_date || record.created_at,
         detail: [
           record.fuel_lines_after !== null && record.fuel_lines_after !== undefined
-            ? `${record.fuel_lines_after}/8 lines`
+            ? `${record.fuel_lines_after}/8 lignes`
             : `${record.amount || record.liters_after || 0}L`,
           record.rental_reference ? formatRentalReference(record.rental_reference) : null,
           record.customer_name || null,
@@ -215,7 +215,7 @@ const VehicleActivityPage = () => {
       ...vehicleReports.map((report) => ({
         id: `report-${report.id}`,
         type: 'report',
-        title: `${formatReportLabel(report)} created`,
+        title: `${formatReportLabel(report)} créé`,
         timestamp: report.created_at,
         detail: [
           formatStatus(report.severity),
@@ -251,8 +251,8 @@ const VehicleActivityPage = () => {
           <div className="flex items-center gap-3">
             <AlertTriangle className="h-6 w-6" />
             <div>
-              <h1 className="text-lg font-semibold">Unable to load vehicle activity</h1>
-              <p className="mt-1 text-sm">{error || 'Vehicle not found'}</p>
+              <h1 className="text-lg font-semibold">Impossible de charger l'activité du véhicule</h1>
+              <p className="mt-1 text-sm">{error || 'Véhicule introuvable'}</p>
             </div>
           </div>
         </div>

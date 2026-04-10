@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { X, Upload, Camera, Loader, CheckCircle, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { runOcr } from '../../services/ocr/runOcr.js';
+import i18n from '../../i18n';
 
 /**
  * IDScanModal - Enhanced OCR modal for ID document scanning
@@ -12,8 +13,10 @@ const IDScanModal = ({
   setFormData,  // Function to update parent form data
   formData,     // Current form data
   onDataExtracted, // Legacy prop for backward compatibility
-  title = "Scan ID Document" 
+  title = "Scanner le document d'identité" 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -81,7 +84,7 @@ const IDScanModal = ({
 
   const processImage = useCallback(async () => {
     if (!selectedFile) {
-      setError('Please select an image file first');
+      setError(tr('Please select an image file first', "Veuillez d'abord sélectionner une image"));
       return;
     }
 
@@ -108,7 +111,7 @@ const IDScanModal = ({
 
     } catch (err) {
       console.error('❌ OCR processing failed:', err);
-      setError(err.message || 'Failed to process image');
+      setError(err.message || tr('Failed to process image', "Impossible de traiter l'image"));
     } finally {
       setIsProcessing(false);
     }
@@ -122,7 +125,7 @@ const IDScanModal = ({
     
     if (!ocrResults || !ocrResults.fields) {
       console.error('❌ No OCR results or fields available');
-      setError('No extracted data available to populate form.');
+      setError(tr('No extracted data available to populate form.', "Aucune donnée extraite disponible pour remplir le formulaire."));
       return;
     }
 
@@ -187,7 +190,7 @@ const IDScanModal = ({
         // Validate that we have at least some data to update
         if (Object.keys(formDataUpdate).length === 0) {
           console.warn('⚠️ No valid fields found to update');
-          setError('No valid data found to populate the form. Please check the document quality.');
+          setError(tr('No valid data found to populate the form. Please check the document quality.', "Aucune donnée valide trouvée pour remplir le formulaire. Veuillez vérifier la qualité du document."));
           return;
         }
         
@@ -201,7 +204,7 @@ const IDScanModal = ({
         console.log('✅ Updated fields:', Object.keys(formDataUpdate));
         
         // Show success message (you can customize this)
-        alert(`✅ Successfully populated ${Object.keys(formDataUpdate).length} fields from the document!`);
+        alert(tr(`✅ Successfully populated ${Object.keys(formDataUpdate).length} fields from the document!`, `✅ ${Object.keys(formDataUpdate).length} champs ont été remplis avec succès à partir du document !`));
         
         // Close modal after successful update
         handleClose();
@@ -209,7 +212,7 @@ const IDScanModal = ({
         
       } catch (error) {
         console.error('❌ Error updating form data via setFormData:', error);
-        setError('Error updating form data: ' + error.message);
+        setError(tr('Error updating form data: ', 'Erreur lors de la mise à jour des données du formulaire : ') + error.message);
         return;
       }
     }
@@ -246,7 +249,7 @@ const IDScanModal = ({
         
       } catch (error) {
         console.error('❌ Error updating form data via onDataExtracted:', error);
-        setError('Error updating form data: ' + error.message);
+        setError(tr('Error updating form data: ', 'Erreur lors de la mise à jour des données du formulaire : ') + error.message);
         return;
       }
     }
@@ -255,7 +258,7 @@ const IDScanModal = ({
     console.error('❌ Neither setFormData nor onDataExtracted is available as a function');
     console.error('❌ setFormData type:', typeof setFormData);
     console.error('❌ onDataExtracted type:', typeof onDataExtracted);
-    setError('Error: Cannot populate form data. No valid update method available.');
+    setError(tr('Error: Cannot populate form data. No valid update method available.', "Erreur : impossible de remplir les données du formulaire. Aucune méthode valide n'est disponible."));
     
   }, [ocrResults, setFormData, onDataExtracted, handleClose]);
 
@@ -284,7 +287,7 @@ const IDScanModal = ({
               <div className="flex">
                 <AlertCircle className="h-5 w-5 text-red-400 mt-0.5" />
                 <div className="ml-3">
-                  <h3 className="text-sm font-medium text-red-800">Error</h3>
+                  <h3 className="text-sm font-medium text-red-800">{tr('Error', 'Erreur')}</h3>
                   <p className="text-sm text-red-700 mt-1">{error}</p>
                 </div>
               </div>
@@ -294,7 +297,7 @@ const IDScanModal = ({
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Left Column - File Upload */}
             <div className="space-y-4">
-              <h3 className="text-lg font-medium text-gray-900">Upload Document</h3>
+              <h3 className="text-lg font-medium text-gray-900">{tr('Upload Document', 'Téléverser le document')}</h3>
               
               {/* File Upload Area */}
               <div
@@ -305,10 +308,10 @@ const IDScanModal = ({
               >
                 <Upload className="mx-auto h-12 w-12 text-gray-400" />
                 <p className="mt-2 text-sm text-gray-600">
-                  Click to upload or drag and drop
+                  {tr('Click to upload or drag and drop', 'Cliquez pour téléverser ou glissez-déposez')}
                 </p>
                 <p className="text-xs text-gray-500">
-                  PNG, JPG, GIF up to 10MB
+                  {tr('PNG, JPG, GIF up to 10MB', 'PNG, JPG, GIF jusqu’à 10 Mo')}
                 </p>
               </div>
 
@@ -323,10 +326,10 @@ const IDScanModal = ({
               {/* Preview */}
               {previewUrl && (
                 <div className="mt-4">
-                  <h4 className="text-sm font-medium text-gray-900 mb-2">Preview</h4>
+                  <h4 className="text-sm font-medium text-gray-900 mb-2">{tr('Preview', 'Aperçu')}</h4>
                   <img
                     src={previewUrl}
-                    alt="Document preview"
+                    alt={tr('Document preview', 'Aperçu du document')}
                     className="w-full h-48 object-contain border border-gray-200 rounded-lg bg-gray-50"
                   />
                 </div>
@@ -345,12 +348,12 @@ const IDScanModal = ({
                 {isProcessing ? (
                   <>
                     <Loader className="animate-spin h-4 w-4 mr-2" />
-                    Processing...
+                    {tr('Processing...', 'Traitement en cours...')}
                   </>
                 ) : (
                   <>
                     <Camera className="h-4 w-4 mr-2" />
-                    Process Document
+                    {tr('Process Document', 'Traiter le document')}
                   </>
                 )}
               </button>
@@ -359,14 +362,14 @@ const IDScanModal = ({
             {/* Right Column - Results */}
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-medium text-gray-900">Extracted Data</h3>
+                <h3 className="text-lg font-medium text-gray-900">{tr('Extracted Data', 'Données extraites')}</h3>
                 {ocrResults && (
                   <button
                     onClick={() => setShowRawData(!showRawData)}
                     className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
                   >
                     {showRawData ? <EyeOff className="h-4 w-4 mr-1" /> : <Eye className="h-4 w-4 mr-1" />}
-                    {showRawData ? 'Hide' : 'Show'} Raw Data
+                    {showRawData ? tr('Hide', 'Masquer') : tr('Show', 'Afficher')} {tr('Raw Data', 'les données brutes')}
                   </button>
                 )}
               </div>
@@ -374,7 +377,7 @@ const IDScanModal = ({
               {isProcessing && (
                 <div className="flex items-center justify-center py-8">
                   <Loader className="animate-spin h-8 w-8 text-blue-600" />
-                  <span className="ml-3 text-gray-600">Processing document...</span>
+                  <span className="ml-3 text-gray-600">{tr('Processing document...', 'Traitement du document...')}</span>
                 </div>
               )}
 
@@ -395,8 +398,8 @@ const IDScanModal = ({
                           ocrResults.validation.isValid ? 'text-green-800' : 'text-yellow-800'
                         }`}>
                           {ocrResults.validation.isValid 
-                            ? `✅ ${Object.keys(ocrResults.fields || {}).length} fields extracted successfully`
-                            : `⚠️ ${ocrResults.validation.errors?.length || 0} validation issues`
+                            ? `✅ ${Object.keys(ocrResults.fields || {}).length} ${tr('fields extracted successfully', 'champs extraits avec succès')}`
+                            : `⚠️ ${ocrResults.validation.errors?.length || 0} ${tr('validation issues', 'problèmes de validation')}`
                           }
                         </span>
                       </div>
@@ -416,7 +419,7 @@ const IDScanModal = ({
                   {/* Extracted Fields */}
                   {ocrResults.fields && Object.keys(ocrResults.fields).length > 0 && (
                     <div className="space-y-3">
-                      <h4 className="text-sm font-medium text-gray-900">Extracted Information</h4>
+                      <h4 className="text-sm font-medium text-gray-900">{tr('Extracted Information', 'Informations extraites')}</h4>
                       <div className="bg-gray-50 rounded-lg p-4 space-y-2">
                         {Object.entries(ocrResults.fields).map(([key, field]) => (
                           <div key={key} className="flex justify-between items-center">
@@ -438,7 +441,7 @@ const IDScanModal = ({
                   {/* Raw Data Display */}
                   {showRawData && ocrResults.text && (
                     <div className="space-y-2">
-                      <h4 className="text-sm font-medium text-gray-900">Raw OCR Text</h4>
+                      <h4 className="text-sm font-medium text-gray-900">{tr('Raw OCR Text', 'Texte OCR brut')}</h4>
                       <div className="bg-gray-100 rounded-lg p-3 text-xs font-mono text-gray-700 max-h-32 overflow-y-auto">
                         {ocrResults.text}
                       </div>
@@ -452,7 +455,7 @@ const IDScanModal = ({
                       className="w-full px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 font-medium flex items-center justify-center"
                     >
                       <CheckCircle className="h-4 w-4 mr-2" />
-                      Use This Data
+                      {tr('Use This Data', 'Utiliser ces données')}
                     </button>
                   )}
                 </div>
@@ -461,7 +464,7 @@ const IDScanModal = ({
               {!ocrResults && !isProcessing && (
                 <div className="flex items-center justify-center py-8 text-gray-500">
                   <Camera className="h-8 w-8 mr-3" />
-                  <span>Upload and process a document to see extracted data</span>
+                  <span>{tr('Upload and process a document to see extracted data', 'Téléversez et traitez un document pour voir les données extraites')}</span>
                 </div>
               )}
             </div>
@@ -475,7 +478,7 @@ const IDScanModal = ({
             disabled={isProcessing}
             className="px-4 py-2 text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
           >
-            Cancel
+            {tr('Cancel', 'Annuler')}
           </button>
         </div>
       </div>

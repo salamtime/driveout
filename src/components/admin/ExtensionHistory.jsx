@@ -8,9 +8,10 @@ import React, { useState } from 'react';
 import { Badge } from '../ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
-import { Clock, CheckCircle, XCircle, AlertCircle, AlertTriangle } from 'lucide-react';
+import { Clock, CheckCircle, XCircle, AlertCircle, AlertTriangle, Pencil } from 'lucide-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
+import i18n from '../../i18n';
 
 const ExtensionHistory = ({ 
   extensions, 
@@ -19,16 +20,20 @@ const ExtensionHistory = ({
   isAdmin,
   onWhatsAppNotify,
   isSharing,
-  rental
+  rental,
+  onEdit,
+  canEdit,
 }) => {
   const [localSharing, setLocalSharing] = useState(false);
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
 
   if (!extensions || extensions.length === 0) {
     return (
       <Card>
         <CardContent className="py-8 text-center text-gray-500">
           <Clock className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-          <p>No extension history available</p>
+          <p>{tr('No extension history available', "Aucun historique de prolongation disponible")}</p>
         </CardContent>
       </Card>
     );
@@ -44,17 +49,28 @@ const ExtensionHistory = ({
   };
 
   const formatDate = (dateString) => {
-    if (!dateString) return 'N/A';
+    if (!dateString) return tr('N/A', 'N/D');
     return new Date(dateString).toLocaleString();
+  };
+
+  const getRequesterDisplay = (extension) => {
+    return (
+      extension?.requester?.full_name ||
+      extension?.requester?.email ||
+      extension?.requested_by_name ||
+      extension?.created_by_name ||
+      (typeof extension?.requested_by === 'string' && !/^[0-9a-f-]{32,}$/i.test(extension.requested_by) ? extension.requested_by : null) ||
+      tr('Not recorded', 'Non renseigné')
+    );
   };
 
   const getStatusBadge = (status) => {
     const statusConfig = {
-      pending: { color: 'bg-yellow-100 text-yellow-800', icon: AlertCircle, label: 'Pending' },
-      approved: { color: 'bg-green-100 text-green-800', icon: CheckCircle, label: 'Approved' },
-      rejected: { color: 'bg-red-100 text-red-800', icon: XCircle, label: 'Rejected' },
-      active: { color: 'bg-blue-100 text-blue-800', icon: Clock, label: 'Active' },
-      completed: { color: 'bg-gray-100 text-gray-800', icon: CheckCircle, label: 'Completed' }
+      pending: { color: 'bg-yellow-100 text-yellow-800', icon: AlertCircle, label: tr('Pending', 'En attente') },
+      approved: { color: 'bg-green-100 text-green-800', icon: CheckCircle, label: tr('Approved', 'Approuvée') },
+      rejected: { color: 'bg-red-100 text-red-800', icon: XCircle, label: tr('Rejected', 'Refusée') },
+      active: { color: 'bg-blue-100 text-blue-800', icon: Clock, label: tr('Active', 'Active') },
+      completed: { color: 'bg-gray-100 text-gray-800', icon: CheckCircle, label: tr('Completed', 'Terminée') }
     };
 
     const config = statusConfig[status] || statusConfig.pending;
@@ -174,7 +190,7 @@ Click the link above to review and approve the extension.`;
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Clock className="w-5 h-5 text-blue-600" />
-          Extension History ({extensions.length})
+          {tr('Extension History', 'Historique des prolongations')} ({extensions.length})
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -190,56 +206,73 @@ Click the link above to review and approve the extension.`;
                 }`}
               >
                 {/* Header */}
-                <div className="flex items-start justify-between mb-3">
+                <div className="mb-3 flex items-start justify-between gap-3">
                   <div>
                     <p className="text-sm font-medium text-gray-900">
-                      Extension #{index + 1}
+                      {tr('Extension', 'Prolongation')} #{index + 1}
                     </p>
                     <p className="text-xs text-gray-500">
-                      Requested: {formatDate(extension.requested_at)}
+                      {tr('Requested:', 'Demandée :')} {formatDate(extension.requested_at)}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {tr('Staff:', 'Personnel :')} {getRequesterDisplay(extension)}
                     </p>
                   </div>
-                  {getStatusBadge(extension.status)}
+                  <div className="flex items-center gap-2">
+                    {canEdit && onEdit && extension.status !== 'rejected' && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onEdit(extension)}
+                        className="h-8 rounded-lg border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                        {tr('Edit', 'Modifier')}
+                      </Button>
+                    )}
+                    {getStatusBadge(extension.status)}
+                  </div>
                 </div>
 
                 {/* Details Grid */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
                   <div>
-                    <p className="text-xs text-gray-600">Duration</p>
+                    <p className="text-xs text-gray-600">{tr('Duration', 'Durée')}</p>
                     <p className="text-sm font-medium text-gray-900">
                       {extension.extension_type === 'days'
-                        ? `${extension.extension_value || Math.round(extension.extension_hours/24)} day(s)`
-                        : `${extension.extension_hours} hour(s)`}
+                        ? `${extension.extension_value || Math.round(extension.extension_hours/24)} ${tr('day(s)', 'jour(s)')}`
+                        : `${extension.extension_hours} ${tr('hour(s)', 'heure(s)')}`}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs text-gray-600">Price</p>
+                    <p className="text-xs text-gray-600">{tr('Price', 'Prix')}</p>
                     <p className="text-sm font-medium text-blue-600">
                       {formatPrice(extension.extension_price)}
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs text-gray-600">Type</p>
+                    <p className="text-xs text-gray-600">{tr('Type', 'Type')}</p>
                     <div className="flex items-center gap-1 flex-wrap">
                       {extension.use_package_pricing || extension.package_id ? (
-                        <Badge className="bg-purple-100 text-purple-800 text-xs">📦 Package</Badge>
+                        <Badge className="bg-purple-100 text-purple-800 text-xs">📦 {tr('Package', 'Forfait')}</Badge>
                       ) : extension.tier_applied ? (
                         <Badge className="bg-blue-100 text-blue-800 text-xs">⚡ Tier</Badge>
                       ) : isManualExtension ? (
-                        <Badge className="bg-yellow-100 text-yellow-800 text-xs">✏️ Manual</Badge>
+                        <Badge className="bg-yellow-100 text-yellow-800 text-xs">✏️ {tr('Manual', 'Manuel')}</Badge>
                       ) : (
-                        <Badge className="bg-gray-100 text-gray-800 text-xs">📊 Base Rate</Badge>
+                        <Badge className="bg-gray-100 text-gray-800 text-xs">📊 {tr('Base Rate', 'Tarif de base')}</Badge>
                       )}
                     </div>
                   </div>
                   <div>
-                    <p className="text-xs text-gray-600">Breakdown</p>
+                    <p className="text-xs text-gray-600">{tr('Breakdown', 'Détail')}</p>
                     <p className="text-xs font-medium text-gray-700">
                       {extension.use_package_pricing || extension.package_id ? (
                         <>
                           {extension.package_name && <span className="block text-purple-700">{extension.package_name}</span>}
                           {extension.package_rate_per_unit > 0 && (
-                            <span>{extension.package_rate_per_unit} MAD × {extension.extension_value || extension.extension_hours} {extension.extension_type}</span>
+                            <span>{extension.package_rate_per_unit} MAD × {extension.extension_value || extension.extension_hours} {extension.extension_type === 'days' ? tr('days', 'jours') : tr('hours', 'heures')}</span>
                           )}
                         </>
                       ) : (

@@ -70,17 +70,17 @@ class PaymentErrorBoundary extends React.Component {
               
               <div className="ml-4 flex-1">
                 <h3 className="text-lg font-semibold text-red-800 mb-2">
-                  Payment System Error
+                  Erreur du système de paiement
                 </h3>
                 
                 <p className="text-red-700 mb-4">
-                  {analysis?.userFriendly || 'An unexpected error occurred with the payment system.'}
+                  {analysis?.userFriendly || "Une erreur inattendue s'est produite avec le système de paiement."}
                 </p>
 
                 {isStripeError && analysis?.category === 'blocking' && (
                   <div className="mb-4 p-4 bg-white border border-red-200 rounded">
                     <h4 className="font-medium text-red-800 mb-2">
-                      This appears to be a browser blocking issue
+                      Cela semble être un problème de blocage du navigateur
                     </h4>
                     <ul className="text-sm text-red-700 list-disc list-inside space-y-1">
                       {StripeErrorHandler.getTroubleshootingSteps(analysis.type).map((step, index) => (
@@ -95,44 +95,44 @@ class PaymentErrorBoundary extends React.Component {
                     onClick={this.handleRetry}
                     className="bg-red-100 hover:bg-red-200 text-red-800 px-4 py-2 rounded-md text-sm font-medium transition-colors"
                   >
-                    Try Again
+                    Réessayer
                   </button>
                   
                   <button
                     onClick={this.handleShowAlternatives}
                     className="bg-blue-100 hover:bg-blue-200 text-blue-800 px-4 py-2 rounded-md text-sm font-medium transition-colors"
                   >
-                    Alternative Payment Options
+                    Options de paiement alternatives
                   </button>
                   
                   <button
                     onClick={() => this.setState({ showDetails: !showDetails })}
                     className="bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-2 rounded-md text-sm font-medium transition-colors"
                   >
-                    {showDetails ? 'Hide' : 'Show'} Technical Details
+                    {showDetails ? 'Masquer' : 'Afficher'} les détails techniques
                   </button>
                 </div>
 
                 {showDetails && (
                   <div className="bg-white border border-red-200 rounded p-4 text-sm">
-                    <h5 className="font-medium text-gray-800 mb-2">Technical Details:</h5>
+                    <h5 className="font-medium text-gray-800 mb-2">Détails techniques :</h5>
                     <div className="text-gray-600 space-y-2">
-                      <p><strong>Error:</strong> {error?.message || 'Unknown error'}</p>
-                      <p><strong>Type:</strong> {analysis?.type || 'Unknown'}</p>
-                      <p><strong>Category:</strong> {analysis?.category || 'Unknown'}</p>
+                      <p><strong>Erreur :</strong> {error?.message || 'Erreur inconnue'}</p>
+                      <p><strong>Type :</strong> {analysis?.type || 'Inconnu'}</p>
+                      <p><strong>Catégorie :</strong> {analysis?.category || 'Inconnue'}</p>
                       {analysis?.severity && (
-                        <p><strong>Severity:</strong> {analysis.severity}</p>
+                        <p><strong>Gravité :</strong> {analysis.severity}</p>
                       )}
                     </div>
                   </div>
                 )}
 
                 <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded">
-                  <h4 className="font-medium text-blue-800 mb-2">Need Help?</h4>
+                  <h4 className="font-medium text-blue-800 mb-2">Besoin d'aide ?</h4>
                   <div className="text-sm text-blue-700 space-y-1">
-                    <p>📞 Call us: <a href="tel:+1-555-123-4567" className="underline">+1-555-123-4567</a></p>
-                    <p>📧 Email: <a href="mailto:payments@quadventure.com" className="underline">payments@quadventure.com</a></p>
-                    <p>💬 We're here to help complete your booking!</p>
+                    <p>📞 Appelez-nous : <a href="tel:+1-555-123-4567" className="underline">+1-555-123-4567</a></p>
+                    <p>📧 E-mail : <a href="mailto:payments@quadventure.com" className="underline">payments@quadventure.com</a></p>
+                    <p>💬 Nous sommes là pour vous aider à finaliser votre réservation !</p>
                   </div>
                 </div>
               </div>
@@ -150,13 +150,13 @@ class PaymentErrorBoundary extends React.Component {
             ) : (
               <div className="text-center p-8 bg-gray-50 rounded-lg m-4">
                 <p className="text-gray-600 mb-4">
-                  Payment processing is temporarily unavailable, but we can still help you complete your booking.
+                  Le traitement du paiement est temporairement indisponible, mais nous pouvons toujours vous aider à finaliser votre réservation.
                 </p>
                 <button
                   onClick={this.handleShowAlternatives}
                   className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition-colors"
                 >
-                  View Payment Alternatives
+                  Voir les alternatives de paiement
                 </button>
               </div>
             )}

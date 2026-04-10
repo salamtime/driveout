@@ -1,6 +1,7 @@
 import { forwardRef } from "react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
+import i18n from "../i18n";
 
 const getRentalKilometerPackage = (rental) => {
   const pkg = rental?.package;
@@ -14,9 +15,31 @@ const getRentalKilometerPackage = (rental) => {
   return hasLinkedPackage && hasKmConfig ? pkg : null;
 };
 
+const getRentalDurationUnits = (rental) =>
+  rental?.rental_type === 'hourly'
+    ? (rental?.quantity_hours ?? rental?.quantity_days ?? 1)
+    : (rental?.quantity_days ?? 1);
+
+const isFlatHourlyTierRental = (rental, hasPackage = false) => {
+  const duration = Number(getRentalDurationUnits(rental));
+  return !hasPackage && rental?.rental_type === 'hourly' && duration === 1.5;
+};
+
+const getEffectiveRentalBaseTotal = (rental, hasPackage = false, packageRate = null) => {
+  const duration = Number(getRentalDurationUnits(rental));
+  const fallbackRate = Number(rental?.unit_price || 0) || 0;
+  const rate = packageRate ?? fallbackRate;
+  if (isFlatHourlyTierRental(rental, hasPackage)) {
+    return rate;
+  }
+  return rate * duration;
+};
+
 const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   if (!rental) {
-    return <div ref={ref}>No rental data available.</div>;
+    return <div ref={ref}>{tr('No rental data available.', 'Aucune donnée de location disponible.')}</div>;
   }
 
   const {
@@ -52,6 +75,11 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
   } = rental;
 
   const kilometerPackage = getRentalKilometerPackage(rental);
+  const durationUnits = getRentalDurationUnits(rental);
+  const flatHourlyTier = isFlatHourlyTierRental(rental, !!kilometerPackage);
+  const effectiveBaseTotal = kilometerPackage
+    ? getEffectiveRentalBaseTotal(rental, true, Number(kilometerPackage.fixed_amount || unit_price || 0))
+    : getEffectiveRentalBaseTotal(rental, false, Number(unit_price || 0));
 
   // Calculate overage details - Use stored value as source of truth only for real kilometer packages
   const calculateOverageDetails = () => {
@@ -84,7 +112,7 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
         stored: storedOverageCharge,
         calculated: calculatedOverageCharge,
         difference: storedOverageCharge - calculatedOverageCharge,
-        using: 'STORED VALUE'
+        using: tr('STORED VALUE', 'VALEUR ENREGISTRÉE')
       });
     }
     
@@ -196,40 +224,40 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
           {/* Header - Compact */}
           <header className="flex justify-between items-start pb-3 border-b-2 border-gray-800">
             <div className="flex items-center">
-              <img src={logoUrl || "/assets/logo.jpg"} alt="Company Logo" className="h-14 w-auto" />
+              <img src={logoUrl || "/assets/logo.jpg"} alt="Company Logo" className="h-14 w-auto object-contain" />
               <div className="ml-3">
                 <h1 className="text-xl font-bold text-gray-900">SaharaX Rentals</h1>
                 <p className="text-[9px] text-gray-600">Ave. Mohammed El Yazidi 43 Sect. 12 Bur. 34-3 Riad Rabat | contact@saharax.co | +212658888852</p>
               </div>
             </div>
             <div className="text-right">
-              <h2 className="text-2xl font-extrabold text-gray-800 uppercase">Rental Agreement</h2>
-              <p className="text-xs text-gray-600 mt-1">Agreement #: {rental_id || id.substring(0, 8)}</p>
+              <h2 className="text-2xl font-extrabold text-gray-800 uppercase">{tr('Rental Agreement', 'Contrat de location')}</h2>
+              <p className="text-xs text-gray-600 mt-1">{tr('Agreement #:', 'Contrat n° :')} {rental_id || id.substring(0, 8)}</p>
             </div>
           </header>
 
           {/* Parties Involved - Compact */}
           <section className="grid grid-cols-2 gap-4 mt-3">
             <div>
-              <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1">Renter Details</h3>
+              <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1">{tr('Renter Details', 'Détails du locataire')}</h3>
               <div className="text-xs space-y-0.5">
-                <p><strong>Name:</strong> {customer_name}</p>
-                {customer_email && <p><strong>Email:</strong> {customer_email}</p>}
-                <p><strong>Phone:</strong> {customer_phone || "N/A"}</p>
-                <p><strong>License:</strong> {customer_license_number || "N/A"}</p>
-                {nationality && nationality !== "N/A" && <p><strong>Nationality:</strong> {nationality}</p>}
+                <p><strong>{tr('Name:', 'Nom :')}</strong> {customer_name}</p>
+                {customer_email && <p><strong>{tr('Email:', 'E-mail :')}</strong> {customer_email}</p>}
+                <p><strong>{tr('Phone:', 'Téléphone :')}</strong> {customer_phone || tr("N/A", "N/D")}</p>
+                <p><strong>{tr('License:', 'Permis :')}</strong> {customer_license_number || tr("N/A", "N/D")}</p>
+                {nationality && nationality !== "N/A" && <p><strong>{tr('Nationality:', 'Nationalité :')}</strong> {nationality}</p>}
               </div>
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1">Vehicle Details</h3>
+              <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1">{tr('Vehicle Details', 'Détails du véhicule')}</h3>
               <div className="text-xs space-y-0.5">
-                <p><strong>Vehicle:</strong> {vehicle_details?.name || "Not specified"}</p>
-                {vehicle_details?.plate_number && <p><strong>Plate:</strong> {vehicle_details.plate_number}</p>}
+                <p><strong>{tr('Vehicle:', 'Véhicule :')}</strong> {vehicle_details?.name || tr('Not specified', 'Non précisé')}</p>
+                {vehicle_details?.plate_number && <p><strong>{tr('Plate:', 'Plaque :')}</strong> {vehicle_details.plate_number}</p>}
               </div>
-              <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1 mt-2">Rental Period</h3>
+              <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1 mt-2">{tr('Rental Period', 'Période de location')}</h3>
               <div className="text-xs space-y-0.5">
-                <p><strong>Start:</strong> {start_date || "N/A"}</p>
-                <p><strong>End:</strong> {end_date || "N/A"}</p>
+                <p><strong>{tr('Start:', 'Début :')}</strong> {start_date || tr("N/A", "N/D")}</p>
+                <p><strong>{tr('End:', 'Fin :')}</strong> {end_date || tr("N/A", "N/D")}</p>
               </div>
             </div>
           </section>
@@ -237,17 +265,17 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
           {/* Second Driver Details - Compact */}
           {second_driver_name && (
             <section className="mt-3">
-              <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1">Second Driver</h3>
+              <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1">{tr('Second Driver', 'Second conducteur')}</h3>
               <div className="text-xs space-y-0.5">
-                <p><strong>Name:</strong> {second_driver_name}</p>
-                <p><strong>License:</strong> {second_driver_license || "N/A"}</p>
+                <p><strong>{tr('Name:', 'Nom :')}</strong> {second_driver_name}</p>
+                <p><strong>{tr('License:', 'Permis :')}</strong> {second_driver_license || tr("N/A", "N/D")}</p>
               </div>
             </section>
           )}
 
           {/* Financial Breakdown Section - Compact */}
           <section className="mt-3 financial-section">
-            <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1">Financial Details</h3>
+            <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-1">{tr('Financial Details', 'Détails financiers')}</h3>
             
             <div className="space-y-1 text-xs">
               {/* Package Information - Compact */}
@@ -255,39 +283,39 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
                 <div className="bg-blue-50 border border-blue-200 rounded p-2">
                   <p className="font-semibold text-blue-900 text-[10px] mb-0.5">📦 {kilometerPackage.package_name}</p>
                   <div className="text-[9px] text-blue-800">
-                    <span>• Included KM: {includedKms} km</span>
-                    <span className="ml-2">• Extra Rate: {extraKmRate.toFixed(2)} MAD/km</span>
+                    <span>• {tr('Included KM:', 'KM inclus :')} {includedKms} km</span>
+                    <span className="ml-2">• {tr('Extra Rate:', 'Tarif extra :')} {extraKmRate.toFixed(2)} MAD/km</span>
                   </div>
                 </div>
               )}
               
               {/* Base Price */}
               <div className="flex justify-between">
-                <span>{kilometerPackage ? 'Package Base Price:' : 'Base Rental Price:'}</span>
-                <span className="font-medium">{(unit_price || total_amount || 0).toFixed(2)} MAD</span>
+                <span>{kilometerPackage ? tr('Package Base Price:', 'Prix de base du package :') : tr('Base Rental Price:', 'Prix de base de location :')}</span>
+                <span className="font-medium">{effectiveBaseTotal.toFixed(2)} MAD</span>
               </div>
               
               {/* Kilometer Overage - Compact */}
               {finalOverageCharge > 0 && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded p-2">
                   <div className="flex justify-between items-center mb-1">
-                    <span className="font-semibold text-yellow-800 text-[10px]">KM Overage</span>
+                    <span className="font-semibold text-yellow-800 text-[10px]">{tr('KM Overage', 'Dépassement KM')}</span>
                     <span className="font-bold text-red-600 text-[10px]">+{finalOverageCharge.toFixed(2)} MAD</span>
                   </div>
                   
                   <div className="text-[9px] text-gray-700 space-y-0.5">
                     {start_odometer && ending_odometer && (
                       <div className="flex justify-between">
-                        <span>Start: {start_odometer} km</span>
-                        <span>End: {ending_odometer} km</span>
+                        <span>{tr('Start:', 'Départ :')} {start_odometer} km</span>
+                        <span>{tr('End:', 'Fin :')} {ending_odometer} km</span>
                       </div>
                     )}
                     <div className="flex justify-between border-t border-yellow-200 pt-0.5">
-                      <span>Total: {totalKms.toFixed(2)} km</span>
-                      <span>Included: {includedKms} km</span>
+                      <span>{tr('Total:', 'Total :')} {totalKms.toFixed(2)} km</span>
+                      <span>{tr('Included:', 'Inclus :')} {includedKms} km</span>
                     </div>
                     <div className="flex justify-between">
-                      <span>Extra KM:</span>
+                      <span>{tr('Extra KM:', 'KM extra :')}</span>
                       <span className="font-medium">{extraKms.toFixed(2)} km @ {extraKmRate.toFixed(2)} MAD/km</span>
                     </div>
                   </div>
@@ -298,8 +326,8 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
               {totalKms > 0 && finalOverageCharge === 0 && (
                 <div className="bg-green-50 border border-green-200 rounded p-1.5">
                   <div className="text-[9px] text-green-800">
-                    <p className="font-semibold">✓ No KM Overage</p>
-                    <p>Total: {totalKms.toFixed(2)} km (within {includedKms} km)</p>
+                    <p className="font-semibold">✓ {tr('No KM Overage', 'Aucun dépassement KM')}</p>
+                    <p>{tr('Total:', 'Total :')} {totalKms.toFixed(2)} km ({tr('within', 'dans la limite de')} {includedKms} km)</p>
                   </div>
                 </div>
               )}
@@ -308,22 +336,22 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
               {displayPrice > 0 && (
                 <div className="bg-purple-50 border border-purple-200 rounded p-2">
                   <div className="flex justify-between items-center mb-1">
-                    <span className="font-semibold text-purple-800 text-[10px]">Ext. Info</span>
+                    <span className="font-semibold text-purple-800 text-[10px]">{tr('Ext. Info', "Infos d'extension")}</span>
                     <span className="font-bold text-purple-600 text-[10px]">+{displayPrice.toFixed(2)} MAD</span>
                   </div>
                   
                   <div className="text-[9px] text-gray-700">
                     <div className="flex justify-between mb-0.5">
-                      <span>Extensions: {approvedExtensions.length || (displayHours > 0 ? 1 : 0)}</span>
-                      <span>Hours: {displayHours}h</span>
+                      <span>{tr('Extensions:', 'Extensions :')} {approvedExtensions.length || (displayHours > 0 ? 1 : 0)}</span>
+                      <span>{tr('Hours:', 'Heures :')} {displayHours}h</span>
                     </div>
                     
                     {original_end_date && (
                       <div className="border-t border-purple-200 pt-0.5">
                         <div className="flex justify-between">
-                          <span>Original End:</span>
+                          <span>{tr('Original End:', 'Fin initiale :')}</span>
                           <span className="text-[8px]">
-                            {new Date(original_end_date).toLocaleString('en-US', {
+                            {new Date(original_end_date).toLocaleString(isFrench ? 'fr-FR' : 'en-US', {
                               month: 'short',
                               day: 'numeric',
                               hour: '2-digit',
@@ -339,18 +367,18 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
               
               {/* Grand Total */}
               <div className="flex justify-between pt-1 border-t-2 border-gray-800 text-sm font-bold">
-                <span>Grand Total:</span>
-                <span>{((unit_price || total_amount || 0) + (finalOverageCharge || 0) + (displayPrice || 0)).toFixed(2)} MAD</span>
+                <span>{tr('Grand Total:', 'Total général :')}</span>
+                <span>{(effectiveBaseTotal + (finalOverageCharge || 0) + (displayPrice || 0)).toFixed(2)} MAD</span>
               </div>
               
               {/* Deposit & Remaining */}
               <div className="flex justify-between">
-                <span>Deposit Paid:</span>
+                <span>{tr('Deposit Paid:', 'Dépôt payé :')}</span>
                 <span>{(deposit_amount || 0).toFixed(2)} MAD</span>
               </div>
               
               <div className="flex justify-between font-semibold">
-                <span>Remaining Due:</span>
+                <span>{tr('Remaining Due:', 'Reste dû :')}</span>
                 <span>{(remaining_amount || 0).toFixed(2)} MAD</span>
               </div>
             </div>
@@ -358,21 +386,21 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
 
           {/* Signature Section - Compact */}
           <section className="mt-4 pt-3 border-t-2 border-dashed signature-section">
-            <p className="text-[10px] text-center text-gray-600 mb-3">By signing below, the Renter acknowledges and agrees to all terms and conditions.</p>
+            <p className="text-[10px] text-center text-gray-600 mb-3">{tr('By signing below, the Renter acknowledges and agrees to all terms and conditions.', 'En signant ci-dessous, le locataire reconnaît et accepte tous les termes et conditions.')}</p>
             <div className="grid grid-cols-2 gap-6 items-end">
               <div>
-                <h4 className="font-semibold text-xs text-gray-800 mb-1">Renter's Signature:</h4>
+                <h4 className="font-semibold text-xs text-gray-800 mb-1">{tr("Renter's Signature:", 'Signature du locataire :')}</h4>
                 {finalSignatureUrl ? (
                   <img src={finalSignatureUrl} alt="Customer Signature" className="h-14 w-auto border-b-2 border-gray-400 pb-1" />
                 ) : (
                   <div className="h-14 border-b-2 border-gray-400"></div>
                 )}
-                <p className="text-[10px] mt-1">Date: {new Date().toLocaleDateString('en-US')}</p>
+                <p className="text-[10px] mt-1">{tr('Date:', 'Date :')} {new Date().toLocaleDateString(isFrench ? 'fr-FR' : 'en-US')}</p>
               </div>
               <div className="text-center">
                 <img src={stampUrl || "/assets/stamp.png"} alt="Company Stamp" className="h-20 w-auto mx-auto opacity-90" />
                 <div className="border-t-2 border-gray-400 mt-1 pt-1">
-                  <p className="font-semibold text-xs text-gray-800">SaharaX Rentals Representative</p>
+                  <p className="font-semibold text-xs text-gray-800">{tr('SaharaX Rentals Representative', 'Représentant SaharaX Rentals')}</p>
                 </div>
               </div>
             </div>
@@ -382,7 +410,7 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
         {/* Page 2: Terms and Conditions - Highly Compact */}
         <div className="page-break">
           <section className="mt-3">
-            <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-2">Terms & Conditions</h3>
+            <h3 className="text-sm font-semibold text-gray-800 border-b pb-1 mb-2">{tr('Terms & Conditions', 'Termes & conditions')}</h3>
             <div className="grid grid-cols-2 gap-2 text-[6px] leading-[0.95]">
               {/* French Column */}
               <div className="font-sans">
@@ -481,7 +509,7 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
 
           {/* Footer - Compact */}
           <footer className="mt-4 pt-2 border-t border-gray-200 text-center text-[9px] text-gray-500">
-            <p>Thank you for your business. Drive safely!</p>
+            <p>{tr('Thank you for your business. Drive safely!', 'Merci pour votre confiance. Conduisez prudemment !')}</p>
           </footer>
         </div>
       </div>
@@ -489,7 +517,7 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
       {/* Action Buttons */}
       <div className="mt-6 text-center no-print">
         <button onClick={handleDownloadPdf} className="bg-blue-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-blue-700 transition-colors">
-          Download as PDF
+          {tr('Download as PDF', 'Télécharger en PDF')}
         </button>
       </div>
     </div>

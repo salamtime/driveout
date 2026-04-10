@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, X, AlertCircle, CheckCircle, Image as ImageIcon } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import i18n from '../i18n';
 
 interface VehicleImageUploadProps {
   vehicleId: string;
@@ -17,6 +18,8 @@ const VehicleImageUpload: React.FC<VehicleImageUploadProps> = ({
   disabled = false, 
   className = "" 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en: string, fr: string) => (isFrench ? fr : en);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{[key: string]: {progress: number, status: string, error?: string}}>({});
   const [error, setError] = useState<string | null>(null);
@@ -34,14 +37,14 @@ const VehicleImageUpload: React.FC<VehicleImageUploadProps> = ({
 
   const uploadFiles = async (files: File[]) => {
     if (!vehicleId) {
-      setError('Vehicle ID is required for image upload');
+      setError(tr('Vehicle ID is required for image upload', "L'identifiant du véhicule est requis pour téléverser une image"));
       return;
     }
 
     // Validate image files only
     const imageFiles = files.filter(file => file.type.startsWith('image/'));
     if (imageFiles.length === 0) {
-      setError('Please select only image files (JPG, PNG)');
+      setError(tr('Please select only image files (JPG, PNG)', 'Veuillez sélectionner uniquement des images (JPG, PNG)'));
       return;
     }
 
@@ -49,12 +52,12 @@ const VehicleImageUpload: React.FC<VehicleImageUploadProps> = ({
 
     // File validation
     if (file.size > 10 * 1024 * 1024) {
-      setError('Image file size must be less than 10MB');
+      setError(tr('Image file size must be less than 10MB', "La taille de l'image doit être inférieure à 10 Mo"));
       return;
     }
 
     if (!['image/jpeg', 'image/jpg', 'image/png'].includes(file.type)) {
-      setError('Only JPG and PNG image files are supported');
+      setError(tr('Only JPG and PNG image files are supported', 'Seuls les fichiers JPG et PNG sont pris en charge'));
       return;
     }
 
@@ -109,7 +112,7 @@ const VehicleImageUpload: React.FC<VehicleImageUploadProps> = ({
       }, 3000);
 
     } catch (error: any) {
-      setError(`Upload failed: ${error.message}`);
+      setError(`${tr('Upload failed:', 'Échec du téléversement :')} ${error.message}`);
       setUploadProgress({
         [fileId]: { progress: 0, status: 'error', error: error.message }
       });

@@ -7,8 +7,19 @@ import {
 import { supabase } from '../../lib/supabase';
 import { toast } from 'sonner';
 import enhancedUnifiedCustomerService from '../../services/EnhancedUnifiedCustomerService';
+import { uploadFile } from '../../utils/storageUpload';
+import i18n from '../../i18n';
 
-const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add Second Driver" }) => {
+const SecondDriverIDScanModal = ({
+  isOpen,
+  onClose,
+  onDriverAdded,
+  title = "Ajouter un second conducteur",
+  autoLaunchPicker = false,
+  scanOnlyMode = false,
+}) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -46,6 +57,17 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen || !autoLaunchPicker) return;
+
+    const timeoutId = window.setTimeout(() => {
+      const input = document.getElementById('fileInput');
+      input?.click();
+    }, 120);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isOpen, autoLaunchPicker]);
+
   const resetForm = () => {
     setExtractedData(null);
     setImageFile(null);
@@ -79,36 +101,33 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
       const randomString = Math.random().toString(36).substring(2, 8);
       const fileExtension = file.name.split('.').pop() || 'jpg';
       const fileName = `second_driver_manual_${timestamp}_${randomString}.${fileExtension}`;
-      
-      const { data, error } = await supabase.storage
-        .from('customer-documents')
-        .upload(fileName, file, {
-          cacheControl: '3600',
-          upsert: false,
-        });
-      
-      if (error) throw error;
-      
-      const { data: { publicUrl } } = supabase.storage
-        .from('customer-documents')
-        .getPublicUrl(data.path);
+
+      const uploadResult = await uploadFile(file, {
+        bucket: 'customer-documents',
+        fileName,
+        optimizationProfile: 'document',
+      });
+
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || tr('Failed to upload image', "Impossible de téléverser l'image"));
+      }
       
       const imageObj = {
         id: `manual_img_${timestamp}_${randomString}`,
-        url: publicUrl,
+        url: uploadResult.url,
         name: file.name,
-        path: data.path,
+        path: uploadResult.path,
         uploadedAt: new Date().toISOString()
       };
       
       setManualUploadedImages([imageObj]);
-      setManualImagePreview(publicUrl);
-      toast.success('Image uploaded successfully');
+      setManualImagePreview(uploadResult.url);
+      toast.success(tr('Image uploaded successfully', 'Image téléversée avec succès'));
       
-      return publicUrl;
+      return uploadResult.url;
     } catch (error) {
       console.error('❌ Error uploading manual image:', error);
-      toast.error('Failed to upload image');
+      toast.error(tr('Failed to upload image', "Impossible de téléverser l'image"));
       return null;
     } finally {
       setManualUploading(false);
@@ -131,7 +150,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
       
     } catch (error) {
       console.error('❌ File upload failed:', error);
-      toast.error('Upload failed');
+      toast.error(tr('Upload failed', 'Échec du téléversement'));
       setScanError(error.message);
     } finally {
       setUploading(false);
@@ -147,7 +166,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
       const result = await enhancedUnifiedCustomerService.processSecondDriverID(file);
 
       if (!result.success) {
-        throw new Error(result.error || 'Scan failed');
+        throw new Error(result.error || tr('Scan failed', 'Le scan a échoué'));
       }
 
       // Extract OCR data from result
@@ -191,7 +210,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
         setManualUploadedImages([{
           id: `scan_img_${Date.now()}`,
           url: uploadedImageUrl,
-          name: file.name || 'Scanned ID',
+          name: file.name || 'ID scanné',
           uploadedAt: new Date().toISOString()
         }]);
         setManualImagePreview(uploadedImageUrl);
@@ -199,21 +218,39 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
 
       if (result.ocrUnavailable) {
         setScanSuccess(false);
-        setScanError('Image uploaded, but OCR is unavailable right now. Please fill the driver details manually.');
-        setActiveTab('manual');
-        toast.info('Image uploaded. Complete the second driver details manually.');
+        if (scanOnlyMode) {
+          if (onDriverAdded) {
+            onDriverAdded(buildDriverData());
+          }
+          toast.info(tr('Image uploaded. You can complete the second driver fields in the form.', "Image téléversée. Vous pouvez compléter les champs du second conducteur dans le formulaire."));
+          onClose();
+        } else {
+          setScanError(tr('Image uploaded, but OCR is unavailable right now. Please fill the driver details manually.', "Image téléversée, mais l'OCR est indisponible pour le moment. Veuillez remplir manuellement les détails du conducteur."));
+          setActiveTab('manual');
+          toast.info(tr('Image uploaded. Complete the second driver details manually.', "Image téléversée. Complétez manuellement les détails du second conducteur."));
+        }
         return;
       }
 
       setScanSuccess(true);
-      setActiveTab('manual');
-      toast.success('ID scanned. Review the details and tap Add Driver.');
+      if (scanOnlyMode) {
+        if (onDriverAdded) {
+          onDriverAdded(buildDriverData());
+        }
+        toast.success(tr('Second driver ID scanned and fields updated.', "L'identité du second conducteur a été scannée et les champs ont été mis à jour."));
+        onClose();
+      } else {
+        setActiveTab('manual');
+        toast.success(tr('ID scanned. Review the details and tap Add Driver.', "Identité scannée. Vérifiez les détails puis appuyez sur Ajouter le conducteur."));
+      }
 
     } catch (error) {
       console.error('❌ Scan error:', error);
       setScanError(error.message);
-      toast.error('Scan failed');
-      setActiveTab('manual');
+      toast.error(tr('Scan failed', 'Le scan a échoué'));
+      if (!scanOnlyMode) {
+        setActiveTab('manual');
+      }
     } finally {
       setScanning(false);
     }
@@ -238,17 +275,51 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
     setManualData(prev => ({ ...prev, [field]: value }));
   };
 
+  const buildDriverData = () => {
+    const imageUrl =
+      extractedData?.id_scan_url ||
+      (manualUploadedImages.length > 0 ? manualUploadedImages[0].url : null);
+
+    return {
+      id: `temp_sd_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      full_name: String(manualData.full_name || extractedData?.full_name || '').trim(),
+      phone: String(manualData.phone || extractedData?.phone || '').trim() || null,
+      email: String(manualData.email || extractedData?.email || '').trim() || null,
+      licence_number: String(manualData.licence_number || extractedData?.licence_number || '').trim() || null,
+      id_number: String(manualData.id_number || extractedData?.id_number || '').trim() || null,
+      document_number: String(manualData.document_number || extractedData?.document_number || '').trim() || null,
+      document_type: manualData.document_type || extractedData?.document_type || 'Permis de conduire',
+      date_of_birth: manualData.date_of_birth || extractedData?.date_of_birth || null,
+      nationality: String(manualData.nationality || extractedData?.nationality || 'Moroccan').trim(),
+      place_of_birth: String(manualData.place_of_birth || extractedData?.place_of_birth || '').trim() || null,
+      gender: String(manualData.gender || extractedData?.gender || '').trim() || null,
+      id_scan_url: imageUrl,
+      customer_id_image: imageUrl,
+      uploaded_images: manualUploadedImages.length > 0 ? manualUploadedImages :
+        (imageUrl ? [{
+          url: imageUrl,
+          name: imageFile?.name || 'ID scanné',
+          uploadedAt: new Date().toISOString()
+        }] : []),
+      extra_images: imageUrl ? [imageUrl] : [],
+      scan_confidence: extractedData?.scan_confidence || 0.95,
+      is_active: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  };
+
   const validateDriverData = () => {
     const { full_name, licence_number, id_number, document_number } = manualData;
 
     if (!full_name.trim()) {
-      toast.error('Name is required');
+      toast.error(tr('Name is required', 'Le nom est requis'));
       return false;
     }
 
     const hasIdentification = licence_number || id_number || document_number;
     if (!hasIdentification) {
-      toast.error('ID or License number required');
+      toast.error(tr('ID or License number required', "Le numéro d'identité ou de permis est requis"));
       return false;
     }
 
@@ -258,7 +329,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
   const handleAddDriver = async () => {
     if (activeTab === 'scan' && !scanSuccess) {
       setActiveTab('manual');
-      toast.info('Complete the second driver details manually, then tap Add Driver.');
+      toast.info(tr('Complete the second driver details manually, then tap Add Driver.', "Complétez manuellement les détails du second conducteur, puis appuyez sur Ajouter le conducteur."));
       return;
     }
 
@@ -281,7 +352,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
         licence_number: manualData.licence_number.trim() || null,
         id_number: manualData.id_number.trim() || null,
         document_number: manualData.document_number.trim() || null,
-        document_type: manualData.document_type || 'Driving License',
+        document_type: manualData.document_type || 'Permis de conduire',
         date_of_birth: manualData.date_of_birth || null,
         nationality: manualData.nationality.trim() || 'Moroccan',
         place_of_birth: manualData.place_of_birth.trim() || null,
@@ -291,7 +362,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
         uploaded_images: manualUploadedImages.length > 0 ? manualUploadedImages : 
                         (extractedData?.id_scan_url ? [{
                           url: extractedData.id_scan_url,
-                          name: 'Scanned ID',
+                          name: 'ID scanné',
                           uploadedAt: new Date().toISOString()
                         }] : []),
         extra_images: manualUploadedImages.length > 0 ? [imageUrl] : 
@@ -306,12 +377,12 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
         onDriverAdded(driverData);
       }
 
-      toast.success(`Driver "${driverData.full_name}" added!`);
+      toast.success(`Conducteur "${driverData.full_name}" ajouté !`);
       onClose();
 
     } catch (error) {
       console.error('❌ Error adding driver:', error);
-      toast.error(`Failed: ${error.message}`);
+      toast.error(`Échec : ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -336,8 +407,10 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                 <UserPlus className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600" />
               </div>
               <div>
-                <h2 className="text-lg sm:text-xl font-bold text-gray-900">Add Second Driver</h2>
-                <p className="text-gray-500 text-sm">Scan ID or enter manually</p>
+                <h2 className="text-lg sm:text-xl font-bold text-gray-900">{title}</h2>
+                <p className="text-gray-500 text-sm">
+                  {scanOnlyMode ? "Scanner ou téléverser l'identité du second conducteur" : "Scanner l'identité ou saisir manuellement"}
+                </p>
               </div>
             </div>
             <button
@@ -349,6 +422,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
           </div>
           
           {/* Tab Navigation */}
+          {!scanOnlyMode && (
           <div className="flex mt-4 bg-gray-100 p-1 rounded-lg">
             <button
               onClick={() => setActiveTab('scan')}
@@ -365,23 +439,24 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
             >
               <div className="flex items-center justify-center gap-2">
                 <User className="w-4 h-4" />
-                Manual Entry
+                Saisie manuelle
               </div>
             </button>
           </div>
+          )}
         </div>
 
         {/* Content - Scrollable */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-          {activeTab === 'scan' ? (
+          {(scanOnlyMode || activeTab === 'scan') ? (
             /* Scan Section */
             <div className="mb-6">
               <div className="text-center mb-6">
                 <div className="inline-flex items-center justify-center w-12 h-12 bg-blue-100 rounded-full mb-3">
                   <Sparkles className="w-6 h-6 text-blue-600" />
                 </div>
-                <h3 className="text-lg font-semibold text-gray-900">Scan ID Card</h3>
-                <p className="text-gray-500 text-sm mt-1">Take a clear photo of driver's ID</p>
+                <h3 className="text-lg font-semibold text-gray-900">Scanner la carte d'identité</h3>
+                <p className="text-gray-500 text-sm mt-1">Prenez une photo nette de l'identité du conducteur</p>
               </div>
 
               {/* Upload Area */}
@@ -404,7 +479,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                   <div className="py-8">
                     <Loader className="w-8 h-8 text-blue-600 animate-spin mx-auto mb-3" />
                     <p className="text-sm text-gray-600">
-                      {scanning ? 'Processing ID...' : 'Uploading...'}
+                      {scanning ? "Traitement de l'identité..." : 'Téléversement...'}
                     </p>
                   </div>
                 ) : previewUrl ? (
@@ -412,13 +487,13 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                     <div className="relative w-40 h-32 mx-auto mb-4 rounded-lg overflow-hidden border border-gray-200">
                       <img 
                         src={previewUrl} 
-                        alt="ID Preview"
+                        alt="Aperçu de l'identité"
                         className="w-full h-full object-cover"
                       />
                     </div>
                     <div className="flex items-center justify-center gap-2 text-green-600">
                       <CheckCircle className="w-5 h-5" />
-                      <span className="font-medium">Ready to Scan</span>
+                      <span className="font-medium">Prêt à scanner</span>
                     </div>
                     <button
                       onClick={(e) => {
@@ -428,7 +503,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                       }}
                       className="mt-3 text-sm text-red-500 hover:text-red-700"
                     >
-                      Remove Photo
+                      Supprimer la photo
                     </button>
                   </div>
                 ) : (
@@ -436,8 +511,8 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                     <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
                       <Upload className="w-7 h-7 text-blue-600" />
                     </div>
-                    <p className="text-gray-700 font-medium mb-2">Upload ID Photo</p>
-                    <p className="text-gray-500 text-sm mb-4">Tap or drag & drop</p>
+                    <p className="text-gray-700 font-medium mb-2">Téléverser la photo d'identité</p>
+                    <p className="text-gray-500 text-sm mb-4">Touchez ou glissez-déposez</p>
                     <div className="flex items-center justify-center gap-4 text-xs text-gray-500">
                       <span className="flex items-center gap-1">
                         <FileImage className="w-3 h-3" />
@@ -445,7 +520,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                       </span>
                       <span className="flex items-center gap-1">
                         <Sparkles className="w-3 h-3" />
-                        Auto-fill
+                        Remplissage auto
                       </span>
                     </div>
                   </>
@@ -462,12 +537,12 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                   {scanning ? (
                     <>
                       <Loader className="w-4 h-4 animate-spin" />
-                      Scanning...
+                      Scan en cours...
                     </>
                   ) : (
                     <>
                       <Scan className="w-4 h-4" />
-                      Scan ID Now
+                      Scanner maintenant
                     </>
                   )}
                 </button>
@@ -479,7 +554,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                   <div className="flex items-start gap-2">
                     <AlertCircle className="w-4 h-4 text-red-500 mt-0.5" />
                     <div className="text-sm">
-                      <p className="text-red-700 font-medium">Scan failed</p>
+                      <p className="text-red-700 font-medium">Le scan a échoué</p>
                       <p className="text-red-600 text-xs mt-1">{scanError}</p>
                     </div>
                   </div>
@@ -487,7 +562,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                     onClick={() => setActiveTab('manual')}
                     className="mt-2 text-sm text-blue-600 font-medium"
                   >
-                    Enter manually instead →
+                    Saisir manuellement à la place →
                   </button>
                 </div>
               )}
@@ -499,9 +574,9 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                 <div className="inline-flex items-center justify-center w-12 h-12 bg-gray-100 rounded-full mb-3">
                   <User className="w-6 h-6 text-gray-600" />
                 </div>
-                <h3 className="text-lg font-semibold text-gray-900">Driver Details</h3>
+                <h3 className="text-lg font-semibold text-gray-900">Détails du conducteur</h3>
                 <p className="text-gray-500 text-sm">
-                  {scanSuccess ? 'Review and edit the scanned details below' : 'Fill in the details below'}
+                  {scanSuccess ? 'Vérifiez et modifiez les détails scannés ci-dessous' : 'Renseignez les détails ci-dessous'}
                 </p>
               </div>
 
@@ -510,14 +585,14 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                 {/* Full Name - Full Width */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Full Name *
+                    Nom complet *
                   </label>
                   <input
                     type="text"
                     value={manualData.full_name}
                     onChange={(e) => handleManualInputChange('full_name', e.target.value)}
                     className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="Enter full name"
+                    placeholder="Saisir le nom complet"
                   />
                 </div>
 
@@ -525,7 +600,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Phone
+                      Téléphone
                     </label>
                     <input
                       type="tel"
@@ -537,7 +612,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Email
+                      E-mail
                     </label>
                     <input
                       type="email"
@@ -553,26 +628,26 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      License No.
+                      N° de permis
                     </label>
                     <input
                       type="text"
                       value={manualData.licence_number}
                       onChange={(e) => handleManualInputChange('licence_number', e.target.value)}
                       className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="License number"
+                      placeholder="Numéro de permis"
                     />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      ID Number
+                      N° d'identité
                     </label>
                     <input
                       type="text"
                       value={manualData.id_number}
                       onChange={(e) => handleManualInputChange('id_number', e.target.value)}
                       className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="National ID"
+                      placeholder="Identité nationale"
                     />
                   </div>
                 </div>
@@ -580,7 +655,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                 {/* Date of Birth - Full Width */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Date of Birth
+                    Date de naissance
                   </label>
                   <input
                     type="date"
@@ -592,14 +667,14 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Place of Birth
+                    Lieu de naissance
                   </label>
                   <input
                     type="text"
                     value={manualData.place_of_birth}
                     onChange={(e) => handleManualInputChange('place_of_birth', e.target.value)}
                     className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="City or place of birth"
+                    placeholder="Ville ou lieu de naissance"
                   />
                 </div>
 
@@ -607,29 +682,29 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Nationality
+                      Nationalité
                     </label>
                     <select
                       value={manualData.nationality}
                       onChange={(e) => handleManualInputChange('nationality', e.target.value)}
                       className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     >
-                      <option value="Moroccan">Moroccan</option>
-                      <option value="Other">Other</option>
+                      <option value="Moroccan">Marocaine</option>
+                      <option value="Other">Autre</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Gender
+                      Genre
                     </label>
                     <select
                       value={manualData.gender}
                       onChange={(e) => handleManualInputChange('gender', e.target.value)}
                       className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     >
-                      <option value="">Select</option>
-                      <option value="Male">Male</option>
-                      <option value="Female">Female</option>
+                      <option value="">Sélectionner</option>
+                      <option value="Male">Homme</option>
+                      <option value="Female">Femme</option>
                     </select>
                   </div>
                 </div>
@@ -637,28 +712,28 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Document Type
+                      Type de document
                     </label>
                     <select
                       value={manualData.document_type}
                       onChange={(e) => handleManualInputChange('document_type', e.target.value)}
                       className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     >
-                      <option value="Driving License">Driving License</option>
-                      <option value="National ID">National ID</option>
-                      <option value="Passport">Passport</option>
+                      <option value="Driving License">Permis de conduire</option>
+                      <option value="National ID">Identité nationale</option>
+                      <option value="Passport">Passeport</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Document Number
+                      Numéro du document
                     </label>
                     <input
                       type="text"
                       value={manualData.document_number}
                       onChange={(e) => handleManualInputChange('document_number', e.target.value)}
                       className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="Document number"
+                      placeholder="Numéro du document"
                     />
                   </div>
                 </div>
@@ -666,7 +741,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                 {/* Manual Image Upload Section - Full Width */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Driver ID Image
+                    Image de la pièce d'identité du conducteur
                   </label>
                   <div
                     className={`relative border-2 border-dashed rounded-xl p-4 text-center transition-all cursor-pointer ${
@@ -701,14 +776,14 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                     {manualUploading ? (
                       <div className="py-4">
                         <Loader className="w-8 h-8 text-blue-600 animate-spin mx-auto mb-2" />
-                        <p className="text-sm text-gray-600">Uploading...</p>
+                        <p className="text-sm text-gray-600">Téléversement...</p>
                       </div>
                     ) : manualUploadedImages.length > 0 ? (
                       <div>
                         <div className="relative w-24 h-24 mx-auto mb-3 rounded-lg overflow-hidden border border-green-200">
                           <img 
                             src={manualImagePreview || manualUploadedImages[0].url} 
-                            alt="Driver ID"
+                            alt="Identité du conducteur"
                             className="w-full h-full object-cover"
                             onError={(e) => {
                               e.target.onerror = null;
@@ -718,7 +793,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                         </div>
                         <div className="flex items-center justify-center gap-2 text-green-600">
                           <CheckCircle className="w-4 h-4" />
-                          <span className="text-sm font-medium">ID Image Uploaded</span>
+                          <span className="text-sm font-medium">Image d'identité téléversée</span>
                         </div>
                         <button
                           type="button"
@@ -729,7 +804,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                           }}
                           className="mt-2 text-xs text-red-500 hover:text-red-700"
                         >
-                          Remove Image
+                          Supprimer l'image
                         </button>
                       </div>
                     ) : (
@@ -737,9 +812,9 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                         <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
                           <Upload className="w-5 h-5 text-blue-600" />
                         </div>
-                        <p className="text-gray-700 text-sm font-medium mb-1">Upload ID Photo</p>
-                        <p className="text-gray-500 text-xs">Click or drag & drop</p>
-                        <p className="text-xs text-gray-400 mt-2">JPG, PNG up to 10MB</p>
+                        <p className="text-gray-700 text-sm font-medium mb-1">Téléverser la photo d'identité</p>
+                        <p className="text-gray-500 text-xs">Cliquez ou glissez-déposez</p>
+                        <p className="text-xs text-gray-400 mt-2">JPG, PNG jusqu'à 10 Mo</p>
                       </>
                     )}
                   </div>
@@ -752,7 +827,7 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
                   onClick={() => setActiveTab('scan')}
                   className="flex items-center justify-center gap-2 text-blue-600 text-sm font-medium w-full py-2"
                 >
-                  ← Scan ID instead
+                  ← Scanner l'identité à la place
                 </button>
               </div>
                         </div>
@@ -760,13 +835,14 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
         </div>
 
         {/* Footer */}
+        {!scanOnlyMode && (
         <div className="sticky bottom-0 bg-white border-t border-gray-200 p-4 sm:p-6">
           <div className="flex gap-3">
             <button
               onClick={onClose}
               className="flex-1 py-3.5 px-4 border border-gray-300 text-gray-700 font-medium rounded-xl text-sm hover:bg-gray-50"
             >
-              Cancel
+              Annuler
             </button>
             <button
               onClick={handleAddDriver}
@@ -776,12 +852,12 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
               {loading ? (
                 <>
                   <Loader className="w-4 h-4 animate-spin" />
-                  Adding...
+                  Ajout...
                 </>
               ) : (
                 <>
                   <UserPlus className="w-4 h-4" />
-                  Add Driver
+                  Ajouter le conducteur
                 </>
               )}
             </button>
@@ -790,9 +866,10 @@ const SecondDriverIDScanModal = ({ isOpen, onClose, onDriverAdded, title = "Add 
           {/* Info Note */}
           <div className="mt-3 flex items-center justify-center gap-2 text-xs text-gray-500">
             <Database className="w-3 h-3" />
-            <span>Saved to rental_second_drivers (no customer record created)</span>
+            <span>Enregistré dans rental_second_drivers (aucun profil client créé)</span>
           </div>
         </div>
+        )}
       </div>
     </div>
   );

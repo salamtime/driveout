@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useTranslation } from 'react-i18next';
 import { 
   fetchDashboardData, 
   fetchLowStockItems,
@@ -19,6 +20,8 @@ import InventoryService from '../../services/InventoryService';
 import { getInventoryCategoryVisual } from '../../utils/inventoryVisuals';
 
 const InventoryDashboard = ({ onNavigate }) => {
+  const { i18n } = useTranslation();
+  const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
   const dispatch = useDispatch();
   const { dashboardData, lowStockItems, loading, error } = useSelector(state => state.inventory);
   const [filter, setFilter] = useState('all');
@@ -103,15 +106,68 @@ const InventoryDashboard = ({ onNavigate }) => {
     return new Date(dateString).toLocaleDateString();
   };
 
+  const formatUnitLabel = (unitValue) => {
+    const normalizedUnit = String(unitValue || '').trim().toLowerCase();
+    if (!normalizedUnit) return tr('piece', 'pièce');
+
+    switch (normalizedUnit) {
+      case 'piece':
+      case 'pieces':
+      case 'pièce':
+      case 'pièces':
+        return tr('piece', 'pièce');
+      case 'liter':
+      case 'liters':
+      case 'litre':
+      case 'litres':
+        return tr('liter', 'litre');
+      case 'box':
+      case 'boxes':
+        return tr('box', 'boîte');
+      case 'pack':
+      case 'packs':
+        return tr('pack', 'paquet');
+      default:
+        return unitValue;
+    }
+  };
+
+  const formatMovementNote = (movement) => {
+    const rawNote = String(movement?.notes || '').trim();
+    if (!rawNote) return '—';
+
+    const stripMaintenanceId = (value) => value
+      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
+      .trim();
+
+    const usedInMaintenancePrefix = 'Used in maintenance';
+    if (rawNote.startsWith(usedInMaintenancePrefix)) {
+      const suffix = stripMaintenanceId(rawNote.slice(usedInMaintenancePrefix.length).trim());
+      return suffix
+        ? `${tr('Used in maintenance', 'Utilisé en maintenance')} ${suffix}`
+        : tr('Used in maintenance', 'Utilisé en maintenance');
+    }
+
+    const restoredFromMaintenancePrefix = 'Restored from maintenance';
+    if (rawNote.startsWith(restoredFromMaintenancePrefix)) {
+      const suffix = stripMaintenanceId(rawNote.slice(restoredFromMaintenancePrefix.length).trim());
+      return suffix
+        ? `${tr('Restored from maintenance', 'Restauré depuis la maintenance')} ${suffix}`
+        : tr('Restored from maintenance', 'Restauré depuis la maintenance');
+    }
+
+    return rawNote;
+  };
+
   if (loading.dashboard && !realTimeStats) {
     return (
       <div className="p-4 lg:p-6">
-        <div className="animate-pulse">
-          <div className="h-8 bg-gray-200 rounded w-1/4 mb-6"></div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            {[...Array(4)].map((_, i) => (
-              <div key={i} className="h-32 bg-gray-200 rounded-xl"></div>
-            ))}
+        <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
+          <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+            <div className="text-5xl leading-none animate-pulse">⏳</div>
+            <h2 className="text-xl font-semibold text-slate-900">
+              {tr('Loading inventory workspace...', "Chargement de l'espace inventaire...")}
+            </h2>
           </div>
         </div>
       </div>
@@ -123,8 +179,8 @@ const InventoryDashboard = ({ onNavigate }) => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">Inventory Dashboard</h1>
-          <p className="text-gray-600 mt-1">Manage parts, supplies, and equipment inventory</p>
+          <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">{tr('Inventory Dashboard', "Tableau de bord d'inventaire")}</h1>
+          <p className="text-gray-600 mt-1">{tr('Manage parts, supplies, and equipment inventory', "Gérez les pièces, fournitures et équipements d'inventaire")}</p>
         </div>
       </div>
 
@@ -142,33 +198,33 @@ const InventoryDashboard = ({ onNavigate }) => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard
           icon={PackageIcon}
-          title="Total Items"
+          title={tr('Total Items', 'Total des articles')}
           value={stats.totalItems}
-          subtitle="Active inventory items"
+          subtitle={tr('Active inventory items', "Articles d'inventaire actifs")}
           color="blue"
           onClick={() => onNavigate('items')}
         />
         <StatCard
           icon={AlertTriangleIcon}
-          title="Low Stock"
+          title={tr('Low Stock', 'Stock faible')}
           value={stats.lowStockCount}
-          subtitle="Items below reorder level"
+          subtitle={tr('Items below reorder level', 'Articles sous le seuil de réapprovisionnement')}
           color="red"
           onClick={() => onNavigate('low-stock')}
         />
         <StatCard
           icon={ShoppingCartIcon}
-          title="Recent Purchases"
+          title={tr('Recent Purchases', 'Achats récents')}
           value={purchases.length}
-          subtitle="Last 30 days"
+          subtitle={tr('Last 30 days', '30 derniers jours')}
           color="green"
           onClick={() => onNavigate('purchases')}
         />
         <StatCard
           icon={TrendingUpIcon}
-          title="Stock Movements"
+          title={tr('Stock Movements', 'Mouvements de stock')}
           value={movements.length}
-          subtitle="Last 30 days"
+          subtitle={tr('Last 30 days', '30 derniers jours')}
           color="purple"
           onClick={() => onNavigate('movements')}
         />
@@ -176,26 +232,26 @@ const InventoryDashboard = ({ onNavigate }) => {
 
       {/* Quick Actions */}
       <div className="bg-white rounded-xl shadow-sm border p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h2>
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">{tr('Quick Actions', 'Actions rapides')}</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <QuickActionButton
             icon={PlusIcon}
-            title="Add New Item"
-            description="Create a new inventory item"
+            title={tr('Add New Item', 'Ajouter un nouvel article')}
+            description={tr('Create a new inventory item', "Créer un nouvel article d'inventaire")}
             onClick={() => onNavigate('items', { action: 'create' })}
             color="blue"
           />
           <QuickActionButton
             icon={ShoppingCartIcon}
-            title="Record Purchase"
-            description="Add a new purchase with invoice"
+            title={tr('Record Purchase', 'Enregistrer un achat')}
+            description={tr('Add a new purchase with invoice', 'Ajouter un nouvel achat avec facture')}
             onClick={() => onNavigate('purchases', { action: 'create' })}
             color="green"
           />
           <QuickActionButton
             icon={TrendingDownIcon}
-            title="Issue Items"
-            description="Record items issued to vehicles"
+            title={tr('Issue Items', 'Sortir des articles')}
+            description={tr('Record items issued to vehicles', 'Enregistrer les articles remis aux véhicules')}
             onClick={() => onNavigate('movements', { action: 'create', type: 'OUT' })}
             color="orange"
           />
@@ -208,13 +264,13 @@ const InventoryDashboard = ({ onNavigate }) => {
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center">
               <AlertTriangleIcon className="h-5 w-5 text-red-600 mr-2" />
-              <h2 className="text-lg font-semibold text-red-900">Low Stock Alert</h2>
+              <h2 className="text-lg font-semibold text-red-900">{tr('Low Stock Alert', 'Alerte stock faible')}</h2>
             </div>
             <button
               onClick={() => onNavigate('low-stock')}
               className="text-red-600 hover:text-red-800 text-sm font-medium"
             >
-              View All ({stats.lowStockCount})
+              {tr('View All', 'Voir tout')} ({stats.lowStockCount})
             </button>
           </div>
           <div className="space-y-2">
@@ -234,10 +290,10 @@ const InventoryDashboard = ({ onNavigate }) => {
                 </div>
                 <div className="text-right">
                   <p className="text-sm font-medium text-red-600">
-                    {item.stock_on_hand} {item.unit}
+                    {item.stock_on_hand} {formatUnitLabel(item.unit)}
                   </p>
                   <p className="text-xs text-gray-500">
-                    Reorder at {item.reorder_level}
+                    {tr('Reorder at', 'Réapprovisionner à')} {item.reorder_level} {formatUnitLabel(item.unit)}
                   </p>
                 </div>
               </div>
@@ -251,12 +307,12 @@ const InventoryDashboard = ({ onNavigate }) => {
         {/* Recent Purchases */}
         <div className="bg-white rounded-xl shadow-sm border p-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">Recent Purchases</h2>
+            <h2 className="text-lg font-semibold text-gray-900">{tr('Recent Purchases', 'Achats récents')}</h2>
             <button
               onClick={() => onNavigate('purchases')}
               className="text-blue-600 hover:text-blue-800 text-sm font-medium"
             >
-              View All
+              {tr('View All', 'Voir tout')}
             </button>
           </div>
           <div className="space-y-3">
@@ -265,7 +321,7 @@ const InventoryDashboard = ({ onNavigate }) => {
                 <div className="flex-1">
                   <p className="font-medium text-gray-900">{purchase.supplier}</p>
                   <p className="text-sm text-gray-600">
-                    Invoice #{purchase.invoice_number || purchase.purchase_number || 'N/A'}
+                    {tr('Invoice', 'Facture')} #{purchase.invoice_number || purchase.purchase_number || tr('N/A', 'N/D')}
                   </p>
                   <p className="text-xs text-gray-500">
                     {formatDate(purchase.purchase_date)}
@@ -276,13 +332,13 @@ const InventoryDashboard = ({ onNavigate }) => {
                     {formatCurrency(purchase.total_amount_mad)}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {purchase.purchase_lines?.length || 0} items
+                    {purchase.purchase_lines?.length || 0} {tr('items', 'articles')}
                   </p>
                 </div>
               </div>
             ))}
             {purchases.length === 0 && (
-              <p className="text-gray-500 text-center py-4">No recent purchases</p>
+              <p className="text-gray-500 text-center py-4">{tr('No recent purchases', 'Aucun achat récent')}</p>
             )}
           </div>
         </div>
@@ -290,14 +346,14 @@ const InventoryDashboard = ({ onNavigate }) => {
         {/* Recent Stock Movements */}
         <div className="bg-white rounded-xl shadow-sm border p-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">Recent Movements</h2>
+            <h2 className="text-lg font-semibold text-gray-900">{tr('Recent Movements', 'Mouvements récents')}</h2>
             <div className="flex items-center space-x-2">
               <select
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 className="text-sm border border-gray-300 rounded px-2 py-1"
               >
-                <option value="all">All</option>
+                <option value="all">{tr('All', 'Tous')}</option>
                 <option value="in">IN</option>
                 <option value="out">OUT</option>
               </select>
@@ -305,7 +361,7 @@ const InventoryDashboard = ({ onNavigate }) => {
                 onClick={() => onNavigate('movements')}
                 className="text-blue-600 hover:text-blue-800 text-sm font-medium"
               >
-                View All
+                {tr('View All', 'Voir tout')}
               </button>
             </div>
           </div>
@@ -317,7 +373,7 @@ const InventoryDashboard = ({ onNavigate }) => {
                     {movement.inventory_items?.name}
                   </p>
                   <p className="text-sm text-gray-600 truncate">
-                    {movement.notes}
+                    {formatMovementNote(movement)}
                   </p>
                   <p className="text-xs text-gray-500">
                     {formatDate(movement.created_at)}
@@ -337,13 +393,13 @@ const InventoryDashboard = ({ onNavigate }) => {
                     </span>
                   </div>
                   <p className="text-xs text-gray-500">
-                    {movement.inventory_items?.unit}
+                    {formatUnitLabel(movement.item?.unit || movement.inventory_items?.unit)}
                   </p>
                 </div>
               </div>
             ))}
             {filteredMovements.length === 0 && (
-              <p className="text-gray-500 text-center py-4">No recent movements</p>
+              <p className="text-gray-500 text-center py-4">{tr('No recent movements', 'Aucun mouvement récent')}</p>
             )}
           </div>
         </div>

@@ -63,7 +63,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
       if (result.success) {
         setAnalytics(result.analytics);
       } else {
-        setError(result.error || 'Failed to load analytics');
+        setError(result.error || "Impossible de charger les analyses");
       }
     } catch (err) {
       setError(err.message);
@@ -90,7 +90,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
 
     return Object.entries(analytics.monthlyTrends)
       .map(([month, data]) => ({
-        month: new Date(month + '-01').toLocaleDateString('en-US', { 
+        month: new Date(month + '-01').toLocaleDateString('fr-FR', { 
           month: 'short', 
           year: 'numeric' 
         }),
@@ -119,7 +119,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
       .map(([vehicleId, data]) => {
         const vehicle = vehicles.find(v => v.id.toString() === vehicleId);
         return {
-          name: vehicle ? formatVehicleLabel(vehicle) : `Vehicle ${vehicleId}`,
+          name: vehicle ? formatVehicleLabel(vehicle) : `Véhicule ${vehicleId}`,
           amount: data.amount,
           cost: data.cost,
           transactions: data.count
@@ -155,13 +155,13 @@ const FuelAnalytics = ({ vehicles = [] }) => {
     return (
       <div className="p-6">
         <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-          <div className="text-red-600 mb-2">Failed to load analytics</div>
+          <div className="text-red-600 mb-2">Impossible de charger les analyses</div>
           <div className="text-red-500 text-sm mb-4">{error}</div>
           <button
             onClick={loadAnalytics}
             className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
           >
-            Retry
+            Réessayer
           </button>
         </div>
       </div>
@@ -177,8 +177,8 @@ const FuelAnalytics = ({ vehicles = [] }) => {
       {/* Header with Filters */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Fuel Analytics</h2>
-          <p className="text-gray-600">Comprehensive fuel consumption and cost analysis</p>
+          <h2 className="text-2xl font-bold text-gray-900">Analyses carburant</h2>
+          <p className="text-gray-600">Analyse complète de la consommation et des coûts de carburant</p>
         </div>
 
         <div className="flex gap-3">
@@ -188,7 +188,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
             onChange={(e) => setSelectedVehicle(e.target.value)}
             className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
-            <option value="">All Vehicles</option>
+            <option value="">Tous les véhicules</option>
             {vehicles.map(vehicle => (
               <option key={vehicle.id} value={vehicle.id}>
                 {vehicle.name} ({vehicle.plate_number})
@@ -202,11 +202,11 @@ const FuelAnalytics = ({ vehicles = [] }) => {
             onChange={(e) => setDateRange(e.target.value)}
             className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
-            <option value="7">Last 7 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="90">Last 3 months</option>
-            <option value="180">Last 6 months</option>
-            <option value="365">Last year</option>
+            <option value="7">7 derniers jours</option>
+            <option value="30">30 derniers jours</option>
+            <option value="90">3 derniers mois</option>
+            <option value="180">6 derniers mois</option>
+            <option value="365">Dernière année</option>
           </select>
         </div>
       </div>
@@ -217,7 +217,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Total Transactions</p>
+              <p className="text-sm font-medium text-gray-600">Transactions totales</p>
               <p className="text-2xl font-bold text-gray-900">{analytics?.totalTransactions || 0}</p>
             </div>
             <div className="p-3 bg-blue-100 rounded-full">
@@ -226,11 +226,11 @@ const FuelAnalytics = ({ vehicles = [] }) => {
           </div>
           <div className="mt-2 flex items-center text-sm">
             <span className="text-green-600 font-medium">
-              {analytics?.totalRefills || 0} refills
+              {analytics?.totalRefills || 0} remplissages
             </span>
             <span className="text-gray-500 mx-2">•</span>
             <span className="text-blue-600 font-medium">
-              {analytics?.totalWithdrawals || 0} withdrawals
+              {analytics?.totalWithdrawals || 0} retraits
             </span>
           </div>
         </div>
@@ -239,7 +239,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Total Fuel</p>
+              <p className="text-sm font-medium text-gray-600">Carburant total</p>
               <p className="text-2xl font-bold text-gray-900">
                 {(analytics?.totalFuelAmount || 0).toFixed(1)}L
               </p>
@@ -250,7 +250,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
           </div>
           <div className="mt-2 flex items-center text-sm text-gray-600">
             <TrendingUp className="w-4 h-4 mr-1" />
-            Fuel consumption tracking
+            Suivi de la consommation de carburant
           </div>
         </div>
 
@@ -258,7 +258,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Total Cost</p>
+              <p className="text-sm font-medium text-gray-600">Coût total</p>
               <p className="text-2xl font-bold text-gray-900">
                 {formatMAD(analytics?.totalCost || 0)}
               </p>
@@ -268,7 +268,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
             </div>
           </div>
           <div className="mt-2 flex items-center text-sm text-gray-600">
-            <span>Fuel expenses</span>
+            <span>Dépenses carburant</span>
           </div>
         </div>
 
@@ -276,7 +276,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Avg Cost/Liter</p>
+              <p className="text-sm font-medium text-gray-600">Coût moyen/litre</p>
               <p className="text-2xl font-bold text-gray-900">
                 {formatMAD(analytics?.avgCostPerLiter || 0)}
               </p>
@@ -286,7 +286,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
             </div>
           </div>
           <div className="mt-2 flex items-center text-sm text-gray-600">
-            <span>Price efficiency</span>
+            <span>Efficacité du prix</span>
           </div>
         </div>
       </div>
@@ -294,10 +294,10 @@ const FuelAnalytics = ({ vehicles = [] }) => {
       {/* Monthly Trends Chart */}
       <div className="bg-white rounded-lg shadow p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">Monthly Trends</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Tendances mensuelles</h3>
           <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-gray-500" />
-            <span className="text-sm text-gray-600">Fuel consumption and costs over time</span>
+            <span className="text-sm text-gray-600">Consommation et coûts du carburant dans le temps</span>
           </div>
         </div>
 
@@ -310,7 +310,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
             <Tooltip 
               formatter={(value, name) => [
                 name === 'amount' ? `${value}L` : formatMAD(value),
-                name === 'amount' ? 'Fuel Amount' : 'Cost'
+                name === 'amount' ? 'Quantité de carburant' : 'Coût'
               ]}
             />
             <Legend />
@@ -322,7 +322,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
               stroke="#10b981"
               fill="#10b981"
               fillOpacity={0.6}
-              name="Fuel Amount (L)"
+              name="Quantité de carburant (L)"
             />
             <Area
               yAxisId="right"
@@ -332,7 +332,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
               stroke="#3b82f6"
               fill="#3b82f6"
               fillOpacity={0.6}
-              name="Cost (MAD)"
+              name="Coût (MAD)"
             />
           </AreaChart>
         </ResponsiveContainer>
@@ -344,7 +344,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center gap-2 mb-4">
             <Fuel className="w-5 h-5 text-blue-600" />
-            <h3 className="text-lg font-semibold text-gray-900">Fuel by Type</h3>
+            <h3 className="text-lg font-semibold text-gray-900">Carburant par type</h3>
           </div>
 
           {fuelTypeData.length > 0 ? (
@@ -364,12 +364,12 @@ const FuelAnalytics = ({ vehicles = [] }) => {
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip formatter={(value) => [`${value.toFixed(1)}L`, 'Amount']} />
+                <Tooltip formatter={(value) => [`${value.toFixed(1)}L`, 'Quantité']} />
               </PieChart>
             </ResponsiveContainer>
           ) : (
             <div className="h-64 flex items-center justify-center text-gray-500">
-              No fuel type data available
+              Aucune donnée disponible par type de carburant
             </div>
           )}
         </div>
@@ -378,7 +378,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center gap-2 mb-4">
             <Car className="w-5 h-5 text-green-600" />
-            <h3 className="text-lg font-semibold text-gray-900">Top Vehicles by Consumption</h3>
+            <h3 className="text-lg font-semibold text-gray-900">Top véhicules par consommation</h3>
           </div>
 
           {vehicleData.length > 0 ? (
@@ -390,7 +390,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
                 <Tooltip 
                   formatter={(value, name) => [
                     name === 'amount' ? `${value.toFixed(1)}L` : formatMAD(value),
-                    name === 'amount' ? 'Fuel Amount' : 'Cost'
+                    name === 'amount' ? 'Quantité de carburant' : 'Coût'
                   ]}
                 />
                 <Bar dataKey="amount" fill="#10b981" name="amount" />
@@ -398,7 +398,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
             </ResponsiveContainer>
           ) : (
             <div className="h-64 flex items-center justify-center text-gray-500">
-              No vehicle data available
+              Aucune donnée véhicule disponible
             </div>
           )}
         </div>
@@ -407,14 +407,14 @@ const FuelAnalytics = ({ vehicles = [] }) => {
       {/* Detailed Breakdown */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
         <div className="p-6 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">Detailed Breakdown</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Répartition détaillée</h3>
         </div>
 
         <div className="p-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {/* Fuel Types */}
             <div>
-              <h4 className="font-medium text-gray-900 mb-3">By Fuel Type</h4>
+              <h4 className="font-medium text-gray-900 mb-3">Par type de carburant</h4>
               <div className="space-y-2">
                 {fuelTypeData.map((item, index) => (
                   <div key={item.name} className="flex justify-between items-center p-2 bg-gray-50 rounded">
@@ -436,7 +436,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
 
             {/* Monthly Summary */}
             <div>
-              <h4 className="font-medium text-gray-900 mb-3">Monthly Summary</h4>
+              <h4 className="font-medium text-gray-900 mb-3">Résumé mensuel</h4>
               <div className="space-y-2">
                 {monthlyData.slice(-3).map((month) => (
                   <div key={month.month} className="flex justify-between items-center p-2 bg-gray-50 rounded">
@@ -452,10 +452,10 @@ const FuelAnalytics = ({ vehicles = [] }) => {
 
             {/* Key Metrics */}
             <div>
-              <h4 className="font-medium text-gray-900 mb-3">Key Metrics</h4>
+              <h4 className="font-medium text-gray-900 mb-3">Indicateurs clés</h4>
               <div className="space-y-2">
                 <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                  <span className="text-sm font-medium">Avg per Transaction</span>
+                  <span className="text-sm font-medium">Moyenne par transaction</span>
                   <span className="text-sm">
                     {analytics?.totalTransactions > 0 
                       ? (analytics.totalFuelAmount / analytics.totalTransactions).toFixed(1)
@@ -465,7 +465,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
                 </div>
                 
                 <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                  <span className="text-sm font-medium">Refill Ratio</span>
+                  <span className="text-sm font-medium">Ratio de remplissage</span>
                   <span className="text-sm">
                     {analytics?.totalTransactions > 0 
                       ? ((analytics.totalRefills / analytics.totalTransactions) * 100).toFixed(1)
@@ -475,7 +475,7 @@ const FuelAnalytics = ({ vehicles = [] }) => {
                 </div>
                 
                 <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                  <span className="text-sm font-medium">Active Vehicles</span>
+                  <span className="text-sm font-medium">Véhicules actifs</span>
                   <span className="text-sm">{Object.keys(analytics?.fuelByVehicle || {}).length}</span>
                 </div>
               </div>

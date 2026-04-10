@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Calendar, AlertCircle, CheckCircle, Clock } from 'lucide-react';
 import { useDateRangeAvailability } from '../hooks/useVehicleAvailability';
 import VehicleStatusBadge from './VehicleStatusBadge';
+import i18n from '../i18n';
 
 /**
  * VehicleAvailabilityChecker - Component for checking vehicle availability in date ranges
@@ -17,6 +18,8 @@ const VehicleAvailabilityChecker = ({
   startDate = '',
   endDate = ''
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { availableVehicles, loading, error, checkDateRange } = useDateRangeAvailability();
   const [localStartDate, setLocalStartDate] = useState(startDate);
   const [localEndDate, setLocalEndDate] = useState(endDate);
@@ -59,13 +62,13 @@ const VehicleAvailabilityChecker = ({
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <Calendar className="h-5 w-5 text-blue-600" />
-          Check Vehicle Availability
+          {tr('Vérifier la disponibilité des véhicules', 'Vérifier la disponibilité des véhicules')}
         </h3>
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Start Date *
+              {tr('Date de début', 'Date de début')} *
             </label>
             <input
               type="date"
@@ -143,7 +146,7 @@ const VehicleAvailabilityChecker = ({
               <div className="flex items-center gap-2 text-yellow-600">
                 <Clock className="h-4 w-4" />
                 <span className="text-sm">
-                  No vehicles available for the selected dates. Please choose different dates or check back later.
+                  {tr("Aucun véhicule disponible pour les dates sélectionnées. Veuillez choisir d'autres dates ou réessayer plus tard.", "Aucun véhicule disponible pour les dates sélectionnées. Veuillez choisir d'autres dates ou réessayer plus tard.")}
                 </span>
               </div>
             </div>
@@ -152,7 +155,7 @@ const VehicleAvailabilityChecker = ({
           {!loading && !error && safeAvailableVehicles.length > 0 && (
             <div className="space-y-3">
               <div className="text-sm text-gray-600 mb-4">
-                Found {safeAvailableVehicles.length} available vehicle{safeAvailableVehicles.length !== 1 ? 's' : ''}
+                {tr('Trouvé', 'Trouvé')} {safeAvailableVehicles.length} {safeAvailableVehicles.length !== 1 ? tr('véhicules disponibles', 'véhicules disponibles') : tr('véhicule disponible', 'véhicule disponible')}
               </div>
               
               <div className="grid grid-cols-1 gap-3">

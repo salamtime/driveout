@@ -13,6 +13,7 @@ import {
 import { getQuickDateRanges, formatDateOnly } from '../../utils/formatters';
 import { validateDateRange, validateSearchQuery } from '../../utils/validation';
 import { formatVehicleLabel } from '../../utils/vehicleLabels';
+import i18n from '../../i18n';
 
 const FuelFiltersPanel = ({ 
   filters, 
@@ -21,6 +22,8 @@ const FuelFiltersPanel = ({
   onClearFilters,
   className = '' 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [isExpanded, setIsExpanded] = useState(false);
   const [localFilters, setLocalFilters] = useState(filters);
   const [dateErrors, setDateErrors] = useState({});
@@ -101,11 +104,14 @@ const FuelFiltersPanel = ({
             <Filter className="h-5 w-5 text-blue-700" />
           </div>
           <div>
-            <h3 className="font-semibold text-blue-900">Advanced Filters</h3>
+            <h3 className="font-semibold text-blue-900">{tr('Advanced Filters', 'Filtres avancés')}</h3>
             <p className="text-sm text-blue-600">
               {activeFiltersCount > 0 
-                ? `${activeFiltersCount} filter${activeFiltersCount > 1 ? 's' : ''} active`
-                : 'Click to expand filters'
+                ? tr(
+                    `${activeFiltersCount} active filter${activeFiltersCount > 1 ? 's' : ''}`,
+                    `${activeFiltersCount} filtre${activeFiltersCount > 1 ? 's' : ''} actif${activeFiltersCount > 1 ? 's' : ''}`
+                  )
+                : tr('Click to expand filters', 'Cliquez pour développer les filtres')
               }
             </p>
           </div>
@@ -120,7 +126,7 @@ const FuelFiltersPanel = ({
               className="px-3 py-1 text-xs bg-red-100 text-red-700 rounded-full hover:bg-red-200 transition-colors flex items-center space-x-1"
             >
               <X className="h-3 w-3" />
-              <span>Clear All</span>
+              <span>{tr('Clear all', 'Tout effacer')}</span>
             </button>
           )}
           {isExpanded ? (
@@ -138,13 +144,13 @@ const FuelFiltersPanel = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-blue-800 mb-2">
-                Search
+                {tr('Search', 'Rechercher')}
               </label>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <input
                   type="text"
-                  placeholder="Search notes, station, location..."
+                  placeholder={tr('Search notes, station, location...', 'Rechercher des notes, station, lieu...')}
                   value={localFilters.search || ''}
                   onChange={(e) => handleFilterChange('search', e.target.value)}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
@@ -154,7 +160,7 @@ const FuelFiltersPanel = ({
 
             <div>
               <label className="block text-sm font-medium text-blue-800 mb-2">
-                Vehicle
+                {tr('Vehicle', 'Véhicule')}
               </label>
               <div className="relative">
                 <Car className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -163,7 +169,7 @@ const FuelFiltersPanel = ({
                   onChange={(e) => handleFilterChange('vehicleId', e.target.value)}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 appearance-none"
                 >
-                  <option value="">All Vehicles</option>
+                  <option value="">{tr('All vehicles', 'Tous les véhicules')}</option>
                   {vehicles.map((vehicle) => (
                     <option key={vehicle.id} value={vehicle.id}>
                       {formatVehicleLabel(vehicle)}
@@ -178,26 +184,27 @@ const FuelFiltersPanel = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-blue-800 mb-2">
-                Transaction Type
+                {tr('Transaction type', 'Type de transaction')}
               </label>
               <select
                 value={localFilters.transactionType || ''}
                 onChange={(e) => handleFilterChange('transactionType', e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               >
-                <option value="">All Types</option>
-                <option value="tank_refill">⛽ Tank In</option>
-                <option value="vehicle_refill">🚗 Direct Fill</option>
-                <option value="withdrawal">🔄 Transfer</option>
-                <option value="rental_opening_level">Rental Opening Fuel</option>
-                <option value="rental_closing_level">Rental Return Fuel</option>
-                <option value="manual_adjustment">Manual Adjustment</option>
+                <option value="">{tr('All types', 'Tous les types')}</option>
+                <option value="tank_refill">{tr('⛽ Tank In', '⛽ Entrée cuve')}</option>
+                <option value="tank_out">{tr('🛢️ Tank Out', '🛢️ Sortie cuve')}</option>
+                <option value="vehicle_refill">{tr('🚗 Direct Fill', '🚗 Remplissage direct')}</option>
+                <option value="withdrawal">{tr('🔄 Transfer', '🔄 Transfert')}</option>
+                <option value="rental_opening_level">{tr('Rental Opening Fuel', 'Carburant départ location')}</option>
+                <option value="rental_closing_level">{tr('Rental Return Fuel', 'Carburant retour location')}</option>
+                <option value="manual_adjustment">{tr('Manual Adjustment', 'Ajustement manuel')}</option>
               </select>
             </div>
 
             <div>
               <label className="block text-sm font-medium text-blue-800 mb-2">
-                Fuel Type
+                {tr('Fuel type', 'Type de carburant')}
               </label>
               <div className="relative">
                 <Fuel className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -206,8 +213,8 @@ const FuelFiltersPanel = ({
                   onChange={(e) => handleFilterChange('fuelType', e.target.value)}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 appearance-none"
                 >
-                  <option value="">All Fuel Types</option>
-                  <option value="gasoline">Gasoline</option>
+                  <option value="">{tr('All fuel types', 'Tous les types de carburant')}</option>
+                  <option value="gasoline">{tr('Gasoline', 'Essence')}</option>
                   <option value="diesel">Diesel</option>
                   <option value="premium">Premium</option>
                 </select>
@@ -218,7 +225,7 @@ const FuelFiltersPanel = ({
           {/* Date Range */}
           <div>
             <label className="block text-sm font-medium text-blue-800 mb-2">
-              Date Range
+              {tr('Period', 'Période')}
             </label>
             <div className="space-y-3">
               {/* Quick Date Buttons */}
@@ -241,7 +248,7 @@ const FuelFiltersPanel = ({
                     <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                     <input
                       type="date"
-                      placeholder="Start Date"
+                      placeholder={tr('Start date', 'Date de début')}
                       value={localFilters.startDate || ''}
                       onChange={(e) => handleFilterChange('startDate', e.target.value)}
                       className={`w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
@@ -258,7 +265,7 @@ const FuelFiltersPanel = ({
                     <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                     <input
                       type="date"
-                      placeholder="End Date"
+                      placeholder={tr('End date', 'Date de fin')}
                       value={localFilters.endDate || ''}
                       onChange={(e) => handleFilterChange('endDate', e.target.value)}
                       className={`w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
@@ -281,13 +288,13 @@ const FuelFiltersPanel = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-blue-800 mb-2">
-                Fuel Station
+                {tr('Fuel station', 'Station-service')}
               </label>
               <div className="relative">
                 <Fuel className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <input
                   type="text"
-                  placeholder="Enter fuel station name..."
+                  placeholder={tr('Enter fuel station name...', 'Saisir le nom de la station-service...')}
                   value={localFilters.fuelStation || ''}
                   onChange={(e) => handleFilterChange('fuelStation', e.target.value)}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
@@ -297,13 +304,13 @@ const FuelFiltersPanel = ({
 
             <div>
               <label className="block text-sm font-medium text-blue-800 mb-2">
-                Location
+                {tr('Location', 'Lieu')}
               </label>
               <div className="relative">
                 <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <input
                   type="text"
-                  placeholder="Enter location..."
+                  placeholder={tr('Enter location...', 'Saisir le lieu...')}
                   value={localFilters.location || ''}
                   onChange={(e) => handleFilterChange('location', e.target.value)}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"

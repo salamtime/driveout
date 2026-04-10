@@ -204,7 +204,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
 
     if (uploadError) {
       console.error('❌ Storage upload failed:', uploadError);
-      throw new Error(`Failed to upload invoice image: ${uploadError.message}`);
+      throw new Error(`Impossible de téléverser l'image de facture : ${uploadError.message}`);
     }
 
     // Get public URL
@@ -231,15 +231,15 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
     const newErrors = {};
 
     if (!formData.refill_date) {
-      newErrors.refill_date = 'Refill date is required';
+      newErrors.refill_date = 'La date de remplissage est requise';
     }
 
     if (!formData.liters_added || parseFloat(formData.liters_added) <= 0) {
-      newErrors.liters_added = 'Liters must be greater than 0';
+      newErrors.liters_added = 'Les litres doivent être supérieurs à 0';
     }
 
     if (!formData.unit_price || parseFloat(formData.unit_price) <= 0) {
-      newErrors.unit_price = 'Price per liter must be greater than 0';
+      newErrors.unit_price = 'Le prix par litre doit être supérieur à 0';
     }
 
     setErrors(newErrors);
@@ -307,7 +307,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
       onClose();
     } catch (error) {
       console.error('❌ Unexpected error creating tank refill:', error);
-      setErrors({ submit: error.message || 'An unexpected error occurred. Please try again.' });
+      setErrors({ submit: error.message || 'Une erreur inattendue est survenue. Veuillez réessayer.' });
     } finally {
       setIsLoading(false);
     }
@@ -319,7 +319,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-6 border-b">
-          <h2 className="text-xl font-semibold text-gray-900">Add Tank Refill</h2>
+          <h2 className="text-xl font-semibold text-gray-900">Ajouter un remplissage du réservoir</h2>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 transition-colors"
@@ -338,7 +338,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
           {/* Refill Date */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Refill Date *
+              Date de remplissage *
             </label>
             <input
               type="date"
@@ -359,7 +359,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Liters *
+                Litres *
               </label>
               <input
                 type="number"
@@ -381,7 +381,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Price per Liter (MAD) *
+                Prix par litre (MAD) *
               </label>
               <input
                 type="number"
@@ -403,21 +403,21 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
-                <span>Total Cost (MAD)</span>
+                <span>Coût total (MAD)</span>
                 {isManualOverride ? (
                   <span className="text-xs text-orange-600 flex items-center gap-1">
-                    ✏️ Manual Override
+                    ✏️ Saisie manuelle
                     <button
                       type="button"
                       onClick={resetToAutoCalculated}
                       className="text-blue-600 hover:text-blue-800 underline ml-2"
                     >
-                      Reset
+                      Réinitialiser
                     </button>
                   </span>
                 ) : (
                   <span className="text-xs text-green-600 flex items-center gap-1">
-                    🧮 Auto-calculated
+                    🧮 Calcul automatique
                   </span>
                 )}
               </label>
@@ -437,8 +437,8 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
               />
               <p className="text-xs text-gray-500 mt-1">
                 {isManualOverride 
-                  ? '💡 Manually edited. Click Reset to return to auto-calculated value.' 
-                  : '💡 Editable field. Enter custom amount if needed (e.g., for discounts).'}
+                  ? '💡 Modifié manuellement. Cliquez sur Réinitialiser pour revenir à la valeur calculée automatiquement.' 
+                  : '💡 Champ modifiable. Saisissez un montant personnalisé si nécessaire (par ex. pour une remise).'}
               </p>
             </div>
           </div>
@@ -446,7 +446,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
           {/* Fuel Type */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Fuel Type
+              Type de carburant
             </label>
             <select
               name="fuel_type"
@@ -454,7 +454,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
               onChange={handleInputChange}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="gasoline">Gasoline</option>
+              <option value="gasoline">Essence</option>
               <option value="diesel">Diesel</option>
               <option value="premium">Premium</option>
             </select>
@@ -464,7 +464,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Fuel Station
+                Station-service
               </label>
               <input
                 type="text"
@@ -472,13 +472,13 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
                 value={formData.fuel_station}
                 onChange={handleInputChange}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Station name"
+                placeholder="Nom de la station"
               />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Location
+                Lieu
               </label>
               <input
                 type="text"
@@ -486,7 +486,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
                 value={formData.location}
                 onChange={handleInputChange}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="City, area"
+                placeholder="Ville, zone"
               />
             </div>
           </div>
@@ -494,7 +494,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
           {/* Invoice Image Upload */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Invoice Image
+              Image de facture
             </label>
             
             {!formData.invoice_image ? (
@@ -513,7 +513,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
                 <div className="mt-4">
                   <label htmlFor="invoice-upload" className="cursor-pointer">
                     <span className="text-blue-600 hover:text-blue-500 font-medium">
-                      Upload invoice image
+                      Téléverser l'image de la facture
                     </span>
                     <input
                       id="invoice-upload"
@@ -524,11 +524,11 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
                     />
                   </label>
                   <p className="text-gray-500 text-sm mt-1">
-                    or drag and drop
+                    ou glisser-déposer
                   </p>
                 </div>
                 <p className="text-xs text-gray-400 mt-2">
-                  JPG, PNG, GIF, PDF up to 10MB
+                  JPG, PNG, GIF, PDF jusqu'à 10 Mo
                 </p>
               </div>
             ) : (
@@ -562,7 +562,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
                   <div className="mt-3">
                     <img
                       src={imagePreview}
-                      alt="Invoice preview"
+                        alt="Aperçu de la facture"
                       className="max-w-full h-32 object-contain rounded border"
                     />
                   </div>
@@ -578,7 +578,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
           {/* Refilled By */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Refilled By
+              Rempli par
             </label>
             <input
               type="text"
@@ -586,7 +586,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
               value={formData.refilled_by}
               onChange={handleInputChange}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Person name"
+              placeholder="Nom de la personne"
             />
           </div>
 
@@ -601,7 +601,7 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
               onChange={handleInputChange}
               rows={3}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Optional notes about this refill..."
+              placeholder="Notes optionnelles sur ce remplissage..."
             />
           </div>
 
@@ -613,14 +613,14 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
               className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
               disabled={isLoading}
             >
-              Cancel
+              Annuler
             </button>
             <button
               type="submit"
               className="flex-1 px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-md transition-colors disabled:opacity-50"
               disabled={isLoading}
             >
-              {isLoading ? 'Saving...' : 'Save Refill'}
+              {isLoading ? 'Enregistrement...' : 'Enregistrer le remplissage'}
             </button>
           </div>
         </form>

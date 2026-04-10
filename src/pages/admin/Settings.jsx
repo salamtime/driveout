@@ -2,32 +2,70 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Bell,
   Briefcase,
+  CalendarDays,
+  Image as ImageIcon,
   KeyRound,
   RefreshCw,
   Save,
   Settings2,
   Shield,
   Store,
+  Upload,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
+import { useLanguageContext } from '../../contexts/LanguageContext';
 import { defaultSystemSettings, fetchSystemSettings, saveSystemSettings } from '../../services/systemSettingsApi';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
+import i18n from '../../i18n';
+import { supabase } from '../../lib/supabase';
 
-const TAB_ITEMS = [
-  { id: 'overview', label: 'Overview', icon: Settings2 },
-  { id: 'business', label: 'Business Profile', icon: Store },
-  { id: 'operations', label: 'Operations', icon: Briefcase },
-  { id: 'finance', label: 'Finance & Tax', icon: Shield },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'security', label: 'Security & Access', icon: KeyRound },
+const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
+const SAHARAX_DEFAULT_STAMP_URL = '/assets/stamp.png';
+
+const getBrandingContext = () => {
+  if (typeof window === 'undefined') {
+    return { isSaharaXTenant: false, isLocal: false };
+  }
+
+  const hostname = String(window.location.hostname || '').toLowerCase();
+  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
+  const isSaharaXTenant =
+    isLocal ||
+    hostname === 'saharax.driveout.io' ||
+    hostname === 'saharax.co' ||
+    hostname === 'www.saharax.co';
+
+  return { isSaharaXTenant, isLocal };
+};
+
+const getTabItems = (isFrench) => [
+  { id: 'overview', label: isFrench ? 'Vue d’ensemble' : 'Overview', icon: Settings2 },
+  { id: 'business', label: isFrench ? 'Profil entreprise' : 'Business Profile', icon: Store },
+  { id: 'operations', label: isFrench ? 'Opérations' : 'Operations', icon: Briefcase },
+  { id: 'rentalRules', label: isFrench ? 'Règles de location' : 'Rental Rules', icon: CalendarDays },
+  { id: 'finance', label: isFrench ? 'Finance & taxes' : 'Finance & Tax', icon: Shield },
+  { id: 'notifications', label: isFrench ? 'Notifications' : 'Notifications', icon: Bell },
+  { id: 'security', label: isFrench ? 'Sécurité & accès' : 'Security & Access', icon: KeyRound },
 ];
 
 const FIELD_CLASS =
-  'w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-50';
+  'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100 disabled:cursor-not-allowed disabled:bg-slate-50';
+
+const PRIMARY_BUTTON_CLASS =
+  'inline-flex items-center gap-2 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(79,70,229,0.18)] transition-all duration-200 hover:-translate-y-0.5 hover:from-violet-700 hover:to-indigo-800 hover:shadow-[0_18px_34px_rgba(79,70,229,0.24)] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0';
+
+const SECONDARY_BUTTON_CLASS =
+  'inline-flex items-center gap-2 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-50 to-indigo-50 px-4 py-2.5 text-sm font-semibold text-violet-700 shadow-sm transition-all duration-200 hover:border-violet-300 hover:from-violet-100 hover:to-indigo-100 disabled:cursor-not-allowed disabled:opacity-60';
 
 const ToggleCard = ({ title, description, checked, onChange, disabled }) => (
-  <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+  <div
+    className={`flex items-center justify-between rounded-[1.75rem] border px-4 py-4 shadow-sm transition-all ${
+      checked
+        ? 'border-violet-200 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 shadow-[0_16px_34px_rgba(124,58,237,0.10)]'
+        : 'border-slate-200 bg-white'
+    }`}
+  >
     <div className="pr-4">
       <p className="text-sm font-semibold text-slate-900">{title}</p>
       <p className="mt-1 text-sm text-slate-500">{description}</p>
@@ -36,14 +74,16 @@ const ToggleCard = ({ title, description, checked, onChange, disabled }) => (
       type="button"
       onClick={() => !disabled && onChange(!checked)}
       disabled={disabled}
-      className={`relative h-7 w-12 rounded-full transition ${
-        checked ? 'bg-blue-600' : 'bg-slate-300'
-      } ${disabled ? 'opacity-60' : ''}`}
+      className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full border transition duration-200 ${
+        checked
+          ? 'border-violet-500 bg-gradient-to-r from-violet-600 to-indigo-700'
+          : 'border-slate-200 bg-slate-200'
+      } ${disabled ? 'cursor-not-allowed opacity-60' : 'hover:shadow-sm'}`}
       aria-pressed={checked}
     >
       <span
-        className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${
-          checked ? 'left-6' : 'left-1'
+        className={`absolute left-1 h-6 w-6 rounded-full bg-white shadow-md transition-transform duration-200 ${
+          checked ? 'translate-x-6' : 'translate-x-0'
         }`}
       />
     </button>
@@ -51,11 +91,12 @@ const ToggleCard = ({ title, description, checked, onChange, disabled }) => (
 );
 
 const SectionCard = ({ title, description, action, children }) => (
-  <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
-    <div className="flex flex-col gap-4 border-b border-slate-100 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
+  <section className="overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-[0_20px_55px_rgba(15,23,42,0.06)]">
+    <div className="flex flex-col gap-4 border-b border-violet-100 bg-gradient-to-r from-violet-50/80 via-white to-indigo-50/70 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
       <div>
-        <h2 className="text-lg font-semibold text-slate-950">{title}</h2>
-        {description ? <p className="mt-1 text-sm text-slate-500">{description}</p> : null}
+        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">Workspace</p>
+        <h2 className="mt-2 text-lg font-semibold text-slate-950">{title}</h2>
+        {description ? <p className="mt-1 max-w-3xl text-sm text-slate-500">{description}</p> : null}
       </div>
       {action}
     </div>
@@ -63,12 +104,42 @@ const SectionCard = ({ title, description, action, children }) => (
   </section>
 );
 
+const AssetPreview = ({ label, url, emptyLabel, bucketLabel }) => (
+  <div className="rounded-[1.75rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-4">
+    <div className="flex items-center justify-between gap-3">
+      <div>
+        <p className="text-sm font-semibold text-slate-900">{label}</p>
+        <p className="mt-1 text-xs text-slate-500 break-all">{url || emptyLabel}</p>
+      </div>
+      <div className="rounded-xl bg-white p-2 text-slate-400 shadow-sm">
+        <ImageIcon className="h-5 w-5" />
+      </div>
+    </div>
+    <div className="mt-4 flex h-36 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      {url ? (
+        <img src={url} alt={label} className="max-h-full max-w-full object-contain" />
+      ) : (
+        <div className="px-4 text-center text-sm text-slate-400">{emptyLabel}</div>
+      )}
+    </div>
+    <p className="mt-3 text-xs text-slate-500">{bucketLabel}</p>
+  </div>
+);
+
 const SettingsPage = () => {
   const { userProfile } = useAuth();
+  const { setLanguage } = useLanguageContext();
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tabs = getTabItems(isFrench);
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [savingSection, setSavingSection] = useState(null);
   const [settings, setSettings] = useState(defaultSystemSettings);
+  const [assetUploads, setAssetUploads] = useState({
+    logo: false,
+    stamp: false,
+  });
+  const brandingContext = useMemo(() => getBrandingContext(), []);
 
   const [businessForm, setBusinessForm] = useState({
     companyName: '',
@@ -76,6 +147,8 @@ const SettingsPage = () => {
     companyPhone: '',
     companyAddress: '',
     companyWebsite: '',
+    logoUrl: '',
+    stampUrl: '',
     timezone: 'Africa/Casablanca',
     language: 'en',
     currency: 'MAD',
@@ -99,6 +172,8 @@ const SettingsPage = () => {
   const [notificationsForm, setNotificationsForm] = useState({
     bookingReminderHours: 24,
     returnReminderHours: 2,
+    rentalGracePeriodMinutes: 60,
+    rentalSoftLockMinutes: 45,
     whatsappEnabled: true,
     emailNotifications: true,
     smsNotifications: false,
@@ -117,6 +192,7 @@ const SettingsPage = () => {
   });
 
   const canEdit = userProfile?.role === 'owner' || userProfile?.role === 'admin';
+  const brandingBucket = settings.storageBucket || defaultSystemSettings.storageBucket || 'rental-documents';
 
   const overviewCards = useMemo(
     () => [
@@ -156,6 +232,8 @@ const SettingsPage = () => {
         companyPhone: mergedSettings.companyPhone || '',
         companyAddress: mergedSettings.companyAddress || '',
         companyWebsite: mergedSettings.companyWebsite || '',
+        logoUrl: mergedSettings.logoUrl || '',
+        stampUrl: mergedSettings.stampUrl || '',
         timezone: mergedSettings.timezone || 'Africa/Casablanca',
         language: mergedSettings.language || 'en',
         currency: mergedSettings.currency || 'MAD',
@@ -177,6 +255,8 @@ const SettingsPage = () => {
       setNotificationsForm({
         bookingReminderHours: Number(mergedSettings.bookingReminderHours) || 24,
         returnReminderHours: Number(mergedSettings.returnReminderHours) || 2,
+        rentalGracePeriodMinutes: Number(mergedSettings.rentalGracePeriodMinutes ?? mergedSettings.rental_grace_period_minutes) || 120,
+        rentalSoftLockMinutes: Number(mergedSettings.rentalSoftLockMinutes ?? mergedSettings.rental_soft_lock_minutes) || 90,
         whatsappEnabled: mergedSettings.whatsappEnabled !== false,
         emailNotifications: mergedSettings.emailNotifications !== false,
         smsNotifications: Boolean(mergedSettings.smsNotifications),
@@ -231,11 +311,76 @@ const SettingsPage = () => {
     }
   };
 
+  const uploadBrandAsset = async (assetType, file) => {
+    if (!file) return;
+    if (!canEdit) {
+      toast.error(isFrench ? 'Acces refuse' : 'Access denied');
+      return;
+    }
+    if (!file.type.startsWith('image/')) {
+      toast.error(isFrench ? 'Veuillez choisir une image valide' : 'Please choose a valid image');
+      return;
+    }
+
+    const extension = (file.name.split('.').pop() || 'png').toLowerCase();
+    const storagePath = `branding/${assetType}-${Date.now()}.${extension}`;
+
+    setAssetUploads((current) => ({ ...current, [assetType]: true }));
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from(brandingBucket)
+        .upload(storagePath, file, {
+          cacheControl: '3600',
+          upsert: true,
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from(brandingBucket).getPublicUrl(storagePath);
+      const publicUrl = data?.publicUrl || '';
+      if (!publicUrl) {
+        throw new Error(isFrench ? "Impossible d'obtenir l'URL publique" : 'Unable to get public URL');
+      }
+
+      setBusinessForm((current) => ({
+        ...current,
+        [assetType === 'logo' ? 'logoUrl' : 'stampUrl']: publicUrl,
+      }));
+
+      const savedSettings = await saveSystemSettings({
+        [assetType === 'logo' ? 'logoUrl' : 'stampUrl']: publicUrl,
+      });
+
+      setSettings({ ...defaultSystemSettings, ...savedSettings });
+      setBusinessForm((current) => ({
+        ...current,
+        logoUrl: savedSettings.logoUrl || current.logoUrl,
+        stampUrl: savedSettings.stampUrl || current.stampUrl,
+      }));
+
+      toast.success(
+        assetType === 'logo'
+          ? (isFrench ? 'Logo importe' : 'Logo imported')
+          : (isFrench ? 'Cachet importe' : 'Stamp imported')
+      );
+    } catch (error) {
+      console.error(`Failed to upload ${assetType}:`, error);
+      toast.error(error.message || (isFrench ? 'Import impossible' : 'Upload failed'));
+    } finally {
+      setAssetUploads((current) => ({ ...current, [assetType]: false }));
+    }
+  };
+
   const handleBusinessSave = async () => {
     await persistSettings('Business profile', {
       ...businessForm,
+    }, async () => {
+      setLanguage(businessForm.language || 'en');
     });
   };
+
+  const effectiveLogoUrl = businessForm.logoUrl || (brandingContext.isSaharaXTenant ? SAHARAX_DEFAULT_LOGO_URL : '');
+  const effectiveStampUrl = businessForm.stampUrl || (brandingContext.isSaharaXTenant ? SAHARAX_DEFAULT_STAMP_URL : '');
 
   const handleOperationsSave = async () => {
     await persistSettings('Operations', {
@@ -276,15 +421,34 @@ const SettingsPage = () => {
   };
 
   const handleNotificationsSave = async () => {
+    const normalizedGraceMinutes = Math.max(0, Math.min(120, Number(notificationsForm.rentalGracePeriodMinutes) || 0));
+    const normalizedSoftLockMinutes = Math.max(0, Math.min(normalizedGraceMinutes || 120, Number(notificationsForm.rentalSoftLockMinutes) || 0));
+
     await persistSettings('Notifications', {
       bookingReminderHours: Number(notificationsForm.bookingReminderHours) || 0,
       returnReminderHours: Number(notificationsForm.returnReminderHours) || 0,
+      rentalGracePeriodMinutes: normalizedGraceMinutes,
+      rentalSoftLockMinutes: normalizedSoftLockMinutes,
+      rental_grace_period_minutes: normalizedGraceMinutes,
+      rental_soft_lock_minutes: normalizedSoftLockMinutes,
       whatsappEnabled: notificationsForm.whatsappEnabled,
       emailNotifications: notificationsForm.emailNotifications,
       smsNotifications: notificationsForm.smsNotifications,
       pushNotifications: notificationsForm.pushNotifications,
       notifyOnOverdue: notificationsForm.notifyOnOverdue,
       notifyOnMaintenance: notificationsForm.notifyOnMaintenance,
+    });
+  };
+
+  const handleRentalRulesSave = async () => {
+    const normalizedGraceMinutes = Math.max(0, Math.min(120, Number(notificationsForm.rentalGracePeriodMinutes) || 0));
+    const normalizedSoftLockMinutes = Math.max(0, Math.min(normalizedGraceMinutes || 120, Number(notificationsForm.rentalSoftLockMinutes) || 0));
+
+    await persistSettings('Rental rules', {
+      rentalGracePeriodMinutes: normalizedGraceMinutes,
+      rentalSoftLockMinutes: normalizedSoftLockMinutes,
+      rental_grace_period_minutes: normalizedGraceMinutes,
+      rental_soft_lock_minutes: normalizedSoftLockMinutes,
     });
   };
 
@@ -302,12 +466,12 @@ const SettingsPage = () => {
   const renderOverview = () => (
     <div className="space-y-6">
       <SectionCard
-        title="System Settings Hub"
-        description="One source of truth for business, operations, finance, notifications, and access."
+        title={isFrench ? 'Centre des paramètres système' : 'System Settings Hub'}
+        description={isFrench ? 'Une seule source de vérité pour l’entreprise, les opérations, la finance, les notifications et les accès.' : 'One source of truth for business, operations, finance, notifications, and access.'}
       >
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {overviewCards.map((card) => (
-            <div key={card.label} className="rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4">
+            <div key={card.label} className="rounded-[1.75rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 px-5 py-4 shadow-sm">
               <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">{card.label}</p>
               <p className="mt-3 text-2xl font-semibold text-slate-950">{card.value}</p>
               <p className="mt-2 text-sm text-slate-500">{card.hint}</p>
@@ -316,24 +480,24 @@ const SettingsPage = () => {
         </div>
       </SectionCard>
 
-      <SectionCard title="What Is Wired Now" description="These areas are already connected to real settings services.">
+      <SectionCard title={isFrench ? 'Ce qui est déjà connecté' : 'What Is Wired Now'} description={isFrench ? 'Ces zones sont déjà reliées à de vrais services de paramètres.' : 'These areas are already connected to real settings services.'}>
         <div className="grid gap-4 lg:grid-cols-3">
           <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <p className="text-sm font-semibold text-slate-900">Business Profile</p>
+            <p className="text-sm font-semibold text-slate-900">{isFrench ? 'Profil entreprise' : 'Business Profile'}</p>
             <p className="mt-2 text-sm text-slate-500">
-              Company identity, contact details, timezone, language, and currency are saved through the main settings service.
+              {isFrench ? "L'identité de l'entreprise, les coordonnées, le fuseau horaire, la langue et la devise sont enregistrés via le service principal de paramètres." : 'Company identity, contact details, timezone, language, and currency are saved through the main settings service.'}
             </p>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <p className="text-sm font-semibold text-slate-900">Operations</p>
+            <p className="text-sm font-semibold text-slate-900">{isFrench ? 'Opérations' : 'Operations'}</p>
             <p className="mt-2 text-sm text-slate-500">
-              Rental defaults, tracking flags, operating days, and transport behavior are wired to live services.
+              {isFrench ? 'Les valeurs par défaut des locations, les indicateurs de suivi, les jours ouvrés et le comportement du transport sont reliés aux services en direct.' : 'Rental defaults, tracking flags, operating days, and transport behavior are wired to live services.'}
             </p>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <p className="text-sm font-semibold text-slate-900">Finance & Notifications</p>
+            <p className="text-sm font-semibold text-slate-900">{isFrench ? 'Finance et notifications' : 'Finance & Notifications'}</p>
             <p className="mt-2 text-sm text-slate-500">
-              Finance defaults, tax rules, and operational reminders now save through the same stable API-backed settings flow.
+              {isFrench ? "Les paramètres financiers, les règles fiscales et les rappels opérationnels sont maintenant enregistrés via le même flux de paramètres stable relié à l'API." : 'Finance defaults, tax rules, and operational reminders now save through the same stable API-backed settings flow.'}
             </p>
           </div>
         </div>
@@ -343,23 +507,23 @@ const SettingsPage = () => {
 
   const renderBusiness = () => (
     <SectionCard
-      title="Business Profile"
-      description="Central company identity used across admin pages, printed documents, and customer-facing communications."
+      title={isFrench ? 'Profil entreprise' : 'Business Profile'}
+      description={isFrench ? "Identité centrale de l'entreprise utilisée dans les pages admin, les documents imprimés et les communications côté client." : 'Central company identity used across admin pages, printed documents, and customer-facing communications.'}
       action={
         <button
           type="button"
           onClick={handleBusinessSave}
           disabled={!canEdit || savingSection === 'Business profile'}
-          className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className={PRIMARY_BUTTON_CLASS}
         >
           {savingSection === 'Business profile' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Save Business Profile
+          {isFrench ? 'Enregistrer le profil entreprise' : 'Save Business Profile'}
         </button>
       }
     >
       <div className="grid gap-5 md:grid-cols-2">
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-700">Company Name</label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Nom de l’entreprise' : 'Company Name'}</label>
           <input
             className={FIELD_CLASS}
             value={businessForm.companyName}
@@ -368,7 +532,7 @@ const SettingsPage = () => {
           />
         </div>
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-700">Company Email</label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? "E-mail de l'entreprise" : 'Company Email'}</label>
           <input
             type="email"
             className={FIELD_CLASS}
@@ -378,7 +542,7 @@ const SettingsPage = () => {
           />
         </div>
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-700">Company Phone</label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? "Téléphone de l'entreprise" : 'Company Phone'}</label>
           <input
             className={FIELD_CLASS}
             value={businessForm.companyPhone}
@@ -387,7 +551,7 @@ const SettingsPage = () => {
           />
         </div>
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-700">Website</label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Site web' : 'Website'}</label>
           <input
             className={FIELD_CLASS}
             value={businessForm.companyWebsite}
@@ -395,8 +559,107 @@ const SettingsPage = () => {
             onChange={(e) => setBusinessForm((current) => ({ ...current, companyWebsite: e.target.value }))}
           />
         </div>
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'URL du logo' : 'Logo URL'}</label>
+          <input
+            className={FIELD_CLASS}
+            placeholder={isFrench ? 'https://.../logo.png' : 'https://.../logo.png'}
+            value={businessForm.logoUrl}
+            disabled={!canEdit}
+            onChange={(e) => setBusinessForm((current) => ({ ...current, logoUrl: e.target.value }))}
+          />
+          <p className="mt-2 text-xs text-slate-500">
+            {isFrench ? 'Utilise partout dans le tenant, y compris les partages, documents et pages publiques.' : 'Used across the tenant, including shares, documents, and public pages.'}
+          </p>
+          <div className="mt-3">
+            <label className={`${SECONDARY_BUTTON_CLASS} cursor-pointer`}>
+              {assetUploads.logo ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {isFrench ? 'Importer le logo' : 'Import Logo'}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={!canEdit || assetUploads.logo}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    uploadBrandAsset('logo', file);
+                  }
+                  e.target.value = '';
+                }}
+              />
+            </label>
+          </div>
+        </div>
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'URL du cachet' : 'Stamp URL'}</label>
+          <input
+            className={FIELD_CLASS}
+            placeholder={isFrench ? 'https://.../stamp.png' : 'https://.../stamp.png'}
+            value={businessForm.stampUrl}
+            disabled={!canEdit}
+            onChange={(e) => setBusinessForm((current) => ({ ...current, stampUrl: e.target.value }))}
+          />
+          <div className="mt-3">
+            <label className={`${SECONDARY_BUTTON_CLASS} cursor-pointer`}>
+              {assetUploads.stamp ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {isFrench ? 'Importer le cachet' : 'Import Stamp'}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={!canEdit || assetUploads.stamp}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    uploadBrandAsset('stamp', file);
+                  }
+                  e.target.value = '';
+                }}
+              />
+            </label>
+          </div>
+        </div>
+        <div className="md:col-span-2 grid gap-5 md:grid-cols-2">
+          <AssetPreview
+            label={isFrench ? 'Apercu du logo' : 'Logo Preview'}
+            url={effectiveLogoUrl}
+            emptyLabel={isFrench ? 'Aucun logo importe pour le moment.' : 'No logo imported yet.'}
+            bucketLabel={
+              businessForm.logoUrl
+                ? (isFrench
+                    ? `Stocke dans le bucket ${brandingBucket} et reutilise partout dans le tenant.`
+                    : `Stored in the ${brandingBucket} bucket and reused across the tenant.`)
+                : brandingContext.isSaharaXTenant
+                  ? (isFrench
+                      ? 'Apercu de l’actif SaharaX herite. Enregistrez ou importez pour le stocker pour ce tenant.'
+                      : 'Previewing the inherited SaharaX asset. Save or import it to store it for this tenant.')
+                  : (isFrench
+                      ? `Ce tenant doit importer son propre logo dans le bucket ${brandingBucket}.`
+                      : `This tenant should import its own logo into the ${brandingBucket} bucket.`)
+            }
+          />
+          <AssetPreview
+            label={isFrench ? 'Apercu du cachet' : 'Stamp Preview'}
+            url={effectiveStampUrl}
+            emptyLabel={isFrench ? 'Aucun cachet importe pour le moment.' : 'No stamp imported yet.'}
+            bucketLabel={
+              businessForm.stampUrl
+                ? (isFrench
+                    ? `Stocke dans le bucket ${brandingBucket} et reutilise pour les documents et impressions.`
+                    : `Stored in the ${brandingBucket} bucket and reused for documents and print flows.`)
+                : brandingContext.isSaharaXTenant
+                  ? (isFrench
+                      ? 'Apercu du cachet SaharaX herite. Enregistrez ou importez pour le stocker pour ce tenant.'
+                      : 'Previewing the inherited SaharaX stamp. Save or import it to store it for this tenant.')
+                  : (isFrench
+                      ? `Ce tenant doit importer son propre cachet dans le bucket ${brandingBucket}.`
+                      : `This tenant should import its own stamp into the ${brandingBucket} bucket.`)
+            }
+          />
+        </div>
         <div className="md:col-span-2">
-          <label className="mb-2 block text-sm font-medium text-slate-700">Address</label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Adresse' : 'Address'}</label>
           <textarea
             rows={3}
             className={FIELD_CLASS}
@@ -406,7 +669,7 @@ const SettingsPage = () => {
           />
         </div>
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-700">Timezone</label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Fuseau horaire' : 'Timezone'}</label>
           <select
             className={FIELD_CLASS}
             value={businessForm.timezone}
@@ -419,20 +682,20 @@ const SettingsPage = () => {
           </select>
         </div>
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-700">Default Language</label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Langue par défaut' : 'Default Language'}</label>
           <select
             className={FIELD_CLASS}
             value={businessForm.language}
             disabled={!canEdit}
             onChange={(e) => setBusinessForm((current) => ({ ...current, language: e.target.value }))}
           >
-            <option value="en">English</option>
-            <option value="fr">French</option>
-            <option value="ar">Arabic</option>
+            <option value="en">{isFrench ? 'Anglais' : 'English'}</option>
+            <option value="fr">{isFrench ? 'Français' : 'French'}</option>
+            <option value="ar">{isFrench ? 'Arabe' : 'Arabic'}</option>
           </select>
         </div>
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-700">Currency</label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Devise' : 'Currency'}</label>
           <select
             className={FIELD_CLASS}
             value={businessForm.currency}
@@ -450,17 +713,17 @@ const SettingsPage = () => {
 
   const renderOperations = () => (
     <SectionCard
-      title="Operations"
-      description="Operational rules for bookings, rental windows, notifications, and live tracking behavior."
+      title={isFrench ? 'Opérations' : 'Operations'}
+      description={isFrench ? 'Règles opérationnelles pour les réservations, fenêtres de location, notifications et comportement du suivi en direct.' : 'Operational rules for bookings, rental windows, notifications, and live tracking behavior.'}
       action={
         <button
           type="button"
           onClick={handleOperationsSave}
           disabled={!canEdit || savingSection === 'Operations'}
-          className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className={PRIMARY_BUTTON_CLASS}
         >
           {savingSection === 'Operations' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Save Operations
+          {isFrench ? 'Enregistrer les opérations' : 'Save Operations'}
         </button>
       }
     >
@@ -468,7 +731,7 @@ const SettingsPage = () => {
         <div className="space-y-5">
           <div className="grid gap-5 md:grid-cols-2">
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Opening Time</label>
+              <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? "Heure d'ouverture" : 'Opening Time'}</label>
               <input
                 type="time"
                 className={FIELD_CLASS}
@@ -478,7 +741,7 @@ const SettingsPage = () => {
               />
             </div>
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Closing Time</label>
+              <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Heure de fermeture' : 'Closing Time'}</label>
               <input
                 type="time"
                 className={FIELD_CLASS}
@@ -488,7 +751,7 @@ const SettingsPage = () => {
               />
             </div>
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Default Rental Duration</label>
+              <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Durée de location par défaut' : 'Default Rental Duration'}</label>
               <input
                 type="number"
                 min="1"
@@ -499,7 +762,7 @@ const SettingsPage = () => {
               />
             </div>
             <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Minimum Rental Duration</label>
+              <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Durée minimale de location' : 'Minimum Rental Duration'}</label>
               <input
                 type="number"
                 min="1"
@@ -510,7 +773,7 @@ const SettingsPage = () => {
               />
             </div>
             <div className="md:col-span-2">
-              <label className="mb-2 block text-sm font-medium text-slate-700">Maximum Rental Duration</label>
+              <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Durée maximale de location' : 'Maximum Rental Duration'}</label>
               <input
                 type="number"
                 min="1"
@@ -523,7 +786,7 @@ const SettingsPage = () => {
           </div>
 
           <div>
-            <p className="mb-3 text-sm font-medium text-slate-700">Operating Days</p>
+            <p className="mb-3 text-sm font-medium text-slate-700">{isFrench ? "Jours d'ouverture" : 'Operating Days'}</p>
             <div className="flex flex-wrap gap-2">
               {['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].map((day) => {
                 const active = operationsForm.operatingDays.includes(day);
@@ -549,43 +812,43 @@ const SettingsPage = () => {
 
         <div className="space-y-4">
           <ToggleCard
-            title="Maintenance Mode"
-            description="Use this when the system should be read-only for operational changes."
+            title={isFrench ? 'Mode maintenance' : 'Maintenance Mode'}
+            description={isFrench ? 'À utiliser lorsque le système doit être en lecture seule pour les changements opérationnels.' : 'Use this when the system should be read-only for operational changes.'}
             checked={operationsForm.maintenanceMode}
             disabled={!canEdit}
             onChange={(value) => setOperationsForm((current) => ({ ...current, maintenanceMode: value }))}
           />
           <ToggleCard
-            title="Online Booking"
-            description="Controls whether online booking flows stay available to the team."
+            title={isFrench ? 'Réservation en ligne' : 'Online Booking'}
+            description={isFrench ? "Contrôle si les flux de réservation en ligne restent disponibles pour l'équipe." : 'Controls whether online booking flows stay available to the team.'}
             checked={operationsForm.onlineBooking}
             disabled={!canEdit}
             onChange={(value) => setOperationsForm((current) => ({ ...current, onlineBooking: value }))}
           />
           <ToggleCard
-            title="Real-Time Tracking"
-            description="Default flag for the live map and tour tracking workflow."
+            title={isFrench ? 'Suivi en temps réel' : 'Real-Time Tracking'}
+            description={isFrench ? 'Indicateur par défaut pour la carte en direct et le suivi des tours.' : 'Default flag for the live map and tour tracking workflow.'}
             checked={operationsForm.realTimeTracking}
             disabled={!canEdit}
             onChange={(value) => setOperationsForm((current) => ({ ...current, realTimeTracking: value }))}
           />
           <ToggleCard
-            title="Email Notifications"
-            description="Enable operational email notifications across booking and admin flows."
+            title={isFrench ? 'Notifications e-mail' : 'Email Notifications'}
+            description={isFrench ? "Active les notifications opérationnelles par e-mail dans les flux de réservation et d'administration." : 'Enable operational email notifications across booking and admin flows.'}
             checked={operationsForm.emailNotifications}
             disabled={!canEdit}
             onChange={(value) => setOperationsForm((current) => ({ ...current, emailNotifications: value }))}
           />
           <ToggleCard
-            title="SMS Notifications"
-            description="Enable SMS reminders for customers and staff workflows."
+            title={isFrench ? 'Notifications SMS' : 'SMS Notifications'}
+            description={isFrench ? "Active les rappels SMS pour les clients et les flux de l'équipe." : 'Enable SMS reminders for customers and staff workflows.'}
             checked={operationsForm.smsNotifications}
             disabled={!canEdit}
             onChange={(value) => setOperationsForm((current) => ({ ...current, smsNotifications: value }))}
           />
           <ToggleCard
-            title="Push Notifications"
-            description="Controls push-style notifications for supported user experiences."
+            title={isFrench ? 'Notifications push' : 'Push Notifications'}
+            description={isFrench ? 'Contrôle les notifications push pour les expériences utilisateur prises en charge.' : 'Controls push-style notifications for supported user experiences.'}
             checked={operationsForm.pushNotifications}
             disabled={!canEdit}
             onChange={(value) => setOperationsForm((current) => ({ ...current, pushNotifications: value }))}
@@ -597,24 +860,24 @@ const SettingsPage = () => {
 
   const renderFinance = () => (
     <SectionCard
-      title="Finance & Tax"
-      description="Tax behavior and finance defaults used by receipts, invoices, rentals, and tours."
+      title={isFrench ? 'Finance et taxes' : 'Finance & Tax'}
+      description={isFrench ? 'Comportement fiscal et paramètres financiers utilisés par les reçus, factures, locations et tours.' : 'Tax behavior and finance defaults used by receipts, invoices, rentals, and tours.'}
       action={
         <button
           type="button"
           onClick={handleFinanceSave}
           disabled={!canEdit || savingSection === 'Finance & tax'}
-          className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className={PRIMARY_BUTTON_CLASS}
         >
           {savingSection === 'Finance & tax' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Save Finance & Tax
+          {isFrench ? 'Enregistrer finance et taxes' : 'Save Finance & Tax'}
         </button>
       }
     >
       <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
-        <div className="space-y-5 rounded-2xl border border-slate-200 bg-slate-50 p-5">
+        <div className="space-y-5 rounded-[1.75rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">Tax Percentage</label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Pourcentage de taxe' : 'Tax Percentage'}</label>
             <input
               type="number"
               min="0"
@@ -626,7 +889,7 @@ const SettingsPage = () => {
             />
           </div>
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">Invoice Prefix</label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Préfixe de facture' : 'Invoice Prefix'}</label>
             <input
               className={FIELD_CLASS}
               value={settings.invoicePrefix || 'INV'}
@@ -636,15 +899,15 @@ const SettingsPage = () => {
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <ToggleCard
-              title="Apply Tax To Rentals"
-              description="Include tax on rental receipts and finance calculations."
+              title={isFrench ? 'Appliquer la taxe aux locations' : 'Apply Tax To Rentals'}
+              description={isFrench ? 'Inclure la taxe sur les reçus de location et les calculs financiers.' : 'Include tax on rental receipts and finance calculations.'}
               checked={Boolean(settings.apply_to_rentals)}
               disabled={!canEdit}
               onChange={(value) => setSettings((current) => ({ ...current, apply_to_rentals: value }))}
             />
             <ToggleCard
-              title="Apply Tax To Tours"
-              description="Include tax on tour bookings and tour finance reporting."
+              title={isFrench ? 'Appliquer la taxe aux tours' : 'Apply Tax To Tours'}
+              description={isFrench ? 'Inclure la taxe sur les réservations de tours et les rapports financiers des tours.' : 'Include tax on tour bookings and tour finance reporting.'}
               checked={Boolean(settings.apply_to_tours)}
               disabled={!canEdit}
               onChange={(value) => setSettings((current) => ({ ...current, apply_to_tours: value }))}
@@ -653,27 +916,115 @@ const SettingsPage = () => {
         </div>
         <div className="space-y-4">
           <ToggleCard
-            title="Enable Tax"
-            description="Master control for tax visibility and automatic tax calculations."
+            title={isFrench ? 'Activer la taxe' : 'Enable Tax'}
+            description={isFrench ? 'Contrôle principal de la visibilité des taxes et des calculs automatiques.' : 'Master control for tax visibility and automatic tax calculations.'}
             checked={Boolean(settings.tax_enabled)}
             disabled={!canEdit}
             onChange={(value) => setSettings((current) => ({ ...current, tax_enabled: value }))}
           />
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-sm font-semibold text-slate-900">Finance Defaults</p>
+            <p className="text-sm font-semibold text-slate-900">{isFrench ? 'Paramètres financiers par défaut' : 'Finance Defaults'}</p>
             <p className="mt-2 text-sm text-slate-500">
-              This section is now stored with the same shared system settings document, so it no longer depends on the missing
-              `tax_settings` SQL table.
+              {isFrench ? "Cette section est maintenant enregistrée dans le même document partagé de paramètres système, elle ne dépend donc plus de la table SQL manquante `tax_settings`." : 'This section is now stored with the same shared system settings document, so it no longer depends on the missing `tax_settings` SQL table.'}
             </p>
             <button
               type="button"
               onClick={handleFinanceSave}
               disabled={!canEdit || savingSection === 'Finance & tax'}
-              className="mt-4 inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              className={`mt-4 ${PRIMARY_BUTTON_CLASS}`}
             >
               {savingSection === 'Finance & tax' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              Save Finance & Tax
+              {isFrench ? 'Enregistrer finance et taxes' : 'Save Finance & Tax'}
             </button>
+          </div>
+        </div>
+      </div>
+    </SectionCard>
+  );
+
+  const renderRentalRules = () => (
+    <SectionCard
+      title={isFrench ? 'Règles de location' : 'Rental Rules'}
+      description={
+        isFrench
+          ? 'Configurez la période de grâce, l’alerte de retard et la logique de libération automatique pour les réservations planifiées.'
+          : 'Configure the grace window, late warning, and auto-release behavior for scheduled rentals.'
+      }
+      action={
+        <button
+          type="button"
+          onClick={handleRentalRulesSave}
+          disabled={!canEdit || savingSection === 'Rental rules'}
+          className={PRIMARY_BUTTON_CLASS}
+        >
+          {savingSection === 'Rental rules' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          {isFrench ? 'Enregistrer les règles de location' : 'Save Rental Rules'}
+        </button>
+      }
+    >
+      <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+        <div className="space-y-5">
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">
+              {isFrench ? 'Période de grâce réservation (minutes)' : 'Booking Grace Period (minutes)'}
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="120"
+              className={FIELD_CLASS}
+              value={notificationsForm.rentalGracePeriodMinutes}
+              disabled={!canEdit}
+              onChange={(e) => setNotificationsForm((current) => ({ ...current, rentalGracePeriodMinutes: e.target.value }))}
+            />
+            <p className="mt-2 text-xs text-slate-500">
+              {isFrench
+                ? 'Maximum 120 minutes. Cette règle s’applique aux locations journalières et horaires planifiées.'
+                : 'Maximum 120 minutes. This rule applies to both scheduled daily and hourly rentals.'}
+            </p>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">
+              {isFrench ? 'Alerte retard réservation (minutes)' : 'Late Booking Warning (minutes)'}
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="120"
+              className={FIELD_CLASS}
+              value={notificationsForm.rentalSoftLockMinutes}
+              disabled={!canEdit}
+              onChange={(e) => setNotificationsForm((current) => ({ ...current, rentalSoftLockMinutes: e.target.value }))}
+            />
+            <p className="mt-2 text-xs text-slate-500">
+              {isFrench
+                ? 'Définit quand la réservation doit commencer à être signalée comme en retard avant la libération automatique.'
+                : 'Defines when the booking should start being flagged as late before auto-release.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="rounded-[1.75rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+          <p className="text-sm font-semibold text-slate-900">
+            {isFrench ? 'Comment cela fonctionne' : 'How It Works'}
+          </p>
+          <div className="mt-3 space-y-3 text-sm text-slate-600">
+            <p>
+              {isFrench
+                ? 'Les réservations planifiées restent bloquées pendant la période de grâce après l’heure prévue de départ.'
+                : 'Scheduled rentals stay blocked during the grace window after the planned start time.'}
+            </p>
+            <p>
+              {isFrench
+                ? 'Une fois la période dépassée, la réservation peut expirer automatiquement et le véhicule redevient disponible.'
+                : 'Once that window passes, the booking can auto-expire and the vehicle becomes available again.'}
+            </p>
+            <p>
+              {isFrench
+                ? 'Il n’existe pas de seconde période distincte pour les locations horaires aujourd’hui: cette même règle est la source de vérité.'
+                : 'There is no second separate hourly grace today: this same rule is the source of truth.'}
+            </p>
           </div>
         </div>
       </div>
@@ -682,24 +1033,24 @@ const SettingsPage = () => {
 
   const renderNotifications = () => (
     <SectionCard
-      title="Notifications"
-      description="Operational communication defaults for reminders, alerts, WhatsApp, and staff follow-up."
+      title={isFrench ? 'Notifications' : 'Notifications'}
+      description={isFrench ? "Paramètres de communication opérationnelle pour les rappels, alertes, WhatsApp et le suivi de l'équipe." : 'Operational communication defaults for reminders, alerts, WhatsApp, and staff follow-up.'}
       action={
         <button
           type="button"
           onClick={handleNotificationsSave}
           disabled={!canEdit || savingSection === 'Notifications'}
-          className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className={PRIMARY_BUTTON_CLASS}
         >
           {savingSection === 'Notifications' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Save Notifications
+          {isFrench ? 'Enregistrer les notifications' : 'Save Notifications'}
         </button>
       }
     >
       <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
         <div className="grid gap-5 md:grid-cols-2">
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">Booking Reminder (hours before)</label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Rappel de réservation (heures avant)' : 'Booking Reminder (hours before)'}</label>
             <input
               type="number"
               min="0"
@@ -710,7 +1061,7 @@ const SettingsPage = () => {
             />
           </div>
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">Return Reminder (hours before)</label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Rappel de retour (heures avant)' : 'Return Reminder (hours before)'}</label>
             <input
               type="number"
               min="0"
@@ -720,31 +1071,31 @@ const SettingsPage = () => {
               onChange={(e) => setNotificationsForm((current) => ({ ...current, returnReminderHours: e.target.value }))}
             />
           </div>
-          <div className="md:col-span-2 rounded-2xl border border-slate-200 bg-slate-50 p-5">
-            <p className="text-sm font-semibold text-slate-900">Delivery Channels</p>
+          <div className="md:col-span-2 rounded-[1.75rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+            <p className="text-sm font-semibold text-slate-900">{isFrench ? 'Canaux de diffusion' : 'Delivery Channels'}</p>
             <p className="mt-2 text-sm text-slate-500">
-              Set the default channels the operations team expects to use for reminders and alerts.
+              {isFrench ? "Définissez les canaux par défaut que l'équipe opérationnelle utilisera pour les rappels et alertes." : 'Set the default channels the operations team expects to use for reminders and alerts.'}
             </p>
           </div>
         </div>
         <div className="space-y-4">
           <ToggleCard
-            title="WhatsApp Contact Flow"
-            description="Makes WhatsApp the preferred communication channel in admin workflows."
+            title={isFrench ? 'Flux de contact WhatsApp' : 'WhatsApp Contact Flow'}
+            description={isFrench ? 'Fait de WhatsApp le canal de communication préféré dans les flux admin.' : 'Makes WhatsApp the preferred communication channel in admin workflows.'}
             checked={notificationsForm.whatsappEnabled}
             disabled={!canEdit}
             onChange={(value) => setNotificationsForm((current) => ({ ...current, whatsappEnabled: value }))}
           />
           <ToggleCard
-            title="Overdue Alerts"
-            description="Notify the team when a rental or tour passes its planned return time."
+            title={isFrench ? 'Alertes de retard' : 'Overdue Alerts'}
+            description={isFrench ? "Notifier l'équipe lorsqu'une location ou un tour dépasse son heure de retour prévue." : 'Notify the team when a rental or tour passes its planned return time.'}
             checked={notificationsForm.notifyOnOverdue}
             disabled={!canEdit}
             onChange={(value) => setNotificationsForm((current) => ({ ...current, notifyOnOverdue: value }))}
           />
           <ToggleCard
-            title="Maintenance Alerts"
-            description="Notify staff when inspection or maintenance thresholds are triggered."
+            title={isFrench ? 'Alertes maintenance' : 'Maintenance Alerts'}
+            description={isFrench ? "Notifier l'équipe lorsque les seuils d'inspection ou de maintenance sont atteints." : 'Notify staff when inspection or maintenance thresholds are triggered.'}
             checked={notificationsForm.notifyOnMaintenance}
             disabled={!canEdit}
             onChange={(value) => setNotificationsForm((current) => ({ ...current, notifyOnMaintenance: value }))}
@@ -756,23 +1107,23 @@ const SettingsPage = () => {
 
   const renderSecurity = () => (
     <SectionCard
-      title="Security & Access"
-      description="Administrative access policies, session timing, audit behavior, and sensitive workflow protections."
+      title={isFrench ? 'Sécurité et accès' : 'Security & Access'}
+      description={isFrench ? "Politiques d'accès administrateur, durée des sessions, audit et protections des flux sensibles." : 'Administrative access policies, session timing, audit behavior, and sensitive workflow protections.'}
       action={
         <button
           type="button"
           onClick={handleSecuritySave}
           disabled={!canEdit || savingSection === 'Security & access'}
-          className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className={PRIMARY_BUTTON_CLASS}
         >
           {savingSection === 'Security & access' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          Save Security
+          {isFrench ? 'Enregistrer la sécurité' : 'Save Security'}
         </button>
       }
     >
       <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-700">Session Timeout (minutes)</label>
+          <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Expiration de session (minutes)' : 'Session Timeout (minutes)'}</label>
           <input
             type="number"
             min="5"
@@ -781,45 +1132,45 @@ const SettingsPage = () => {
             disabled={!canEdit}
             onChange={(e) => setSecurityForm((current) => ({ ...current, sessionTimeoutMinutes: e.target.value }))}
           />
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-5">
-            <p className="text-sm font-semibold text-slate-900">Access Policy Notes</p>
+          <div className="mt-4 rounded-[1.75rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+            <p className="text-sm font-semibold text-slate-900">{isFrench ? "Notes sur la politique d'accès" : 'Access Policy Notes'}</p>
             <p className="mt-2 text-sm text-slate-500">
-              These controls establish the administrative default policy. The rest of the app can gradually adopt them as the central source of truth.
+              {isFrench ? "Ces contrôles définissent la politique administrative par défaut. Le reste de l'application peut les adopter progressivement comme source de vérité centrale." : 'These controls establish the administrative default policy. The rest of the app can gradually adopt them as the central source of truth.'}
             </p>
           </div>
         </div>
         <div className="space-y-4">
           <ToggleCard
-            title="Require 2FA For Admins"
-            description="Target policy for owner/admin logins and sensitive settings changes."
+            title={isFrench ? 'Exiger la 2FA pour les admins' : 'Require 2FA For Admins'}
+            description={isFrench ? 'Politique cible pour les connexions owner/admin et les changements sensibles.' : 'Target policy for owner/admin logins and sensitive settings changes.'}
             checked={securityForm.requireTwoFactorForAdmins}
             disabled={!canEdit}
             onChange={(value) => setSecurityForm((current) => ({ ...current, requireTwoFactorForAdmins: value }))}
           />
           <ToggleCard
-            title="Allow Employee Package Edits"
-            description="If disabled, employees stay read-only for package management and settings-adjacent package changes."
+            title={isFrench ? 'Autoriser la modification des packages par les employés' : 'Allow Employee Package Edits'}
+            description={isFrench ? 'Si désactivé, les employés restent en lecture seule pour la gestion des packages et les changements liés aux paramètres.' : 'If disabled, employees stay read-only for package management and settings-adjacent package changes.'}
             checked={securityForm.allowEmployeePackageEdits}
             disabled={!canEdit}
             onChange={(value) => setSecurityForm((current) => ({ ...current, allowEmployeePackageEdits: value }))}
           />
           <ToggleCard
-            title="Allow Employee Settings View"
-            description="Lets employees open system settings in read-only mode for operational reference."
+            title={isFrench ? 'Autoriser la consultation des paramètres par les employés' : 'Allow Employee Settings View'}
+            description={isFrench ? 'Permet aux employés d’ouvrir les paramètres système en lecture seule pour référence opérationnelle.' : 'Lets employees open system settings in read-only mode for operational reference.'}
             checked={securityForm.allowEmployeeSettingsView}
             disabled={!canEdit}
             onChange={(value) => setSecurityForm((current) => ({ ...current, allowEmployeeSettingsView: value }))}
           />
           <ToggleCard
-            title="Write Audit Logs"
-            description="Keep admin changes and sensitive workflow changes attached to the audit trail."
+            title={isFrench ? "Écrire les journaux d'audit" : 'Write Audit Logs'}
+            description={isFrench ? "Conserver les changements admin et les modifications sensibles dans la piste d'audit." : 'Keep admin changes and sensitive workflow changes attached to the audit trail.'}
             checked={securityForm.writeAuditLogs}
             disabled={!canEdit}
             onChange={(value) => setSecurityForm((current) => ({ ...current, writeAuditLogs: value }))}
           />
           <ToggleCard
-            title="Allow Live Tracking Retry"
-            description="Controls whether guides can re-trigger location permission after dismissing it once."
+            title={isFrench ? 'Autoriser la relance du suivi en direct' : 'Allow Live Tracking Retry'}
+            description={isFrench ? "Contrôle si les guides peuvent redemander l'autorisation de localisation après l'avoir refusée une fois." : 'Controls whether guides can re-trigger location permission after dismissing it once.'}
             checked={securityForm.allowLiveTrackingRetry}
             disabled={!canEdit}
             onChange={(value) => setSecurityForm((current) => ({ ...current, allowLiveTrackingRetry: value }))}
@@ -835,6 +1186,8 @@ const SettingsPage = () => {
         return renderBusiness();
       case 'operations':
         return renderOperations();
+      case 'rentalRules':
+        return renderRentalRules();
       case 'finance':
         return renderFinance();
       case 'notifications':
@@ -848,35 +1201,31 @@ const SettingsPage = () => {
   };
 
   return (
-    <div className="space-y-6 p-4 lg:p-6">
+    <div className="min-h-screen bg-slate-50">
       <AdminModuleHero
         icon={<Settings2 className="h-8 w-8 text-white" />}
-        eyebrow="System Settings"
-        title="Control the whole admin system from one place"
-        description="Configure business identity, operations, finance, notifications, and access without jumping between disconnected settings pages."
+        eyebrow={null}
+        title={isFrench ? 'Paramètres système' : 'System Settings'}
+        description={isFrench ? "Pilotez tout le système admin depuis un seul endroit." : 'Control the whole admin system from one place.'}
+        className="w-full"
         actions={
-          <>
-            <button
-              type="button"
-              onClick={loadSettingsHub}
-              disabled={loading}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20 disabled:opacity-60"
-            >
-              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-              Refresh Settings
-            </button>
-            <div className="inline-flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm">
-              <Bell className="h-4 w-4" />
-              {canEdit ? 'Owner/Admin editing enabled' : 'Read-only access'}
-            </div>
-          </>
+          <button
+            type="button"
+            onClick={loadSettingsHub}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20 disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            {isFrench ? 'Actualiser les paramètres' : 'Refresh Settings'}
+          </button>
         }
       />
 
-      <div className="rounded-[2rem] border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-100 px-4 py-4 sm:px-6">
+      <div className="space-y-6 p-4 lg:p-6">
+      <div className="rounded-[2rem] border border-slate-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.06)]">
+        <div className="border-b border-violet-100 bg-gradient-to-r from-violet-50/80 via-white to-indigo-50/70 px-4 py-4 sm:px-6">
           <div className="flex flex-wrap gap-3">
-            {TAB_ITEMS.map((item) => {
+            {tabs.map((item) => {
               const Icon = item.icon;
               const active = activeTab === item.id;
               return (
@@ -884,10 +1233,10 @@ const SettingsPage = () => {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
+                  className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm font-semibold transition-all duration-200 ${
                     active
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                      ? 'border-violet-200 bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_14px_28px_rgba(79,70,229,0.18)]'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700'
                   }`}
                 >
                   <Icon className="h-4 w-4" />
@@ -900,16 +1249,19 @@ const SettingsPage = () => {
 
         <div className="px-4 py-6 sm:px-6">
           {loading ? (
-            <div className="flex items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-slate-50 py-16">
-              <div className="flex items-center gap-3 text-slate-500">
-                <RefreshCw className="h-5 w-5 animate-spin" />
-                Loading system settings...
+            <div className="rounded-[2rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 px-6 py-16 text-center">
+              <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+                <div className="text-5xl leading-none animate-pulse">⏳</div>
+                <h2 className="text-xl font-semibold text-slate-900">
+                  {isFrench ? 'Chargement des paramètres système...' : 'Loading system settings...'}
+                </h2>
               </div>
             </div>
           ) : (
             renderContent()
           )}
         </div>
+      </div>
       </div>
     </div>
   );

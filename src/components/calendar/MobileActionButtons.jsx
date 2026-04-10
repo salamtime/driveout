@@ -1,7 +1,10 @@
 import React from 'react';
 import { Play, Square, Edit, X, CheckCircle } from 'lucide-react';
+import i18n from '../../i18n';
 
 const MobileActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const canStart = booking.status === 'confirmed';
   const isOnTour = booking.status === 'on_tour';
   const isCompleted = booking.status === 'completed';
@@ -18,7 +21,7 @@ const MobileActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =
             style={{ minHeight: '60px' }}
           >
             <Play className="h-5 w-5 mr-2" />
-            Start Tour
+            {tr('Start Tour', 'Commencer le tour')}
           </button>
         )}
 
@@ -29,14 +32,14 @@ const MobileActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =
             style={{ minHeight: '60px' }}
           >
             <Square className="h-5 w-5 mr-2" />
-            Finish Tour
+            {tr('Finish Tour', 'Terminer le tour')}
           </button>
         )}
 
         {isCompleted && (
           <div className="flex items-center justify-center py-4 px-4 bg-gray-100 text-gray-600 rounded-xl font-semibold col-span-2">
             <CheckCircle className="h-5 w-5 mr-2" />
-            Tour Completed
+            {tr('Tour Completed', 'Tour terminé')}
           </div>
         )}
 
@@ -48,7 +51,7 @@ const MobileActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =
             style={{ minHeight: '60px' }}
           >
             <Edit className="h-5 w-5 mr-2" />
-            Edit
+            {tr('Edit', 'Modifier')}
           </button>
         )}
       </div>
@@ -62,14 +65,14 @@ const MobileActionButtons = ({ booking, onStart, onFinish, onEdit, onCancel }) =
             style={{ minHeight: '50px' }}
           >
             <X className="h-4 w-4 mr-2" />
-            Cancel Booking
+            {tr('Cancel Booking', 'Annuler la réservation')}
           </button>
         )}
       </div>
 
       {/* Quick Action Info */}
       <div className="text-center text-xs text-gray-500 pt-2">
-        <p>💡 Tip: Swipe right to start • Swipe left to cancel</p>
+        <p>{tr('💡 Tip: Swipe right to start • Swipe left to cancel', '💡 Astuce : glissez à droite pour démarrer • glissez à gauche pour annuler')}</p>
       </div>
     </div>
   );

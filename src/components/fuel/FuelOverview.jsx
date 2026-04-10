@@ -106,7 +106,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
   // Get vehicle name
   const getVehicleName = (vehicleId) => {
     const vehicle = vehicles.find(v => v.id === vehicleId);
-    return vehicle ? formatVehicleLabel(vehicle) : 'Unknown Vehicle';
+    return vehicle ? formatVehicleLabel(vehicle) : 'Véhicule inconnu';
   };
 
   // Get fuel level color
@@ -141,13 +141,13 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
     return (
       <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
         <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
-        <h3 className="text-lg font-semibold text-red-800 mb-2">Failed to Load Overview</h3>
+        <h3 className="text-lg font-semibold text-red-800 mb-2">Impossible de charger la vue d'ensemble</h3>
         <p className="text-red-600 mb-4">{error}</p>
         <button
           onClick={loadOverviewData}
           className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
         >
-          Retry
+          Réessayer
         </button>
       </div>
     );
@@ -161,7 +161,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Total Transactions</p>
+              <p className="text-sm font-medium text-gray-600">Transactions totales</p>
               <p className="text-2xl font-bold text-gray-900">{metrics.totalTransactions}</p>
             </div>
             <div className="p-3 bg-blue-100 rounded-full">
@@ -170,7 +170,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
           </div>
           <div className="mt-2 flex items-center text-sm text-green-600">
             <TrendingUp className="w-4 h-4 mr-1" />
-            Last 30 days
+            30 derniers jours
           </div>
         </div>
 
@@ -178,7 +178,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Fuel Consumed</p>
+              <p className="text-sm font-medium text-gray-600">Carburant consommé</p>
               <p className="text-2xl font-bold text-gray-900">
                 {metrics.totalFuelConsumed.toFixed(1)}L
               </p>
@@ -188,7 +188,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
             </div>
           </div>
           <div className="mt-2 flex items-center text-sm text-gray-600">
-            <span>Across all vehicles</span>
+            <span>Sur tous les véhicules</span>
           </div>
         </div>
 
@@ -196,7 +196,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Total Cost</p>
+              <p className="text-sm font-medium text-gray-600">Coût total</p>
               <p className="text-2xl font-bold text-gray-900">
                 {formatMAD(metrics.totalCost)}
               </p>
@@ -206,7 +206,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
             </div>
           </div>
           <div className="mt-2 flex items-center text-sm text-gray-600">
-            <span>Fuel expenses</span>
+            <span>Dépenses carburant</span>
           </div>
         </div>
 
@@ -214,7 +214,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Active Vehicles</p>
+              <p className="text-sm font-medium text-gray-600">Véhicules actifs</p>
               <p className="text-2xl font-bold text-gray-900">{metrics.activeVehicles}</p>
             </div>
             <div className="p-3 bg-purple-100 rounded-full">
@@ -222,7 +222,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
             </div>
           </div>
           <div className="mt-2 flex items-center text-sm text-gray-600">
-            <span>With fuel activity</span>
+            <span>Avec activité carburant</span>
           </div>
         </div>
       </div>
@@ -233,12 +233,12 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
         <div className="bg-white rounded-lg shadow">
           <div className="p-6 border-b border-gray-200">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-gray-900">Recent Transactions</h3>
+              <h3 className="text-lg font-semibold text-gray-900">Transactions récentes</h3>
               <button
                 onClick={onViewTransactions}
                 className="text-blue-600 hover:text-blue-800 text-sm font-medium flex items-center gap-1"
               >
-                View All
+                Tout voir
                 <ArrowRight className="w-4 h-4" />
               </button>
             </div>
@@ -248,13 +248,13 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
             {recentTransactions.length === 0 ? (
               <div className="text-center py-8">
                 <Fuel className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-500 mb-4">No recent transactions</p>
+                <p className="text-gray-500 mb-4">Aucune transaction récente</p>
                 <button
                   onClick={() => onAddTransaction('refill')}
                   className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                 >
                   <Plus className="w-4 h-4" />
-                  Add First Transaction
+                  Ajouter la première transaction
                 </button>
               </div>
             ) : (
@@ -303,15 +303,15 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
         {/* Vehicle Fuel Status */}
         <div className="bg-white rounded-lg shadow">
           <div className="p-6 border-b border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-900">Vehicle Fuel Status</h3>
-            <p className="text-sm text-gray-600 mt-1">Current fuel levels (estimated)</p>
+            <h3 className="text-lg font-semibold text-gray-900">État carburant des véhicules</h3>
+            <p className="text-sm text-gray-600 mt-1">Niveaux de carburant actuels (estimés)</p>
           </div>
           
           <div className="p-6">
             {vehicleFuelStatus.length === 0 ? (
               <div className="text-center py-8">
                 <Car className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-500">No vehicles available</p>
+                <p className="text-gray-500">Aucun véhicule disponible</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -323,7 +323,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
                           {formatVehicleNameWithModel(vehicle)}
                         </div>
                         <div className="text-xs text-gray-500">
-                          {vehicle.plateNumber} • Last refill: {formatDate(vehicle.lastRefill)}
+                          {vehicle.plateNumber} • Dernier remplissage : {formatDate(vehicle.lastRefill)}
                         </div>
                       </div>
                       <div className="text-right">
@@ -357,7 +357,7 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
 
       {/* Quick Actions */}
       <div className="bg-white rounded-lg shadow p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Actions rapides</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <button
             onClick={() => onAddTransaction('refill')}
@@ -367,8 +367,8 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
               <Plus className="w-5 h-5 text-green-600" />
             </div>
             <div className="text-left">
-              <div className="font-medium text-gray-900">Add Fuel Refill</div>
-              <div className="text-sm text-gray-600">Record fuel added to vehicle</div>
+              <div className="font-medium text-gray-900">Ajouter un remplissage carburant</div>
+              <div className="text-sm text-gray-600">Enregistrer le carburant ajouté au véhicule</div>
             </div>
           </button>
           
@@ -380,8 +380,8 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
               <TrendingDown className="w-5 h-5 text-orange-600" />
             </div>
             <div className="text-left">
-              <div className="font-medium text-gray-900">Add Fuel Withdrawal</div>
-              <div className="text-sm text-gray-600">Record fuel consumed by vehicle</div>
+              <div className="font-medium text-gray-900">Ajouter un retrait carburant</div>
+              <div className="text-sm text-gray-600">Enregistrer le carburant consommé par le véhicule</div>
             </div>
           </button>
           
@@ -393,8 +393,8 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
               <Activity className="w-5 h-5 text-blue-600" />
             </div>
             <div className="text-left">
-              <div className="font-medium text-gray-900">View All Transactions</div>
-              <div className="text-sm text-gray-600">Browse complete fuel history</div>
+              <div className="font-medium text-gray-900">Voir toutes les transactions</div>
+              <div className="text-sm text-gray-600">Parcourir l'historique complet du carburant</div>
             </div>
           </button>
         </div>
@@ -408,13 +408,13 @@ const FuelOverview = ({ vehicles = [], onAddTransaction, onViewTransactions }) =
               <div className="text-2xl font-bold text-blue-600">
                 {formatMAD(metrics.avgCostPerLiter)}
               </div>
-              <div className="text-sm text-gray-600">Average Cost per Liter</div>
+              <div className="text-sm text-gray-600">Coût moyen par litre</div>
             </div>
             <div>
               <div className="text-2xl font-bold text-green-600">
                 {metrics.totalTransactions > 0 ? (metrics.totalFuelConsumed / metrics.totalTransactions).toFixed(1) : '0'}L
               </div>
-              <div className="text-sm text-gray-600">Average per Transaction</div>
+              <div className="text-sm text-gray-600">Moyenne par transaction</div>
             </div>
             <div>
               <div className="text-2xl font-bold text-purple-600">

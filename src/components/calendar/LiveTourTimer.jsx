@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Clock, Play, Square, Volume2, VolumeX } from 'lucide-react';
 import audioNotificationSystem from '../../utils/audioNotifications';
+import i18n from '../../i18n';
 
 const LiveTourTimer = ({ booking, isActive, startTime, onTimerUpdate }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [elapsed, setElapsed] = useState(0);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [lastNotifiedMinute, setLastNotifiedMinute] = useState(0);
@@ -120,9 +123,9 @@ const LiveTourTimer = ({ booking, isActive, startTime, onTimerUpdate }) => {
         {/* Audio Status Indicator */}
         <div className="bg-white bg-opacity-20 rounded-full p-2 ml-4">
           {isAudioEnabled ? (
-            <Volume2 className="h-6 w-6 text-white" title="Audio notifications enabled" />
+            <Volume2 className="h-6 w-6 text-white" title={tr('Audio notifications enabled', 'Notifications audio actives')} />
           ) : (
-            <VolumeX className="h-6 w-6 text-white opacity-50" title="Audio notifications disabled" />
+            <VolumeX className="h-6 w-6 text-white opacity-50" title={tr('Audio notifications disabled', 'Notifications audio desactivees')} />
           )}
         </div>
       </div>
@@ -131,20 +134,20 @@ const LiveTourTimer = ({ booking, isActive, startTime, onTimerUpdate }) => {
       <div className="bg-white bg-opacity-10 rounded-3xl p-8 text-center mb-4">
         <div className="flex items-center justify-center mb-2">
           <Clock className="h-10 w-10 mr-3" />
-          <span className="text-lg font-bold opacity-90">LIVE TIMER</span>
+          <span className="text-lg font-bold opacity-90">{tr('LIVE TIMER', 'CHRONO EN DIRECT')}</span>
         </div>
         <div className="text-6xl font-black font-mono tracking-wider mb-2">
           {formatTime(elapsed)}
         </div>
         <div className="text-xl font-bold opacity-90">
-          Duration: {formatDuration(elapsed)}
+          {tr('Duration', 'Duree')}: {formatDuration(elapsed)}
         </div>
 
         {/* Milestone Progress */}
         {milestoneInfo && (
           <div className="mt-4 bg-white bg-opacity-10 rounded-xl p-4">
             <div className="text-sm font-bold opacity-80 mb-2">
-              NEXT MILESTONE: {milestoneInfo.nextMilestone} MIN
+              {tr('NEXT MILESTONE', 'PROCHAIN PALIER')}: {milestoneInfo.nextMilestone} MIN
             </div>
             <div className="w-full bg-white bg-opacity-20 rounded-full h-3 mb-2">
               <div 
@@ -153,7 +156,7 @@ const LiveTourTimer = ({ booking, isActive, startTime, onTimerUpdate }) => {
               ></div>
             </div>
             <div className="text-sm font-bold">
-              {milestoneInfo.minutesLeft} minute{milestoneInfo.minutesLeft !== 1 ? 's' : ''} to next alert
+              {milestoneInfo.minutesLeft} {tr(milestoneInfo.minutesLeft !== 1 ? 'minutes' : 'minute', milestoneInfo.minutesLeft !== 1 ? 'minutes' : 'minute')} {tr('to next alert', "jusqu'a la prochaine alerte")}
             </div>
           </div>
         )}
@@ -162,13 +165,13 @@ const LiveTourTimer = ({ booking, isActive, startTime, onTimerUpdate }) => {
       {/* Tour Info */}
       <div className="grid grid-cols-2 gap-4 text-center mb-4">
         <div className="bg-white bg-opacity-10 rounded-xl p-3">
-          <div className="text-sm font-bold opacity-80 mb-1">CUSTOMER</div>
+          <div className="text-sm font-bold opacity-80 mb-1">{tr('CUSTOMER', 'CLIENT')}</div>
           <div className="text-lg font-black">
-            {booking.participants?.[0]?.name || 'Guest'}
+            {booking.participants?.[0]?.name || tr('Guest', 'Invite')}
           </div>
         </div>
         <div className="bg-white bg-opacity-10 rounded-xl p-3">
-          <div className="text-sm font-bold opacity-80 mb-1">STARTED</div>
+          <div className="text-sm font-bold opacity-80 mb-1">{tr('STARTED', 'COMMENCE')}</div>
           <div className="text-lg font-black">
             {new Date(startTime).toLocaleTimeString('en-US', { 
               hour: '2-digit', 
@@ -182,9 +185,9 @@ const LiveTourTimer = ({ booking, isActive, startTime, onTimerUpdate }) => {
       {isAudioEnabled && (
         <div className="bg-white bg-opacity-10 rounded-xl p-4 mb-4">
           <div className="text-center">
-            <div className="text-sm font-bold opacity-80 mb-2">🔔 AUDIO ALERTS ACTIVE</div>
+            <div className="text-sm font-bold opacity-80 mb-2">🔔 {tr('AUDIO ALERTS ACTIVE', 'ALERTES AUDIO ACTIVES')}</div>
             <div className="text-xs opacity-70 leading-relaxed">
-              Sound notifications at: 15min • 30min • 45min • 60min • 90min • 120min
+              {tr('Sound notifications at', 'Notifications sonores a')}: 15min • 30min • 45min • 60min • 90min • 120min
             </div>
           </div>
         </div>
@@ -194,13 +197,13 @@ const LiveTourTimer = ({ booking, isActive, startTime, onTimerUpdate }) => {
       <div className="flex items-center justify-center">
         <div className="flex items-center bg-white bg-opacity-20 rounded-full px-4 py-2">
           <div className="w-3 h-3 bg-red-400 rounded-full mr-2 animate-pulse"></div>
-          <span className="text-sm font-bold">LIVE • RECORDING TIME</span>
+          <span className="text-sm font-bold">{tr('LIVE • RECORDING TIME', 'EN DIRECT • TEMPS ENREGISTRE')}</span>
           {isAudioEnabled && (
             <>
               <div className="w-1 h-1 bg-white rounded-full mx-2"></div>
               <div className="flex items-center">
                 <Volume2 className="h-3 w-3 mr-1" />
-                <span className="text-xs">ALERTS ON</span>
+                <span className="text-xs">{tr('ALERTS ON', 'ALERTES ACTIVEES')}</span>
               </div>
             </>
           )}

@@ -2,6 +2,10 @@ import React, { useState } from 'react';
 import { ChevronLeft, ChevronRight, Eye } from 'lucide-react';
 import ClickableCalendarEvent from './ClickableCalendarEvent';
 import BookingDetailsModal from './BookingDetailsModal';
+import i18n from '../../i18n';
+
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 const SimplifiedCalendar = ({ 
   currentDate, 
@@ -47,7 +51,7 @@ const SimplifiedCalendar = ({
   // Transform bookings into calendar events
   const transformBookingToEvent = (booking) => ({
     id: booking.id,
-    title: booking.tourName || 'Unknown Tour',
+    title: booking.tourName || tr('Unknown Tour', 'Tour inconnu'),
     start: new Date(booking.selectedDate + 'T' + booking.selectedTime),
     status: booking.status,
     guide: booking.assignedGuide || booking.guideName,
@@ -78,8 +82,18 @@ const SimplifiedCalendar = ({
   };
 
   const monthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
+    tr('January', 'Janvier'),
+    tr('February', 'Fevrier'),
+    tr('March', 'Mars'),
+    tr('April', 'Avril'),
+    tr('May', 'Mai'),
+    tr('June', 'Juin'),
+    tr('July', 'Juillet'),
+    tr('August', 'Aout'),
+    tr('September', 'Septembre'),
+    tr('October', 'Octobre'),
+    tr('November', 'Novembre'),
+    tr('December', 'Decembre')
   ];
 
   const calendarDays = generateCalendarDays();
@@ -116,7 +130,7 @@ const SimplifiedCalendar = ({
       <div className="p-4">
         {/* Day Headers - Super Simple */}
         <div className="grid grid-cols-7 gap-2 mb-4">
-          {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(day => (
+          {[tr('SUN', 'DIM'), tr('MON', 'LUN'), tr('TUE', 'MAR'), tr('WED', 'MER'), tr('THU', 'JEU'), tr('FRI', 'VEN'), tr('SAT', 'SAM')].map(day => (
             <div key={day} className="text-center py-3">
               <span className="text-lg font-bold text-gray-700">{day}</span>
             </div>
@@ -181,12 +195,12 @@ const SimplifiedCalendar = ({
                       const event = transformBookingToEvent(dayBookings[0]);
                       handleEventClick(event);
                     }}
-                  >
-                    <div className="bg-white bg-opacity-95 rounded-lg p-1 text-xs font-bold text-center shadow-lg">
-                      Click for details
+                    >
+                      <div className="bg-white bg-opacity-95 rounded-lg p-1 text-xs font-bold text-center shadow-lg">
+                      {tr('Tap for details', 'Touchez pour les details')}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
                 {/* View Details Button for Mobile */}
                 {hasBookings && (
@@ -212,15 +226,15 @@ const SimplifiedCalendar = ({
         <div className="flex justify-center space-x-6">
           <div className="flex items-center">
             <div className="w-6 h-6 bg-blue-500 rounded-full mr-2"></div>
-            <span className="text-lg font-semibold text-gray-700">Today</span>
+            <span className="text-lg font-semibold text-gray-700">{tr('Today', "Aujourd'hui")}</span>
           </div>
           <div className="flex items-center">
             <div className="w-6 h-6 bg-green-100 border-2 border-green-300 rounded-full mr-2"></div>
-            <span className="text-lg font-semibold text-gray-700">Has Bookings</span>
+            <span className="text-lg font-semibold text-gray-700">{tr('Has Bookings', 'Avec reservations')}</span>
           </div>
           <div className="flex items-center">
             <div className="w-6 h-6 bg-gray-50 border-2 border-gray-200 rounded-full mr-2"></div>
-            <span className="text-lg font-semibold text-gray-700">Available</span>
+            <span className="text-lg font-semibold text-gray-700">{tr('Available', 'Disponible')}</span>
           </div>
         </div>
       </div>

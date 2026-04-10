@@ -2,13 +2,28 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase.js';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, Activity, Fuel, WalletCards, ChevronDown } from 'lucide-react';
+import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, Activity, Fuel, WalletCards, ChevronDown, ClipboardList } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext.jsx';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { shortenUrl } from '../../services/UrlShortenerService';
+import { getUsers } from '../../services/UserService';
+import { getTaskStats } from '../../services/TaskService';
+import { buildTourTrackingUrl } from '../../services/tourTrackingService';
+import i18n from '../../i18n';
 
 const TOUR_BOOKING_MARKER = '[tour_booking]';
+const DASHBOARD_CACHE_TTL_MS = 15000;
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+
+const scheduleBackgroundTask = (callback) => {
+  if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+    return window.requestIdleCallback(callback, { timeout: 700 });
+  }
+
+  return window.setTimeout(callback, 0);
+};
 
 const extractTourBookingMeta = (value) => {
   const text = typeof value === 'string' ? value : '';
@@ -27,6 +42,9 @@ const VEHICLE_TABLE_CANDIDATES = [
 ];
 
 let resolvedVehicleTableName = null;
+let dashboardCoreCache = null;
+let dashboardCoreCacheAt = 0;
+let dashboardCorePromise = null;
 
 const getVehicleTableName = async () => {
   if (resolvedVehicleTableName) {
@@ -143,8 +161,8 @@ const getLocalDateKey = (value) => {
 
 const formatDashboardDateTime = (value) => {
   const date = new Date(value || '');
-  if (Number.isNaN(date.getTime())) return 'Not scheduled';
-  return date.toLocaleString('en-US', {
+  if (Number.isNaN(date.getTime())) return tr('Not scheduled', 'Non planifié');
+  return date.toLocaleString(isFrenchLocale() ? 'fr-FR' : 'en-US', {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -222,11 +240,58 @@ const getDashboardTourElapsedTone = (tour, currentTime = Date.now()) => {
   };
 };
 
+const getDashboardRentalElapsedTone = (rental, currentTime = Date.now()) => {
+  const startedAtTime = new Date(rental?.started_at || rental?.rental_start_date || '').getTime();
+  const endAtTime = new Date(rental?.actual_end_time || rental?.actual_end_date || rental?.rental_end_date || '').getTime();
+  const durationMs = endAtTime - startedAtTime;
+
+  if (!Number.isFinite(startedAtTime) || !Number.isFinite(endAtTime) || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return {
+      badgeClass: 'border border-slate-200 bg-slate-50 text-slate-700',
+      labelClass: 'text-slate-500',
+      expired: false,
+    };
+  }
+
+  const elapsedMs = Math.max(0, currentTime - startedAtTime);
+  const progress = elapsedMs / durationMs;
+
+  if (progress >= 1) {
+    return {
+      badgeClass: 'border border-red-200 bg-red-50 text-red-700',
+      labelClass: 'text-red-500',
+      expired: true,
+    };
+  }
+
+  if (progress >= 0.75) {
+    return {
+      badgeClass: 'border border-red-200 bg-red-50 text-red-700',
+      labelClass: 'text-red-500',
+      expired: false,
+    };
+  }
+
+  if (progress >= 0.45) {
+    return {
+      badgeClass: 'border border-amber-200 bg-amber-50 text-amber-700',
+      labelClass: 'text-amber-500',
+      expired: false,
+    };
+  }
+
+  return {
+    badgeClass: 'border border-emerald-200 bg-emerald-50 text-emerald-700',
+    labelClass: 'text-emerald-500',
+    expired: false,
+  };
+};
+
 const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
   if (rental?.rental_status !== 'active') {
     return {
       text: 'N/A',
-      label: 'Inactive',
+      label: tr('Inactive', 'Inactive'),
       color: 'slate',
       bgClass: 'bg-slate-50',
       textClass: 'text-slate-600',
@@ -241,7 +306,7 @@ const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
   if (!endDate || Number.isNaN(endDate.getTime())) {
     return {
       text: 'N/A',
-      label: 'Timer unavailable',
+      label: tr('Timer unavailable', 'Minuteur indisponible'),
       color: 'slate',
       bgClass: 'bg-slate-50',
       textClass: 'text-slate-600',
@@ -256,8 +321,8 @@ const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
 
   if (diffMs <= 0) {
       return {
-        text: 'Expired',
-        label: 'Expired',
+        text: tr('Expired', 'Expiré'),
+        label: tr('Expired', 'Expiré'),
         color: 'red',
         bgClass: 'bg-red-50',
         textClass: 'text-red-600',
@@ -277,7 +342,7 @@ const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
     if (hours === 0 && minutes <= 30) {
       return {
         text: timeStr,
-        label: 'Ending now',
+        label: tr('Ending now', 'Se termine maintenant'),
         color: 'red',
         bgClass: 'bg-red-50',
         textClass: 'text-red-600',
@@ -290,7 +355,7 @@ const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
     if (hours <= 2) {
       return {
         text: timeStr,
-        label: 'Ending soon',
+        label: tr('Ending soon', 'Se termine bientôt'),
         color: 'orange',
         bgClass: 'bg-orange-50',
         textClass: 'text-orange-600',
@@ -302,7 +367,7 @@ const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
 
       return {
         text: timeStr,
-        label: 'On time',
+        label: tr('On time', 'Dans les temps'),
         color: 'green',
         bgClass: 'bg-green-50',
         textClass: 'text-green-600',
@@ -317,12 +382,12 @@ const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
   const remainingHours = diffHours % 24;
 
   if (diffDays > 0) {
-    const text = diffDays === 1 ? '1 day' : `${diffDays} days`;
+    const text = diffDays === 1 ? tr('1 day', '1 jour') : tr(`${diffDays} days`, `${diffDays} jours`);
     const fullText = remainingHours > 0 ? `${text} ${remainingHours}h` : text;
     const endingSoon = diffDays <= 1;
     return {
       text: fullText,
-      label: endingSoon ? 'Ending soon' : 'On time',
+      label: endingSoon ? tr('Ending soon', 'Se termine bientôt') : tr('On time', 'Dans les temps'),
       color: endingSoon ? 'orange' : 'green',
       bgClass: endingSoon ? 'bg-orange-50' : 'bg-green-50',
       textClass: endingSoon ? 'text-orange-600' : 'text-green-600',
@@ -334,8 +399,8 @@ const calculateDashboardRentalTimer = (rental, currentTime = Date.now()) => {
 
   const danger = diffHours <= 3;
   return {
-    text: `${diffHours}h left`,
-    label: danger ? 'Ending now' : 'Ending soon',
+    text: tr(`${diffHours}h left`, `${diffHours}h restantes`),
+    label: danger ? tr('Ending now', 'Se termine maintenant') : tr('Ending soon', 'Se termine bientôt'),
     color: danger ? 'red' : 'orange',
     bgClass: danger ? 'bg-red-50' : 'bg-orange-50',
     textClass: danger ? 'text-red-600' : 'text-orange-600',
@@ -361,42 +426,48 @@ const buildWhatsAppReminderMessage = (rental) => {
 
   let timeStr = '';
   if (diffHours > 0) {
-    timeStr += `${diffHours} hour${diffHours > 1 ? 's' : ''}`;
+    timeStr += diffHours > 1
+      ? tr(`${diffHours} hours`, `${diffHours} heures`)
+      : tr(`${diffHours} hour`, `${diffHours} heure`);
     if (diffMinutes > 0) {
-      timeStr += ` and ${diffMinutes} minute${diffMinutes > 1 ? 's' : ''}`;
+      timeStr += diffMinutes > 1
+        ? tr(` and ${diffMinutes} minutes`, ` et ${diffMinutes} minutes`)
+        : tr(` and ${diffMinutes} minute`, ` et ${diffMinutes} minute`);
     }
   } else {
-    timeStr += `${diffMinutes} minute${diffMinutes > 1 ? 's' : ''}`;
+    timeStr += diffMinutes > 1
+      ? tr(`${diffMinutes} minutes`, `${diffMinutes} minutes`)
+      : tr(`${diffMinutes} minute`, `${diffMinutes} minute`);
   }
 
   let message = '';
 
   if (isOverdue) {
-    message = `Hello *${rental.customer_name}*,\n\n`;
-    message += `*URGENT: Your rental is OVERDUE!*\n\n`;
-    message += `Vehicle: ${rental.vehicle?.model || rental.vehicle?.name || 'N/A'}\n`;
-    message += `Plate: ${rental.vehicle?.plate_number || 'N/A'}\n`;
-    message += `Overdue by: *${timeStr}*\n\n`;
+    message = `${tr('Hello', 'Bonjour')} *${rental.customer_name}*,\n\n`;
+    message += `*${tr('URGENT: Your rental is OVERDUE!', 'URGENT : votre location est en retard !')}*\n\n`;
+    message += `${tr('Vehicle', 'Véhicule')} : ${rental.vehicle?.model || rental.vehicle?.name || 'N/A'}\n`;
+    message += `${tr('Plate', 'Plaque')} : ${rental.vehicle?.plate_number || 'N/A'}\n`;
+    message += `${tr('Overdue by', 'Retard de')} : *${timeStr}*\n\n`;
 
     if (hasBalanceDue) {
-      message += `*Payment Status:* Balance due of *${balanceDue.toFixed(2)} MAD*\n\n`;
+      message += `*${tr('Payment Status', 'Statut de paiement')} :* ${tr('Balance due of', 'Solde dû de')} *${balanceDue.toFixed(2)} MAD*\n\n`;
     }
 
-    message += `Please return the vehicle immediately. Late fees may apply.\n`;
-    message += `Thank you for choosing our service!`;
+    message += `${tr('Please return the vehicle immediately. Late fees may apply.', 'Veuillez retourner le véhicule immédiatement. Des frais de retard peuvent s’appliquer.')}\n`;
+    message += tr('Thank you for choosing our service!', 'Merci d’avoir choisi notre service !');
   } else {
-    message = `Hello *${rental.customer_name}*,\n\n`;
-    message += `*REMINDER: Your rental is expiring soon!*\n\n`;
-    message += `Vehicle: ${rental.vehicle?.model || rental.vehicle?.name || 'N/A'}\n`;
-    message += `Plate: ${rental.vehicle?.plate_number || 'N/A'}\n`;
-    message += `Time remaining: *${timeStr}*\n\n`;
+    message = `${tr('Hello', 'Bonjour')} *${rental.customer_name}*,\n\n`;
+    message += `*${tr('REMINDER: Your rental is expiring soon!', 'RAPPEL : votre location expire bientôt !')}*\n\n`;
+    message += `${tr('Vehicle', 'Véhicule')} : ${rental.vehicle?.model || rental.vehicle?.name || 'N/A'}\n`;
+    message += `${tr('Plate', 'Plaque')} : ${rental.vehicle?.plate_number || 'N/A'}\n`;
+    message += `${tr('Time remaining', 'Temps restant')} : *${timeStr}*\n\n`;
 
     if (hasBalanceDue) {
-      message += `*Payment Status:* Balance due of *${balanceDue.toFixed(2)} MAD*\n`;
-      message += `Please settle payment to avoid late fees.\n\n`;
+      message += `*${tr('Payment Status', 'Statut de paiement')} :* ${tr('Balance due of', 'Solde dû de')} *${balanceDue.toFixed(2)} MAD*\n`;
+      message += `${tr('Please settle payment to avoid late fees.', 'Veuillez régler le paiement pour éviter des frais de retard.')}\n\n`;
     }
 
-    message += `Thank you for choosing our service!`;
+    message += tr('Thank you for choosing our service!', 'Merci d’avoir choisi notre service !');
   }
 
   return message;
@@ -408,7 +479,7 @@ const buildWhatsAppReminderMessage = (rental) => {
  */
 const sendWhatsAppReminder = async (rental) => {
   if (!rental.customer_phone) {
-    alert('❌ Customer phone number not available');
+    alert(tr('❌ Customer phone number not available', '❌ Numéro de téléphone du client indisponible'));
     return false;
   }
 
@@ -430,12 +501,12 @@ const sendWhatsAppReminder = async (rental) => {
     // Open WhatsApp in new tab
     window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
 
-    alert(`✅ WhatsApp reminder opened for ${rental.customer_name}`);
+    alert(tr(`✅ WhatsApp reminder opened for ${rental.customer_name}`, `✅ Rappel WhatsApp ouvert pour ${rental.customer_name}`));
     return true;
 
   } catch (error) {
     console.error('❌ Error sending WhatsApp reminder:', error);
-    alert('Failed to open WhatsApp. Please try again.');
+    alert(tr('Failed to open WhatsApp. Please try again.', 'Impossible d’ouvrir WhatsApp. Veuillez réessayer.'));
     return false;
   }
 };
@@ -443,20 +514,20 @@ const sendWhatsAppReminder = async (rental) => {
 const sendGuideLocateMessage = async (tour) => {
   const cleanPhone = String(tour?.guidePhone || '').replace(/\D/g, '');
   if (!cleanPhone) {
-    alert('Guide phone number is not available.');
+    alert(tr('Guide phone number is not available.', 'Le numéro du guide n’est pas disponible.'));
     return false;
   }
 
   try {
-    const trackingUrl = tour?.trackingUrl || `${window.location.origin}/track/tour/${tour.groupId}`;
+    const trackingUrl = tour?.trackingUrl || buildTourTrackingUrl(tour.groupId);
     const shortTrackingUrl = await shortenUrl(trackingUrl, null, 'tour_tracking');
-    const message = `Open and share location now: ${shortTrackingUrl}`;
+    const message = tr(`Open and share location now: ${shortTrackingUrl}`, `Ouvrez et partagez votre position maintenant : ${shortTrackingUrl}`);
     const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
     window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
     return true;
   } catch (error) {
     console.error('❌ Error opening guide WhatsApp:', error);
-    alert('Failed to open WhatsApp. Please try again.');
+    alert(tr('Failed to open WhatsApp. Please try again.', 'Impossible d’ouvrir WhatsApp. Veuillez réessayer.'));
     return false;
   }
 };
@@ -466,7 +537,7 @@ const OverviewStats = ({ stats, loading, urgentStats }) => {
   const statItems = [
     {
       icon: <Car className="w-6 h-6 text-blue-500" />,
-      label: 'Total Vehicles',
+      label: tr('Total Vehicles', 'Total véhicules'),
       value: stats.vehicles,
       color: 'blue',
       link: '/admin/fleet',
@@ -474,16 +545,16 @@ const OverviewStats = ({ stats, loading, urgentStats }) => {
     },
     {
       icon: <Users className="w-6 h-6 text-green-500" />,
-      label: 'Active Rentals',
+      label: tr('Active Rentals', 'Locations actives'),
       value: stats.rentals,
       color: 'green',
       link: '/admin/rentals',
-      change: urgentStats ? `${urgentStats.overdue + urgentStats.expiringSoon} urgent` : null,
+      change: urgentStats ? tr(`${urgentStats.overdue + urgentStats.expiringSoon} urgent`, `${urgentStats.overdue + urgentStats.expiringSoon} urgents`) : null,
       changeColor: urgentStats && (urgentStats.overdue + urgentStats.expiringSoon) > 0 ? 'red' : 'gray'
     },
     {
       icon: <Wrench className="w-6 h-6 text-yellow-500" />,
-      label: 'Maintenance',
+      label: tr('Maintenance', 'Maintenance'),
       value: stats.maintenance,
       color: 'yellow',
       link: '/admin/maintenance',
@@ -491,20 +562,20 @@ const OverviewStats = ({ stats, loading, urgentStats }) => {
     },
     {
       icon: <DollarSign className="w-6 h-6 text-purple-500" />,
-      label: 'Total Revenue',
+      label: tr('Total Revenue', 'Revenu total'),
       value: `${formatNumber(stats.revenue)} MAD`,
       color: 'purple',
       link: '/admin/finance',
-      change: '+12% from last month',
+      change: tr('+12% from last month', '+12% par rapport au mois dernier'),
       changeColor: 'green'
     },
     {
       icon: <Calendar className="w-6 h-6 text-indigo-500" />,
-      label: 'Upcoming Tours',
+      label: tr('Upcoming Tours', 'Tours à venir'),
       value: stats.tours,
       color: 'indigo',
       link: '/admin/tours',
-      change: stats.toursToday ? `${stats.toursToday} today` : 'No tours today',
+      change: stats.toursToday ? tr(`${stats.toursToday} today`, `${stats.toursToday} aujourd’hui`) : tr('No tours today', 'Aucun tour aujourd’hui'),
       changeColor: stats.toursToday ? 'blue' : 'gray'
     },
   ];
@@ -585,12 +656,12 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-700">Urgent Rentals</h3>
-          <span className="text-sm text-green-600 font-medium">All good</span>
+          <h3 className="text-lg font-semibold text-gray-700">{tr('Urgent Rentals', 'Locations urgentes')}</h3>
+          <span className="text-sm text-green-600 font-medium">{tr('All good', 'Tout va bien')}</span>
         </div>
         <div className="text-center py-8">
           <Bell className="w-12 h-12 text-green-400 mx-auto mb-3" />
-          <p className="text-gray-500">No urgent rentals at the moment</p>
+          <p className="text-gray-500">{tr('No urgent rentals at the moment', 'Aucune location urgente pour le moment')}</p>
         </div>
       </div>
     );
@@ -600,6 +671,10 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
   const MobileBookingCard = ({ booking }) => {
     const timerState = calculateDashboardRentalTimer(booking, currentTime);
     const isOverdue = timerState.isExpired;
+    const rentalStartedAt = new Date(booking?.started_at || '').getTime();
+    const hasElapsedTimer = booking?.rental_status === 'active' && Number.isFinite(rentalStartedAt);
+    const elapsedText = hasElapsedTimer ? formatDashboardDuration(currentTime - rentalStartedAt) : null;
+    const elapsedTone = hasElapsedTimer ? getDashboardRentalElapsedTone(booking, currentTime) : null;
 
     // Calculate payment status
     const totalAmount = booking.total_amount || 0;
@@ -701,11 +776,24 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
             </span>
           </div>
 
+          {hasElapsedTimer ? (
+            <div className="mb-4 flex flex-col items-start gap-1">
+              <span className={`inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-bold ${elapsedTone.badgeClass}`}>
+                {elapsedText}
+              </span>
+              {elapsedTone.expired ? (
+                <span className={`text-[10px] font-semibold uppercase tracking-[0.16em] ${elapsedTone.labelClass}`}>
+                  {tr('Expired', 'Expiré')}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+
           {/* Payment Status - Show if balance due */}
           {hasBalanceDue && (
             <div className="mb-4 p-2 bg-red-50 border border-red-200 rounded-lg">
               <div className="flex items-center justify-between">
-                <span className="text-xs text-red-700 font-medium">Balance Due:</span>
+                <span className="text-xs text-red-700 font-medium">{tr('Balance Due:', 'Solde dû :')}</span>
                 <span className="text-sm font-bold text-red-600">{balanceDue.toFixed(2)} MAD</span>
               </div>
             </div>
@@ -728,7 +816,7 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
             <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-3 rounded-xl">
               <div className="flex items-center gap-2 mb-1">
                 <Clock className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                <span className="text-xs text-gray-500 font-medium truncate">End Time</span>
+                <span className="text-xs text-gray-500 font-medium truncate">{tr('End Time', 'Heure de fin')}</span>
               </div>
               <p className="text-sm font-bold text-gray-900 truncate">
                 {booking.actual_end_time?.toLocaleTimeString('en-US', {
@@ -742,7 +830,7 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
             <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-3 rounded-xl">
               <div className="flex items-center gap-2 mb-1">
                 <DollarSign className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                <span className="text-xs text-gray-500 font-medium truncate">Amount</span>
+                <span className="text-xs text-gray-500 font-medium truncate">{tr('Amount', 'Montant')}</span>
               </div>
               <p className="text-sm font-bold text-green-600 truncate">
                 {totalAmount.toFixed(2)} MAD
@@ -755,25 +843,25 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
             <button
               onClick={handleRemind}
               className="flex-1 min-w-0 px-3 py-2.5 text-sm bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl hover:from-blue-600 hover:to-blue-700 transition-all duration-200 flex items-center justify-center gap-2 font-semibold shadow-sm hover:shadow active:scale-[0.98]"
-              title={`Send WhatsApp reminder to ${booking.customer_phone || 'N/A'}`}
+              title={tr(`Send WhatsApp reminder to ${booking.customer_phone || 'N/A'}`, `Envoyer un rappel WhatsApp à ${booking.customer_phone || 'N/A'}`)}
             >
               <MessageSquare className="w-4 h-4 flex-shrink-0" />
-              <span className="truncate">Remind</span>
+              <span className="truncate">{tr('Remind', 'Rappeler')}</span>
             </button>
             <button
               onClick={handleExtend}
               className="flex-1 min-w-0 px-3 py-2.5 text-sm bg-gradient-to-r from-green-500 to-green-600 text-white rounded-xl hover:from-green-600 hover:to-green-700 transition-all duration-200 flex items-center justify-center gap-2 font-semibold shadow-sm hover:shadow active:scale-[0.98]"
-              title="Request extension for this rental"
+              title={tr('Request extension for this rental', 'Demander une prolongation pour cette location')}
             >
               <Zap className="w-4 h-4 flex-shrink-0" />
-              <span className="truncate">Extend</span>
+              <span className="truncate">{tr('Extend', 'Prolonger')}</span>
             </button>
             <button
               onClick={handleView}
               className="flex-1 min-w-0 px-3 py-2.5 text-sm bg-gradient-to-r from-gray-600 to-gray-700 text-white rounded-xl hover:from-gray-700 hover:to-gray-800 transition-all duration-200 font-semibold shadow-sm hover:shadow active:scale-[0.98] truncate"
-              title="View rental details"
+              title={tr('View rental details', 'Voir les détails de la location')}
             >
-              View
+              {tr('View', 'Voir')}
             </button>
           </div>
         </div>
@@ -790,8 +878,8 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
             <AlertTriangle className="w-5 h-5 text-red-600" />
           </div>
           <div>
-            <h3 className="text-lg font-bold text-gray-800">Urgent Rentals</h3>
-            <p className="text-sm text-gray-500">Need immediate attention</p>
+            <h3 className="text-lg font-bold text-gray-800">{tr('Urgent Rentals', 'Locations urgentes')}</h3>
+            <p className="text-sm text-gray-500">{tr('Need immediate attention', 'Attention immédiate requise')}</p>
           </div>
         </div>
         <span className="px-3 py-1.5 text-sm font-bold rounded-full bg-red-100 text-red-800">
@@ -814,7 +902,7 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
               <div className="text-2xl font-bold text-red-600">
                 {urgentRentals.filter((r) => calculateDashboardRentalTimer(r, currentTime).isExpired).length}
               </div>
-              <div className="text-xs text-gray-500">Expired</div>
+              <div className="text-xs text-gray-500">{tr('Expired', 'Expiré')}</div>
             </div>
             <div className="text-center">
               <div className="text-2xl font-bold text-orange-600">
@@ -823,7 +911,7 @@ const UrgentRentals = ({ urgentRentals, loading }) => {
                   return !timer.isExpired && (timer.color === 'orange' || timer.color === 'red');
                 }).length}
               </div>
-              <div className="text-xs text-gray-500">Expiring Soon</div>
+              <div className="text-xs text-gray-500">{tr('Expiring Soon', 'Expiration imminente')}</div>
             </div>
           </div>
         </div>
@@ -868,16 +956,16 @@ const UpcomingTours = ({ tours, loading }) => {
   return (
     <div className="rounded-xl border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-slate-700">Tours & Departures</h3>
+        <h3 className="text-lg font-semibold text-slate-700">{tr('Tours & Departures', 'Tours et départs')}</h3>
         <div className="flex items-center gap-3">
           <Link
             to="/admin/live-map"
             className="inline-flex items-center gap-2 rounded-2xl border border-violet-100 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700 transition-colors hover:bg-violet-100"
           >
             <Smartphone className="w-4 h-4" />
-            Open Live Map
+            {tr('Open Live Map', 'Ouvrir la carte en direct')}
           </Link>
-          <span className="text-sm text-blue-600 font-medium">{tours.length} in queue</span>
+          <span className="text-sm text-blue-600 font-medium">{tr(`${tours.length} in queue`, `${tours.length} en file`)}</span>
         </div>
       </div>
       <div className="space-y-3">
@@ -905,12 +993,22 @@ const UpcomingTours = ({ tours, loading }) => {
                           ? 'bg-emerald-100 text-emerald-700'
                           : 'bg-orange-100 text-orange-700'
                     }`}>
-                      {expiredTour ? 'Expired' : tour.status === 'active' ? 'Out now' : tour.status}
+                      {expiredTour
+                        ? tr('Expired', 'Expiré')
+                        : tour.status === 'active'
+                          ? tr('Out now', 'En cours')
+                          : tour.status === 'scheduled'
+                            ? tr('Scheduled', 'Planifié')
+                            : tour.status === 'completed'
+                              ? tr('Completed', 'Terminé')
+                              : tour.status === 'cancelled'
+                                ? tr('Cancelled', 'Annulé')
+                                : tour.status}
                     </span>
                   </div>
                   <p className="mt-1 text-sm text-slate-600">{tour.customerName}</p>
                   <p className="mt-1 text-sm text-slate-500">
-                    {tour.guideName} • {tour.quadCount} quads
+                    {tour.guideName} • {tr(`${tour.quadCount} quads`, `${tour.quadCount} quads`)}
                   </p>
                 </Link>
                 <div className="text-right shrink-0">
@@ -928,13 +1026,17 @@ const UpcomingTours = ({ tours, loading }) => {
                       </p>
                       {elapsedTone.expired ? (
                         <p className={`mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${elapsedTone.labelClass}`}>
-                          Expired
+                          {tr('Expired', 'Expiré')}
                         </p>
                       ) : null}
                     </div>
                   ) : null}
                   <p className="mt-1 text-xs text-slate-500">
-                    {expiredTour ? 'Need location now' : tour.status === 'active' ? 'Tap to open tour schedule' : 'Tap to continue booking'}
+                    {expiredTour
+                      ? tr('Need location now', 'Position requise maintenant')
+                      : tour.status === 'active'
+                        ? tr('Tap to open tour schedule', 'Touchez pour ouvrir le planning du tour')
+                        : tr('Tap to continue booking', 'Touchez pour continuer la réservation')}
                   </p>
                 </div>
               </div>
@@ -946,7 +1048,7 @@ const UpcomingTours = ({ tours, loading }) => {
                     className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
                   >
                     <MessageSquare className="h-4 w-4" />
-                    Locate Guide
+                    {tr('Locate Guide', 'Localiser le guide')}
                   </button>
                 </div>
               ) : null}
@@ -960,7 +1062,7 @@ const UpcomingTours = ({ tours, loading }) => {
             to="/admin/tours"
             className="inline-flex items-center gap-2 text-sm font-semibold text-violet-700 transition-colors hover:text-violet-900"
           >
-            +{hiddenToursCount} more tours
+            {tr(`+${hiddenToursCount} more tours`, `+${hiddenToursCount} autres tours`)}
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
@@ -993,16 +1095,16 @@ const UpcomingRentals = ({ rentals, loading }) => {
   return (
     <div className="rounded-xl border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-slate-700">Upcoming Rentals</h3>
+        <h3 className="text-lg font-semibold text-slate-700">{tr('Upcoming Rentals', 'Locations à venir')}</h3>
         <div className="flex items-center gap-3">
           <Link
             to="/admin/rentals"
             className="inline-flex items-center gap-2 rounded-2xl border border-violet-100 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700 transition-colors hover:bg-violet-100"
           >
             <Car className="w-4 h-4" />
-            Open Rentals
+            {tr('Open Rentals', 'Ouvrir les locations')}
           </Link>
-          <span className="text-sm text-blue-600 font-medium">{rentals.length} upcoming</span>
+          <span className="text-sm text-blue-600 font-medium">{tr(`${rentals.length} upcoming`, `${rentals.length} à venir`)}</span>
         </div>
       </div>
       <div className="space-y-3">
@@ -1017,7 +1119,7 @@ const UpcomingRentals = ({ rentals, loading }) => {
                 <div className="flex items-center gap-2 flex-wrap">
                   <p className="font-semibold text-slate-900">{rental.customerName}</p>
                   <span className="rounded-full bg-orange-100 px-2 py-1 text-xs font-semibold text-orange-700">
-                    Scheduled
+                    {tr('Scheduled', 'Planifié')}
                   </span>
                 </div>
                 <p className="mt-1 text-sm text-slate-600">
@@ -1029,7 +1131,7 @@ const UpcomingRentals = ({ rentals, loading }) => {
               </div>
               <div className="shrink-0 text-right">
                 <p className="text-sm font-semibold text-slate-900">{formatDashboardDateTime(rental.startAt)}</p>
-                <p className="mt-1 text-xs text-slate-500">Tap to open rental</p>
+                <p className="mt-1 text-xs text-slate-500">{tr('Tap to open rental', 'Touchez pour ouvrir la location')}</p>
               </div>
             </div>
           </Link>
@@ -1041,7 +1143,7 @@ const UpcomingRentals = ({ rentals, loading }) => {
             to="/admin/rentals"
             className="inline-flex items-center gap-2 text-sm font-semibold text-violet-700 transition-colors hover:text-violet-900"
           >
-            +{hiddenRentalsCount} more rentals
+            {tr(`+${hiddenRentalsCount} more rentals`, `+${hiddenRentalsCount} autres locations`)}
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
@@ -1056,10 +1158,10 @@ const RevenueChart = ({ data, loading }) => {
   return (
     <div className="rounded-xl border border-violet-100 bg-white p-4 shadow-[0_18px_45px_rgba(76,29,149,0.08)] sm:p-6">
       <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold text-slate-700">Revenue Trend (Last 7 Days)</h3>
+        <h3 className="text-lg font-semibold text-slate-700">{tr('Revenue Trend (Last 7 Days)', 'Tendance du revenu (7 derniers jours)')}</h3>
         <div className="flex items-center text-sm text-green-600 font-medium">
           <TrendingUp className="w-4 h-4 mr-1" />
-          +8% from last week
+          {tr('+8% from last week', '+8% depuis la semaine dernière')}
         </div>
       </div>
       <div className="h-64 sm:h-80">
@@ -1076,8 +1178,8 @@ const RevenueChart = ({ data, loading }) => {
               tickFormatter={(value) => `${formatNumber(value)} MAD`}
             />
             <Tooltip
-              formatter={(value) => [`${Number(value).toLocaleString()} MAD`, 'Revenue']}
-              labelFormatter={(label) => `Date: ${label}`}
+              formatter={(value) => [`${Number(value).toLocaleString()} MAD`, tr('Revenue', 'Revenu')]}
+              labelFormatter={(label) => tr(`Date: ${label}`, `Date : ${label}`)}
               contentStyle={{
                 backgroundColor: 'white',
                 border: '1px solid #e5e7eb',
@@ -1232,11 +1334,11 @@ const RecentBookings = ({ bookings, loading, collapsed, onToggle }) => {
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-slate-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vehicle</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tr('Customer', 'Client')}</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tr('Vehicle', 'Véhicule')}</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tr('Amount', 'Montant')}</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tr('Status', 'Statut')}</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{tr('Date', 'Date')}</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"></th>
             </tr>
           </thead>
@@ -1345,8 +1447,8 @@ const UrgentActionsBoard = ({ items, loading }) => {
     <div className="rounded-xl border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
       <div className="mb-5 flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">Urgent Actions</p>
-          <h2 className="mt-2 text-2xl font-bold text-slate-900">Need attention now</h2>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Urgent Actions', 'Actions urgentes')}</p>
+          <h2 className="mt-2 text-2xl font-bold text-slate-900">{tr('Need attention now', 'Attention immédiate requise')}</h2>
         </div>
         <span className="rounded-full bg-rose-50 px-3 py-1 text-sm font-semibold text-rose-600">
           {items.length}
@@ -1356,8 +1458,8 @@ const UrgentActionsBoard = ({ items, loading }) => {
       {items.length === 0 ? (
         <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-8 text-center">
           <Bell className="mx-auto h-10 w-10 text-emerald-500" />
-          <p className="mt-3 text-lg font-semibold text-emerald-700">Everything is under control</p>
-          <p className="mt-1 text-sm text-emerald-600">No urgent actions are waiting right now.</p>
+          <p className="mt-3 text-lg font-semibold text-emerald-700">{tr('Everything is under control', 'Tout est sous contrôle')}</p>
+          <p className="mt-1 text-sm text-emerald-600">{tr('No urgent actions are waiting right now.', "Aucune action urgente n'est en attente pour le moment.")}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -1503,17 +1605,47 @@ const AdminDashboard = () => {
   const [fleetSnapshot, setFleetSnapshot] = useState({ available: 0, rented: 0, tour: 0, maintenance: 0, outOfService: 0, total: 0 });
   const [maintenanceSnapshot, setMaintenanceSnapshot] = useState({ open: 0, completed: 0, weeklyCost: 0 });
   const [tourSnapshot, setTourSnapshot] = useState({ active: 0, scheduled: 0, today: 0 });
+  const [taskStats, setTaskStats] = useState({ active: 0, my: 0, open: 0, done: 0 });
   const [recentBookingsCollapsed, setRecentBookingsCollapsed] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const { user, session } = useAuth();
   const navigate = useNavigate();
   const hasUpcomingRentals = upcomingRentals.length > 0;
   const hasUpcomingTours = upcomingTours.length > 0;
 
+  const applyDashboardCoreData = useCallback((coreData) => {
+    if (!coreData) return;
+    setFleetSnapshot(coreData.fleetSnapshot);
+    setMaintenanceSnapshot(coreData.maintenanceSnapshot);
+    setStats((prev) => ({
+      ...prev,
+      ...coreData.stats,
+    }));
+    setRecentBookings(coreData.recentBookings);
+    setUpcomingRentals(coreData.upcomingRentals);
+    setHasLoadedOnce(true);
+    setLoading(false);
+  }, []);
+
   useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
+    const timer = setInterval(() => setCurrentTime(Date.now()), 30000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    getTaskStats(user?.id)
+      .then((nextStats) => {
+        if (isMounted) setTaskStats(nextStats);
+      })
+      .catch((error) => {
+        console.warn('Dashboard task stats unavailable:', error.message || error);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.id]);
 
   const fetchUrgentRentals = useCallback(async () => {
     try {
@@ -1527,6 +1659,8 @@ const AdminDashboard = () => {
           customer_name,
           customer_phone,
           vehicle_id,
+          is_impounded,
+          impounded_at,
           rental_start_date,
           rental_start_time,
           rental_end_date,
@@ -1677,7 +1811,7 @@ const AdminDashboard = () => {
             durationHours: Number(meta.durationHours || first.duration_hours || 1),
             scheduledStartAt: meta.scheduledStartAt || first.scheduled_for || first.rental_start_date,
             startedAt: meta.startedAt || first.started_at || '',
-            trackingUrl: meta.trackingUrl || `${window.location.origin}/track/tour/${groupId}`,
+            trackingUrl: buildTourTrackingUrl(groupId),
             status,
             totalAmount: sortedRows.reduce(
               (sum, row) => sum + Number(row.total_amount ?? row.total_amount_mad ?? row.booking_payload?.total_amount ?? 0),
@@ -1691,15 +1825,15 @@ const AdminDashboard = () => {
       let guidePhoneMap = new Map();
 
       if (guideIds.length > 0) {
-        const { data: guideRows, error: guideError } = await supabase
-          .from(TABLE_NAMES.USERS)
-          .select('id, phone_number')
-          .in('id', guideIds);
-
-        if (guideError) {
+        try {
+          const allUsers = await getUsers();
+          guidePhoneMap = new Map(
+            (allUsers || [])
+              .filter((user) => guideIds.includes(String(user.id)))
+              .map((user) => [String(user.id), user.phone_number || ''])
+          );
+        } catch (guideError) {
           console.warn('Unable to load dashboard guide phones:', guideError);
-        } else {
-          guidePhoneMap = new Map((guideRows || []).map((guide) => [String(guide.id), guide.phone_number || '']));
         }
       }
 
@@ -1709,16 +1843,12 @@ const AdminDashboard = () => {
       }));
       const activeTours = toursWithGuidePhones.filter((tour) => tour.status === 'active');
       const scheduledTours = toursWithGuidePhones.filter((tour) => tour.status === 'scheduled');
-      const scheduledUpcomingTours = scheduledTours.filter((tour) => {
-        const timestamp = new Date(tour.scheduledStartAt || '').getTime();
-        return Number.isFinite(timestamp) ? timestamp >= Date.now() : false;
-      });
       const activeTodayTours = activeTours.filter((tour) => {
         const reference = tour.startedAt || tour.scheduledStartAt;
         return getLocalDateKey(reference) === todayString;
       });
-      const scheduledTodayTours = scheduledUpcomingTours.filter((tour) => getLocalDateKey(tour.scheduledStartAt) === todayString);
-      const dashboardTours = [...activeTours, ...scheduledUpcomingTours]
+      const scheduledTodayTours = scheduledTours.filter((tour) => getLocalDateKey(tour.scheduledStartAt) === todayString);
+      const dashboardTours = [...activeTours, ...scheduledTours]
         .sort((a, b) => {
           const aDate = new Date((a.status === 'active' && a.startedAt) || a.scheduledStartAt).getTime();
           const bDate = new Date((b.status === 'active' && b.startedAt) || b.scheduledStartAt).getTime();
@@ -1729,7 +1859,7 @@ const AdminDashboard = () => {
       setUpcomingTours(dashboardTours.slice(0, 5));
       setTourSnapshot({
         active: activeTours.length,
-        scheduled: scheduledUpcomingTours.length,
+        scheduled: scheduledTours.length,
         today: todayTours.length,
       });
       setStats((prev) => ({
@@ -1742,168 +1872,201 @@ const AdminDashboard = () => {
     }
   }, [session?.access_token]);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = useCallback(async () => {
+    if (!hasLoadedOnce) {
+      setLoading(true);
+    }
     try {
-      const vehicleTable = await getVehicleTableName();
-
-      // --- Fetch overview stats ---
-      const [vehiclesResult, rentalsResult, maintenanceResult, revenueResult] = await Promise.all([
-        supabase.from(vehicleTable).select('id, vehicle_type, status'),
-        supabase.from('app_4c3a7a6153_rentals').select('*', { count: 'exact', head: true }).eq('rental_status', 'active'),
-        supabase.from('app_687f658e98_maintenance').select('vehicle_id, status, cost, service_date, created_at'),
-        supabase.from('app_4c3a7a6153_rentals').select('total_amount').eq('payment_status', 'paid')
-      ]);
-
-      const maintenanceRows = Array.isArray(maintenanceResult.data) ? maintenanceResult.data : [];
-      const openMaintenanceRows = maintenanceRows.filter((row) => ['scheduled', 'in_progress', 'pending'].includes(String(row.status || '').toLowerCase()));
-      const maintenanceCount = new Set(openMaintenanceRows.map(r => r.vehicle_id)).size;
-      const totalRevenue = revenueResult.data ? revenueResult.data.reduce((acc, item) => acc + item.total_amount, 0) : 0;
-      const allVehicles = Array.isArray(vehiclesResult.data) ? vehiclesResult.data : [];
-      const totalVehicles = allVehicles.length;
-      const startOfWeek = new Date();
-      startOfWeek.setDate(startOfWeek.getDate() - 6);
-      startOfWeek.setHours(0, 0, 0, 0);
-
-      setFleetSnapshot({
-        available: allVehicles.filter((vehicle) => vehicle.status === 'available').length,
-        rented: allVehicles.filter((vehicle) => vehicle.status === 'rented').length,
-        tour: allVehicles.filter((vehicle) => vehicle.status === 'tour').length,
-        maintenance: allVehicles.filter((vehicle) => vehicle.status === 'maintenance').length,
-        outOfService: allVehicles.filter((vehicle) => vehicle.status === 'out_of_service').length,
-        total: totalVehicles,
-      });
-
-      setMaintenanceSnapshot({
-        open: openMaintenanceRows.length,
-        completed: maintenanceRows.filter((row) => String(row.status || '').toLowerCase() === 'completed').length,
-        weeklyCost: maintenanceRows
-          .filter((row) => {
-            const serviceDate = row.service_date || row.created_at;
-            return serviceDate && new Date(serviceDate) >= startOfWeek;
-          })
-          .reduce((sum, row) => sum + Number(row.cost || 0), 0),
-      });
-
-      setStats((prev) => ({
-        ...prev,
-        vehicles: totalVehicles,
-        rentals: rentalsResult.count || 0,
-        maintenance: maintenanceCount || 0,
-        revenue: totalRevenue,
-      }));
-
-      // --- Fetch recent bookings with vehicle type ---
-      const { data: bookingsRaw, error: bError } = await supabase
-        .from("app_4c3a7a6153_rentals")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(5);
-
-      if (bError) console.error('❌ Error fetching recent bookings', bError);
-      const bookingVehicleMap = await fetchVehiclesByIds((bookingsRaw || []).map((booking) => booking.vehicle_id));
-      const bookings = (bookingsRaw || []).map((booking) => ({
-        ...booking,
-        vehicle: bookingVehicleMap.get(booking.vehicle_id) || null,
-      }));
-      setRecentBookings(bookings);
-
-      const { data: rentalScheduleRaw, error: rentalScheduleError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select('id, customer_name, rental_start_date, rental_end_date, rental_status, rental_type, pickup_location, vehicle_id, vehicle_plate_number')
-        .order('rental_start_date', { ascending: true })
-        .limit(25);
-
-      if (rentalScheduleError) {
-        console.error('❌ Error fetching upcoming rentals', rentalScheduleError);
-        setUpcomingRentals([]);
+      const now = Date.now();
+      if (dashboardCoreCache && now - dashboardCoreCacheAt < DASHBOARD_CACHE_TTL_MS) {
+        applyDashboardCoreData(dashboardCoreCache);
       } else {
-        const upcomingRentalRows = (rentalScheduleRaw || []).filter((rental) => {
-          const status = String(rental.rental_status || '').toLowerCase();
-          const startTime = new Date(rental.rental_start_date || '').getTime();
-          return Number.isFinite(startTime) && startTime >= Date.now() && !['active', 'completed', 'cancelled'].includes(status);
-        });
-        const rentalVehicleMap = await fetchVehiclesByIds(upcomingRentalRows.map((rental) => rental.vehicle_id));
-        const normalizedUpcomingRentals = upcomingRentalRows
-          .map((rental) => {
-            const vehicle = rentalVehicleMap.get(rental.vehicle_id) || null;
-            return {
-              id: rental.id,
-              customerName: rental.customer_name || 'Guest',
-              startAt: rental.rental_start_date,
-              endAt: rental.rental_end_date,
-              vehicleName: vehicle?.model || vehicle?.name || 'Vehicle',
-              plateNumber: rental.vehicle_plate_number || vehicle?.plate_number || '',
-              rentalTypeLabel: rental.rental_type ? `${String(rental.rental_type).charAt(0).toUpperCase()}${String(rental.rental_type).slice(1)}` : 'Rental',
-              pickupLocation: rental.pickup_location || '',
+        if (!dashboardCorePromise) {
+          dashboardCorePromise = (async () => {
+            const vehicleTable = await getVehicleTableName();
+
+            const [
+              vehiclesResult,
+              rentalsResult,
+              maintenanceResult,
+              revenueResult,
+              bookingsResult,
+              rentalScheduleResult,
+            ] = await Promise.all([
+              supabase.from(vehicleTable).select('id, vehicle_type, status'),
+              supabase.from('app_4c3a7a6153_rentals').select('id', { count: 'planned', head: true }).eq('rental_status', 'active'),
+              supabase.from('app_687f658e98_maintenance').select('vehicle_id, status, cost, service_date, created_at'),
+              supabase.from('app_4c3a7a6153_rentals').select('total_amount').eq('payment_status', 'paid'),
+              supabase
+                .from("app_4c3a7a6153_rentals")
+                .select('id, customer_name, vehicle_id, payment_status, total_amount, created_at')
+                .order("created_at", { ascending: false })
+                .limit(5),
+              supabase
+                .from('app_4c3a7a6153_rentals')
+                .select('id, customer_name, rental_start_date, rental_end_date, rental_status, rental_type, pickup_location, vehicle_id, vehicle_plate_number')
+                .order('rental_start_date', { ascending: true })
+                .limit(25),
+            ]);
+
+            const maintenanceRows = Array.isArray(maintenanceResult.data) ? maintenanceResult.data : [];
+            const openMaintenanceRows = maintenanceRows.filter((row) => ['scheduled', 'in_progress', 'pending'].includes(String(row.status || '').toLowerCase()));
+            const maintenanceCount = new Set(openMaintenanceRows.map(r => r.vehicle_id)).size;
+            const totalRevenue = revenueResult.data ? revenueResult.data.reduce((acc, item) => acc + item.total_amount, 0) : 0;
+            const allVehicles = Array.isArray(vehiclesResult.data) ? vehiclesResult.data : [];
+            const totalVehicles = allVehicles.length;
+            const startOfWeek = new Date();
+            startOfWeek.setDate(startOfWeek.getDate() - 6);
+            startOfWeek.setHours(0, 0, 0, 0);
+
+            const fleetSnapshotData = {
+              available: allVehicles.filter((vehicle) => vehicle.status === 'available').length,
+              rented: allVehicles.filter((vehicle) => vehicle.status === 'rented').length,
+              tour: allVehicles.filter((vehicle) => vehicle.status === 'tour').length,
+              maintenance: allVehicles.filter((vehicle) => vehicle.status === 'maintenance').length,
+              outOfService: allVehicles.filter((vehicle) => vehicle.status === 'out_of_service').length,
+              total: totalVehicles,
             };
-          })
-          .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
-          .slice(0, 5);
-        setUpcomingRentals(normalizedUpcomingRentals);
+
+            const maintenanceSnapshotData = {
+              open: openMaintenanceRows.length,
+              completed: maintenanceRows.filter((row) => String(row.status || '').toLowerCase() === 'completed').length,
+              weeklyCost: maintenanceRows
+                .filter((row) => {
+                  const serviceDate = row.service_date || row.created_at;
+                  return serviceDate && new Date(serviceDate) >= startOfWeek;
+                })
+                .reduce((sum, row) => sum + Number(row.cost || 0), 0),
+            };
+
+            const statsData = {
+              vehicles: totalVehicles,
+              rentals: rentalsResult.count || 0,
+              maintenance: maintenanceCount || 0,
+              revenue: totalRevenue,
+            };
+
+            const { data: bookingsRaw, error: bError } = bookingsResult;
+            if (bError) console.error('❌ Error fetching recent bookings', bError);
+            const bookingVehicleMap = await fetchVehiclesByIds((bookingsRaw || []).map((booking) => booking.vehicle_id));
+            const bookings = (bookingsRaw || []).map((booking) => ({
+              ...booking,
+              vehicle: bookingVehicleMap.get(booking.vehicle_id) || null,
+            }));
+
+            let normalizedUpcomingRentals = [];
+            const { data: rentalScheduleRaw, error: rentalScheduleError } = rentalScheduleResult;
+            if (rentalScheduleError) {
+              console.error('❌ Error fetching upcoming rentals', rentalScheduleError);
+            } else {
+              const upcomingRentalRows = (rentalScheduleRaw || []).filter((rental) => {
+                const status = String(rental.rental_status || '').toLowerCase();
+                const startTime = new Date(rental.rental_start_date || '').getTime();
+                return Number.isFinite(startTime) && startTime >= Date.now() && !['active', 'completed', 'cancelled'].includes(status);
+              });
+              const rentalVehicleMap = await fetchVehiclesByIds(upcomingRentalRows.map((rental) => rental.vehicle_id));
+              normalizedUpcomingRentals = upcomingRentalRows
+                .map((rental) => {
+                  const vehicle = rentalVehicleMap.get(rental.vehicle_id) || null;
+                  return {
+                    id: rental.id,
+                    customerName: rental.customer_name || 'Guest',
+                    startAt: rental.rental_start_date,
+                    endAt: rental.rental_end_date,
+                    vehicleName: vehicle?.model || vehicle?.name || 'Vehicle',
+                    plateNumber: rental.vehicle_plate_number || vehicle?.plate_number || '',
+                    rentalTypeLabel: rental.rental_type ? `${String(rental.rental_type).charAt(0).toUpperCase()}${String(rental.rental_type).slice(1)}` : 'Rental',
+                    pickupLocation: rental.pickup_location || '',
+                  };
+                })
+                .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
+                .slice(0, 5);
+            }
+
+            return {
+              stats: statsData,
+              fleetSnapshot: fleetSnapshotData,
+              maintenanceSnapshot: maintenanceSnapshotData,
+              recentBookings: bookings,
+              upcomingRentals: normalizedUpcomingRentals,
+            };
+          })();
+        }
+
+        const coreData = await dashboardCorePromise;
+        dashboardCoreCache = coreData;
+        dashboardCoreCacheAt = Date.now();
+        applyDashboardCoreData(coreData);
       }
 
-      // --- Fetch and process data for Revenue Trend Chart ---
-      const sevenDaysAgo = new Date();
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+      scheduleBackgroundTask(async () => {
+        try {
+          const vehicleTable = await getVehicleTableName();
+          const sevenDaysAgo = new Date();
+          sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-      const { data: revenueTrendRaw, error: revenueTrendError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select('created_at, total_amount')
-        .eq('payment_status', 'paid')
-        .gte('created_at', sevenDaysAgo.toISOString());
+          const [
+            revenueTrendResult,
+            allRentalsResult,
+            allVehiclesResult,
+          ] = await Promise.all([
+            supabase
+              .from('app_4c3a7a6153_rentals')
+              .select('created_at, total_amount')
+              .eq('payment_status', 'paid')
+              .gte('created_at', sevenDaysAgo.toISOString()),
+            supabase.from('app_4c3a7a6153_rentals').select('vehicle_id'),
+            supabase.from(vehicleTable).select("id, vehicle_type")
+          ]);
 
-      if (revenueTrendError) console.error('❌ Error fetching revenue trend', revenueTrendError);
+          if (revenueTrendResult.error) {
+            console.error('❌ Error fetching revenue trend', revenueTrendResult.error);
+          } else {
+            const dailyRevenue = {};
+            (revenueTrendResult.data || []).forEach((rental) => {
+              const date = new Date(rental.created_at).toISOString().split('T')[0];
+              if (!dailyRevenue[date]) dailyRevenue[date] = 0;
+              dailyRevenue[date] += rental.total_amount;
+            });
 
-      const dailyRevenue = {};
-      if (revenueTrendRaw) {
-        revenueTrendRaw.forEach(rental => {
-          const date = new Date(rental.created_at).toISOString().split('T')[0];
-          if (!dailyRevenue[date]) dailyRevenue[date] = 0;
-          dailyRevenue[date] += rental.total_amount;
-        });
-      }
-
-      const last7DaysData = Array(7).fill(0).map((_, i) => {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
-        return {
-          date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-          revenue: dailyRevenue[dateStr] || 0,
-        };
-      }).reverse();
-      setRevenueData(last7DaysData);
-
-      // --- Fetch and process data for Vehicle Utilization Chart ---
-      const [allRentalsResult, allVehiclesResult] = await Promise.all([
-        supabase.from('app_4c3a7a6153_rentals').select('vehicle_id'),
-        supabase.from(vehicleTable).select("id, vehicle_type")
-      ]);
-
-      const utilization = {};
-      if (allRentalsResult.data && allVehiclesResult.data) {
-        const vehicleTypeMap = new Map(allVehiclesResult.data.map(v => [v.id, v.vehicle_type]));
-        allRentalsResult.data.forEach(rental => {
-          const vehicleType = vehicleTypeMap.get(rental.vehicle_id);
-          if (vehicleType) {
-            if (!utilization[vehicleType]) utilization[vehicleType] = 0;
-            utilization[vehicleType]++;
+            const last7DaysData = Array(7).fill(0).map((_, i) => {
+              const d = new Date();
+              d.setDate(d.getDate() - i);
+              const dateStr = d.toISOString().split('T')[0];
+              return {
+                date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+                revenue: dailyRevenue[dateStr] || 0,
+              };
+            }).reverse();
+            setRevenueData(last7DaysData);
           }
-        });
-      }
-      const utilizationChartData = Object.keys(utilization).map(type => ({ name: type, rentals: utilization[type] }));
-      setUtilizationData(utilizationChartData);
 
-      // Fetch urgent rentals
-      await fetchUrgentRentals();
+          const utilization = {};
+          if (allRentalsResult.data && allVehiclesResult.data) {
+            const vehicleTypeMap = new Map(allVehiclesResult.data.map(v => [v.id, v.vehicle_type]));
+            allRentalsResult.data.forEach((rental) => {
+              const vehicleType = vehicleTypeMap.get(rental.vehicle_id);
+              if (vehicleType) {
+                if (!utilization[vehicleType]) utilization[vehicleType] = 0;
+                utilization[vehicleType]++;
+              }
+            });
+          }
+
+          setUtilizationData(Object.keys(utilization).map((type) => ({ name: type, rentals: utilization[type] })));
+          void fetchUrgentRentals();
+        } catch (backgroundError) {
+          console.error('❌ Error hydrating dashboard secondary data:', backgroundError);
+        }
+      });
 
     } catch (error) {
       console.error('❌ Error in fetchData:', error);
     } finally {
+      dashboardCorePromise = null;
       setLoading(false);
     }
-  };
+  }, [applyDashboardCoreData, fetchUrgentRentals, hasLoadedOnce]);
 
   // Real-time updates for urgent rentals
   useEffect(() => {
@@ -1945,6 +2108,10 @@ const AdminDashboard = () => {
       return undefined;
     }
 
+    if (dashboardCoreCache && Date.now() - dashboardCoreCacheAt < DASHBOARD_CACHE_TTL_MS) {
+      applyDashboardCoreData(dashboardCoreCache);
+    }
+
     fetchData();
     loadToursDashboard();
 
@@ -1956,7 +2123,7 @@ const AdminDashboard = () => {
       clearInterval(intervalId);
       clearInterval(toursIntervalId);
     };
-  }, [fetchUrgentRentals, loadToursDashboard, session?.access_token]);
+  }, [applyDashboardCoreData, fetchData, fetchUrgentRentals, loadToursDashboard, session?.access_token]);
 
   const handleCreateRental = () => {
     navigate('/admin/rentals', { state: { openForm: true } });
@@ -1964,53 +2131,55 @@ const AdminDashboard = () => {
 
   const operationsCards = [
     {
-      label: 'Active Rentals',
+      label: tr('Active Rentals', 'Locations actives'),
       value: stats.rentals,
-      caption: urgentStats.overdue > 0 ? `${urgentStats.overdue} overdue right now` : `${urgentStats.expiringSoon} ending soon`,
+      caption: urgentStats.overdue > 0
+        ? tr(`${urgentStats.overdue} overdue right now`, `${urgentStats.overdue} en retard maintenant`)
+        : tr(`${urgentStats.expiringSoon} ending soon`, `${urgentStats.expiringSoon} se terminent bientôt`),
       href: '/admin/rentals',
       icon: <Users className="h-5 w-5 text-blue-700" />,
       iconTone: 'bg-blue-50',
-      badge: urgentStats.overdue > 0 ? 'Urgent' : null,
+      badge: urgentStats.overdue > 0 ? tr('Urgent', 'Urgent') : null,
       badgeTone: 'bg-rose-50 text-rose-600',
     },
     {
-      label: 'Active Tours',
+      label: tr('Active Tours', 'Tours actifs'),
       value: tourSnapshot.active,
-      caption: `${tourSnapshot.scheduled} more queued after live departures`,
+      caption: tr(`${tourSnapshot.scheduled} more queued after live departures`, `${tourSnapshot.scheduled} autres en file après les départs en direct`),
       href: '/admin/tours',
       icon: <Compass className="h-5 w-5 text-violet-700" />,
       iconTone: 'bg-violet-50',
-      badge: tourSnapshot.active > 0 ? 'Live' : null,
+      badge: tourSnapshot.active > 0 ? tr('Live', 'En direct') : null,
       badgeTone: 'bg-emerald-50 text-emerald-600',
     },
     {
-      label: 'In Maintenance',
+      label: tr('In Maintenance', 'En maintenance'),
       value: fleetSnapshot.maintenance,
-      caption: `${maintenanceSnapshot.open} open records in workshop flow`,
+      caption: tr(`${maintenanceSnapshot.open} open records in workshop flow`, `${maintenanceSnapshot.open} dossiers ouverts à l’atelier`),
       href: '/admin/maintenance',
       icon: <Wrench className="h-5 w-5 text-amber-700" />,
       iconTone: 'bg-amber-50',
     },
     {
-      label: 'Out of Service',
+      label: tr('Out of Service', 'Hors service'),
       value: fleetSnapshot.outOfService,
-      caption: 'Units blocked from booking and tours',
+      caption: tr('Units blocked from booking and tours', 'Unités bloquées pour les réservations et les tours'),
       href: '/admin/fleet',
       icon: <ShieldAlert className="h-5 w-5 text-rose-700" />,
       iconTone: 'bg-rose-50',
     },
     {
-      label: 'Tours Today',
+      label: tr('Tours Today', 'Tours aujourd’hui'),
       value: stats.toursToday,
-      caption: 'Today’s tour departures and returns',
+      caption: tr('Today’s tour departures and returns', 'Départs et retours de tours aujourd’hui'),
       href: '/admin/tours',
       icon: <Calendar className="h-5 w-5 text-indigo-700" />,
       iconTone: 'bg-indigo-50',
     },
     {
-      label: 'Revenue',
+      label: tr('Revenue', 'Revenu'),
       value: formatCurrency(stats.revenue),
-      caption: 'Paid rental revenue in the current dataset',
+      caption: tr('Paid rental revenue in the current dataset', 'Revenu des locations payées dans les données actuelles'),
       href: '/admin/finance',
       icon: <DollarSign className="h-5 w-5 text-emerald-700" />,
       iconTone: 'bg-emerald-50',
@@ -2020,109 +2189,143 @@ const AdminDashboard = () => {
   const urgentActionItems = [
     ...urgentRentals.slice(0, 3).map((rental) => {
       const timerState = calculateDashboardRentalTimer(rental, currentTime);
+      const isImpounded = Boolean(rental.is_impounded);
       return {
       id: `rental-${rental.id}`,
-      kind: timerState.isExpired ? 'Expired Rental' : timerState.color === 'red' ? 'Rental Ending' : timerState.color === 'orange' ? 'Ending Soon' : 'Active Rental',
-      tone: timerState.isExpired
-        ? 'bg-rose-50 text-rose-600'
+      kind: isImpounded
+        ? tr('🚨 Impounded', '🚨 Mis en fourrière')
+        : timerState.isExpired
+          ? tr('Expired Rental', 'Location expirée')
+          : timerState.color === 'red'
+            ? tr('Rental Ending', 'Location en fin')
+            : timerState.color === 'orange'
+              ? tr('Ending Soon', 'Fin imminente')
+              : tr('Active Rental', 'Location active'),
+      tone: isImpounded
+        ? 'bg-amber-50 text-amber-800'
+        : timerState.isExpired
+          ? 'bg-rose-50 text-rose-600'
         : timerState.color === 'red'
           ? 'bg-red-50 text-red-700'
           : timerState.color === 'orange'
             ? 'bg-amber-50 text-amber-700'
             : 'bg-emerald-50 text-emerald-700',
       title: rental.customer_name,
-      description: `${rental.vehicle?.model || rental.vehicle?.name || 'Vehicle'}${rental.vehicle?.plate_number ? ` • ${rental.vehicle.plate_number}` : ''}`,
-      module: 'Rental Management',
-      meta: timerState.text,
-      metaTone: timerState.badgeClass,
-      primaryAction: { href: `/admin/rentals/${rental.id}`, label: 'Open rental' },
-      secondaryAction: rental.customer_phone ? { label: 'WhatsApp', onClick: () => sendWhatsAppReminder(rental) } : null,
+      description: `${rental.vehicle?.model || rental.vehicle?.name || tr('Vehicle', 'Véhicule')}${rental.vehicle?.plate_number ? ` • ${rental.vehicle.plate_number}` : ''}`,
+      module: tr('Rental Management', 'Gestion des locations'),
+      meta: isImpounded ? `${tr('Held since', 'En fourrière depuis')} ${formatDashboardDateTime(rental.impounded_at)}` : timerState.text,
+      metaTone: isImpounded ? 'border border-amber-200 bg-amber-50 text-amber-800' : timerState.badgeClass,
+      primaryAction: { href: `/admin/rentals/${rental.id}`, label: tr('Open rental', 'Ouvrir la location') },
+      secondaryAction: rental.customer_phone ? { label: tr('WhatsApp', 'WhatsApp'), onClick: () => sendWhatsAppReminder(rental) } : null,
       };
     }),
     ...(tourSnapshot.active > 0 || tourSnapshot.scheduled > 0 ? [{
       id: 'tour-operations',
-      kind: 'Tours Queue',
+      kind: tr('Tours Queue', 'File des tours'),
       tone: 'bg-violet-50 text-violet-700',
-      title: `${tourSnapshot.active} live tours and ${tourSnapshot.scheduled} scheduled`,
+      title: `${tourSnapshot.active} ${tr('live tours', 'tours en direct')} ${tr('and', 'et')} ${tourSnapshot.scheduled} ${tr('scheduled', 'programmés')}`,
       description: '',
-      module: 'Tours & Booking',
-      meta: `${stats.toursToday} departures today`,
-      primaryAction: { href: '/admin/tours', label: 'Open tours' },
-      secondaryAction: tourSnapshot.active > 0 ? { href: '/admin/live-map', label: 'Live map' } : null,
+      module: tr('Tours & Booking', 'Tours et réservations'),
+      meta: `${stats.toursToday} ${tr('departures today', "départs aujourd'hui")}`,
+      primaryAction: { href: '/admin/tours', label: tr('Open tours', 'Ouvrir les tours') },
+      secondaryAction: tourSnapshot.active > 0 ? { href: '/admin/live-map', label: tr('Live map', 'Carte en direct') } : null,
     }] : []),
     ...((fleetSnapshot.outOfService > 0 || fleetSnapshot.maintenance > 0) ? [{
       id: 'fleet-attention',
-      kind: 'Fleet Attention',
+      kind: tr('Fleet Attention', 'Alerte flotte'),
       tone: 'bg-blue-50 text-blue-700',
-      title: `${fleetSnapshot.outOfService} out of service • ${fleetSnapshot.maintenance} in maintenance`,
+      title: `${fleetSnapshot.outOfService} ${tr('out of service', 'hors service')} • ${fleetSnapshot.maintenance} ${tr('in maintenance', 'en maintenance')}`,
       description: '',
-      module: 'Fleet Management',
-      meta: `${fleetSnapshot.available} available now`,
-      primaryAction: { href: '/admin/fleet', label: 'Open fleet' },
-      secondaryAction: { href: '/admin/maintenance', label: 'Maintenance' },
+      module: tr('Fleet Management', 'Gestion de flotte'),
+      meta: `${fleetSnapshot.available} ${tr('available now', 'disponibles maintenant')}`,
+      primaryAction: { href: '/admin/fleet', label: tr('Open fleet', 'Ouvrir la flotte') },
+      secondaryAction: { href: '/admin/maintenance', label: tr('Maintenance', 'Maintenance') },
     }] : []),
   ];
 
   const liveOperationsCards = [
     {
-      kicker: 'Live Operations',
-      title: 'Tours',
-      description: 'Track departures and route activity without leaving the dashboard.',
+      kicker: tr('Live Operations', 'Opérations en direct'),
+      title: tr('Tours', 'Tours'),
+      description: tr('Track departures and route activity without leaving the dashboard.', 'Suivez les départs et l’activité des itinéraires sans quitter le tableau de bord.'),
       href: '/admin/tours',
       icon: <MapIcon className="h-5 w-5 text-violet-700" />,
       iconTone: 'bg-violet-50',
       lines: [
-        { label: 'Active tours', value: tourSnapshot.active },
-        { label: 'Scheduled next', value: tourSnapshot.scheduled },
-        { label: 'Today', value: stats.toursToday },
+        { label: tr('Active tours', 'Tours actifs'), value: tourSnapshot.active },
+        { label: tr('Scheduled next', 'Prochains programmés'), value: tourSnapshot.scheduled },
+        { label: tr('Today', "Aujourd'hui"), value: stats.toursToday },
       ],
     },
     {
-      kicker: 'Fleet Live',
-      title: 'Fleet',
-      description: 'See the real vehicle mix available for rentals, tours, and workshop flow.',
+      kicker: tr('Fleet Live', 'Flotte en direct'),
+      title: tr('Fleet', 'Flotte'),
+      description: tr('See the real vehicle mix available for rentals, tours, and workshop flow.', 'Visualisez la répartition réelle des véhicules disponibles pour les locations, les tours et le flux atelier.'),
       href: '/admin/fleet',
       icon: <Car className="h-5 w-5 text-indigo-700" />,
       iconTone: 'bg-indigo-50',
       lines: [
-        { label: 'Available', value: fleetSnapshot.available },
-        { label: 'Rented / Tour', value: fleetSnapshot.rented + fleetSnapshot.tour },
-        { label: 'Out of service', value: fleetSnapshot.outOfService },
+        { label: tr('Available', 'Disponibles'), value: fleetSnapshot.available },
+        { label: tr('Rented / Tour', 'Location / Tour'), value: fleetSnapshot.rented + fleetSnapshot.tour },
+        { label: tr('Out of service', 'Hors service'), value: fleetSnapshot.outOfService },
       ],
     },
     {
-      kicker: 'Workshop + Fuel',
-      title: 'Maintenance',
-      description: 'Keep workshop workload and operating costs visible from one place.',
+      kicker: tr('Workshop + Fuel', 'Atelier + carburant'),
+      title: tr('Maintenance', 'Maintenance'),
+      description: tr('Keep workshop workload and operating costs visible from one place.', 'Gardez la charge atelier et les coûts d’exploitation visibles depuis un seul endroit.'),
       href: '/admin/maintenance',
       icon: <Settings className="h-5 w-5 text-amber-700" />,
       iconTone: 'bg-amber-50',
       lines: [
-        { label: 'Open records', value: maintenanceSnapshot.open },
-        { label: 'Completed records', value: maintenanceSnapshot.completed },
-        { label: '7-day cost', value: formatCurrency(maintenanceSnapshot.weeklyCost) },
+        { label: tr('Open records', 'Fiches ouvertes'), value: maintenanceSnapshot.open },
+        { label: tr('Completed records', 'Fiches terminées'), value: maintenanceSnapshot.completed },
+        { label: tr('7-day cost', 'Coût sur 7 jours'), value: formatCurrency(maintenanceSnapshot.weeklyCost) },
       ],
     },
   ];
 
   const moduleCards = [
-    { title: 'Tours & Booking', href: '/admin/tours', description: 'Departures, live tours, and guest bookings.', meta: `${tourSnapshot.active} live • ${tourSnapshot.scheduled} queued`, stat: `${stats.toursToday} today`, icon: <Compass className="h-5 w-5 text-violet-700" />, iconTone: 'bg-violet-50' },
-    { title: 'Pricing Management', href: '/admin/pricing', description: 'Rental, tour, fuel, and extension pricing controls.', meta: 'Rates, tiers, deposits, and packages', icon: <WalletCards className="h-5 w-5 text-indigo-700" />, iconTone: 'bg-indigo-50' },
-    { title: 'Fleet Management', href: '/admin/fleet', description: 'Fleet status, models, and out-of-service tracking.', meta: `${fleetSnapshot.available} available • ${fleetSnapshot.outOfService} blocked`, stat: `${fleetSnapshot.total} units`, icon: <Car className="h-5 w-5 text-blue-700" />, iconTone: 'bg-blue-50' },
-    { title: 'Quad Maintenance', href: '/admin/maintenance', description: 'Workshop records, parts, and vehicle repair flow.', meta: `${maintenanceSnapshot.open} open • ${maintenanceSnapshot.completed} completed`, icon: <Wrench className="h-5 w-5 text-amber-700" />, iconTone: 'bg-amber-50' },
-    { title: 'Fuel Management', href: '/admin/fuel', description: 'Tank activity, vehicle fuel flow, and refills.', meta: 'Fuel board and transfer logs', icon: <Fuel className="h-5 w-5 text-cyan-700" />, iconTone: 'bg-cyan-50' },
-    { title: 'Finance', href: '/admin/finance', description: 'Revenue, vehicle financial performance, and reports.', meta: formatCurrency(stats.revenue), icon: <DollarSign className="h-5 w-5 text-emerald-700" />, iconTone: 'bg-emerald-50' },
-    { title: 'Alerts', href: '/admin/alerts', description: 'Unified alert inbox for fleet, fuel, maintenance, and rentals.', meta: `${urgentActionItems.length} high-priority action items`, icon: <Bell className="h-5 w-5 text-rose-700" />, iconTone: 'bg-rose-50' },
-    { title: 'User Management', href: '/admin/users', description: 'Roles, permissions, and operational access control.', meta: 'Owner-managed access across all modules', icon: <Users className="h-5 w-5 text-slate-700" />, iconTone: 'bg-slate-100' },
+    { title: tr('Tours & Booking', 'Tours et réservations'), href: '/admin/tours', description: tr('Departures, live tours, and guest bookings.', 'Départs, tours en direct et réservations clients.'), meta: `${tourSnapshot.active} ${tr('live', 'en direct')} • ${tourSnapshot.scheduled} ${tr('queued', 'en attente')}`, stat: `${stats.toursToday} ${tr('today', "aujourd'hui")}`, icon: <Compass className="h-5 w-5 text-violet-700" />, iconTone: 'bg-violet-50' },
+    { title: tr('Team Tasks', 'Taches equipe'), href: '/admin/tasks', description: tr('Assign, claim, and complete shared operations tasks.', 'Attribuez, prenez et terminez les taches operations partagees.'), meta: `${taskStats.my} ${tr('mine', 'a moi')} • ${taskStats.open} ${tr('open', 'ouvertes')}`, stat: `${taskStats.active} ${tr('active', 'actives')}`, icon: <ClipboardList className="h-5 w-5 text-violet-700" />, iconTone: 'bg-violet-50' },
+    { title: tr('Pricing Management', 'Gestion tarifaire'), href: '/admin/pricing', description: tr('Rental, tour, fuel, and extension pricing controls.', 'Contrôle des tarifs location, tours, carburant et extensions.'), meta: tr('Rates, tiers, deposits, and packages', 'Tarifs, paliers, cautions et forfaits'), icon: <WalletCards className="h-5 w-5 text-indigo-700" />, iconTone: 'bg-indigo-50' },
+    { title: tr('Fleet Management', 'Gestion de flotte'), href: '/admin/fleet', description: tr('Fleet status, models, and out-of-service tracking.', 'Statut de flotte, modèles et suivi hors service.'), meta: `${fleetSnapshot.available} ${tr('available', 'disponibles')} • ${fleetSnapshot.outOfService} ${tr('blocked', 'bloqués')}`, stat: `${fleetSnapshot.total} ${tr('units', 'unités')}`, icon: <Car className="h-5 w-5 text-blue-700" />, iconTone: 'bg-blue-50' },
+    { title: tr('Quad Maintenance', 'Maintenance des quads'), href: '/admin/maintenance', description: tr('Workshop records, parts, and vehicle repair flow.', 'Fiches atelier, pièces et flux de réparation des véhicules.'), meta: `${maintenanceSnapshot.open} ${tr('open', 'ouvertes')} • ${maintenanceSnapshot.completed} ${tr('completed', 'terminées')}`, icon: <Wrench className="h-5 w-5 text-amber-700" />, iconTone: 'bg-amber-50' },
+    { title: tr('Fuel Management', 'Gestion carburant'), href: '/admin/fuel', description: tr('Tank activity, vehicle fuel flow, and refills.', 'Activité du réservoir, flux carburant véhicule et ravitaillements.'), meta: tr('Fuel board and transfer logs', 'Tableau carburant et journaux de transfert'), icon: <Fuel className="h-5 w-5 text-cyan-700" />, iconTone: 'bg-cyan-50' },
+    { title: tr('Finance', 'Finance'), href: '/admin/finance', description: tr('Revenue, vehicle financial performance, and reports.', 'Revenus, performance financière des véhicules et rapports.'), meta: formatCurrency(stats.revenue), icon: <DollarSign className="h-5 w-5 text-emerald-700" />, iconTone: 'bg-emerald-50' },
+    { title: tr('Alerts', 'Alertes'), href: '/admin/alerts', description: tr('Unified alert inbox for fleet, fuel, maintenance, and rentals.', 'Boîte unifiée des alertes flotte, carburant, maintenance et locations.'), meta: `${urgentActionItems.length} ${tr('high-priority action items', 'actions prioritaires')}`, icon: <Bell className="h-5 w-5 text-rose-700" />, iconTone: 'bg-rose-50' },
+    { title: tr('User Management', 'Gestion des utilisateurs'), href: '/admin/users', description: tr('Roles, permissions, and operational access control.', 'Rôles, permissions et contrôle d’accès opérationnel.'), meta: tr('Owner-managed access across all modules', 'Accès géré par le propriétaire sur tous les modules'), icon: <Users className="h-5 w-5 text-slate-700" />, iconTone: 'bg-slate-100' },
   ];
+
+  if (loading && !hasLoadedOnce) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <AdminModuleHero
+          icon={<Smartphone className="h-8 w-8 text-white" />}
+          eyebrow={tr('Dashboard', 'Tableau de bord')}
+          title={tr('Operations Dashboard', 'Tableau de bord des opérations')}
+          description={tr('Preparing the dashboard workspace...', 'Préparation de l’espace tableau de bord...')}
+        />
+        <div className="max-w-7xl mx-auto p-6">
+          <div className="rounded-2xl border border-violet-100 bg-white p-8 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+            <div className="flex flex-col items-center justify-center text-center">
+              <div className="mb-4 text-4xl animate-spin">⏳</div>
+              <p className="text-base font-medium text-slate-700">{tr('Loading dashboard...', 'Chargement du tableau de bord...')}</p>
+              <p className="mt-2 text-sm text-slate-500">{tr('Preparing live operations, revenue, fleet, and rental summaries.', 'Préparation des opérations en direct, revenus, flotte et résumés de location.')}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">
       <AdminModuleHero
         icon={<Smartphone className="h-8 w-8 text-white" />}
-        eyebrow="Dashboard"
-        title="Operations Dashboard"
-        description={`Welcome back${user?.email ? `, ${user.email}` : ''}.`}
+      eyebrow={tr('Dashboard', 'Tableau de bord')}
+      title={tr('Operations Dashboard', 'Tableau de bord des opérations')}
+      description={tr(`Welcome back${user?.email ? `, ${user.email}` : ''}.`, `Bon retour${user?.email ? `, ${user.email}` : ''}.`)}
         actions={
           <>
             <Link
@@ -2130,35 +2333,35 @@ const AdminDashboard = () => {
               className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
             >
               <Compass className="h-4 w-4" />
-              Open Tours
+              {tr('Open Tours', 'Ouvrir les tours')}
             </Link>
             <Link
               to="/admin/fleet"
               className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
             >
               <Car className="h-4 w-4" />
-              Open Fleet
+              {tr('Open Fleet', 'Ouvrir la flotte')}
             </Link>
             <Link
               to="/admin/alerts"
               className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
             >
               <Bell className="h-4 w-4" />
-              Alerts
+              {tr('Alerts', 'Alertes')}
             </Link>
             <Link
               to="/admin/live-map"
               className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
             >
               <MapIcon className="h-4 w-4" />
-              Open Live Map
+              {tr('Open Live Map', 'Ouvrir la carte en direct')}
             </Link>
             <button
               onClick={handleCreateRental}
               className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
             >
               <Plus className="h-4 w-4" />
-              Create Rental
+              {tr('Create Rental', 'Créer une location')}
             </button>
           </>
         }
@@ -2168,7 +2371,7 @@ const AdminDashboard = () => {
       <button
         onClick={handleCreateRental}
         className="sm:hidden fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_18px_36px_rgba(79,70,229,0.35)] transition-all hover:scale-[1.02]"
-        aria-label="Create New Rental"
+        aria-label={tr('Create New Rental', 'Créer une location')}
       >
         <Plus className="w-6 h-6" />
       </button>
@@ -2176,39 +2379,37 @@ const AdminDashboard = () => {
       <div className="space-y-6 px-4 py-6 sm:space-y-8 sm:px-6 lg:px-8">
         <section className="space-y-3 sm:space-y-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">Today&apos;s Operations</p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-900 sm:text-3xl">Operational overview</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr("Today's Operations", 'Opérations du jour')}</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900 sm:text-3xl">{tr('Operational overview', 'Vue d’ensemble opérationnelle')}</h2>
           </div>
           <OperationsOverview cards={operationsCards} loading={loading} />
         </section>
 
-        {(loading || hasUpcomingRentals || hasUpcomingTours) ? (
-          <section className={`grid grid-cols-1 gap-5 sm:gap-6 ${hasUpcomingRentals && hasUpcomingTours ? 'xl:grid-cols-2' : ''}`}>
-            {hasUpcomingRentals || loading ? <UpcomingRentals rentals={upcomingRentals} loading={loading} /> : null}
-            {hasUpcomingTours || loading ? <UpcomingTours tours={upcomingTours} loading={loading} /> : null}
-          </section>
-        ) : null}
+        <section className="grid grid-cols-1 gap-5 sm:gap-6 xl:grid-cols-2">
+          <UpcomingRentals rentals={upcomingRentals} loading={loading} />
+          <UpcomingTours tours={upcomingTours} loading={loading} />
+        </section>
 
         <section className="space-y-3 sm:space-y-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">Attention Needed</p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-900">Urgent rentals and follow-up actions</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Attention Needed', 'Attention requise')}</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">{tr('Urgent rentals and follow-up actions', 'Locations urgentes et actions de suivi')}</h2>
           </div>
           <UrgentActionsBoard items={urgentActionItems} loading={loading} />
         </section>
 
         <section className="space-y-3 sm:space-y-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">Live Operations</p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-900">Tours, fleet, and workshop at a glance</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Live Operations', 'Opérations en direct')}</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">{tr('Tours, fleet, and workshop at a glance', 'Tours, flotte et atelier en un coup d’œil')}</h2>
           </div>
           <LiveOperationsGrid cards={liveOperationsCards} loading={loading} />
         </section>
 
         <section className="space-y-3 sm:space-y-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">Business Health</p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-900">Performance and booking flow</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Business Health', 'Santé de l’activité')}</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">{tr('Performance and booking flow', 'Performance et flux de réservation')}</h2>
           </div>
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
             <RevenueChart data={revenueData} loading={loading} />
@@ -2224,8 +2425,8 @@ const AdminDashboard = () => {
 
         <section className="space-y-3 sm:space-y-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">Module Shortcuts</p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-900">Jump straight into the right workspace</h2>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Module Shortcuts', 'Raccourcis des modules')}</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">{tr('Jump straight into the right workspace', 'Accédez directement au bon espace de travail')}</h2>
           </div>
           <ModuleShortcutGrid cards={moduleCards} loading={loading} />
         </section>
@@ -2233,7 +2434,7 @@ const AdminDashboard = () => {
         <div className="sm:hidden rounded-xl border border-violet-100 bg-white p-4 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
           <div className="flex justify-between items-center">
             <div className="text-center">
-              <div className="text-xs text-slate-500">Utilization</div>
+              <div className="text-xs text-slate-500">{tr('Utilization', 'Utilisation')}</div>
               <div className="text-lg font-bold text-slate-800">
                 {utilizationData.length > 0
                   ? `${Math.round((utilizationData.reduce((a, b) => a + b.rentals, 0) / Math.max(stats.vehicles, 1)) * 100)}%`
@@ -2241,13 +2442,13 @@ const AdminDashboard = () => {
               </div>
             </div>
             <div className="text-center">
-              <div className="text-xs text-slate-500">Avg. Rental</div>
+              <div className="text-xs text-slate-500">{tr('Avg. Rental', 'Location moyenne')}</div>
               <div className="text-lg font-bold text-slate-800">
                 {stats.rentals > 0 ? Math.round(stats.revenue / stats.rentals) : 0} MAD
               </div>
             </div>
             <div className="text-center">
-              <div className="text-xs text-slate-500">Today</div>
+              <div className="text-xs text-slate-500">{tr('Today', 'Aujourd’hui')}</div>
               <div className="text-lg font-bold text-slate-800">
                 {recentBookings.filter(b =>
                   new Date(b.created_at).toDateString() === new Date().toDateString()

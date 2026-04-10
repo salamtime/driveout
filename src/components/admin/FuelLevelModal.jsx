@@ -1,34 +1,42 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Fuel, AlertCircle } from 'lucide-react';
+import i18n from '../../i18n';
+
+const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
 
 const FuelLevelModal = ({ isOpen, onClose, onSave, currentLevel = null, title = "Fuel Level Reading", description = "Select the current fuel level" }) => {
   const [selectedLevel, setSelectedLevel] = useState(currentLevel || 8);
-  const [saving, setSaving] = useState(false);
 
   const FUEL_LEVELS = [
-    { value: 0, label: 'Empty', color: 'bg-red-500' },
+    { value: 0, label: tr('Empty', 'Vide'), color: 'bg-red-500' },
     { value: 1, label: '1/8', color: 'bg-orange-500' },
     { value: 2, label: '2/8', color: 'bg-orange-400' },
     { value: 3, label: '3/8', color: 'bg-yellow-500' },
-    { value: 4, label: '4/8 (Half)', color: 'bg-yellow-400' },
+    { value: 4, label: tr('4/8 (Half)', '4/8 (Moitié)'), color: 'bg-yellow-400' },
     { value: 5, label: '5/8', color: 'bg-lime-500' },
     { value: 6, label: '6/8', color: 'bg-green-400' },
     { value: 7, label: '7/8', color: 'bg-green-500' },
-    { value: 8, label: 'Full', color: 'bg-green-600' }
+    { value: 8, label: tr('Full', 'Plein'), color: 'bg-green-600' }
   ];
 
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    setSelectedLevel(currentLevel ?? 8);
+  }, [currentLevel, isOpen]);
+
   const handleSave = async () => {
-    setSaving(true);
+    const selectedValue = selectedLevel;
+    onClose();
     try {
-      await onSave(selectedLevel);
-      onClose();
+      await onSave(selectedValue);
     } catch (error) {
       console.error('Error saving fuel level:', error);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -47,16 +55,19 @@ const FuelLevelModal = ({ isOpen, onClose, onSave, currentLevel = null, title = 
           <Alert>
             <AlertCircle className="h-4 w-4" />
             <AlertDescription>
-              Tap on a fuel level to select it. The gauge shows 8 levels from empty (0) to full (8).
+              {tr(
+                'Tap on a fuel level to select it. The gauge shows 8 levels from empty (0) to full (8).',
+                'Appuyez sur un niveau de carburant pour le sélectionner. La jauge affiche 8 niveaux de vide (0) à plein (8).'
+              )}
             </AlertDescription>
           </Alert>
 
           {/* Visual Fuel Gauge */}
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
-              <span>Empty</span>
-              <span className="font-semibold">Selected: {FUEL_LEVELS[selectedLevel].label}</span>
-              <span>Full</span>
+              <span>{tr('Empty', 'Vide')}</span>
+              <span className="font-semibold">{tr('Selected:', 'Sélectionné :')} {FUEL_LEVELS[selectedLevel].label}</span>
+              <span>{tr('Full', 'Plein')}</span>
             </div>
             
             <div className="grid grid-cols-9 gap-1">
@@ -90,7 +101,7 @@ const FuelLevelModal = ({ isOpen, onClose, onSave, currentLevel = null, title = 
 
           {/* Selected Level Display */}
           <div className="bg-gray-50 rounded-lg p-4 text-center">
-            <div className="text-sm text-gray-600 mb-1">Current Selection</div>
+            <div className="text-sm text-gray-600 mb-1">{tr('Current Selection', 'Sélection actuelle')}</div>
             <div className="text-2xl font-bold text-gray-900">{FUEL_LEVELS[selectedLevel].label}</div>
           </div>
         </div>
@@ -99,16 +110,14 @@ const FuelLevelModal = ({ isOpen, onClose, onSave, currentLevel = null, title = 
           <Button
             variant="outline"
             onClick={onClose}
-            disabled={saving}
           >
-            Cancel
+            {tr('Cancel', 'Annuler')}
           </Button>
           <Button
             onClick={handleSave}
-            disabled={saving}
             className="bg-blue-600 hover:bg-blue-700 text-white"
           >
-            {saving ? 'Saving...' : 'Save Fuel Level'}
+            {tr('Save Fuel Level', 'Enregistrer le niveau de carburant')}
           </Button>
         </div>
       </DialogContent>

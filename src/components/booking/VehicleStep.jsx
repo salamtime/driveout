@@ -6,6 +6,7 @@ import { supabase } from '../../utils/supabaseClient';
 
 const VehicleStep = ({ bookingData, updateBookingData, onNext, onPrevious }) => {
   const { t } = useTranslation();
+  const tr = (en, fr) => t(en, fr);
   const dispatch = useDispatch();
   const { vehicles, isLoading } = useSelector(state => state.vehicles);
   const [availableVehicles, setAvailableVehicles] = useState([]);
@@ -174,7 +175,7 @@ const VehicleStep = ({ bookingData, updateBookingData, onNext, onPrevious }) => 
   
   const handleSubmit = () => {
     if (!localData.vehicleId) {
-      setErrors({ vehicle: 'Please select a vehicle' });
+      setErrors({ vehicle: tr('Please select a vehicle', 'Veuillez sélectionner un véhicule') });
       return;
     }
     
@@ -220,7 +221,7 @@ const VehicleStep = ({ bookingData, updateBookingData, onNext, onPrevious }) => 
             <div className="font-medium">
               {bookingData.deliveryRequired 
                 ? t('rental.location.delivery') 
-                : bookingData.pickupLocation?.name || 'Selected Location'}
+                : bookingData.pickupLocation?.name || tr('Selected Location', 'Lieu sélectionné')}
             </div>
           </div>
           <div>
@@ -242,7 +243,7 @@ const VehicleStep = ({ bookingData, updateBookingData, onNext, onPrevious }) => 
         
         {availableVehicles.length === 0 ? (
           <div className="text-center py-8">
-            <p className="text-gray-500">No vehicles available for the selected dates and location.</p>
+            <p className="text-gray-500">{tr('No vehicles available for the selected dates and location.', 'Aucun véhicule disponible pour les dates et le lieu sélectionnés.')}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

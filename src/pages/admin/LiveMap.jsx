@@ -6,6 +6,7 @@ import { supabase } from '../../lib/supabase';
 import { fetchTourBookings } from '../../services/tourBookingService';
 import { buildTourTrackingUrl, fetchRecentTrackedTours, fetchTourTrackingLogs, groupTrackingLogsByTour } from '../../services/tourTrackingService';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
+import i18n from '../../i18n';
 
 const TOUR_BOOKING_MARKER = '[tour_booking]';
 const TOUR_BOOKINGS_TABLE = 'app_687f658e98_tour_bookings';
@@ -16,6 +17,8 @@ const MAX_POINT_ACCURACY_METERS = 25;
 const FALLBACK_POINT_ACCURACY_METERS = 60;
 const MAX_BASE_JUMP_METERS = 35;
 const MIN_HEADING_SPEED_MPS = 1.5;
+const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
+const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 let mapboxLoaderPromise = null;
 let leafletLoaderPromise = null;
@@ -121,6 +124,28 @@ const buildStableTrackingPoints = (points = []) => {
   return stablePoints;
 };
 
+const buildAtvMarkerHtml = () => `
+  <div style="position:relative;width:42px;height:52px;display:flex;align-items:flex-end;justify-content:center;">
+    <div style="position:absolute;bottom:0;width:18px;height:18px;background:#dc2626;transform:rotate(45deg);border-radius:4px;box-shadow:0 10px 18px rgba(15,23,42,0.22);"></div>
+    <div style="position:absolute;bottom:12px;width:42px;height:30px;display:flex;align-items:center;justify-content:center;">
+      <div style="position:relative;width:36px;height:22px;">
+        <div style="position:absolute;left:3px;right:3px;top:5px;height:11px;border-radius:8px;background:#ef4444;border:2px solid #ffffff;box-shadow:0 8px 16px rgba(15,23,42,0.2);"></div>
+        <div style="position:absolute;left:9px;top:1px;width:18px;height:7px;border-radius:999px 999px 4px 4px;background:#b91c1c;border:2px solid #ffffff;border-bottom:none;"></div>
+        <div style="position:absolute;left:1px;bottom:0;width:10px;height:10px;border-radius:999px;background:#111827;border:2px solid #ffffff;"></div>
+        <div style="position:absolute;right:1px;bottom:0;width:10px;height:10px;border-radius:999px;background:#111827;border:2px solid #ffffff;"></div>
+      </div>
+    </div>
+  </div>
+`;
+
+const createLeafletAtvIcon = (L) =>
+  L.divIcon({
+    className: 'tour-live-atv-marker',
+    html: buildAtvMarkerHtml(),
+    iconSize: [42, 52],
+    iconAnchor: [21, 50],
+  });
+
 const extractMarkedJson = (value, marker) => {
   const text = typeof value === 'string' ? value : '';
   const markerIndex = text.indexOf(marker);
@@ -168,9 +193,9 @@ const normalizeTourRows = (rows = []) => {
       groupId,
       status,
       rowIds: sortedRows.map((row) => row.id),
-      packageName: meta.packageName || 'Tour package',
+      packageName: meta.packageName || tr('Tour package', 'Package tour'),
       customerName: first.customer_name || meta.customerName || 'Riders',
-      guideName: meta.guideName || meta.startedByName || 'Guide pending',
+      guideName: meta.guideName || meta.startedByName || tr('Guide pending', 'Guide en attente'),
       guideId: meta.guideId || '',
       quadCount: Number(meta.quadCount || sortedRows.length || 1),
       ridersCount: Number(meta.ridersCount || sortedRows.length || 1),
@@ -184,9 +209,9 @@ const normalizeTourRows = (rows = []) => {
 };
 
 const formatDateTime = (value) => {
-  if (!value) return 'Not started yet';
+  if (!value) return tr('Not started yet', 'Pas encore démarré');
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Not available';
+  if (Number.isNaN(date.getTime())) return tr('Not available', 'Non disponible');
   return date.toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -196,12 +221,12 @@ const formatDateTime = (value) => {
 };
 
 const formatLastPing = (value) => {
-  if (!value) return 'No GPS ping yet';
+  if (!value) return tr('No GPS ping yet', 'Aucun point GPS pour le moment');
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'No GPS ping yet';
+  if (Number.isNaN(date.getTime())) return tr('No GPS ping yet', 'Aucun point GPS pour le moment');
 
   const diffMs = Date.now() - date.getTime();
-  if (diffMs < 60 * 1000) return 'Updated just now';
+  if (diffMs < 60 * 1000) return tr('Updated just now', "Mis à jour à l'instant");
   if (diffMs < 60 * 60 * 1000) return `${Math.floor(diffMs / 60000)}m ago`;
   return `${Math.floor(diffMs / (60 * 60 * 1000))}h ago`;
 };
@@ -211,14 +236,14 @@ const formatGuestSummary = (tour) => {
   const ridersCount = Number(tour?.ridersCount || 0);
 
   if (ridersCount > 1 && leadName) {
-    return `${leadName} + ${ridersCount - 1} more`;
+    return isFrenchLocale() ? `${leadName} + ${ridersCount - 1} de plus` : `${leadName} + ${ridersCount - 1} more`;
   }
 
   if (ridersCount > 1) {
-    return `${ridersCount} riders`;
+    return isFrenchLocale() ? `${ridersCount} pilotes` : `${ridersCount} riders`;
   }
 
-  return leadName || 'Riders';
+  return leadName || tr('Riders', 'Pilotes');
 };
 
 const loadMapbox = () => {
@@ -274,6 +299,7 @@ const loadLeaflet = () => {
 };
 
 const LiveMap = () => {
+  const isFrench = isFrenchLocale();
   const location = useLocation();
   const { userProfile } = useAuth();
   const mapContainerRef = useRef(null);
@@ -470,37 +496,23 @@ const LiveMap = () => {
             }).addTo(mapRef.current);
           }
 
-          const latLngs = stableSelectedPoints
-            .map((point) => [point.latitude, point.longitude])
-            .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng));
-
           if (routeLayerRef.current) {
-            routeLayerRef.current.setLatLngs(latLngs);
-          } else {
-            routeLayerRef.current = L.polyline(latLngs, {
-              color: '#7c3aed',
-              weight: 5,
-              opacity: 0.9,
-            }).addTo(mapRef.current);
+            mapRef.current.removeLayer(routeLayerRef.current);
+            routeLayerRef.current = null;
           }
 
           if (!markerRef.current) {
-            markerRef.current = L.circleMarker([latestPoint.latitude, latestPoint.longitude], {
-              radius: 9,
-              color: '#ffffff',
-              weight: 3,
-              fillColor: '#10b981',
-              fillOpacity: 1,
+            markerRef.current = L.marker([latestPoint.latitude, latestPoint.longitude], {
+              icon: createLeafletAtvIcon(L),
             }).addTo(mapRef.current);
           } else {
             markerRef.current.setLatLng([latestPoint.latitude, latestPoint.longitude]);
           }
 
-          if (latLngs.length > 1) {
-            mapRef.current.fitBounds(latLngs, { padding: [32, 32], maxZoom: 16 });
-          } else {
-            mapRef.current.setView([latestPoint.latitude, latestPoint.longitude], Math.max(mapRef.current.getZoom(), 15));
-          }
+          mapRef.current.setView(
+            [latestPoint.latitude, latestPoint.longitude],
+            Math.max(mapRef.current.getZoom(), 15),
+          );
 
           setTimeout(() => {
             mapRef.current?.invalidateSize?.();
@@ -629,15 +641,10 @@ const LiveMap = () => {
         const markerElement = markerRef.current || document.createElement('div');
         markerRef.current = markerElement;
         markerElement.className = 'tour-live-marker';
-        markerElement.innerHTML = `
-          <div style="position:relative;display:flex;align-items:center;justify-content:center;width:34px;height:34px;">
-            <div style="position:absolute;inset:4px;border-radius:9999px;background:#10b981;border:4px solid #ffffff;box-shadow:0 10px 24px rgba(15,23,42,0.30);"></div>
-            <div style="position:absolute;bottom:-6px;width:14px;height:14px;background:#10b981;transform:rotate(45deg);border-bottom:3px solid #ffffff;border-right:3px solid #ffffff;"></div>
-          </div>
-        `;
+        markerElement.innerHTML = buildAtvMarkerHtml();
 
         if (!markerElement.__markerInstance) {
-          markerElement.__markerInstance = new mapboxgl.Marker({ element: markerElement, anchor: 'center' })
+          markerElement.__markerInstance = new mapboxgl.Marker({ element: markerElement, anchor: 'bottom' })
             .setLngLat([latestPoint.longitude, latestPoint.latitude])
             .addTo(mapRef.current);
         } else {
@@ -757,9 +764,9 @@ const LiveMap = () => {
     <div className="min-h-full bg-slate-50">
       <AdminModuleHero
         icon={<Compass className="h-8 w-8 text-white" />}
-        eyebrow="Live Tour Map"
-        title="Track active guides in real time"
-        description="Follow live GPS pings from each guide and open the tracker directly when a tour is out."
+        eyebrow={tr('Live Tour Map', 'Carte des tours en direct')}
+        title={tr('Track active guides in real time', 'Suivez les guides actifs en temps réel')}
+        description={tr('Follow live GPS pings from each guide and open the tracker directly when a tour is out.', 'Suivez les points GPS en direct de chaque guide et ouvrez directement le traceur lorsqu’un tour est en cours.')}
         actions={
           <>
             <Link
@@ -767,7 +774,7 @@ const LiveMap = () => {
               className="inline-flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
             >
               <Compass className="h-4 w-4" />
-              Schedule
+              {tr('Schedule', 'Planning')}
             </Link>
             <button
               type="button"
@@ -775,7 +782,7 @@ const LiveMap = () => {
               className="inline-flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
             >
               <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
+              {tr('Refresh', 'Actualiser')}
             </button>
           </>
         }
@@ -786,12 +793,12 @@ const LiveMap = () => {
         <section className="rounded-xl border-2 border-violet-200 bg-white shadow-sm">
           <div className="border-b border-violet-100 px-5 py-4 flex items-center justify-between">
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-violet-400">Active Tours</p>
-              <h2 className="mt-1 text-lg font-black text-slate-900">{activeTours.length} out now</h2>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-violet-400">{tr('Active Tours', 'Tours actifs')}</p>
+              <h2 className="mt-1 text-lg font-black text-slate-900">{isFrench ? `${activeTours.length} en cours` : `${activeTours.length} out now`}</h2>
             </div>
             <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-100 px-3 py-1.5 text-xs font-semibold text-emerald-700">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              Live
+              {tr('Live', 'En direct')}
             </span>
           </div>
 
@@ -805,14 +812,14 @@ const LiveMap = () => {
             ) : activeTours.length === 0 ? (
               <div className="rounded-xl border border-dashed border-violet-200 bg-violet-50/40 px-5 py-10 text-center">
                 <MapPinned className="mx-auto h-9 w-9 text-violet-300" />
-                <h3 className="mt-3 text-base font-bold text-slate-900">No tours live right now</h3>
-                <p className="mt-1.5 text-sm text-slate-500">Once a guide starts a tour and enables phone tracking, the live route will appear here.</p>
+                <h3 className="mt-3 text-base font-bold text-slate-900">{tr('No tours live right now', 'Aucun tour en direct pour le moment')}</h3>
+                <p className="mt-1.5 text-sm text-slate-500">{tr('Once a guide starts a tour and enables phone tracking, the live route will appear here.', 'Dès qu’un guide démarre un tour et active le suivi téléphone, l’itinéraire en direct apparaîtra ici.')}</p>
                 <Link
                   to="/admin/tours?tab=schedule"
                   className="mt-4 inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700"
                 >
                   <Compass className="h-4 w-4" />
-                  Go to Tours
+                  {tr('Go to Tours', 'Aller aux tours')}
                 </Link>
               </div>
             ) : (
@@ -837,10 +844,10 @@ const LiveMap = () => {
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="text-base font-bold text-slate-900 truncate">{tour.packageName}</p>
-                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">Active</span>
+                            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">{tr('Active', 'Actif')}</span>
                           </div>
                           <p className="mt-0.5 text-sm text-slate-600">{formatGuestSummary(tour)}</p>
-                          <p className="text-xs text-slate-400">{tour.guideName} · {tour.quadCount} quads</p>
+                          <p className="text-xs text-slate-400">{tour.guideName} · {tour.quadCount} {tr('quads', 'quads')}</p>
                         </div>
                         <Navigation className={`h-4 w-4 shrink-0 mt-0.5 ${isSelected ? 'text-violet-600' : 'text-slate-400'}`} />
                       </div>
@@ -848,11 +855,11 @@ const LiveMap = () => {
                       {/* KM pricing style data rows */}
                       <div className="mt-3 space-y-1.5 border-t border-slate-100 pt-3">
                         <div className="flex items-center justify-between text-xs">
-                          <span className="text-slate-500">Started</span>
+                          <span className="text-slate-500">{tr('Started', 'Démarré')}</span>
                           <span className="font-semibold text-slate-900">{formatDateTime(tour.startedAt || tour.scheduledStartAt)}</span>
                         </div>
                         <div className="flex items-center justify-between text-xs">
-                          <span className="text-slate-500">Last GPS</span>
+                          <span className="text-slate-500">{tr('Last GPS', 'Dernier GPS')}</span>
                           <span className="font-semibold text-violet-700">{formatLastPing(latest?.capturedAt)}</span>
                         </div>
                       </div>
@@ -869,13 +876,13 @@ const LiveMap = () => {
           {/* Section header */}
           <div className="border-b border-violet-100 px-5 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-violet-400">Live Route</p>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-violet-400">{tr('Live Route', 'Itinéraire en direct')}</p>
               <h2 className="mt-1 text-lg font-bold text-slate-900">
-                {selectedTour ? selectedTour.packageName : 'Waiting for active tours'}
+                {selectedTour ? selectedTour.packageName : tr('Waiting for active tours', 'En attente de tours actifs')}
               </h2>
               {selectedTour && (
                 <p className="text-xs text-slate-500">
-                  {selectedTour.guideName} · {selectedTour.ridersCount || 1} riders · {selectedTour.quadCount} quads
+                  {selectedTour.guideName} · {selectedTour.ridersCount || 1} {tr('riders', 'pilotes')} · {selectedTour.quadCount} {tr('quads', 'quads')}
                 </p>
               )}
             </div>
@@ -890,7 +897,7 @@ const LiveMap = () => {
                     className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:from-violet-700 hover:to-indigo-800"
                   >
                     <Smartphone className="h-4 w-4" />
-                    Open tracker
+                    {tr('Open tracker', 'Ouvrir le traceur')}
                   </a>
                 )}
                 {latestPoint && (
@@ -901,7 +908,7 @@ const LiveMap = () => {
                     className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
                   >
                     <ExternalLink className="h-4 w-4" />
-                    Open in Maps
+                    {tr('Open in Maps', 'Ouvrir dans Maps')}
                   </a>
                 )}
               </div>
@@ -912,9 +919,9 @@ const LiveMap = () => {
             <div className="flex min-h-[480px] items-center justify-center rounded-b-xl bg-violet-50/30 p-8">
               <div className="max-w-md text-center">
                 <Route className="mx-auto h-12 w-12 text-violet-300" />
-                <h3 className="mt-4 text-xl font-bold text-slate-900">No live route yet</h3>
+                <h3 className="mt-4 text-xl font-bold text-slate-900">{tr('No live route yet', 'Pas encore d’itinéraire en direct')}</h3>
                 <p className="mt-2 text-sm text-slate-500">
-                  Once a tour is active and the guide enables phone tracking, the moving route and live vehicle marker appear here.
+                  {tr('Once a tour is active and the guide enables phone tracking, the moving route and live vehicle marker appear here.', 'Quand un tour est actif et que le guide active le suivi téléphone, l’itinéraire mobile et le marqueur véhicule apparaissent ici.')}
                 </p>
               </div>
             </div>
@@ -926,14 +933,14 @@ const LiveMap = () => {
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-violet-100 bg-violet-50/60 px-4 py-3">
                   <div className="flex items-center gap-2">
                     <Activity className="h-4 w-4 text-violet-600" />
-                    <span className="text-sm font-semibold text-violet-700">Live moving trace</span>
+                    <span className="text-sm font-semibold text-violet-700">{tr('Live moving trace', 'Trace mobile en direct')}</span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded-lg bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                      {selectedPoints.length} pings
+                      {selectedPoints.length} {tr('pings', 'points')}
                     </span>
                     <span className="rounded-lg bg-violet-100 px-2.5 py-1 text-xs font-semibold text-violet-700">
-                      {selectedTour.quadCount} quad{selectedTour.quadCount === 1 ? '' : 's'}
+                      {selectedTour.quadCount} {isFrench ? `quad${selectedTour.quadCount === 1 ? '' : 's'}` : `quad${selectedTour.quadCount === 1 ? '' : 's'}`}
                     </span>
                     <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
                       {formatLastPing(latestPoint?.capturedAt)}
@@ -952,23 +959,23 @@ const LiveMap = () => {
               {/* Info bar below the map — Guide / Guests / Vehicles / GPS */}
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <div className="rounded-xl border-2 border-violet-100 bg-white px-4 py-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-400">Guide</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-400">{tr('Guide', 'Guide')}</p>
                   <p className="mt-1 text-sm font-bold text-slate-900 truncate">{selectedTour.guideName}</p>
                 </div>
                 <div className="rounded-xl border-2 border-violet-100 bg-white px-4 py-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-400">Guests</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-400">{tr('Guests', 'Invités')}</p>
                   <p className="mt-1 text-sm font-bold text-slate-900 truncate">{formatGuestSummary(selectedTour)}</p>
                 </div>
                 <div className="rounded-xl border-2 border-violet-100 bg-white px-4 py-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-400">Vehicles</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-400">{tr('Vehicles', 'Véhicules')}</p>
                   <p className="mt-1 text-sm font-bold text-slate-900 truncate">
-                    {selectedTour.assignedVehicles.map((v) => v?.plate_number).filter(Boolean).join(', ') || 'Pending'}
+                    {selectedTour.assignedVehicles.map((v) => v?.plate_number).filter(Boolean).join(', ') || tr('Pending', 'En attente')}
                   </p>
                 </div>
                 <div className="rounded-xl border-2 border-violet-100 bg-white px-4 py-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-400">Position</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-400">{tr('Position', 'Position')}</p>
                   <p className="mt-1 text-sm font-bold text-violet-700 truncate">
-                    {latestPoint ? `${latestPoint.latitude.toFixed(4)}, ${latestPoint.longitude.toFixed(4)}` : 'Waiting…'}
+                    {latestPoint ? `${latestPoint.latitude.toFixed(4)}, ${latestPoint.longitude.toFixed(4)}` : tr('Waiting…', 'En attente…')}
                   </p>
                 </div>
               </div>
@@ -976,15 +983,15 @@ const LiveMap = () => {
               {/* Recent pings — KM pricing style data rows */}
               <div className="rounded-xl border-2 border-violet-200 bg-white">
                 <div className="border-b border-violet-100 px-5 py-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-violet-400">Recent GPS pings</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-violet-400">{tr('Recent GPS pings', 'Points GPS récents')}</p>
                 </div>
                 <div className="divide-y divide-slate-100">
                   {recentPoints.length === 0 ? (
-                    <p className="px-5 py-4 text-sm text-slate-400">Waiting for route movement…</p>
+                    <p className="px-5 py-4 text-sm text-slate-400">{tr('Waiting for route movement…', "En attente du mouvement de l'itinéraire…")}</p>
                   ) : (
                     recentPoints.map((point, index) => (
                       <div key={point.id || `${point.latitude}-${point.longitude}-${index}`} className="flex items-center justify-between gap-3 px-5 py-3 text-sm">
-                        <span className="font-semibold text-slate-900">{index === 0 ? 'Latest ping' : `Ping −${index}`}</span>
+                        <span className="font-semibold text-slate-900">{index === 0 ? tr('Latest ping', 'Dernier point') : (isFrench ? `Point −${index}` : `Ping −${index}`)}</span>
                         <span className="text-slate-500">{point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}</span>
                         <span className="text-xs font-medium text-violet-600 shrink-0">{formatLastPing(point.capturedAt)}</span>
                       </div>

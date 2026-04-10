@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import { supabase } from '../../utils/supabaseClient';
+import i18n from '../../i18n';
 
 const MODULES = [
   { id: 'Dashboard', name: 'Dashboard', icon: '📊' },
   { id: 'Tours & Booking', name: 'Tours & Booking', icon: '🏍️' },
+  { id: 'Team Tasks', name: 'Team Tasks', icon: '✅' },
   { id: 'Booking Management', name: 'Booking Management', icon: '📅' },
   { id: 'Fleet Management', name: 'Fleet Management', icon: '🚗' },
   { id: 'Quad Maintenance', name: 'Quad Maintenance', icon: '🔧' },
@@ -17,6 +19,8 @@ const MODULES = [
 ];
 
 const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [permissions, setPermissions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [updating, setUpdating] = useState({});
@@ -108,14 +112,16 @@ const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
       }
 
       // Show success message
-      const message = `${moduleId} access ${newAccessStatus ? 'granted' : 'revoked'} for ${user.name}`;
+      const message = newAccessStatus
+        ? tr(`${moduleId} access granted for ${user.name}`, `Accès à ${moduleId} accordé pour ${user.name}`)
+        : tr(`${moduleId} access revoked for ${user.name}`, `Accès à ${moduleId} révoqué pour ${user.name}`);
       if (window.showToast) {
         window.showToast(message, 'success');
       }
 
     } catch (error) {
       console.error('Error updating permission:', error);
-      alert(`Failed to update permission: ${error.message}`);
+      alert(tr(`Failed to update permission: ${error.message}`, `Impossible de mettre à jour l'autorisation : ${error.message}`));
     } finally {
       setUpdating(prev => ({ ...prev, [moduleId]: false }));
     }
@@ -153,14 +159,16 @@ const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
           reason: `All modules ${grantAll ? 'granted to' : 'revoked from'} ${user.email}`
         });
 
-      const message = `All permissions ${grantAll ? 'granted' : 'revoked'} for ${user.name}`;
+      const message = grantAll
+        ? tr(`All permissions granted for ${user.name}`, `Toutes les autorisations ont été accordées à ${user.name}`)
+        : tr(`All permissions revoked for ${user.name}`, `Toutes les autorisations ont été révoquées pour ${user.name}`);
       if (window.showToast) {
         window.showToast(message, 'success');
       }
 
     } catch (error) {
       console.error('Error updating batch permissions:', error);
-      alert(`Failed to update permissions: ${error.message}`);
+      alert(tr(`Failed to update permissions: ${error.message}`, `Impossible de mettre à jour les autorisations : ${error.message}`));
     } finally {
       setLoading(false);
     }
@@ -176,13 +184,13 @@ const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
     <div className="mt-4 p-4 bg-gray-50 rounded-lg border">
       <div className="flex justify-between items-center mb-4">
         <div className="flex items-center space-x-2">
-          <h4 className="text-sm font-medium text-gray-900">Module Permissions</h4>
+          <h4 className="text-sm font-medium text-gray-900">{tr('Module Permissions', 'Autorisations des modules')}</h4>
           <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
             getActiveModulesCount() === 0 
               ? 'bg-red-100 text-red-800' 
               : 'bg-blue-100 text-blue-800'
           }`}>
-            {getActiveModulesCount()}/{MODULES.length} Active
+            {getActiveModulesCount()}/{MODULES.length} {tr('Active', 'Actifs')}
           </span>
         </div>
         
@@ -193,14 +201,14 @@ const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
               disabled={loading}
               className="text-xs bg-green-100 hover:bg-green-200 text-green-800 px-3 py-1 rounded transition-colors disabled:opacity-50"
             >
-              Grant All
+              {tr('Grant All', 'Tout accorder')}
             </button>
             <button
               onClick={() => handleBatchUpdate(false)}
               disabled={loading || getActiveModulesCount() === 0}
               className="text-xs bg-red-100 hover:bg-red-200 text-red-800 px-3 py-1 rounded transition-colors disabled:opacity-50"
             >
-              Deactivate All ({getActiveModulesCount()})
+              {tr(`Deactivate All (${getActiveModulesCount()})`, `Tout désactiver (${getActiveModulesCount()})`)}
             </button>
           </div>
         )}
@@ -213,9 +221,9 @@ const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 15.5c-.77.833.192 2.5 1.732 2.5z" />
             </svg>
             <div>
-              <h5 className="text-sm font-medium text-red-800">No Active Modules</h5>
+              <h5 className="text-sm font-medium text-red-800">{tr('No Active Modules', 'Aucun module actif')}</h5>
               <p className="text-sm text-red-600 mt-1">
-                {user.name} currently has no access to any modules. Use "Grant All" or toggle individual modules to provide access.
+                {tr(`${user.name} currently has no access to any modules. Use "Grant All" or toggle individual modules to provide access.`, `${user.name} n'a actuellement accès à aucun module. Utilisez « Tout accorder » ou activez les modules individuellement pour fournir un accès.`)}
               </p>
             </div>
           </div>
@@ -228,7 +236,7 @@ const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
-          <span className="ml-2 text-sm text-gray-600">Loading permissions...</span>
+          <span className="ml-2 text-sm text-gray-600">{tr('Loading permissions...', 'Chargement des autorisations...')}</span>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -244,7 +252,7 @@ const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
                   <div className={`text-xs ${
                     module.hasAccess ? 'text-green-600' : 'text-red-600'
                   }`}>
-                    {module.hasAccess ? 'Access Granted' : 'Access Denied'}
+                    {module.hasAccess ? tr('Access Granted', 'Accès accordé') : tr('Access Denied', 'Accès refusé')}
                   </div>
                 </div>
               </div>
@@ -284,7 +292,7 @@ const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
 
       {!canManagePermissions && (
         <div className="mt-3 text-center text-xs text-gray-500">
-          View only - You don't have permission to modify access controls
+          {tr("View only - You don't have permission to modify access controls", "Lecture seule - vous n'avez pas l'autorisation de modifier les contrôles d'accès")}
         </div>
       )}
     </div>

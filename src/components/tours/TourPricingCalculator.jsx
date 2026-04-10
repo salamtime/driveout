@@ -4,6 +4,7 @@ import { usePricing } from '../../contexts/PricingContext';
 import { calculateBookingPrice, isWeekend, isHoliday, formatPrice } from '../../utils/pricingUtils';
 import { getDefaultSettings } from '../../services/settingsService';
 import { getEmergencyPrices } from '../common/EmergencyPriceProvider';
+import i18n from '../../i18n';
 
 /**
  * Tour Pricing Calculator
@@ -18,6 +19,8 @@ const TourPricingCalculator = ({
   className = '',
   onChange = () => {}
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { settings, loading, pricingEnabled, source, online } = usePricing();
   
   // Initialize with non-zero values for immediate display
@@ -121,18 +124,18 @@ const TourPricingCalculator = ({
 
   return (
     <div className={`pricing-summary ${className}`}>
-      <h3 className="text-sm font-medium text-gray-700 mb-2">Payment Information</h3>
+      <h3 className="text-sm font-medium text-gray-700 mb-2">{tr('Payment Information', 'Informations de paiement')}</h3>
       
       {loading ? (
         <div className="p-2 bg-gray-50 rounded text-gray-500 text-sm">
-          Loading pricing settings...
+          {tr('Loading pricing settings...', 'Chargement des paramètres de tarification...')}
         </div>
       ) : (
         <div className="space-y-2 text-sm">
           <div className="flex justify-between items-center">
             <div className="flex items-center">
               <DollarSign size={14} className="mr-1 text-gray-500" />
-              <span>Base Price per Quad:</span>
+              <span>{tr('Base Price per Quad:', 'Prix de base par quad :')}</span>
             </div>
             <span className="font-medium">${Math.max(1, parseFloat((priceDetails.basePrice || 0) / (parseInt(numQuads) || 1))).toFixed(2)}</span>
           </div>
@@ -141,9 +144,9 @@ const TourPricingCalculator = ({
             <div className="flex justify-between items-center">
               <div className="flex items-center">
                 <Users size={14} className="mr-1 text-gray-500" />
-                <span>Extra Passenger Fee:</span>
+                <span>{tr('Extra Passenger Fee:', 'Frais passager supplémentaire :')}</span>
               </div>
-              <span className="font-medium">${parseFloat((priceDetails.passengerFees || 0) / (parseInt(numQuads) || 1)).toFixed(2)} per quad</span>
+              <span className="font-medium">${parseFloat((priceDetails.passengerFees || 0) / (parseInt(numQuads) || 1)).toFixed(2)} {tr('per quad', 'par quad')}</span>
             </div>
           )}
           
@@ -151,31 +154,31 @@ const TourPricingCalculator = ({
             <div className="flex justify-between items-center">
               <div className="flex items-center">
                 <Clock size={14} className="mr-1 text-gray-500" />
-                <span>{(priceDetails.holidaySurcharge || 0) > 0 ? 'Holiday' : 'Weekend'} Surcharge:</span>
+                <span>{(priceDetails.holidaySurcharge || 0) > 0 ? tr('Holiday', 'Jour férié') : tr('Weekend', 'Week-end')} {tr('Surcharge:', 'Supplément :')}</span>
               </div>
               <span className="font-medium">
-                ${parseFloat(((priceDetails.weekendSurcharge || 0) + (priceDetails.holidaySurcharge || 0)) / (parseInt(numQuads) || 1)).toFixed(2)} per quad
+                ${parseFloat(((priceDetails.weekendSurcharge || 0) + (priceDetails.holidaySurcharge || 0)) / (parseInt(numQuads) || 1)).toFixed(2)} {tr('per quad', 'par quad')}
               </span>
             </div>
           )}
           
           <div className="flex justify-between items-center pt-1 border-t">
             <div className="flex items-center">
-              <span>Number of Quads:</span>
+              <span>{tr('Number of Quads:', 'Nombre de quads :')}</span>
             </div>
             <span className="font-medium">× {parseInt(numQuads) || 1}</span>
           </div>
           
           <div className="flex justify-between items-center pt-1 border-t">
             <div className="flex items-center font-medium">
-              <span>Total:</span>
+              <span>{tr('Total:', 'Total :')}</span>
             </div>
             <span className="font-bold text-blue-600">${Math.max(1, parseFloat(priceDetails.total || 0)).toFixed(2)}</span>
           </div>
           
           <div className="flex justify-between items-center text-xs text-gray-500">
             <div className="flex items-center">
-              <span>Deposit ({parseInt(pricingSettings.depositPercentage) || 25}%):</span>
+              <span>{tr('Deposit', 'Dépôt')} ({parseInt(pricingSettings.depositPercentage) || 25}%) :</span>
             </div>
             <span>${Math.max(0.25, parseFloat(priceDetails.deposit || 0)).toFixed(2)}</span>
           </div>

@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { 
@@ -27,6 +28,8 @@ import { toast } from 'react-hot-toast';
  * - Quick action buttons
  */
 const ReportsTabV2 = ({ filters, onExport }) => {
+  const { t } = useTranslation();
+  const tr = (en, fr) => t(en, fr);
   // Handle specific report exports
   const handleExportReport = async (reportType) => {
     try {
@@ -46,7 +49,7 @@ const ReportsTabV2 = ({ filters, onExport }) => {
           exportData = await financeApiV2.exportCustomerAnalysis(filters);
           break;
         default:
-          throw new Error('Unknown report type');
+          throw new Error(tr('Unknown report type', 'Type de rapport inconnu'));
       }
       
       // Create and download CSV
@@ -72,10 +75,10 @@ const ReportsTabV2 = ({ filters, onExport }) => {
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
       
-      toast.success(`${reportType.replace('_', ' ').toUpperCase()} exported successfully`);
+      toast.success(tr('Report exported successfully', 'Rapport exporté avec succès'));
     } catch (error) {
       console.error('Error exporting report:', error);
-      toast.error('Failed to export report');
+      toast.error(tr('Failed to export report', "Impossible d'exporter le rapport"));
     }
   };
 
@@ -99,39 +102,39 @@ const ReportsTabV2 = ({ filters, onExport }) => {
   const reports = [
     {
       id: 'period_pl',
-      title: 'Period P&L Statement',
-      description: 'Comprehensive profit and loss statement for the selected period',
+      title: tr('Period P&L Statement', 'Compte de résultat de la période'),
+      description: tr('Comprehensive profit and loss statement for the selected period', 'Compte de résultat complet pour la période sélectionnée'),
       icon: BarChart3,
       color: 'text-blue-600',
       bgColor: 'bg-blue-100',
-      includes: ['Daily revenue trends', 'Expense breakdowns', 'Tax calculations', 'Net profit analysis']
+      includes: [tr('Daily revenue trends', 'Tendances quotidiennes du revenu'), tr('Expense breakdowns', 'Répartition des dépenses'), tr('Tax calculations', 'Calculs de taxes'), tr('Net profit analysis', 'Analyse du bénéfice net')]
     },
     {
       id: 'vehicle_profitability',
-      title: 'Vehicle Profitability Report',
-      description: 'Individual vehicle performance and ROI analysis',
+      title: tr('Vehicle Profitability Report', 'Rapport de rentabilité des véhicules'),
+      description: tr('Individual vehicle performance and ROI analysis', 'Analyse des performances individuelles des véhicules et du ROI'),
       icon: Car,
       color: 'text-green-600',
       bgColor: 'bg-green-100',
-      includes: ['Revenue per vehicle', 'Operating costs', 'Profit margins', 'Utilization rates']
+      includes: [tr('Revenue per vehicle', 'Revenu par véhicule'), tr('Operating costs', "Coûts d'exploitation"), tr('Profit margins', 'Marges bénéficiaires'), tr('Utilization rates', "Taux d'utilisation")]
     },
     {
       id: 'ar_aging',
-      title: 'Accounts Receivable Aging',
-      description: 'Outstanding balances and collection analysis',
+      title: tr('Accounts Receivable Aging', 'Ancienneté des créances clients'),
+      description: tr('Outstanding balances and collection analysis', 'Analyse des soldes impayés et du recouvrement'),
       icon: Calendar,
       color: 'text-orange-600',
       bgColor: 'bg-orange-100',
-      includes: ['Current balances', 'Aging buckets', 'Collection risks', 'Customer payment patterns']
+      includes: [tr('Current balances', 'Soldes actuels'), tr('Aging buckets', "Tranches d'ancienneté"), tr('Collection risks', 'Risques de recouvrement'), tr('Customer payment patterns', 'Habitudes de paiement clients')]
     },
     {
       id: 'customer_analysis',
-      title: 'Customer Financial Analysis',
-      description: 'Customer lifetime value and segmentation report',
+      title: tr('Customer Financial Analysis', 'Analyse financière des clients'),
+      description: tr('Customer lifetime value and segmentation report', 'Rapport sur la valeur vie client et la segmentation'),
       icon: Users,
       color: 'text-purple-600',
       bgColor: 'bg-purple-100',
-      includes: ['Customer tiers', 'Lifetime value', 'Revenue trends', 'Activity patterns']
+      includes: [tr('Customer tiers', 'Catégories de clients'), tr('Lifetime value', 'Valeur vie client'), tr('Revenue trends', 'Tendances de revenu'), tr('Activity patterns', "Schémas d'activité")]
     }
   ];
 
@@ -142,28 +145,28 @@ const ReportsTabV2 = ({ filters, onExport }) => {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <FileText className="h-5 w-5" />
-            Financial Reports
+            {tr('Financial Reports', 'Rapports financiers')}
           </CardTitle>
           <CardDescription>
-            Generate and export comprehensive financial reports for the period: {formatDateRange()}
+            {tr('Generate and export comprehensive financial reports for the period:', 'Générez et exportez des rapports financiers complets pour la période :')} {formatDateRange()}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-4">
             <div className="flex items-center gap-2 text-sm text-gray-600">
               <Calendar className="h-4 w-4" />
-              <span>Period: {formatDateRange()}</span>
+              <span>{tr('Period:', 'Période :')} {formatDateRange()}</span>
             </div>
             {filters.vehicleIds.length > 0 && (
               <div className="flex items-center gap-2 text-sm text-gray-600">
                 <Car className="h-4 w-4" />
-                <span>{filters.vehicleIds.length} vehicle{filters.vehicleIds.length !== 1 ? 's' : ''} selected</span>
+                <span>{filters.vehicleIds.length} {tr(filters.vehicleIds.length !== 1 ? 'vehicles selected' : 'vehicle selected', filters.vehicleIds.length !== 1 ? 'véhicules sélectionnés' : 'véhicule sélectionné')}</span>
               </div>
             )}
             {filters.customerIds.length > 0 && (
               <div className="flex items-center gap-2 text-sm text-gray-600">
                 <Users className="h-4 w-4" />
-                <span>{filters.customerIds.length} customer{filters.customerIds.length !== 1 ? 's' : ''} selected</span>
+                <span>{filters.customerIds.length} {tr(filters.customerIds.length !== 1 ? 'customers selected' : 'customer selected', filters.customerIds.length !== 1 ? 'clients sélectionnés' : 'client sélectionné')}</span>
               </div>
             )}
           </div>
@@ -175,10 +178,10 @@ const ReportsTabV2 = ({ filters, onExport }) => {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Download className="h-5 w-5" />
-            Quick Exports
+            {tr('Quick Exports', 'Exports rapides')}
           </CardTitle>
           <CardDescription>
-            One-click exports for common financial reports
+            {tr('One-click exports for common financial reports', 'Exports en un clic pour les rapports financiers courants')}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -189,8 +192,8 @@ const ReportsTabV2 = ({ filters, onExport }) => {
               onClick={() => handleExportReport('period_pl')}
             >
               <BarChart3 className="h-8 w-8 text-blue-600" />
-              <span className="font-medium">Period P&L</span>
-              <span className="text-xs text-gray-500">CSV Export</span>
+              <span className="font-medium">{tr('Period P&L', 'P&L période')}</span>
+              <span className="text-xs text-gray-500">{tr('CSV Export', 'Export CSV')}</span>
             </Button>
             
             <Button
@@ -199,8 +202,8 @@ const ReportsTabV2 = ({ filters, onExport }) => {
               onClick={() => handleExportReport('vehicle_profitability')}
             >
               <Car className="h-8 w-8 text-green-600" />
-              <span className="font-medium">Vehicle Reports</span>
-              <span className="text-xs text-gray-500">CSV Export</span>
+              <span className="font-medium">{tr('Vehicle Reports', 'Rapports véhicules')}</span>
+              <span className="text-xs text-gray-500">{tr('CSV Export', 'Export CSV')}</span>
             </Button>
             
             <Button
@@ -209,8 +212,8 @@ const ReportsTabV2 = ({ filters, onExport }) => {
               onClick={() => handleExportReport('ar_aging')}
             >
               <Calendar className="h-8 w-8 text-orange-600" />
-              <span className="font-medium">AR Aging</span>
-              <span className="text-xs text-gray-500">CSV Export</span>
+              <span className="font-medium">{tr('AR Aging', 'Ancienneté créances')}</span>
+              <span className="text-xs text-gray-500">{tr('CSV Export', 'Export CSV')}</span>
             </Button>
             
             <Button
@@ -219,8 +222,8 @@ const ReportsTabV2 = ({ filters, onExport }) => {
               onClick={() => handleExportReport('customer_analysis')}
             >
               <Users className="h-8 w-8 text-purple-600" />
-              <span className="font-medium">Customers</span>
-              <span className="text-xs text-gray-500">CSV Export</span>
+              <span className="font-medium">{tr('Customers', 'Clients')}</span>
+              <span className="text-xs text-gray-500">{tr('CSV Export', 'Export CSV')}</span>
             </Button>
 
             <Button
@@ -229,8 +232,8 @@ const ReportsTabV2 = ({ filters, onExport }) => {
               onClick={onExport}
             >
               <FileText className="h-8 w-8 text-purple-600" />
-              <span className="font-medium">Current View</span>
-              <span className="text-xs text-gray-500">CSV Export</span>
+              <span className="font-medium">{tr('Current View', 'Vue actuelle')}</span>
+              <span className="text-xs text-gray-500">{tr('CSV Export', 'Export CSV')}</span>
             </Button>
           </div>
         </CardContent>
@@ -261,7 +264,7 @@ const ReportsTabV2 = ({ filters, onExport }) => {
               <CardContent>
                 <div className="space-y-4">
                   <div>
-                    <h4 className="font-medium text-gray-900 mb-2">Includes:</h4>
+                    <h4 className="font-medium text-gray-900 mb-2">{tr('Includes:', 'Comprend :')}</h4>
                     <ul className="space-y-1">
                       {report.includes.map((item, index) => (
                         <li key={index} className="text-sm text-gray-600 flex items-center gap-2">
@@ -279,7 +282,7 @@ const ReportsTabV2 = ({ filters, onExport }) => {
                       size="sm"
                     >
                       <Download className="h-4 w-4 mr-2" />
-                      Export CSV
+                      {tr('Export CSV', 'Exporter CSV')}
                     </Button>
                     <Button
                       variant="outline"
@@ -287,7 +290,7 @@ const ReportsTabV2 = ({ filters, onExport }) => {
                       disabled
                       className="text-gray-400"
                     >
-                      XLSX (Soon)
+                      {tr('XLSX (Soon)', 'XLSX (Bientôt)')}
                     </Button>
                   </div>
                 </div>
@@ -300,27 +303,27 @@ const ReportsTabV2 = ({ filters, onExport }) => {
       {/* Export Guidelines */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Export Guidelines</CardTitle>
+          <CardTitle className="text-lg">{tr("Export Guidelines", "Consignes d'export")}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <h4 className="font-medium text-gray-900 mb-2">Data Scope</h4>
+              <h4 className="font-medium text-gray-900 mb-2">{tr('Data Scope', 'Portée des données')}</h4>
               <ul className="space-y-1 text-sm text-gray-600">
-                <li>• All exports respect current filter selections</li>
-                <li>• Date range: {formatDateRange()}</li>
-                <li>• Multi-tenant data isolation maintained</li>
-                <li>• Real-time data from rentals, maintenance, fuel, and vehicle lifecycle logs</li>
+                <li>{tr('• All exports respect current filter selections', '• Tous les exports respectent les filtres actuels')}</li>
+                <li>{tr(`• Date range: ${formatDateRange()}`, `• Période : ${formatDateRange()}`)}</li>
+                <li>{tr('• Multi-tenant data isolation maintained', '• Isolation des données multi-tenant maintenue')}</li>
+                <li>{tr('• Real-time data from rentals, maintenance, fuel, and vehicle lifecycle logs', '• Données en temps réel provenant des locations, de la maintenance, du carburant et du cycle de vie des véhicules')}</li>
               </ul>
             </div>
             
             <div>
-              <h4 className="font-medium text-gray-900 mb-2">File Formats</h4>
+              <h4 className="font-medium text-gray-900 mb-2">{tr('File Formats', 'Formats de fichier')}</h4>
               <ul className="space-y-1 text-sm text-gray-600">
-                <li>• CSV: Compatible with Excel, Google Sheets</li>
-                <li>• UTF-8 encoding for international characters</li>
-                <li>• Comma-separated with quoted text fields</li>
-                <li>• XLSX format coming soon</li>
+                <li>{tr('• CSV: Compatible with Excel, Google Sheets', '• CSV : compatible avec Excel et Google Sheets')}</li>
+                <li>{tr('• UTF-8 encoding for international characters', '• Encodage UTF-8 pour les caractères internationaux')}</li>
+                <li>{tr('• Comma-separated with quoted text fields', '• Valeurs séparées par des virgules avec les champs texte entre guillemets')}</li>
+                <li>{tr('• XLSX format coming soon', '• Format XLSX bientôt disponible')}</li>
               </ul>
             </div>
           </div>

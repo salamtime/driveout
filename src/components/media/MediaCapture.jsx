@@ -1,12 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Camera, Video, X, Check, Upload, AlertCircle } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import { getCompressedVideoRecorderOptions } from '../../utils/videoRecording';
+import i18n from '../../i18n';
 
 const MediaCapture = ({ 
   phase = 'opening', 
   onComplete,
   existingMedia = []
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [capturedFiles, setCapturedFiles] = useState(existingMedia || []);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingType, setRecordingType] = useState(null);
@@ -45,7 +49,7 @@ const MediaCapture = ({
       }
     } catch (error) {
       console.error('Error accessing camera:', error);
-      toast.error('Failed to access camera. Please check permissions.');
+      toast.error(tr('Failed to access camera. Please check permissions.', "Impossible d'accéder à la caméra. Vérifiez les autorisations."));
     }
   };
 
@@ -85,7 +89,7 @@ const MediaCapture = ({
         timestamp: new Date().toISOString()
       }]);
       
-      toast.success('Photo captured successfully');
+      toast.success(tr('Photo captured successfully', 'Photo capturée avec succès'));
       stopCamera();
     }, 'image/jpeg', 0.95);
   };
@@ -94,9 +98,7 @@ const MediaCapture = ({
     if (!stream) return;
 
     chunksRef.current = [];
-    const recorder = new MediaRecorder(stream, {
-      mimeType: 'video/webm;codecs=vp9'
-    });
+    const recorder = new MediaRecorder(stream, getCompressedVideoRecorderOptions());
 
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
@@ -120,7 +122,7 @@ const MediaCapture = ({
         timestamp: new Date().toISOString()
       }]);
       
-      toast.success(`Video recorded successfully (${duration}s)`);
+      toast.success(tr(`Video recorded successfully (${duration}s)`, `Vidéo enregistrée avec succès (${duration}s)`));
       stopCamera();
       setRecordingDuration(0);
     };
@@ -155,7 +157,7 @@ const MediaCapture = ({
       newFiles.splice(index, 1);
       return newFiles;
     });
-    toast.success('File removed');
+    toast.success(tr('File removed', 'Fichier supprimé'));
   };
 
   const handleFileUpload = (event) => {
@@ -190,7 +192,7 @@ const MediaCapture = ({
       }
     });
     
-    toast.success(`${files.length} file(s) uploaded`);
+    toast.success(tr(`${files.length} file(s) uploaded`, `${files.length} fichier(s) téléversé(s)`));
   };
 
   const handleComplete = () => {
@@ -198,7 +200,7 @@ const MediaCapture = ({
     if (phase === 'closing') {
       const hasVideo = capturedFiles.some(f => f.type === 'video');
       if (!hasVideo) {
-        toast.error('At least one video is required for closing documentation');
+        toast.error(tr('At least one video is required for closing documentation', 'Au moins une vidéo est requise pour la documentation de clôture'));
         return;
       }
     }
@@ -220,23 +222,23 @@ const MediaCapture = ({
           <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 mr-3 flex-shrink-0" />
           <div className="text-sm text-blue-900">
             <p className="font-semibold mb-2">
-              {phase === 'opening' ? 'Opening Documentation' : 'Closing Documentation'}
+              {phase === 'opening' ? tr('Opening Documentation', "Documentation d'ouverture") : tr('Closing Documentation', 'Documentation de clôture')}
             </p>
             <ul className="list-disc list-inside space-y-1">
               {phase === 'opening' ? (
                 <>
-                  <li>Capture photos and videos of the vehicle's current condition</li>
-                  <li>Document any existing damage, scratches, or issues</li>
-                  <li>Include interior and exterior views</li>
-                  <li>Record odometer reading</li>
+                  <li>{tr("Capture photos and videos of the vehicle's current condition", "Capturez des photos et vidéos de l'état actuel du véhicule")}</li>
+                  <li>{tr('Document any existing damage, scratches, or issues', 'Documentez tout dommage, rayure ou problème existant')}</li>
+                  <li>{tr('Include interior and exterior views', "Incluez des vues intérieures et extérieures")}</li>
+                  <li>{tr('Record odometer reading', 'Enregistrez le kilométrage')}</li>
                 </>
               ) : (
                 <>
-                  <li>At least one video is required for closing documentation</li>
-                  <li>Document the vehicle's condition upon return</li>
-                  <li>Capture any new damage or issues</li>
-                  <li>Record final odometer reading</li>
-                  <li>Include fuel level documentation</li>
+                  <li>{tr('At least one video is required for closing documentation', 'Au moins une vidéo est requise pour la documentation de clôture')}</li>
+                  <li>{tr("Document the vehicle's condition upon return", "Documentez l'état du véhicule au retour")}</li>
+                  <li>{tr('Capture any new damage or issues', 'Capturez tout nouveau dommage ou problème')}</li>
+                  <li>{tr('Record final odometer reading', 'Enregistrez le kilométrage final')}</li>
+                  <li>{tr('Include fuel level documentation', 'Incluez la documentation du niveau de carburant')}</li>
                 </>
               )}
             </ul>
@@ -308,7 +310,7 @@ const MediaCapture = ({
             className="flex items-center justify-center space-x-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors"
           >
             <Camera className="w-5 h-5" />
-            <span>Take Photo</span>
+            <span>{tr('Take Photo', 'Prendre une photo')}</span>
           </button>
           
           <button
@@ -316,12 +318,12 @@ const MediaCapture = ({
             className="flex items-center justify-center space-x-2 bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 transition-colors"
           >
             <Video className="w-5 h-5" />
-            <span>Record Video</span>
+            <span>{tr('Record Video', 'Enregistrer une vidéo')}</span>
           </button>
           
           <label className="flex items-center justify-center space-x-2 bg-gray-600 text-white px-6 py-3 rounded-lg hover:bg-gray-700 transition-colors cursor-pointer">
             <Upload className="w-5 h-5" />
-            <span>Upload Files</span>
+            <span>{tr('Upload Files', 'Téléverser des fichiers')}</span>
             <input
               type="file"
               multiple
@@ -337,7 +339,7 @@ const MediaCapture = ({
       {capturedFiles.length > 0 && (
         <div>
           <h3 className="text-lg font-semibold mb-3">
-            Captured Media ({capturedFiles.length})
+            {tr('Captured Media', 'Médias capturés')} ({capturedFiles.length})
           </h3>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {capturedFiles.map((item, index) => (
@@ -387,7 +389,7 @@ const MediaCapture = ({
           className="flex items-center space-x-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
           <Check className="w-5 h-5" />
-          <span>Complete {phase === 'opening' ? 'Opening' : 'Closing'} Documentation</span>
+          <span>{isFrench ? `Terminer la documentation ${phase === 'opening' ? "d'ouverture" : 'de clôture'}` : `Complete ${phase === 'opening' ? 'Opening' : 'Closing'} Documentation`}</span>
         </button>
       </div>
     </div>

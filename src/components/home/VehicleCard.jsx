@@ -42,7 +42,7 @@ const VehicleCard = ({ vehicle }) => {
             {vehicle.hourly_rate || vehicle.price || '300'} MAD / {t('rental.duration.hour')}
           </span>
           <Link 
-            to={`/rentals?vehicle=${vehicle.id}`}
+            to={`/rent/fleet-${vehicle.id}`}
             className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-xs sm:text-sm font-medium text-center transition-all duration-300 transform hover:scale-105 shadow hover:shadow-md relative overflow-hidden group flex items-center justify-center"
           >
             <span className="absolute inset-0 bg-white/20 transform -translate-x-full group-hover:translate-x-0 transition-transform duration-500"></span>

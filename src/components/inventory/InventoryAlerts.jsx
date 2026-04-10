@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { 
   AlertTriangle, 
   AlertCircle, 
@@ -15,6 +16,8 @@ import {
 import AlertsService from '../../services/AlertsService';
 
 const InventoryAlerts = () => {
+  const { i18n } = useTranslation();
+  const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
   const [alerts, setAlerts] = useState({
     lowStock: [],
     outOfStock: [],
@@ -110,17 +113,17 @@ const InventoryAlerts = () => {
   const getTypeLabel = (type) => {
     switch (type) {
       case 'out_of_stock':
-        return 'Out of Stock';
+        return tr('Out of Stock', 'Rupture de stock');
       case 'low_stock':
-        return 'Low Stock';
+        return tr('Low Stock', 'Stock faible');
       case 'overstock':
-        return 'Overstock';
+        return tr('Overstock', 'Surstock');
       case 'inactive':
-        return 'Inactive';
+        return tr('Inactive', 'Inactif');
       case 'high_value':
-        return 'High Value';
+        return tr('High Value', 'Valeur élevée');
       default:
-        return 'Unknown';
+        return tr('Unknown', 'Inconnu');
     }
   };
 
@@ -146,7 +149,7 @@ const InventoryAlerts = () => {
     return (
       <div className="flex items-center justify-center py-12">
         <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
-        <span className="ml-2 text-gray-600">Loading alerts...</span>
+        <span className="ml-2 text-gray-600">{tr('Loading alerts...', 'Chargement des alertes...')}</span>
       </div>
     );
   }
@@ -158,9 +161,9 @@ const InventoryAlerts = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Inventory Alerts</h2>
+          <h2 className="text-2xl font-bold text-gray-900">{tr('Inventory Alerts', "Alertes d'inventaire")}</h2>
           <p className="text-gray-600 mt-1">
-            Monitor and manage inventory issues across your stock
+            {tr('Monitor and manage inventory issues across your stock', "Surveillez et gérez les problèmes d'inventaire dans votre stock")}
           </p>
         </div>
         <button
@@ -168,7 +171,7 @@ const InventoryAlerts = () => {
           className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
         >
           <RefreshCw className="w-4 h-4 mr-2" />
-          Refresh
+          {tr('Refresh', 'Actualiser')}
         </button>
       </div>
 
@@ -177,7 +180,7 @@ const InventoryAlerts = () => {
         <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-600">Total Alerts</p>
+              <p className="text-sm text-gray-600">{tr('Total Alerts', 'Total des alertes')}</p>
               <p className="text-2xl font-bold text-gray-900">{alerts.summary.total}</p>
             </div>
             <div className="p-3 bg-gray-100 rounded-lg">
@@ -189,7 +192,7 @@ const InventoryAlerts = () => {
         <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-red-600">Critical</p>
+              <p className="text-sm text-red-600">{tr('Critical', 'Critique')}</p>
               <p className="text-2xl font-bold text-red-600">{alerts.summary.critical}</p>
             </div>
             <div className="p-3 bg-red-100 rounded-lg">
@@ -201,7 +204,7 @@ const InventoryAlerts = () => {
         <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-yellow-600">Warning</p>
+              <p className="text-sm text-yellow-600">{tr('Warning', 'Avertissement')}</p>
               <p className="text-2xl font-bold text-yellow-600">{alerts.summary.warning}</p>
             </div>
             <div className="p-3 bg-yellow-100 rounded-lg">
@@ -213,7 +216,7 @@ const InventoryAlerts = () => {
         <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-blue-600">Info</p>
+              <p className="text-sm text-blue-600">{tr('Info', 'Info')}</p>
               <p className="text-2xl font-bold text-blue-600">{alerts.summary.info}</p>
             </div>
             <div className="p-3 bg-blue-100 rounded-lg">
@@ -229,37 +232,37 @@ const InventoryAlerts = () => {
           <Filter className="w-5 h-5 text-gray-500" />
           
           <div className="flex items-center space-x-2">
-            <label className="text-sm font-medium text-gray-700">Type:</label>
+            <label className="text-sm font-medium text-gray-700">{tr('Type:', 'Type :')}</label>
             <select
               value={selectedFilter}
               onChange={(e) => setSelectedFilter(e.target.value)}
               className="border border-gray-300 rounded-md px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="all">All Types</option>
-              <option value="out_of_stock">Out of Stock</option>
-              <option value="low_stock">Low Stock</option>
-              <option value="overstock">Overstock</option>
-              <option value="inactive">Inactive</option>
-              <option value="high_value">High Value</option>
+              <option value="all">{tr('All Types', 'Tous les types')}</option>
+              <option value="out_of_stock">{tr('Out of Stock', 'Rupture de stock')}</option>
+              <option value="low_stock">{tr('Low Stock', 'Stock faible')}</option>
+              <option value="overstock">{tr('Overstock', 'Surstock')}</option>
+              <option value="inactive">{tr('Inactive', 'Inactif')}</option>
+              <option value="high_value">{tr('High Value', 'Valeur élevée')}</option>
             </select>
           </div>
 
           <div className="flex items-center space-x-2">
-            <label className="text-sm font-medium text-gray-700">Priority:</label>
+            <label className="text-sm font-medium text-gray-700">{tr('Priority:', 'Priorité :')}</label>
             <select
               value={selectedPriority}
               onChange={(e) => setSelectedPriority(e.target.value)}
               className="border border-gray-300 rounded-md px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="all">All Priorities</option>
-              <option value="critical">Critical</option>
-              <option value="warning">Warning</option>
-              <option value="info">Info</option>
+              <option value="all">{tr('All Priorities', 'Toutes les priorités')}</option>
+              <option value="critical">{tr('Critical', 'Critique')}</option>
+              <option value="warning">{tr('Warning', 'Avertissement')}</option>
+              <option value="info">{tr('Info', 'Info')}</option>
             </select>
           </div>
 
           <div className="text-sm text-gray-500">
-            Showing {filteredAlerts.length} of {alerts.summary.total} alerts
+            {tr('Showing', 'Affichage de')} {filteredAlerts.length} {tr('of', 'sur')} {alerts.summary.total} {tr('alerts', 'alertes')}
           </div>
         </div>
       </div>
@@ -269,11 +272,11 @@ const InventoryAlerts = () => {
         {filteredAlerts.length === 0 ? (
           <div className="bg-white p-8 rounded-lg shadow border border-gray-200 text-center">
             <AlertTriangle className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">No Alerts Found</h3>
+            <h3 className="text-lg font-medium text-gray-900 mb-2">{tr('No Alerts Found', 'Aucune alerte trouvée')}</h3>
             <p className="text-gray-600">
               {selectedFilter !== 'all' || selectedPriority !== 'all' 
-                ? 'No alerts match your current filters.' 
-                : 'Great! Your inventory is in good shape with no alerts.'}
+                ? tr('No alerts match your current filters.', 'Aucune alerte ne correspond à vos filtres actuels.') 
+                : tr('Great! Your inventory is in good shape with no alerts.', 'Parfait ! Votre inventaire est en bon état, sans alerte.')}
             </p>
           </div>
         ) : (
@@ -301,10 +304,10 @@ const InventoryAlerts = () => {
                     <p className="text-gray-600 mb-2">{alert.message}</p>
                     
                     <div className="flex items-center space-x-4 text-sm text-gray-500">
-                      <span>Category: {alert.category}</span>
-                      {alert.stock !== undefined && <span>Stock: {alert.stock}</span>}
-                      {alert.reorderLevel && <span>Reorder Level: {alert.reorderLevel}</span>}
-                      {alert.value && <span>Value: {AlertsService.formatCurrency(alert.value)}</span>}
+                      <span>{tr('Category:', 'Catégorie :')} {alert.category}</span>
+                      {alert.stock !== undefined && <span>{tr('Stock:', 'Stock :')} {alert.stock}</span>}
+                      {alert.reorderLevel && <span>{tr('Reorder Level:', 'Seuil de réapprovisionnement :')} {alert.reorderLevel}</span>}
+                      {alert.value && <span>{tr('Value:', 'Valeur :')} {AlertsService.formatCurrency(alert.value)}</span>}
                     </div>
                   </div>
                 </div>
@@ -317,7 +320,7 @@ const InventoryAlerts = () => {
                       className="flex items-center px-3 py-1 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
                     >
                       <ShoppingCart className="w-4 h-4 mr-1" />
-                      Order
+                      {tr('Order', 'Commander')}
                     </button>
                   ) : null}
                   
@@ -326,7 +329,7 @@ const InventoryAlerts = () => {
                     className="flex items-center px-3 py-1 bg-gray-600 text-white text-sm rounded-md hover:bg-gray-700 transition-colors"
                   >
                     <Edit3 className="w-4 h-4 mr-1" />
-                    Adjust
+                    {tr('Adjust', 'Ajuster')}
                   </button>
                 </div>
               </div>
@@ -334,7 +337,7 @@ const InventoryAlerts = () => {
               {/* Action Suggestion */}
               <div className="mt-4 p-3 bg-gray-50 rounded-md">
                 <p className="text-sm text-gray-700">
-                  <strong>Suggested Action:</strong> {alert.action}
+                  <strong>{tr('Suggested Action:', 'Action suggérée :')}</strong> {alert.action}
                 </p>
               </div>
             </div>

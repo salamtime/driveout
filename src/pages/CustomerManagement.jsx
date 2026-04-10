@@ -2,8 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Plus, MoreVertical, Edit, Trash2, Eye, Search, ChevronLeft, ChevronRight, FileText, UserPlus, Clock } from 'lucide-react';
 import CustomerService from '../services/EnhancedUnifiedCustomerService';
 import { Link } from 'react-router-dom';
+import i18n from '../i18n';
 
 const CustomerManagement = () => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -110,7 +113,7 @@ const CustomerManagement = () => {
           </Link>
           <button onClick={openCreateModal} className="bg-green-600 text-white px-4 py-2 rounded-lg shadow hover:bg-green-700 transition duration-300 flex items-center">
             <Plus size={20} className="mr-2" />
-            Add Customer
+            Ajouter le client
           </button>
         </div>
       </div>
@@ -165,7 +168,7 @@ const CustomerManagement = () => {
                           <Edit size={16} className="mr-2" /> Edit
                         </button>
                         <button onClick={() => openDeleteModal(customer)} className="dropdown-item text-red-600">
-                          <Trash2 size={16} className="mr-2" /> Delete
+                          <Trash2 size={16} className="mr-2" /> {tr('Delete', 'Supprimer')}
                         </button>
                       </DropdownMenu>
                     </div>
@@ -233,15 +236,15 @@ const Pagination = ({ page, totalPages, setPage }) => (
       disabled={page === 1}
       className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
     >
-      <ChevronLeft size={16} className="inline" /> Previous
+      <ChevronLeft size={16} className="inline" /> {tr('Previous', 'Précédent')}
     </button>
-    <span className="text-sm text-gray-700">Page {page} of {totalPages}</span>
+    <span className="text-sm text-gray-700">{tr(`Page ${page} of ${totalPages}`, `Page ${page} sur ${totalPages}`)}</span>
     <button
       onClick={() => setPage(p => Math.min(totalPages, p + 1))}
       disabled={page === totalPages}
       className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
     >
-      Next <ChevronRight size={16} className="inline" />
+      {tr('Next', 'Suivant')} <ChevronRight size={16} className="inline" />
     </button>
   </div>
 );
@@ -282,17 +285,17 @@ const CustomerFormModal = ({ isOpen, onClose, onSubmit, customer }) => {
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
       <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
-        <h2 className="text-2xl font-bold mb-6">{customer ? 'Edit Customer' : 'Add New Customer'}</h2>
+        <h2 className="text-2xl font-bold mb-6">{customer ? tr('Edit Customer', 'Modifier le client') : tr('Add New Customer', 'Ajouter un nouveau client')}</h2>
         <form onSubmit={handleSubmit}>
           <div className="space-y-4">
-            <input type="text" name="full_name" value={formData.full_name} onChange={handleChange} placeholder="Full Name" className="w-full px-4 py-2 border rounded-lg" required />
-            <input type="email" name="email" value={formData.email} onChange={handleChange} placeholder="Email Address" className="w-full px-4 py-2 border rounded-lg" required />
-            <input type="tel" name="phone" value={formData.phone} onChange={handleChange} placeholder="Phone Number" className="w-full px-4 py-2 border rounded-lg" />
-            <textarea name="address" value={formData.address} onChange={handleChange} placeholder="Address" className="w-full px-4 py-2 border rounded-lg" rows="3"></textarea>
+            <input type="text" name="full_name" value={formData.full_name} onChange={handleChange} placeholder={tr('Full Name', 'Nom complet')} className="w-full px-4 py-2 border rounded-lg" required />
+            <input type="email" name="email" value={formData.email} onChange={handleChange} placeholder={tr('Email Address', 'Adresse e-mail')} className="w-full px-4 py-2 border rounded-lg" required />
+            <input type="tel" name="phone" value={formData.phone} onChange={handleChange} placeholder={tr('Phone Number', 'Numéro de téléphone')} className="w-full px-4 py-2 border rounded-lg" />
+            <textarea name="address" value={formData.address} onChange={handleChange} placeholder={tr('Address', 'Adresse')} className="w-full px-4 py-2 border rounded-lg" rows="3"></textarea>
           </div>
           <div className="mt-6 flex justify-end space-x-4">
-            <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-200 rounded-lg">Cancel</button>
-            <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg">{customer ? 'Save Changes' : 'Add Customer'}</button>
+            <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-200 rounded-lg">{tr('Cancel', 'Annuler')}</button>
+            <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg">{customer ? tr('Save Changes', 'Enregistrer les modifications') : tr('Add Customer', 'Ajouter le client')}</button>
           </div>
         </form>
       </div>
@@ -332,13 +335,13 @@ const CustomerDetailsModal = ({ isOpen, onClose, customer }) => {
         </div>
         
         <div className="mt-6 border-t pt-6">
-          <h3 className="text-lg font-semibold flex items-center"><Clock size={20} className="mr-2" /> Rental History</h3>
-          {loadingHistory ? <p>Loading history...</p> : (
+          <h3 className="text-lg font-semibold flex items-center"><Clock size={20} className="mr-2" /> {tr('Rental History', 'Historique des locations')}</h3>
+          {loadingHistory ? <p>{tr('Loading history...', 'Chargement de l’historique...')}</p> : (
             <div className="mt-4 space-y-4 max-h-60 overflow-y-auto">
               {rentalHistory.length > 0 ? rentalHistory.map(rental => (
                 <div key={rental.id} className="p-4 bg-gray-50 rounded-lg">
                   <div className="flex justify-between">
-                    <p className="font-semibold">{rental.vehicle?.name || 'Unknown Vehicle'}</p>
+                    <p className="font-semibold">{rental.vehicle?.name || tr('Unknown Vehicle', 'Véhicule inconnu')}</p>
                     <span className={`px-2 py-1 text-xs rounded-full ${rental.rental_status === 'completed' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>
                       {rental.rental_status}
                     </span>
@@ -347,7 +350,7 @@ const CustomerDetailsModal = ({ isOpen, onClose, customer }) => {
                     {new Date(rental.rental_start_date).toLocaleDateString()} - {new Date(rental.rental_end_date).toLocaleDateString()}
                   </p>
                 </div>
-              )) : <p className="text-gray-500">No rental history found for this customer.</p>}
+              )) : <p className="text-gray-500">{tr('No rental history found for this customer.', 'Aucun historique de location trouvé pour ce client.')}</p>}
             </div>
           )}
         </div>
@@ -362,11 +365,11 @@ const DeleteConfirmationModal = ({ isOpen, onClose, onConfirm, customerName }) =
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
       <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
-        <h2 className="text-xl font-bold mb-4">Confirm Deletion</h2>
-        <p>Are you sure you want to delete the customer "{customerName}"? This action cannot be undone.</p>
+        <h2 className="text-xl font-bold mb-4">{tr('Confirm Deletion', 'Confirmer la suppression')}</h2>
+        <p>{tr(`Are you sure you want to delete the customer "${customerName}"? This action cannot be undone.`, `Êtes-vous sûr de vouloir supprimer le client "${customerName}" ? Cette action est irréversible.`)}</p>
         <div className="mt-6 flex justify-end space-x-4">
-          <button onClick={onClose} className="px-4 py-2 bg-gray-200 rounded-lg">Cancel</button>
-          <button onClick={onConfirm} className="px-4 py-2 bg-red-600 text-white rounded-lg">Delete</button>
+          <button onClick={onClose} className="px-4 py-2 bg-gray-200 rounded-lg">{tr('Cancel', 'Annuler')}</button>
+          <button onClick={onConfirm} className="px-4 py-2 bg-red-600 text-white rounded-lg">{tr('Delete', 'Supprimer')}</button>
         </div>
       </div>
     </div>

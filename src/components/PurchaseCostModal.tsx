@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X, DollarSign, Calendar, Building, FileText } from 'lucide-react';
 
 interface PurchaseCostData {
@@ -23,6 +24,8 @@ const PurchaseCostModal: React.FC<PurchaseCostModalProps> = ({
   initialData = {},
   vehicleName = "Vehicle"
 }) => {
+  const { t } = useTranslation();
+  const tr = (en: string, fr: string) => t(en, fr);
   const [formData, setFormData] = useState<PurchaseCostData>({
     purchase_cost_mad: '',
     purchase_date: '',
@@ -67,10 +70,10 @@ const PurchaseCostModal: React.FC<PurchaseCostModalProps> = ({
             </div>
             <div>
               <h2 className="text-xl font-semibold text-gray-900">
-                Purchase Cost Information
+                {tr('Purchase Cost Information', "Informations sur le coût d'achat")}
               </h2>
               <p className="text-sm text-gray-600">
-                Add acquisition details for {vehicleName}
+                {tr('Add acquisition details for', "Ajouter les détails d'acquisition pour")} {vehicleName}
               </p>
             </div>
           </div>
@@ -91,10 +94,10 @@ const PurchaseCostModal: React.FC<PurchaseCostModalProps> = ({
               </div>
               <div className="ml-3">
                 <p className="text-lg font-semibold text-green-800">
-                  Purchase Cost Tracking Module
+                  {tr('Purchase Cost Tracking Module', "Module de suivi du coût d'achat")}
                 </p>
                 <p className="text-sm text-green-700">
-                  Track vehicle acquisition costs, suppliers, and financial documentation
+                  {tr('Track vehicle acquisition costs, suppliers, and financial documentation', "Suivez les coûts d'acquisition des véhicules, les fournisseurs et la documentation financière")}
                 </p>
               </div>
             </div>
@@ -106,7 +109,7 @@ const PurchaseCostModal: React.FC<PurchaseCostModalProps> = ({
               <div>
                 <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-2">
                   <DollarSign className="w-4 h-4 text-green-600" />
-                  Purchase Cost (MAD)
+                  {tr('Purchase Cost (MAD)', "Coût d'achat (MAD)")}
                 </label>
                 <input
                   type="number"
@@ -114,16 +117,16 @@ const PurchaseCostModal: React.FC<PurchaseCostModalProps> = ({
                   min="0"
                   value={formData.purchase_cost_mad}
                   onChange={(e) => handleInputChange('purchase_cost_mad', e.target.value)}
-                  placeholder="e.g., 50000.00"
+                  placeholder={tr('e.g., 50000.00', 'ex. : 50000.00')}
                   className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg text-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
                 />
-                <p className="text-xs text-gray-500 mt-1">Enter the total purchase price in MAD</p>
+                <p className="text-xs text-gray-500 mt-1">{tr('Enter the total purchase price in MAD', "Entrez le prix d'achat total en MAD")}</p>
               </div>
               
               <div>
                 <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-2">
                   <Calendar className="w-4 h-4 text-blue-600" />
-                  Purchase Date
+                  {tr('Purchase Date', "Date d'achat")}
                 </label>
                 <input
                   type="date"
@@ -131,59 +134,59 @@ const PurchaseCostModal: React.FC<PurchaseCostModalProps> = ({
                   onChange={(e) => handleInputChange('purchase_date', e.target.value)}
                   className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg text-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
-                <p className="text-xs text-gray-500 mt-1">Date when the vehicle was purchased</p>
+                <p className="text-xs text-gray-500 mt-1">{tr('Date when the vehicle was purchased', 'Date à laquelle le véhicule a été acheté')}</p>
               </div>
             </div>
 
             <div>
               <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-2">
                 <Building className="w-4 h-4 text-purple-600" />
-                Supplier / Seller
+                {tr('Supplier / Seller', 'Fournisseur / vendeur')}
               </label>
               <input
                 type="text"
                 value={formData.supplier}
                 onChange={(e) => handleInputChange('supplier', e.target.value)}
-                placeholder="e.g., Yamaha Morocco, Local Dealer, Private Seller"
+                placeholder={tr('e.g., Yamaha Morocco, Local Dealer, Private Seller', 'ex. : Yamaha Maroc, concessionnaire local, vendeur privé')}
                 className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg text-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
               />
-              <p className="text-xs text-gray-500 mt-1">Name of the dealer, company, or person who sold the vehicle</p>
+              <p className="text-xs text-gray-500 mt-1">{tr('Name of the dealer, company, or person who sold the vehicle', 'Nom du concessionnaire, de la société ou de la personne ayant vendu le véhicule')}</p>
             </div>
 
             <div>
               <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-2">
                 <FileText className="w-4 h-4 text-orange-600" />
-                Invoice / Receipt URL
+                {tr('Invoice / Receipt URL', 'URL de la facture / du reçu')}
               </label>
               <input
                 type="url"
                 value={formData.invoice_url}
                 onChange={(e) => handleInputChange('invoice_url', e.target.value)}
-                placeholder="https://example.com/invoice.pdf"
+                placeholder={tr('https://example.com/invoice.pdf', 'https://exemple.com/facture.pdf')}
                 className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg text-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
               />
-              <p className="text-xs text-gray-500 mt-1">Link to the purchase invoice, receipt, or contract document</p>
+              <p className="text-xs text-gray-500 mt-1">{tr('Link to the purchase invoice, receipt, or contract document', "Lien vers la facture d'achat, le reçu ou le document contractuel")}</p>
             </div>
           </div>
 
           {/* Summary Section */}
           {formData.purchase_cost_mad && (
             <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-              <h4 className="font-semibold text-gray-900 mb-2">Purchase Summary</h4>
+              <h4 className="font-semibold text-gray-900 mb-2">{tr('Purchase Summary', "Résumé de l'achat")}</h4>
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="text-gray-600">Cost:</span>
+                    <span className="text-gray-600">{tr('Cost:', 'Coût :')}</span>
                   <span className="ml-2 font-semibold">{formData.purchase_cost_mad} MAD</span>
                 </div>
                 {formData.purchase_date && (
                   <div>
-                    <span className="text-gray-600">Date:</span>
+                    <span className="text-gray-600">{tr('Date:', 'Date :')}</span>
                     <span className="ml-2 font-semibold">{new Date(formData.purchase_date).toLocaleDateString()}</span>
                   </div>
                 )}
                 {formData.supplier && (
                   <div className="col-span-2">
-                    <span className="text-gray-600">Supplier:</span>
+                    <span className="text-gray-600">{tr('Supplier:', 'Fournisseur :')}</span>
                     <span className="ml-2 font-semibold">{formData.supplier}</span>
                   </div>
                 )}
@@ -198,7 +201,7 @@ const PurchaseCostModal: React.FC<PurchaseCostModalProps> = ({
               onClick={onClose}
               className="px-6 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors font-medium"
             >
-              Cancel
+              {tr('Cancel', 'Annuler')}
             </button>
             <button
               type="submit"
@@ -212,12 +215,12 @@ const PurchaseCostModal: React.FC<PurchaseCostModalProps> = ({
               {saving ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  Saving...
+                  {tr('Saving...', 'Enregistrement...')}
                 </>
               ) : (
                 <>
                   <DollarSign className="w-4 h-4" />
-                  Save Purchase Information
+                  {tr('Save Purchase Information', "Enregistrer les informations d'achat")}
                 </>
               )}
             </button>

@@ -1,24 +1,100 @@
 import { useState, useEffect } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
 import ContractTemplate from '../components/ContractTemplate';
 import ReceiptTemplate from '../components/ReceiptTemplate';
 import { decodePublicSharePayload } from '../utils/publicSharePayload';
+import DynamicPricingService from '../services/DynamicPricingService';
+import i18n from '../i18n';
+
+const hasRecordedReturnFuel = (rental) => {
+  return rental?.end_fuel_level !== null && rental?.end_fuel_level !== undefined ||
+    String(rental?.rental_status || '').toLowerCase() === 'completed';
+};
+
+const getEffectiveFuelChargeAmount = ({ rental }) => {
+  if (!rental?.fuel_charge_enabled || !hasRecordedReturnFuel(rental)) {
+    return 0;
+  }
+
+  return parseFloat(rental?.fuel_charge || 0) || 0;
+};
+
+const getCorrectedDisplayedPaidAmount = ({ rental }) => {
+  const rawPaidAmount = parseFloat(rental?.deposit_amount || 0) || 0;
+  const effectiveFuelCharge = getEffectiveFuelChargeAmount({ rental });
+  const rawFuelCharge = parseFloat(rental?.fuel_charge || 0) || 0;
+  const staleFuelCharge = Math.max(0, rawFuelCharge - effectiveFuelCharge);
+
+  return Math.max(0, rawPaidAmount - staleFuelCharge);
+};
+
+const getWeekendImpoundEstimatedReleaseDate = (impoundedAt) => {
+  const impoundDate = new Date(impoundedAt || '');
+  if (Number.isNaN(impoundDate.getTime())) return null;
+
+  const day = impoundDate.getDay();
+  let daysToAdd = 0;
+
+  if (day === 5) daysToAdd = 3;
+  else if (day === 6) daysToAdd = 2;
+  else if (day === 0) daysToAdd = 1;
+
+  if (daysToAdd === 0) return null;
+
+  const estimate = new Date(impoundDate);
+  estimate.setDate(estimate.getDate() + daysToAdd);
+  return estimate;
+};
+
+const getWeekendMinimumEstimatedDays = (impoundedAt) => {
+  const impoundDate = new Date(impoundedAt || '');
+  if (Number.isNaN(impoundDate.getTime())) return 0;
+  const day = impoundDate.getDay();
+  if (day === 4 || day === 5) return 3;
+  if (day === 6) return 2;
+  if (day === 0) return 1;
+  return 0;
+};
 
 export default function PublicRentalView() {
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const type = searchParams.get('type') || 'contract'; // 'contract' or 'receipt'
+  const documentLanguage = searchParams.get('lang') === 'en' ? 'en' : 'fr';
   const sharedPayload = searchParams.get('payload');
   const isMediaGallery = type === 'opening-media' || type === 'closing-media';
   const mediaPhase = type === 'closing-media' ? 'in' : 'out';
+  const isFrench = documentLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
 
   const [rental, setRental] = useState(null);
+  const [displayRental, setDisplayRental] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [logoUrl, setLogoUrl] = useState(null);
   const [stampUrl, setStampUrl] = useState(null);
   const [galleryMedia, setGalleryMedia] = useState([]);
+
+  const applySharedOverrides = (baseRental, decodedPayload = null) => {
+    if (!baseRental) return baseRental;
+    const overrides = decodedPayload?.overrides;
+    if (!overrides || typeof overrides !== 'object') {
+      return {
+        ...baseRental,
+        bundle: decodedPayload?.bundle || baseRental?.bundle || null,
+        sharedLinks: decodedPayload?.links || baseRental?.sharedLinks || null,
+      };
+    }
+
+    return {
+      ...baseRental,
+      ...overrides,
+      vehicle_report: overrides.vehicle_report ?? overrides.vehicleReport ?? baseRental.vehicle_report,
+      vehicleReport: overrides.vehicleReport ?? overrides.vehicle_report ?? baseRental.vehicleReport,
+      bundle: decodedPayload?.bundle || baseRental?.bundle || null,
+      sharedLinks: decodedPayload?.links || baseRental?.sharedLinks || null,
+    };
+  };
 
   const mapMediaItem = (item) => ({
     ...item,
@@ -32,10 +108,7 @@ export default function PublicRentalView() {
       try {
         const decodedPayload = sharedPayload ? await decodePublicSharePayload(sharedPayload) : null;
         if (decodedPayload?.rental) {
-          setRental({
-            ...decodedPayload.rental,
-            bundle: decodedPayload.bundle || null,
-          });
+          setRental(applySharedOverrides(decodedPayload.rental, decodedPayload));
           if (decodedPayload.settings?.logoUrl) setLogoUrl(decodedPayload.settings.logoUrl);
           if (decodedPayload.settings?.stampUrl) setStampUrl(decodedPayload.settings.stampUrl);
 
@@ -51,7 +124,7 @@ export default function PublicRentalView() {
         const hydrateFromBody = (body) => {
           if (!body?.rental) return false;
 
-          setRental(body.rental);
+          setRental(applySharedOverrides(body.rental, decodedPayload));
 
           if (body.settings?.logo_url) setLogoUrl(body.settings.logo_url);
           if (body.settings?.stamp_url) setStampUrl(body.settings.stamp_url);
@@ -80,71 +153,10 @@ export default function PublicRentalView() {
         if (response.ok && hydrateFromBody(body)) {
           return;
         }
-
-        // Fallback for older staging/API mismatches: try client-side lookup by internal id, then contract id.
-        const rentalSelect = `
-          *,
-          quantity_hours,
-          quantity_days,
-          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
-            *,
-            vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
-          ),
-          extensions:rental_extensions!rental_extensions_rental_id_fkey(*),
-          package:app_4c3a7a6153_rental_km_packages!package_id(*)
-        `;
-
-        let rentalData = null;
-
-        const byInternalId = await supabase
-          .from('app_4c3a7a6153_rentals')
-          .select(rentalSelect)
-          .eq('id', id)
-          .maybeSingle();
-
-        rentalData = byInternalId.data;
-
-        if (!rentalData) {
-          const byContractId = await supabase
-            .from('app_4c3a7a6153_rentals')
-            .select(rentalSelect)
-            .eq('rental_id', id)
-            .maybeSingle();
-          rentalData = byContractId.data;
-        }
-
-        if (!rentalData) {
-          setError(body?.error || 'Rental not found');
-          return;
-        }
-
-        setRental(rentalData);
-
-        const { data: settings } = await supabase
-          .from('app_settings')
-          .select('logo_url, stamp_url')
-          .eq('id', 1)
-          .maybeSingle();
-
-        if (settings?.logo_url) setLogoUrl(settings.logo_url);
-        if (settings?.stamp_url) setStampUrl(settings.stamp_url);
-
-        if (isMediaGallery || type === 'documents') {
-          const { data: mediaRows } = await supabase
-            .from('app_2f7bf469b0_rental_media')
-            .select('*')
-            .eq('rental_id', rentalData.id)
-            .order('created_at', { ascending: false });
-
-          const sourceRows =
-            type === 'documents'
-              ? (mediaRows || [])
-              : (mediaRows || []).filter((item) => item.phase === mediaPhase);
-
-          setGalleryMedia(sourceRows.map(mapMediaItem));
-        }
+        setError(body?.error || tr('Rental not found', 'Location introuvable'));
+        return;
       } catch (e) {
-        setError('Failed to load document');
+        setError(tr('Failed to load document', 'Impossible de charger le document'));
       } finally {
         setLoading(false);
       }
@@ -152,12 +164,128 @@ export default function PublicRentalView() {
     if (id) load();
   }, [id, isMediaGallery, mediaPhase, sharedPayload]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const enrichReceiptRental = async () => {
+      if (!rental) {
+        setDisplayRental(null);
+        return;
+      }
+
+      if (type !== 'receipt' || !rental?.is_impounded) {
+        setDisplayRental({
+          ...rental,
+          deposit_amount: getCorrectedDisplayedPaidAmount({ rental }),
+          fuel_charge: getEffectiveFuelChargeAmount({ rental }),
+        });
+        return;
+      }
+
+      const plannedEnd = [rental.rental_end_date, rental.actual_end_date]
+        .filter(Boolean)
+        .map((value) => new Date(value))
+        .filter((value) => !Number.isNaN(value.getTime()))
+        .reduce((latest, current) => (current > latest ? current : latest), null);
+
+      if (!plannedEnd) {
+        setDisplayRental(rental);
+        return;
+      }
+
+      const releaseDate = getWeekendImpoundEstimatedReleaseDate(rental.impounded_at) || new Date();
+      const diffMs = releaseDate.getTime() - plannedEnd.getTime();
+      const hourMs = 1000 * 60 * 60;
+      const dayMs = 1000 * 60 * 60 * 24;
+
+      const liveDiffMs = Date.now() - plannedEnd.getTime();
+      const liveDays = liveDiffMs > 0 ? Math.max(1, Math.ceil(liveDiffMs / dayMs)) : 0;
+      const liveHours = liveDiffMs > 0 ? Math.max(1, Math.ceil(liveDiffMs / hourMs)) : 0;
+
+      let estimatedDays = diffMs > 0 ? Math.max(1, Math.ceil(diffMs / dayMs)) : 0;
+      let estimatedHours = diffMs > 0 ? Math.max(1, Math.ceil(diffMs / hourMs)) : 0;
+
+      const vehicleId = rental?.vehicle_id || rental?.vehicle?.id;
+      const vehicleModelId = rental?.vehicle?.vehicle_model?.id || rental?.vehicle?.vehicle_model_id || rental?.vehicle_model_id;
+
+      let liveRate = Number(rental?.impound_rate || rental?.unit_price || 0);
+      let liveRateMode = 'package';
+      if (rental?.rental_type === 'daily' && liveDays > 0 && vehicleModelId) {
+        const pricing = await DynamicPricingService.getPricingForDuration(vehicleModelId, liveDays);
+        liveRate = Math.max(0, Number(pricing?.price || liveRate));
+        liveRateMode = pricing?.source === 'base_price' ? 'per_day' : 'package';
+      }
+
+      const minimumWeekendDays = getWeekendMinimumEstimatedDays(rental?.impounded_at);
+      if (rental?.rental_type === 'daily' && minimumWeekendDays > 0) {
+        estimatedDays = Math.max(liveDays, minimumWeekendDays);
+        estimatedHours = 0;
+      }
+
+      let estimatedRate = liveRate;
+      let estimatedRateMode = liveRateMode;
+      if (rental?.rental_type === 'daily' && estimatedDays > 0) {
+        const pricing = vehicleModelId
+          ? await DynamicPricingService.getPricingForDuration(vehicleModelId, estimatedDays)
+          : { price: await DynamicPricingService.getDynamicPrice(vehicleId, 'daily', estimatedDays), source: 'vehicle' };
+        estimatedRate = Math.max(0, Number(pricing?.price || estimatedRate));
+        estimatedRateMode = pricing?.source === 'base_price' ? 'per_day' : 'package';
+      }
+
+      const liveTotal = rental?.rental_type === 'daily' && liveRateMode === 'per_day'
+        ? liveRate * liveDays
+        : liveRate;
+      const estimatedTotal = rental?.rental_type === 'daily' && estimatedRateMode === 'per_day'
+        ? estimatedRate * estimatedDays
+        : estimatedRate;
+
+      if (cancelled) return;
+
+      setDisplayRental({
+        ...rental,
+        deposit_amount: getCorrectedDisplayedPaidAmount({ rental }),
+        fuel_charge: getEffectiveFuelChargeAmount({ rental }),
+        impound_charge_days: liveDays,
+        impound_charge_hours: liveHours,
+        impound_rate: liveRate,
+        impound_total: liveTotal,
+        impound_live_charge_days: liveDays,
+        impound_live_charge_hours: liveHours,
+        impound_live_rate: liveRate,
+        impound_live_total: liveTotal,
+        impound_is_estimate: true,
+        impound_estimated_release_at: releaseDate.toISOString(),
+        impound_estimate_note: getWeekendImpoundEstimatedReleaseDate(rental?.impounded_at)
+          ? 'Weekend estimate assumes the vehicle remains held until Monday before release can happen. It prepares the customer for the added rental days beyond the live charge already running now.'
+          : 'Estimate based on the current held time. Final charge may change until the impound is released.',
+        impound_estimate_weekend_carry: Boolean(getWeekendImpoundEstimatedReleaseDate(rental?.impounded_at)),
+        impound_estimated_days_total: estimatedDays,
+        impound_estimated_hours_total: estimatedHours,
+        impound_estimated_rate: estimatedRate,
+        impound_estimated_total: estimatedTotal,
+        impound_estimated_extra_days: Math.max(0, estimatedDays - liveDays),
+        impound_estimated_extra_amount: Math.max(
+          0,
+          rental?.rental_type === 'daily'
+            ? Math.max(0, estimatedDays - liveDays) * estimatedRate
+            : estimatedTotal - liveTotal
+        ),
+      });
+    };
+
+    enrichReceiptRental();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rental, type]);
+
   if (loading) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb' }}>
       <div style={{ textAlign: 'center' }}>
         <div style={{ width: 48, height: 48, border: '4px solid #dbeafe', borderTopColor: '#2563eb', borderRadius: '50%', margin: '0 auto 16px', animation: 'spin 1s linear infinite' }} />
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-        <p style={{ color: '#6b7280', fontSize: 16 }}>Loading document...</p>
+        <p style={{ color: '#6b7280', fontSize: 16 }}>{tr('Loading document...', 'Chargement du document...')}</p>
       </div>
     </div>
   );
@@ -166,7 +294,7 @@ export default function PublicRentalView() {
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb' }}>
       <div style={{ textAlign: 'center', padding: 24 }}>
         <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
-        <h1 style={{ fontSize: 20, fontWeight: 'bold', color: '#111827', marginBottom: 8 }}>Document Not Found</h1>
+        <h1 style={{ fontSize: 20, fontWeight: 'bold', color: '#111827', marginBottom: 8 }}>{tr('Document Not Found', 'Document introuvable')}</h1>
         <p style={{ color: '#6b7280' }}>{error}</p>
       </div>
     </div>
@@ -181,10 +309,25 @@ export default function PublicRentalView() {
     return `/view/rental/${encodeURIComponent(id)}?${params.toString()}`;
   };
 
+  const sharedLinks =
+    rental?.sharedLinks && typeof rental.sharedLinks === 'object'
+      ? rental.sharedLinks
+      : {};
+  const printablePdfUrl =
+    type === 'receipt'
+      ? (sharedLinks.receiptPdf || null)
+      : type === 'contract'
+        ? (sharedLinks.contractPdf || null)
+        : null;
+
   if (type === 'documents') {
     const decodedBundle =
       rental?.bundle && typeof rental.bundle === 'object'
         ? rental.bundle
+        : {};
+    const decodedLinks =
+      rental?.sharedLinks && typeof rental.sharedLinks === 'object'
+        ? rental.sharedLinks
         : {};
 
     const available = {
@@ -197,35 +340,43 @@ export default function PublicRentalView() {
     const documentCards = [
       {
         key: 'contract',
-        title: 'Contract',
-        subtitle: 'Open the signed rental agreement',
+        title: tr('Contract', 'Contrat'),
+        subtitle: tr('Open the signed rental agreement', 'Ouvrir le contrat de location signe'),
         icon: '📄',
-        href: buildSharedUrl('contract'),
-        visible: available.contract,
+        href: decodedLinks.contract || null,
+        visible: available.contract && Boolean(decodedLinks.contract),
       },
       {
         key: 'receipt',
-        title: 'Receipt',
-        subtitle: 'View the payment receipt',
+        title: tr('Receipt', 'Recu'),
+        subtitle: tr('View the payment receipt', 'Voir le recu de paiement'),
         icon: '🧾',
-        href: buildSharedUrl('receipt'),
-        visible: available.receipt,
+        href: decodedLinks.receipt || null,
+        visible: available.receipt && Boolean(decodedLinks.receipt),
       },
       {
         key: 'opening-media',
-        title: 'Start Media',
-        subtitle: 'Browse opening photos and videos',
+        title: tr('Start Media', 'Media de depart'),
+        subtitle: tr('Browse opening photos and videos', 'Parcourir les photos et videos de depart'),
         icon: '📸',
-        href: buildSharedUrl('opening-media'),
+        href: decodedLinks.openingMedia || buildSharedUrl('opening-media'),
         visible: available.openingMedia,
       },
       {
         key: 'closing-media',
-        title: 'End Media',
-        subtitle: 'Browse return photos and videos',
+        title: tr('End Media', 'Media de retour'),
+        subtitle: tr('Browse return photos and videos', 'Parcourir les photos et videos de retour'),
         icon: '🎥',
-        href: buildSharedUrl('closing-media'),
+        href: decodedLinks.closingMedia || buildSharedUrl('closing-media'),
         visible: available.closingMedia,
+      },
+      {
+        key: 'banking-info',
+        title: tr('Banking Info', 'Informations bancaires'),
+        subtitle: tr('Open bank transfer instructions', 'Ouvrir les instructions de virement'),
+        icon: '🏦',
+        href: decodedLinks.bankingInfo || null,
+        visible: Boolean(decodedBundle.bankingInfo && decodedLinks.bankingInfo),
       },
     ].filter((item) => item.visible);
 
@@ -261,15 +412,15 @@ export default function PublicRentalView() {
                 />
                 <div style={{ minWidth: 0 }}>
                   <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, color: '#1f2937' }}>
-                    Rental Documents
+                    {tr('Rental Documents', 'Documents de location')}
                   </h1>
                   <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 15 }}>
-                    {rental?.rental_id || 'Rental'} • {rental?.customer_name || 'Customer'}
+                    {rental?.rental_id || tr('Rental', 'Location')} • {rental?.customer_name || tr('Customer', 'Client')}
                   </p>
                 </div>
               </div>
               <div style={{ color: '#64748b', fontSize: 14, fontWeight: 600 }}>
-                {documentCards.length} item{documentCards.length === 1 ? '' : 's'}
+                {documentCards.length} {tr(documentCards.length === 1 ? 'item' : 'items', documentCards.length === 1 ? 'element' : 'elements')}
               </div>
             </div>
 
@@ -311,7 +462,7 @@ export default function PublicRentalView() {
                       <span aria-hidden="true">{item.icon}</span>
                     </div>
                     <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6366f1' }}>
-                      Open
+                      {tr('Open', 'Ouvrir')}
                     </div>
                     <div style={{ marginTop: 8, fontSize: 22, fontWeight: 800 }}>
                       {item.title}
@@ -362,15 +513,15 @@ export default function PublicRentalView() {
                 />
                 <div style={{ minWidth: 0 }}>
                   <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, color: '#1f2937' }}>
-                    {type === 'opening-media' ? 'Opening Media' : 'Closing Media'}
+                    {type === 'opening-media' ? tr('Opening Media', 'Media de depart') : tr('Closing Media', 'Media de retour')}
                   </h1>
                   <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 15 }}>
-                    {rental?.rental_id || 'Rental'} • {rental?.customer_name || 'Customer'}
+                    {rental?.rental_id || tr('Rental', 'Location')} • {rental?.customer_name || tr('Customer', 'Client')}
                   </p>
                 </div>
               </div>
               <div style={{ color: '#64748b', fontSize: 14, fontWeight: 600 }}>
-                {galleryMedia.length} item{galleryMedia.length === 1 ? '' : 's'}
+                {galleryMedia.length} {tr(galleryMedia.length === 1 ? 'item' : 'items', galleryMedia.length === 1 ? 'element' : 'elements')}
               </div>
             </div>
 
@@ -386,7 +537,7 @@ export default function PublicRentalView() {
                     background: '#f8fafc',
                   }}
                 >
-                  No media available.
+                  {tr('No media available.', 'Aucun media disponible.')}
                 </div>
               ) : (
                 <>
@@ -408,9 +559,9 @@ export default function PublicRentalView() {
                         textTransform: 'uppercase',
                       }}
                     >
-                      <span>← Previous</span>
-                      <span>Swipe left or right to view all {galleryMedia.length} items</span>
-                      <span>Next →</span>
+                      <span>{tr('← Previous', '← Precedent')}</span>
+                      <span>{tr(`Swipe left or right to view all ${galleryMedia.length} items`, `Glissez a gauche ou a droite pour voir les ${galleryMedia.length} elements`)}</span>
+                      <span>{tr('Next →', 'Suivant →')}</span>
                     </div>
                   )}
                   <div
@@ -449,17 +600,17 @@ export default function PublicRentalView() {
                           ) : (
                             <img
                               src={item.url}
-                              alt={item.file_name || 'Rental media'}
+                              alt={item.file_name || tr('Rental media', 'Média de location')}
                               style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                             />
                           )}
                         </div>
                         <div style={{ padding: '14px 16px' }}>
                           <div style={{ fontSize: 13, color: '#667085', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
-                            {item.isVideo ? 'Video' : 'Photo'}
+                            {item.isVideo ? tr('Video', 'Vidéo') : tr('Photo', 'Photo')}
                           </div>
                           <div style={{ marginTop: 6, fontSize: 14, color: '#1f2937', fontWeight: 600, wordBreak: 'break-word' }}>
-                            {item.original_filename || item.file_name || 'Media file'}
+                            {item.original_filename || item.file_name || tr('Media file', 'Fichier média')}
                           </div>
                           <div style={{ marginTop: 8 }}>
                             <a
@@ -468,7 +619,7 @@ export default function PublicRentalView() {
                               rel="noreferrer"
                               style={{ color: '#4f46e5', fontWeight: 600, textDecoration: 'none' }}
                             >
-                              Open full media
+                              {tr('Open full media', 'Ouvrir le média en plein écran')}
                             </a>
                           </div>
                         </div>
@@ -493,33 +644,77 @@ export default function PublicRentalView() {
   return (
     <div style={{ background: '#f3f4f6', minHeight: '100vh', padding: '16px' }}>
       {/* Print button - hidden on print */}
-      <div style={{ maxWidth: 900, margin: '0 auto 16px', display: 'flex', justifyContent: 'flex-end' }} className="no-print">
-        <button
-          onClick={() => window.print()}
-          style={{
-            padding: '10px 20px',
-            background: '#2563eb',
-            color: 'white',
-            border: 'none',
-            borderRadius: 8,
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8
-          }}
-        >
-          🖨️ Print / Save PDF
-        </button>
+      <div
+        style={{
+          maxWidth: 980,
+          margin: '0 auto 16px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap'
+        }}
+        className="no-print"
+      >
+        <div style={{ color: '#64748b', fontSize: 14, fontWeight: 600 }}>
+          {tr('Mobile-friendly view', 'Vue mobile lisible')}
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {printablePdfUrl && (
+            <a
+              href={printablePdfUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                padding: '10px 16px',
+                background: '#ffffff',
+                color: '#334155',
+                border: '1px solid #cbd5e1',
+                borderRadius: 10,
+                fontSize: 14,
+                fontWeight: 600,
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8
+              }}
+            >
+              {tr('Open PDF', 'Ouvrir le PDF')}
+            </a>
+          )}
+          <button
+            onClick={() => window.print()}
+            style={{
+              padding: '10px 20px',
+              background: '#2563eb',
+              color: 'white',
+              border: 'none',
+              borderRadius: 10,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8
+            }}
+          >
+            {tr('🖨️ Print / Save PDF', '🖨️ Imprimer / enregistrer en PDF')}
+          </button>
+        </div>
       </div>
 
       {/* Document */}
-      <div style={{ maxWidth: 900, margin: '0 auto' }}>
+      <div style={{ maxWidth: 980, margin: '0 auto' }}>
         {type === 'contract' ? (
-          <ContractTemplate rental={rental} logoUrl={logoUrl} stampUrl={stampUrl} />
+          <ContractTemplate rental={displayRental || rental} logoUrl={logoUrl} stampUrl={stampUrl} language={documentLanguage} />
         ) : (
-          <ReceiptTemplate rental={rental} logoUrl={logoUrl} stampUrl={stampUrl} />
+          <ReceiptTemplate
+            rental={displayRental || rental}
+            logoUrl={logoUrl}
+            stampUrl={stampUrl}
+            bookingGraceMinutes={displayRental?.booking_grace_period_minutes || rental?.booking_grace_period_minutes || 120}
+            language={documentLanguage}
+          />
         )}
       </div>
 

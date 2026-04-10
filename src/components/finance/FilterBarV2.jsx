@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Calendar, Filter, Car, User, X } from 'lucide-react';
-import financeService from '../../services/FinanceService';
+import { financeApiV2 } from '../../services/financeApiV2';
+import i18n from '../../i18n';
 
 const FilterBarV2 = ({ onChange, initialFilters = {} }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [filters, setFilters] = useState({
     startDate: initialFilters.startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days ago
     endDate: initialFilters.endDate || new Date().toISOString().split('T')[0], // today
@@ -24,13 +27,15 @@ const FilterBarV2 = ({ onChange, initialFilters = {} }) => {
   }, [filters, onChange]);
 
   const loadVehicles = async () => {
+    setLoading(true);
     try {
-      const result = await financeService.getVehicles();
-      if (result.success) {
-        setVehicles(result.data);
-      }
+      const result = await financeApiV2.getVehicles('current');
+      setVehicles(Array.isArray(result) ? result : []);
     } catch (error) {
       console.error('Error loading vehicles:', error);
+      setVehicles([]);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -98,7 +103,7 @@ const FilterBarV2 = ({ onChange, initialFilters = {} }) => {
           }`}
         >
           <Filter className="h-4 w-4" />
-          Filters
+          {tr('Filtres', 'Filtres')}
           {getActiveFilterCount() > 0 && (
             <span className="bg-blue-600 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[1.25rem] text-center">
               {getActiveFilterCount()}
@@ -113,7 +118,7 @@ const FilterBarV2 = ({ onChange, initialFilters = {} }) => {
             className="flex items-center gap-1 px-2 py-1 text-sm text-gray-600 hover:text-gray-800 transition-colors"
           >
             <X className="h-3 w-3" />
-            Clear
+            {tr('Effacer', 'Effacer')}
           </button>
         )}
       </div>
@@ -126,11 +131,13 @@ const FilterBarV2 = ({ onChange, initialFilters = {} }) => {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
                 <Car className="h-4 w-4" />
-                Vehicles
+                {tr('Véhicules', 'Véhicules')}
               </label>
               <div className="max-h-32 overflow-y-auto border border-gray-300 rounded-md">
                 {vehicles.length === 0 ? (
-                  <div className="p-2 text-sm text-gray-500">No vehicles available</div>
+                  <div className="p-2 text-sm text-gray-500">
+                    {loading ? tr('Loading vehicles...', 'Chargement des véhicules...') : tr('No vehicles available', 'Aucun véhicule disponible')}
+                  </div>
                 ) : (
                   vehicles.map(vehicle => (
                     <label key={vehicle.id} className="flex items-center p-2 hover:bg-gray-50 cursor-pointer">

@@ -10,6 +10,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { formatRentalReference } from '../../utils/rentalReference';
 import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
 import AddMaintenanceForm from './AddMaintenanceForm';
+import i18n from '../../i18n';
 import { 
   Search, 
   Plus, 
@@ -33,6 +34,12 @@ import {
  * CRITICAL: All arrays must have fallback values to prevent undefined.map() errors
  */
 const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEditRecordId = null, initialViewRecordId = null, onClearInitialSelection = null }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
+  const softActionButtonClass = 'rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900';
+  const primaryActionButtonClass = 'rounded-2xl bg-violet-600 text-white shadow-sm hover:bg-violet-700';
+  const warningActionButtonClass = 'rounded-2xl border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800';
+  const dangerActionButtonClass = 'rounded-2xl border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800';
   const navigate = useNavigate();
   const { userProfile } = useAuth();
   const isOwner = userProfile?.role === 'owner';
@@ -50,9 +57,13 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
   const [statusFilter, setStatusFilter] = useState('all');
   const [vehicleFilter, setVehicleFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
+  const [smartFilter, setSmartFilter] = useState('all');
   const [sortBy, setSortBy] = useState('service_date');
   const [sortOrder, setSortOrder] = useState('desc');
   const [viewMode, setViewMode] = useState('cards');
+  const [densityMode, setDensityMode] = useState('compact');
+  const [expandedRecordIds, setExpandedRecordIds] = useState([]);
+  const [openMenuId, setOpenMenuId] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 8;
 
@@ -111,11 +122,11 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
 
   useEffect(() => {
     filterAndSortRecords();
-  }, [maintenanceRecords, searchTerm, statusFilter, vehicleFilter, sourceFilter, sortBy, sortOrder]);
+  }, [maintenanceRecords, searchTerm, statusFilter, vehicleFilter, sourceFilter, smartFilter, sortBy, sortOrder]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, vehicleFilter, sourceFilter, sortBy, sortOrder, viewMode]);
+  }, [searchTerm, statusFilter, vehicleFilter, sourceFilter, smartFilter, sortBy, sortOrder, viewMode]);
 
   const loadMaintenanceData = async () => {
     try {
@@ -182,6 +193,22 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
 
       if (sourceFilter === 'regular') {
         filtered = filtered.filter((record) => !record.linked_rental_report);
+      }
+
+      if (smartFilter === 'needs_attention') {
+        filtered = filtered.filter((record) => (
+          record.status === 'scheduled'
+          || record.status === 'in_progress'
+          || Boolean(record.linked_rental_report && record.linked_rental_report.status !== 'maintenance_completed')
+        ));
+      }
+
+      if (smartFilter === 'incomplete') {
+        filtered = filtered.filter((record) => record.status !== 'completed');
+      }
+
+      if (smartFilter === 'high_cost') {
+        filtered = filtered.filter((record) => getFinancialSummary(record).total >= 1000);
       }
 
       // Apply sorting
@@ -370,6 +397,46 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
     }
   };
 
+  const handleDuplicateRecord = async (record) => {
+    if (!record?.id) return;
+
+    try {
+      setLoading(true);
+      setOpenMenuId(null);
+      const fullRecord = await MaintenanceTrackingService.getMaintenanceById(record.id);
+      const duplicateSource = fullRecord || record;
+
+      await MaintenanceTrackingService.createMaintenanceRecord({
+        vehicle_id: parseInt(duplicateSource.vehicle_id),
+        maintenance_type: duplicateSource.maintenance_type || duplicateSource.type || 'Other',
+        status: 'scheduled',
+        scheduled_date: new Date().toISOString().split('T')[0],
+        completed_date: null,
+        odometer_reading: duplicateSource.odometer_reading || null,
+        labor_rate_mad: MaintenanceTrackingService.safeCostToNumber(duplicateSource.labor_rate_mad || duplicateSource.labor_cost_mad),
+        parts_cost_mad: MaintenanceTrackingService.safeCostToNumber(duplicateSource.parts_cost_mad),
+        tax_mad: MaintenanceTrackingService.safeCostToNumber(duplicateSource.tax_mad),
+        notes: `Duplicated from ${record.id}${duplicateSource.description || duplicateSource.notes ? `\n${duplicateSource.description || duplicateSource.notes}` : ''}`,
+        technician_name: duplicateSource.technician_name || duplicateSource.technician || '',
+        parts_used: (duplicateSource.parts_used || []).map((part) => ({
+          ...part,
+          source_type: part.source_type || (part.item_id ? 'inventory' : 'manual'),
+          item_id: part.item_id || null,
+          quantity: part.quantity || 1,
+        })),
+        created_by: 'Admin',
+      });
+
+      await loadMaintenanceData();
+      onMaintenanceUpdated?.();
+    } catch (err) {
+      console.error('❌ Error duplicating maintenance record:', err);
+      setError(`Failed to duplicate maintenance record: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleViewClose = () => {
     setShowViewModal(false);
     setSelectedRecord(null);
@@ -400,6 +467,25 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
 
     return { labor, parts, tax, total };
   };
+
+  const toggleExpandedRecord = (recordId) => {
+    setExpandedRecordIds((current) => (
+      current.includes(recordId)
+        ? current.filter((id) => id !== recordId)
+        : [...current, recordId]
+    ));
+  };
+
+  const summaryStats = maintenanceRecords.reduce((summary, record) => {
+    const financials = getFinancialSummary(record);
+    return {
+      total: summary.total + 1,
+      open: summary.open + (record.status !== 'completed' ? 1 : 0),
+      completed: summary.completed + (record.status === 'completed' ? 1 : 0),
+      cost: summary.cost + financials.total,
+    };
+  }, { total: 0, open: 0, completed: 0, cost: 0 });
+  const averageMaintenanceCost = summaryStats.total > 0 ? summaryStats.cost / summaryStats.total : 0;
 
   const getLinkedReportLabel = (report) => {
     if (!report) return null;
@@ -469,7 +555,7 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 rounded-[2rem] border border-slate-200/80 bg-slate-100/80 p-3 shadow-inner sm:p-4">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -479,14 +565,14 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
           </p>
         </div>
         <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
-          <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
+          <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
             <button
               type="button"
               onClick={() => setViewMode('cards')}
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
                 viewMode === 'cards'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-600 hover:bg-gray-50'
+                  ? 'bg-violet-600 text-white shadow-sm'
+                  : 'text-slate-600 hover:bg-slate-50'
               }`}
             >
               <Grid className="w-4 h-4" />
@@ -495,22 +581,22 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
             <button
               type="button"
               onClick={() => setViewMode('table')}
-              className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
                 viewMode === 'table'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-600 hover:bg-gray-50'
+                  ? 'bg-violet-600 text-white shadow-sm'
+                  : 'text-slate-600 hover:bg-slate-50'
               }`}
             >
               <List className="w-4 h-4" />
-              List View
+              {tr('List View', 'Vue liste')}
             </button>
           </div>
           <Button
             onClick={onAddMaintenance}
-            className="flex items-center gap-2"
+            className={`flex items-center gap-2 ${primaryActionButtonClass}`}
           >
             <Plus className="w-4 h-4" />
-            Add Maintenance
+            {tr('Add Maintenance', 'Ajouter une maintenance')}
           </Button>
         </div>
       </div>
@@ -522,14 +608,28 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
         </div>
       )}
 
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        {[
+          { label: tr('Total maintenance', 'Total maintenance'), value: summaryStats.total },
+          { label: tr('Open jobs', 'Interventions ouvertes'), value: summaryStats.open },
+          { label: tr('Completed jobs', 'Interventions terminees'), value: summaryStats.completed },
+          { label: tr('Average cost', 'Cout moyen'), value: MaintenanceTrackingService.formatCurrency(averageMaintenanceCost) },
+        ].map((item) => (
+          <div key={item.label} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{item.label}</p>
+            <p className="mt-1 text-lg font-bold text-slate-900">{item.value}</p>
+          </div>
+        ))}
+      </div>
+
       {/* Filters */}
-      <Card>
+      <Card className="rounded-[2rem] border-slate-200 bg-white/95 shadow-sm">
         <CardContent className="p-4">
-          <div className="mb-4 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap gap-2">
             {[
-              { id: 'all', label: 'All' },
-              { id: 'linked', label: 'Linked Rental Reports' },
-              { id: 'regular', label: 'Regular Maintenance' },
+              { id: 'all', label: tr('All', 'Tous') },
+              { id: 'linked', label: tr('Linked Rental Reports', 'Rapports de location lies') },
+              { id: 'regular', label: tr('Regular Maintenance', 'Maintenance reguliere') },
             ].map((option) => (
               <button
                 key={option.id}
@@ -537,20 +637,60 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                 onClick={() => setSourceFilter(option.id)}
                 className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
                   sourceFilter === option.id
-                    ? 'border-blue-600 bg-blue-600 text-white'
-                    : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                    ? 'border-violet-600 bg-violet-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                 }`}
               >
                 {option.label}
               </button>
             ))}
           </div>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: 'all', label: tr('All work', 'Tous travaux') },
+                { id: 'needs_attention', label: tr('Needs attention', 'Attention requise') },
+                { id: 'incomplete', label: tr('Incomplete', 'Incomplet') },
+                { id: 'high_cost', label: tr('High cost', 'Cout eleve') },
+              ].map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setSmartFilter(option.id)}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    smartFilter === option.id
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div className="inline-flex rounded-full border border-slate-200 bg-white p-1">
+              {[
+                { id: 'compact', label: tr('Compact', 'Compact') },
+                { id: 'comfortable', label: tr('Comfortable', 'Confort') },
+              ].map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setDensityMode(option.id)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    densityMode === option.id ? 'bg-violet-600 text-white' : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Search */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
               <Input
-                placeholder="Search maintenance..."
+                placeholder={tr('Search maintenance...', 'Rechercher une maintenance...')}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10"
@@ -560,23 +700,23 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
             {/* Status Filter */}
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger>
-                <SelectValue placeholder="Filter by status" />
+                <SelectValue placeholder={tr('Filter by status', 'Filtrer par statut')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
-                <SelectItem value="scheduled">Scheduled</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
+                <SelectItem value="all">{tr('All Statuses', 'Tous les statuts')}</SelectItem>
+                <SelectItem value="scheduled">{tr('Scheduled', 'Planifie')}</SelectItem>
+                <SelectItem value="in_progress">{tr('In Progress', 'En cours')}</SelectItem>
+                <SelectItem value="completed">{tr('Completed', 'Termine')}</SelectItem>
               </SelectContent>
             </Select>
 
             {/* Vehicle Filter */}
             <Select value={vehicleFilter} onValueChange={setVehicleFilter}>
               <SelectTrigger>
-                <SelectValue placeholder="Filter by vehicle" />
+                <SelectValue placeholder={tr('Filter by vehicle', 'Filtrer par vehicule')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Vehicles</SelectItem>
+                <SelectItem value="all">{tr('All Vehicles', 'Tous les vehicules')}</SelectItem>
                 {(vehicles || []).map((vehicle) => (
                   <SelectItem key={vehicle.id} value={vehicle.id.toString()}>
                     {vehicle.name} ({vehicle.plate_number})
@@ -592,16 +732,16 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
               setSortOrder(order);
             }}>
               <SelectTrigger>
-                <SelectValue placeholder="Sort by" />
+                <SelectValue placeholder={tr('Sort by', 'Trier par')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="service_date-desc">Date (Newest)</SelectItem>
-                <SelectItem value="service_date-asc">Date (Oldest)</SelectItem>
-                <SelectItem value="maintenance_type-asc">Type (A-Z)</SelectItem>
-                <SelectItem value="maintenance_type-desc">Type (Z-A)</SelectItem>
-                <SelectItem value="status-asc">Status (A-Z)</SelectItem>
-                <SelectItem value="cost-desc">Cost (High-Low)</SelectItem>
-                <SelectItem value="cost-asc">Cost (Low-High)</SelectItem>
+                <SelectItem value="service_date-desc">{tr('Date (Newest)', 'Date (plus recente)')}</SelectItem>
+                <SelectItem value="service_date-asc">{tr('Date (Oldest)', 'Date (plus ancienne)')}</SelectItem>
+                <SelectItem value="maintenance_type-asc">{tr('Type (A-Z)', 'Type (A-Z)')}</SelectItem>
+                <SelectItem value="maintenance_type-desc">{tr('Type (Z-A)', 'Type (Z-A)')}</SelectItem>
+                <SelectItem value="status-asc">{tr('Status (A-Z)', 'Statut (A-Z)')}</SelectItem>
+                <SelectItem value="cost-desc">{tr('Cost (High-Low)', 'Cout (haut-bas)')}</SelectItem>
+                <SelectItem value="cost-asc">{tr('Cost (Low-High)', 'Cout (bas-haut)')}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -609,165 +749,202 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
       </Card>
 
       {/* Maintenance Records List */}
-      <Card>
+      <Card className="rounded-[2rem] border-slate-200 bg-slate-50/90 shadow-sm">
         <CardContent className="p-0">
           {(filteredRecords || []).length === 0 ? (
             <div className="text-center py-12">
               <Car className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No maintenance records found</h3>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">{tr('No maintenance records found', 'Aucun dossier de maintenance trouve')}</h3>
               <p className="text-gray-500 mb-4">
                 {(maintenanceRecords || []).length === 0 
-                  ? "Start by adding your first maintenance record"
-                  : "Try adjusting your filters to see more records"
+                  ? tr('Start by adding your first maintenance record', 'Commencez par ajouter votre premier dossier de maintenance')
+                  : tr('Try adjusting your filters to see more records', 'Essayez de modifier vos filtres pour voir plus de dossiers')
                 }
               </p>
-              <Button onClick={onAddMaintenance} className="flex items-center gap-2">
+              <Button onClick={onAddMaintenance} className={`flex items-center gap-2 ${primaryActionButtonClass}`}>
                 <Plus className="w-4 h-4" />
-                Add First Maintenance Record
+                {tr('Add First Maintenance Record', 'Ajouter le premier dossier')}
               </Button>
             </div>
           ) : (
             <>
             {viewMode === 'cards' ? (
-              <div className="p-4 grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-3 p-3 xl:grid-cols-2">
                 {paginatedRecords.map((record) => {
                   const financials = getFinancialSummary(record);
                   const maintenanceVisual = getMaintenanceTypeVisual(record.maintenance_type);
+                  const isExpanded = expandedRecordIds.includes(record.id) || densityMode === 'comfortable';
                   return (
-                    <div key={record.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm hover:shadow-md transition-shadow">
+                    <div
+                      key={record.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => toggleExpandedRecord(record.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          toggleExpandedRecord(record.id);
+                        }
+                      }}
+                      className={`relative rounded-[1.25rem] border border-slate-300 bg-white shadow-[0_12px_28px_rgba(15,23,42,0.06)] transition-all hover:border-violet-200 hover:shadow-[0_16px_34px_rgba(76,29,149,0.10)] ${densityMode === 'compact' ? 'p-3' : 'p-4'}`}
+                    >
                       <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-gray-900">{getVehicleName(record.vehicle_id)}</p>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-semibold text-gray-900">{getVehicleName(record.vehicle_id)}</p>
+                            <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${MaintenanceTrackingService.getStatusColor(record.status)}`}>
+                              {getStatusIcon(record.status)}
+                              {record.status || tr('unknown', 'inconnu')}
+                            </span>
+                          </div>
                           <div className="mt-1 flex flex-wrap items-center gap-2">
                             <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${maintenanceVisual.classes}`}>
                               <span>{maintenanceVisual.emoji}</span>
                               <span>{maintenanceVisual.label}</span>
                             </span>
-                            <p className="text-sm text-gray-700">{record.maintenance_type || 'N/A'}</p>
+                            <p className="text-sm text-gray-700">{record.maintenance_type || tr('N/A', 'N/D')}</p>
                           </div>
                           {record.linked_rental_report && (
                             <div className="mt-2 flex flex-wrap items-center gap-2">
                               <span className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-red-700">
-                                Linked Rental Report
+                                {tr('Linked Rental Report', 'Rapport de location lie')}
                               </span>
-                              <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-2.5 py-1 text-[11px] font-medium text-orange-700">
-                                {getLinkedReportLabel(record.linked_rental_report)}
-                              </span>
-                              <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700">
-                                {String(record.linked_rental_report.severity || 'reported').replace(/_/g, ' ')}
-                              </span>
+                              {record.linked_rental_report.rental_id && (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    navigate(`/admin/rentals/${record.linked_rental_report.rental_id}`);
+                                  }}
+                                  className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-2.5 py-1 text-[11px] font-medium text-orange-700 hover:bg-orange-100"
+                                >
+                                  {tr('Rental', 'Location')} {formatRentalReference(record.linked_rental_report.rental_id)}
+                                </button>
+                              )}
                             </div>
                           )}
-                          {getMaintenanceDescriptionSummary(record) && (
+                          {isExpanded && getMaintenanceDescriptionSummary(record) && (
                             <p className="mt-1 text-xs text-gray-500 line-clamp-2">{getMaintenanceDescriptionSummary(record)}</p>
                           )}
                         </div>
-                        <div className="flex items-center gap-2">
-                          {getStatusIcon(record.status)}
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                            MaintenanceTrackingService.getStatusColor(record.status)
-                          }`}>
-                            {record.status || 'unknown'}
-                          </span>
+                        <div className="flex shrink-0 items-start gap-2">
+                          <div className="text-right">
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">{tr('Total', 'Total')}</p>
+                            <p className="text-base font-black text-green-700">{MaintenanceTrackingService.formatCurrency(financials.total)}</p>
+                          </div>
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setOpenMenuId(openMenuId === record.id ? null : record.id);
+                              }}
+                              className="rounded-full border border-slate-200 px-2.5 py-1 text-lg leading-none text-slate-500 hover:bg-slate-50"
+                              aria-label={tr('Open quick actions', 'Ouvrir actions rapides')}
+                            >
+                              ⋯
+                            </button>
+                            {openMenuId === record.id && (
+                              <div
+                                className="absolute right-0 z-20 mt-2 w-44 rounded-2xl border border-slate-200 bg-white p-2 text-sm shadow-xl"
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                <button type="button" onClick={() => handleInlineStatusChange(record, 'completed')} className="w-full rounded-xl px-3 py-2 text-left text-slate-700 hover:bg-slate-50">
+                                  {tr('Mark completed', 'Marquer termine')}
+                                </button>
+                                <button type="button" onClick={() => { setOpenMenuId(null); handleEditRecord(record); }} className="w-full rounded-xl px-3 py-2 text-left text-slate-700 hover:bg-slate-50">
+                                  {tr('Add cost', 'Ajouter cout')}
+                                </button>
+                                {record.linked_rental_report?.rental_id && (
+                                  <button type="button" onClick={() => navigate(`/admin/rentals/${record.linked_rental_report.rental_id}`)} className="w-full rounded-xl px-3 py-2 text-left text-slate-700 hover:bg-slate-50">
+                                    {tr('Open rental', 'Ouvrir location')}
+                                  </button>
+                                )}
+                                <button type="button" onClick={() => handleDuplicateRecord(record)} className="w-full rounded-xl px-3 py-2 text-left text-slate-700 hover:bg-slate-50">
+                                  {tr('Duplicate', 'Dupliquer')}
+                                </button>
+                                {isOwner && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuId(null);
+                                      setSelectedRecord(record);
+                                      setShowDeleteModal(true);
+                                    }}
+                                    className="w-full rounded-xl px-3 py-2 text-left text-red-700 hover:bg-red-50"
+                                  >
+                                    {tr('Delete', 'Supprimer')}
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
 
-                      {record.linked_rental_report && (
-                        <div className="mt-4 rounded-lg border border-red-100 bg-red-50 p-3">
-                          <div className="grid grid-cols-1 gap-2 text-sm text-gray-700 sm:grid-cols-3">
-                            <div>
-                              <p className="text-[11px] uppercase tracking-wide text-gray-400">Rental</p>
-                              <p className="font-medium text-gray-900">{formatRentalReference(record.linked_rental_report.rental_id)}</p>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2">
+                        <div className="flex flex-wrap gap-2 text-[11px] font-medium text-slate-600">
+                          <span>{tr('Labor', 'Main-d oeuvre')} {MaintenanceTrackingService.formatCurrency(financials.labor)}</span>
+                          <span>{tr('Parts', 'Pieces')} {MaintenanceTrackingService.formatCurrency(financials.parts)}</span>
+                          <span>{tr('Tax', 'Taxe')} {MaintenanceTrackingService.formatCurrency(financials.tax)}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                          <Calendar className="w-3.5 h-3.5" />
+                          {MaintenanceTrackingService.formatDate(record.service_date)}
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="mt-3 space-y-3">
+                          {record.linked_rental_report && (
+                            <div className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800">
+                              <span className="font-semibold">{getLinkedReportLabel(record.linked_rental_report)}</span>
+                              <span> • {String(record.linked_rental_report.severity || 'reported').replace(/_/g, ' ')}</span>
+                              <span> • {record.linked_rental_report.status === 'maintenance_completed' ? tr('Ready to close rental', 'Pret a cloturer la location') : tr('Repair in progress', 'Reparation en cours')}</span>
                             </div>
-                            <div>
-                              <p className="text-[11px] uppercase tracking-wide text-gray-400">Report</p>
-                              <p className="font-medium text-gray-900">{getLinkedReportLabel(record.linked_rental_report)}</p>
-                            </div>
-                            <div>
-                              <p className="text-[11px] uppercase tracking-wide text-gray-400">Rental Status</p>
-                              <p className="font-medium text-gray-900">
-                                {record.linked_rental_report.status === 'maintenance_completed' ? 'Ready to close rental' : 'Repair in progress'}
-                              </p>
-                            </div>
+                          )}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            {[
+                              { value: 'scheduled', label: tr('Scheduled', 'Planifie'), activeClasses: 'border-amber-300 bg-amber-50 text-amber-800' },
+                              { value: 'in_progress', label: tr('In Progress', 'En cours'), activeClasses: 'border-blue-300 bg-blue-50 text-blue-800' },
+                              { value: 'completed', label: tr('Completed', 'Termine'), activeClasses: 'border-green-300 bg-green-50 text-green-800' },
+                            ].map((option) => {
+                              const isActive = record.status === option.value;
+                              return (
+                                <button
+                                  key={option.value}
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleInlineStatusChange(record, option.value);
+                                  }}
+                                  disabled={updatingStatusId === record.id}
+                                  className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                                    isActive
+                                      ? option.activeClasses
+                                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
+                                  } ${updatingStatusId === record.id ? 'cursor-not-allowed opacity-60' : ''}`}
+                                >
+                                  {option.label}
+                                </button>
+                              );
+                            })}
                           </div>
+                          {updatingStatusId === record.id && (
+                            <p className="text-[11px] font-medium text-blue-600">{tr('Saving status...', 'Enregistrement du statut...')}</p>
+                          )}
                         </div>
                       )}
 
-                      <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
-                        <div className="rounded-lg bg-blue-50 border border-blue-100 p-3">
-                          <p className="text-[11px] font-medium text-blue-700 uppercase tracking-wide">Labor</p>
-                          <p className="mt-1 text-sm font-semibold text-blue-900">{MaintenanceTrackingService.formatCurrency(financials.labor)}</p>
-                        </div>
-                        <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3">
-                          <p className="text-[11px] font-medium text-indigo-700 uppercase tracking-wide">Parts</p>
-                          <p className="mt-1 text-sm font-semibold text-indigo-900">{MaintenanceTrackingService.formatCurrency(financials.parts)}</p>
-                        </div>
-                        <div className="rounded-lg bg-amber-50 border border-amber-100 p-3">
-                          <p className="text-[11px] font-medium text-amber-700 uppercase tracking-wide">Tax</p>
-                          <p className="mt-1 text-sm font-semibold text-amber-900">{MaintenanceTrackingService.formatCurrency(financials.tax)}</p>
-                        </div>
-                        <div className="rounded-lg bg-green-50 border border-green-100 p-3">
-                          <p className="text-[11px] font-medium text-green-700 uppercase tracking-wide">Total</p>
-                          <p className="mt-1 text-sm font-semibold text-green-900">{MaintenanceTrackingService.formatCurrency(financials.total)}</p>
-                        </div>
-                      </div>
-
-                      <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                            Status
-                          </p>
-                          {updatingStatusId === record.id && (
-                            <span className="text-[11px] font-medium text-blue-600">Saving status...</span>
-                          )}
-                        </div>
-                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
-                          {[
-                            { value: 'scheduled', label: 'Scheduled', activeClasses: 'border-amber-300 bg-amber-50 text-amber-800' },
-                            { value: 'in_progress', label: 'In Progress', activeClasses: 'border-blue-300 bg-blue-50 text-blue-800' },
-                            { value: 'completed', label: 'Completed', activeClasses: 'border-green-300 bg-green-50 text-green-800' },
-                          ].map((option) => {
-                            const isActive = record.status === option.value;
-                            return (
-                              <button
-                                key={option.value}
-                                type="button"
-                                onClick={() => handleInlineStatusChange(record, option.value)}
-                                disabled={updatingStatusId === record.id}
-                                className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
-                                  isActive
-                                    ? option.activeClasses
-                                    : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100'
-                                } ${updatingStatusId === record.id ? 'cursor-not-allowed opacity-60' : ''}`}
-                              >
-                                {option.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                        <div className="flex items-center gap-2 text-xs text-gray-500">
-                          <Calendar className="w-4 h-4" />
-                          {MaintenanceTrackingService.formatDate(record.service_date)}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {record.linked_rental_report?.rental_id && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => navigate(`/admin/rentals/${record.linked_rental_report.rental_id}`)}
-                              className="flex items-center gap-1 border-orange-200 text-orange-700 hover:bg-orange-50"
-                            >
-                              Open Rental
-                            </Button>
-                          )}
+                      <div className="mt-3 flex flex-wrap justify-end gap-2">
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => navigate(`/admin/maintenance/${record.id}`)}
-                            className="flex items-center gap-1"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              navigate(`/admin/maintenance/${record.id}`);
+                            }}
+                            className={`flex items-center gap-1 ${softActionButtonClass}`}
                           >
                             <Eye className="w-3 h-3" />
                             View
@@ -775,44 +952,32 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => handleEditRecord(record)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleEditRecord(record);
+                            }}
                             disabled={loadingFullRecord}
-                            className="flex items-center gap-1"
+                            className={`flex items-center gap-1 ${primaryActionButtonClass}`}
                           >
                             <Edit className="w-3 h-3" />
-                            Edit
+                            {tr('Edit', 'Modifier')}
                           </Button>
-                          {isOwner && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => {
-                                setSelectedRecord(record);
-                                setShowDeleteModal(true);
-                              }}
-                              className="flex items-center gap-1 text-red-600 hover:text-red-700"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                              Delete
-                            </Button>
-                          )}
-                        </div>
                       </div>
                     </div>
                   );
                 })}
               </div>
             ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto rounded-[1.5rem] bg-white">
               <table className="w-full">
                 <thead className="bg-gray-50 border-b">
                   <tr>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">Vehicle</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">Type</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">Status</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">Service Date</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">Cost Summary</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">Actions</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Vehicle', 'Vehicule')}</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Type', 'Type')}</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Status', 'Statut')}</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Service Date', 'Date de service')}</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Cost Summary', 'Resume des couts')}</th>
+                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Actions', 'Actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -836,15 +1001,15 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                               <span>{maintenanceVisual.emoji}</span>
                               <span>{maintenanceVisual.label}</span>
                             </span>
-                            <p className="font-medium text-gray-900">{record.maintenance_type || 'N/A'}</p>
+                            <p className="font-medium text-gray-900">{record.maintenance_type || tr('N/A', 'N/D')}</p>
                           </div>
                           {record.linked_rental_report && (
                             <div className="flex flex-wrap gap-1.5">
                               <span className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">
-                                Linked Rental Report
+                                {tr('Linked Rental Report', 'Rapport de location lie')}
                               </span>
                               <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[11px] font-medium text-orange-700">
-                                Rental {formatRentalReference(record.linked_rental_report.rental_id)}
+                                {tr('Rental', 'Location')} {formatRentalReference(record.linked_rental_report.rental_id)}
                               </span>
                             </div>
                           )}
@@ -859,7 +1024,7 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             MaintenanceTrackingService.getStatusColor(record.status)
                           }`}>
-                            {record.status || 'unknown'}
+                            {record.status || tr('unknown', 'inconnu')}
                           </span>
                         </div>
                       </td>
@@ -876,13 +1041,13 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                           </p>
                           <div className="flex flex-wrap gap-1.5">
                             <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 border border-blue-100">
-                              Labor {MaintenanceTrackingService.formatCurrency(financials.labor)}
+                              {tr('Labor', 'Main-d oeuvre')} {MaintenanceTrackingService.formatCurrency(financials.labor)}
                             </span>
                             <span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 border border-indigo-100">
-                              Parts {MaintenanceTrackingService.formatCurrency(financials.parts)}
+                              {tr('Parts', 'Pieces')} {MaintenanceTrackingService.formatCurrency(financials.parts)}
                             </span>
                             <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 border border-amber-100">
-                              Tax {MaintenanceTrackingService.formatCurrency(financials.tax)}
+                              {tr('Tax', 'Taxe')} {MaintenanceTrackingService.formatCurrency(financials.tax)}
                             </span>
                           </div>
                         </div>
@@ -894,36 +1059,36 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                               size="sm"
                               variant="outline"
                               onClick={() => navigate(`/admin/rentals/${record.linked_rental_report.rental_id}`)}
-                              className="flex items-center gap-1 border-orange-200 text-orange-700 hover:bg-orange-50"
+                              className={`flex items-center gap-1 ${warningActionButtonClass}`}
                             >
-                              Open Rental
+                              {tr('Open Rental', 'Ouvrir la location')}
                             </Button>
                           )}
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => navigate(`/admin/maintenance/${record.id}`)}
-                            className="flex items-center gap-1"
+                            className={`flex items-center gap-1 ${softActionButtonClass}`}
                           >
                             <Eye className="w-3 h-3" />
-                            View
+                            {tr('View', 'Voir')}
                           </Button>
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => handleEditRecord(record)}
                             disabled={loadingFullRecord}
-                            className="flex items-center gap-1"
+                            className={`flex items-center gap-1 ${primaryActionButtonClass}`}
                           >
                             {loadingFullRecord && selectedRecord?.id === record.id ? (
                               <>
                                 <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                                Loading...
+                                {tr('Loading...', 'Chargement...')}
                               </>
                             ) : (
                               <>
                                 <Edit className="w-3 h-3" />
-                                Edit
+                                {tr('Edit', 'Modifier')}
                               </>
                             )}
                           </Button>
@@ -935,10 +1100,10 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                                 setSelectedRecord(record);
                                 setShowDeleteModal(true);
                               }}
-                              className="flex items-center gap-1 text-red-600 hover:text-red-700"
+                              className={`flex items-center gap-1 ${dangerActionButtonClass}`}
                             >
                               <Trash2 className="w-3 h-3" />
-                              Delete
+                              {tr('Delete', 'Supprimer')}
                             </Button>
                           )}
                         </div>
@@ -951,8 +1116,8 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
             )}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-t border-gray-200 px-4 py-4">
               <p className="text-sm text-gray-500">
-                Showing {paginatedRecords.length === 0 ? 0 : ((currentPage - 1) * pageSize) + 1}
-                {' '}to {Math.min(currentPage * pageSize, (filteredRecords || []).length)} of {(filteredRecords || []).length} records
+                {tr('Showing', 'Affichage')} {paginatedRecords.length === 0 ? 0 : ((currentPage - 1) * pageSize) + 1}
+                {' '}{tr('to', 'a')} {Math.min(currentPage * pageSize, (filteredRecords || []).length)} {tr('of', 'sur')} {(filteredRecords || []).length} {tr('records', 'dossiers')}
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -962,10 +1127,10 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                   onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
                   disabled={currentPage === 1}
                 >
-                  Previous
+                  {tr('Previous', 'Precedent')}
                 </Button>
                 <span className="text-sm font-medium text-gray-700">
-                  Page {currentPage} of {totalPages}
+                  {tr('Page', 'Page')} {currentPage} {tr('of', 'sur')} {totalPages}
                 </span>
                 <Button
                   type="button"
@@ -974,7 +1139,7 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                   onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
                   disabled={currentPage === totalPages}
                 >
-                  Next
+                  {tr('Next', 'Suivant')}
                 </Button>
               </div>
             </div>
@@ -989,13 +1154,13 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-screen overflow-y-auto">
             <div className="p-6">
               <div className="flex items-center justify-between mb-6">
-                <h3 className="text-lg font-semibold text-gray-900">Maintenance Record Details</h3>
+                <h3 className="text-lg font-semibold text-gray-900">{tr('Maintenance Record Details', 'Details du dossier de maintenance')}</h3>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleViewClose}
                 >
-                  Close
+                  {tr('Close', 'Fermer')}
                 </Button>
               </div>
 
@@ -1200,11 +1365,11 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                 <div className="p-2 bg-red-100 rounded-lg">
                   <AlertTriangle className="w-6 h-6 text-red-600" />
                 </div>
-                <h3 className="text-lg font-semibold text-gray-900">Delete Maintenance Record</h3>
+                <h3 className="text-lg font-semibold text-gray-900">{tr('Delete Maintenance Record', 'Supprimer la fiche de maintenance')}</h3>
               </div>
               
               <p className="text-gray-600 mb-6">
-                Are you sure you want to delete this maintenance record for{' '}
+                {tr('Are you sure you want to delete this maintenance record for', 'Êtes-vous sûr de vouloir supprimer cette fiche de maintenance pour')}{' '}
                 <strong>{getVehicleName(selectedRecord.vehicle_id)}</strong>? This action cannot be undone.
               </p>
 
@@ -1217,7 +1382,7 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                   }}
                   disabled={loading}
                 >
-                  Cancel
+                  {tr('Cancel', 'Annuler')}
                 </Button>
                 <Button
                   variant="destructive"
@@ -1228,12 +1393,12 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                   {loading ? (
                     <>
                       <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                      Deleting...
+                      {tr('Deleting...', 'Suppression...')}
                     </>
                   ) : (
                     <>
                       <Trash2 className="w-4 h-4" />
-                      Delete Record
+                      {tr('Delete Record', 'Supprimer la fiche')}
                     </>
                   )}
                 </Button>

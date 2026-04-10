@@ -2,8 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { Calculator, Calendar, Car, Truck, Percent, DollarSign } from 'lucide-react';
 import pricingService from '../../services/PricingService';
 import toast from 'react-hot-toast';
+import i18n from '../../i18n';
 
 const DynamicPricingCalculator = () => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [vehicles, setVehicles] = useState([]);
   const [models, setModels] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -42,7 +45,7 @@ const DynamicPricingCalculator = () => {
       }
     } catch (error) {
       console.error('Error loading data:', error);
-      toast.error('Failed to load vehicle data');
+      toast.error(tr('Failed to load vehicle data', 'Échec du chargement des données véhicule'));
     } finally {
       setLoading(false);
     }
@@ -50,12 +53,12 @@ const DynamicPricingCalculator = () => {
 
   const calculatePrice = async () => {
     if (!formData.start_date || !formData.end_date) {
-      toast.error('Please select rental dates');
+      toast.error(tr('Please select rental dates', 'Veuillez sélectionner les dates de location'));
       return;
     }
 
     if (!formData.model_id && !formData.vehicle_id) {
-      toast.error('Please select a vehicle or model');
+      toast.error(tr('Please select a vehicle or model', 'Veuillez sélectionner un véhicule ou un modèle'));
       return;
     }
 
@@ -80,12 +83,12 @@ const DynamicPricingCalculator = () => {
       if (result.success) {
         setPriceBreakdown(result.data);
       } else {
-        toast.error(result.error || 'Failed to calculate price');
+        toast.error(result.error || tr('Failed to calculate price', 'Impossible de calculer le prix'));
         setPriceBreakdown(null);
       }
     } catch (error) {
       console.error('Error calculating price:', error);
-      toast.error('Failed to calculate price');
+      toast.error(tr('Failed to calculate price', 'Impossible de calculer le prix'));
       setPriceBreakdown(null);
     } finally {
       setCalculating(false);
@@ -130,10 +133,10 @@ const DynamicPricingCalculator = () => {
         <div>
           <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
             <Calculator className="h-5 w-5 text-purple-600" />
-            Dynamic Pricing Calculator
+            {tr('Dynamic Pricing Calculator', 'Calculateur de tarification dynamique')}
           </h3>
           <p className="text-sm text-gray-600 mt-1">
-            Pricing is layered: Base → Seasonal → Tiers → Discounts → Transport
+            {tr('Pricing is layered: Base → Seasonal → Tiers → Discounts → Transport', 'La tarification est progressive : Base → Saisonnier → Paliers → Remises → Transport')}
           </p>
         </div>
       </div>
@@ -141,14 +144,14 @@ const DynamicPricingCalculator = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Input Form */}
         <div className="space-y-4">
-          <h4 className="font-medium text-gray-900">Rental Details</h4>
+          <h4 className="font-medium text-gray-900">{tr('Rental Details', 'Détails de location')}</h4>
           
           {/* Date Range */}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 <Calendar className="inline h-4 w-4 mr-1" />
-                Start Date
+                {tr('Start Date', 'Date de début')}
               </label>
               <input
                 type="date"
@@ -160,7 +163,7 @@ const DynamicPricingCalculator = () => {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 <Calendar className="inline h-4 w-4 mr-1" />
-                End Date
+                {tr('End Date', 'Date de fin')}
               </label>
               <input
                 type="date"
@@ -175,7 +178,7 @@ const DynamicPricingCalculator = () => {
           {/* Duration Display */}
           <div className="bg-gray-50 rounded-lg p-3">
             <p className="text-sm text-gray-600">
-              Duration: <span className="font-medium text-gray-900">{getDurationDays()} days</span>
+              {tr('Duration', 'Durée')}: <span className="font-medium text-gray-900">{getDurationDays()} {tr('days', 'jours')}</span>
             </p>
           </div>
 
@@ -183,14 +186,14 @@ const DynamicPricingCalculator = () => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               <Car className="inline h-4 w-4 mr-1" />
-              Vehicle Model
+              {tr('Vehicle Model', 'Modèle de véhicule')}
             </label>
             <select
               value={formData.model_id}
               onChange={(e) => handleInputChange('model_id', e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
             >
-              <option value="">Select Model</option>
+              <option value="">{tr('Select Model', 'Choisir un modèle')}</option>
               {models.map(model => (
                 <option key={model.id} value={model.id}>
                   {model.name}
@@ -202,14 +205,14 @@ const DynamicPricingCalculator = () => {
           {/* Specific Vehicle */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Specific Vehicle (Optional)
+              {tr('Specific Vehicle (Optional)', 'Véhicule spécifique (optionnel)')}
             </label>
             <select
               value={formData.vehicle_id}
               onChange={(e) => handleInputChange('vehicle_id', e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
             >
-              <option value="">Any vehicle of selected model</option>
+              <option value="">{tr('Any vehicle of selected model', "N'importe quel véhicule du modèle sélectionné")}</option>
               {vehicles
                 .filter(v => !formData.model_id || `${v.brand}-${v.model}` === formData.model_id)
                 .map(vehicle => (
@@ -224,13 +227,13 @@ const DynamicPricingCalculator = () => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               <Percent className="inline h-4 w-4 mr-1" />
-              Discount Code (Optional)
+              {tr('Discount Code (Optional)', 'Code de remise (optionnel)')}
             </label>
             <input
               type="text"
               value={formData.discount_code}
               onChange={(e) => handleInputChange('discount_code', e.target.value.toUpperCase())}
-              placeholder="Enter discount code"
+              placeholder={tr('Enter discount code', 'Entrer le code de remise')}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
             />
           </div>
@@ -239,7 +242,7 @@ const DynamicPricingCalculator = () => {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               <Truck className="inline h-4 w-4 mr-1" />
-              Transport Services
+              {tr('Transport Services', 'Services de transport')}
             </label>
             <div className="space-y-2">
               <label className="flex items-center">
@@ -249,7 +252,7 @@ const DynamicPricingCalculator = () => {
                   onChange={(e) => handleInputChange('pickup', e.target.checked)}
                   className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
                 />
-                <span className="ml-2 text-sm text-gray-700">Vehicle Pickup/Delivery</span>
+                <span className="ml-2 text-sm text-gray-700">{tr('Vehicle Pickup/Delivery', 'Prise en charge / livraison du vehicule')}</span>
               </label>
               <label className="flex items-center">
                 <input
@@ -258,7 +261,7 @@ const DynamicPricingCalculator = () => {
                   onChange={(e) => handleInputChange('dropoff', e.target.checked)}
                   className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
                 />
-                <span className="ml-2 text-sm text-gray-700">Vehicle Return/Collection</span>
+                <span className="ml-2 text-sm text-gray-700">{tr('Vehicle Return/Collection', 'Retour / recuperation du vehicule')}</span>
               </label>
             </div>
           </div>
@@ -272,12 +275,12 @@ const DynamicPricingCalculator = () => {
             {calculating ? (
               <>
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                Calculating...
+                {tr('Calculating...', 'Calcul...')}
               </>
             ) : (
               <>
                 <Calculator className="h-4 w-4" />
-                Calculate Price
+                {tr('Calculate Price', 'Calculer le prix')}
               </>
             )}
           </button>
@@ -285,25 +288,25 @@ const DynamicPricingCalculator = () => {
 
         {/* Price Breakdown */}
         <div className="space-y-4">
-          <h4 className="font-medium text-gray-900">Price Breakdown</h4>
+          <h4 className="font-medium text-gray-900">{tr('Price Breakdown', 'Detail du prix')}</h4>
           
           {!priceBreakdown ? (
             <div className="bg-gray-50 rounded-lg p-8 text-center">
               <Calculator className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-              <p className="text-gray-500">Enter rental details and click calculate to see pricing</p>
+              <p className="text-gray-500">{tr('Enter rental details and click calculate to see pricing', 'Entrez les details de location puis cliquez sur calculer pour voir le prix')}</p>
             </div>
           ) : (
             <div className="space-y-4">
               {/* Base Price */}
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                 <div className="flex justify-between items-center">
-                  <span className="text-blue-700">Base Price (per day)</span>
+                  <span className="text-blue-700">{tr('Base Price (per day)', 'Prix de base (par jour)')}</span>
                   <span className="font-medium text-blue-900">
                     {priceBreakdown.basePrice.toFixed(2)} {priceBreakdown.currency}
                   </span>
                 </div>
                 <div className="flex justify-between items-center mt-1">
-                  <span className="text-sm text-blue-600">× {priceBreakdown.durationDays} days</span>
+                  <span className="text-sm text-blue-600">× {priceBreakdown.durationDays} {tr('days', 'jours')}</span>
                   <span className="text-sm text-blue-600">
                     {(priceBreakdown.basePrice * priceBreakdown.durationDays).toFixed(2)} {priceBreakdown.currency}
                   </span>
@@ -314,7 +317,7 @@ const DynamicPricingCalculator = () => {
               {priceBreakdown.seasonalMultiplier !== 1 && (
                 <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
                   <div className="flex justify-between items-center">
-                    <span className="text-orange-700">Seasonal Adjustment</span>
+                    <span className="text-orange-700">{tr('Seasonal Adjustment', 'Ajustement saisonnier')}</span>
                     <span className="font-medium text-orange-900">
                       ×{priceBreakdown.seasonalMultiplier}
                     </span>
@@ -326,7 +329,7 @@ const DynamicPricingCalculator = () => {
               {priceBreakdown.dailyMultiplier !== 1 && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                   <div className="flex justify-between items-center">
-                    <span className="text-green-700">Daily Tier Discount</span>
+                    <span className="text-green-700">{tr('Daily Tier Discount', 'Remise palier journalier')}</span>
                     <span className="font-medium text-green-900">
                       ×{priceBreakdown.dailyMultiplier}
                     </span>
@@ -337,7 +340,7 @@ const DynamicPricingCalculator = () => {
               {/* Subtotal */}
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                 <div className="flex justify-between items-center">
-                  <span className="text-gray-700">Rental Subtotal</span>
+                  <span className="text-gray-700">{tr('Rental Subtotal', 'Sous-total location')}</span>
                   <span className="font-medium text-gray-900">
                     {priceBreakdown.subtotal.toFixed(2)} {priceBreakdown.currency}
                   </span>
@@ -348,7 +351,7 @@ const DynamicPricingCalculator = () => {
               {priceBreakdown.discountAmount > 0 && (
                 <div className="bg-red-50 border border-red-200 rounded-lg p-4">
                   <div className="flex justify-between items-center">
-                    <span className="text-red-700">Discount Applied</span>
+                    <span className="text-red-700">{tr('Discount Applied', 'Remise appliquee')}</span>
                     <span className="font-medium text-red-900">
                       -{priceBreakdown.discountAmount.toFixed(2)} {priceBreakdown.currency}
                     </span>
@@ -359,7 +362,7 @@ const DynamicPricingCalculator = () => {
               {/* Rental Total */}
               <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
                 <div className="flex justify-between items-center">
-                  <span className="text-indigo-700 font-medium">Rental Total</span>
+                  <span className="text-indigo-700 font-medium">{tr('Rental Total', 'Total location')}</span>
                   <span className="font-semibold text-indigo-900">
                     {priceBreakdown.rentalTotal.toFixed(2)} {priceBreakdown.currency}
                   </span>
@@ -370,7 +373,7 @@ const DynamicPricingCalculator = () => {
               {priceBreakdown.transportTotal > 0 && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                   <div className="flex justify-between items-center">
-                    <span className="text-yellow-700">Transport Services</span>
+                    <span className="text-yellow-700">{tr('Transport Services', 'Services de transport')}</span>
                     <span className="font-medium text-yellow-900">
                       +{priceBreakdown.transportTotal.toFixed(2)} {priceBreakdown.currency}
                     </span>
@@ -381,7 +384,7 @@ const DynamicPricingCalculator = () => {
               {/* Final Total */}
               <div className="bg-purple-100 border border-purple-300 rounded-lg p-4">
                 <div className="flex justify-between items-center">
-                  <span className="text-purple-800 font-semibold text-lg">Final Total</span>
+                  <span className="text-purple-800 font-semibold text-lg">{tr('Final Total', 'Total final')}</span>
                   <span className="font-bold text-purple-900 text-xl">
                     {priceBreakdown.finalTotal.toFixed(2)} {priceBreakdown.currency}
                   </span>

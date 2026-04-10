@@ -443,14 +443,14 @@ const QuadSelectionModal = ({
               onClick={onClose}
               className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
             >
-              Cancel
+              Annuler
             </button>
             <button
               onClick={handleConfirm}
               disabled={selectedQuads.length === 0 || totalParticipants === 0}
               className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Confirm Selection ({selectedQuads.length} quads, {totalParticipants} participants)
+              Confirmer la sélection ({selectedQuads.length} quads, {totalParticipants} participants)
             </button>
           </div>
         </div>

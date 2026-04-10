@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import MaintenanceTrackingService from '../../services/MaintenanceTrackingService';
+import i18n from '../../i18n';
 import { 
   DollarSign, 
   Edit, 
@@ -20,6 +21,8 @@ import {
  * Finance-ready pricing management with cost estimation capabilities
  */
 const MaintenancePricingCatalog = () => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -48,7 +51,7 @@ const MaintenancePricingCatalog = () => {
       
     } catch (err) {
       console.error('Error loading pricing catalog:', err);
-      setError(`Failed to load pricing catalog: ${err.message}`);
+      setError(`${tr('Failed to load pricing catalog', 'Echec du chargement du catalogue tarifaire')} : ${err.message}`);
       // CRITICAL: Set empty array on error
       setPricingCatalog([]);
     } finally {
@@ -81,7 +84,7 @@ const MaintenancePricingCatalog = () => {
 
       await MaintenanceTrackingService.updateMaintenancePricing(editingType, pricingData);
       
-      setSuccess('✅ Pricing updated successfully!');
+      setSuccess(`✅ ${tr('Pricing updated successfully!', 'Tarification mise a jour avec succes !')}`);
       setEditingType(null);
       setEditFormData({
         default_labor_hours: '',
@@ -158,9 +161,9 @@ const MaintenancePricingCatalog = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-gray-900">Maintenance Pricing Catalog</h2>
+          <h2 className="text-xl font-semibold text-gray-900">{tr('Maintenance Pricing Catalog', 'Catalogue tarifaire maintenance')}</h2>
           <p className="text-sm text-gray-600">
-            Manage default pricing for different maintenance types. These values are used to prefill maintenance forms.
+            {tr('Manage default pricing for different maintenance types. These values are used to prefill maintenance forms.', 'Gerez les tarifs par defaut pour les differents types de maintenance. Ces valeurs servent a pre-remplir les formulaires de maintenance.')}
           </p>
         </div>
         <Button
@@ -171,7 +174,7 @@ const MaintenancePricingCatalog = () => {
           className="flex items-center gap-2"
         >
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
+          {tr('Refresh', 'Actualiser')}
         </Button>
       </div>
 
@@ -210,7 +213,7 @@ const MaintenancePricingCatalog = () => {
                       className="flex items-center gap-1"
                     >
                       <Edit className="w-3 h-3" />
-                      Edit
+                      {tr('Edit', 'Modifier')}
                     </Button>
                   )}
                 </CardTitle>
@@ -223,7 +226,7 @@ const MaintenancePricingCatalog = () => {
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         <Clock className="w-4 h-4 inline mr-1" />
-                        Default Labor Hours
+                        {tr('Default Labor Hours', 'Heures de main-d oeuvre par defaut')}
                       </label>
                       <input
                         type="number"
@@ -240,7 +243,7 @@ const MaintenancePricingCatalog = () => {
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         <DollarSign className="w-4 h-4 inline mr-1" />
-                        Labor Rate (MAD/hour)
+                        {tr('Labor Rate (MAD/hour)', "Taux de main-d'oeuvre (MAD/heure)")}
                       </label>
                       <input
                         type="number"
@@ -256,7 +259,7 @@ const MaintenancePricingCatalog = () => {
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Default Parts Cost (MAD)
+                        {tr('Default Parts Cost (MAD)', 'Cout des pieces par defaut (MAD)')}
                       </label>
                       <input
                         type="number"
@@ -272,7 +275,7 @@ const MaintenancePricingCatalog = () => {
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Description
+                        {tr('Description', 'Description')}
                       </label>
                       <textarea
                         name="description"
@@ -280,7 +283,7 @@ const MaintenancePricingCatalog = () => {
                         onChange={handleInputChange}
                         rows={3}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
-                        placeholder="Description of this maintenance type"
+                        placeholder={tr('Description of this maintenance type', 'Description de ce type de maintenance')}
                       />
                     </div>
 
@@ -293,7 +296,7 @@ const MaintenancePricingCatalog = () => {
                         className="flex items-center gap-1 flex-1"
                       >
                         <Save className="w-3 h-3" />
-                        Save
+                        {tr('Save', 'Enregistrer')}
                       </Button>
                       <Button
                         onClick={handleCancel}
@@ -302,7 +305,7 @@ const MaintenancePricingCatalog = () => {
                         className="flex items-center gap-1"
                       >
                         <X className="w-3 h-3" />
-                        Cancel
+                        {tr('Cancel', 'Annuler')}
                       </Button>
                     </div>
                   </div>
@@ -319,7 +322,7 @@ const MaintenancePricingCatalog = () => {
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-gray-600 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
-                          Labor Hours:
+                          {tr('Labor Hours:', 'Heures de main-d oeuvre :')}
                         </span>
                         <span className="font-medium">{pricing.default_labor_hours || 0}</span>
                       </div>
@@ -327,7 +330,7 @@ const MaintenancePricingCatalog = () => {
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-gray-600 flex items-center gap-1">
                           <DollarSign className="w-3 h-3" />
-                          Labor Rate:
+                          {tr('Labor Rate:', "Taux de main-d'oeuvre :")}
                         </span>
                         <span className="font-medium">
                           {MaintenanceTrackingService.formatCurrency(pricing.default_labor_rate_mad)}/hr
@@ -335,7 +338,7 @@ const MaintenancePricingCatalog = () => {
                       </div>
 
                       <div className="flex items-center justify-between text-sm">
-                        <span className="text-gray-600">Parts Cost:</span>
+                        <span className="text-gray-600">{tr('Parts Cost:', 'Cout des pieces :')}</span>
                         <span className="font-medium">
                           {MaintenanceTrackingService.formatCurrency(pricing.default_parts_cost_mad)}
                         </span>
@@ -343,7 +346,7 @@ const MaintenancePricingCatalog = () => {
 
                       <div className="border-t pt-3">
                         <div className="flex items-center justify-between text-sm mb-1">
-                          <span className="text-gray-600">Labor Cost:</span>
+                          <span className="text-gray-600">{tr('Labor Cost:', 'Cout main-d oeuvre :')}</span>
                           <span className="font-medium">
                             {MaintenanceTrackingService.formatCurrency(laborCost)}
                           </span>
@@ -351,7 +354,7 @@ const MaintenancePricingCatalog = () => {
                         <div className="flex items-center justify-between font-bold text-blue-900">
                           <span className="flex items-center gap-1">
                             <Calculator className="w-4 h-4" />
-                            Estimated Total:
+                            {tr('Estimated Total:', 'Total estime :')}
                           </span>
                           <span>{MaintenanceTrackingService.formatCurrency(totalCost)}</span>
                         </div>
@@ -369,13 +372,13 @@ const MaintenancePricingCatalog = () => {
       {safePricingCatalog.length === 0 && !loading && (
         <div className="text-center py-12">
           <Wrench className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No pricing catalog found</h3>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">{tr('No pricing catalog found', 'Aucun catalogue tarifaire trouve')}</h3>
           <p className="text-gray-500 mb-4">
-            The maintenance pricing catalog is empty or failed to load.
+            {tr('The maintenance pricing catalog is empty or failed to load.', "Le catalogue tarifaire maintenance est vide ou n'a pas pu etre charge.")}
           </p>
           <Button onClick={loadPricingCatalog} className="flex items-center gap-2">
             <RefreshCw className="w-4 h-4" />
-            Retry Loading
+            {tr('Retry Loading', 'Reessayer le chargement')}
           </Button>
         </div>
       )}
@@ -386,13 +389,13 @@ const MaintenancePricingCatalog = () => {
           <div className="flex items-start gap-3">
             <Settings className="w-5 h-5 text-blue-600 mt-0.5" />
             <div>
-              <h4 className="font-medium text-blue-900 mb-2">Pricing Catalog Guidelines</h4>
+              <h4 className="font-medium text-blue-900 mb-2">{tr('Pricing Catalog Guidelines', 'Guide du catalogue tarifaire')}</h4>
               <ul className="text-sm text-blue-700 space-y-1">
-                <li>• <strong>Auto-prefill:</strong> These values automatically populate maintenance forms to speed up data entry</li>
-                <li>• <strong>Editable defaults:</strong> Staff can modify prefilled values for specific maintenance cases</li>
-                <li>• <strong>Cost estimation:</strong> Estimated totals help with budgeting and customer quotes</li>
-                <li>• <strong>Finance integration:</strong> Actual costs from maintenance records feed into financial reporting</li>
-                <li>• <strong>Regular updates:</strong> Review and update pricing periodically to reflect current market rates</li>
+                <li>• <strong>{tr('Auto-prefill:', 'Pre-remplissage automatique :')}</strong> {tr('These values automatically populate maintenance forms to speed up data entry', 'Ces valeurs remplissent automatiquement les formulaires de maintenance pour accelerer la saisie')}</li>
+                <li>• <strong>{tr('Editable defaults:', 'Valeurs modifiables :')}</strong> {tr('Staff can modify prefilled values for specific maintenance cases', 'Le personnel peut modifier les valeurs pre-remplies selon le cas')}</li>
+                <li>• <strong>{tr('Cost estimation:', 'Estimation des couts :')}</strong> {tr('Estimated totals help with budgeting and customer quotes', 'Les totaux estimes aident pour le budget et les devis clients')}</li>
+                <li>• <strong>{tr('Finance integration:', 'Integration finance :')}</strong> {tr('Actual costs from maintenance records feed into financial reporting', 'Les couts reels des dossiers de maintenance alimentent les rapports financiers')}</li>
+                <li>• <strong>{tr('Regular updates:', 'Mises a jour regulieres :')}</strong> {tr('Review and update pricing periodically to reflect current market rates', 'Revoyez et mettez a jour regulierement les tarifs pour suivre le marche')}</li>
               </ul>
             </div>
           </div>

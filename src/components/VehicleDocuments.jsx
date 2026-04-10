@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { File, Download, Eye, Trash2, AlertTriangle, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, ExternalLink, Eye, File, RefreshCw, Trash2, AlertTriangle, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import i18n from '../i18n';
 
 const VehicleDocuments = ({ 
   documents = [], 
@@ -11,10 +12,13 @@ const VehicleDocuments = ({
   vehicleId, 
   loadFromStorage = true 
 }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [loading, setLoading] = useState(false);
   const [vehicleMedia, setVehicleMedia] = useState([]);
   const [deletingDocumentId, setDeletingDocumentId] = useState(null);
   const [lastSyncedSignature, setLastSyncedSignature] = useState('');
+  const [viewerIndex, setViewerIndex] = useState(null);
   
   // FIXED: Use existing vehicle-documents bucket instead of vehicle-media
   const BUCKET_NAME = 'vehicle-documents';
@@ -95,6 +99,7 @@ const VehicleDocuments = ({
           // Extract original filename from the timestamp pattern
           const originalName = extractOriginalFilename(file.name);
           const fileType = getMimeTypeFromName(originalName);
+          const categoryMeta = getCategoryFromStoredName(file.name, fileType);
 
           return {
             id: file.id || `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -104,7 +109,8 @@ const VehicleDocuments = ({
             url: urlData.publicUrl,
             storagePath: fullPath,
             uploadedAt: file.created_at || new Date().toISOString(),
-            category: getCategoryFromType(fileType),
+            category: categoryMeta.category,
+            categoryKey: categoryMeta.categoryKey,
             vehicleId: vehicleId
           };
         });
@@ -149,16 +155,46 @@ const VehicleDocuments = ({
 
   // Extract original filename from stored filename
   const extractOriginalFilename = (storedName) => {
+    const withoutCategory = String(storedName || '').replace(/^[a-z-]+__/, '');
     // Handle the pattern: timestamp_randomstring.extension
-    if (/^\d{13}_/.test(storedName)) {
-      const parts = storedName.split('_');
+    if (/^\d{13}_/.test(withoutCategory)) {
+      const parts = withoutCategory.split('_');
       if (parts.length >= 2) {
         // Remove timestamp (first part) and keep the rest
         return parts.slice(1).join('_');
       }
     }
     
-    return storedName;
+    if (/^\d+_[a-z0-9]+_/i.test(withoutCategory)) {
+      return withoutCategory.split('_').slice(2).join('_');
+    }
+
+    return withoutCategory;
+  };
+
+  const getCategoryFromStoredName = (storedName, mimeType) => {
+    const categoryKey = String(storedName || '').split('__')[0];
+    const categoryMap = {
+      'legal': tr('Legal file', 'Document légal'),
+      'purchase-invoice': tr('Purchase invoice', "Facture d'achat"),
+      'registration': tr('Registration', 'Immatriculation'),
+      'annual-tax': tr('Annual vehicle tax receipt', 'Reçu de taxe annuelle véhicule'),
+      'insurance': tr('Insurance', 'Assurance'),
+      'maintenance': tr('Maintenance', 'Maintenance'),
+      'other': tr('Other', 'Autre'),
+    };
+
+    if (categoryMap[categoryKey]) {
+      return {
+        category: categoryMap[categoryKey],
+        categoryKey,
+      };
+    }
+
+    return {
+      category: getCategoryFromType(mimeType),
+      categoryKey: null,
+    };
   };
 
   const getMimeTypeFromName = (name) => {
@@ -220,10 +256,25 @@ const VehicleDocuments = ({
     return doc.type && doc.type.startsWith('image/');
   };
 
+  const isPdf = (doc) => {
+    return doc.type === 'application/pdf' || doc.name?.toLowerCase?.().endsWith('.pdf');
+  };
+
   const handleView = (doc) => {
-    if (doc.url) {
-      window.open(doc.url, '_blank');
-    }
+    const index = allDocuments.findIndex((document) => (document?.storagePath || document?.url || document?.id) === (doc?.storagePath || doc?.url || doc?.id));
+    setViewerIndex(index >= 0 ? index : 0);
+  };
+
+  const selectedDocument = viewerIndex === null ? null : allDocuments[viewerIndex];
+
+  const showPreviousDocument = () => {
+    if (viewerIndex === null || allDocuments.length <= 1) return;
+    setViewerIndex((current) => (current === 0 ? allDocuments.length - 1 : current - 1));
+  };
+
+  const showNextDocument = () => {
+    if (viewerIndex === null || allDocuments.length <= 1) return;
+    setViewerIndex((current) => (current >= allDocuments.length - 1 ? 0 : current + 1));
   };
 
   const handleDownload = async (doc) => {
@@ -299,6 +350,52 @@ const VehicleDocuments = ({
     }
   };
 
+  const imageDocuments = allDocuments.filter((doc) => isImage(doc));
+  const taxReceiptDocuments = allDocuments.filter((doc) => String(doc?.categoryKey || doc?.category || '').toLowerCase().includes('annual-tax'));
+  const legalDocuments = allDocuments.filter((doc) => !isImage(doc) && !taxReceiptDocuments.includes(doc));
+
+  const renderDocumentActions = (doc) => (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => handleView(doc)}
+        className="p-1 text-gray-500 hover:text-blue-600 transition-colors"
+        title={tr('View Document', 'Voir le document')}
+        disabled={deletingDocumentId === doc.id}
+      >
+        <Eye className="w-4 h-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => handleDownload(doc)}
+        className="p-1 text-gray-500 hover:text-green-600 transition-colors"
+        title={tr('Download Document', 'Télécharger le document')}
+        disabled={deletingDocumentId === doc.id}
+      >
+        <Download className="w-4 h-4" />
+      </button>
+      {canDelete && (
+        <button
+          type="button"
+          onClick={() => handleDelete(doc)}
+          disabled={deletingDocumentId === doc.id}
+          className={`p-1 transition-colors ${
+            deletingDocumentId === doc.id
+              ? 'text-gray-400 cursor-not-allowed'
+              : 'text-gray-500 hover:text-red-600'
+          }`}
+          title={deletingDocumentId === doc.id ? tr('Deleting...', 'Suppression...') : tr('Delete Document', 'Supprimer le document')}
+        >
+          {deletingDocumentId === doc.id ? (
+            <RefreshCw className="w-4 h-4 animate-spin" />
+          ) : (
+            <Trash2 className="w-4 h-4" />
+          )}
+        </button>
+      )}
+    </div>
+  );
+
   if (loading) {
     return (
       <div className={`space-y-4 ${className}`}>
@@ -316,11 +413,11 @@ const VehicleDocuments = ({
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-start gap-2">
           <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
           <div className="text-sm">
-            <p className="text-amber-800 font-medium">No Media Found</p>
+            <p className="text-amber-800 font-medium">{tr('No Media Found', 'Aucun média trouvé')}</p>
             <p className="text-amber-700">
               {loadFromStorage 
-                ? `No documents or media have been uploaded for this vehicle yet.`
-                : 'No documents uploaded yet for this new vehicle.'
+                ? tr('No documents or media have been uploaded for this vehicle yet.', "Aucun document ou média n'a encore été téléversé pour ce véhicule.")
+                : tr('No documents uploaded yet for this new vehicle.', "Aucun document n'a encore été téléversé pour ce nouveau véhicule.")
               }
             </p>
           </div>
@@ -328,14 +425,14 @@ const VehicleDocuments = ({
         
         <div className="border-2 border-dashed border-gray-200 rounded-lg p-6 text-center">
           <File className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-400">No media available</p>
+          <p className="text-sm text-gray-400">{tr('No media available', 'Aucun média disponible')}</p>
           {loadFromStorage && vehicleId && (
             <button
               type="button"
               onClick={loadVehicleMedia}
               className="mt-2 text-xs text-blue-600 hover:text-blue-700 underline"
             >
-              Refresh
+              {tr('Refresh', 'Actualiser')}
             </button>
           )}
         </div>
@@ -350,8 +447,8 @@ const VehicleDocuments = ({
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-medium text-gray-700 flex items-center gap-2">
             <File className="w-4 h-4" />
-            Vehicle Media ({allDocuments.length})
-            {vehicleId && <span className="text-xs text-gray-500">• Vehicle ID: {vehicleId}</span>}
+            {tr('Vehicle Media', 'Médias du véhicule')} ({allDocuments.length})
+            {vehicleId && <span className="text-xs text-gray-500">• {tr('Vehicle ID', 'ID véhicule')}: {vehicleId}</span>}
           </h4>
           {loadFromStorage && vehicleId && (
             <button
@@ -360,119 +457,183 @@ const VehicleDocuments = ({
               className="text-xs text-blue-600 hover:text-blue-700 underline flex items-center gap-1"
             >
               <RefreshCw className="w-3 h-3" />
-              Refresh
+              {tr('Refresh', 'Actualiser')}
             </button>
           )}
         </div>
         
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {allDocuments.map((doc) => (
-            <div key={doc.id} className="bg-white border border-gray-200 rounded-lg overflow-hidden hover:shadow-md transition-shadow">
-              {/* Document Preview */}
-              <div className="aspect-video bg-gray-50 flex items-center justify-center relative">
-                {isImage(doc) ? (
-                  <img
-                    src={doc.url}
-                    alt={doc.name}
-                    className="w-full h-full object-cover"
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="flex flex-col items-center justify-center p-4">
-                    <File className="w-12 h-12 text-gray-400 mb-2" />
-                    <span className="text-xs text-gray-500 text-center">{doc.category}</span>
-                  </div>
-                )}
-                
-                {/* Category Badge */}
-                {doc.category && (
-                  <div className="absolute top-2 left-2">
-                    <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${getCategoryColor(doc.category)}`}>
-                      {doc.category}
-                    </span>
-                  </div>
-                )}
+        {imageDocuments.length > 0 ? (
+          <section className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Images', 'Images')}</p>
+            <div className="-mx-1 flex snap-x gap-3 overflow-x-auto px-1 pb-2">
+              {imageDocuments.map((doc) => (
+                <button
+                  key={doc.id}
+                  type="button"
+                  onClick={() => handleView(doc)}
+                  className="relative h-28 w-40 shrink-0 snap-start overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm"
+                >
+                  <img src={doc.url} alt={doc.name} className="h-full w-full object-cover" loading="lazy" />
+                  <span className="absolute bottom-2 left-2 max-w-[8rem] truncate rounded-full bg-white/90 px-2 py-1 text-[10px] font-semibold text-slate-700 shadow-sm">
+                    {doc.name}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
-                {/* Vehicle ID Badge (for debugging) */}
-                {doc.vehicleId && (
-                  <div className="absolute top-2 right-2">
-                    <span className="inline-flex items-center px-1 py-0.5 rounded text-xs bg-gray-800 text-white">
-                      V{doc.vehicleId}
+        {legalDocuments.length > 0 ? (
+          <section className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Legal documents', 'Documents légaux')}</p>
+            <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              {legalDocuments.map((doc) => (
+                <div key={doc.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                  <button type="button" onClick={() => handleView(doc)} className="flex min-w-0 items-center gap-3 text-left">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
+                      <File className="h-5 w-5" />
                     </span>
-                  </div>
-                )}
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-slate-900">{doc.name}</span>
+                      <span className="block truncate text-xs text-slate-500">{doc.category} • {formatFileSize(doc.size)}</span>
+                    </span>
+                  </button>
+                  {renderDocumentActions(doc)}
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
-                {/* Deletion Loading Overlay */}
-                {deletingDocumentId === doc.id && (
-                  <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-                    <div className="bg-white rounded-lg p-3 flex items-center gap-2">
-                      <RefreshCw className="w-4 h-4 text-red-600 animate-spin" />
-                      <span className="text-sm text-gray-700">Deleting...</span>
-                    </div>
-                  </div>
-                )}
+        {taxReceiptDocuments.length > 0 ? (
+          <details className="overflow-hidden rounded-2xl border border-emerald-100 bg-emerald-50/50" open>
+            <summary className="cursor-pointer px-3 py-2.5 text-sm font-semibold text-emerald-800">
+              {tr('Tax receipts', 'Reçus de taxe')} ({taxReceiptDocuments.length})
+            </summary>
+            <div className="divide-y divide-emerald-100 bg-white">
+              {taxReceiptDocuments.map((doc) => (
+                <div key={doc.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                  <button type="button" onClick={() => handleView(doc)} className="flex min-w-0 items-center gap-3 text-left">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                      <File className="h-5 w-5" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-slate-900">{doc.name}</span>
+                      <span className="block truncate text-xs text-slate-500">{formatFileSize(doc.size)} • {new Date(doc.uploadedAt).toLocaleDateString()}</span>
+                    </span>
+                  </button>
+                  {renderDocumentActions(doc)}
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
+      </div>
+      {selectedDocument ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/70 p-3 backdrop-blur-sm sm:p-6"
+          onClick={() => setViewerIndex(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-5">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-900">{selectedDocument.name}</p>
+                <p className="text-xs text-slate-500">
+                  {selectedDocument.category || tr('Document', 'Document')} • {viewerIndex + 1} / {allDocuments.length}
+                </p>
               </div>
-              
-              {/* Document Info */}
-              <div className="p-3">
-                <div className="flex items-start justify-between mb-2">
-                  <h5 className="text-sm font-medium text-gray-900 truncate flex-1">{doc.name}</h5>
-                </div>
-                
-                <div className="flex items-center justify-between text-xs text-gray-500 mb-3">
-                  <span>{formatFileSize(doc.size)}</span>
-                  <span>{new Date(doc.uploadedAt).toLocaleDateString()}</span>
-                </div>
-                
-                {/* Action Buttons */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => handleView(doc)}
-                      className="p-1 text-gray-500 hover:text-blue-600 transition-colors"
-                      title="View Document"
-                      disabled={deletingDocumentId === doc.id}
-                    >
-                      <Eye className="w-4 h-4" />
-                    </button>
-                    
-                    <button
-                      type="button"
-                      onClick={() => handleDownload(doc)}
-                      className="p-1 text-gray-500 hover:text-green-600 transition-colors"
-                      title="Download Document"
-                      disabled={deletingDocumentId === doc.id}
-                    >
-                      <Download className="w-4 h-4" />
-                    </button>
-                  </div>
-                  
-                  {canDelete && (
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(doc)}
-                      disabled={deletingDocumentId === doc.id}
-                      className={`p-1 transition-colors ${
-                        deletingDocumentId === doc.id
-                          ? 'text-gray-400 cursor-not-allowed'
-                          : 'text-gray-500 hover:text-red-600'
-                      }`}
-                      title={deletingDocumentId === doc.id ? 'Deleting...' : 'Delete Document'}
-                    >
-                      {deletingDocumentId === doc.id ? (
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="w-4 h-4" />
-                      )}
-                    </button>
+              <div className="flex items-center gap-2">
+                {selectedDocument.url ? (
+                  <a
+                    href={selectedDocument.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    {tr('Open', 'Ouvrir')}
+                  </a>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setViewerIndex(null)}
+                  className="rounded-full border border-slate-200 p-2 text-slate-600 hover:bg-slate-50"
+                  aria-label={tr('Close viewer', 'Fermer la visionneuse')}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="relative flex min-h-[55vh] flex-1 items-center justify-center bg-slate-100">
+              {allDocuments.length > 1 ? (
+                <button
+                  type="button"
+                  onClick={showPreviousDocument}
+                  className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/90 p-2 text-slate-700 shadow-lg hover:bg-white"
+                  aria-label={tr('Previous document', 'Document précédent')}
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
+              ) : null}
+
+              <div className="flex h-full max-h-[72vh] w-full snap-x snap-mandatory overflow-x-auto">
+                <div className="flex w-full shrink-0 snap-center items-center justify-center p-3 sm:p-6">
+                  {isImage(selectedDocument) ? (
+                    <img
+                      src={selectedDocument.url}
+                      alt={selectedDocument.name}
+                      className="max-h-[70vh] max-w-full rounded-2xl object-contain shadow-lg"
+                    />
+                  ) : isPdf(selectedDocument) ? (
+                    <iframe
+                      src={selectedDocument.url}
+                      title={selectedDocument.name}
+                      className="h-[70vh] w-full rounded-2xl border border-slate-200 bg-white shadow-lg"
+                    />
+                  ) : (
+                    <div className="max-w-sm rounded-2xl bg-white p-6 text-center shadow-lg">
+                      <File className="mx-auto mb-3 h-12 w-12 text-slate-400" />
+                      <p className="text-sm font-semibold text-slate-900">{selectedDocument.name}</p>
+                      <p className="mt-2 text-sm text-slate-500">
+                        {tr('This file type cannot be previewed here. You can still open or download it.', 'Ce type de fichier ne peut pas être prévisualisé ici. Vous pouvez toujours l’ouvrir ou le télécharger.')}
+                      </p>
+                    </div>
                   )}
                 </div>
               </div>
+
+              {allDocuments.length > 1 ? (
+                <button
+                  type="button"
+                  onClick={showNextDocument}
+                  className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/90 p-2 text-slate-700 shadow-lg hover:bg-white"
+                  aria-label={tr('Next document', 'Document suivant')}
+                >
+                  <ChevronRight className="h-5 w-5" />
+                </button>
+              ) : null}
             </div>
-          ))}
+
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-xs text-slate-500 sm:px-5">
+              <span>{tr('Swipe or use arrows to browse documents.', 'Balayez ou utilisez les flèches pour parcourir les documents.')}</span>
+              <button
+                type="button"
+                onClick={() => handleDownload(selectedDocument)}
+                className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-3 py-2 font-medium text-white hover:bg-slate-800"
+              >
+                <Download className="h-3.5 w-3.5" />
+                {tr('Download', 'Télécharger')}
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 };

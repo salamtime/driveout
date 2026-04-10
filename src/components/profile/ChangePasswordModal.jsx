@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
   const { t } = useTranslation();
+  const tr = (key, fallback) => t(key, { defaultValue: fallback });
   const [formData, setFormData] = useState({
     currentPassword: '',
     newPassword: '',
@@ -36,23 +37,23 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
     const errors = [];
     
     if (password.length < 8) {
-      errors.push(t('profile.password.minLength'));
+      errors.push(tr('profile.password.minLength', 'At least 8 characters'));
     }
     
     if (!/(?=.*[a-z])/.test(password)) {
-      errors.push(t('profile.password.lowercase'));
+      errors.push(tr('profile.password.lowercase', 'One lowercase letter'));
     }
     
     if (!/(?=.*[A-Z])/.test(password)) {
-      errors.push(t('profile.password.uppercase'));
+      errors.push(tr('profile.password.uppercase', 'One uppercase letter'));
     }
     
     if (!/(?=.*\d)/.test(password)) {
-      errors.push(t('profile.password.number'));
+      errors.push(tr('profile.password.number', 'One number'));
     }
     
     if (!/(?=.*[@$!%*?&])/.test(password)) {
-      errors.push(t('profile.password.special'));
+      errors.push(tr('profile.password.special', 'One special character (@$!%*?&)'));
     }
     
     return errors;
@@ -67,7 +68,7 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
     const newErrors = {};
     
     if (!formData.newPassword) {
-      newErrors.newPassword = t('profile.password.required');
+      newErrors.newPassword = tr('profile.password.required', 'Enter a new password');
     } else {
       const passwordErrors = validatePassword(formData.newPassword);
       if (passwordErrors.length > 0) {
@@ -76,9 +77,9 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
     }
     
     if (!formData.confirmPassword) {
-      newErrors.confirmPassword = t('profile.password.confirmRequired');
+      newErrors.confirmPassword = tr('profile.password.confirmRequired', 'Confirm your new password');
     } else if (formData.newPassword !== formData.confirmPassword) {
-      newErrors.confirmPassword = t('profile.password.mismatch');
+      newErrors.confirmPassword = tr('profile.password.mismatch', 'Passwords do not match');
     }
 
     if (Object.keys(newErrors).length > 0) {
@@ -127,12 +128,12 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
     score = checks.filter(Boolean).length;
     
     const strengthMap = {
-      0: { label: t('profile.password.strength.veryWeak'), color: 'bg-red-500' },
-      1: { label: t('profile.password.strength.weak'), color: 'bg-red-400' },
-      2: { label: t('profile.password.strength.fair'), color: 'bg-yellow-400' },
-      3: { label: t('profile.password.strength.good'), color: 'bg-yellow-500' },
-      4: { label: t('profile.password.strength.strong'), color: 'bg-green-400' },
-      5: { label: t('profile.password.strength.veryStrong'), color: 'bg-green-500' }
+      0: { label: tr('profile.password.strength.veryWeak', 'Very weak'), color: 'bg-red-500' },
+      1: { label: tr('profile.password.strength.weak', 'Weak'), color: 'bg-red-400' },
+      2: { label: tr('profile.password.strength.fair', 'Fair'), color: 'bg-yellow-400' },
+      3: { label: tr('profile.password.strength.good', 'Good'), color: 'bg-yellow-500' },
+      4: { label: tr('profile.password.strength.strong', 'Strong'), color: 'bg-green-400' },
+      5: { label: tr('profile.password.strength.veryStrong', 'Very strong'), color: 'bg-green-500' }
     };
     
     return { strength: score, ...strengthMap[score] };
@@ -149,7 +150,7 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
           {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-medium text-gray-900">
-              {t('profile.changePassword')}
+              {tr('profile.changePassword', 'Change Password')}
             </h3>
             <button
               onClick={onClose}
@@ -181,7 +182,7 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
             {/* New Password */}
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                {t('profile.password.new')}
+                {tr('profile.password.new', 'New password')}
               </label>
               <div className="relative">
                 <input
@@ -192,7 +193,7 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
                   className={`w-full px-3 py-2 pr-10 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                     errors.newPassword ? 'border-red-300 focus:ring-red-500' : 'border-gray-300'
                   }`}
-                  placeholder={t('profile.password.newPlaceholder')}
+                  placeholder={tr('profile.password.newPlaceholder', 'Enter your new password')}
                 />
                 <button
                   type="button"
@@ -235,7 +236,7 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
             {/* Confirm Password */}
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                {t('profile.password.confirm')}
+                {tr('profile.password.confirm', 'Confirm password')}
               </label>
               <div className="relative">
                 <input
@@ -246,7 +247,7 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
                   className={`w-full px-3 py-2 pr-10 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                     errors.confirmPassword ? 'border-red-300 focus:ring-red-500' : 'border-gray-300'
                   }`}
-                  placeholder={t('profile.password.confirmPlaceholder')}
+                  placeholder={tr('profile.password.confirmPlaceholder', 'Confirm your new password')}
                 />
                 <button
                   type="button"
@@ -273,38 +274,38 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
             {/* Password Requirements */}
             <div className="mb-6 p-3 bg-gray-50 rounded-md">
               <h4 className="text-sm font-medium text-gray-700 mb-2">
-                {t('profile.password.requirements')}
+                {tr('profile.password.requirements', 'Password requirements')}
               </h4>
               <ul className="text-xs text-gray-600 space-y-1">
                 <li className="flex items-center">
                   <span className={`mr-2 ${formData.newPassword.length >= 8 ? 'text-green-500' : 'text-gray-400'}`}>
                     {formData.newPassword.length >= 8 ? '✓' : '○'}
                   </span>
-                  {t('profile.password.minLength')}
+                  {tr('profile.password.minLength', 'At least 8 characters')}
                 </li>
                 <li className="flex items-center">
                   <span className={`mr-2 ${/(?=.*[a-z])/.test(formData.newPassword) ? 'text-green-500' : 'text-gray-400'}`}>
                     {/(?=.*[a-z])/.test(formData.newPassword) ? '✓' : '○'}
                   </span>
-                  {t('profile.password.lowercase')}
+                  {tr('profile.password.lowercase', 'One lowercase letter')}
                 </li>
                 <li className="flex items-center">
                   <span className={`mr-2 ${/(?=.*[A-Z])/.test(formData.newPassword) ? 'text-green-500' : 'text-gray-400'}`}>
                     {/(?=.*[A-Z])/.test(formData.newPassword) ? '✓' : '○'}
                   </span>
-                  {t('profile.password.uppercase')}
+                  {tr('profile.password.uppercase', 'One uppercase letter')}
                 </li>
                 <li className="flex items-center">
                   <span className={`mr-2 ${/(?=.*\d)/.test(formData.newPassword) ? 'text-green-500' : 'text-gray-400'}`}>
                     {/(?=.*\d)/.test(formData.newPassword) ? '✓' : '○'}
                   </span>
-                  {t('profile.password.number')}
+                  {tr('profile.password.number', 'One number')}
                 </li>
                 <li className="flex items-center">
                   <span className={`mr-2 ${/(?=.*[@$!%*?&])/.test(formData.newPassword) ? 'text-green-500' : 'text-gray-400'}`}>
                     {/(?=.*[@$!%*?&])/.test(formData.newPassword) ? '✓' : '○'}
                   </span>
-                  {t('profile.password.special')}
+                  {tr('profile.password.special', 'One special character (@$!%*?&)')}
                 </li>
               </ul>
             </div>
@@ -316,7 +317,7 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
                 onClick={onClose}
                 className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               >
-                {t('common.cancel')}
+                {tr('common.cancel', 'Cancel')}
               </button>
               <button
                 type="submit"
@@ -329,10 +330,10 @@ const ChangePasswordModal = ({ isOpen, onClose, onPasswordChange }) => {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    {t('common.saving')}
+                    {tr('common.saving', 'Saving...')}
                   </>
                 ) : (
-                  t('profile.changePassword')
+                  tr('profile.changePassword', 'Change Password')
                 )}
               </button>
             </div>

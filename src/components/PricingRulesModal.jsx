@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import PricingRulesService from '../services/PricingRulesService';
 import VehicleModelService from '../services/VehicleModelService';
 
@@ -9,6 +10,8 @@ import VehicleModelService from '../services/VehicleModelService';
  * vehicle models and rental types.
  */
 const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
+  const { t } = useTranslation();
+  const tr = (en, fr) => t(en, fr);
   const [pricingRules, setPricingRules] = useState([]);
   const [vehicleModels, setVehicleModels] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -160,7 +163,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
    * Handle delete rule
    */
   const handleDeleteRule = async (ruleId) => {
-    if (!window.confirm('Are you sure you want to delete this pricing rule?')) {
+    if (!window.confirm(tr('Are you sure you want to delete this pricing rule?', 'Voulez-vous vraiment supprimer cette règle tarifaire ?'))) {
       return;
     }
 
@@ -219,8 +222,8 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <div>
-            <h2 className="text-2xl font-bold text-gray-900">Pricing Rules Management</h2>
-            <p className="text-gray-600 mt-1">Manage vehicle pricing rules and rates</p>
+            <h2 className="text-2xl font-bold text-gray-900">{tr('Pricing Rules Management', 'Gestion des règles tarifaires')}</h2>
+            <p className="text-gray-600 mt-1">{tr('Manage vehicle pricing rules and rates', 'Gérez les règles tarifaires et les tarifs des véhicules')}</p>
           </div>
           <button
             onClick={onClose}
@@ -241,14 +244,14 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
           {/* Action Buttons */}
           <div className="mb-6 flex justify-between items-center">
             <h3 className="text-lg font-semibold text-gray-900">
-              {showForm ? (editingRule ? 'Edit Pricing Rule' : 'Add New Pricing Rule') : 'Pricing Rules'}
+              {showForm ? (editingRule ? tr('Edit Pricing Rule', 'Modifier la règle tarifaire') : tr('Add New Pricing Rule', 'Ajouter une nouvelle règle tarifaire')) : tr('Pricing Rules', 'Règles tarifaires')}
             </h3>
             {!showForm && (
               <button
                 onClick={() => setShowForm(true)}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                Add New Rule
+                {tr('Add New Rule', 'Ajouter une règle')}
               </button>
             )}
           </div>
@@ -260,7 +263,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                 {/* Vehicle Model */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Vehicle Model *
+                    {tr('Vehicle Model', 'Modèle de véhicule')} *
                   </label>
                   <select
                     name="vehicle_model_id"
@@ -269,7 +272,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                     required
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    <option value="">Select vehicle model</option>
+                    <option value="">{tr('Select vehicle model', 'Sélectionnez un modèle de véhicule')}</option>
                     {safeVehicleModels.map(model => (
                       <option key={model.id} value={model.id}>
                         {VehicleModelService.getDetailedLabel(model)}
@@ -281,7 +284,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                 {/* Rental Type */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Rental Type *
+                    {tr('Rental Type', 'Type de location')} *
                   </label>
                   <select
                     name="rental_type"
@@ -290,18 +293,18 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                     required
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    <option value="daily">Daily</option>
-                    <option value="hourly">Hourly</option>
-                    <option value="weekly">Weekly</option>
-                    <option value="monthly">Monthly</option>
-                    <option value="all">All Types</option>
+                    <option value="daily">{tr('Daily', 'Journalier')}</option>
+                    <option value="hourly">{tr('Hourly', 'Horaire')}</option>
+                    <option value="weekly">{tr('Weekly', 'Hebdomadaire')}</option>
+                    <option value="monthly">{tr('Monthly', 'Mensuel')}</option>
+                    <option value="all">{tr('All Types', 'Tous les types')}</option>
                   </select>
                 </div>
 
                 {/* Hourly Rate */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Hourly Rate (MAD)
+                    {tr('Hourly Rate (MAD)', 'Tarif horaire (MAD)')}
                   </label>
                   <input
                     type="number"
@@ -317,7 +320,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                 {/* Daily Rate */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Daily Rate (MAD) *
+                    {tr('Daily Rate (MAD)', 'Tarif journalier (MAD)')} *
                   </label>
                   <input
                     type="number"
@@ -334,7 +337,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                 {/* Weekly Rate */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Weekly Rate (MAD)
+                    {tr('Weekly Rate (MAD)', 'Tarif hebdomadaire (MAD)')}
                   </label>
                   <input
                     type="number"
@@ -350,7 +353,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                 {/* Monthly Rate */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Monthly Rate (MAD)
+                    {tr('Monthly Rate (MAD)', 'Tarif mensuel (MAD)')}
                   </label>
                   <input
                     type="number"
@@ -366,7 +369,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                 {/* Weekly Discount */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Weekly Discount (%)
+                    {tr('Weekly Discount (%)', 'Remise hebdomadaire (%)')}
                   </label>
                   <input
                     type="number"
@@ -383,7 +386,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                 {/* Monthly Discount */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Monthly Discount (%)
+                    {tr('Monthly Discount (%)', 'Remise mensuelle (%)')}
                   </label>
                   <input
                     type="number"
@@ -408,7 +411,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                   className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                 />
                 <label className="text-sm font-medium text-gray-700">
-                  Active (rule will be used for calculations)
+                  {tr('Active (rule will be used for calculations)', 'Actif (la règle sera utilisée pour les calculs)')}
                 </label>
               </div>
 
@@ -419,14 +422,14 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                   onClick={handleCancelForm}
                   className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-500"
                 >
-                  Cancel
+                  {tr('Cancel', 'Annuler')}
                 </button>
                 <button
                   type="submit"
                   disabled={loading}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                 >
-                  {loading ? 'Saving...' : (editingRule ? 'Update Rule' : 'Create Rule')}
+                  {loading ? tr('Saving...', 'Enregistrement...') : (editingRule ? tr('Update Rule', 'Mettre à jour la règle') : tr('Create Rule', 'Créer la règle'))}
                 </button>
               </div>
             </form>
@@ -436,17 +439,17 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
               {loading ? (
                 <div className="text-center py-8">
                   <div className="animate-spin text-2xl mb-2">⏳</div>
-                  <p className="text-gray-600">Loading pricing rules...</p>
+                  <p className="text-gray-600">{tr('Loading pricing rules...', 'Chargement des règles tarifaires...')}</p>
                 </div>
               ) : safePricingRules.length === 0 ? (
                 <div className="text-center py-8">
                   <div className="text-4xl mb-4">💰</div>
-                  <p className="text-gray-600 mb-4">No pricing rules found</p>
+                  <p className="text-gray-600 mb-4">{tr('No pricing rules found', 'Aucune règle tarifaire trouvée')}</p>
                   <button
                     onClick={() => setShowForm(true)}
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                   >
-                    Create First Rule
+                    {tr('Create First Rule', 'Créer la première règle')}
                   </button>
                 </div>
               ) : (
@@ -455,25 +458,25 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Vehicle Model
+                          {tr('Vehicle Model', 'Modèle de véhicule')}
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Rental Type
+                          {tr('Rental Type', 'Type de location')}
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Daily Rate
+                          {tr('Daily Rate', 'Tarif journalier')}
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Weekly Rate
+                          {tr('Weekly Rate', 'Tarif hebdomadaire')}
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Monthly Rate
+                          {tr('Monthly Rate', 'Tarif mensuel')}
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Status
+                          {tr('Status', 'Statut')}
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Actions
+                          {tr('Actions', 'Actions')}
                         </th>
                       </tr>
                     </thead>
@@ -492,17 +495,17 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="text-sm text-gray-900">
-                              {rule.daily_rate ? `${rule.daily_rate} MAD` : 'N/A'}
+                              {rule.daily_rate ? `${rule.daily_rate} MAD` : tr('N/A', 'N/D')}
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="text-sm text-gray-900">
-                              {rule.weekly_rate ? `${rule.weekly_rate} MAD` : 'N/A'}
+                              {rule.weekly_rate ? `${rule.weekly_rate} MAD` : tr('N/A', 'N/D')}
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="text-sm text-gray-900">
-                              {rule.monthly_rate ? `${rule.monthly_rate} MAD` : 'N/A'}
+                              {rule.monthly_rate ? `${rule.monthly_rate} MAD` : tr('N/A', 'N/D')}
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
@@ -511,7 +514,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                                 ? 'bg-green-100 text-green-800' 
                                 : 'bg-red-100 text-red-800'
                             }`}>
-                              {rule.is_active !== false ? 'Active' : 'Inactive'}
+                              {rule.is_active !== false ? tr('Active', 'Actif') : tr('Inactive', 'Inactif')}
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
@@ -520,13 +523,13 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
                                 onClick={() => handleEditRule(rule)}
                                 className="text-blue-600 hover:text-blue-900"
                               >
-                                Edit
+                                {tr('Edit', 'Modifier')}
                               </button>
                               <button
                                 onClick={() => handleDeleteRule(rule.id)}
                                 className="text-red-600 hover:text-red-900"
                               >
-                                Delete
+                                {tr('Delete', 'Supprimer')}
                               </button>
                             </div>
                           </td>
@@ -546,7 +549,7 @@ const PricingRulesModal = ({ isOpen, onClose, onSuccess }) => {
             onClick={onClose}
             className="px-6 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500"
           >
-            Close
+            {tr('Close', 'Fermer')}
           </button>
         </div>
       </div>

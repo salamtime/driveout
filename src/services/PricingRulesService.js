@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import VehicleModelService from './VehicleModelService';
+import DynamicPricingService from './DynamicPricingService';
 
 export class PricingRulesService {
   /**
@@ -134,48 +135,54 @@ export class PricingRulesService {
    */
   static async calculatePrice(vehicleModelId, startDate, endDate, rentalType = 'daily') {
     try {
-      // Get vehicle model info
-      const vehicleModel = await VehicleModelService.getById(vehicleModelId);
+      let resolvedVehicleModelId = vehicleModelId;
+      let resolvedVehicleId = null;
+
+      // Accept either a vehicle model id or a vehicle id for backward compatibility.
+      let vehicleModel = await VehicleModelService.getById(vehicleModelId).catch(() => null);
+
       if (!vehicleModel) {
-        throw new Error('Vehicle model not found');
+        const { data: vehicleRow, error: vehicleError } = await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .select('id, vehicle_model_id')
+          .eq('id', vehicleModelId)
+          .maybeSingle();
+
+        if (vehicleError || !vehicleRow?.vehicle_model_id) {
+          throw new Error('Vehicle model not found');
+        }
+
+        resolvedVehicleId = vehicleRow.id;
+        resolvedVehicleModelId = vehicleRow.vehicle_model_id;
+        vehicleModel = await VehicleModelService.getById(resolvedVehicleModelId).catch(() => null);
       }
 
-      // Get pricing rules for this vehicle model using the vehicle_model_id field
-      const { data: rules, error } = await supabase
-        .from('saharax_0u4w4d_pricing_simple')
-        .select('*')
-        .eq('vehicle_model_id', vehicleModelId)
-        .eq('is_active', true);
-
-      if (error) {
-        console.error('Error fetching pricing rules:', error);
-        return { price: 0, breakdown: [] };
-      }
-
-      if (!rules || rules.length === 0) {
-        return { price: 0, breakdown: ['No pricing rules found'] };
-      }
-
-      // Simple calculation - use the first active rule
-      const rule = rules.find(r => r.duration_type === rentalType) || rules[0];
       const start = new Date(startDate);
       const end = new Date(endDate);
       const diffTime = Math.abs(end - start);
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      const diffHours = Math.ceil(diffTime / (1000 * 60 * 60));
 
+      let unitPrice = 0;
       let price = 0;
       const breakdown = [];
 
-      if (rentalType === 'daily' && rule.price) {
-        price = rule.price * diffDays;
-        breakdown.push(`${diffDays} days × ${rule.price} MAD = ${price} MAD`);
-      } else if (rentalType === 'hourly' && rule.price) {
-        const diffHours = Math.ceil(diffTime / (1000 * 60 * 60));
-        price = rule.price * diffHours;
-        breakdown.push(`${diffHours} hours × ${rule.price} MAD = ${price} MAD`);
+      if (rentalType === 'daily') {
+        const pricing = await DynamicPricingService.getPricingForDuration(resolvedVehicleModelId, diffDays);
+        unitPrice = Number(pricing?.price) || 0;
+        price = unitPrice * diffDays;
+        breakdown.push(`${diffDays} days × ${unitPrice} MAD = ${price} MAD`);
+        if (pricing?.source) breakdown.push(`Source: ${pricing.source}`);
+      } else if (rentalType === 'hourly') {
+        const priceSourceVehicleId = resolvedVehicleId || vehicleModelId;
+        unitPrice = await DynamicPricingService.getDynamicPrice(priceSourceVehicleId, 'hourly', diffHours);
+        price = unitPrice * diffHours;
+        breakdown.push(`${diffHours} hours × ${unitPrice} MAD = ${price} MAD`);
       } else {
-        price = rule.price * diffDays; // fallback to daily
-        breakdown.push(`${diffDays} days × ${rule.price} MAD = ${price} MAD (fallback)`);
+        const pricing = await DynamicPricingService.getPricingForDuration(resolvedVehicleModelId, diffDays);
+        unitPrice = Number(pricing?.price) || 0;
+        price = unitPrice * diffDays;
+        breakdown.push(`${diffDays} days × ${unitPrice} MAD = ${price} MAD (fallback)`);
       }
 
       return { price, breakdown };

@@ -131,14 +131,7 @@ export const getTourPriceForModelAndDuration = ({
   if (Number(globalMatch?.price_mad || 0) > 0) {
     return Number(globalMatch.price_mad || 0);
   }
-
-  const durationModelMatch = rows.find(
-    (row) =>
-      String(row.vehicle_model_id) === String(vehicleModelId) &&
-      String(normalizeDuration(row.duration_hours)) === normalizedDuration
-  );
-
-  return Number(durationModelMatch?.price_mad || 0);
+  return 0;
 };
 
 export const getTourPackageStartingPrice = ({
@@ -168,12 +161,5 @@ export const getTourPackageStartingPrice = ({
     .filter((value) => value > 0);
 
   if (globalPrices.length > 0) return Math.min(...globalPrices);
-
-  const anyPrices = rows
-    .filter((row) => String(normalizeDuration(row.duration_hours)) === normalizedDuration)
-    .map((row) => Number(row.price_mad || 0))
-    .filter((value) => value > 0);
-
-  if (anyPrices.length === 0) return 0;
-  return Math.min(...anyPrices);
+  return 0;
 };

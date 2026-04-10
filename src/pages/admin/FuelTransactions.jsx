@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Plus, 
+  Minus,
   Filter, 
   Download, 
   Search,
@@ -17,8 +18,11 @@ import FuelFiltersPanel from '../../components/fuel/FuelFiltersPanel';
 import AddFuelTransactionModal from '../../components/fuel/AddFuelTransactionModal';
 import TransactionDetailsModal from '../../components/fuel/TransactionDetailsModal';
 import FuelTransactionService from '../../services/FuelTransactionService';
+import i18n from '../../i18n';
 
 const FuelTransactions = () => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const [vehicles, setVehicles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -143,8 +147,8 @@ const FuelTransactions = () => {
               <Fuel className="w-8 h-8 text-blue-600" />
             </div>
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">Fuel Transactions</h1>
-              <p className="text-gray-600">Manage and track all fuel-related transactions</p>
+              <h1 className="text-3xl font-bold text-gray-900">{tr('Fuel Transactions', 'Transactions carburant')}</h1>
+              <p className="text-gray-600">{tr('Manage and track all fuel-related transactions', 'Gérez et suivez toutes les transactions liées au carburant')}</p>
             </div>
           </div>
         </div>
@@ -158,11 +162,11 @@ const FuelTransactions = () => {
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-5 h-5 text-yellow-600" />
               <div>
-                <h4 className="font-medium text-yellow-800">Database Setup Required</h4>
+                <h4 className="font-medium text-yellow-800">{tr('Database Setup Required', 'Configuration de la base requise')}</h4>
                 <p className="text-sm text-yellow-700">
-                  Enhanced transaction features require database setup. Please run the SQL migration from 
+                  {tr('Enhanced transaction features require database setup. Please run the SQL migration from', 'Les fonctions avancées de transaction nécessitent une configuration de base de données. Veuillez lancer la migration SQL depuis')}
                   <code className="mx-1 px-1 bg-yellow-100 rounded">src/database/fuel_management_schema.sql</code>
-                  in your Supabase dashboard. Currently showing mock data.
+                  {tr('in your Supabase dashboard. Currently showing mock data.', 'dans votre tableau de bord Supabase. Des données fictives sont actuellement affichées.')}
                 </p>
               </div>
             </div>
@@ -172,8 +176,8 @@ const FuelTransactions = () => {
         {/* Action Bar */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-gray-900">All Fuel Transactions</h2>
-            <p className="text-gray-600">Complete transaction history with advanced filtering</p>
+            <h2 className="text-2xl font-bold text-gray-900">{tr('All Fuel Transactions', 'Toutes les transactions carburant')}</h2>
+            <p className="text-gray-600">{tr('Complete transaction history with advanced filtering', 'Historique complet des transactions avec filtrage avancé')}</p>
           </div>
           
           <div className="flex gap-3">
@@ -182,7 +186,7 @@ const FuelTransactions = () => {
               className="flex items-center gap-2 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors"
             >
               <Car className="w-4 h-4" />
-              Tank to Vehicle
+              {tr('Tank to Vehicle', 'Réservoir vers véhicule')}
             </button>
             
             <button
@@ -190,7 +194,7 @@ const FuelTransactions = () => {
               className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
             >
               <Plus className="w-4 h-4" />
-              Refill Tank
+              {tr('Refill Tank', 'Remplir le réservoir')}
             </button>
 
             <button
@@ -198,7 +202,7 @@ const FuelTransactions = () => {
               className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors"
             >
               <Minus className="w-4 h-4" />
-              Tank Out
+              {tr('Tank Out', 'Sortie réservoir')}
             </button>
 
             <button
@@ -206,7 +210,7 @@ const FuelTransactions = () => {
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
               <Fuel className="w-4 h-4" />
-              Direct Vehicle Refill
+              {tr('Direct Vehicle Refill', 'Remplissage direct véhicule')}
             </button>
           </div>
         </div>

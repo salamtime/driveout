@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
@@ -25,6 +26,8 @@ import { financeApi } from '../../services/financeApi';
  * - Loading states, error handling, and empty data scenarios
  */
 const FinanceDashboard = ({ onNavigateToFleet = null }) => {
+  const { t } = useTranslation();
+  const tr = (en, fr) => t(en, fr);
   // State management
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -93,7 +96,7 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
       });
     } catch (err) {
       console.error('Error loading dashboard data:', err);
-      setError('Failed to load financial data. Please try again.');
+      setError(tr('Failed to load financial data. Please try again.', 'Impossible de charger les données financières. Veuillez réessayer.'));
     } finally {
       setLoading(false);
     }
@@ -115,7 +118,7 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
       onNavigateToFleet(vehicleId);
     } else {
       // Fallback: show alert or redirect
-      alert(`Navigate to Fleet Management${vehicleId ? ` for vehicle ${vehicleId}` : ''}`);
+      alert(tr(`Navigate to Fleet Management${vehicleId ? ` for vehicle ${vehicleId}` : ''}`, `Aller à la gestion de flotte${vehicleId ? ` pour le véhicule ${vehicleId}` : ''}`));
     }
   };
 
@@ -126,7 +129,7 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
         <div className="flex items-center justify-center min-h-[400px]">
           <div className="text-center">
             <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
-            <p className="text-gray-600">Loading financial data...</p>
+            <p className="text-gray-600">{tr('Loading financial data...', 'Chargement des données financières...')}</p>
           </div>
         </div>
       </div>
@@ -149,8 +152,8 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
       {/* Header */}
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div>
-          <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">Finance Dashboard</h1>
-          <p className="text-gray-600 mt-1">Financial analytics, KPIs, and performance insights</p>
+          <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">{tr('Finance Dashboard', 'Tableau de bord financier')}</h1>
+          <p className="text-gray-600 mt-1">{tr('Financial analytics, KPIs, and performance insights', 'Analyses financières, KPI et indicateurs de performance')}</p>
         </div>
         
         {/* Filters */}
@@ -160,15 +163,15 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
             endDate={dateRange.endDate}
             onDateChange={handleDateRangeChange}
             className="w-full sm:w-64"
-            placeholder="Select date range"
+            placeholder={tr('Select date range', 'Sélectionnez une période')}
           />
           
           <Select value={selectedVehicle} onValueChange={setSelectedVehicle}>
             <SelectTrigger className="w-full sm:w-48">
-              <SelectValue placeholder="All Vehicles" />
+              <SelectValue placeholder={tr('All Vehicles', 'Tous les véhicules')} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Vehicles</SelectItem>
+              <SelectItem value="all">{tr('All Vehicles', 'Tous les véhicules')}</SelectItem>
               <SelectItem value="yamaha-raptor">Yamaha Raptor 700</SelectItem>
               <SelectItem value="honda-trx">Honda TRX450R</SelectItem>
               <SelectItem value="polaris-sportsman">Polaris Sportsman</SelectItem>
@@ -177,13 +180,13 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
           
           <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
             <SelectTrigger className="w-full sm:w-48">
-              <SelectValue placeholder="All Customers" />
+              <SelectValue placeholder={tr('All Customers', 'Tous les clients')} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Customers</SelectItem>
-              <SelectItem value="vip">VIP Customers</SelectItem>
-              <SelectItem value="premium">Premium Customers</SelectItem>
-              <SelectItem value="regular">Regular Customers</SelectItem>
+              <SelectItem value="all">{tr('All Customers', 'Tous les clients')}</SelectItem>
+              <SelectItem value="vip">{tr('VIP Customers', 'Clients VIP')}</SelectItem>
+              <SelectItem value="premium">{tr('Premium Customers', 'Clients premium')}</SelectItem>
+              <SelectItem value="regular">{tr('Regular Customers', 'Clients réguliers')}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -192,7 +195,7 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
         <FinanceKPICard
-          title="Total Revenue"
+          title={tr('Total Revenue', 'Revenu total')}
           value={dashboardData?.kpis?.revenue?.value || 0}
           change={dashboardData?.kpis?.revenue?.change || 0}
           trend={dashboardData?.kpis?.revenue?.trend || 'neutral'}
@@ -201,7 +204,7 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
           color="green"
         />
         <FinanceKPICard
-          title="Total Expenses"
+          title={tr('Total Expenses', 'Dépenses totales')}
           value={dashboardData?.kpis?.expenses?.value || 0}
           change={dashboardData?.kpis?.expenses?.change || 0}
           trend={dashboardData?.kpis?.expenses?.trend || 'neutral'}
@@ -210,7 +213,7 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
           color="red"
         />
         <FinanceKPICard
-          title="Taxes"
+          title={tr('Taxes', 'Taxes')}
           value={dashboardData?.kpis?.taxes?.value || 0}
           change={dashboardData?.kpis?.taxes?.change || 0}
           trend={dashboardData?.kpis?.taxes?.trend || 'neutral'}
@@ -219,7 +222,7 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
           color="blue"
         />
         <FinanceKPICard
-          title="Gross Profit"
+          title={tr('Gross Profit', 'Profit brut')}
           value={dashboardData?.kpis?.grossProfit?.value || 0}
           change={dashboardData?.kpis?.grossProfit?.change || 0}
           trend={dashboardData?.kpis?.grossProfit?.trend || 'neutral'}
@@ -232,21 +235,21 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
       {/* Charts and Tables */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
         <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="rentals">Rental P&L</TabsTrigger>
+          <TabsTrigger value="overview">{tr('Overview', 'Aperçu')}</TabsTrigger>
+          <TabsTrigger value="rentals">{tr('Rental P&L', 'P&L locations')}</TabsTrigger>
           <TabsTrigger value="vehicles">
             <Car className="h-4 w-4 mr-2" />
-            Vehicle Finance
+            {tr('Vehicle Finance', 'Finance véhicule')}
           </TabsTrigger>
-          <TabsTrigger value="customers">Customer Analysis</TabsTrigger>
-          <TabsTrigger value="reports">Reports</TabsTrigger>
+          <TabsTrigger value="customers">{tr('Customer Analysis', 'Analyse client')}</TabsTrigger>
+          <TabsTrigger value="reports">{tr('Reports', 'Rapports')}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Revenue vs Expenses Trend</CardTitle>
-              <CardDescription>Monthly comparison of revenue and operating expenses</CardDescription>
+              <CardTitle>{tr('Revenue vs Expenses Trend', 'Tendance revenus vs dépenses')}</CardTitle>
+              <CardDescription>{tr('Monthly comparison of revenue and operating expenses', 'Comparaison mensuelle des revenus et des dépenses d’exploitation')}</CardDescription>
             </CardHeader>
             <CardContent>
               <FinanceTrendChart data={dashboardData?.trends || []} />
@@ -257,19 +260,19 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
         <TabsContent value="rentals" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Rental Profit & Loss</CardTitle>
-              <CardDescription>Individual rental performance and profitability analysis</CardDescription>
+              <CardTitle>{tr('Rental Profit & Loss', 'Profit et perte des locations')}</CardTitle>
+              <CardDescription>{tr('Individual rental performance and profitability analysis', 'Analyse de performance et de rentabilité par location')}</CardDescription>
             </CardHeader>
             <CardContent>
               <FinanceTable
                 data={dashboardData?.tables?.rentalPL || []}
                 columns={[
-                  { key: 'rental', label: 'Rental ID', sortable: true },
-                  { key: 'customer', label: 'Customer', sortable: true },
-                  { key: 'vehicle', label: 'Vehicle', sortable: true },
-                  { key: 'revenue', label: 'Revenue (MAD)', sortable: true, type: 'currency' },
-                  { key: 'costs', label: 'Costs (MAD)', sortable: true, type: 'currency' },
-                  { key: 'profit', label: 'Profit (MAD)', sortable: true, type: 'currency' }
+                  { key: 'rental', label: tr('Rental ID', 'ID location'), sortable: true },
+                  { key: 'customer', label: tr('Customer', 'Client'), sortable: true },
+                  { key: 'vehicle', label: tr('Vehicle', 'Véhicule'), sortable: true },
+                  { key: 'revenue', label: tr('Revenue (MAD)', 'Revenus (MAD)'), sortable: true, type: 'currency' },
+                  { key: 'costs', label: tr('Costs (MAD)', 'Coûts (MAD)'), sortable: true, type: 'currency' },
+                  { key: 'profit', label: tr('Profit (MAD)', 'Profit (MAD)'), sortable: true, type: 'currency' }
                 ]}
                 searchable={true}
                 exportable={true}
@@ -288,16 +291,15 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
         <TabsContent value="customers" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Customer Analysis</CardTitle>
-              <CardDescription>Customer segmentation and lifetime value analysis</CardDescription>
+              <CardTitle>{tr('Customer Analysis', 'Analyse client')}</CardTitle>
+              <CardDescription>{tr('Customer segmentation and lifetime value analysis', 'Segmentation client et analyse de valeur vie client')}</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="text-center py-12">
                 <Users className="h-12 w-12 mx-auto text-gray-400 mb-4" />
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Customer Analytics</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">{tr('Customer Analytics', 'Analytique client')}</h3>
                 <p className="text-gray-600">
-                  Customer analysis features will be implemented here, including lifetime value,
-                  segmentation, and retention metrics.
+                  {tr('Customer analysis features will be implemented here, including lifetime value, segmentation, and retention metrics.', 'Les fonctions d’analyse client seront disponibles ici, avec la valeur vie client, la segmentation et les indicateurs de rétention.')}
                 </p>
               </div>
             </CardContent>
@@ -307,16 +309,15 @@ const FinanceDashboard = ({ onNavigateToFleet = null }) => {
         <TabsContent value="reports" className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Financial Reports</CardTitle>
-              <CardDescription>Generate and export comprehensive financial reports</CardDescription>
+              <CardTitle>{tr('Financial Reports', 'Rapports financiers')}</CardTitle>
+              <CardDescription>{tr('Generate and export comprehensive financial reports', 'Générez et exportez des rapports financiers complets')}</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="text-center py-12">
                 <BarChart3 className="h-12 w-12 mx-auto text-gray-400 mb-4" />
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Financial Reports</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">{tr('Financial Reports', 'Rapports financiers')}</h3>
                 <p className="text-gray-600">
-                  Advanced reporting features will be available here, including P&L statements,
-                  cash flow reports, and custom financial analytics.
+                  {tr('Advanced reporting features will be available here, including P&L statements, cash flow reports, and custom financial analytics.', 'Les fonctions avancées de reporting seront disponibles ici, avec les états de résultat, les rapports de trésorerie et des analyses financières personnalisées.')}
                 </p>
               </div>
             </CardContent>

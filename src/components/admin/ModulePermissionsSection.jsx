@@ -3,8 +3,11 @@ import { useSelector } from 'react-redux';
 import { Shield, Lock, Unlock, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useModulePermissions, AVAILABLE_MODULES } from '../../hooks/useModulePermissions';
+import i18n from '../../i18n';
 
 const ModulePermissionsSection = ({ targetUser, onPermissionChange = null }) => {
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { user: currentUser } = useSelector(state => state.auth);
   const [showConfirmDialog, setShowConfirmDialog] = useState(null);
   
@@ -201,11 +204,11 @@ const ModulePermissionsSection = ({ targetUser, onPermissionChange = null }) => 
                   <div className="flex items-center">
                     {hasAccess ? (
                       <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
-                        ✅ Access Granted
+                        ✅ {tr('Access Granted', 'Accès accordé')}
                       </span>
                     ) : (
                       <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800">
-                        ❌ Access Denied
+                        ❌ {tr('Access Denied', 'Accès refusé')}
                       </span>
                     )}
                   </div>

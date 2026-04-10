@@ -12,6 +12,7 @@ import {
 import {
   fetchTourPackageModelPrices,
   getTourPackageStartingPrice,
+  getTourPriceForModelAndDuration,
   GLOBAL_TOUR_PRICING_KEY,
 } from '../../../services/tourPackagePricingService';
 import TourPackagePricingManager from './TourPackagePricingManager';
@@ -97,6 +98,16 @@ const normalizeFlexibleDuration = (value) => {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric) || numeric <= 0) return null;
   return Number(numeric.toFixed(1));
+};
+
+const getVehicleModelCatalogName = (model) => {
+  if (!model) return 'Unknown model';
+  const name = String(model.name || '').trim();
+  const variant = String(model.model || '').trim();
+  if (name && variant && name.toLowerCase().includes(variant.toLowerCase())) {
+    return name;
+  }
+  return [name, variant].filter(Boolean).join(' ').trim() || `Model ${model.id}`;
 };
 
 const normalizePackage = (pkg) => {
@@ -247,7 +258,7 @@ const TourPackagesWorkspace = () => {
   const getPackagePricingBadge = (pkg) => {
     const startingPrice = getTourPackageStartingPrice({
       rows: tourPricingRows,
-      packageId: GLOBAL_TOUR_PRICING_KEY,
+      packageId: pkg?.id,
       durationHours: pkg?.duration,
     });
 
@@ -255,11 +266,35 @@ const TourPackagesWorkspace = () => {
     return getLegacyPackagePricingBadge(pkg);
   };
 
+  const getPackageModelPriceHighlights = (pkg) => {
+    if (!pkg) return [];
+
+    return (vehicleModels || [])
+      .map((model) => {
+        const price = getTourPriceForModelAndDuration({
+          rows: tourPricingRows,
+          packageId: pkg?.id,
+          vehicleModelId: model.id,
+          durationHours: pkg?.duration,
+        });
+
+        if (!(price > 0)) return null;
+
+        return {
+          modelId: String(model.id),
+          label: getVehicleModelCatalogName(model),
+          price,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.price - right.price || left.label.localeCompare(right.label));
+  };
+
   const getPackageReadiness = (pkg) => {
     const currentDuration = Number(pkg?.duration || 0);
     const relevantRows = tourPricingRows.filter(
       (row) =>
-        String(row.package_id) === GLOBAL_TOUR_PRICING_KEY &&
+        (String(row.package_id) === String(pkg?.id || '') || String(row.package_id) === GLOBAL_TOUR_PRICING_KEY) &&
         Number(row.duration_hours) === currentDuration &&
         Number(row.price_mad || 0) > 0
     );
@@ -444,6 +479,7 @@ const TourPackagesWorkspace = () => {
             ) : (
               packages.map((pkg) => {
                 const readiness = getPackageReadiness(pkg);
+                const modelPriceHighlights = getPackageModelPriceHighlights(pkg);
                 const readinessClasses = readiness.tone === 'ready'
                   ? 'bg-emerald-100 text-emerald-700'
                   : readiness.tone === 'partial'
@@ -488,6 +524,24 @@ const TourPackagesWorkspace = () => {
                       <span>{pkg.maxQuads} quads</span>
                       <span className="truncate text-right">{readiness.note}</span>
                     </div>
+
+                    {modelPriceHighlights.length > 0 ? (
+                      <div className="mt-4 rounded-xl border border-violet-100 bg-white/80 p-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          Vehicle pricing
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {modelPriceHighlights.map((item) => (
+                            <span
+                              key={`${pkg.id}-${item.modelId}`}
+                              className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700"
+                            >
+                              {item.label} • {item.price.toLocaleString('en-MA')} MAD
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
 
                     <div className="mt-4 flex flex-wrap gap-2">
                       <button
@@ -576,6 +630,18 @@ const TourPackagesWorkspace = () => {
                     <p className="mt-3 text-sm text-slate-600">
                       Keep package details, pricing, and advanced settings separate so staff can work faster.
                     </p>
+                    {selectedPackagePreview && getPackageModelPriceHighlights(selectedPackagePreview).length > 0 ? (
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {getPackageModelPriceHighlights(selectedPackagePreview).map((item) => (
+                          <span
+                            key={`preview-${item.modelId}`}
+                            className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-violet-700 ring-1 ring-violet-100"
+                          >
+                            {item.label} • {item.price.toLocaleString('en-MA')} MAD
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="grid gap-3 sm:grid-cols-3">
                     <div className="rounded-xl border border-violet-200 bg-white px-4 py-3">

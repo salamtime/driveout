@@ -1,8 +1,31 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from '../lib/supabase';
+import i18n from '../i18n';
 
-const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
-  if (!rental) return <div className="p-10 text-center">No rental data available.</div>;
+const getRentalDurationUnits = (rental) =>
+  rental?.rental_type === 'hourly'
+    ? (rental?.quantity_hours ?? rental?.quantity_days ?? 1)
+    : (rental?.quantity_days ?? 1);
+
+const isFlatHourlyTierRental = (rental, hasPackage = false) => {
+  const duration = Number(getRentalDurationUnits(rental));
+  return !hasPackage && rental?.rental_type === 'hourly' && duration === 1.5;
+};
+
+const getEffectiveRentalBaseTotal = (rental, hasPackage = false, packageRate = null) => {
+  const duration = Number(getRentalDurationUnits(rental));
+  const fallbackRate = Number(rental?.unit_price || 0) || 0;
+  const rate = packageRate ?? fallbackRate;
+  if (isFlatHourlyTierRental(rental, hasPackage)) {
+    return rate;
+  }
+  return rate * duration;
+};
+
+const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
+  const isFrench = language === 'fr';
+  if (!rental) return <div className="p-10 text-center">{isFrench ? 'Aucune donnée de location disponible.' : 'No rental data available.'}</div>;
+  const tr = (en, fr) => (isFrench ? fr : en);
 
   const [basePrices, setBasePrices] = useState([]);
   const [loadingPrices, setLoadingPrices] = useState(true);
@@ -32,8 +55,13 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
   }, []);
 
   // Data mapping logic
-  const customerName = rental.customer_name || "N/A";
-  const customerPhone = rental.customer_phone || "N/A";
+  const customerName = rental.customer_name || rental.linkedCustomerProfile?.full_name || rental.linkedCustomerProfile?.name || "N/A";
+  const customerPhone =
+    rental.customer_phone ||
+    rental.phone ||
+    rental.linkedCustomerProfile?.phone ||
+    rental.linkedCustomerProfile?.customer_phone ||
+    "N/A";
   const license = rental.customer_license_number || rental.customer_licence_number || "N/A";
   const vehicleName = rental.vehicle?.name || rental.vehicle_details?.name || "N/A";
   const plateNumber = rental.vehicle?.plate_number || rental.vehicle_details?.plate_number || "N/A";
@@ -59,7 +87,6 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
   
   const fuelCharge = rental.fuel_charge || 0;
   const fuelPricePerLine = rental.vehicle?.vehicle_model?.fuel_price || 0;
-
   // Calculate fuel deficit if both values exist
   const fuelDeficit = (startFuel !== "N/A" && endFuel !== "N/A" && startFuel >= endFuel) 
     ? startFuel - endFuel 
@@ -75,15 +102,15 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
     const isHourly = rental.rental_type === 'hourly';
     const isDaily = rental.rental_type === 'daily';
     
-    const duration = rental.quantity_hours || rental.quantity_days || 1;
+    const duration = getRentalDurationUnits(rental);
     const ratePerUnit = parseFloat(pkg.fixed_amount) || rental.unit_price || 0;
-    const packageTotal = ratePerUnit * duration;
+    const packageTotal = getEffectiveRentalBaseTotal(rental, true, ratePerUnit);
     const includedKmPerUnit = pkg.included_kilometers ? parseFloat(pkg.included_kilometers) : null;
     const totalIncludedKm = includedKmPerUnit ? includedKmPerUnit * duration : null;
     const extraRate = parseFloat(pkg.extra_km_rate) || 0;
     
     return {
-      name: pkg.name || 'Kilometer Package',
+      name: pkg.name || (isFrench ? 'Forfait kilométrique' : 'Kilometer Package'),
       ratePerUnit,
       duration,
       packageTotal,
@@ -106,8 +133,9 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
     
     if (!isHourly && !isDaily) return null;
     
-    const duration = rental.quantity_hours || rental.quantity_days || 1;
+    const duration = getRentalDurationUnits(rental);
     const tierRate = rental.unit_price || 0;
+    const isFlatTier = isFlatHourlyTierRental(rental, hasPackage);
     
     const getStandardRate = () => {
       let standardRate = 0;
@@ -127,6 +155,16 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
       }
       
       if (standardRate === 0) {
+        if (isHourly && rental.vehicle?.vehicle_model?.hourly_price) {
+          standardRate = parseFloat(rental.vehicle.vehicle_model.hourly_price);
+          priceSource = 'vehicle_model';
+        } else if (isDaily && rental.vehicle?.vehicle_model?.daily_price) {
+          standardRate = parseFloat(rental.vehicle.vehicle_model.daily_price);
+          priceSource = 'vehicle_model';
+        }
+      }
+
+      if (standardRate === 0) {
         if (isHourly && rental.vehicle?.hourly_rate) {
           standardRate = parseFloat(rental.vehicle.hourly_rate);
           priceSource = 'vehicle_rate';
@@ -138,14 +176,14 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
       
       if (standardRate === 0) {
         const vehicleNameUpper = vehicleName.toUpperCase();
-        if (vehicleNameUpper.includes('SEGWAY') || vehicleNameUpper.includes('AT6')) {
-          standardRate = isHourly ? 600 : 1300;
+        if (vehicleNameUpper.includes('AT6')) {
+          standardRate = isHourly ? 599 : 1999;
         } else if (vehicleNameUpper.includes('AT5')) {
-          standardRate = isHourly ? 400 : 900;
+          standardRate = isHourly ? 399 : 1499;
         } else if (vehicleNameUpper.includes('AT10')) {
-          standardRate = isHourly ? 1000 : 1800;
+          standardRate = isHourly ? 999 : 3499;
         } else {
-          standardRate = isHourly ? 400 : 800;
+          standardRate = isHourly ? 400 : 1500;
         }
         priceSource = 'fallback';
       }
@@ -158,25 +196,27 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
     if (standardRate <= 0 || tierRate <= 0) return null;
     
     const standardTotal = duration * standardRate;
-    const tierTotal = duration * tierRate;
+    const tierTotal = isFlatTier ? tierRate : duration * tierRate;
     const savings = Math.max(0, standardTotal - tierTotal);
     const savingsPercentage = standardTotal > 0 ? ((savings / standardTotal) * 100).toFixed(1) : 0;
     const isDiscounted = savings > 0;
     
     const getTierDescription = () => {
       if (isHourly) {
-        if (duration === 1) return "1-hour standard rate";
-        if (duration === 2) return "2-hour special rate";
-        if (duration === 3) return "3-hour package deal";
-        if (duration >= 4 && duration <= 6) return "4-6 hour bundle";
-        if (duration >= 24) return "Daily package (24h)";
-        return `${duration}-hour package`;
+        if (duration === 1) return tr("1-hour standard rate", "Tarif standard 1 heure");
+        if (duration === 1.5) return tr("1.5-hour fixed tier", "Palier fixe 1,5 heure");
+        if (duration === 2) return tr("2-hour special rate", "Tarif spécial 2 heures");
+        if (duration === 3) return tr("3-hour package deal", "Offre package 3 heures");
+        if (duration >= 4 && duration < 24) return isFrench ? `Pack ${duration} heures` : `${duration}-hour bundle`;
+        if (duration >= 24) return tr("Daily package (24h)", "Package journalier (24h)");
+        return isFrench ? `Pack ${duration} heures` : `${duration}-hour package`;
       } else {
-        if (duration === 1) return "1-day standard rate";
-        if (duration === 2) return "2-day special rate";
-        if (duration === 3) return "3-day package deal";
-        if (duration >= 7) return "Weekly package";
-        return `${duration}-day package`;
+        if (duration === 1) return tr("1-day standard rate", "Tarif standard 1 jour");
+        if (duration === 2) return tr("2-day package deal", "Offre package 2 jours");
+        if (duration === 3) return tr("3-day special offer", "Offre spéciale 3 jours");
+        if (duration >= 4 && duration < 7) return isFrench ? `Pack prolongé ${duration} jours` : `${duration}-day extended package`;
+        if (duration >= 7) return tr("Weekly+ package (7+ days)", "Package hebdomadaire+ (7+ jours)");
+        return isFrench ? `Pack ${duration} jours` : `${duration}-day package`;
       }
     };
     
@@ -262,7 +302,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
             </svg>
           </div>
           <div>
-            <h4 style={{ fontSize: '15px', fontWeight: '600', margin: 0, color: '#4c1d95' }}>Selected Package</h4>
+            <h4 style={{ fontSize: '15px', fontWeight: '600', margin: 0, color: '#4c1d95' }}>{tr('Selected Package', 'Package sélectionné')}</h4>
             <p style={{ fontSize: '13px', margin: '2px 0 0 0', color: '#6d28d9' }}>{breakdown.name}</p>
           </div>
         </div>
@@ -281,7 +321,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                 textAlign: 'center',
                 border: '1px solid #e9d5ff'
               }}>
-                <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '2px' }}>Included per {unit}</div>
+                <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '2px' }}>{tr('Included per', 'Inclus par')} {unit}</div>
                 <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#4c1d95' }}>{breakdown.includedKmPerUnit} km</div>
               </div>
               
@@ -292,7 +332,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                 textAlign: 'center',
                 border: '1px solid #c4b5fd'
               }}>
-                <div style={{ fontSize: '11px', color: '#5b21b6', marginBottom: '2px' }}>Total Included</div>
+                <div style={{ fontSize: '11px', color: '#5b21b6', marginBottom: '2px' }}>{tr('Total Included', 'Total inclus')}</div>
                 <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#4c1d95' }}>{breakdown.totalIncludedKm} km</div>
                 <div style={{ fontSize: '10px', color: '#6d28d9', marginTop: '2px' }}>
                   {breakdown.includedKmPerUnit} km × {breakdown.duration} {breakdown.duration > 1 ? unitPlural : unit}
@@ -309,7 +349,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               textAlign: 'center',
               border: '1px solid #fed7aa'
             }}>
-              <div style={{ fontSize: '11px', color: '#9a3412', marginBottom: '2px' }}>Extra KM Rate</div>
+              <div style={{ fontSize: '11px', color: '#9a3412', marginBottom: '2px' }}>{tr('Extra KM Rate', 'Tarif KM extra')}</div>
               <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#9a3412' }}>{formatCurrency(breakdown.extraRate)} MAD/km</div>
             </div>
           )}
@@ -326,7 +366,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
             borderRadius: '6px',
             border: '1px dashed #c4b5fd'
           }}>
-            ✓ Package includes {breakdown.totalIncludedKm} km total
+            {isFrench ? `✓ Le package inclut ${breakdown.totalIncludedKm} km au total` : `✓ Package includes ${breakdown.totalIncludedKm} km total`}
           </div>
         )}
       </div>
@@ -369,7 +409,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
             </svg>
           </div>
           <div>
-            <h4 style={{ fontSize: '16px', fontWeight: 'bold', margin: 0 }}>Special Tier Pricing</h4>
+            <h4 style={{ fontSize: '16px', fontWeight: 'bold', margin: 0 }}>{tr('Special Tier Pricing', 'Tarification spéciale par palier')}</h4>
             <p style={{ fontSize: '13px', opacity: 0.9, margin: '2px 0 0 0' }}>{breakdown.tierDescription}</p>
           </div>
         </div>
@@ -381,11 +421,11 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
           marginBottom: '16px'
         }}>
           <div style={{ background: 'rgba(255,255,255,0.1)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '11px', opacity: 0.8 }}>Your Rate</div>
+            <div style={{ fontSize: '11px', opacity: 0.8 }}>{tr('Your Rate', 'Votre tarif')}</div>
             <div style={{ fontSize: '20px', fontWeight: 'bold' }}>{formatCurrency(breakdown.tierRate)} MAD</div>
           </div>
           <div style={{ background: 'rgba(255,255,255,0.1)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '11px', opacity: 0.8 }}>Standard Rate</div>
+            <div style={{ fontSize: '11px', opacity: 0.8 }}>{tr('Standard Rate', 'Tarif standard')}</div>
             <div style={{ fontSize: '16px', textDecoration: 'line-through', opacity: 0.8 }}>{formatCurrency(breakdown.standardRate)} MAD</div>
           </div>
         </div>
@@ -398,7 +438,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
           justifyContent: 'space-between',
           alignItems: 'center'
         }}>
-          <span>You Save:</span>
+          <span>{tr('You Save:', 'Vous économisez :')}</span>
           <span style={{ fontSize: '18px', fontWeight: 'bold' }}>
             {formatCurrency(breakdown.savings)} MAD ({breakdown.savingsPercentage}%)
           </span>
@@ -716,7 +756,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                 src={logoUrl || "/assets/logo.jpg"} 
                 alt="Logo" 
                 className="header-logo"
-                style={{ maxWidth: '220px', width: '100%', height: 'auto' }}
+                style={{ maxWidth: '220px', width: '100%', height: 'auto', objectFit: 'contain' }}
                 onError={(e) => e.target.style.display = 'none'}
               />
             </div>
@@ -751,7 +791,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               color: '#2d3748',
               margin: '0 0 8px 0'
             }}>
-              RENTAL AGREEMENT
+              {tr('RENTAL AGREEMENT', 'CONTRAT DE LOCATION')}
             </h2>
             <div style={{
               display: 'inline-block',
@@ -760,10 +800,61 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               borderRadius: '20px'
             }}>
               <span style={{ color: 'white', fontSize: '12px', fontWeight: '600' }}>
-                Agreement #: {rental.rental_id || rental.id?.substring(0, 8).toUpperCase()}
+                {tr('Agreement #:', 'Contrat n° :')} {rental.rental_id || rental.id?.substring(0, 8).toUpperCase()}
               </span>
             </div>
           </div>
+
+          {(rental.is_impounded || rental.released_from_impound_at) && (
+            <div style={{
+              marginBottom: '20px',
+              padding: '16px',
+              background: 'linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)',
+              border: '1px solid #fcd34d',
+              borderRadius: '12px'
+            }}>
+              <div style={{
+                fontSize: '11px',
+                color: '#92400e',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+                marginBottom: '8px',
+                fontWeight: 700
+              }}>
+                {rental.is_impounded ? tr('Impound Notice', 'Avis de fourrière') : tr('Impound History', 'Historique de fourrière')}
+              </div>
+              <p style={{ fontSize: '14px', fontWeight: 600, color: '#92400e', margin: '0 0 6px 0' }}>
+                {rental.is_impounded
+                  ? tr('This rental is currently marked as impounded. The rental timer continues during impound.', 'Cette location est actuellement marquée comme mise en fourrière. Le chronomètre de location continue pendant la fourrière.')
+                  : tr('This rental was impounded during the booking. The impound history remains attached to this contract preview.', "Cette location a été mise en fourrière pendant la réservation. L'historique de fourrière reste attaché à cet aperçu du contrat.")}
+              </p>
+              {rental.impounded_at && (
+                <p style={{ fontSize: '13px', color: '#7c2d12', margin: '0 0 4px 0' }}>
+                  {tr('Impounded at:', 'Mis en fourrière le :')} {new Date(rental.impounded_at).toLocaleString()}
+                </p>
+              )}
+              {rental.impound_reason && (
+                <p style={{ fontSize: '13px', color: '#7c2d12', margin: '0 0 4px 0' }}>
+                  {tr('Reason:', 'Raison :')} {rental.impound_reason}
+                </p>
+              )}
+              {rental.impound_reference && (
+                <p style={{ fontSize: '13px', color: '#7c2d12', margin: '0 0 4px 0' }}>
+                  {tr('Reference:', 'Référence :')} {rental.impound_reference}
+                </p>
+              )}
+              {rental.impound_note && (
+                <p style={{ fontSize: '13px', color: '#7c2d12', margin: '0 0 4px 0' }}>
+                  {tr('Note:', 'Note :')} {rental.impound_note}
+                </p>
+              )}
+              {rental.released_from_impound_at && (
+                <p style={{ fontSize: '13px', color: '#7c2d12', margin: 0 }}>
+                  {tr('Released from impound:', 'Sortie de fourrière le :')} {new Date(rental.released_from_impound_at).toLocaleString()}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Renter & Vehicle Details - Enhanced Cards */}
           <div className="details-grid" style={{ marginBottom: '24px' }}>
@@ -788,20 +879,20 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                   </svg>
                 </div>
-                <h3 className="section-title" style={{ margin: 0, border: 'none' }}>RENTER DETAILS</h3>
+                <h3 className="section-title" style={{ margin: 0, border: 'none' }}>{tr('RENTER DETAILS', 'DÉTAILS DU LOCATAIRE')}</h3>
               </div>
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <div>
-                  <div style={{ fontSize: '11px', color: '#718096', marginBottom: '2px' }}>Full Name</div>
+                  <div style={{ fontSize: '11px', color: '#718096', marginBottom: '2px' }}>{tr('Full Name', 'Nom complet')}</div>
                   <div style={{ fontSize: '15px', fontWeight: '600', color: '#2d3748' }}>{customerName}</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: '11px', color: '#718096', marginBottom: '2px' }}>Phone Number</div>
+                  <div style={{ fontSize: '11px', color: '#718096', marginBottom: '2px' }}>{tr('Phone Number', 'Numéro de téléphone')}</div>
                   <div style={{ fontSize: '15px', fontWeight: '600', color: '#2d3748' }}>{customerPhone}</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: '11px', color: '#718096', marginBottom: '2px' }}>License Number</div>
+                  <div style={{ fontSize: '11px', color: '#718096', marginBottom: '2px' }}>{tr('License Number', 'Numéro de permis')}</div>
                   <div style={{ fontSize: '15px', fontWeight: '600', color: '#2d3748' }}>{license}</div>
                 </div>
               </div>
@@ -828,27 +919,27 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                   </svg>
                 </div>
-                <h3 className="section-title" style={{ margin: 0, border: 'none' }}>VEHICLE & PERIOD</h3>
+                <h3 className="section-title" style={{ margin: 0, border: 'none' }}>{tr('VEHICLE & PERIOD', 'VÉHICULE & PÉRIODE')}</h3>
               </div>
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '13px', color: '#4a5568' }}>Vehicle:</span>
+                  <span style={{ fontSize: '13px', color: '#4a5568' }}>{tr('Vehicle:', 'Véhicule :')}</span>
                   <span style={{ fontSize: '15px', fontWeight: '600', color: '#2d3748' }}>{vehicleName}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '13px', color: '#4a5568' }}>Plate Number:</span>
+                  <span style={{ fontSize: '13px', color: '#4a5568' }}>{tr('Plate Number:', 'Plaque :')}</span>
                   <span style={{ fontSize: '15px', fontWeight: '600', color: '#2d3748' }}>{plateNumber}</span>
                 </div>
                 <div style={{ marginTop: '8px', padding: '12px', background: 'white', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                  <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '8px' }}>Rental Period</div>
+                  <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '8px' }}>{tr('Rental Period', 'Période de location')}</div>
                   <div style={{ fontSize: '13px' }}>
                     <div style={{ marginBottom: '6px' }}>
-                      <span style={{ color: '#718096' }}>From: </span>
+                      <span style={{ color: '#718096' }}>{tr('From: ', 'Du : ')}</span>
                       <span style={{ fontWeight: '600' }}>{formatContractDate(startDate)}</span>
                     </div>
                     <div>
-                      <span style={{ color: '#718096' }}>To: </span>
+                      <span style={{ color: '#718096' }}>{tr('To: ', 'Au : ')}</span>
                       <span style={{ fontWeight: '600' }}>{formatContractDate(endDate)}</span>
                     </div>
                   </div>
@@ -856,15 +947,6 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               </div>
             </div>
           </div>
-
-          {/* Display Package if exists, otherwise show Tier Pricing */}
-          {hasPackage && packageBreakdown ? (
-            <PackageDisplay breakdown={packageBreakdown} />
-          ) : (
-            tierPricingBreakdown && tierPricingBreakdown.isDiscounted && (
-              <TierPricingDisplay breakdown={tierPricingBreakdown} />
-            )
-          )}
 
           {/* ODOMETER SECTION - Enhanced */}
           <div style={{
@@ -883,7 +965,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               <svg style={{ width: '20px', height: '20px', color: '#2b6cb0' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
               </svg>
-              <h3 className="section-title" style={{ margin: 0, color: '#2b6cb0', borderColor: '#2b6cb0' }}>ODOMETER READINGS</h3>
+              <h3 className="section-title" style={{ margin: 0, color: '#2b6cb0', borderColor: '#2b6cb0' }}>{tr('ODOMETER READINGS', 'RELEVÉS DU COMPTEUR')}</h3>
             </div>
             
             <div style={{
@@ -897,7 +979,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                 borderRadius: '10px',
                 textAlign: 'center'
               }}>
-                <div style={{ fontSize: '11px', color: '#718096', marginBottom: '4px' }}>START ODOMETER</div>
+                <div style={{ fontSize: '11px', color: '#718096', marginBottom: '4px' }}>{tr('START ODOMETER', 'COMPTEUR DÉPART')}</div>
                 <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2b6cb0' }}>{startOdo} km</div>
               </div>
               <div style={{
@@ -906,7 +988,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                 borderRadius: '10px',
                 textAlign: 'center'
               }}>
-                <div style={{ fontSize: '11px', color: '#718096', marginBottom: '4px' }}>RETURN ODOMETER</div>
+                <div style={{ fontSize: '11px', color: '#718096', marginBottom: '4px' }}>{tr('RETURN ODOMETER', 'COMPTEUR RETOUR')}</div>
                 <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2b6cb0' }}>{endOdo} km</div>
               </div>
             </div>
@@ -919,7 +1001,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                 borderRadius: '8px',
                 textAlign: 'center'
               }}>
-                <span style={{ fontSize: '13px', color: '#4a5568' }}>Total Distance: </span>
+                <span style={{ fontSize: '13px', color: '#4a5568' }}>{tr('Total Distance: ', 'Distance totale : ')}</span>
                 <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#2b6cb0' }}>
                   {parseInt(endOdo) - parseInt(startOdo)} km
                 </span>
@@ -945,7 +1027,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                 <svg style={{ width: '20px', height: '20px', color: '#b7791f' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
-                <h3 className="section-title" style={{ margin: 0, color: '#b7791f', borderColor: '#b7791f' }}>FUEL INFORMATION</h3>
+                <h3 className="section-title" style={{ margin: 0, color: '#b7791f', borderColor: '#b7791f' }}>{tr('FUEL INFORMATION', 'INFORMATIONS CARBURANT')}</h3>
               </div>
               
               <div className="fuel-gauge-container">
@@ -958,12 +1040,12 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                   }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                       <div>
-                        <div style={{ fontSize: '14px', fontWeight: '600', color: '#2d3748' }}>Fuel at Departure</div>
-                        <div style={{ fontSize: '11px', color: '#718096' }}>8-line system</div>
+                        <div style={{ fontSize: '14px', fontWeight: '600', color: '#2d3748' }}>{tr('Fuel at Departure', 'Carburant au départ')}</div>
+                        <div style={{ fontSize: '11px', color: '#718096' }}>{tr('8-line system', 'Système à 8 lignes')}</div>
                       </div>
                       <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#b7791f' }}>{startFuel}/8</div>
                     </div>
-                    <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '4px' }}>Fuel Level Visual:</div>
+                    <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '4px' }}>{tr('Fuel Level Visual:', 'Niveau de carburant visuel :')}</div>
                     {renderFuelGauge(startFuel)}
                   </div>
                 </div>
@@ -978,8 +1060,8 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                     }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                         <div>
-                          <div style={{ fontSize: '14px', fontWeight: '600', color: '#2d3748' }}>Fuel at Return</div>
-                          <div style={{ fontSize: '11px', color: '#718096' }}>8-line system</div>
+                          <div style={{ fontSize: '14px', fontWeight: '600', color: '#2d3748' }}>{tr('Fuel at Return', 'Carburant au retour')}</div>
+                          <div style={{ fontSize: '11px', color: '#718096' }}>{tr('8-line system', 'Système à 8 lignes')}</div>
                         </div>
                         <div style={{ 
                           fontSize: '24px', 
@@ -989,7 +1071,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                           {endFuel}/8
                         </div>
                       </div>
-                      <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '4px' }}>Fuel Level Visual:</div>
+                      <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '4px' }}>{tr('Fuel Level Visual:', 'Niveau de carburant visuel :')}</div>
                       {renderFuelGauge(endFuel)}
                     </div>
                   </div>
@@ -1009,55 +1091,15 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
                     <svg style={{ width: '20px', height: '20px', color: '#c53030' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.998-.833-2.732 0L4.346 16.5c-.77.833.192 2.5 1.732 2.5z" />
                     </svg>
-                    <span style={{ fontSize: '14px', fontWeight: '600', color: '#c53030' }}>Fuel Deficit Detected</span>
+                    <span style={{ fontSize: '14px', fontWeight: '600', color: '#c53030' }}>{tr('Fuel Deficit Detected', 'Déficit de carburant détecté')}</span>
                   </div>
                   <p style={{ fontSize: '13px', color: '#c53030', marginBottom: '8px' }}>
-                    Vehicle returned with {startFuel - endFuel} lines less fuel than at departure.
+                    {tr(`Vehicle returned with ${startFuel - endFuel} lines less fuel than at departure.`, `Le véhicule a été rendu avec ${startFuel - endFuel} lignes de moins qu’au départ.`)}
                   </p>
-                  {fuelCharge > 0 && (
-                    <div style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      padding: '10px',
-                      background: 'white',
-                      borderRadius: '6px'
-                    }}>
-                      <span style={{ fontSize: '13px', fontWeight: '500' }}>Fuel Surcharge Applied:</span>
-                      <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#c53030' }}>
-                        +{formatCurrency(fuelCharge)} MAD
-                      </span>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
           )}
-
-          {/* PAYMENT STATUS - Enhanced */}
-          <div style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            padding: '16px 20px',
-            background: rental.payment_status === 'paid' 
-              ? 'linear-gradient(135deg, #c6f6d5 0%, #9ae6b4 100%)'
-              : 'linear-gradient(135deg, #feebc8 0%, #fbd38d 100%)',
-            borderRadius: '10px',
-            marginBottom: '32px'
-          }}>
-            <div>
-              <div style={{ fontSize: '12px', color: rental.payment_status === 'paid' ? '#22543d' : '#7b341e', fontWeight: '600' }}>
-                PAYMENT STATUS
-              </div>
-              <div style={{ fontSize: '18px', fontWeight: 'bold', color: rental.payment_status === 'paid' ? '#22543d' : '#7b341e' }}>
-                {rental.payment_status === 'paid' ? 'PAID IN FULL' : 'BALANCE DUE'}
-              </div>
-            </div>
-            <div className={`badge ${rental.payment_status === 'paid' ? 'badge-success' : 'badge-warning'}`}>
-              {rental.payment_status === 'paid' ? '✅ SETTLED' : '⚠️ PENDING'}
-            </div>
-          </div>
         </div>
 
         {/* SIGNATURE SECTION - Enhanced */}
@@ -1078,7 +1120,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               color: '#718096',
               marginBottom: '12px'
             }}>
-              RENTER SIGNATURE
+              {tr('RENTER SIGNATURE', 'SIGNATURE DU LOCATAIRE')}
             </div>
             <div style={{
               height: '80px',
@@ -1097,7 +1139,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               )}
             </div>
             <div style={{ fontSize: '11px', color: '#a0aec0' }}>
-              {new Date().toLocaleDateString('en-GB', {
+              {new Date().toLocaleDateString(isFrench ? 'fr-FR' : 'en-GB', {
                 day: '2-digit',
                 month: 'short',
                 year: 'numeric'
@@ -1117,7 +1159,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               color: '#718096',
               marginBottom: '12px'
             }}>
-              COMPANY STAMP
+              {tr('COMPANY STAMP', 'CACHET DE L’ENTREPRISE')}
             </div>
             <div style={{
               height: '80px',
@@ -1139,7 +1181,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               color: '#2d3748',
               marginTop: '8px'
             }}>
-              SaharaX Representative
+              {tr('SaharaX Representative', 'Représentant SaharaX')}
             </div>
           </div>
         </div>
@@ -1174,7 +1216,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
               color: '#2d3748',
               margin: '0 0 8px 0'
             }}>
-              TERMS & CONDITIONS
+              {tr('TERMS & CONDITIONS', 'TERMES & CONDITIONS')}
             </h2>
             <p style={{
               fontSize: '12px',
@@ -1306,7 +1348,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl }) => {
             textAlign: 'center'
           }}>
             <p style={{ margin: 0 }}>
-              By signing this agreement, the renter acknowledges having read, understood, and accepted all terms and conditions.
+              {tr('By signing this agreement, the renter acknowledges having read, understood, and accepted all terms and conditions.', 'En signant cet accord, le locataire reconnaît avoir lu, compris et accepté tous les termes et conditions.')}
             </p>
           </div>
         </div>

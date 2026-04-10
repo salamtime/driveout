@@ -19,12 +19,16 @@ import {
 import { MoreHorizontal, Clock } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../contexts/AuthContext";
+import EnhancedTransactionalRentalService from "../../services/EnhancedTransactionalRentalService";
+import i18n from "../../i18n";
+
+const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
 
 // Helper function to format rental periods - SHOW DATES ONLY
 const formatRentalPeriod = (rental) => {
   // Format date only - NO TIME for daily rentals
   const formatDateOnly = (dateStr) => {
-    if (!dateStr) return 'N/A';
+    if (!dateStr) return tr('N/A', 'N/D');
     try {
       const date = new Date(dateStr);
       // Return DD/MM/YYYY format
@@ -33,19 +37,19 @@ const formatRentalPeriod = (rental) => {
       const year = date.getFullYear();
       return `${day}/${month}/${year}`;
     } catch (error) {
-      return 'N/A';
+      return tr('N/A', 'N/D');
     }
   };
 
   const startDate = formatDateOnly(rental.rental_start_date);
-  const endDate = rental.rental_end_date ? formatDateOnly(rental.rental_end_date) : 'Ongoing';
+  const endDate = rental.rental_end_date ? formatDateOnly(rental.rental_end_date) : tr('Ongoing', 'En cours');
   
-  return `${startDate} to ${endDate}`;
+  return `${startDate} ${tr('to', 'au')} ${endDate}`;
 };
 
 // Helper function to format the rental ID
 const formatRentalId = (id) => {
-  if (!id) return 'N/A';
+  if (!id) return tr('N/A', 'N/D');
   const year = new Date().getFullYear();
   const idSnippet = id.split('-')[0];
   return `RNT-${year}-${idSnippet}`;
@@ -73,7 +77,7 @@ const calculateTimeRemaining = (rental) => {
   
   const diff = endDate - now;
   
-  if (diff <= 0) return 'Expired';
+  if (diff <= 0) return tr('Expired', 'Expirée');
   
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
@@ -85,6 +89,24 @@ const calculateTimeRemaining = (rental) => {
   } else {
     return `${hours}h ${minutes}m`;
   }
+};
+
+const translateStatusLabel = (status) => {
+  const value = String(status || '').toLowerCase();
+  const labels = {
+    active: tr('Active', 'Active'),
+    confirmed: tr('Confirmed', 'Confirmée'),
+    paid: tr('Paid', 'Payée'),
+    completed: tr('Completed', 'Terminée'),
+    partial: tr('Partial', 'Partiel'),
+    cancelled: tr('Cancelled', 'Annulée'),
+    unpaid: tr('Unpaid', 'Impayée'),
+    overdue: tr('Overdue', 'En retard'),
+    scheduled: tr('Scheduled', 'Planifiée'),
+    pending: tr('Pending', 'En attente'),
+    unknown: tr('Unknown', 'Inconnu'),
+  };
+  return labels[value] || status;
 };
 
 export default function RentalList() {
@@ -219,18 +241,16 @@ export default function RentalList() {
     }
 
     try {
-      const { error: deleteError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .delete()
-        .eq('id', rentalId);
-
-      if (deleteError) throw deleteError;
+      const result = await EnhancedTransactionalRentalService.deleteRental(rentalId);
+      if (!result?.success) {
+        throw new Error(result?.error || tr('Failed to delete rental', 'Échec de la suppression de la location'));
+      }
 
       setRentals(rentals.filter(r => r.id !== rentalId));
-      alert('Rental deleted successfully.');
+      alert(result?.message || tr('Rental deleted successfully.', 'Location supprimée avec succès.'));
     } catch (err) {
       console.error('Error deleting rental:', err);
-      alert(`Failed to delete rental: ${err.message}`);
+      alert(`${tr('Failed to delete rental:', 'Échec de la suppression de la location :')} ${err.message}`);
     }
   };
 
@@ -281,23 +301,23 @@ export default function RentalList() {
     }
   };
 
-  if (loading) return <div className="text-center py-10">Loading rentals...</div>;
-  if (error) return <div className="text-center py-10 text-red-600">Error: {error}</div>;
+  if (loading) return <div className="text-center py-10">{tr('Loading rentals...', 'Chargement des locations...')}</div>;
+  if (error) return <div className="text-center py-10 text-red-600">{tr('Error:', 'Erreur :')} {error}</div>;
 
   return (
     <div className="border rounded-lg w-full">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Rental ID</TableHead>
-            <TableHead>Customer</TableHead>
-            <TableHead>Vehicle</TableHead>
-            <TableHead>Plate Number</TableHead>
-            <TableHead>Rental Period</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Payment Status</TableHead>
-            <TableHead className="text-right">Amount</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead>{tr('Rental ID', 'ID location')}</TableHead>
+            <TableHead>{tr('Customer', 'Client')}</TableHead>
+            <TableHead>{tr('Vehicle', 'Véhicule')}</TableHead>
+            <TableHead>{tr('Plate Number', 'Plaque')}</TableHead>
+            <TableHead>{tr('Rental Period', 'Période de location')}</TableHead>
+            <TableHead>{tr('Status', 'Statut')}</TableHead>
+            <TableHead>{tr('Payment Status', 'Statut du paiement')}</TableHead>
+            <TableHead className="text-right">{tr('Amount', 'Montant')}</TableHead>
+            <TableHead className="text-right">{tr('Actions', 'Actions')}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -310,16 +330,16 @@ export default function RentalList() {
                 <TableRow key={rental.id}>
                   <TableCell>{formatRentalId(rental.id)}</TableCell>
                   <TableCell>
-                    <div className="font-medium">{rental.customer_name || 'N/A'}</div>
+                    <div className="font-medium">{rental.customer_name || tr('N/A', 'N/D')}</div>
                     <Link to="#" className="text-sm text-muted-foreground hover:underline">
-                      View Customer Details
+                      {i18n.resolvedLanguage === 'fr' ? 'Voir les détails du client' : 'View Customer Details'}
                     </Link>
                   </TableCell>
                   <TableCell>
-                    <div className="font-medium">{rental.vehicle?.name || "N/A"}</div>
-                    <div className="text-sm text-muted-foreground">ID: {rental.vehicle?.id || "N/A"}</div>
+                    <div className="font-medium">{rental.vehicle?.name || tr('N/A', 'N/D')}</div>
+                    <div className="text-sm text-muted-foreground">ID: {rental.vehicle?.id || tr('N/A', 'N/D')}</div>
                   </TableCell>
-                  <TableCell>{rental.vehicle?.plate_number || "N/A"}</TableCell>
+                  <TableCell>{rental.vehicle?.plate_number || tr('N/A', 'N/D')}</TableCell>
                   <TableCell>
                     <div className="space-y-1">
                       <div>{formatRentalPeriod(rental)}</div>
@@ -332,12 +352,12 @@ export default function RentalList() {
                   </TableCell>
                   <TableCell>
                     <Badge variant={getStatusVariant(displayStatus)}>
-                      {displayStatus}
+                      {translateStatusLabel(displayStatus)}
                     </Badge>
                   </TableCell>
                   <TableCell>
                     <Badge variant={getPaymentStatusVariant(rental.payment_status)}>
-                      {rental.payment_status || "Unknown"}
+                      {translateStatusLabel(rental.payment_status || tr('Unknown', 'Inconnu'))}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">

@@ -1,25 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import { supabase } from '../utils/supabaseClient';
+import { ALL_PERMISSION_KEYS } from '../utils/permissionCatalog';
 
-export const AVAILABLE_MODULES = [
-  'Dashboard',
-  'Calendar',
-  'Tours & Bookings',
-  'Rental Management',
-  'Customer Management',
-  'Fleet Management',
-  'Manage Tour Packages',
-  'Quad Maintenance',
-  'Fuel Logs',
-  'Inventory',
-  'Finance Management',
-  'Alerts',
-  'User & Role Management',
-  'Reports',
-  'System Settings',
-  'Activity Log'
-];
+export const AVAILABLE_MODULES = ALL_PERMISSION_KEYS;
 
 export const useModulePermissions = (userId = null) => {
   const authState = useSelector(state => state.auth || {});

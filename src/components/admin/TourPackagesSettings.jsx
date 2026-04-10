@@ -27,7 +27,7 @@ const TourPackagesSettings = () => {
     default_rate_2h: 90,
     vip_rate_1h: 75,
     vip_rate_2h: 140,
-    location: 'Main Base',
+    location: 'Base principale',
     is_active: true
   });
 
@@ -66,7 +66,7 @@ const TourPackagesSettings = () => {
       default_rate_2h: 90,
       vip_rate_1h: 75,
       vip_rate_2h: 140,
-      location: 'Main Base',
+      location: 'Base principale',
       is_active: true
     });
     setIsCreating(false);
@@ -75,7 +75,7 @@ const TourPackagesSettings = () => {
 
   const handleSave = async () => {
     if (!formData.name.trim()) {
-      toast.error('Tour package name is required');
+      toast.error('Le nom du forfait de tour est requis');
       return;
     }
 
@@ -89,12 +89,12 @@ const TourPackagesSettings = () => {
 
       if (result.error) throw result.error;
 
-      toast.success(`Tour package ${editingId ? 'updated' : 'created'} successfully`);
+      toast.success(editingId ? 'Forfait de tour mis à jour avec succès' : 'Forfait de tour créé avec succès');
       resetForm();
       loadTourPackages();
     } catch (error) {
       console.error('Failed to save tour package:', error);
-      toast.error('Failed to save tour package');
+      toast.error("Impossible d'enregistrer le forfait de tour");
     }
   };
 
@@ -107,14 +107,14 @@ const TourPackagesSettings = () => {
       default_rate_2h: tourPackage.default_rate_2h,
       vip_rate_1h: tourPackage.vip_rate_1h,
       vip_rate_2h: tourPackage.vip_rate_2h,
-      location: tourPackage.location || 'Main Base',
+      location: tourPackage.location || 'Base principale',
       is_active: tourPackage.is_active
     });
     setEditingId(tourPackage.id);
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this tour package?')) {
+    if (!window.confirm('Voulez-vous vraiment supprimer ce forfait de tour ?')) {
       return;
     }
 
@@ -122,11 +122,11 @@ const TourPackagesSettings = () => {
       const { error } = await deleteTourPackage(id);
       if (error) throw error;
 
-      toast.success('Tour package deleted successfully');
+      toast.success('Forfait de tour supprimé avec succès');
       loadTourPackages();
     } catch (error) {
       console.error('Failed to delete tour package:', error);
-      toast.error('Failed to delete tour package');
+      toast.error("Impossible de supprimer le forfait de tour");
     }
   };
 
@@ -183,7 +183,7 @@ const TourPackagesSettings = () => {
                   id="location"
                   value={formData.location}
                   onChange={(e) => handleInputChange('location', e.target.value)}
-                  placeholder="e.g., Main Base"
+                  placeholder="ex. Base principale"
                 />
               </div>
 
@@ -253,16 +253,16 @@ const TourPackagesSettings = () => {
                   checked={formData.is_active}
                   onCheckedChange={(checked) => handleInputChange('is_active', checked)}
                 />
-                <Label>Active</Label>
+                <Label>Actif</Label>
               </div>
 
               <div className="flex gap-2">
                 <Button variant="outline" onClick={resetForm}>
-                  Cancel
+                  Annuler
                 </Button>
                 <Button onClick={handleSave}>
                   <Save className="h-4 w-4 mr-2" />
-                  Save
+                  Enregistrer
                 </Button>
               </div>
             </div>
@@ -292,7 +292,7 @@ const TourPackagesSettings = () => {
                           ? 'bg-green-100 text-green-800' 
                           : 'bg-red-100 text-red-800'
                       }`}>
-                        {pkg.is_active ? 'Active' : 'Inactive'}
+                        {pkg.is_active ? 'Actif' : 'Inactif'}
                       </span>
                     </div>
                     
