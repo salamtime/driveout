@@ -16,6 +16,13 @@ export const isHalfHourPackage = (pkg) =>
   /half[\s-]?hour/i.test(String(pkg?.name || '')) ||
   /30[\s-]?(min|minute|minutes)/i.test(String(pkg?.name || ''));
 
+const getPackageDurationRank = (pkg) => {
+  if (isHalfHourPackage(pkg)) return 4;
+  if (isHalfDayPackage(pkg)) return 2;
+  if (pkg?.kind === 'unlimited') return 3;
+  return 1;
+};
+
 const getSelectedDurationForPackage = (pkg, fallbackDurationUnits = 1) =>
   isHalfHourPackage(pkg)
     ? 0.5
@@ -51,26 +58,21 @@ export const getDefaultInstantBookingPackage = (listing, rentalType = 'hourly') 
   const packages = Array.isArray(listing?.packageCatalog?.[rentalType]) ? listing.packageCatalog[rentalType] : [];
   if (!packages.length) return null;
 
-  const modelName = String(listing?.model || listing?.title || '').trim().toUpperCase();
-  const standardPackages = packages.filter((pkg) => !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg) && pkg?.kind !== 'unlimited');
+  const sortedPackages = [...packages].sort((left, right) => {
+    const rankDiff = getPackageDurationRank(left) - getPackageDurationRank(right);
+    if (rankDiff !== 0) return rankDiff;
 
-  if (rentalType === 'hourly') {
-    if (modelName === 'AT6') {
-      return standardPackages.find((pkg) => Number(pkg?.includedKilometers || 0) === 17)
-        || standardPackages[0]
-        || packages[0];
-    }
+    const durationDiff = getSelectedDurationForPackage(left, rentalType === 'daily' ? 1 : 1)
+      - getSelectedDurationForPackage(right, rentalType === 'daily' ? 1 : 1);
+    if (durationDiff !== 0) return durationDiff;
 
-    if (modelName === 'AT5') {
-      return standardPackages.find((pkg) => Number(pkg?.includedKilometers || 0) === 15)
-        || standardPackages[0]
-        || packages[0];
-    }
+    const kmDiff = Number(left?.includedKilometers || 0) - Number(right?.includedKilometers || 0);
+    if (kmDiff !== 0) return kmDiff;
 
-    return standardPackages[0] || packages[0];
-  }
+    return Number(left?.fixedAmount || 0) - Number(right?.fixedAmount || 0);
+  });
 
-  return standardPackages[0] || packages[0];
+  return sortedPackages[0] || null;
 };
 
 export const buildInstantBookingHref = (listing, options = {}) => {

@@ -51,6 +51,19 @@ const isHalfHourPackage = (pkg) =>
   /half[\s-]?hour/i.test(String(pkg?.name || '')) ||
   /30[\s-]?(min|minute|minutes)/i.test(String(pkg?.name || ''));
 
+const PACKAGE_QUERY_KEYS = [
+  'packageId',
+  'packageName',
+  'packageAmount',
+  'packageKind',
+  'includedKilometers',
+  'extraKmRate',
+];
+
+const clearPackageSearchParams = (params) => {
+  PACKAGE_QUERY_KEYS.forEach((key) => params.delete(key));
+};
+
 const formatPackageDisplayName = (pkg, rentalType, tr) => {
   return formatRentalPackageAllowanceLabel(pkg, { rentalType, tr });
 };
@@ -59,38 +72,21 @@ const sortPublicPackages = (
   packages,
   rentalType,
   selectedDurationUnits = 1,
-  hasInteractedWithDuration = false,
-  modelName = ''
+  hasInteractedWithDuration = false
 ) => {
-  const normalizedModelName = String(modelName || '').trim().toUpperCase();
   const getRank = (pkg) => {
     if (rentalType === 'hourly') {
-      if (normalizedModelName === 'AT5') {
-        if (Number(pkg?.includedKilometers || 0) === 15) return 0;
-        if (pkg?.kind === 'unlimited') return 1;
-        if (isHalfDayPackage(pkg)) return 2;
-        if (Number(pkg?.includedKilometers || 0) === 22) return 3;
-        if (isHalfHourPackage(pkg)) return 4;
-      }
-
-      if (normalizedModelName === 'AT6') {
-        if (Number(pkg?.includedKilometers || 0) === 17) return 0;
-        if (Number(pkg?.includedKilometers || 0) === 25) return 1;
-        if (isHalfDayPackage(pkg)) return 2;
-        if (pkg?.kind === 'unlimited') return 3;
-        if (isHalfHourPackage(pkg)) return 4;
-      }
-
       if (isHalfHourPackage(pkg)) {
         return hasInteractedWithDuration && Number(selectedDurationUnits || 1) >= 1 ? 3 : 0;
       }
-      if (Number(pkg?.includedKilometers || 0) > 0) return 1;
-      if (isHalfDayPackage(pkg)) return 3;
-      if (pkg?.kind === 'unlimited') return 4;
+      if (Number(pkg?.includedKilometers || 0) > 0 && !isHalfDayPackage(pkg)) return 1;
+      if (isHalfDayPackage(pkg)) return 2;
+      if (pkg?.kind === 'unlimited') return 3;
       return 2;
     }
 
-    if (pkg?.kind === 'unlimited') return 99;
+    if (pkg?.kind === 'unlimited') return 98;
+    if (isHalfDayPackage(pkg)) return 97;
     return Math.max(0, Number(pkg?.includedKilometers || 0));
   };
 
@@ -279,8 +275,7 @@ const PublicVehicleDetail = () => {
       normalizedPackages,
       rentalType,
       selectedDurationUnits,
-      hasInteractedWithDuration,
-      currentListing?.model || currentListing?.title || ''
+      hasInteractedWithDuration
     );
   }, [currentListing, hasInteractedWithDuration, rentalType, selectedDurationUnits, tr]);
 
@@ -362,12 +357,16 @@ const PublicVehicleDetail = () => {
   }, [normalizedSelectedDurationUnits, selectedDurationUnits]);
 
   useEffect(() => {
-    if (selectedPackageId || !packageCards.length) return;
+    if (!packageCards.length) return;
+
+    const hasValidSelectedPackage = packageCards.some((pkg) => String(pkg.id) === String(selectedPackageId));
+    if (selectedPackageId && hasValidSelectedPackage) return;
 
     const defaultPackage = getDefaultInstantBookingPackage(currentListing, rentalType);
     if (!defaultPackage) return;
 
     const next = new URLSearchParams(searchParams);
+    clearPackageSearchParams(next);
     next.set('packageId', String(defaultPackage.id));
     next.set('durationUnits', String(
       isHalfHourPackage(defaultPackage)
@@ -452,29 +451,15 @@ const PublicVehicleDetail = () => {
 
   const primaryPackageCards = useMemo(() => {
     if (rentalType === 'hourly') {
-      const normalizedModelName = String(currentListing?.model || currentListing?.title || '').trim().toUpperCase();
-
-      if (normalizedModelName === 'AT5') {
-        return packageCards
-          .filter((pkg) => !isHalfHourPackage(pkg) && Number(pkg?.includedKilometers || 0) !== 22)
-          .slice(0, 3);
-      }
-
-      if (normalizedModelName === 'AT6') {
-        return packageCards
-          .filter((pkg) => !isHalfHourPackage(pkg) && pkg.kind !== 'unlimited')
-          .slice(0, 3);
-      }
-
       return packageCards
-        .filter((pkg) => !isHalfHourPackage(pkg) && pkg.kind !== 'unlimited')
+        .filter((pkg) => !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg) && pkg.kind !== 'unlimited')
         .slice(0, 3);
     }
 
     return packageCards
       .filter((pkg) => pkg.kind !== 'unlimited')
       .slice(0, 3);
-  }, [currentListing, packageCards, rentalType]);
+  }, [packageCards, rentalType]);
 
   const hiddenPackageCards = useMemo(() => {
     const primaryIds = new Set(primaryPackageCards.map((pkg) => String(pkg.id)));
@@ -513,7 +498,7 @@ const PublicVehicleDetail = () => {
     setShowMorePackages(false);
     setExpandedPackageId(null);
     const nextSearch = new URLSearchParams(searchParams);
-    nextSearch.delete('packageId');
+    clearPackageSearchParams(nextSearch);
     if (nextSearch.toString() !== currentSearchString) {
       setSearchParams(nextSearch, { replace: true });
     }
@@ -536,7 +521,7 @@ const PublicVehicleDetail = () => {
   const updateRentalType = (value) => {
     const next = new URLSearchParams(searchParams);
     next.set('rentalType', value);
-    next.delete('packageId');
+    clearPackageSearchParams(next);
     setHasInteractedWithDuration(false);
     if (next.toString() !== currentSearchString) {
       setSearchParams(next, { replace: true });
@@ -546,6 +531,7 @@ const PublicVehicleDetail = () => {
   const handleSelectPackage = (pkg) => {
     const next = new URLSearchParams(searchParams);
     next.set('rentalType', rentalType);
+    clearPackageSearchParams(next);
     next.set('packageId', pkg.id);
     next.set('durationUnits', String(getSelectedDurationForPackage(pkg)));
     if (next.toString() !== currentSearchString) {
@@ -561,12 +547,14 @@ const PublicVehicleDetail = () => {
     next.set('rentalType', rentalType);
     next.set('durationUnits', String(safeUnits));
     if (rentalType === 'hourly' && safeUnits === 0.5 && halfHourPackage) {
+      clearPackageSearchParams(next);
       next.set('packageId', String(halfHourPackage.id));
     } else if (selectedPackage && (isHalfHourPackage(selectedPackage) || isHalfDayPackage(selectedPackage))) {
       if (standardDurationPackage) {
+        clearPackageSearchParams(next);
         next.set('packageId', String(standardDurationPackage.id));
-    } else {
-        next.delete('packageId');
+      } else {
+        clearPackageSearchParams(next);
       }
     }
     if (next.toString() !== currentSearchString) {
