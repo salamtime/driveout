@@ -464,6 +464,15 @@ const getTourTimingSummary = (tour, referenceTime = Date.now()) => {
   };
 };
 
+const getTourReference = (tour) =>
+  String(
+    tour?.groupId ||
+    tour?.tour_id ||
+    tour?.tourId ||
+    tour?.rowIds?.[0] ||
+    ''
+  ).trim();
+
 const formatCurrencyMAD = (value) =>
   new Intl.NumberFormat('en-US', {
     minimumFractionDigits: 0,
@@ -4321,6 +4330,11 @@ const ToursPage = () => {
                         <div className="px-5 pt-5 pb-4">
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className="text-lg font-bold text-slate-900">{tour.packageName}</h3>
+                            {getTourReference(tour) ? (
+                              <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
+                                {getTourReference(tour)}
+                              </span>
+                            ) : null}
                             <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${toStatusTone(tour.status)}`}>{getTourStatusLabel(tour.status)}</span>
                             {needsReview ? (
                               <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-700">
@@ -4350,6 +4364,10 @@ const ToursPage = () => {
 
                         {/* Data rows — KM pricing style */}
                         <div className="border-t border-slate-100 px-5 py-4 space-y-2.5">
+                          <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
+                            <span className="text-slate-500">{tr('Reference', 'Référence')}</span>
+                            <span className="font-semibold text-slate-900 text-left break-words">{getTourReference(tour) || '—'}</span>
+                          </div>
                           <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
                             <span className="text-slate-500">{tr('Guest', 'Client')}</span>
                             <span className="font-semibold text-slate-900 text-left break-words">{formatGuestSummary(tour)}</span>
@@ -5122,6 +5140,7 @@ const ToursPage = () => {
                   <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Schedule', 'Planning')}</p>
                   <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-white">
                     {[
+                      [tr('Reference', 'Référence'), getTourReference(selectedTourDetails) || tr('Not saved', 'Non enregistré')],
                       [tr('Departure', 'Départ'), formatDateTime(selectedTourDetails.scheduledStartAt)],
                       [tr('Expected End', 'Fin prévue'), formatDateTime(selectedTourDetails.scheduledEndAt)],
                       [tr('Started', 'Démarré'), selectedTourDetails.startedAt ? formatDateTime(selectedTourDetails.startedAt) : tr('Not started yet', 'Pas encore démarré')],

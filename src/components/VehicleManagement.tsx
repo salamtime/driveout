@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { Plus, Edit, Trash2, Search, Car, Calendar, AlertTriangle, X, FileText, Gauge, Wrench, Shield, Image as ImageIcon, StickyNote, File, Clock, CheckCircle, AlertCircle, DollarSign, LayoutGrid, List, RefreshCw, ExternalLink, ChevronDown, ChevronUp, MapPin } from 'lucide-react';
 import VehicleModelService from '../services/VehicleModelService';
@@ -161,11 +162,13 @@ const VehicleManagement: React.FC = () => {
     vehicle_type: 'quad',
     description: '',
     tank_capacity_liters: '',
+    image_url: '',
   });
   const [modelFormError, setModelFormError] = useState('');
   const [showMigration, setShowMigration] = useState(false);
   const [showSegwayCleanup, setShowSegwayCleanup] = useState(false);
   const [vehicleImageUrl, setVehicleImageUrl] = useState('');
+  const [modelImageDraftId, setModelImageDraftId] = useState(`vehicle-model-draft-${Date.now()}`);
   const [vehicleDocuments, setVehicleDocuments] = useState<VehicleDocument[]>([]);
   
   const [editingVehicleModel, setEditingVehicleModel] = useState<VehicleModel | null>(null);
@@ -188,6 +191,7 @@ const VehicleManagement: React.FC = () => {
   const getEmptyFormData = () => ({
     name: '',
     model: '',
+    vehicle_model_id: '',
     vehicle_type: 'quad',
     power_cc: 0,
     capacity: 1,
@@ -216,6 +220,68 @@ const VehicleManagement: React.FC = () => {
   });
 
   const [formData, setFormData] = useState(getEmptyFormData());
+
+  const availableModelsForType = useMemo(
+    () =>
+      vehicleModels.filter((model) => {
+        if (!formData.vehicle_type) return true;
+        return String(model.vehicle_type || '').toLowerCase() === String(formData.vehicle_type || '').toLowerCase();
+      }),
+    [vehicleModels, formData.vehicle_type]
+  );
+
+  const selectedVehicleModel = useMemo(
+    () => vehicleModels.find((model) => String(model.id) === String(formData.vehicle_model_id || '')) || null,
+    [vehicleModels, formData.vehicle_model_id]
+  );
+
+  const isAtvType = (vehicleType: string) => String(vehicleType || '').toUpperCase() === 'ATV';
+
+  const syncVehicleFromModel = (modelId: string, nextVehicleType = formData.vehicle_type) => {
+    const selectedModel = vehicleModels.find((model) => String(model.id) === String(modelId || ''));
+    if (!selectedModel) {
+      setFormData((current) => ({ ...current, vehicle_model_id: modelId || '' }));
+      return;
+    }
+
+    const modelDisplay = [selectedModel.name, selectedModel.model]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    const inheritedImageUrl = normalizeVehicleImageUrl(selectedModel.image_url || '');
+
+    setFormData((current) => ({
+      ...current,
+      vehicle_model_id: selectedModel.id,
+      model: selectedModel.model || current.model,
+      capacity: isAtvType(nextVehicleType)
+        ? (selectedModel.capacity_max || selectedModel.capacity_min || current.capacity || 1)
+        : current.capacity,
+      power_cc: isAtvType(nextVehicleType)
+        ? (selectedModel.power_cc_max || selectedModel.power_cc_min || current.power_cc || 0)
+        : current.power_cc,
+      name:
+        !current.name.trim() || current.name.trim() === current.model.trim() || current.name.trim() === modelDisplay
+          ? modelDisplay || current.name
+          : current.name,
+    }));
+
+    if (isAtvType(nextVehicleType) && inheritedImageUrl) {
+      setVehicleImageUrl((currentImageUrl) => {
+        const normalizedCurrent = normalizeVehicleImageUrl(currentImageUrl || '');
+        const normalizedEditingImage = normalizeVehicleImageUrl(editingVehicle?.image_url || '');
+        const normalizedSelectedImage = normalizeVehicleImageUrl(selectedVehicleModel?.image_url || '');
+        if (
+          !normalizedCurrent ||
+          normalizedCurrent === normalizedEditingImage ||
+          normalizedCurrent === normalizedSelectedImage
+        ) {
+          return inheritedImageUrl;
+        }
+        return currentImageUrl;
+      });
+    }
+  };
 
   const getVehicleDocumentCount = async (vehicleId: number): Promise<number> => {
     try {
@@ -397,6 +463,12 @@ const VehicleManagement: React.FC = () => {
     } else if (typeof sanitized.location_id === 'string') {
       const parsedLocationId = parseInt(sanitized.location_id, 10);
       sanitized.location_id = Number.isNaN(parsedLocationId) ? null : parsedLocationId;
+    }
+
+    if (sanitized.vehicle_model_id === '' || sanitized.vehicle_model_id === undefined) {
+      sanitized.vehicle_model_id = null;
+    } else {
+      sanitized.vehicle_model_id = String(sanitized.vehicle_model_id).trim() || null;
     }
     
     sanitized.image_url = sanitized.image_url || '';
@@ -828,7 +900,7 @@ const VehicleManagement: React.FC = () => {
             ...sanitizedData,
             features: [],
             location_id: sanitizedData.location_id ?? null,
-            vehicle_model_id: vehicleModels[0]?.id || null
+            vehicle_model_id: sanitizedData.vehicle_model_id ?? null
           }])
           .select()
           .single();
@@ -869,6 +941,7 @@ const VehicleManagement: React.FC = () => {
     setFormData(getEmptyFormData());
     
     setVehicleImageUrl('');
+    setModelImageDraftId(`vehicle-model-draft-${Date.now()}`);
     setVehicleDocuments([]);
     
     setShowAddForm(false);
@@ -882,6 +955,7 @@ const VehicleManagement: React.FC = () => {
     
     setFormData(getEmptyFormData());
     setVehicleImageUrl('');
+    setModelImageDraftId(`vehicle-model-draft-${Date.now()}`);
     setVehicleDocuments([]);
     
     setEditingVehicle(null);
@@ -905,6 +979,7 @@ const VehicleManagement: React.FC = () => {
       setFormData({
         name: fullVehicle.name || '',
         model: fullVehicle.model || '',
+        vehicle_model_id: fullVehicle.vehicle_model_id || '',
         vehicle_type: fullVehicle.vehicle_type || 'quad',
         power_cc: fullVehicle.power_cc || 0,
         capacity: fullVehicle.capacity || 1,
@@ -1001,8 +1076,12 @@ const VehicleManagement: React.FC = () => {
   const handleModelEditSave = async (updatedModel: VehicleModel) => {
     try {
       await fetchData();
-      
-      alert(`Le modèle de véhicule "${updatedModel.name}" a été mis à jour avec succès.`);
+      toast.success(
+        tr(
+          `Vehicle model "${updatedModel.name}" updated successfully.`,
+          `Le modèle de véhicule "${updatedModel.name}" a été mis à jour avec succès.`
+        )
+      );
     } catch (error) {
       console.error('Error after model update:', error);
     }
@@ -1010,7 +1089,12 @@ const VehicleManagement: React.FC = () => {
 
   const handleModelEditError = (error: string) => {
     setModelEditError(error);
-    alert(`Erreur lors de la mise à jour du modèle de véhicule : ${error}`);
+    toast.error(
+      tr(
+        `Vehicle model update failed: ${error}`,
+        `Erreur lors de la mise à jour du modèle de véhicule : ${error}`
+      )
+    );
   };
 
   const closeEditModal = () => {
@@ -1036,6 +1120,7 @@ const VehicleManagement: React.FC = () => {
         model: modelFormData.model.trim(),
         vehicle_type: modelFormData.vehicle_type,
         description: modelFormData.description.trim(),
+        image_url: modelFormData.image_url?.trim() || null,
         power_cc_min: 0,
         power_cc_max: 0,
         capacity_min: 1,
@@ -1050,7 +1135,9 @@ const VehicleManagement: React.FC = () => {
         vehicle_type: 'quad',
         description: '',
         tank_capacity_liters: '',
+        image_url: '',
       });
+      setModelImageDraftId(`vehicle-model-draft-${Date.now()}`);
       setShowAddModelForm(false);
       await fetchData();
       
@@ -1796,15 +1883,27 @@ const VehicleManagement: React.FC = () => {
             <div className="flex flex-wrap gap-2 xl:justify-end">
               <button
                 onClick={fetchData}
-                className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
+                className="inline-flex items-center gap-2 rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700"
                 title={tr('Refresh Models', 'Actualiser les modèles')}
               >
                 <RefreshCw className="w-4 h-4" />
                 {tr('Refresh', 'Actualiser')}
               </button>
               <button
-                onClick={() => setShowAddModelForm(true)}
-                className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
+                onClick={() => {
+                  setModelFormError('');
+                  setModelImageDraftId(`vehicle-model-draft-${Date.now()}`);
+                  setModelFormData({
+                    name: '',
+                    model: '',
+                    vehicle_type: 'quad',
+                    description: '',
+                    tank_capacity_liters: '',
+                    image_url: '',
+                  });
+                  setShowAddModelForm(true);
+                }}
+                className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)] transition-all hover:scale-[1.01] hover:shadow-[0_18px_36px_rgba(79,70,229,0.34)]"
               >
                 <Plus className="w-4 h-4" />
                 {tr('Add Model', 'Ajouter un modèle')}
@@ -1822,13 +1921,20 @@ const VehicleManagement: React.FC = () => {
               const tankCapacityLiters = resolveTankCapacityLiters(model.tank_capacity_liters, model.model, model.name);
               
               return (
-                <div key={model.id} className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
-                  <div className="flex justify-between items-start mb-2">
+                <div key={model.id} className="rounded-[24px] border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+                  {model.image_url ? (
+                    <img
+                      src={normalizeVehicleImageUrl(model.image_url)}
+                      alt={[model.name, model.model].filter(Boolean).join(' ')}
+                      className="mb-4 h-40 w-full rounded-2xl object-cover"
+                    />
+                  ) : null}
+                  <div className="mb-2 flex justify-between items-start">
                     <h3 className="text-lg font-semibold text-gray-900">{model.name}</h3>
                     <div className="flex gap-1">
                       <button
                         onClick={() => handleEditModel(model)}
-                        className="p-1 text-gray-400 hover:text-blue-600 transition-colors"
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-violet-100 bg-violet-50 text-violet-700 transition hover:bg-violet-100"
                         title={tr('Edit Model', 'Modifier le modèle')}
                       >
                         <Edit className="w-4 h-4" />
@@ -1836,10 +1942,10 @@ const VehicleManagement: React.FC = () => {
                       <button
                         onClick={() => handleDeleteModel(model)}
                         disabled={deletingModelId === model.id}
-                        className={`p-1 transition-colors ${
+                        className={`inline-flex h-9 w-9 items-center justify-center rounded-xl border transition ${
                           deletingModelId === model.id
-                            ? 'text-gray-400 cursor-not-allowed'
-                            : 'text-red-600 hover:text-red-900'
+                            ? 'cursor-not-allowed border-slate-200 text-slate-400'
+                            : 'border-red-100 bg-red-50 text-red-600 hover:bg-red-100'
                         }`}
                         title={deletingModelId === model.id ? tr('Deleting...', 'Suppression...') : tr('Delete Model', 'Supprimer le modèle')}
                       >
@@ -1980,7 +2086,13 @@ const VehicleManagement: React.FC = () => {
                     </label>
                     <select
                       value={formData.vehicle_type}
-                      onChange={(e) => setFormData({...formData, vehicle_type: e.target.value})}
+                      onChange={(e) => {
+                        const nextVehicleType = e.target.value;
+                        setFormData((current) => ({ ...current, vehicle_type: nextVehicleType }));
+                        if (formData.vehicle_model_id) {
+                          syncVehicleFromModel(formData.vehicle_model_id, nextVehicleType);
+                        }
+                      }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       disabled={!!viewingVehicle}
                       required
@@ -1998,6 +2110,50 @@ const VehicleManagement: React.FC = () => {
                       <option value="motorcycle">Motorcycle</option>
                       <option value="scooter">Scooter</option>
                     </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_280px] gap-4 mb-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      {tr('Vehicle model', 'Modèle du véhicule')}
+                    </label>
+                    <select
+                      value={formData.vehicle_model_id}
+                      onChange={(e) => syncVehicleFromModel(e.target.value, formData.vehicle_type)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      disabled={!!viewingVehicle}
+                    >
+                      <option value="">{tr('Select a model', 'Sélectionner un modèle')}</option>
+                      {availableModelsForType.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {[model.name, model.model].filter(Boolean).join(' ')}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-2 text-xs text-gray-500">
+                      {tr(
+                        'ATV vehicles inherit their default image and rider capacity from the selected model.',
+                        'Les véhicules ATV héritent de leur image par défaut et de leur capacité de passagers depuis le modèle sélectionné.'
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border border-blue-100 bg-white/70 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-500">
+                      {tr('Model preview', 'Aperçu du modèle')}
+                    </p>
+                    {selectedVehicleModel?.image_url ? (
+                      <img
+                        src={normalizeVehicleImageUrl(selectedVehicleModel.image_url)}
+                        alt={[selectedVehicleModel.name, selectedVehicleModel.model].filter(Boolean).join(' ')}
+                        className="mt-3 h-28 w-full rounded-xl object-cover"
+                      />
+                    ) : (
+                      <div className="mt-3 flex h-28 items-center justify-center rounded-xl border border-dashed border-blue-100 bg-slate-50 text-sm text-slate-400">
+                        {tr('No model image yet', 'Pas encore d’image modèle')}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2337,6 +2493,14 @@ const VehicleManagement: React.FC = () => {
                   <ImageIcon className="w-5 h-5 text-purple-600" />
                   <h3 className="text-lg font-semibold text-purple-900">{tr('Vehicle Image', 'Image du véhicule')}</h3>
                 </div>
+                {isAtvType(formData.vehicle_type) && selectedVehicleModel?.image_url && (
+                  <div className="mb-4 rounded-xl border border-purple-100 bg-white px-4 py-3 text-sm text-purple-700">
+                    {tr(
+                      'This ATV is using the image from its selected model. Upload another image only if this unit needs a custom photo.',
+                      'Cet ATV utilise l’image de son modèle sélectionné. Téléversez une autre image seulement si cette unité a besoin d’une photo personnalisée.'
+                    )}
+                  </div>
+                )}
                 
                 <VehicleImageUpload
                   vehicleId={editingVehicle?.id?.toString() || viewingVehicle?.id?.toString() || 'new'}
@@ -2456,90 +2620,115 @@ const VehicleManagement: React.FC = () => {
 
       {/* Add Model Modal */}
       {showAddModelForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-3xl rounded-[28px] border border-violet-100 bg-[linear-gradient(180deg,#f8f6ff_0%,#ffffff_28%)] shadow-[0_24px_60px_rgba(76,29,149,0.18)]">
+            <div className="border-b border-violet-100 px-6 py-6">
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-violet-500">{tr('Vehicle Models', 'Modèles véhicule')}</p>
+              <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950">{tr('Add New Vehicle Model', 'Ajouter un nouveau modèle de véhicule')}</h2>
+              <p className="mt-2 max-w-2xl text-sm text-slate-600">
+                {tr(
+                  'Create one clean ATV model record and reuse it across fleet vehicles and the Tours website.',
+                  'Créez une fiche modèle ATV propre et réutilisez-la dans la flotte et sur le site Tours.'
+                )}
+              </p>
+            </div>
             <div className="p-6">
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">{tr('Add New Vehicle Model', 'Ajouter un nouveau modèle de véhicule')}</h2>
               
               {modelFormError && (
-                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
+                <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-4">
                   <p className="text-sm text-red-600">{modelFormError}</p>
                 </div>
               )}
               
               <form onSubmit={handleAddModel} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Model Name *', 'Nom du modèle *')}</label>
-                  <input
-                    type="text"
-                    value={modelFormData.name}
-                    onChange={(e) => setModelFormData({...modelFormData, name: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="e.g., Segway AT6"
-                    required
-                  />
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">{tr('Model Name *', 'Nom du modèle *')}</label>
+                    <input
+                      type="text"
+                      value={modelFormData.name}
+                      onChange={(e) => setModelFormData({...modelFormData, name: e.target.value})}
+                      className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-slate-900 outline-none transition focus:border-violet-300"
+                      placeholder="SEGWAY"
+                      required
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">{tr('Model Identifier *', 'Identifiant du modèle *')}</label>
+                    <input
+                      type="text"
+                      value={modelFormData.model}
+                      onChange={(e) => setModelFormData({...modelFormData, model: e.target.value})}
+                      className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-slate-900 outline-none transition focus:border-violet-300"
+                      placeholder="AT6"
+                      required
+                    />
+                  </div>
                 </div>
                 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Model Identifier *', 'Identifiant du modèle *')}</label>
-                  <input
-                    type="text"
-                    value={modelFormData.model}
-                    onChange={(e) => setModelFormData({...modelFormData, model: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="e.g., AT6"
-                    required
-                  />
+                <div className="rounded-[24px] border border-violet-100 bg-white p-5 shadow-sm">
+                  <p className="text-[11px] font-black uppercase tracking-[0.22em] text-violet-500">{tr('Image', 'Image')}</p>
+                  <div className="mt-4">
+                    <label className="mb-2 block text-sm font-medium text-slate-700">{tr('Model image', 'Image du modèle')}</label>
+                    <VehicleImageUpload
+                      vehicleId={`vehicle-models/${modelImageDraftId}`}
+                      currentImageUrl={modelFormData.image_url}
+                      onImageChange={(nextUrl) => setModelFormData({ ...modelFormData, image_url: nextUrl })}
+                      className="w-full"
+                    />
+                  </div>
                 </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Vehicle Type', 'Type de véhicule')}</label>
-                  <select
-                    value={modelFormData.vehicle_type}
-                    onChange={(e) => setModelFormData({...modelFormData, vehicle_type: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  >
-                    <option value="quad">Quad</option>
-                    <option value="ATV">ATV</option>
-                    <option value="UTV">UTV</option>
-                    <option value="buggy">Buggy</option>
-                    <option value="car">Car</option>
-                    <option value="motorhome">Motorhome</option>
-                    <option value="jet_ski">Jet Ski</option>
-                    <option value="electric_bike">Electric Bike</option>
-                    <option value="electric_motorbike">Electric Motorbike</option>
-                    <option value="electric_motorcycle">Electric Motorcycle</option>
-                    <option value="motorcycle">Motorcycle</option>
-                    <option value="scooter">Scooter</option>
-                  </select>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">{tr('Vehicle Type', 'Type de véhicule')}</label>
+                    <select
+                      value={modelFormData.vehicle_type}
+                      onChange={(e) => setModelFormData({...modelFormData, vehicle_type: e.target.value})}
+                      className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-slate-900 outline-none transition focus:border-violet-300"
+                    >
+                      <option value="quad">Quad</option>
+                      <option value="ATV">ATV</option>
+                      <option value="UTV">UTV</option>
+                      <option value="buggy">Buggy</option>
+                      <option value="car">Car</option>
+                      <option value="motorhome">Motorhome</option>
+                      <option value="jet_ski">Jet Ski</option>
+                      <option value="electric_bike">Electric Bike</option>
+                      <option value="electric_motorbike">Electric Motorbike</option>
+                      <option value="electric_motorcycle">Electric Motorcycle</option>
+                      <option value="motorcycle">Motorcycle</option>
+                      <option value="scooter">Scooter</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">{tr('Fuel Tank Capacity (L)', 'Capacité du réservoir (L)')}</label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      value={modelFormData.tank_capacity_liters}
+                      onChange={(e) => setModelFormData({...modelFormData, tank_capacity_liters: e.target.value})}
+                      className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-slate-900 outline-none transition focus:border-violet-300"
+                      placeholder="23"
+                    />
+                  </div>
                 </div>
-                
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Description', 'Description')}</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">{tr('Description', 'Description')}</label>
                   <textarea
                     value={modelFormData.description}
                     onChange={(e) => setModelFormData({...modelFormData, description: e.target.value})}
                     rows={3}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-slate-900 outline-none transition focus:border-violet-300"
                     placeholder={tr('Optional description of the vehicle model', 'Description facultative du modèle de véhicule')}
                   />
                 </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{tr('Fuel Tank Capacity (L)', 'Capacité du réservoir (L)')}</label>
-                  <input
-                    type="number"
-                    min="1"
-                    step="0.1"
-                    value={modelFormData.tank_capacity_liters}
-                    onChange={(e) => setModelFormData({...modelFormData, tank_capacity_liters: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="e.g., 19"
-                  />
-                  <p className="mt-1 text-xs text-gray-500">Used by Fuel Management and rentals to calculate the real tank fill state.</p>
-                </div>
                 
-                <div className="flex justify-end gap-3 pt-4">
+                <div className="flex justify-end gap-3 border-t border-violet-100 pt-4">
                   <button
                     type="button"
                     onClick={() => {
@@ -2551,15 +2740,17 @@ const VehicleManagement: React.FC = () => {
                         vehicle_type: 'quad',
                         description: '',
                         tank_capacity_liters: '',
+                        image_url: '',
                       });
+                      setModelImageDraftId(`vehicle-model-draft-${Date.now()}`);
                     }}
-                    className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                    className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
                   >
                     {tr('Cancel', 'Annuler')}
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                    className="rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01]"
                   >
                     {tr('Add Model', 'Ajouter un modèle')}
                   </button>

@@ -971,7 +971,7 @@ const UpcomingTours = ({ tours, loading }) => {
       <div className="space-y-3">
         {visibleTours.map((tour) => {
           const expiredTour = isDashboardTourExpired(tour);
-          const destination = '/admin/tours?tab=bookings';
+          const destination = '/admin/tours?tab=schedule';
           const activeStartedAt = new Date(tour.startedAt || '').getTime();
           const hasActiveTimer = tour.status === 'active' && Number.isFinite(activeStartedAt);
           const elapsedText = hasActiveTimer ? formatDashboardDuration(currentTime - activeStartedAt) : null;

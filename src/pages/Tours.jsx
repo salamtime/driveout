@@ -7,7 +7,9 @@ import {
   Image as ImageIcon,
   Instagram,
   MapPin,
+  Minus,
   Play,
+  Plus,
   Route,
   X,
   XCircle,
@@ -51,6 +53,14 @@ const formatDisplayText = (value, fallback = '') => {
   return text.replace(/\b\w/g, (match) => match.toUpperCase());
 };
 
+const normalizeVehicleImageUrl = (url) => {
+  const source = String(url || '').trim();
+  if (!source) return '';
+  if (/^https?:\/\//i.test(source)) return source;
+  if (source.startsWith('/')) return encodeURI(source);
+  return encodeURI(`/${source.replace(/^\/+/, '')}`);
+};
+
 const normalizeMediaUrl = (value) => {
   const url = String(value || '').trim();
   if (!url) return '';
@@ -77,6 +87,25 @@ const modelLabel = (model) => {
   const variant = String(model?.model || '').trim();
   if (name && variant && name.toLowerCase().includes(variant.toLowerCase())) return name;
   return [name, variant].filter(Boolean).join(' ').trim() || 'Selected model';
+};
+
+const modelCapacityLabel = (model) => {
+  const min = Number(model?.capacityMin || 0) || 0;
+  const max = Number(model?.capacityMax || 0) || 0;
+  if (min > 0 && max > 0 && min !== max) return `${min}-${max} riders`;
+  const seats = max || min || 1;
+  return seats === 1 ? '1 rider' : `${seats} riders`;
+};
+
+const modelCardImage = (model) => normalizeVehicleImageUrl(model?.imageUrl);
+
+const getPreferredTourModel = (models = []) =>
+  models.find((model) => modelCardImage(model)) || models[0] || null;
+
+const clampRidersToCapacity = (riders, maxCapacity) => {
+  const safeMax = Math.max(1, Number(maxCapacity || 1));
+  const safeRiders = Math.max(1, Number(riders || 1) || 1);
+  return Math.min(safeRiders, safeMax);
 };
 
 const getPackagePriceRows = ({ rows = [], packageId, durationHours }) => {
@@ -212,6 +241,9 @@ const buildPublicTour = (pkg, pricingRows, vehicleModels) => {
         modelId: String(row.vehicle_model_id || ''),
         label: modelLabel(model),
         price: Number(row.price_mad || 0),
+        imageUrl: modelCardImage(model),
+        capacityMin: Number(model?.capacity_min || 0) || 0,
+        capacityMax: Number(model?.capacity_max || 0) || 1,
       };
     })
     .filter((row) => row.modelId && row.price > 0)
@@ -387,6 +419,134 @@ const TourMediaPreviewStrip = ({ media = [], title, onOpenPreview }) => {
         View media
         <ArrowRight className="h-3.5 w-3.5" />
       </button>
+    </div>
+  );
+};
+
+const TourModelPicker = ({
+  models = [],
+  activeModelId,
+  selectedCounts = {},
+  maxQuads = 1,
+  onSelectModel,
+  onIncrease,
+  onDecrease,
+}) => {
+  const activeIndex = Math.max(0, models.findIndex((model) => String(model.modelId) === String(activeModelId)));
+  const activeModel = models[activeIndex] || models[0] || null;
+  const [touchStart, setTouchStart] = useState(null);
+
+  if (!activeModel) return null;
+
+  const handleSwipeEnd = (clientX) => {
+    if (touchStart === null) return;
+    const delta = clientX - touchStart;
+    if (Math.abs(delta) < 35) {
+      setTouchStart(null);
+      return;
+    }
+    const nextIndex = delta < 0 ? Math.min(models.length - 1, activeIndex + 1) : Math.max(0, activeIndex - 1);
+    onSelectModel?.(models[nextIndex]?.modelId);
+    setTouchStart(null);
+  };
+
+  return (
+    <div className="rounded-[24px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(79,70,229,0.06)]">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.18em] text-violet-600">Choose ATV model</p>
+          <p className="mt-1 text-sm font-medium text-slate-500">Swipe left or right to browse models.</p>
+        </div>
+        <div className="rounded-full bg-violet-50 px-3 py-1 text-[11px] font-black text-violet-700">
+          {Object.values(selectedCounts).reduce((sum, count) => sum + Number(count || 0), 0)} / {maxQuads} ATVs
+        </div>
+      </div>
+
+      <div
+        className="mt-4 overflow-hidden rounded-[24px] border border-violet-100 bg-[linear-gradient(180deg,#ffffff_0%,#f8f6ff_100%)]"
+        onTouchStart={(event) => setTouchStart(event.touches?.[0]?.clientX ?? null)}
+        onTouchEnd={(event) => handleSwipeEnd(event.changedTouches?.[0]?.clientX ?? touchStart)}
+      >
+        <div className="relative">
+          {activeModel.imageUrl ? (
+            <img src={activeModel.imageUrl} alt={activeModel.label} className="h-40 w-full object-cover sm:h-44" />
+          ) : (
+            <div className="flex h-40 w-full items-center justify-center bg-[linear-gradient(180deg,#faf7ff_0%,#f3efff_100%)] text-center sm:h-44">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-violet-500">ATV Model</p>
+                <p className="mt-2 text-sm font-semibold text-slate-500">Add the model image in Fleet Management</p>
+              </div>
+            </div>
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-slate-950/10 to-transparent" />
+          <div className="absolute bottom-0 left-0 right-0 p-4 text-white">
+            <p className="text-xl font-black tracking-tight">{activeModel.label}</p>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-black uppercase tracking-[0.12em]">
+              <span className="rounded-full bg-white/18 px-2.5 py-1 backdrop-blur">{modelCapacityLabel(activeModel)}</span>
+              <span className="rounded-full bg-white/18 px-2.5 py-1 backdrop-blur">{formatMoney(activeModel.price)}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onSelectModel?.(models[Math.max(0, activeIndex - 1)]?.modelId)}
+            disabled={activeIndex === 0}
+            className="absolute left-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-slate-700 shadow-sm transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Previous model"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onSelectModel?.(models[Math.min(models.length - 1, activeIndex + 1)]?.modelId)}
+            disabled={activeIndex === models.length - 1}
+            className="absolute right-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-slate-700 shadow-sm transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Next model"
+          >
+            <ArrowRight className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 px-4 py-4">
+          <div className="min-w-0">
+            <p className="text-sm font-black text-slate-950">{activeModel.label}</p>
+            <p className="mt-1 text-xs font-medium text-slate-500">Tap plus to add this model to the booking mix.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onDecrease?.(activeModel.modelId)}
+              disabled={Number(selectedCounts?.[activeModel.modelId] || 0) <= 0}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label={`Remove ${activeModel.label}`}
+            >
+              <Minus className="h-4 w-4" />
+            </button>
+            <div className="min-w-[56px] rounded-full bg-violet-700 px-4 py-2 text-center text-sm font-black text-white">
+              {Number(selectedCounts?.[activeModel.modelId] || 0)}
+            </div>
+            <button
+              type="button"
+              onClick={() => onIncrease?.(activeModel.modelId)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 transition hover:bg-violet-100"
+              aria-label={`Add ${activeModel.label}`}
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex justify-center gap-2">
+        {models.map((model, index) => (
+          <button
+            key={model.modelId}
+            type="button"
+            onClick={() => onSelectModel?.(model.modelId)}
+            className={`h-2.5 rounded-full transition ${index === activeIndex ? 'w-6 bg-violet-600' : 'w-2.5 bg-slate-200 hover:bg-slate-300'}`}
+            aria-label={`Show ${model.label}`}
+          />
+        ))}
+      </div>
     </div>
   );
 };
@@ -640,14 +800,15 @@ const Tours = () => {
   const [loadError, setLoadError] = useState('');
   const [reloadToken, setReloadToken] = useState(0);
   const [selectedPackageId, setSelectedPackageId] = useState('');
-  const [selectedModelId, setSelectedModelId] = useState('');
+  const [activeModelId, setActiveModelId] = useState('');
+  const [showAllTours, setShowAllTours] = useState(false);
   const [mediaTour, setMediaTour] = useState(null);
   const [mediaIndex, setMediaIndex] = useState(0);
   const [bookingForm, setBookingForm] = useState({
     date: '',
     time: '',
-    quadCount: 1,
     ridersCount: 1,
+    selectedModelCounts: {},
     customerName: '',
     customerPhone: '',
     customerEmail: '',
@@ -691,28 +852,108 @@ const Tours = () => {
   }, [packages, pricingRows, vehicleModels]);
 
   const selectedTour = tours.find((tour) => String(tour.id) === String(selectedPackageId)) || null;
-  const selectedModel = selectedTour?.modelOptions.find((model) => String(model.modelId) === String(selectedModelId)) || selectedTour?.modelOptions[0] || null;
-  const totalPrice = Number(selectedModel?.price || 0) * Number(bookingForm.quadCount || 1);
+  const preferredSelectedTourModel = selectedTour ? getPreferredTourModel(selectedTour.modelOptions) : null;
+  const activeModel =
+    selectedTour?.modelOptions.find((model) => String(model.modelId) === String(activeModelId)) ||
+    preferredSelectedTourModel ||
+    null;
+  const selectedModelMix = selectedTour
+    ? selectedTour.modelOptions
+      .map((model) => ({
+        ...model,
+        count: Math.max(0, Number(bookingForm.selectedModelCounts?.[model.modelId] || 0)),
+      }))
+      .filter((model) => model.count > 0)
+    : [];
+  const selectedQuadCount = selectedModelMix.reduce((sum, model) => sum + Number(model.count || 0), 0);
+  const maxRiderCapacity = Math.max(
+    1,
+    selectedModelMix.reduce((sum, model) => sum + (Math.max(1, Number(model.capacityMax || model.capacityMin || 1)) * Number(model.count || 0)), 0) || 1
+  );
+  const totalPrice = selectedModelMix.reduce((sum, model) => sum + (Number(model.price || 0) * Number(model.count || 0)), 0);
+  const selectedModelSummary = selectedModelMix.map((model) => `${model.count} × ${model.label}`).join(' · ');
+  const visibleTours = showAllTours ? tours : tours.slice(0, 2);
+  const hiddenToursCount = Math.max(0, tours.length - visibleTours.length);
 
   useEffect(() => {
     if (!selectedTour) return;
-    if (!selectedModelId && selectedTour.modelOptions[0]?.modelId) {
-      setSelectedModelId(selectedTour.modelOptions[0].modelId);
+    if (!activeModelId && preferredSelectedTourModel?.modelId) {
+      setActiveModelId(preferredSelectedTourModel.modelId);
     }
-  }, [selectedTour, selectedModelId]);
+  }, [selectedTour, activeModelId, preferredSelectedTourModel]);
+
+  useEffect(() => {
+    setBookingForm((current) => ({
+      ...current,
+      ridersCount: clampRidersToCapacity(current.ridersCount, maxRiderCapacity),
+    }));
+  }, [maxRiderCapacity]);
 
   const updateBooking = (field, value) => {
     setBookingForm((current) => ({
       ...current,
       [field]: value,
-      ...(field === 'quadCount' ? { ridersCount: Math.max(Number(value || 1), Number(current.ridersCount || 1)) } : {}),
     }));
   };
 
   const toggleTourSelection = (tour) => {
     const isSelected = String(selectedPackageId) === String(tour.id);
+    const preferredModel = getPreferredTourModel(tour.modelOptions);
     setSelectedPackageId(isSelected ? '' : tour.id);
-    setSelectedModelId(isSelected ? '' : tour.modelOptions[0]?.modelId || '');
+    setActiveModelId(isSelected ? '' : preferredModel?.modelId || '');
+    setBookingSuccess(null);
+    setBookingForm((current) => ({
+      ...current,
+      ridersCount: 1,
+      selectedModelCounts: isSelected
+        ? {}
+        : preferredModel?.modelId
+          ? { [preferredModel.modelId]: 1 }
+          : {},
+    }));
+  };
+
+  const handleSelectActiveModel = (modelId) => {
+    if (!modelId) return;
+    setActiveModelId(modelId);
+  };
+
+  const handleIncreaseModel = (modelId) => {
+    if (!selectedTour || !modelId) return;
+    setActiveModelId(modelId);
+    setBookingForm((current) => {
+      const currentCounts = current.selectedModelCounts || {};
+      const totalCount = Object.values(currentCounts).reduce((sum, count) => sum + Number(count || 0), 0);
+      if (totalCount >= Number(selectedTour.maxQuads || 1)) return current;
+
+      return {
+        ...current,
+        selectedModelCounts: {
+          ...currentCounts,
+          [modelId]: Number(currentCounts[modelId] || 0) + 1,
+        },
+      };
+    });
+  };
+
+  const handleDecreaseModel = (modelId) => {
+    if (!modelId) return;
+    setBookingForm((current) => {
+      const currentCounts = current.selectedModelCounts || {};
+      const nextValue = Math.max(0, Number(currentCounts[modelId] || 0) - 1);
+      const nextCounts = { ...currentCounts };
+
+      if (nextValue <= 0) {
+        delete nextCounts[modelId];
+      } else {
+        nextCounts[modelId] = nextValue;
+      }
+
+      return {
+        ...current,
+        selectedModelCounts: nextCounts,
+      };
+    });
   };
 
   const openMediaPreview = (tour, index = 0) => {
@@ -721,7 +962,7 @@ const Tours = () => {
   };
 
   const handleSubmit = async () => {
-    if (!selectedTour || !selectedModel) {
+    if (!selectedTour || selectedModelMix.length === 0) {
       toast.error('Choose a tour package first');
       return;
     }
@@ -738,12 +979,17 @@ const Tours = () => {
         body: JSON.stringify({
           publicBooking: true,
           packageId: selectedTour.id,
-          vehicleModelId: selectedModel.modelId,
-          vehicleModelLabel: selectedModel.label,
+          vehicleModelId: activeModel?.modelId || selectedModelMix[0]?.modelId || '',
+          vehicleModelLabel: activeModel?.label || selectedModelMix[0]?.label || '',
+          selectedModelMix: selectedModelMix.map((model) => ({
+            modelId: model.modelId,
+            label: model.label,
+            count: Number(model.count || 0),
+          })),
           date: bookingForm.date,
           time: bookingForm.time,
-          quadCount: Number(bookingForm.quadCount || 1),
-          ridersCount: Number(bookingForm.ridersCount || bookingForm.quadCount || 1),
+          quadCount: selectedQuadCount,
+          ridersCount: clampRidersToCapacity(bookingForm.ridersCount, maxRiderCapacity),
           customerName: bookingForm.customerName,
           customerPhone: bookingForm.customerPhone,
           customerEmail: bookingForm.customerEmail,
@@ -763,7 +1009,7 @@ const Tours = () => {
         customerPhone: bookingForm.customerPhone,
         customerName: bookingForm.customerName,
         selectedTourTitle: selectedTour.title,
-        selectedModelLabel: selectedModel.label,
+        selectedModelLabel: selectedModelSummary || activeModel?.label || 'Selected ATV mix',
         scheduledDate: bookingForm.date,
         scheduledTime: bookingForm.time,
       });
@@ -771,8 +1017,8 @@ const Tours = () => {
       setBookingForm({
         date: '',
         time: '',
-        quadCount: 1,
         ridersCount: 1,
+        selectedModelCounts: {},
         customerName: '',
         customerPhone: '',
         customerEmail: '',
@@ -833,7 +1079,7 @@ const Tours = () => {
           />
         ) : (
           <div className="space-y-5">
-            {tours.map((tour) => {
+            {visibleTours.map((tour) => {
               const selected = String(selectedPackageId) === String(tour.id);
               const hasBookableModelPricing = tour.modelOptions.length > 0;
               const hasVisiblePrice = Number(tour.startingPrice || 0) > 0;
@@ -1033,17 +1279,28 @@ const Tours = () => {
                             <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-600">Book now</p>
                             <div className="mt-4 space-y-3">
                               {hasBookableModelPricing ? (
-                                <select
-                                  value={selectedModelId}
-                                  onChange={(event) => setSelectedModelId(event.target.value)}
-                                  className="w-full rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm font-black text-slate-900 outline-none focus:border-violet-300"
-                                >
-                                  {tour.modelOptions.map((model) => (
-                                    <option key={model.modelId} value={model.modelId}>
-                                      {model.label} · {formatMoney(model.price)}
-                                    </option>
-                                  ))}
-                                </select>
+                                <>
+                                  <TourModelPicker
+                                    models={tour.modelOptions}
+                                    activeModelId={activeModelId}
+                                    selectedCounts={bookingForm.selectedModelCounts}
+                                    maxQuads={tour.maxQuads || 1}
+                                    onSelectModel={handleSelectActiveModel}
+                                    onIncrease={handleIncreaseModel}
+                                    onDecrease={handleDecreaseModel}
+                                  />
+                                  <div className="rounded-2xl border border-violet-100 bg-white px-4 py-4">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Selected ATVs</p>
+                                      <span className="rounded-full bg-violet-50 px-3 py-1 text-[11px] font-black text-violet-700">
+                                        {selectedQuadCount} / {tour.maxQuads || 1}
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 text-sm font-black text-slate-950">
+                                      {selectedModelSummary || 'Choose at least one ATV model to continue.'}
+                                    </p>
+                                  </div>
+                                </>
                               ) : (
                                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">
                                   Final model pricing is not configured yet for booking.
@@ -1053,25 +1310,19 @@ const Tours = () => {
                                 <input type="date" value={bookingForm.date} onChange={(event) => updateBooking('date', event.target.value)} className="rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300" />
                                 <input type="time" value={bookingForm.time} onChange={(event) => updateBooking('time', event.target.value)} className="rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300" />
                               </div>
-                              <div className="grid grid-cols-2 gap-3">
-                                <label className="rounded-2xl border border-violet-100 bg-white px-4 py-3">
-                                  <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Quads</span>
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    max={tour.maxQuads || 12}
-                                    value={bookingForm.quadCount}
-                                    onChange={(event) => updateBooking('quadCount', event.target.value)}
-                                    className="mt-2 w-full bg-transparent text-sm font-bold text-slate-900 outline-none"
-                                  />
-                                </label>
+                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                <div className="rounded-2xl border border-violet-100 bg-white px-4 py-3">
+                                  <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">ATVs</span>
+                                  <p className="mt-2 text-sm font-black text-slate-900">{selectedQuadCount || 0}</p>
+                                </div>
                                 <label className="rounded-2xl border border-violet-100 bg-white px-4 py-3">
                                   <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Riders</span>
                                   <input
                                     type="number"
                                     min="1"
+                                    max={maxRiderCapacity}
                                     value={bookingForm.ridersCount}
-                                    onChange={(event) => updateBooking('ridersCount', event.target.value)}
+                                    onChange={(event) => updateBooking('ridersCount', clampRidersToCapacity(event.target.value, maxRiderCapacity))}
                                     className="mt-2 w-full bg-transparent text-sm font-bold text-slate-900 outline-none"
                                   />
                                 </label>
@@ -1095,7 +1346,7 @@ const Tours = () => {
                             <button
                               type="button"
                               onClick={handleSubmit}
-                              disabled={!hasBookableModelPricing || submitting}
+                              disabled={!hasBookableModelPricing || submitting || selectedQuadCount <= 0}
                               className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-violet-700 px-5 py-4 text-sm font-black text-white shadow-[0_18px_35px_rgba(124,58,237,0.22)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                             >
                               {submitting ? 'Sending...' : 'Book now'}
@@ -1109,6 +1360,15 @@ const Tours = () => {
                 </article>
               );
             })}
+            {hiddenToursCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => setShowAllTours((current) => !current)}
+                className="text-sm font-semibold text-violet-700"
+              >
+                {showAllTours ? 'See fewer options' : 'See more options'}
+              </button>
+            ) : null}
           </div>
         )}
       </main>
