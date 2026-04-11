@@ -1,1 +1,0 @@
-const t=r=>{if(!r)return"N/A";const e=String(r).trim();return e?e.startsWith("MNT-")?e.toUpperCase():e.includes("-")&&e.length>=8?`MNT-${e.replace(/-/g,"").slice(-8).toUpperCase()}`:`MNT-${e.toUpperCase()}`:"N/A"};export{t as f};
