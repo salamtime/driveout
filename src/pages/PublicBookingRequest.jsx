@@ -111,7 +111,7 @@ const PublicBookingRequest = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-50 px-6 py-14">
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)] px-6 py-14">
         <div className="mx-auto max-w-6xl animate-pulse rounded-[32px] border border-slate-200 bg-white p-8">
           <div className="h-64 rounded-[28px] bg-slate-100" />
         </div>
@@ -121,7 +121,7 @@ const PublicBookingRequest = () => {
 
   if (error && !listing) {
     return (
-      <div className="min-h-screen bg-slate-50 px-6 py-14">
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)] px-6 py-14">
         <div className="mx-auto max-w-3xl rounded-[32px] border border-rose-200 bg-rose-50 p-8 text-rose-700">
           <h1 className="text-2xl font-semibold text-rose-900">Request unavailable</h1>
           <p className="mt-3">{error}</p>
@@ -134,7 +134,7 @@ const PublicBookingRequest = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#fff7ed_40%,#ffffff_100%)] px-6 py-10">
+    <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)] px-6 py-10">
       <div className="mx-auto max-w-6xl">
         <div className="mb-6 flex items-center justify-between">
           <Link to={detailHref} className="text-sm font-semibold text-amber-700">

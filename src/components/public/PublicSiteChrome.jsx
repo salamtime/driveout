@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ChevronRight, Compass, Home, ImageIcon, Info, LayoutDashboard, LogIn, Menu, Share2, Tractor, Waves, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
@@ -21,6 +21,7 @@ const DEFAULT_CATEGORY_PILLS = [
 const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_PILLS }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   useTranslation();
   const { user, userProfile, signOut, getBusinessOwnerHomePath } = useAuth();
   const { setLanguage } = useLanguageContext();
@@ -76,6 +77,10 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
     setMenuOpen(false);
     await signOut();
   };
+  const handlePublicNavigate = (href) => {
+    setMenuOpen(false);
+    navigate(href);
+  };
   const accountLabel = user
     ? (userProfile?.fullName || userProfile?.email || user?.email || 'Signed in')
     : 'SaharaX website';
@@ -87,9 +92,12 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
     () =>
       navItemsConfig.map((item) => {
         const basePath = item.href.split('#')[0] || item.href;
+        const hasExplicitCurrent = Boolean(current);
         return {
           ...item,
-          active: current === item.id || (item.href !== '/' && location.pathname.startsWith(basePath)),
+          active: hasExplicitCurrent
+            ? current === item.id
+            : item.href !== '/' && location.pathname.startsWith(basePath),
         };
       }),
     [current, location.pathname, navItemsConfig]
@@ -201,24 +209,26 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                   </button>
                 </div>
 
-                <div className="mt-4 rounded-[24px] border border-violet-100 bg-gradient-to-r from-violet-50 via-white to-indigo-50 p-4">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
-                    {user ? tr('Signed In', 'Connecté') : tr('Public Access', 'Accès public')}
-                  </div>
-                  <div className="mt-2 flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-200 text-sm font-semibold text-slate-700">
-                      {(accountLabel || 'S').charAt(0).toUpperCase()}
+                <div className="mt-3 space-y-3">
+                  <div className="flex items-center gap-3 rounded-2xl border border-violet-100 bg-white/85 px-3 py-2 shadow-sm">
+                    <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
+                      {user ? (
+                        <span className="text-sm font-semibold text-slate-700">
+                          {(accountLabel || 'S').charAt(0).toUpperCase()}
+                        </span>
+                      ) : (
+                        <img
+                          src={SAHARAX_LOGO_SRC}
+                          alt="SaharaX"
+                          className="h-full w-full object-contain"
+                        />
+                      )}
                     </div>
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-semibold text-slate-900">{accountLabel}</div>
                       <div className="text-xs capitalize text-slate-500">{accountSubtitle}</div>
                     </div>
-                  </div>
-                  <div className="mt-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
-                      {tr('Website Language', 'Langue du site')}
-                    </div>
-                    <div className="mt-2 inline-flex rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
+                    <div className="inline-flex rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
                       {[
                         { code: 'fr', label: 'FR' },
                         { code: 'en', label: 'EN' },
@@ -242,12 +252,15 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                       })}
                     </div>
                   </div>
-                  <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
-                    <span>{tr('Page access', 'Accès aux pages')}</span>
-                    <span>{navItems.length}/{navItems.length}</span>
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100">
-                    <div className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-700" style={{ width: '100%' }} />
+
+                  <div className="rounded-2xl border border-violet-100 bg-white/85 px-3 py-3 shadow-sm">
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>{tr('Page access', 'Accès aux pages')}</span>
+                      <span>{navItems.length}/{navItems.length}</span>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100">
+                      <div className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-700" style={{ width: '100%' }} />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -263,12 +276,12 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                 {navItems.map((item) => {
                   const Icon = item.icon;
                   return (
-                    <a
+                    <button
                       key={item.id}
-                      href={item.href}
-                      onClick={() => setMenuOpen(false)}
+                      type="button"
+                      onClick={() => handlePublicNavigate(item.href)}
                       className={`
-                        group relative w-full overflow-hidden rounded-2xl border px-3.5 py-3 text-left transition-all duration-200 block
+                        group relative block w-full overflow-hidden rounded-2xl border px-3.5 py-3 text-left transition-all duration-200
                         ${item.active
                           ? 'border-violet-200 bg-gradient-to-r from-violet-50 via-white to-indigo-50 text-violet-900 shadow-[0_16px_38px_rgba(79,70,229,0.12)]'
                           : 'border-transparent bg-white/70 text-slate-700 hover:border-slate-200 hover:bg-white hover:shadow-sm'
@@ -287,7 +300,7 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                         </div>
                         <ChevronRight className={`h-4 w-4 flex-shrink-0 transition-transform ${item.active ? 'text-violet-600' : 'text-slate-400 group-hover:translate-x-0.5'}`} />
                       </div>
-                    </a>
+                    </button>
                   );
                 })}
 

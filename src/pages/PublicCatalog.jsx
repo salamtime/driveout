@@ -494,7 +494,7 @@ const PublicCatalog = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#fcfbff_0%,#f6f4ff_32%,#ffffff_100%)]">
+    <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)]">
       <PublicSiteChrome current={isMarketplacePage ? 'marketplace' : 'rent'} />
       <main className={`mx-auto ${isMarketplacePage ? 'max-w-7xl' : 'max-w-3xl'} px-4 py-4 sm:px-6 sm:py-6`}>
         <section className="space-y-4">

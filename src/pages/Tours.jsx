@@ -3,6 +3,8 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   ArrowRight,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   Image as ImageIcon,
   Instagram,
@@ -90,14 +92,14 @@ const modelLabel = (model) => {
 };
 
 const modelCapacityLabel = (model) => {
-  const min = Number(model?.capacityMin || 0) || 0;
-  const max = Number(model?.capacityMax || 0) || 0;
+  const min = Number(model?.capacityMin || model?.capacity_min || 0) || 0;
+  const max = Number(model?.capacityMax || model?.capacity_max || 0) || 0;
   if (min > 0 && max > 0 && min !== max) return `${min}-${max} riders`;
   const seats = max || min || 1;
   return seats === 1 ? '1 rider' : `${seats} riders`;
 };
 
-const modelCardImage = (model) => normalizeVehicleImageUrl(model?.imageUrl);
+const modelCardImage = (model) => normalizeVehicleImageUrl(model?.imageUrl || model?.image_url);
 
 const getPreferredTourModel = (models = []) =>
   models.find((model) => modelCardImage(model)) || models[0] || null;
@@ -478,31 +480,37 @@ const TourModelPicker = ({
               </div>
             </div>
           )}
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/60 via-slate-950/10 to-transparent" />
-          <div className="absolute bottom-0 left-0 right-0 p-4 text-white">
-            <p className="text-xl font-black tracking-tight">{activeModel.label}</p>
-            <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-black uppercase tracking-[0.12em]">
-              <span className="rounded-full bg-white/18 px-2.5 py-1 backdrop-blur">{modelCapacityLabel(activeModel)}</span>
-              <span className="rounded-full bg-white/18 px-2.5 py-1 backdrop-blur">{formatMoney(activeModel.price)}</span>
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/20 via-slate-950/03 to-transparent" />
+          <div className="absolute bottom-0 left-0 right-0 p-4">
+            <p className="truncate text-xl font-black tracking-tight text-white [text-shadow:0_2px_10px_rgba(15,23,42,0.55)]">
+              {activeModel.label}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-black uppercase tracking-[0.12em] text-white">
+              <span className="rounded-full border border-white/22 bg-white/18 px-2.5 py-1 shadow-[0_10px_24px_rgba(15,23,42,0.14)] backdrop-blur-md">
+                {modelCapacityLabel(activeModel)}
+              </span>
+              <span className="rounded-full border border-white/22 bg-white/18 px-2.5 py-1 shadow-[0_10px_24px_rgba(15,23,42,0.14)] backdrop-blur-md">
+                {formatMoney(activeModel.price)}
+              </span>
             </div>
           </div>
           <button
             type="button"
             onClick={() => onSelectModel?.(models[Math.max(0, activeIndex - 1)]?.modelId)}
             disabled={activeIndex === 0}
-            className="absolute left-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-slate-700 shadow-sm transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="absolute left-3 top-1/2 inline-flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.16)] transition duration-150 ease-out hover:-translate-x-1 hover:-translate-y-1/2 hover:bg-violet-600 hover:text-white hover:shadow-[0_14px_32px_rgba(124,58,237,0.24)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:translate-x-0 disabled:hover:bg-violet-50 disabled:hover:text-violet-700"
             aria-label="Previous model"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft className="h-5 w-5" />
           </button>
           <button
             type="button"
             onClick={() => onSelectModel?.(models[Math.min(models.length - 1, activeIndex + 1)]?.modelId)}
             disabled={activeIndex === models.length - 1}
-            className="absolute right-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-slate-700 shadow-sm transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="absolute right-3 top-1/2 inline-flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.16)] transition duration-150 ease-out hover:translate-x-1 hover:-translate-y-1/2 hover:bg-violet-600 hover:text-white hover:shadow-[0_14px_32px_rgba(124,58,237,0.24)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:translate-x-0 disabled:hover:bg-violet-50 disabled:hover:text-violet-700"
             aria-label="Next model"
           >
-            <ArrowRight className="h-4 w-4" />
+            <ArrowRight className="h-5 w-5" />
           </button>
         </div>
 
@@ -516,10 +524,10 @@ const TourModelPicker = ({
               type="button"
               onClick={() => onDecrease?.(activeModel.modelId)}
               disabled={Number(selectedCounts?.[activeModel.modelId] || 0) <= 0}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-800 shadow-[0_10px_24px_rgba(15,23,42,0.10)] transition duration-150 ease-out hover:scale-[1.03] hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35 disabled:shadow-none"
               aria-label={`Remove ${activeModel.label}`}
             >
-              <Minus className="h-4 w-4" />
+              <Minus className="h-4 w-4 stroke-[2.5]" />
             </button>
             <div className="min-w-[56px] rounded-full bg-violet-700 px-4 py-2 text-center text-sm font-black text-white">
               {Number(selectedCounts?.[activeModel.modelId] || 0)}
@@ -527,10 +535,10 @@ const TourModelPicker = ({
             <button
               type="button"
               onClick={() => onIncrease?.(activeModel.modelId)}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 transition hover:bg-violet-100"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-violet-700 bg-white text-violet-700 shadow-[0_12px_28px_rgba(124,58,237,0.18)] transition duration-150 ease-out hover:scale-[1.03] hover:bg-violet-700 hover:text-white hover:shadow-[0_16px_34px_rgba(124,58,237,0.24)]"
               aria-label={`Add ${activeModel.label}`}
             >
-              <Plus className="h-4 w-4" />
+              <Plus className="h-4 w-4 stroke-[2.5]" />
             </button>
           </div>
         </div>
@@ -804,6 +812,8 @@ const Tours = () => {
   const [showAllTours, setShowAllTours] = useState(false);
   const [mediaTour, setMediaTour] = useState(null);
   const [mediaIndex, setMediaIndex] = useState(0);
+  const [bookingDetailsOpen, setBookingDetailsOpen] = useState(false);
+  const [contactInfoOpen, setContactInfoOpen] = useState(false);
   const [bookingForm, setBookingForm] = useState({
     date: '',
     time: '',
@@ -872,6 +882,7 @@ const Tours = () => {
   );
   const totalPrice = selectedModelMix.reduce((sum, model) => sum + (Number(model.price || 0) * Number(model.count || 0)), 0);
   const selectedModelSummary = selectedModelMix.map((model) => `${model.count} × ${model.label}`).join(' · ');
+  const bookingStickySummary = `${selectedQuadCount || 0} ${selectedQuadCount === 1 ? 'ATV' : 'ATVs'} • ${bookingForm.ridersCount || 1} ${Number(bookingForm.ridersCount || 1) === 1 ? 'Rider' : 'Riders'}`;
   const visibleTours = showAllTours ? tours : tours.slice(0, 2);
   const hiddenToursCount = Math.max(0, tours.length - visibleTours.length);
 
@@ -901,6 +912,8 @@ const Tours = () => {
     const preferredModel = getPreferredTourModel(tour.modelOptions);
     setSelectedPackageId(isSelected ? '' : tour.id);
     setActiveModelId(isSelected ? '' : preferredModel?.modelId || '');
+    setBookingDetailsOpen(false);
+    setContactInfoOpen(false);
     setBookingSuccess(null);
     setBookingForm((current) => ({
       ...current,
@@ -916,6 +929,21 @@ const Tours = () => {
   const handleSelectActiveModel = (modelId) => {
     if (!modelId) return;
     setActiveModelId(modelId);
+    setBookingForm((current) => {
+      const currentCounts = current.selectedModelCounts || {};
+      const totalSelected = Object.values(currentCounts).reduce((sum, count) => sum + Number(count || 0), 0);
+
+      if (totalSelected !== 1 || Number(currentCounts[modelId] || 0) > 0) {
+        return current;
+      }
+
+      return {
+        ...current,
+        selectedModelCounts: {
+          [modelId]: 1,
+        },
+      };
+    });
   };
 
   const handleIncreaseModel = (modelId) => {
@@ -963,11 +991,17 @@ const Tours = () => {
 
   const handleSubmit = async () => {
     if (!selectedTour || selectedModelMix.length === 0) {
-      toast.error('Choose a tour package first');
+      toast('Choose your tour and ATV mix to continue.', {
+        icon: 'i',
+      });
       return;
     }
     if (!bookingForm.date || !bookingForm.time || !bookingForm.customerName.trim() || !bookingForm.customerPhone.trim()) {
-      toast.error('Add date, time, name, and phone');
+      setBookingDetailsOpen(true);
+      setContactInfoOpen(true);
+      toast('Add your date, time, name, and WhatsApp to continue.', {
+        icon: 'i',
+      });
       return;
     }
 
@@ -1024,6 +1058,8 @@ const Tours = () => {
         customerEmail: '',
         notes: '',
       });
+      setBookingDetailsOpen(false);
+      setContactInfoOpen(false);
     } catch (error) {
       toast.error(error.message || 'Could not book this tour');
     } finally {
@@ -1096,7 +1132,7 @@ const Tours = () => {
                       toggleTourSelection(tour);
                     }
                   }}
-                  className={`relative cursor-pointer rounded-[32px] border bg-white p-6 shadow-[0_18px_45px_rgba(79,70,229,0.07)] transition duration-150 hover:scale-[1.005] hover:shadow-[0_22px_58px_rgba(79,70,229,0.12)] ${
+                  className={`relative cursor-pointer rounded-[32px] border bg-white p-6 shadow-[0_18px_45px_rgba(79,70,229,0.07)] transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.018] hover:shadow-[0_26px_64px_rgba(79,70,229,0.13)] active:translate-y-0 active:scale-[0.982] ${
                     selected ? 'border-violet-400 ring-4 ring-violet-100' : 'border-violet-100'
                   }`}
                 >
@@ -1177,7 +1213,7 @@ const Tours = () => {
                         )}
                       </div>
 
-                      <div className="rounded-[28px] border border-violet-100 bg-violet-50/60 p-5">
+                      <div className="rounded-[28px] border border-violet-100 bg-violet-50/60 p-5 pb-28 shadow-[0_18px_45px_rgba(79,70,229,0.07)]">
                         {bookingSuccess && String(selectedPackageId) === String(tour.id) ? (
                           <div className="space-y-4">
                             <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-600">Reservation received</p>
@@ -1289,16 +1325,16 @@ const Tours = () => {
                                     onIncrease={handleIncreaseModel}
                                     onDecrease={handleDecreaseModel}
                                   />
-                                  <div className="rounded-2xl border border-violet-100 bg-white px-4 py-4">
+                                  <div className="rounded-[20px] bg-white px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
                                     <div className="flex items-center justify-between gap-3">
-                                      <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Selected ATVs</p>
-                                      <span className="rounded-full bg-violet-50 px-3 py-1 text-[11px] font-black text-violet-700">
-                                        {selectedQuadCount} / {tour.maxQuads || 1}
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Total</p>
+                                        <p className="mt-1 text-xl font-black tracking-tight text-slate-950">{formatMoney(totalPrice)}</p>
+                                      </div>
+                                      <span className="shrink-0 rounded-full bg-violet-50 px-3 py-1 text-[11px] font-black text-violet-700">
+                                        {selectedQuadCount} / {tour.maxQuads || 1} ATVs
                                       </span>
                                     </div>
-                                    <p className="mt-2 text-sm font-black text-slate-950">
-                                      {selectedModelSummary || 'Choose at least one ATV model to continue.'}
-                                    </p>
                                   </div>
                                 </>
                               ) : (
@@ -1306,52 +1342,105 @@ const Tours = () => {
                                   Final model pricing is not configured yet for booking.
                                 </div>
                               )}
-                              <div className="grid grid-cols-2 gap-3">
-                                <input type="date" value={bookingForm.date} onChange={(event) => updateBooking('date', event.target.value)} className="rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300" />
-                                <input type="time" value={bookingForm.time} onChange={(event) => updateBooking('time', event.target.value)} className="rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300" />
-                              </div>
-                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                <div className="rounded-2xl border border-violet-100 bg-white px-4 py-3">
-                                  <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">ATVs</span>
-                                  <p className="mt-2 text-sm font-black text-slate-900">{selectedQuadCount || 0}</p>
+
+                              <div className="rounded-[20px] bg-white px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
+                                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Selection</p>
+                                <div className="mt-2 flex items-center justify-between gap-3">
+                                  <p className="min-w-0 truncate text-sm font-black text-slate-950">
+                                    {selectedModelSummary || 'No ATV selected yet'}
+                                  </p>
+                                  <span className="shrink-0 text-sm font-semibold text-slate-500">{bookingStickySummary}</span>
                                 </div>
-                                <label className="rounded-2xl border border-violet-100 bg-white px-4 py-3">
-                                  <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Riders</span>
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    max={maxRiderCapacity}
-                                    value={bookingForm.ridersCount}
-                                    onChange={(event) => updateBooking('ridersCount', clampRidersToCapacity(event.target.value, maxRiderCapacity))}
-                                    className="mt-2 w-full bg-transparent text-sm font-bold text-slate-900 outline-none"
-                                  />
-                                </label>
                               </div>
-                              <input value={bookingForm.customerName} onChange={(event) => updateBooking('customerName', event.target.value)} className="w-full rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300" placeholder="Full name" />
-                              <div className="rounded-2xl border border-violet-100 bg-white px-1 py-1">
-                                <PhoneInputWithCountryCode
-                                  value={bookingForm.customerPhone}
-                                  onChange={(value) => updateBooking('customerPhone', value)}
-                                  label="WhatsApp phone"
-                                />
+
+                              <div className="overflow-hidden rounded-[22px] bg-white shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+                                <button
+                                  type="button"
+                                  onClick={() => setBookingDetailsOpen((current) => !current)}
+                                  className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+                                >
+                                  <div>
+                                    <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Booking details</p>
+                                    <p className="mt-1 text-sm font-semibold text-slate-500">
+                                      {bookingForm.date || bookingForm.time
+                                        ? `${bookingForm.date || 'Choose date'}${bookingForm.time ? ` • ${bookingForm.time}` : ''}`
+                                        : 'Date, time, and riders'}
+                                    </p>
+                                  </div>
+                                  {bookingDetailsOpen ? <ChevronUp className="h-5 w-5 text-slate-500" /> : <ChevronDown className="h-5 w-5 text-slate-500" />}
+                                </button>
+                                {bookingDetailsOpen ? (
+                                  <div className="space-y-3 border-t border-slate-100 px-4 py-4">
+                                    <div className="grid grid-cols-2 gap-3">
+                                      <input type="date" value={bookingForm.date} onChange={(event) => updateBooking('date', event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300 focus:bg-white" />
+                                      <input type="time" value={bookingForm.time} onChange={(event) => updateBooking('time', event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300 focus:bg-white" />
+                                    </div>
+                                    <label className="block rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                                      <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Riders</span>
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        max={maxRiderCapacity}
+                                        value={bookingForm.ridersCount}
+                                        onChange={(event) => updateBooking('ridersCount', clampRidersToCapacity(event.target.value, maxRiderCapacity))}
+                                        className="mt-2 w-full bg-transparent text-sm font-bold text-slate-900 outline-none"
+                                      />
+                                    </label>
+                                  </div>
+                                ) : null}
                               </div>
-                              <input type="email" value={bookingForm.customerEmail} onChange={(event) => updateBooking('customerEmail', event.target.value)} className="w-full rounded-2xl border border-violet-100 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300" placeholder="Email optional" />
+
+                              <div className="overflow-hidden rounded-[22px] bg-white shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+                                <button
+                                  type="button"
+                                  onClick={() => setContactInfoOpen((current) => !current)}
+                                  className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+                                >
+                                  <div>
+                                    <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Contact info</p>
+                                    <p className="mt-1 text-sm font-semibold text-slate-500">
+                                      {bookingForm.customerName || bookingForm.customerPhone
+                                        ? `${bookingForm.customerName || 'Name'}${bookingForm.customerPhone ? ' • WhatsApp ready' : ''}`
+                                        : 'Name, WhatsApp, and optional email'}
+                                    </p>
+                                  </div>
+                                  {contactInfoOpen ? <ChevronUp className="h-5 w-5 text-slate-500" /> : <ChevronDown className="h-5 w-5 text-slate-500" />}
+                                </button>
+                                {contactInfoOpen ? (
+                                  <div className="space-y-3 border-t border-slate-100 px-4 py-4">
+                                    <input value={bookingForm.customerName} onChange={(event) => updateBooking('customerName', event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300 focus:bg-white" placeholder="Full name" />
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-1 py-1">
+                                      <PhoneInputWithCountryCode
+                                        value={bookingForm.customerPhone}
+                                        onChange={(value) => updateBooking('customerPhone', value)}
+                                        label="WhatsApp phone"
+                                      />
+                                    </div>
+                                    <input type="email" value={bookingForm.customerEmail} onChange={(event) => updateBooking('customerEmail', event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300 focus:bg-white" placeholder="Email optional" />
+                                  </div>
+                                ) : null}
+                              </div>
                             </div>
 
-                            <div className="mt-5 rounded-2xl bg-white px-4 py-4">
-                              <p className="text-xs font-black uppercase tracking-[0.22em] text-slate-400">Total</p>
-                              <p className="mt-1 text-3xl font-black text-slate-950">{formatMoney(totalPrice)}</p>
+                            <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)] sm:px-6 lg:absolute lg:bottom-5 lg:left-5 lg:right-5">
+                              <div className="pointer-events-auto rounded-[26px] border border-violet-200 bg-white/96 px-4 py-3 shadow-[0_-12px_30px_rgba(15,23,42,0.12)] backdrop-blur">
+                                <div className="flex items-center gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-sm font-black text-slate-950">{bookingStickySummary}</p>
+                                    <p className="mt-1 text-2xl font-black tracking-tight text-slate-950">{formatMoney(totalPrice)}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={handleSubmit}
+                                    disabled={!hasBookableModelPricing || submitting || selectedQuadCount <= 0}
+                                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-violet-700 px-5 py-3 text-sm font-black text-white shadow-[0_18px_35px_rgba(124,58,237,0.22)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                                  >
+                                    {submitting ? 'Sending...' : 'Book now'}
+                                    <ArrowRight className="h-4 w-4" />
+                                  </button>
+                                </div>
+                              </div>
                             </div>
-
-                            <button
-                              type="button"
-                              onClick={handleSubmit}
-                              disabled={!hasBookableModelPricing || submitting || selectedQuadCount <= 0}
-                              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-violet-700 px-5 py-4 text-sm font-black text-white shadow-[0_18px_35px_rgba(124,58,237,0.22)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-                            >
-                              {submitting ? 'Sending...' : 'Book now'}
-                              <ArrowRight className="h-4 w-4" />
-                            </button>
                           </>
                         )}
                       </div>

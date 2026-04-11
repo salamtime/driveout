@@ -128,6 +128,7 @@ const MarketplaceListingDetail = () => {
   const messages = Array.isArray(detail.messages) ? detail.messages : [];
   const history = Array.isArray(detail.moderationHistory) ? detail.moderationHistory : [];
   const quality = computeQuality(detail);
+  const currentListingStatus = String(detail.listingStatus || '').toLowerCase();
 
   const reload = async () => {
     const result = await MarketplaceAdminService.getListingDetail(listingId);
@@ -381,30 +382,36 @@ const MarketplaceListingDetail = () => {
               </div>
             </div>
             <div className="mt-6 space-y-3">
-              <button
-                type="button"
-                onClick={() => runAction('approve')}
-                disabled={Boolean(actionLoading)}
-                className="flex w-full items-center justify-center rounded-2xl bg-sky-600 px-4 py-3 text-sm font-bold text-white transition hover:bg-sky-700 disabled:opacity-60"
-              >
-                {actionLoading === 'approve' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : tr('Approve', 'Approuver')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalMode('request_changes')}
-                disabled={Boolean(actionLoading)}
-                className="flex w-full items-center justify-center rounded-2xl bg-amber-500 px-4 py-3 text-sm font-bold text-white transition hover:bg-amber-600 disabled:opacity-60"
-              >
-                {tr('Request changes', 'Demander des modifications')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalMode('reject')}
-                disabled={Boolean(actionLoading)}
-                className="flex w-full items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-bold text-white transition hover:bg-rose-700 disabled:opacity-60"
-              >
-                {tr('Reject', 'Refuser')}
-              </button>
+              {['pending_review', 'pending', 'draft', 'rejected'].includes(currentListingStatus) ? (
+                <button
+                  type="button"
+                  onClick={() => runAction('approve')}
+                  disabled={Boolean(actionLoading)}
+                  className="flex w-full items-center justify-center rounded-2xl bg-sky-600 px-4 py-3 text-sm font-bold text-white transition hover:bg-sky-700 disabled:opacity-60"
+                >
+                  {actionLoading === 'approve' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : tr('Approve', 'Approuver')}
+                </button>
+              ) : null}
+              {!['live', 'unpublished'].includes(currentListingStatus) ? (
+                <button
+                  type="button"
+                  onClick={() => setModalMode('request_changes')}
+                  disabled={Boolean(actionLoading)}
+                  className="flex w-full items-center justify-center rounded-2xl bg-amber-500 px-4 py-3 text-sm font-bold text-white transition hover:bg-amber-600 disabled:opacity-60"
+                >
+                  {tr('Request changes', 'Demander des modifications')}
+                </button>
+              ) : null}
+              {!['live', 'rejected'].includes(currentListingStatus) ? (
+                <button
+                  type="button"
+                  onClick={() => setModalMode('reject')}
+                  disabled={Boolean(actionLoading)}
+                  className="flex w-full items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-bold text-white transition hover:bg-rose-700 disabled:opacity-60"
+                >
+                  {tr('Reject', 'Refuser')}
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => setModalMode('message_owner')}
@@ -413,7 +420,7 @@ const MarketplaceListingDetail = () => {
               >
                 {tr('Message owner', 'Message proprietaire')}
               </button>
-              {detail.listingStatus === 'approved' ? (
+              {currentListingStatus === 'approved' ? (
                 <button
                   type="button"
                   onClick={() => runAction('publish')}
@@ -423,7 +430,15 @@ const MarketplaceListingDetail = () => {
                   {tr('Publish', 'Publier')}
                 </button>
               ) : null}
-              {detail.listingStatus === 'live' ? (
+              {currentListingStatus === 'approved' ? (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                  {tr(
+                    'Approved means moderation passed. Publish it to make it visible on the marketplace website.',
+                    "Approuvé signifie que la modération est validée. Publiez-le pour le rendre visible sur le site marketplace."
+                  )}
+                </div>
+              ) : null}
+              {currentListingStatus === 'live' ? (
                 <button
                   type="button"
                   onClick={() => runAction('unpublish')}
@@ -436,7 +451,7 @@ const MarketplaceListingDetail = () => {
               <Link to="/admin/marketplace" className="flex items-center justify-center rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700">
                 {tr('Back to review queue', 'Retour a la file de revue')}
               </Link>
-              {detail.listingStatus === 'live' ? (
+              {currentListingStatus === 'live' ? (
                 <Link to={`/marketplace/marketplace-${detail.id}`} className="flex items-center justify-center rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white transition hover:bg-emerald-700">
                   {tr('Open public listing', 'Ouvrir le listing public')}
                 </Link>

@@ -759,7 +759,7 @@ const PublicVehicleDetail = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_40%,#ffffff_100%)]">
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)]">
         <PublicSiteChrome current="rent" />
         <div className="px-6 py-10">
           <div className="mx-auto max-w-6xl animate-pulse">
@@ -798,7 +798,7 @@ const PublicVehicleDetail = () => {
 
   if (error || !currentListing) {
     return (
-      <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_40%,#ffffff_100%)]">
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)]">
         <PublicSiteChrome current="rent" />
         <div className="px-6 py-14">
           <div className="mx-auto max-w-4xl rounded-[32px] border border-rose-200 bg-rose-50 p-8 text-rose-700">
@@ -817,7 +817,7 @@ const PublicVehicleDetail = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_40%,#ffffff_100%)]">
+    <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)]">
       <PublicSiteChrome current="rent" />
       <div className="px-6 py-10">
       <div className="mx-auto max-w-6xl">

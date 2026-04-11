@@ -69,12 +69,12 @@ const Landing = () => {
               <Link
                 key={option.value}
                 to={option.value === 'rent' ? rentHref : toursHref}
-                className="group flex min-h-[156px] w-full items-center justify-between rounded-[24px] bg-white p-9 text-left shadow-[0_10px_30px_rgba(0,0,0,0.06)] transition duration-150 ease-out hover:scale-[1.01] hover:shadow-[0_16px_42px_rgba(15,23,42,0.10)] active:scale-[0.98] sm:p-10"
+                className="group flex min-h-[156px] w-full items-center justify-between rounded-[24px] bg-white p-9 text-left shadow-[0_10px_30px_rgba(0,0,0,0.06)] transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.018] hover:shadow-[0_22px_56px_rgba(15,23,42,0.12)] active:translate-y-0 active:scale-[0.982] sm:p-10"
               >
                 <span className="text-[42px] font-extrabold leading-none tracking-[-0.045em] text-slate-950 sm:text-[48px]">
                   {option.title}
                 </span>
-                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.16)] transition duration-150 ease-out group-hover:translate-x-1 group-hover:bg-violet-600 group-hover:text-white group-hover:shadow-[0_14px_32px_rgba(124,58,237,0.24)]">
+                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.16)] transition duration-200 ease-out group-hover:translate-x-1 group-hover:scale-[1.04] group-hover:bg-violet-600 group-hover:text-white group-hover:shadow-[0_16px_36px_rgba(124,58,237,0.26)]">
                   <ArrowRight className="h-5 w-5" />
                 </span>
               </Link>

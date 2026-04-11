@@ -543,7 +543,7 @@ const PublicInstantBooking = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_40%,#ffffff_100%)] px-4 py-4 pb-[148px] sm:px-6 sm:py-8 sm:pb-[200px]">
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)] px-4 py-4 pb-[148px] sm:px-6 sm:py-8 sm:pb-[200px]">
         <div className="mx-auto max-w-xl animate-pulse">
           <div className="mb-4 flex items-center justify-between">
             <div className="h-11 w-11 rounded-2xl border border-slate-200 bg-white" />
@@ -583,7 +583,7 @@ const PublicInstantBooking = () => {
 
   if (error && !listing) {
     return (
-      <div className="min-h-screen bg-slate-50 px-6 py-14">
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)] px-6 py-14">
         <div className="mx-auto max-w-3xl rounded-[32px] border border-rose-200 bg-rose-50 p-8 text-rose-700">
           <h1 className="text-2xl font-semibold text-rose-900">{tr('Booking unavailable', 'Réservation indisponible')}</h1>
           <p className="mt-3">{error}</p>
@@ -596,7 +596,7 @@ const PublicInstantBooking = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_40%,#ffffff_100%)] px-4 py-4 pb-[148px] sm:px-6 sm:py-8 sm:pb-[200px]">
+    <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)] px-4 py-4 pb-[148px] sm:px-6 sm:py-8 sm:pb-[200px]">
       <div className="mx-auto max-w-xl">
         <div className="mb-4 flex items-center justify-between">
           <button

@@ -2015,7 +2015,7 @@ const VehicleManagement: React.FC = () => {
 
       {/* Vehicle Modal - keeping existing implementation */}
       {showAddForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black bg-opacity-50 p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-screen overflow-y-auto">
             {/* Modal Header */}
             <div className="flex items-center justify-between p-6 border-b border-gray-200">
@@ -2620,7 +2620,7 @@ const VehicleManagement: React.FC = () => {
 
       {/* Add Model Modal */}
       {showAddModelForm && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm">
           <div className="w-full max-w-3xl rounded-[28px] border border-violet-100 bg-[linear-gradient(180deg,#f8f6ff_0%,#ffffff_28%)] shadow-[0_24px_60px_rgba(76,29,149,0.18)]">
             <div className="border-b border-violet-100 px-6 py-6">
               <p className="text-[11px] font-black uppercase tracking-[0.22em] text-violet-500">{tr('Vehicle Models', 'Modèles véhicule')}</p>

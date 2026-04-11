@@ -302,8 +302,10 @@ const AdminLayout = () => {
         onFocus={() => handleModuleIntent(module)}
         onTouchStart={() => handleModuleIntent(module)}
         onClick={() => {
+          if (shouldShowHamburger) {
+            setSidebarOpen(false);
+          }
           navigate(module.path);
-          if (shouldShowHamburger) setSidebarOpen(false);
         }}
         className={`
           group relative w-full overflow-hidden rounded-2xl border px-3.5 py-3 text-left transition-all duration-200
@@ -677,7 +679,7 @@ const AdminLayout = () => {
     <div className="min-h-screen bg-slate-50 flex">
       {shouldShowHamburger && sidebarOpen && (
         <div 
-          className="fixed inset-0 z-40 bg-slate-950/45 backdrop-blur-[2px]"
+          className="fixed inset-0 z-[9999] bg-slate-950/45 backdrop-blur-[2px]"
           onClick={() => setSidebarOpen(false)}
         />
       )}
@@ -687,7 +689,7 @@ const AdminLayout = () => {
           ? 'static'
           : 'fixed'
         }
-        inset-y-0 left-0 z-50 w-[19rem] transform transition-transform duration-300 ease-in-out
+        inset-y-0 left-0 z-[10000] w-[19rem] transform transition-transform duration-300 ease-in-out
         flex flex-col h-full
         ${shouldShowHamburger 
           ? (sidebarOpen ? 'translate-x-0' : '-translate-x-full')

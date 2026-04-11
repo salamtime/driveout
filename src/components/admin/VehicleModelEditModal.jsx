@@ -75,7 +75,7 @@ const VehicleModelEditModal = ({ vehicleModel, isOpen, onClose, onSave, onError 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[140] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm">
       <div className="max-h-screen w-full max-w-3xl overflow-y-auto rounded-[28px] border border-violet-100 bg-[linear-gradient(180deg,#f8f6ff_0%,#ffffff_28%)] shadow-[0_24px_60px_rgba(76,29,149,0.18)]">
         <div className="flex items-center justify-between border-b border-violet-100 px-6 py-6">
           <div>

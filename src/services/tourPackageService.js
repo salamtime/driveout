@@ -34,6 +34,21 @@ const sanitizePackagePayload = (tourPackage = {}) => {
   return payload;
 };
 
+const normalizeVehicleModel = (model = {}) => ({
+  ...model,
+  id: String(model.id || ''),
+  name: String(model.name || '').trim(),
+  model: String(model.model || '').trim(),
+  vehicleType: String(model.vehicleType || model.vehicle_type || '').trim(),
+  vehicle_type: String(model.vehicle_type || model.vehicleType || '').trim(),
+  imageUrl: String(model.imageUrl || model.image_url || '').trim(),
+  image_url: String(model.image_url || model.imageUrl || '').trim(),
+  capacityMin: Number(model.capacityMin || model.capacity_min || 0) || 0,
+  capacity_max: Number(model.capacity_max || model.capacityMax || 0) || 0,
+  capacityMax: Number(model.capacityMax || model.capacity_max || 0) || 0,
+  capacity_min: Number(model.capacity_min || model.capacityMin || 0) || 0,
+});
+
 /**
  * Fetch all active tour packages
  * @returns {Promise<{data: Array|null, error: Error|null}>}
@@ -61,7 +76,7 @@ export const fetchTourPackages = async () => {
     return {
       data: packages,
       pricingRows: Array.isArray(payload?.pricingRows) ? payload.pricingRows : [],
-      vehicleModels: Array.isArray(payload?.vehicleModels) ? payload.vehicleModels : [],
+      vehicleModels: Array.isArray(payload?.vehicleModels) ? payload.vehicleModels.map(normalizeVehicleModel) : [],
       error: null,
     };
   } catch (apiError) {

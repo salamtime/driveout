@@ -124,6 +124,21 @@ const createLocalApiPlugin = () => ({
           return `/tour-bookings?${nextQuery.toString()}`
         }
 
+        if (normalizedPath === '/public-catalog') {
+          nextQuery.set('resource', 'public-catalog')
+          return `/public-links?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/public-pricing') {
+          nextQuery.set('resource', 'public-pricing')
+          return `/public-links?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/public-bookings') {
+          nextQuery.set('resource', 'public-bookings')
+          return `/public-links?${nextQuery.toString()}`
+        }
+
         if (normalizedPath === '/document-shares/create') {
           nextQuery.set('action', 'create')
           return `/document-shares?${nextQuery.toString()}`
@@ -243,6 +258,23 @@ const createLocalApiPlugin = () => ({
       const mockRes = {
         status(code) { statusCode = code; return mockRes },
         setHeader(name, value) { if (!res.headersSent) res.setHeader(name, value); return mockRes },
+        end(body = '') {
+          if (!res.headersSent) {
+            res.statusCode = statusCode
+            res.end(body)
+          }
+        },
+        send(body = '') {
+          if (!res.headersSent) {
+            res.statusCode = statusCode
+            if (typeof body === 'object' && body !== null) {
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify(body))
+              return
+            }
+            res.end(String(body))
+          }
+        },
         json(body) {
           if (!res.headersSent) {
             res.statusCode = statusCode
