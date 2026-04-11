@@ -80,10 +80,8 @@ const VehicleGridView: React.FC<VehicleGridViewProps> = ({
         (() => {
           const displayImageUrl = normalizeVehicleImageUrl(vehicle.image_url);
           return (
-        <button
+        <article
           key={vehicle.id}
-          type="button"
-          onClick={() => onView(vehicle)}
           className="w-full overflow-hidden rounded-lg border border-gray-200 bg-white text-left shadow-md transition-shadow hover:shadow-lg"
         >
           <div className="relative">
@@ -221,7 +219,7 @@ const VehicleGridView: React.FC<VehicleGridViewProps> = ({
               </div>
             )}
           </div>
-        </button>
+        </article>
           );
         })()
       ))}

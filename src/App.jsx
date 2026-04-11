@@ -433,6 +433,48 @@ const getModuleLoadingMeta = (pathname) => {
 
 const RouteLoadingFallback = () => {
   const location = useLocation();
+  const isPublicStorefrontPath = [
+    '/',
+    '/website',
+    '/rent',
+    '/rentals',
+    '/marketplace',
+    '/tours',
+    '/tour-booking',
+    '/rental-booking',
+  ].some((path) => location.pathname === path || location.pathname.startsWith(`${path}/`));
+
+  if (isPublicStorefrontPath) {
+    return (
+      <div className="min-h-screen bg-[linear-gradient(180deg,#F5F3FF_0%,#ECE9FF_100%)] text-slate-950">
+        <div className="min-h-[76px]" />
+        <section className="min-h-[calc(100vh-76px)] px-5 py-14 sm:px-6 sm:py-20">
+          <div className="mx-auto flex max-w-[620px] flex-col items-center">
+            <div className="text-center">
+              <div className="h-12 w-64 animate-pulse rounded-2xl bg-white/70 shadow-[0_10px_24px_rgba(15,23,42,0.06)] sm:h-16 sm:w-80" />
+              <div className="mt-6 inline-flex items-center justify-center gap-3 rounded-full bg-white/80 px-5 py-3 shadow-sm ring-1 ring-violet-100">
+                <div className="h-4 w-20 animate-pulse rounded-full bg-slate-200" />
+                <div className="h-4 w-16 animate-pulse rounded-full bg-violet-100" />
+              </div>
+            </div>
+
+            <div className="mt-14 grid w-full gap-5">
+              {[0, 1].map((item) => (
+                <div
+                  key={item}
+                  className="flex min-h-[156px] w-full items-center justify-between rounded-[24px] bg-white p-9 shadow-[0_10px_30px_rgba(0,0,0,0.06)] sm:p-10"
+                >
+                  <div className="h-12 w-36 animate-pulse rounded-2xl bg-slate-100 sm:h-14 sm:w-40" />
+                  <div className="h-12 w-12 animate-pulse rounded-full bg-violet-100" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   const meta = getModuleLoadingMeta(location.pathname);
   const Icon = meta.icon;
 

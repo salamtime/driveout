@@ -483,6 +483,9 @@ const normalizeVehicleModel = (model = {}) => ({
   name: String(model.name || '').trim(),
   model: String(model.model || '').trim(),
   vehicle_type: String(model.vehicle_type || '').trim(),
+  image_url: String(model.image_url || '').trim(),
+  capacity_min: Number(model.capacity_min || 0) || null,
+  capacity_max: Number(model.capacity_max || model.capacity || 0) || null,
 });
 
 export const readTourPackagePricingContext = async (adminClient) => {
@@ -496,7 +499,7 @@ export const readTourPackagePricingContext = async (adminClient) => {
       .order('duration_hours', { ascending: true }),
     adminClient
       .from(VEHICLE_MODELS_TABLE)
-      .select('id,name,model,vehicle_type')
+      .select('id,name,model,vehicle_type,image_url,capacity_min,capacity_max')
       .order('name', { ascending: true }),
   ]);
 

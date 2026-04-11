@@ -904,6 +904,11 @@ export const AuthProvider = ({ children }) => {
   }, [session, loadUserProfile]);
 
   const getBusinessOwnerHomePath = useCallback((metadata = null) => {
+    const normalizedEmail = String(userProfile?.email || session?.user?.email || '').trim().toLowerCase();
+    if (isPlatformOwnerEmail(normalizedEmail)) {
+      return null;
+    }
+
     const profileMetadata = metadata || {
       account_type: userProfile?.accountType || session?.user?.user_metadata?.account_type || session?.user?.app_metadata?.account_type,
       verification_status: userProfile?.verificationStatus || session?.user?.user_metadata?.verification_status || session?.user?.app_metadata?.verification_status,
@@ -937,9 +942,11 @@ export const AuthProvider = ({ children }) => {
     session?.user?.user_metadata?.verification_status,
     tenantSession?.workspaceState,
     tenantSession?.workspace_state,
+    userProfile?.email,
     userProfile?.accountType,
     userProfile?.subscriptionStatus,
     userProfile?.verificationStatus,
+    session?.user?.email,
   ]);
 
   const getUserRole = useCallback(() => {

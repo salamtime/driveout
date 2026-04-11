@@ -193,9 +193,27 @@ const createMediaItem = (index = 0, type = 'image') => ({
 });
 
 const getPreviewMediaItems = (pkg = {}, limit = 3) => {
+  const coverImageUrl = String(pkg.coverImageUrl || '').trim();
+  const galleryItems = Array.isArray(pkg.mediaGallery) ? pkg.mediaGallery : [];
+  const coverGalleryItem = galleryItems.find((item) => {
+    const itemUrl = String(item?.url || '').trim();
+    const itemThumbnail = String(item?.thumbnailUrl || item?.thumbnail_url || '').trim();
+    return coverImageUrl && (itemUrl === coverImageUrl || itemThumbnail === coverImageUrl);
+  });
+
+  const normalizedGalleryItems = galleryItems.filter((item) => item !== coverGalleryItem);
   const media = [
-    ...(pkg.coverImageUrl ? [{ url: pkg.coverImageUrl, thumbnailUrl: pkg.coverImageUrl, type: 'image', caption: pkg.publicTitle || pkg.name }] : []),
-    ...(Array.isArray(pkg.mediaGallery) ? pkg.mediaGallery : []),
+    ...(coverImageUrl
+      ? [{
+        ...(coverGalleryItem || {}),
+        url: coverGalleryItem?.url || coverImageUrl,
+        thumbnailUrl: coverGalleryItem?.thumbnailUrl || coverGalleryItem?.thumbnail_url || coverImageUrl,
+        type: coverGalleryItem?.type || 'image',
+        caption: coverGalleryItem?.caption || pkg.publicTitle || pkg.name,
+        isMainCover: true,
+      }]
+      : []),
+    ...normalizedGalleryItems,
   ]
     .map((item) => ({
       ...item,
@@ -672,6 +690,21 @@ const TourPackagesWorkspace = () => {
     return savedPackage;
   };
 
+  const applyPackageFormUpdate = async (updater, successMessage = 'Package updated') => {
+    const nextForm = typeof updater === 'function' ? updater(packageForm) : updater;
+    setPackageForm(nextForm);
+
+    if (!editingPackageId) {
+      if (successMessage) {
+        toast.success(successMessage);
+      }
+      return nextForm;
+    }
+
+    await persistPackageForm(nextForm, successMessage);
+    return nextForm;
+  };
+
   const handleCompleteMediaEditor = async () => {
     if (activeMediaEditorIndex === null) return;
 
@@ -686,10 +719,11 @@ const TourPackagesWorkspace = () => {
       return;
     }
 
-    if (currentItem.type === 'instagram' && editingPackageId) {
+    if (editingPackageId) {
       setMediaResolving(true);
       try {
-        const savedPackage = await persistPackageForm(packageForm, 'Instagram preview parsed');
+        const saveMessage = currentItem.type === 'instagram' ? 'Instagram preview parsed' : 'Media entry saved';
+        const savedPackage = await persistPackageForm(packageForm, saveMessage);
         if (savedPackage) {
           const resolvedMedia = Array.isArray(savedPackage.mediaGallery) ? savedPackage.mediaGallery : [];
           const resolvedIndex = resolvedMedia.findIndex((item) => String(item.id) === String(currentItem.id));
@@ -706,6 +740,7 @@ const TourPackagesWorkspace = () => {
       }
     } else {
       setActiveMediaEditorIndex(null);
+      toast.success(currentItem.type === 'instagram' ? 'Instagram entry ready' : 'Media entry ready');
     }
   };
 
@@ -1467,12 +1502,58 @@ const TourPackagesWorkspace = () => {
                       onChange={(event) => handleMediaFiles(event.target.files)}
                     />
                     <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-                      <label className="text-sm font-semibold text-slate-700">Cover image URL</label>
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <label className="text-sm font-semibold text-slate-700">Cover image URL</label>
+                          <p className="mt-1 text-xs font-medium text-slate-500">This is the image used first on the website card.</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await applyPackageFormUpdate(
+                                (prev) => ({ ...prev, coverImageUrl: '' }),
+                                'Main preview cleared'
+                              );
+                            }}
+                            disabled={!packageForm.coverImageUrl}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Clear preview
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const firstGalleryItem = (packageForm.mediaGallery || []).find((item) => item?.thumbnailUrl || item?.url);
+                              if (!firstGalleryItem) return;
+                              await applyPackageFormUpdate(
+                                (prev) => ({
+                                  ...prev,
+                                  coverImageUrl: firstGalleryItem.thumbnailUrl || firstGalleryItem.url || '',
+                                }),
+                                'Main preview updated'
+                              );
+                            }}
+                            disabled={!packageForm.mediaGallery?.some((item) => item?.thumbnailUrl || item?.url)}
+                            className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Use first media
+                          </button>
+                        </div>
+                      </div>
                       <input
                         type="url"
                         value={packageForm.coverImageUrl}
                         onChange={(event) => setPackageForm((prev) => ({ ...prev, coverImageUrl: event.target.value }))}
-                        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
+                        onBlur={async () => {
+                          if (editingPackageId) {
+                            await applyPackageFormUpdate(
+                              (prev) => ({ ...prev, coverImageUrl: String(prev.coverImageUrl || '').trim() }),
+                              'Main cover updated'
+                            );
+                          }
+                        }}
+                        className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
                         placeholder="https://..."
                       />
                     </div>
@@ -1520,23 +1601,32 @@ const TourPackagesWorkspace = () => {
                             {getPreviewMediaItems(packageForm, MAX_PUBLIC_TOUR_MEDIA_ITEMS).map((item, index) => (
                               <div
                                 key={`website-media-inline-${item.previewUrl || item.url}-${index}`}
-                                className="group relative h-24 w-24 overflow-hidden rounded-2xl border border-violet-100 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
+                                className="flex flex-col gap-1.5"
                               >
-                                {item.type === 'video' ? (
-                                  <video src={item.url} muted playsInline className="h-full w-full object-cover" />
-                                ) : item.type === 'instagram' && item.thumbnailUrl ? (
-                                  <img src={item.thumbnailUrl} alt={item.caption || 'Instagram preview'} className="h-full w-full object-cover" />
-                                ) : item.type === 'instagram' ? (
-                                  <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(180deg,#fde7ff_0%,#ede9fe_100%)]">
-                                    <Instagram className="h-5 w-5 text-fuchsia-700" />
-                                  </div>
-                                ) : (
-                                  <img src={item.previewUrl || item.url} alt={item.caption || packageForm.name || 'Tour media'} className="h-full w-full object-cover" />
-                                )}
-                                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/70 to-transparent px-2 pb-2 pt-6">
-                                  <p className="truncate text-[10px] font-bold text-white">
-                                    {item.caption || (item.type === 'video' ? 'Video preview' : item.type === 'instagram' ? 'Instagram preview' : `Media ${index + 1}`)}
+                                {item.isMainCover ? (
+                                  <p className="pl-1 text-[10px] font-black uppercase tracking-[0.14em] text-violet-700">
+                                    Main cover
                                   </p>
+                                ) : (
+                                  <div className="h-[14px]" aria-hidden="true" />
+                                )}
+                                <div className="group relative h-24 w-24 overflow-hidden rounded-2xl border border-violet-100 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+                                  {item.type === 'video' ? (
+                                    <video src={item.url} muted playsInline className="h-full w-full object-cover" />
+                                  ) : item.type === 'instagram' && item.thumbnailUrl ? (
+                                    <img src={item.thumbnailUrl} alt={item.caption || 'Instagram preview'} className="h-full w-full object-cover" />
+                                  ) : item.type === 'instagram' ? (
+                                    <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(180deg,#fde7ff_0%,#ede9fe_100%)]">
+                                      <Instagram className="h-5 w-5 text-fuchsia-700" />
+                                    </div>
+                                  ) : (
+                                    <img src={item.previewUrl || item.url} alt={item.caption || packageForm.name || 'Tour media'} className="h-full w-full object-cover" />
+                                  )}
+                                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/70 to-transparent px-2 pb-2 pt-6">
+                                    <p className="truncate text-[10px] font-bold text-white">
+                                      {item.caption || (item.type === 'video' ? 'Video preview' : item.type === 'instagram' ? 'Instagram preview' : `Media ${index + 1}`)}
+                                    </p>
+                                  </div>
                                 </div>
                               </div>
                             ))}
@@ -1586,18 +1676,21 @@ const TourPackagesWorkspace = () => {
                               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    setPackageForm((prev) => ({
-                                      ...prev,
-                                      coverImageUrl:
-                                        prev.mediaGallery[activeMediaEditorIndex]?.thumbnailUrl ||
-                                        prev.mediaGallery[activeMediaEditorIndex]?.url ||
-                                        prev.coverImageUrl,
-                                    }))
-                                  }
+                                  onClick={async () => {
+                                    await applyPackageFormUpdate(
+                                      (prev) => ({
+                                        ...prev,
+                                        coverImageUrl:
+                                          prev.mediaGallery[activeMediaEditorIndex]?.thumbnailUrl ||
+                                          prev.mediaGallery[activeMediaEditorIndex]?.url ||
+                                          prev.coverImageUrl,
+                                      }),
+                                      'Main cover updated'
+                                    );
+                                  }}
                                   className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100"
                                 >
-                                  Main preview
+                                  Main cover
                                 </button>
                                 <button
                                   type="button"
@@ -1607,7 +1700,7 @@ const TourPackagesWorkspace = () => {
                                 >
                                   {mediaResolving
                                     ? 'Parsing...'
-                                    : packageForm.mediaGallery[activeMediaEditorIndex]?.type === 'instagram' && editingPackageId
+                                    : packageForm.mediaGallery[activeMediaEditorIndex]?.type === 'instagram'
                                       ? 'Save & parse'
                                       : 'Done'}
                                 </button>
@@ -1708,29 +1801,38 @@ const TourPackagesWorkspace = () => {
                             <div className="mt-4 grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
                               <button
                                 type="button"
-                                onClick={() =>
-                                  setPackageForm((prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, activeMediaEditorIndex, -1) }))
-                                }
+                                onClick={async () => {
+                                  await applyPackageFormUpdate(
+                                    (prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, activeMediaEditorIndex, -1) }),
+                                    'Media order updated'
+                                  );
+                                }}
                                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600"
                               >
                                 Up
                               </button>
                               <button
                                 type="button"
-                                onClick={() =>
-                                  setPackageForm((prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, activeMediaEditorIndex, 1) }))
-                                }
+                                onClick={async () => {
+                                  await applyPackageFormUpdate(
+                                    (prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, activeMediaEditorIndex, 1) }),
+                                    'Media order updated'
+                                  );
+                                }}
                                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600"
                               >
                                 Down
                               </button>
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setPackageForm((prev) => ({
-                                    ...prev,
-                                    mediaGallery: prev.mediaGallery.filter((_, itemIndex) => itemIndex !== activeMediaEditorIndex),
-                                  }));
+                                onClick={async () => {
+                                  await applyPackageFormUpdate(
+                                    (prev) => ({
+                                      ...prev,
+                                      mediaGallery: prev.mediaGallery.filter((_, itemIndex) => itemIndex !== activeMediaEditorIndex),
+                                    }),
+                                    'Media removed'
+                                  );
                                   setActiveMediaEditorIndex(null);
                                 }}
                                 className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600"
@@ -1789,16 +1891,19 @@ const TourPackagesWorkspace = () => {
                                   </span>
                                   <button
                                     type="button"
-                                    onClick={(event) => {
+                                    onClick={async (event) => {
                                       event.stopPropagation();
-                                      setPackageForm((prev) => ({
-                                        ...prev,
-                                        coverImageUrl: media.thumbnailUrl || media.url || prev.coverImageUrl,
-                                      }));
+                                      await applyPackageFormUpdate(
+                                        (prev) => ({
+                                          ...prev,
+                                          coverImageUrl: media.thumbnailUrl || media.url || prev.coverImageUrl,
+                                        }),
+                                        'Main cover updated'
+                                      );
                                     }}
                                     className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-bold text-violet-700"
                                   >
-                                    Main preview
+                                    Main cover
                                   </button>
                                 </div>
                               </div>

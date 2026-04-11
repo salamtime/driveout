@@ -41,13 +41,16 @@ const ProtectedRoute = ({
   const tr = (en, fr) => (isFrench ? fr : en);
   const location = useLocation();
   const normalizedEmail = (userProfile?.email || user?.email || '').toLowerCase();
+  const platformOwnerOverride = normalizedEmail === 'salamtime2016@gmail.com';
   const effectiveRole =
-    normalizedEmail === 'salamtime2016@gmail.com'
+    platformOwnerOverride
       ? 'owner'
       : userProfile?.role;
   const businessOwnerLike =
-    effectiveRole === 'business_owner' ||
-    isBusinessOwnerAccountType(userProfile?.accountType);
+    !platformOwnerOverride && (
+      effectiveRole === 'business_owner' ||
+      isBusinessOwnerAccountType(userProfile?.accountType)
+    );
   const businessOwnerFreezeRedirect = businessOwnerLike
     ? getBusinessOwnerHomePath({
         account_type: userProfile?.accountType,

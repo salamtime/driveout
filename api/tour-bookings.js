@@ -56,6 +56,17 @@ const normalizeDuration = (value) => {
   return Number.isFinite(duration) && duration > 0 ? Number(duration.toFixed(1)) : 1;
 };
 
+const normalizeSelectedModelMix = (value = []) => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      modelId: String(item?.modelId || item?.vehicleModelId || item?.vehicle_model_id || '').trim(),
+      label: String(item?.label || item?.vehicleModelLabel || item?.vehicle_model_label || '').trim(),
+      count: Math.max(0, Number(item?.count || 0) || 0),
+    }))
+    .filter((item) => item.modelId && item.count > 0);
+};
+
 const normalizeBookingRow = (row = {}) => ({
   ...row,
   id: String(row.id || createBookingId()),
@@ -211,16 +222,27 @@ const getPublicTourPrice = async (adminClient, { packageId, vehicleModelId, dura
 const createPublicTourBooking = async (body = {}) => {
   const packageId = String(body.packageId || body.package_id || '').trim();
   const vehicleModelId = String(body.vehicleModelId || body.vehicle_model_id || '').trim();
+  const requestedMix = normalizeSelectedModelMix(body.selectedModelMix || body.selected_model_mix);
   const date = String(body.date || '').trim();
   const time = String(body.time || '').trim();
   const customerName = String(body.customerName || body.customer_name || '').trim();
   const customerPhone = String(body.customerPhone || body.customer_phone || body.phone || '').trim();
   const customerEmail = String(body.customerEmail || body.customer_email || '').trim();
-  const quadCount = Math.max(1, Math.min(12, Number(body.quadCount || body.quad_count || 1) || 1));
+  const fallbackQuadCount = Math.max(1, Math.min(12, Number(body.quadCount || body.quad_count || 1) || 1));
+  const selectedModelMix = requestedMix.length > 0
+    ? requestedMix
+    : vehicleModelId
+      ? [{
+          modelId: vehicleModelId,
+          label: String(body.vehicleModelLabel || body.vehicle_model_label || 'Selected model'),
+          count: fallbackQuadCount,
+        }]
+      : [];
+  const quadCount = Math.max(1, Math.min(12, selectedModelMix.reduce((sum, item) => sum + Number(item.count || 0), 0) || fallbackQuadCount));
   const ridersCount = Math.max(quadCount, Number(body.ridersCount || body.riders_count || quadCount) || quadCount);
 
-  if (!packageId || !vehicleModelId || !date || !time || !customerName || !customerPhone) {
-    return { status: 400, body: { error: 'Package, model, date, time, name, and phone are required' } };
+  if (!packageId || selectedModelMix.length === 0 || !date || !time || !customerName || !customerPhone) {
+    return { status: 400, body: { error: 'Package, model mix, date, time, name, and phone are required' } };
   }
 
   const scheduledStart = new Date(`${date}T${time}:00`);
@@ -242,14 +264,25 @@ const createPublicTourBooking = async (body = {}) => {
   }
 
   const durationHours = normalizeDuration(packageRow.duration || body.durationHours || body.duration_hours || 1);
-  const unitPrice = await getPublicTourPrice(adminClient, {
-    packageId,
-    vehicleModelId,
-    durationHours,
-  });
+  const pricedModelMix = [];
+  for (const item of selectedModelMix) {
+    const unitPrice = await getPublicTourPrice(adminClient, {
+      packageId,
+      vehicleModelId: item.modelId,
+      durationHours,
+    });
 
-  if (!(unitPrice > 0)) {
-    return { status: 409, body: { error: 'Tour pricing is not configured for this model and package' } };
+    if (!(unitPrice > 0)) {
+      return { status: 409, body: { error: `Tour pricing is not configured for ${item.label || 'this model'} and package` } };
+    }
+
+    pricedModelMix.push({
+      modelId: item.modelId,
+      label: item.label || 'Selected model',
+      count: item.count,
+      unitPrice,
+      lineTotal: unitPrice * item.count,
+    });
   }
 
   const scheduledEnd = new Date(scheduledStart.getTime() + durationHours * 60 * 60 * 1000);
@@ -258,7 +291,7 @@ const createPublicTourBooking = async (body = {}) => {
   const blockingStart = new Date(scheduledStart.getTime() - bufferBeforeMinutes * 60 * 1000);
   const blockingEnd = new Date(scheduledEnd.getTime() + bufferAfterMinutes * 60 * 1000);
   const groupId = `WEB-TOUR-${Date.now().toString(36).toUpperCase()}`;
-  const totalAmount = unitPrice * quadCount;
+  const totalAmount = pricedModelMix.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
   const now = new Date().toISOString();
 
   const metadata = {
@@ -281,39 +314,37 @@ const createPublicTourBooking = async (body = {}) => {
     customerEmail,
     packageLocation: packageRow.location || '',
     assignmentMode: 'assign_on_arrival',
-    selectedModelMix: [{
-      modelId: vehicleModelId,
-      label: String(body.vehicleModelLabel || body.vehicle_model_label || 'Selected model'),
-      count: quadCount,
-      unitPrice,
-      lineTotal: totalAmount,
-    }],
+    selectedModelMix: pricedModelMix,
     publicNotes: String(body.notes || '').trim(),
     createdAt: now,
   };
 
   const notes = `${String(body.notes || '').trim()}\n\n${TOUR_BOOKING_MARKER}${JSON.stringify(metadata)}`.trim();
-  const rows = Array.from({ length: quadCount }, () => ({
-    customer_name: customerName,
-    customer_email: customerEmail,
-    phone: customerPhone,
-    vehicle_id: null,
-    rental_start_date: blockingStart.toISOString(),
-    rental_end_date: blockingEnd.toISOString(),
-    rental_status: 'scheduled',
-    payment_status: 'unpaid',
-    total_amount: unitPrice,
-    remaining_amount: unitPrice,
-    package_id: packageId,
-    package_name: packageRow.name,
-    scheduled_for: scheduledStart.toISOString(),
-    scheduled_end_at: scheduledEnd.toISOString(),
-    scheduled_date: date,
-    scheduled_time: time,
-    notes,
-    created_at: now,
-    updated_at: now,
-  }));
+  const rows = pricedModelMix.flatMap((item) =>
+    Array.from({ length: item.count }, () => ({
+      customer_name: customerName,
+      customer_email: customerEmail,
+      phone: customerPhone,
+      vehicle_id: null,
+      vehicle_model_id: item.modelId,
+      vehicle_model_label: item.label,
+      rental_start_date: blockingStart.toISOString(),
+      rental_end_date: blockingEnd.toISOString(),
+      rental_status: 'scheduled',
+      payment_status: 'unpaid',
+      total_amount: item.unitPrice,
+      remaining_amount: item.unitPrice,
+      package_id: packageId,
+      package_name: packageRow.name,
+      scheduled_for: scheduledStart.toISOString(),
+      scheduled_end_at: scheduledEnd.toISOString(),
+      scheduled_date: date,
+      scheduled_time: time,
+      notes,
+      created_at: now,
+      updated_at: now,
+    }))
+  );
 
   const createdRows = await insertBookings(adminClient, rows);
   return {

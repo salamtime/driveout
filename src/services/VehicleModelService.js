@@ -13,6 +13,25 @@ class VehicleModelService {
   static cache = new Map();
   static cacheTimestamps = new Map();
   static connectionTested = false;
+  static MODEL_SELECT_COLUMNS = 'id, name, model, vehicle_type, description, image_url, power_cc_min, power_cc_max, capacity_min, capacity_max, features, tank_capacity_liters, is_active';
+  static MODEL_SELECT_COLUMNS_FALLBACK = 'id, name, model, vehicle_type, description, image_url, power_cc_min, power_cc_max, capacity_min, capacity_max, features, is_active';
+  static MODEL_SELECT_COLUMNS_MINIMAL = 'id, name, model, vehicle_type, description, power_cc_min, power_cc_max, capacity_min, capacity_max, features, is_active';
+
+  static async selectVehicleModels(buildQuery, operation) {
+    let result = await this.executeWithTimeout(buildQuery(this.MODEL_SELECT_COLUMNS), operation);
+    const primaryError = result?.error;
+
+    if (primaryError && `${primaryError.message || ''}`.toLowerCase().includes('tank_capacity_liters')) {
+      result = await this.executeWithTimeout(buildQuery(this.MODEL_SELECT_COLUMNS_FALLBACK), operation);
+    }
+
+    const secondaryError = result?.error;
+    if (secondaryError && `${secondaryError.message || ''}`.toLowerCase().includes('image_url')) {
+      result = await this.executeWithTimeout(buildQuery(this.MODEL_SELECT_COLUMNS_MINIMAL), operation);
+    }
+
+    return result;
+  }
 
   /**
    * Check if cached data is still valid
@@ -122,14 +141,16 @@ class VehicleModelService {
 
       console.log('🚀 VehicleModelService: Fetching active models with enhanced error handling...');
       
-      const queryPromise = supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('id, name, model, vehicle_type, is_active')
-        .eq('is_active', true)
-        .order('name', { ascending: true })
-        .limit(50); // Increased limit
-
-      const { data, error } = await this.executeWithTimeout(queryPromise, 'getActiveModels');
+      const { data, error } = await this.selectVehicleModels(
+        (columns) =>
+          supabase
+            .from('saharax_0u4w4d_vehicle_models')
+            .select(columns)
+            .eq('is_active', true)
+            .order('name', { ascending: true })
+            .limit(50),
+        'getActiveModels'
+      );
 
       if (error) {
         console.error('❌ VehicleModelService: Error fetching active models:', error);
@@ -164,13 +185,15 @@ class VehicleModelService {
 
       console.log('🚀 VehicleModelService: Fetching all models with enhanced error handling...');
       
-      const queryPromise = supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('id, name, model, vehicle_type, is_active')
-        .order('name', { ascending: true })
-        .limit(100); // Increased limit
-
-      const { data, error } = await this.executeWithTimeout(queryPromise, 'getAllModels');
+      const { data, error } = await this.selectVehicleModels(
+        (columns) =>
+          supabase
+            .from('saharax_0u4w4d_vehicle_models')
+            .select(columns)
+            .order('name', { ascending: true })
+            .limit(100),
+        'getAllModels'
+      );
 
       if (error) {
         console.error('❌ VehicleModelService: Error fetching all models:', error);
@@ -211,13 +234,15 @@ class VehicleModelService {
     try {
       console.log('🚀 VehicleModelService: Fetching model by ID with enhanced error handling:', modelId);
       
-      const queryPromise = supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('id, name, model, vehicle_type, is_active')
-        .eq('id', modelId)
-        .single();
-
-      const { data, error } = await this.executeWithTimeout(queryPromise, 'getModelById');
+      const { data, error } = await this.selectVehicleModels(
+        (columns) =>
+          supabase
+            .from('saharax_0u4w4d_vehicle_models')
+            .select(columns)
+            .eq('id', modelId)
+            .single(),
+        'getModelById'
+      );
 
       if (error) {
         console.error('❌ VehicleModelService: Error fetching model by ID:', error);
@@ -251,18 +276,29 @@ class VehicleModelService {
         updated_at: new Date().toISOString()
       };
 
-      const buildInsertPromise = (includeTankCapacity = true) => supabase
+      const buildInsertPromise = ({ includeTankCapacity = true, includeImageUrl = true } = {}) => supabase
         .from('saharax_0u4w4d_vehicle_models')
-        .insert([includeTankCapacity ? payload : { ...payload, tank_capacity_liters: undefined }])
-        .select('id, name, model, vehicle_type, is_active');
+        .insert([{
+          ...payload,
+          ...(includeTankCapacity ? {} : { tank_capacity_liters: undefined }),
+          ...(includeImageUrl ? {} : { image_url: undefined }),
+        }])
+        .select(this.MODEL_SELECT_COLUMNS_FALLBACK);
 
-      let { data, error } = await this.executeWithTimeout(buildInsertPromise(true), 'createModel');
+      let { data, error } = await this.executeWithTimeout(buildInsertPromise({ includeTankCapacity: true, includeImageUrl: true }), 'createModel');
 
       if (
         error &&
         `${error.message || ''} ${error.details || ''}`.toLowerCase().includes('tank_capacity_liters')
       ) {
-        ({ data, error } = await this.executeWithTimeout(buildInsertPromise(false), 'createModel'));
+        ({ data, error } = await this.executeWithTimeout(buildInsertPromise({ includeTankCapacity: false, includeImageUrl: true }), 'createModel'));
+      }
+
+      if (
+        error &&
+        `${error.message || ''} ${error.details || ''}`.toLowerCase().includes('image_url')
+      ) {
+        ({ data, error } = await this.executeWithTimeout(buildInsertPromise({ includeTankCapacity: false, includeImageUrl: false }), 'createModel'));
       }
 
       if (error) {
@@ -305,19 +341,30 @@ class VehicleModelService {
         updated_at: new Date().toISOString()
       };
 
-      const buildUpdatePromise = (includeTankCapacity = true) => supabase
+      const buildUpdatePromise = ({ includeTankCapacity = true, includeImageUrl = true } = {}) => supabase
         .from('saharax_0u4w4d_vehicle_models')
-        .update(includeTankCapacity ? payload : { ...payload, tank_capacity_liters: undefined })
+        .update({
+          ...payload,
+          ...(includeTankCapacity ? {} : { tank_capacity_liters: undefined }),
+          ...(includeImageUrl ? {} : { image_url: undefined }),
+        })
         .eq('id', modelId)
-        .select('id, name, model, vehicle_type, is_active');
+        .select(this.MODEL_SELECT_COLUMNS_FALLBACK);
 
-      let { data, error } = await this.executeWithTimeout(buildUpdatePromise(true), 'updateModel');
+      let { data, error } = await this.executeWithTimeout(buildUpdatePromise({ includeTankCapacity: true, includeImageUrl: true }), 'updateModel');
 
       if (
         error &&
         `${error.message || ''} ${error.details || ''}`.toLowerCase().includes('tank_capacity_liters')
       ) {
-        ({ data, error } = await this.executeWithTimeout(buildUpdatePromise(false), 'updateModel'));
+        ({ data, error } = await this.executeWithTimeout(buildUpdatePromise({ includeTankCapacity: false, includeImageUrl: true }), 'updateModel'));
+      }
+
+      if (
+        error &&
+        `${error.message || ''} ${error.details || ''}`.toLowerCase().includes('image_url')
+      ) {
+        ({ data, error } = await this.executeWithTimeout(buildUpdatePromise({ includeTankCapacity: false, includeImageUrl: false }), 'updateModel'));
       }
 
       if (error) {
@@ -380,16 +427,18 @@ class VehicleModelService {
     try {
       console.log('🚀 VehicleModelService: Toggling active status with enhanced error handling:', modelId, active);
       
-      const updatePromise = supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .update({
-          is_active: active,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', modelId)
-        .select('id, name, model, vehicle_type, is_active');
-
-      const { data, error } = await this.executeWithTimeout(updatePromise, 'toggleActiveStatus');
+      const { data, error } = await this.selectVehicleModels(
+        (columns) =>
+          supabase
+            .from('saharax_0u4w4d_vehicle_models')
+            .update({
+              is_active: active,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', modelId)
+            .select(columns),
+        'toggleActiveStatus'
+      );
 
       if (error) {
         console.error('❌ VehicleModelService: Error toggling active status:', error);
@@ -418,15 +467,17 @@ class VehicleModelService {
 
       console.log('🚀 VehicleModelService: Searching models with enhanced error handling:', searchTerm);
 
-      const queryPromise = supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('id, name, model, vehicle_type, is_active')
-        .eq('is_active', true)
-        .or(`name.ilike.%${searchTerm}%,model.ilike.%${searchTerm}%`)
-        .order('name', { ascending: true })
-        .limit(25);
-
-      const { data, error } = await this.executeWithTimeout(queryPromise, 'searchModels');
+      const { data, error } = await this.selectVehicleModels(
+        (columns) =>
+          supabase
+            .from('saharax_0u4w4d_vehicle_models')
+            .select(columns)
+            .eq('is_active', true)
+            .or(`name.ilike.%${searchTerm}%,model.ilike.%${searchTerm}%`)
+            .order('name', { ascending: true })
+            .limit(25),
+        'searchModels'
+      );
 
       if (error) {
         console.error('❌ VehicleModelService: Error searching models:', error);
@@ -496,14 +547,14 @@ class VehicleModelService {
   static getFallbackModels() {
     console.log('🔄 VehicleModelService: Using fallback models data');
     return [
-      { id: '1', name: 'SEGWAY', model: 'AT5', vehicle_type: 'ATV', is_active: true, tank_capacity_liters: 19 },
-      { id: '2', name: 'SEGWAY', model: 'AT6', vehicle_type: 'ATV', is_active: true, tank_capacity_liters: 23 },
-      { id: '3', name: 'SEGWAY', model: 'AT5', vehicle_type: 'Quad', is_active: true, tank_capacity_liters: 19 },
-      { id: '4', name: 'SEGWAY', model: 'AT6', vehicle_type: 'Quad', is_active: true, tank_capacity_liters: 23 },
-      { id: '5', name: 'YAMAHA', model: 'YFZ450R', vehicle_type: 'ATV', is_active: true },
-      { id: '6', name: 'HONDA', model: 'TRX450R', vehicle_type: 'ATV', is_active: true },
-      { id: '7', name: 'KAWASAKI', model: 'KFX450R', vehicle_type: 'ATV', is_active: true },
-      { id: '8', name: 'SUZUKI', model: 'LTR450', vehicle_type: 'ATV', is_active: true }
+      { id: '1', name: 'SEGWAY', model: 'AT5', vehicle_type: 'ATV', is_active: true, tank_capacity_liters: 19, image_url: null, description: '', power_cc_min: 0, power_cc_max: 0, capacity_min: 1, capacity_max: 1, features: [] },
+      { id: '2', name: 'SEGWAY', model: 'AT6', vehicle_type: 'ATV', is_active: true, tank_capacity_liters: 23, image_url: null, description: '', power_cc_min: 0, power_cc_max: 0, capacity_min: 1, capacity_max: 1, features: [] },
+      { id: '3', name: 'SEGWAY', model: 'AT5', vehicle_type: 'Quad', is_active: true, tank_capacity_liters: 19, image_url: null, description: '', power_cc_min: 0, power_cc_max: 0, capacity_min: 1, capacity_max: 1, features: [] },
+      { id: '4', name: 'SEGWAY', model: 'AT6', vehicle_type: 'Quad', is_active: true, tank_capacity_liters: 23, image_url: null, description: '', power_cc_min: 0, power_cc_max: 0, capacity_min: 1, capacity_max: 1, features: [] },
+      { id: '5', name: 'YAMAHA', model: 'YFZ450R', vehicle_type: 'ATV', is_active: true, image_url: null, description: '', power_cc_min: 0, power_cc_max: 0, capacity_min: 1, capacity_max: 1, features: [] },
+      { id: '6', name: 'HONDA', model: 'TRX450R', vehicle_type: 'ATV', is_active: true, image_url: null, description: '', power_cc_min: 0, power_cc_max: 0, capacity_min: 1, capacity_max: 1, features: [] },
+      { id: '7', name: 'KAWASAKI', model: 'KFX450R', vehicle_type: 'ATV', is_active: true, image_url: null, description: '', power_cc_min: 0, power_cc_max: 0, capacity_min: 1, capacity_max: 1, features: [] },
+      { id: '8', name: 'SUZUKI', model: 'LTR450', vehicle_type: 'ATV', is_active: true, image_url: null, description: '', power_cc_min: 0, power_cc_max: 0, capacity_min: 1, capacity_max: 1, features: [] }
     ];
   }
 

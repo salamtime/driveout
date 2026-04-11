@@ -5,6 +5,7 @@ import {
   PLATFORM_TENANTS_TABLE,
   PLATFORM_TENANT_PROVISIONING_JOBS_TABLE,
   PLATFORM_TENANT_AUDIT_LOG_TABLE,
+  PLATFORM_TENANT_WORKSPACE_POOL_TABLE,
 } from './supabase.js';
 
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
@@ -50,6 +51,102 @@ const buildProvisioningResult = (payload = {}) => ({
   tenant_database_name: payload.tenant_database_name || null,
   schema_version: payload.schema_version || 'v1',
 });
+
+const syncManualWorkspacePoolEntry = async ({
+  adminClient,
+  tenant,
+  job,
+  tenantProjectRef,
+  tenantAppUrl,
+  tenantApiUrl,
+  tenantAnonKey,
+  tenantServiceRoleSecretRef,
+  tenantDatabaseName,
+  schemaVersion,
+  userId,
+}) => {
+  const nowIso = new Date().toISOString();
+  let workspace = null;
+
+  const { data: assignedWorkspace, error: assignedError } = await adminClient
+    .from(PLATFORM_TENANT_WORKSPACE_POOL_TABLE)
+    .select('*')
+    .eq('assigned_tenant_id', tenant.id)
+    .order('assigned_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (assignedError) throw assignedError;
+  workspace = assignedWorkspace || null;
+
+  if (!workspace) {
+    const { data: projectWorkspace, error: projectError } = await adminClient
+      .from(PLATFORM_TENANT_WORKSPACE_POOL_TABLE)
+      .select('*')
+      .eq('tenant_project_ref', tenantProjectRef)
+      .limit(1)
+      .maybeSingle();
+
+    if (projectError) throw projectError;
+    workspace = projectWorkspace || null;
+  }
+
+  if (!workspace) {
+    const { data: appWorkspace, error: appError } = await adminClient
+      .from(PLATFORM_TENANT_WORKSPACE_POOL_TABLE)
+      .select('*')
+      .eq('tenant_app_url', tenantAppUrl)
+      .limit(1)
+      .maybeSingle();
+
+    if (appError) throw appError;
+    workspace = appWorkspace || null;
+  }
+
+  const payload = {
+    workspace_name: workspace?.workspace_name || tenant.tenant_slug || tenantProjectRef,
+    tenant_project_ref: tenantProjectRef,
+    tenant_app_url: tenantAppUrl,
+    tenant_api_url: tenantApiUrl,
+    tenant_anon_key: tenantAnonKey,
+    tenant_service_role_secret_ref: tenantServiceRoleSecretRef || null,
+    tenant_database_name: tenantDatabaseName || null,
+    schema_version: schemaVersion || 'v1',
+    status: 'assigned',
+    assigned_tenant_id: tenant.id,
+    assigned_business_account_id: job.business_account_id,
+    assigned_job_id: job.id,
+    assigned_at: workspace?.assigned_at || nowIso,
+    updated_at: nowIso,
+    metadata: {
+      ...(workspace?.metadata || {}),
+      real_config_synced_at: nowIso,
+      real_config_synced_by: userId || null,
+      real_config_sync_mode: 'manual_activation',
+    },
+  };
+
+  if (workspace?.id) {
+    const { data, error } = await adminClient
+      .from(PLATFORM_TENANT_WORKSPACE_POOL_TABLE)
+      .update(payload)
+      .eq('id', workspace.id)
+      .select('*')
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await adminClient
+    .from(PLATFORM_TENANT_WORKSPACE_POOL_TABLE)
+    .insert(payload)
+    .select('*')
+    .single();
+
+  if (error) throw error;
+  return data;
+};
 
 const buildTenantSlug = ({ email = '', companyName = '', businessAccountId = '' } = {}) => {
   const base = String(companyName || email || businessAccountId || 'workspace')
@@ -707,10 +804,24 @@ export default async function handler(req, res) {
 
     const provisioningResult = buildProvisioningResult({
       tenant_project_ref: tenantProjectRef,
-      tenant_app_url: tenantAppUrl,
-      tenant_api_url: tenantApiUrl,
+      tenant_app_url: normalizeUrl(tenantAppUrl),
+      tenant_api_url: normalizeUrl(tenantApiUrl),
       tenant_database_name: tenantDatabaseName,
       schema_version: schemaVersion,
+    });
+
+    const updatedWorkspacePoolEntry = await syncManualWorkspacePoolEntry({
+      adminClient,
+      tenant,
+      job,
+      tenantProjectRef,
+      tenantAppUrl: normalizeUrl(tenantAppUrl),
+      tenantApiUrl: normalizeUrl(tenantApiUrl),
+      tenantAnonKey,
+      tenantServiceRoleSecretRef,
+      tenantDatabaseName,
+      schemaVersion,
+      userId: user.id,
     });
 
     const [{ data: updatedTenant, error: tenantUpdateError }, { data: updatedJob, error: jobUpdateError }] = await Promise.all([
@@ -719,8 +830,8 @@ export default async function handler(req, res) {
         .update({
           tenant_status: 'active',
           tenant_project_ref: tenantProjectRef,
-          tenant_app_url: tenantAppUrl,
-          tenant_api_url: tenantApiUrl,
+          tenant_app_url: normalizeUrl(tenantAppUrl),
+          tenant_api_url: normalizeUrl(tenantApiUrl),
           tenant_anon_key: tenantAnonKey,
           tenant_service_role_secret_ref: tenantServiceRoleSecretRef || null,
           tenant_database_name: tenantDatabaseName || null,
@@ -743,6 +854,7 @@ export default async function handler(req, res) {
           result: {
             ...provisioningResult,
             completed_by: user.id,
+            workspace_pool_id: updatedWorkspacePoolEntry.id,
           },
         })
         .eq('id', jobId)
@@ -763,9 +875,10 @@ export default async function handler(req, res) {
       metadata: {
           job_id: jobId,
           tenant_project_ref: tenantProjectRef,
-          tenant_app_url: tenantAppUrl,
-          tenant_api_url: tenantApiUrl,
+          tenant_app_url: normalizeUrl(tenantAppUrl),
+          tenant_api_url: normalizeUrl(tenantApiUrl),
           schema_version: schemaVersion,
+          workspace_pool_id: updatedWorkspacePoolEntry.id,
         },
       });
 
@@ -776,7 +889,8 @@ export default async function handler(req, res) {
       payload: {
         job_id: jobId,
         tenant_project_ref: tenantProjectRef,
-        tenant_app_url: tenantAppUrl,
+        tenant_app_url: normalizeUrl(tenantAppUrl),
+        workspace_pool_id: updatedWorkspacePoolEntry.id,
         mode: 'manual',
       },
     });
