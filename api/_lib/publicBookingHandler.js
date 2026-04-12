@@ -686,12 +686,11 @@ const tryUpdateWithCompatibility = async (adminClient, tableName, rowId, payload
   throw lastError || new Error(`Failed to update ${tableName}`);
 };
 
-const createBookingId = () =>
-  (typeof randomUUID === 'function'
-    ? randomUUID()
-    : (typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`));
+const createBookingId = () => {
+  if (typeof randomUUID === 'function') return randomUUID();
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return null;
+};
 
 const createRequestReference = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -702,6 +701,7 @@ const createRequestReference = () => {
 };
 
 const isUuid = (value = '') => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+const sanitizeUuid = (value) => (isUuid(value) ? String(value) : null);
 
 const getAuthenticatedCustomerLink = async (adminClient, user, payload = {}) => {
   const userId = String(user?.id || '').trim();
@@ -1091,9 +1091,9 @@ const createMarketplaceRequest = async (adminClient, payload) => {
   const payloadRow = {
     id: createBookingId(),
     request_reference: createRequestReference(),
-    listing_id: listingId,
-    vehicle_public_profile_id: cleanValue(listing.vehiclePublicProfileId),
-    owner_id: ownerId,
+    listing_id: sanitizeUuid(listingId),
+    vehicle_public_profile_id: sanitizeUuid(cleanValue(listing.vehiclePublicProfileId)),
+    owner_id: sanitizeUuid(ownerId),
     customer_id: normalizedUserId,
     customer_name: customerNameValue,
     customer_email: customerEmailValue,
@@ -1107,8 +1107,9 @@ const createMarketplaceRequest = async (adminClient, payload) => {
     counter_offer: {},
   };
 
-  if (!isUuid(payloadRow.id)) {
-    delete payloadRow.id;
+  if (!isUuid(payloadRow.id)) delete payloadRow.id;
+  if (!payloadRow.listing_id || !payloadRow.owner_id) {
+    throw createHttpError(400, 'This marketplace listing is missing owner information. Please try another listing.');
   }
 
   const { error } = await adminClient.from('app_booking_requests').insert([payloadRow]);
