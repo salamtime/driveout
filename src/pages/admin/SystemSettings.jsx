@@ -8,7 +8,6 @@ import { Separator } from '../../components/ui/separator';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Settings, Database, Shield, Bell, Download, FileArchive, Loader2, Package, MapPin, Trash2, Clock3 } from 'lucide-react';
 import ProjectArchiver from '../../utils/projectArchiver';
-import TourPackagesSettings from '../../components/admin/TourPackagesSettings';
 import TourMetadataSettings from '../../components/admin/TourMetadataSettings';
 import PublicContentWorkspace from '../../components/admin/PublicContentWorkspace';
 import MarketplaceControlWorkspace from '../../components/admin/MarketplaceControlWorkspace';
@@ -209,7 +208,7 @@ const SystemSettings = () => {
 
       <div className="container mx-auto py-6 space-y-6">
       <Tabs defaultValue="general" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-8">
+        <TabsList className="grid w-full grid-cols-7">
           <TabsTrigger value="general" className="flex items-center gap-2">
             <Settings className="h-4 w-4" />
             {isFrench ? 'Général' : 'General'}
@@ -221,10 +220,6 @@ const SystemSettings = () => {
           <TabsTrigger value="marketplace" className="flex items-center gap-2">
             <MapPin className="h-4 w-4" />
             {isFrench ? 'Marketplace' : 'Marketplace'}
-          </TabsTrigger>
-          <TabsTrigger value="tour-packages" className="flex items-center gap-2">
-            <Package className="h-4 w-4" />
-            {isFrench ? 'Forfaits tours' : 'Tour Packages'}
           </TabsTrigger>
           <TabsTrigger value="tour-metadata" className="flex items-center gap-2">
             <MapPin className="h-4 w-4" />
@@ -394,10 +389,6 @@ const SystemSettings = () => {
           <MarketplaceControlWorkspace />
         </TabsContent>
 
-        {/* Tour Packages Settings Tab */}
-        <TabsContent value="tour-packages" className="space-y-6">
-          <TourPackagesSettings />
-        </TabsContent>
 
         {/* Tour Metadata Settings Tab */}
         <TabsContent value="tour-metadata" className="space-y-6">
