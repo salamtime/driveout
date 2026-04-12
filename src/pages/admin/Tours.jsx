@@ -45,6 +45,7 @@ import { searchCustomers as searchCustomerRecords } from '../../services/Enhance
 import {
   assignTourVehicles,
   createTourBookings,
+  deleteTourBookingRows,
   fetchTourBookings,
   reconcileTourVehicleStatuses,
   updateTourBookingRows,
@@ -244,10 +245,11 @@ const normalizePackage = (pkg) => {
   };
 };
 
-const getPackagePrice = (pkg) => {
-  if (!pkg) return 0;
-  return Number(pkg.duration) === 2 ? Number(pkg.default_rate_2h || 0) : Number(pkg.default_rate_1h || 0);
-};
+const hasTourPricingRows = (rows = [], packageId) =>
+  rows.some((row) =>
+    Number(row?.price_mad || 0) > 0 &&
+    (String(row?.package_id) === String(packageId) || String(row?.package_id) === GLOBAL_TOUR_PRICING_KEY)
+  );
 
 const getVehicleModelId = (vehicle) =>
   String(vehicle?.vehicle_model_id || vehicle?.model_id || vehicle?.vehicle_model?.id || '');
@@ -336,13 +338,7 @@ const buildVehiclesForModelMix = (vehicles = [], selectedModelMix = []) => {
   };
 };
 
-const getLegacyPackagePricingBadge = (pkg) => {
-  const fallbackPrice = getPackagePrice(pkg);
-  if (fallbackPrice > 0) {
-    return tr(`From ${fallbackPrice} MAD`, `À partir de ${fallbackPrice} MAD`);
-  }
-  return 'Model pricing';
-};
+const getLegacyPackagePricingBadge = () => tr('Pricing not set', 'Tarifs à définir');
 
 const formatDateTime = (value) => {
   if (!value) return 'Not scheduled';
@@ -844,6 +840,12 @@ const ToursPage = () => {
   const [trackedTours, setTrackedTours] = useState([]);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [openTourActionGroupId, setOpenTourActionGroupId] = useState('');
+  const canDeleteScheduledTour = useCallback((tour) => {
+    const role = String(userProfile?.role || '').toLowerCase();
+    if (!['admin', 'owner'].includes(role)) return false;
+    if (!tour) return false;
+    return String(tour.status || '').toLowerCase() === 'scheduled' && !tour.startedAt;
+  }, [userProfile?.role]);
   const realtimeReloadTimerRef = useRef(null);
   const currentTimeSlot = formatTimeInputValue(new Date());
 
@@ -1104,8 +1106,11 @@ const ToursPage = () => {
     if (startingPrice > 0) {
       return tr(`From ${startingPrice} MAD`, `À partir de ${startingPrice} MAD`);
     }
+    if (hasTourPricingRows(tourPricingRows, pkg?.id)) {
+      return tr('Model pricing', 'Tarifs par modèle');
+    }
 
-    return getLegacyPackagePricingBadge(pkg);
+    return getLegacyPackagePricingBadge();
   };
 
   const getPackageModelPriceHighlights = useCallback((pkg) => {
@@ -2525,6 +2530,45 @@ const ToursPage = () => {
 
     toast.success(`Tour marked ${status}`);
     setRefreshKey((prev) => prev + 1);
+  };
+
+  const handleDeleteScheduledTour = async (tour) => {
+    if (!tour?.rowIds?.length) return;
+    if (!canDeleteScheduledTour(tour)) {
+      toast.error(tr('Only owner or admin can delete a scheduled tour.', 'Seul le propriétaire ou un administrateur peut supprimer un tour planifié.'));
+      return;
+    }
+
+    const confirmed = window.confirm(
+      tr(
+        'Delete this scheduled tour permanently? This cannot be undone.',
+        'Supprimer définitivement ce tour planifié ? Cette action est irréversible.'
+      )
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteTourBookingRows(tour.rowIds);
+      await logTourActivity(
+        tour,
+        'tour_deleted',
+        tr('Scheduled tour was deleted before departure.', 'Le tour planifié a été supprimé avant le départ.'),
+        {
+          deletedAt: new Date().toISOString(),
+          deletedByUserId: userProfile?.id || null,
+          deletedByName: userProfile?.full_name || userProfile?.fullName || userProfile?.name || userProfile?.email || 'Team Member',
+        }
+      );
+      setOpenTourActionGroupId('');
+      if (selectedTourDetails?.groupId === tour.groupId) {
+        closeTourDetails();
+      }
+      toast.success(tr('Scheduled tour deleted', 'Tour planifié supprimé'));
+      setRefreshKey((prev) => prev + 1);
+    } catch (error) {
+      console.error('Failed to delete scheduled tour:', error);
+      toast.error(tr(`Could not delete this scheduled tour: ${error.message}`, `Impossible de supprimer ce tour planifié : ${error.message}`));
+    }
   };
 
   const validateStep = () => {
@@ -4479,6 +4523,18 @@ const ToursPage = () => {
                                       >
                                         {tr('Cancel tour', 'Annuler le tour')}
                                       </button>
+                                      {canDeleteScheduledTour(tour) ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setOpenTourActionGroupId('');
+                                            handleDeleteScheduledTour(tour);
+                                          }}
+                                          className="block w-full border-t border-slate-100 px-4 py-3 text-left text-sm font-semibold text-rose-700 hover:bg-rose-50"
+                                        >
+                                          {tr('Delete tour', 'Supprimer le tour')}
+                                        </button>
+                                      ) : null}
                                     </div>
                                   ) : null}
                                 </div>
@@ -5103,6 +5159,15 @@ const ToursPage = () => {
                       >
                         {tr('Cancel tour', 'Annuler le tour')}
                       </button>
+                      {canDeleteScheduledTour(selectedTourDetails) ? (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteScheduledTour(selectedTourDetails)}
+                          className="rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                        >
+                          {tr('Delete tour', 'Supprimer le tour')}
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

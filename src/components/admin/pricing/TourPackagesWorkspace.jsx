@@ -375,10 +375,13 @@ const buildPackagePayload = (formData) => {
   };
 };
 
-const getLegacyPackagePricingBadge = (pkg) => {
-  const fallbackPrice = Number(pkg?.default_rate_1h || pkg?.default_rate_2h || 0);
-  return fallbackPrice > 0 ? `From ${fallbackPrice} MAD` : 'Set pricing';
-};
+const getLegacyPackagePricingBadge = () => 'Set pricing';
+
+const hasTourPricingRows = (rows = [], packageId) =>
+  rows.some((row) =>
+    Number(row?.price_mad || 0) > 0 &&
+    (String(row?.package_id) === String(packageId) || String(row?.package_id) === GLOBAL_TOUR_PRICING_KEY)
+  );
 
 const packageToForm = (pkg) => ({
   ...initialPackageForm,
@@ -502,7 +505,8 @@ const TourPackagesWorkspace = () => {
     });
 
     if (startingPrice > 0) return `From ${startingPrice} MAD`;
-    return getLegacyPackagePricingBadge(pkg);
+    if (hasTourPricingRows(tourPricingRows, pkg?.id)) return 'Model pricing';
+    return getLegacyPackagePricingBadge();
   };
 
   const getPackageModelPriceHighlights = (pkg) => {
