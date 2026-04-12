@@ -1,5 +1,6 @@
 import { createSupabaseClients } from './supabase.js';
 import { authenticateRequest } from './auth.js';
+import { randomUUID } from 'crypto';
 
 const WEBSITE_BOOKING_SOURCE = 'website';
 const WEBSITE_BLOCKING_STATUSES = ['verified', 'awaiting_payment', 'payment_submitted', 'confirmed'];
@@ -9,6 +10,49 @@ const DEFAULT_BUFFER_MINUTES = 60;
 const DEFAULT_SCHEDULED_GRACE_MINUTES = 120;
 
 const json = (res, status, body) => res.status(status).json(body);
+
+const createHttpError = (status, message) => {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+};
+
+const isCustomersTablePermissionError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  const details = String(error?.details || '').toLowerCase();
+  const code = String(error?.code || '').toUpperCase();
+
+  return (
+    code === '42501' &&
+    (message.includes('app_4c3a7a6153_customers') || details.includes('app_4c3a7a6153_customers'))
+  );
+};
+
+const isSchemaCompatibilityError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  const details = String(error?.details || '').toLowerCase();
+  const code = String(error?.code || '').toUpperCase();
+
+  return (
+    code === '42703' ||
+    code === 'PGRST204' ||
+    message.includes('schema cache') ||
+    message.includes('does not exist') ||
+    message.includes('column') ||
+    details.includes('schema cache')
+  );
+};
+
+const getMissingColumnName = (error) => {
+  const message = String(error?.message || '');
+  const directMatch = message.match(/column\s+[\w."]*\.?("?)([a-zA-Z0-9_]+)\1\s+does not exist/i);
+  if (directMatch?.[2]) return directMatch[2];
+
+  const schemaMatch = message.match(/'([a-zA-Z0-9_]+)' column/i);
+  if (schemaMatch?.[1]) return schemaMatch[1];
+
+  return null;
+};
 
 const parseBody = (body) => {
   if (!body) return {};
@@ -26,6 +70,9 @@ const cleanValue = (value) => {
   if (value === undefined || value === null || value === '') return null;
   return value;
 };
+
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+const normalizeText = (value) => String(value || '').trim();
 
 const toIsoDateTime = (date, time = '10:00') => {
   if (!date) return null;
@@ -493,7 +540,7 @@ const findExistingWebsiteBooking = async ({
       .order('created_at', { ascending: false })
       .limit(1);
 
-    if (sessionError) throw sessionError;
+    if (sessionError && !isSchemaCompatibilityError(sessionError)) throw sessionError;
     if (sessionMatches?.[0]) {
       return { type: 'reuse_website_booking', row: sessionMatches[0] };
     }
@@ -567,35 +614,234 @@ const tryInsertVariants = async (adminClient, tableName, variants) => {
   let lastError = null;
 
   for (const payload of variants) {
-    const sanitizedPayload = Object.fromEntries(
+    let sanitizedPayload = Object.fromEntries(
       Object.entries(payload).filter(([, value]) => value !== undefined)
     );
 
-    const { data, error } = await adminClient
-      .from(tableName)
-      .insert([sanitizedPayload])
-      .select('*')
-      .single();
+    while (sanitizedPayload && Object.keys(sanitizedPayload).length > 0) {
+      const { data, error } = await adminClient
+        .from(tableName)
+        .insert([sanitizedPayload])
+        .select('*')
+        .single();
 
-    if (!error) return data;
-    lastError = error;
-    if (['42501', 'PGRST301'].includes(String(error.code || ''))) {
-      break;
+      if (!error) return data;
+      lastError = error;
+
+      if (['42501', 'PGRST301'].includes(String(error.code || ''))) {
+        break;
+      }
+
+      if (!isSchemaCompatibilityError(error)) {
+        break;
+      }
+
+      const missingColumn = getMissingColumnName(error);
+      if (!missingColumn || !Object.prototype.hasOwnProperty.call(sanitizedPayload, missingColumn)) {
+        break;
+      }
+
+      const { [missingColumn]: _removed, ...nextPayload } = sanitizedPayload;
+      sanitizedPayload = nextPayload;
     }
   }
 
   throw lastError || new Error(`Failed to insert into ${tableName}`);
 };
 
-const createBookingId = () => `rq_${(typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`)}`;
+const tryUpdateWithCompatibility = async (adminClient, tableName, rowId, payload) => {
+  let sanitizedPayload = Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => value !== undefined)
+  );
+  let lastError = null;
 
-const createCertifiedBooking = async (adminClient, payload) => {
+  while (sanitizedPayload && Object.keys(sanitizedPayload).length > 0) {
+    const { data, error } = await adminClient
+      .from(tableName)
+      .update(sanitizedPayload)
+      .eq('id', rowId)
+      .select('*')
+      .single();
+
+    if (!error) return data;
+    lastError = error;
+
+    if (['42501', 'PGRST301'].includes(String(error.code || ''))) {
+      break;
+    }
+
+    if (!isSchemaCompatibilityError(error)) {
+      break;
+    }
+
+    const missingColumn = getMissingColumnName(error);
+    if (!missingColumn || !Object.prototype.hasOwnProperty.call(sanitizedPayload, missingColumn)) {
+      break;
+    }
+
+    const { [missingColumn]: _removed, ...nextPayload } = sanitizedPayload;
+    sanitizedPayload = nextPayload;
+  }
+
+  throw lastError || new Error(`Failed to update ${tableName}`);
+};
+
+const createBookingId = () =>
+  (typeof randomUUID === 'function'
+    ? randomUUID()
+    : (typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`));
+
+const createRequestReference = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    const slug = crypto.randomUUID().split('-')[0];
+    return `RQ-${slug.toUpperCase()}`;
+  }
+  return `RQ-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+};
+
+const isUuid = (value = '') => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+
+const getAuthenticatedCustomerLink = async (adminClient, user, payload = {}) => {
+  const userId = String(user?.id || '').trim();
+  const authEmail = normalizeEmail(user?.email);
+  const payloadEmail = normalizeEmail(payload?.customerEmail);
+  const fallbackEmail = authEmail || payloadEmail || '';
+  const authCustomerId = userId ? `cust_auth_${userId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}` : '';
+
+  if (!userId && !fallbackEmail) {
+    return {
+      customerId: null,
+      customerEmail: cleanValue(payload?.customerEmail),
+      customerName: cleanValue(payload?.customerName),
+      customerPhone: cleanValue(payload?.customerPhone),
+    };
+  }
+
+  const [customerByIdResult, customerByEmailResult] = await Promise.all([
+    authCustomerId
+      ? adminClient
+          .from('app_4c3a7a6153_customers')
+          .select('id, full_name, email, phone, licence_number, id_number, id_scan_url, initial_scan_complete, scan_metadata')
+          .eq('id', authCustomerId)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    fallbackEmail
+      ? adminClient
+          .from('app_4c3a7a6153_customers')
+          .select('id, full_name, email, phone, licence_number, id_number, id_scan_url, initial_scan_complete, scan_metadata')
+          .ilike('email', fallbackEmail)
+          .limit(1)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  if (customerByIdResult.error) throw customerByIdResult.error;
+  if (customerByEmailResult.error) throw customerByEmailResult.error;
+
+  const existingCustomer = customerByIdResult.data || customerByEmailResult.data?.[0] || null;
+  const linkedCustomerId = existingCustomer?.id || authCustomerId || null;
+  const linkedEmail = cleanValue(existingCustomer?.email || authEmail || payload?.customerEmail);
+  const linkedName = cleanValue(payload?.customerName || existingCustomer?.full_name || user?.user_metadata?.full_name || user?.user_metadata?.name);
+  const linkedPhone = cleanValue(payload?.customerPhone || existingCustomer?.phone || user?.user_metadata?.phone);
+  const linkedLicenseNumber = cleanValue(payload?.customerLicenseNumber || existingCustomer?.licence_number);
+  const linkedIdNumber = cleanValue(payload?.customerIdNumber || existingCustomer?.id_number);
+  const linkedScanUrl = cleanValue(payload?.licenseDocumentUrl || existingCustomer?.id_scan_url);
+
+  if (linkedCustomerId) {
+    const upsertPayload = {
+      id: linkedCustomerId,
+      full_name: linkedName,
+      email: linkedEmail,
+      phone: linkedPhone,
+      licence_number: linkedLicenseNumber,
+      id_number: linkedIdNumber,
+      id_scan_url: linkedScanUrl,
+      initial_scan_complete: Boolean(linkedLicenseNumber || linkedScanUrl || existingCustomer?.initial_scan_complete),
+      scan_metadata:
+        existingCustomer?.scan_metadata && typeof existingCustomer.scan_metadata === 'object'
+          ? existingCustomer.scan_metadata
+          : {},
+    };
+
+    const { error: upsertError } = await adminClient
+      .from('app_4c3a7a6153_customers')
+      .upsert(upsertPayload, { onConflict: 'id' });
+
+    if (upsertError) throw upsertError;
+  }
+
+  return {
+    customerId: linkedCustomerId,
+    customerEmail: linkedEmail,
+    customerName: linkedName,
+    customerPhone: linkedPhone,
+    customerLicenseNumber: linkedLicenseNumber,
+    licenseDocumentUrl: linkedScanUrl,
+  };
+};
+
+const repairAuthenticatedRentalLink = async (adminClient, rental, user, linkedCustomer, payload = {}) => {
+  if (!rental?.id || !user) {
+    return rental;
+  }
+
+  const resolvedEmail = cleanValue(
+    linkedCustomer?.customerEmail ||
+    user?.email ||
+    payload?.customerEmail
+  );
+  const resolvedName = cleanValue(
+    linkedCustomer?.customerName ||
+    user?.user_metadata?.full_name ||
+    user?.user_metadata?.name ||
+    payload?.customerName
+  );
+  const resolvedPhone = cleanValue(
+    linkedCustomer?.customerPhone ||
+    user?.user_metadata?.phone ||
+    payload?.customerPhone
+  );
+  const resolvedCustomerId = cleanValue(linkedCustomer?.customerId);
+  const resolvedLicenseNumber = cleanValue(
+    linkedCustomer?.customerLicenseNumber ||
+    payload?.customerLicenseNumber
+  );
+  const resolvedLicenseDocumentUrl = cleanValue(
+    linkedCustomer?.licenseDocumentUrl ||
+    payload?.licenseDocumentUrl
+  );
+
+  const needsRepair =
+    (!rental.customer_id && resolvedCustomerId) ||
+    (!normalizeText(rental.customer_email) && resolvedEmail) ||
+    (!normalizeText(rental.customer_phone) && resolvedPhone) ||
+    (!normalizeText(rental.customer_name) && resolvedName) ||
+    (!normalizeText(rental.customer_licence_number) && resolvedLicenseNumber) ||
+    (!normalizeText(rental.customer_id_image) && resolvedLicenseDocumentUrl);
+
+  if (!needsRepair) {
+    return rental;
+  }
+
+  return tryUpdateWithCompatibility(adminClient, 'app_4c3a7a6153_rentals', rental.id, {
+    customer_id: resolvedCustomerId,
+    customer_name: resolvedName,
+    customer_email: resolvedEmail,
+    customer_phone: resolvedPhone,
+    customer_licence_number: resolvedLicenseNumber,
+    customer_id_image: resolvedLicenseDocumentUrl,
+  });
+};
+
+const createCertifiedBooking = async (adminClient, payload, { user = null } = {}) => {
   const {
     listing,
     customerName,
     customerEmail,
     customerPhone,
     customerLicenseNumber,
+    customerIdNumber,
     licenseDocumentUrl,
     rentalType,
     packageSelection,
@@ -607,9 +853,32 @@ const createCertifiedBooking = async (adminClient, payload) => {
     bookingSecurityOption,
     bookingSessionKey,
   } = payload;
+  const linkedCustomer = user
+    ? await getAuthenticatedCustomerLink(adminClient, user, {
+        customerName,
+        customerEmail,
+        customerPhone,
+        customerLicenseNumber,
+        customerIdNumber,
+        licenseDocumentUrl,
+      })
+    : {
+        customerId: null,
+        customerEmail: cleanValue(customerEmail),
+        customerName: cleanValue(customerName),
+        customerPhone: cleanValue(customerPhone),
+        customerLicenseNumber: cleanValue(customerLicenseNumber),
+        licenseDocumentUrl: cleanValue(licenseDocumentUrl),
+      };
 
-  if (!String(customerName || '').trim()) throw new Error('Full name is required.');
-  if (!String(customerPhone || '').trim()) throw new Error('Phone number is required.');
+  const resolvedCustomerName = cleanValue(linkedCustomer.customerName || customerName);
+  const resolvedCustomerEmail = cleanValue(linkedCustomer.customerEmail || customerEmail);
+  const resolvedCustomerPhone = cleanValue(linkedCustomer.customerPhone || customerPhone);
+  const resolvedCustomerLicenseNumber = cleanValue(linkedCustomer.customerLicenseNumber || customerLicenseNumber);
+  const resolvedLicenseDocumentUrl = cleanValue(linkedCustomer.licenseDocumentUrl || licenseDocumentUrl);
+
+  if (!String(resolvedCustomerName || '').trim()) throw createHttpError(400, 'Full name is required.');
+  if (!String(resolvedCustomerPhone || '').trim()) throw createHttpError(400, 'Phone number is required.');
 
   const normalizedDurationUnits = Math.max(
     rentalType === 'hourly' ? 0.5 : 1,
@@ -620,11 +889,11 @@ const createCertifiedBooking = async (adminClient, payload) => {
   const localStart = startIso ? new Date(startIso) : null;
   const localEnd = endIso ? new Date(endIso) : null;
 
-  if (!startIso || !endIso) throw new Error('Please choose a valid booking window.');
+  if (!startIso || !endIso) throw createHttpError(400, 'Please choose a valid booking window.');
   if (!localStart || Number.isNaN(localStart.getTime()) || !localEnd || Number.isNaN(localEnd.getTime())) {
-    throw new Error('Please choose a valid booking date and start time.');
+    throw createHttpError(400, 'Please choose a valid booking date and start time.');
   }
-  if (localStart.getTime() <= Date.now()) throw new Error('Please choose a future reservation time.');
+  if (localStart.getTime() <= Date.now()) throw createHttpError(400, 'Please choose a future reservation time.');
 
   await cleanupExpiredWebsiteBookingLocks(adminClient).catch(() => {});
 
@@ -636,7 +905,7 @@ const createCertifiedBooking = async (adminClient, payload) => {
   });
 
   if (!assignment.assignedVehicle) {
-    throw new Error(assignment.reason || 'This vehicle is no longer available for the selected period.');
+    throw createHttpError(409, assignment.reason || 'This vehicle is no longer available for the selected period.');
   }
 
   const assignedVehicle = assignment.assignedVehicle;
@@ -649,7 +918,7 @@ const createCertifiedBooking = async (adminClient, payload) => {
 
   const duplicateResolution = await findExistingWebsiteBooking({
     adminClient,
-    customerPhone,
+    customerPhone: resolvedCustomerPhone,
     startIso,
     endIso,
     listing,
@@ -658,16 +927,17 @@ const createCertifiedBooking = async (adminClient, payload) => {
   });
 
   if (duplicateResolution?.type === 'conflict_real_booking') {
-    throw new Error('A reservation already exists for this customer during the selected time window. Please review the existing booking instead of creating another one.');
+    throw createHttpError(409, 'A reservation already exists for this customer during the selected time window. Please review the existing booking instead of creating another one.');
   }
 
   const totalAmount = Number(packageSelection?.amount || 0) || Number(listing.priceFrom || 0);
   const basePayload = {
-    customer_name: customerName,
-    customer_email: cleanValue(customerEmail),
-    customer_phone: cleanValue(customerPhone),
-    customer_licence_number: cleanValue(customerLicenseNumber),
-    customer_id_image: cleanValue(licenseDocumentUrl),
+    customer_id: cleanValue(linkedCustomer.customerId),
+    customer_name: resolvedCustomerName,
+    customer_email: resolvedCustomerEmail,
+    customer_phone: resolvedCustomerPhone,
+    customer_licence_number: resolvedCustomerLicenseNumber,
+    customer_id_image: resolvedLicenseDocumentUrl,
     vehicle_id: assignedVehicle?.id || listing.sourceId,
     rental_start_date: startIso,
     rental_end_date: endIso,
@@ -713,13 +983,14 @@ const createCertifiedBooking = async (adminClient, payload) => {
       selected_package_fixed_amount: undefined,
       selected_package_included_km: undefined,
       selected_package_extra_rate: undefined,
-      customer_id_image: cleanValue(licenseDocumentUrl),
-      customer_licence_number: cleanValue(customerLicenseNumber),
+      customer_id_image: resolvedLicenseDocumentUrl,
+      customer_licence_number: resolvedCustomerLicenseNumber,
     },
     {
-      customer_name: customerName,
-      customer_email: cleanValue(customerEmail),
-      customer_phone: cleanValue(customerPhone),
+      customer_id: cleanValue(linkedCustomer.customerId),
+      customer_name: resolvedCustomerName,
+      customer_email: resolvedCustomerEmail,
+      customer_phone: resolvedCustomerPhone,
       vehicle_id: assignedVehicle?.id || listing.sourceId,
       rental_start_date: startIso,
       rental_end_date: endIso,
@@ -737,18 +1008,29 @@ const createCertifiedBooking = async (adminClient, payload) => {
 
   let rental;
   if (duplicateResolution?.type === 'reuse_website_booking' && duplicateResolution.row?.id) {
-    const { data, error } = await adminClient
-      .from('app_4c3a7a6153_rentals')
-      .update(basePayload)
-      .eq('id', duplicateResolution.row.id)
-      .select('*')
-      .single();
-
-    if (error) throw error;
-    rental = data;
+    rental = await tryUpdateWithCompatibility(
+      adminClient,
+      'app_4c3a7a6153_rentals',
+      duplicateResolution.row.id,
+      basePayload
+    );
   } else {
     rental = await tryInsertVariants(adminClient, 'app_4c3a7a6153_rentals', variants);
   }
+
+  rental = await repairAuthenticatedRentalLink(
+    adminClient,
+    rental,
+    user,
+    linkedCustomer,
+    {
+      customerName: resolvedCustomerName,
+      customerEmail: resolvedCustomerEmail,
+      customerPhone: resolvedCustomerPhone,
+      customerLicenseNumber: resolvedCustomerLicenseNumber,
+      licenseDocumentUrl: resolvedLicenseDocumentUrl,
+    }
+  );
 
   return {
     ...rental,
@@ -775,28 +1057,40 @@ const createMarketplaceRequest = async (adminClient, payload) => {
   const startIso = toIsoDateTime(startDate, startTime);
   const endIso = addDuration(startIso, duration, rentalType);
   if (!startIso || !endIso) {
-    throw new Error('Please choose a valid requested start date, time, and duration.');
+    throw createHttpError(400, 'Please choose a valid requested start date, time, and duration.');
   }
 
-  const listingId = cleanValue(listing.sourceId);
+  const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+  const extractUuid = (value) => {
+    const text = cleanValue(value);
+    if (!text) return null;
+    const match = text.match(uuidRegex);
+    return match ? match[0] : null;
+  };
+
+  const listingId =
+    extractUuid(listing?.sourceId) ||
+    extractUuid(listing?.raw?.id) ||
+    extractUuid(listing?.id);
   const ownerId = cleanValue(listing.ownerId);
   const customerNameValue = cleanValue(customerName);
   const customerEmailValue = cleanValue(customerEmail);
   const customerPhoneValue = cleanValue(customerPhone);
 
   if (!listingId || !ownerId) {
-    throw new Error('This marketplace listing is missing owner information. Please try another listing.');
+    throw createHttpError(400, 'This marketplace listing is missing owner information. Please try another listing.');
   }
   if (!customerNameValue || !customerEmailValue) {
-    throw new Error('Please enter your name and email before sending the request.');
+    throw createHttpError(400, 'Please enter your name and email before sending the request.');
   }
   if (!customerPhoneValue) {
-    throw new Error('Please enter your WhatsApp or phone number before sending the request.');
+    throw createHttpError(400, 'Please enter your WhatsApp or phone number before sending the request.');
   }
 
   const normalizedUserId = cleanValue(userId);
   const payloadRow = {
     id: createBookingId(),
+    request_reference: createRequestReference(),
     listing_id: listingId,
     vehicle_public_profile_id: cleanValue(listing.vehiclePublicProfileId),
     owner_id: ownerId,
@@ -812,6 +1106,10 @@ const createMarketplaceRequest = async (adminClient, payload) => {
     customer_message: cleanValue(message),
     counter_offer: {},
   };
+
+  if (!isUuid(payloadRow.id)) {
+    delete payloadRow.id;
+  }
 
   const { error } = await adminClient.from('app_booking_requests').insert([payloadRow]);
   if (error) throw error;
@@ -870,6 +1168,12 @@ const getAuthenticatedUserId = async (req) => {
   return auth.user?.id || null;
 };
 
+const getAuthenticatedUser = async (req) => {
+  const auth = await authenticateRequest(req);
+  if (auth.error) return null;
+  return auth.user || null;
+};
+
 export default async function publicBookingHandler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -879,7 +1183,8 @@ export default async function publicBookingHandler(req, res) {
   try {
     if (req.method === 'POST' && action === 'create-certified') {
       const body = parseBody(req.body);
-      const rental = await createCertifiedBooking(adminClient, body);
+      const authenticatedUser = await getAuthenticatedUser(req);
+      const rental = await createCertifiedBooking(adminClient, body, { user: authenticatedUser });
       return json(res, 200, rental);
     }
 
@@ -905,6 +1210,13 @@ export default async function publicBookingHandler(req, res) {
 
     return json(res, 405, { error: 'Method not allowed' });
   } catch (error) {
-    return json(res, 500, { error: error.message || 'Failed to process public booking request' });
+    if (isCustomersTablePermissionError(error)) {
+      return json(res, 500, {
+        error:
+          'Database grant missing: service_role cannot access app_4c3a7a6153_customers. Apply src/migrations/grant_service_role_customers_access.sql and retry.',
+      });
+    }
+
+    return json(res, Number(error?.status || 500), { error: error.message || 'Failed to process public booking request' });
   }
 }
