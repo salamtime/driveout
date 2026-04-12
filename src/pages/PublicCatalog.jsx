@@ -611,7 +611,7 @@ const PublicCatalog = () => {
               {error}
             </div>
           ) : loading ? (
-            <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:gap-6">
+            <div className={`grid gap-4 ${isMarketplacePage ? 'grid-cols-1 sm:grid-cols-2 xl:gap-8' : 'grid-cols-2 lg:grid-cols-3 xl:gap-6'}`}>
               {Array.from({ length: 6 }).map((_, index) => (
                 <div key={index} className="h-[290px] animate-pulse rounded-[28px] border border-slate-200 bg-white sm:h-[340px] lg:h-[420px]" />
               ))}
@@ -962,15 +962,11 @@ const PublicCatalog = () => {
                   })() : null}
                 </div>
               ) : (
-                <>
-                  <div className="rounded-[2rem] bg-slate-100/70 p-3 sm:p-4 lg:p-5">
-                    <div className="grid grid-cols-2 gap-5 lg:grid-cols-3 xl:gap-7">
-                    {visibleListings.map((listing) => (
-                      <PublicListingCard key={listing.id} listing={listing} />
-                    ))}
-                    </div>
-                  </div>
-                </>
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:gap-8">
+                  {visibleListings.map((listing) => (
+                    <PublicListingCard key={listing.id} listing={listing} />
+                  ))}
+                </div>
               )}
             </>
           )}

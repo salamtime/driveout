@@ -1,17 +1,23 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n';
 import PublicSiteChrome from '../components/public/PublicSiteChrome';
+import PublicCatalogService from '../services/PublicCatalogService';
+import { preloadTourPackages } from '../services/tourPackageService';
 
 const FALLBACK_CITIES = ['Tangier'];
+const preloadRentRoute = () => import('./PublicRentRedirect');
+const preloadToursRoute = () => import('./Tours');
+const preloadMarketplaceRoute = () => import('./PublicCatalog');
 
 const Landing = () => {
   useTranslation();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const [selectedCity, setSelectedCity] = useState('Tangier');
+  const warmedFlowsRef = useRef(new Set());
   const cities = FALLBACK_CITIES;
   const experienceOptions = useMemo(
     () => [
@@ -22,6 +28,10 @@ const Landing = () => {
       {
         value: 'tours',
         title: tr('Tours', 'Excursions'),
+      },
+      {
+        value: 'marketplace',
+        title: tr('Marketplace', 'Marketplace'),
       },
     ],
     [isFrench]
@@ -35,11 +45,59 @@ const Landing = () => {
     () => `/tours?city=${encodeURIComponent(selectedCity)}`,
     [selectedCity]
   );
+  const marketplaceHref = useMemo(
+    () => `/marketplace?city=${encodeURIComponent(selectedCity)}`,
+    [selectedCity]
+  );
 
   const handleChangeCity = () => {
     const currentIndex = cities.indexOf(selectedCity);
     setSelectedCity(cities[(currentIndex + 1) % cities.length] || selectedCity);
   };
+
+  const warmFlow = (flow) => {
+    const cacheKey = `${flow}:${selectedCity}`;
+    if (warmedFlowsRef.current.has(cacheKey)) return;
+    warmedFlowsRef.current.add(cacheKey);
+
+    if (flow === 'rent') {
+      void preloadRentRoute();
+      void PublicCatalogService.preloadCatalog({
+        flow: 'instant',
+        source: 'certified_fleet',
+        city: selectedCity,
+      });
+      return;
+    }
+
+    if (flow === 'tours') {
+      void preloadToursRoute();
+      void preloadTourPackages();
+      return;
+    }
+
+    if (flow === 'marketplace') {
+      void preloadMarketplaceRoute();
+      void PublicCatalogService.preloadCatalog({
+        flow: 'request',
+        source: 'marketplace',
+        city: selectedCity,
+      });
+    }
+  };
+
+  useEffect(() => {
+    void preloadRentRoute();
+    void preloadToursRoute();
+    void preloadMarketplaceRoute();
+    const timer = window.setTimeout(() => {
+      warmFlow('rent');
+      warmFlow('tours');
+      warmFlow('marketplace');
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [selectedCity]);
 
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#F5F3FF_0%,#ECE9FF_100%)] text-slate-950">
@@ -68,7 +126,16 @@ const Landing = () => {
             {experienceOptions.map((option) => (
               <Link
                 key={option.value}
-                to={option.value === 'rent' ? rentHref : toursHref}
+                to={
+                  option.value === 'rent'
+                    ? rentHref
+                    : option.value === 'tours'
+                      ? toursHref
+                      : marketplaceHref
+                }
+                onMouseEnter={() => warmFlow(option.value)}
+                onFocus={() => warmFlow(option.value)}
+                onTouchStart={() => warmFlow(option.value)}
                 className="group flex min-h-[156px] w-full items-center justify-between rounded-[24px] bg-white p-9 text-left shadow-[0_10px_30px_rgba(0,0,0,0.06)] transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.018] hover:shadow-[0_22px_56px_rgba(15,23,42,0.12)] active:translate-y-0 active:scale-[0.982] sm:p-10"
               >
                 <span className="text-[42px] font-extrabold leading-none tracking-[-0.045em] text-slate-950 sm:text-[48px]">

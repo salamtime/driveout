@@ -49,40 +49,70 @@ const normalizeVehicleModel = (model = {}) => ({
   capacity_min: Number(model.capacity_min || model.capacityMin || 0) || 0,
 });
 
+let cachedTourPackages = null;
+let cachedTourPackagesAt = 0;
+let inFlightTourPackagesRequest = null;
+const TOUR_PACKAGES_CACHE_TTL_MS = 60 * 1000;
+
 /**
  * Fetch all active tour packages
  * @returns {Promise<{data: Array|null, error: Error|null}>}
  */
 export const fetchTourPackages = async () => {
+  const now = Date.now();
+  if (cachedTourPackages && now - cachedTourPackagesAt < TOUR_PACKAGES_CACHE_TTL_MS) {
+    return cachedTourPackages;
+  }
+
+  if (inFlightTourPackagesRequest) {
+    return inFlightTourPackagesRequest;
+  }
+
   try {
-    const response = await fetch('/api/tour-packages', {
-      method: 'GET',
-      credentials: 'include',
-      cache: 'no-store',
-    });
-    const contentType = response.headers.get('content-type') || '';
+    inFlightTourPackagesRequest = (async () => {
+      const response = await fetch('/api/tour-packages', {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      const contentType = response.headers.get('content-type') || '';
 
-    if (!contentType.includes('application/json')) {
-      throw new Error(`Unexpected response type: ${contentType || 'unknown'}`);
-    }
+      if (!contentType.includes('application/json')) {
+        throw new Error(`Unexpected response type: ${contentType || 'unknown'}`);
+      }
 
-    const payload = await response.json();
+      const payload = await response.json();
 
-    if (!response.ok) {
-      throw new Error(payload?.error || response.statusText || 'Could not load tour packages');
-    }
+      if (!response.ok) {
+        throw new Error(payload?.error || response.statusText || 'Could not load tour packages');
+      }
 
-    const packages = Array.isArray(payload?.packages) ? payload.packages : [];
-    return {
-      data: packages,
-      pricingRows: Array.isArray(payload?.pricingRows) ? payload.pricingRows : [],
-      vehicleModels: Array.isArray(payload?.vehicleModels) ? payload.vehicleModels.map(normalizeVehicleModel) : [],
-      error: null,
-    };
+      const packages = Array.isArray(payload?.packages) ? payload.packages : [];
+      const result = {
+        data: packages,
+        pricingRows: Array.isArray(payload?.pricingRows) ? payload.pricingRows : [],
+        vehicleModels: Array.isArray(payload?.vehicleModels) ? payload.vehicleModels.map(normalizeVehicleModel) : [],
+        error: null,
+      };
+
+      cachedTourPackages = result;
+      cachedTourPackagesAt = Date.now();
+      return result;
+    })();
+
+    const result = await inFlightTourPackagesRequest;
+    inFlightTourPackagesRequest = null;
+    return result;
   } catch (apiError) {
+    inFlightTourPackagesRequest = null;
     console.warn('Tour packages request failed:', apiError.message);
     return { data: null, error: apiError };
   }
+};
+
+export const preloadTourPackages = async () => {
+  const result = await fetchTourPackages();
+  return result;
 };
 
 /**

@@ -4,7 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { isBusinessAccountType, isBusinessOwnerAccountType, isPlatformOwnerEmail } from '../../utils/accountType';
 
 /**
- * CustomerDashboard - Redirects customer users into the single workspace page.
+ * CustomerDashboard - Redirects customer users into the profile workspace.
  */
 const CustomerDashboard = () => {
   const { user, getBusinessOwnerHomePath } = useAuth();
@@ -27,10 +27,10 @@ const CustomerDashboard = () => {
   }
 
   if (isBusinessAccountType(accountType)) {
-    return <Navigate to="/customer/profile" replace />;
+    return <Navigate to="/account/overview" replace />;
   }
 
-  return <Navigate to="/customer/profile" replace />;
+  return <Navigate to="/account/overview" replace />;
 };
 
 export default CustomerDashboard;

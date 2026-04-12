@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, CalendarClock, Gauge, MapPin, ShieldCheck, UserRound } from 'lucide-react';
+import { ArrowLeft, BadgeCheck, CalendarClock, Gauge, MapPin, ShieldCheck, UserRound, X } from 'lucide-react';
 import PublicSiteChrome from '../components/public/PublicSiteChrome';
 import PublicCatalogService from '../services/PublicCatalogService';
+
+const VERIFIED_BADGE_SRC = '/images/certified-badge.png';
 
 const formatMoney = (value, currency = 'MAD') => {
   const amount = Number(value || 0);
@@ -12,6 +14,8 @@ const formatMoney = (value, currency = 'MAD') => {
 const PublicMarketplaceDetail = () => {
   const { listingId } = useParams();
   const [listing, setListing] = useState(null);
+  const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+  const [showVerificationInfo, setShowVerificationInfo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -32,6 +36,7 @@ const PublicMarketplaceDetail = () => {
         }
 
         setListing(data);
+        setActiveMediaIndex(0);
       } catch (loadError) {
         if (active) {
           setError(loadError?.message || 'Unable to load this marketplace listing.');
@@ -47,6 +52,12 @@ const PublicMarketplaceDetail = () => {
       active = false;
     };
   }, [listingId]);
+
+  const galleryMedia = Array.isArray(listing?.media) && listing.media.length > 0
+    ? listing.media.filter((item) => String(item?.url || '').trim())
+    : [];
+  const activeMediaItem = galleryMedia[activeMediaIndex] || null;
+  const activeImageUrl = activeMediaItem?.url || listing?.imageUrl || '';
 
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#fcfbff_0%,#f8fafc_45%,#ffffff_100%)]">
@@ -72,20 +83,42 @@ const PublicMarketplaceDetail = () => {
             <section className="overflow-hidden rounded-[2rem] border border-violet-100 bg-white shadow-[0_24px_70px_rgba(79,70,229,0.10)]">
               <div className="relative min-h-[360px] bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.9),rgba(237,233,254,0.9))]">
                 <img
-                  src={listing.imageUrl}
+                  src={activeImageUrl}
                   alt={listing.title}
-                  className="h-full min-h-[360px] w-full object-contain p-4"
+                  className="h-full min-h-[360px] w-full rounded-[2rem] object-contain p-4"
                 />
                 <div className="absolute left-5 top-5 rounded-full bg-white/90 px-4 py-2 text-sm font-black text-violet-700 shadow-sm ring-1 ring-violet-100">
                   {listing.badge}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setShowVerificationInfo(true)}
+                  className="absolute bottom-5 right-5 inline-flex h-14 w-14 items-center justify-center rounded-full bg-white shadow-[0_14px_34px_rgba(79,70,229,0.18)] ring-1 ring-violet-200 transition hover:scale-[1.03] hover:shadow-[0_18px_42px_rgba(79,70,229,0.22)]"
+                  aria-label="Open verified listing information"
+                >
+                  <img
+                    src={VERIFIED_BADGE_SRC}
+                    alt="Verified listing"
+                    className="h-9 w-9 rounded-full object-cover"
+                  />
+                </button>
               </div>
-              {Array.isArray(listing.media) && listing.media.length > 1 ? (
+              {galleryMedia.length > 1 ? (
                 <div className="flex gap-3 overflow-x-auto border-t border-slate-100 p-4">
-                  {listing.media.slice(0, 8).map((item, index) => (
-                    <div key={item.id || item.url || index} className="h-20 w-28 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                  {galleryMedia.slice(0, 8).map((item, index) => (
+                    <button
+                      key={item.id || item.url || index}
+                      type="button"
+                      onClick={() => setActiveMediaIndex(index)}
+                      className={`h-20 w-28 shrink-0 overflow-hidden rounded-2xl border bg-slate-50 transition ${
+                        index === activeMediaIndex
+                          ? 'border-violet-400 ring-2 ring-violet-200'
+                          : 'border-slate-200 hover:border-violet-200'
+                      }`}
+                      aria-label={`Show marketplace image ${index + 1}`}
+                    >
                       <img src={item.url} alt="" className="h-full w-full object-cover" />
-                    </div>
+                    </button>
                   ))}
                 </div>
               ) : null}
@@ -164,6 +197,34 @@ const PublicMarketplaceDetail = () => {
           </div>
         )}
       </main>
+
+      {showVerificationInfo ? (
+        <div className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-950/45 p-4 sm:items-center sm:p-6">
+          <div className="w-full max-w-md rounded-[2rem] border border-violet-100 bg-white p-6 shadow-[0_30px_80px_rgba(15,23,42,0.22)]">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <span className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-violet-100 text-violet-700">
+                  <BadgeCheck className="h-6 w-6" />
+                </span>
+                <div>
+                  <p className="text-lg font-black text-slate-950">Verified marketplace listing</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    This vehicle passed the marketplace visibility checks. Owner details, pricing, and listing setup were reviewed before going live.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowVerificationInfo(false)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 hover:text-slate-700"
+                aria-label="Close verified listing information"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

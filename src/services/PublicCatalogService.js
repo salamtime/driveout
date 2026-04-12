@@ -80,7 +80,7 @@ class PublicCatalogService {
   }
 
   static async fetchCertifiedFleet() {
-    const body = await this.fetchServerCatalog('catalog', {
+    const body = await this.getCatalog({
       flow: 'instant',
       source: 'certified_fleet',
     });
@@ -88,7 +88,7 @@ class PublicCatalogService {
   }
 
   static async fetchMarketplaceListings() {
-    const body = await this.fetchServerCatalog('catalog', {
+    const body = await this.getCatalog({
       flow: 'request',
       source: 'marketplace',
     });
@@ -96,7 +96,40 @@ class PublicCatalogService {
   }
 
   static async getCatalog(filters = {}) {
-    return this.fetchServerCatalog('catalog', filters);
+    const normalizedFilters = Object.entries(filters || {})
+      .filter(([, value]) => value !== undefined && value !== null && value !== '')
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+    const cacheKey = `catalog:${JSON.stringify(normalizedFilters)}`;
+    const now = Date.now();
+    const cached = this.catalogCache.get(cacheKey);
+
+    if (cached?.data && now - cached.timestamp < this.cacheTtlMs) {
+      return cached.data;
+    }
+
+    if (cached?.promise) {
+      return cached.promise;
+    }
+
+    const request = this.fetchServerCatalog('catalog', filters)
+      .then((data) => {
+        this.catalogCache.set(cacheKey, {
+          data,
+          timestamp: Date.now(),
+        });
+        return data;
+      })
+      .catch((error) => {
+        this.catalogCache.delete(cacheKey);
+        throw error;
+      });
+
+    this.catalogCache.set(cacheKey, {
+      promise: request,
+      timestamp: now,
+    });
+
+    return request;
   }
 
   static async getListingById(listingId, cityOverride) {
@@ -113,6 +146,10 @@ class PublicCatalogService {
 
   static getMarketingPrintPackages(packages = [], limit = 5) {
     return getMarketingPrintPackages(packages, limit);
+  }
+
+  static preloadCatalog(filters = {}) {
+    return this.getCatalog(filters).catch(() => null);
   }
 }
 

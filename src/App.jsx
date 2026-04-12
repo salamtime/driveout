@@ -241,8 +241,16 @@ const RentalDetails = lazy(() => import('./pages/admin/RentalDetails'));
 const InvoicePage = lazy(() => import('./pages/admin/InvoicePage'));
 const AdminDashboard = lazy(() => import('./pages/admin/Dashboard'));
 const GuideDashboard = lazy(() => import('./pages/guide/Dashboard'));
-const CustomerDashboard = lazy(() => import('./pages/customer/Dashboard'));
-const CustomerAccount = lazy(() => import('./pages/customer/Account'));
+const AccountWorkspaceLayout = lazy(() => import('./components/account/AccountWorkspaceLayout'));
+const AccountOverview = lazy(() => import('./pages/account/AccountOverview'));
+const AccountRentals = lazy(() => import('./pages/account/AccountRentals'));
+const AccountTours = lazy(() => import('./pages/account/AccountTours'));
+const AccountMarketplace = lazy(() => import('./pages/account/AccountMarketplace'));
+const AccountMessages = lazy(() => import('./pages/account/AccountMessages'));
+const AccountReviews = lazy(() => import('./pages/account/AccountReviews'));
+const AccountRevenue = lazy(() => import('./pages/account/AccountRevenue'));
+const AccountVerification = lazy(() => import('./pages/account/AccountVerification'));
+const AccountSettings = lazy(() => import('./pages/account/AccountSettings'));
 const Login = lazy(() => import('./pages/auth/Login'));
 const Register = lazy(() => import('./pages/auth/Register'));
 const Unauthorized = lazy(() => import('./pages/auth/Unauthorized'));
@@ -745,6 +753,24 @@ function App() {
                     </ProtectedRoute>
                   </ErrorBoundary>
                 } />
+                <Route path="/account/*" element={
+                  <ErrorBoundary name="Account-Workspace">
+                    <ProtectedRoute>
+                      <AccountWorkspaceLayout />
+                    </ProtectedRoute>
+                  </ErrorBoundary>
+                }>
+                  <Route index element={<Navigate to="/account/overview" replace />} />
+                  <Route path="overview" element={<AccountOverview />} />
+                  <Route path="rentals" element={<AccountRentals />} />
+                  <Route path="tours" element={<AccountTours />} />
+                  <Route path="marketplace" element={<AccountMarketplace />} />
+                  <Route path="messages" element={<AccountMessages />} />
+                  <Route path="reviews" element={<AccountReviews />} />
+                  <Route path="revenue" element={<AccountRevenue />} />
+                  <Route path="verification" element={<AccountVerification />} />
+                  <Route path="settings" element={<AccountSettings />} />
+                </Route>
                 <Route path="/track/tour/:groupId" element={
                   <ErrorBoundary name="Tour-Tracker">
                     <ProtectedRoute requiredRoles={['owner', 'admin', 'employee', 'guide']}>
@@ -811,16 +837,16 @@ function App() {
                   <ErrorBoundary name="Customer-Routes">
                     <CustomerRoute>
                       <Routes>
-                        <Route path="dashboard" element={<CustomerDashboard />} />
+                        <Route path="dashboard" element={<Navigate to="/account/overview" replace />} />
                         <Route path="book" element={<div className="p-6"><div className="bg-purple-50 border border-purple-200 rounded-lg p-6"><h2 className="text-lg font-semibold text-purple-900 mb-2">Booking System</h2><p className="text-purple-800">Vehicle booking interface will be implemented here.</p></div></div>} />
-                        <Route path="rentals" element={<div className="p-6"><div className="bg-purple-50 border border-purple-200 rounded-lg p-6"><h2 className="text-lg font-semibold text-purple-900 mb-2">My Rentals</h2><p className="text-purple-800">Personal rental history will be implemented here.</p></div></div>} />
-                        <Route path="profile" element={<CustomerAccount />} />
+                        <Route path="rentals" element={<Navigate to="/account/rentals" replace />} />
+                        <Route path="profile" element={<Navigate to="/account/settings" replace />} />
                       </Routes>
                     </CustomerRoute>
                   </ErrorBoundary>
                 } />
 
-                <Route path="/business/*" element={<Navigate to="/customer/profile" replace />} />
+                <Route path="/business/*" element={<Navigate to="/account/overview" replace />} />
 
                 {/* Catch-all redirect to home */}
                 <Route path="*" element={<Navigate to="/" replace />} />

@@ -1286,7 +1286,7 @@ const Tours = () => {
                             ) : (
                               <div className="flex flex-wrap gap-3">
                                 <Link
-                                  to="/customer/profile"
+                                  to="/account/overview"
                                   className="rounded-full border border-violet-200 bg-violet-50 px-5 py-3 text-sm font-black text-violet-700 transition hover:bg-violet-100"
                                 >
                                   Go to profile

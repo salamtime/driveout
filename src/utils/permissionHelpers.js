@@ -245,8 +245,9 @@ export const canChooseTourGuide = (user) => {
 
 export const canManageTourPackages = (user) => {
   const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
 
-  if (String(userProfile?.role || '').toLowerCase() === 'owner') {
+  if (role === 'owner' || role === 'admin') {
     return true;
   }
 

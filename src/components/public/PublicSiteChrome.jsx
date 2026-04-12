@@ -8,6 +8,8 @@ import i18n from '../../i18n';
 import { isApprovedBusinessOwnerAccount, isBusinessAccountType, isBusinessOwnerAccountType, isPlatformOwnerEmail } from '../../utils/accountType';
 
 const SAHARAX_LOGO_SRC = '/assets/logo.jpg';
+const ACCOUNT_MENU_PERSIST_KEY = 'saharax_account_menu_open';
+const ACCOUNT_RETURN_PATH_KEY = 'saharax_account_return_path';
 
 const DEFAULT_CATEGORY_PILLS = [
   { label: 'ATV', href: '/rent?category=atv' },
@@ -19,7 +21,14 @@ const DEFAULT_CATEGORY_PILLS = [
 ];
 
 const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_PILLS }) => {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.sessionStorage.getItem(ACCOUNT_MENU_PERSIST_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const location = useLocation();
   const navigate = useNavigate();
   useTranslation();
@@ -62,17 +71,20 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
   const canOpenAdminPanel = ['owner', 'admin', 'employee', 'guide', 'business_owner'].includes(normalizedRole) || approvedBusinessOwner;
   const adminHref = normalizedRole === 'guide' ? '/guide/dashboard' : '/admin/dashboard';
   const adminLabel = normalizedRole === 'guide' ? 'Open Guide Panel' : 'Open Admin Panel';
-  let workspaceHref = '/customer/profile';
+  const hasPrivateProfileWorkspace = Boolean(user) && !businessOwnerFreezeRedirect && !canOpenAdminPanel;
+  let workspaceHref = '/account/overview';
   if (businessOwnerFreezeRedirect) {
     workspaceHref = businessOwnerFreezeRedirect;
   } else if (canOpenAdminPanel) {
     workspaceHref = adminHref;
   } else if (isBusinessAccountType(normalizedAccountType)) {
-    workspaceHref = '/customer/profile';
+    workspaceHref = '/account/overview';
   }
-  const workspaceLabel = isBusinessAccountType(normalizedAccountType)
-    ? tr('Business Workspace', 'Espace business')
-    : tr('My Workspace', 'Mon espace');
+  const workspaceLabel = hasPrivateProfileWorkspace
+    ? tr('My Profile', 'Mon profil')
+    : isBusinessAccountType(normalizedAccountType)
+      ? tr('Business Workspace', 'Espace business')
+      : tr('My Workspace', 'Mon espace');
   const handleSignOut = async () => {
     setMenuOpen(false);
     await signOut();
@@ -80,6 +92,18 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
   const handlePublicNavigate = (href) => {
     setMenuOpen(false);
     navigate(href);
+  };
+  const handleProfileWorkspaceNavigate = () => {
+    try {
+      window.sessionStorage.setItem(ACCOUNT_MENU_PERSIST_KEY, '1');
+      window.sessionStorage.setItem(
+        ACCOUNT_RETURN_PATH_KEY,
+        `${location.pathname || '/website'}${location.search || ''}${location.hash || ''}`
+      );
+    } catch (error) {
+      console.warn('Failed to persist account menu state:', error);
+    }
+    navigate('/account/overview');
   };
   const accountLabel = user
     ? (userProfile?.fullName || userProfile?.email || user?.email || 'Signed in')
@@ -129,6 +153,18 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
       document.body.style.overflow = '';
       window.scrollTo(0, Number.parseInt(top || '0', 10) * -1 || 0);
     };
+  }, [menuOpen]);
+
+  useEffect(() => {
+    try {
+      if (menuOpen) {
+        window.sessionStorage.setItem(ACCOUNT_MENU_PERSIST_KEY, '1');
+      } else {
+        window.sessionStorage.removeItem(ACCOUNT_MENU_PERSIST_KEY);
+      }
+    } catch (error) {
+      console.warn('Failed to sync public menu state:', error);
+    }
   }, [menuOpen]);
 
   return (
@@ -253,15 +289,34 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-violet-100 bg-white/85 px-3 py-3 shadow-sm">
-                    <div className="flex items-center justify-between text-xs text-slate-500">
-                      <span>{tr('Page access', 'Accès aux pages')}</span>
-                      <span>{navItems.length}/{navItems.length}</span>
+                  {hasPrivateProfileWorkspace ? (
+                    <button
+                      type="button"
+                      onClick={handleProfileWorkspaceNavigate}
+                      className="flex w-full items-center justify-between gap-3 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-50 via-white to-indigo-50 px-3 py-3 text-left text-sm font-semibold text-violet-700 transition-all hover:border-violet-300 hover:text-violet-800"
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-sm">
+                          <LayoutDashboard className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate">{tr('My profile', 'Mon profil')}</div>
+                          <div className="mt-0.5 text-xs font-medium text-violet-600">{tr('Signed in', 'Connecté')}</div>
+                        </div>
+                      </div>
+                      <ChevronRight className="h-4 w-4 flex-shrink-0 text-violet-600" />
+                    </button>
+                  ) : (
+                    <div className="rounded-2xl border border-violet-100 bg-white/85 px-3 py-3 shadow-sm">
+                      <div className="flex items-center justify-between text-xs text-slate-500">
+                        <span>{tr('Page access', 'Accès aux pages')}</span>
+                        <span>{navItems.length}/{navItems.length}</span>
+                      </div>
+                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100">
+                        <div className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-700" style={{ width: '100%' }} />
+                      </div>
                     </div>
-                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100">
-                      <div className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-700" style={{ width: '100%' }} />
-                    </div>
-                  </div>
+                  )}
                 </div>
               </div>
 
@@ -316,21 +371,19 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                     <LayoutDashboard className="h-4 w-4" />
                     <span>{adminLabel}</span>
                   </Link>
-                ) : (
-                  <Link
-                    to="/login"
-                    onClick={() => setMenuOpen(false)}
-                    className="flex w-full items-center gap-3 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_36px_rgba(79,70,229,0.20)] transition-all hover:from-violet-700 hover:to-indigo-800"
-                  >
-                    <LayoutDashboard className="h-4 w-4" />
-                    <span>{tr('Admin Sign In', 'Connexion admin')}</span>
-                  </Link>
-                )}
+                ) : null}
 
-                {user ? (
+                {user && !hasPrivateProfileWorkspace ? (
                   <Link
                     to={workspaceHref}
-                    onClick={() => setMenuOpen(false)}
+                    onClick={(event) => {
+                      if (hasPrivateProfileWorkspace) {
+                        event.preventDefault();
+                        handleProfileWorkspaceNavigate();
+                        return;
+                      }
+                      setMenuOpen(false);
+                    }}
                     className="flex w-full items-center gap-3 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-50 via-white to-indigo-50 px-4 py-3 text-sm font-semibold text-violet-700 transition-all hover:border-violet-300 hover:text-violet-800"
                   >
                     <LayoutDashboard className="h-4 w-4" />
@@ -345,7 +398,7 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                     className="flex w-full items-center gap-3 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-600 transition-colors hover:bg-rose-100"
                   >
                     <LogIn className="h-4 w-4" />
-                    <span>{tr('Sign Out', 'Se déconnecter')}</span>
+                    <span>{tr('Sign out', 'Se déconnecter')}</span>
                   </button>
                 ) : (
                   <Link
