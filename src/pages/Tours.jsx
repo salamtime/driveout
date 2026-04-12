@@ -157,17 +157,6 @@ const getTourStartingPrice = ({ rows = [], packageId, durationHours, pkg }) => {
     return Math.min(...anyGlobalRows.map((row) => Number(row.price_mad || 0)).filter((price) => price > 0));
   }
 
-  const packageDefaults = [
-    Number(pkg?.default_rate_1h || 0),
-    Number(pkg?.default_rate_2h || 0),
-    Number(pkg?.vip_rate_1h || 0),
-    Number(pkg?.vip_rate_2h || 0),
-  ].filter((price) => price > 0);
-
-  if (packageDefaults.length > 0) {
-    return Math.min(...packageDefaults);
-  }
-
   return 0;
 };
 
@@ -1128,9 +1117,7 @@ const Tours = () => {
                 <article
                   key={tour.id}
                   onClick={() => {
-                    if (!selected) {
-                      toggleTourSelection(tour);
-                    }
+                    toggleTourSelection(tour);
                   }}
                   className={`relative cursor-pointer rounded-[32px] border bg-white p-6 shadow-[0_18px_45px_rgba(79,70,229,0.07)] transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.018] hover:shadow-[0_26px_64px_rgba(79,70,229,0.13)] active:translate-y-0 active:scale-[0.982] ${
                     selected ? 'border-violet-400 ring-4 ring-violet-100' : 'border-violet-100'
@@ -1195,6 +1182,16 @@ const Tours = () => {
                     </div>
                   ) : null}
 
+                  <div className="mt-5 flex items-center justify-between border-t border-violet-100/80 pt-4">
+                    <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">
+                      {selected ? 'Hide details' : 'View details'}
+                    </span>
+                    <span className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50/70 px-3 py-1.5 text-xs font-black text-violet-700">
+                      {selected ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      {selected ? 'Tap to collapse' : 'Tap to open'}
+                    </span>
+                  </div>
+
                   {selected && (
                     <div
                       className="mt-6 grid gap-5 border-t border-violet-100 pt-6 lg:grid-cols-[1fr_420px]"
@@ -1213,7 +1210,7 @@ const Tours = () => {
                         )}
                       </div>
 
-                      <div className="rounded-[28px] border border-violet-100 bg-violet-50/60 p-5 pb-28 shadow-[0_18px_45px_rgba(79,70,229,0.07)]">
+                      <div className="flex flex-col rounded-[28px] border border-violet-100 bg-violet-50/60 p-5 pb-8 shadow-[0_18px_45px_rgba(79,70,229,0.07)] lg:pb-28">
                         {bookingSuccess && String(selectedPackageId) === String(tour.id) ? (
                           <div className="space-y-4">
                             <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-600">Reservation received</p>
@@ -1422,8 +1419,8 @@ const Tours = () => {
                               </div>
                             </div>
 
-                            <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)] sm:px-6 lg:absolute lg:bottom-5 lg:left-5 lg:right-5">
-                              <div className="pointer-events-auto rounded-[26px] border border-violet-200 bg-white/96 px-4 py-3 shadow-[0_-12px_30px_rgba(15,23,42,0.12)] backdrop-blur">
+                            <div className="hidden lg:absolute lg:bottom-5 lg:left-5 lg:right-5 lg:block">
+                              <div className="rounded-[26px] border border-violet-200 bg-white/88 px-4 py-3 shadow-[0_-12px_30px_rgba(15,23,42,0.12)] backdrop-blur-xl transition-opacity duration-200">
                                 <div className="flex items-center gap-3">
                                   <div className="min-w-0 flex-1">
                                     <p className="truncate text-sm font-black text-slate-950">{bookingStickySummary}</p>
@@ -1461,6 +1458,28 @@ const Tours = () => {
           </div>
         )}
       </main>
+
+      {selectedTour && !bookingSuccess ? (
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)] sm:px-6 lg:hidden">
+          <div className="pointer-events-auto rounded-[26px] border border-violet-200 bg-white/88 px-4 py-3 shadow-[0_-12px_30px_rgba(15,23,42,0.12)] backdrop-blur-xl">
+            <div className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-black text-slate-950">{bookingStickySummary}</p>
+                <p className="mt-1 text-2xl font-black tracking-tight text-slate-950">{formatMoney(totalPrice)}</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={!selectedTour.modelOptions.length || submitting || selectedQuadCount <= 0}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-violet-700 px-5 py-3 text-sm font-black text-white shadow-[0_18px_35px_rgba(124,58,237,0.22)] transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                {submitting ? 'Sending...' : 'Book now'}
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <MediaModal tour={mediaTour} initialIndex={mediaIndex} onClose={() => setMediaTour(null)} />
     </div>
