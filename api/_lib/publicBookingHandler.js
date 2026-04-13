@@ -701,6 +701,7 @@ const createRequestReference = () => {
 };
 
 const isUuid = (value = '') => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+const isRqReference = (value = '') => String(value || '').toLowerCase().startsWith('rq_');
 const sanitizeUuid = (value) => (isUuid(value) ? String(value) : null);
 
 const getAuthenticatedCustomerLink = async (adminClient, user, payload = {}) => {
@@ -1112,7 +1113,22 @@ const createMarketplaceRequest = async (adminClient, payload) => {
     throw createHttpError(400, 'This marketplace listing is missing owner information. Please try another listing.');
   }
 
-  const { error } = await adminClient.from('app_booking_requests').insert([payloadRow]);
+  let { error } = await adminClient.from('app_booking_requests').insert([payloadRow]);
+  if (error) {
+    const message = String(error?.message || '').toLowerCase();
+    if (message.includes('invalid input syntax for type uuid')) {
+      const fallback = {
+        ...payloadRow,
+        request_reference: null,
+        counter_offer: {
+          ...(payloadRow.counter_offer || {}),
+          request_reference: requestReference,
+        },
+      };
+      if (!isUuid(fallback.id)) delete fallback.id;
+      ({ error } = await adminClient.from('app_booking_requests').insert([fallback]));
+    }
+  }
   if (error) throw error;
   return { ...payloadRow, request_reference: requestReference };
 };
