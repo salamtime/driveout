@@ -1092,6 +1092,7 @@ const createMarketplaceRequest = async (adminClient, payload) => {
   const requestReference = createRequestReference();
   const payloadRow = {
     id: createBookingId(),
+    request_reference: null,
     listing_id: sanitizeUuid(listingId),
     vehicle_public_profile_id: sanitizeUuid(cleanValue(listing.vehiclePublicProfileId)),
     owner_id: sanitizeUuid(ownerId),
