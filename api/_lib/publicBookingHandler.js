@@ -1088,9 +1088,9 @@ const createMarketplaceRequest = async (adminClient, payload) => {
   }
 
   const normalizedUserId = cleanValue(userId);
+  const requestReference = createRequestReference();
   const payloadRow = {
     id: createBookingId(),
-    request_reference: createRequestReference(),
     listing_id: sanitizeUuid(listingId),
     vehicle_public_profile_id: sanitizeUuid(cleanValue(listing.vehiclePublicProfileId)),
     owner_id: sanitizeUuid(ownerId),
@@ -1112,27 +1112,9 @@ const createMarketplaceRequest = async (adminClient, payload) => {
     throw createHttpError(400, 'This marketplace listing is missing owner information. Please try another listing.');
   }
 
-  let { error } = await adminClient.from('app_booking_requests').insert([payloadRow]);
-  if (error) {
-    const message = String(error?.message || '').toLowerCase();
-    if (message.includes('invalid input syntax for type uuid') && String(payloadRow.request_reference || '').toLowerCase().startsWith('rq_')) {
-      const fallbackPayload = {
-        ...payloadRow,
-        counter_offer: {
-          ...(payloadRow.counter_offer || {}),
-          request_reference: payloadRow.request_reference,
-        },
-      };
-      delete fallbackPayload.request_reference;
-      if (!isUuid(fallbackPayload.id)) delete fallbackPayload.id;
-      ({ error } = await adminClient.from('app_booking_requests').insert([fallbackPayload]));
-      if (!error) {
-        return payloadRow;
-      }
-    }
-    throw error;
-  }
-  return payloadRow;
+  const { error } = await adminClient.from('app_booking_requests').insert([payloadRow]);
+  if (error) throw error;
+  return { ...payloadRow, request_reference: requestReference };
 };
 
 const updateWebsiteBookingState = async (adminClient, rentalId, payload) => {
