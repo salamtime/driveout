@@ -1,8 +1,16 @@
-import React, { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, BadgeCheck, CalendarClock, Gauge, MapPin, ShieldCheck, UserRound, X } from 'lucide-react';
+import React, { useMemo, useEffect, useState } from 'react';
+import { Link, useLocation, useParams } from 'react-router-dom';
+import { ArrowLeft, BadgeCheck, CalendarClock, Gauge, MapPin, ShieldCheck, Share2, X } from 'lucide-react';
 import PublicSiteChrome from '../components/public/PublicSiteChrome';
+import PublicSiteFooter from '../components/public/PublicSiteFooter';
 import PublicCatalogService from '../services/PublicCatalogService';
+import PublicBookingService from '../services/PublicBookingService';
+import VerificationService from '../services/VerificationService';
+import { useAuth } from '../contexts/AuthContext';
+import { buildMarketplaceRequestPath, buildMarketplaceWhatsappShareHref } from '../utils/marketplaceShareLinks';
+import { getMarketplaceRequestDisplay, normalizeMarketplaceRequestLifecycleStatus } from '../utils/marketplaceRequestState';
+import { getCachedMarketplaceRequestForUsers } from '../utils/marketplaceRequestCache';
+import { resolveReturnPath } from '../utils/navigationReturn';
 
 const VERIFIED_BADGE_SRC = '/images/certified-badge.png';
 
@@ -11,13 +19,52 @@ const formatMoney = (value, currency = 'MAD') => {
   return `${Number.isFinite(amount) ? amount.toLocaleString() : '0'} ${currency}`;
 };
 
-const PublicMarketplaceDetail = () => {
+const formatHalfDayWindow = (minHours, maxHours) => {
+  const min = Number(minHours || 0);
+  const max = Number(maxHours || 0);
+  if (min > 0 && max > 0) return `${min}-${max} hours`;
+  if (max > 0) return `${max} hours`;
+  if (min > 0) return `${min} hours`;
+  return '4-5 hours';
+};
+
+const getVerificationStatus = (userProfile, user) =>
+  String(
+    userProfile?.verificationStatus ||
+      user?.user_metadata?.verification_status ||
+      user?.app_metadata?.verification_status ||
+      ''
+  )
+    .trim()
+    .toLowerCase();
+
+const resolveListingOwnerId = (listing) =>
+  String(listing?.ownerId || listing?.owner_id || listing?.ownerUserId || listing?.owner_user_id || '')
+    .trim();
+
+const PublicMarketplaceDetail = ({ embeddedInAccount = false, accountBasePath = '/account/marketplace' }) => {
   const { listingId } = useParams();
+  const location = useLocation();
+  const { user, userProfile } = useAuth();
   const [listing, setListing] = useState(null);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
   const [showVerificationInfo, setShowVerificationInfo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [verificationSummary, setVerificationSummary] = useState(null);
+  const [existingRequest, setExistingRequest] = useState(null);
+  const listingOwnerId = resolveListingOwnerId(listing);
+  const isOwnerViewingOwnListing = Boolean(user?.id && listingOwnerId && String(user.id) === listingOwnerId);
+  const backHref = useMemo(
+    () => resolveReturnPath(location, embeddedInAccount ? accountBasePath : '/marketplace'),
+    [accountBasePath, embeddedInAccount, location]
+  );
+  const backLabel = useMemo(() => {
+    if (location.state?.from) {
+      return 'Back to messages';
+    }
+    return embeddedInAccount ? 'Back to your marketplace' : 'Back to marketplace';
+  }, [embeddedInAccount, location.state]);
 
   useEffect(() => {
     let active = true;
@@ -53,19 +100,138 @@ const PublicMarketplaceDetail = () => {
     };
   }, [listingId]);
 
+  useEffect(() => {
+    let active = true;
+
+    const loadVerificationSummary = async () => {
+      if (!user?.id) {
+        setVerificationSummary(null);
+        return;
+      }
+
+      try {
+        const result = await VerificationService.getEntityVerificationSummary('user', user.id, { forceRefresh: true });
+        if (active) {
+          setVerificationSummary(result?.summary || null);
+        }
+      } catch {
+        if (active) {
+          setVerificationSummary(null);
+        }
+      }
+    };
+
+    void loadVerificationSummary();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadExistingRequest = async () => {
+      if (!user?.id || !listing?.id || isOwnerViewingOwnListing) {
+        setExistingRequest(null);
+        return;
+      }
+
+      try {
+        const result = await PublicBookingService.getExistingMarketplaceRequest(listing.id);
+        if (active) {
+          setExistingRequest(result || null);
+        }
+      } catch {
+        if (active) {
+          setExistingRequest(null);
+        }
+      }
+    };
+
+    void loadExistingRequest();
+
+    return () => {
+      active = false;
+    };
+  }, [isOwnerViewingOwnListing, listing?.id, user?.id]);
+
   const galleryMedia = Array.isArray(listing?.media) && listing.media.length > 0
     ? listing.media.filter((item) => String(item?.url || '').trim())
     : [];
   const activeMediaItem = galleryMedia[activeMediaIndex] || null;
   const activeImageUrl = activeMediaItem?.url || listing?.imageUrl || '';
+  const returnPath = `${location.pathname}${location.search || ''}${location.hash || ''}`;
+  const verificationStatus = String(
+    verificationSummary?.status || getVerificationStatus(userProfile, user)
+  ).trim().toLowerCase();
+  const isVerifiedAccount = Boolean(user?.id) && ['approved', 'verified'].includes(verificationStatus);
+  const requestPath = listing
+    ? embeddedInAccount
+      ? `${accountBasePath}/${listing.id}/request`
+      : buildMarketplaceRequestPath(listing.id, { source: 'listing-detail', via: 'primary-cta' })
+    : '/marketplace';
+  const verificationRedirectState = listing
+    ? {
+        from: requestPath,
+        resumeBookingFlow: 'marketplace_request',
+        bookingContext: {
+          listingId: listing.id,
+          vehicleId: listing.vehicleId || listing.vehiclePublicProfileId || '',
+          startDate: '',
+          endDate: '',
+        },
+      }
+    : { from: returnPath };
+  const trustSignals = useMemo(
+    () => [
+      listing?.badge ? 'Verified owner' : null,
+      galleryMedia.length >= 3 ? 'Real photos' : null,
+      listing?.depositAmount ? 'Deposit at pickup' : null,
+    ].filter(Boolean),
+    [galleryMedia.length, listing?.badge, listing?.depositAmount]
+  );
+  const vehicleSpecs = [
+    listing?.riderCapacity ? `${listing.riderCapacity} ${listing.riderCapacity === 1 ? 'seat' : 'seats'}` : null,
+    listing?.powerCcLabel || null,
+    listing?.transmission || null,
+  ].filter(Boolean);
+  const whatsappHref = listing
+    ? buildMarketplaceWhatsappShareHref({
+        listingId: listing.id,
+        title: listing.title,
+        dailyPrice: listing.dailyPrice,
+        currencyCode: listing.currencyCode || 'MAD',
+        locationLabel: listing?.location?.label || listing?.location?.city || '',
+        source: 'public-share',
+      })
+    : '';
+  const existingRequestStatus = normalizeMarketplaceRequestLifecycleStatus(existingRequest || '');
+  const existingRequestDisplay = existingRequest ? getMarketplaceRequestDisplay(existingRequestStatus) : null;
+  const cachedRequestedState = getCachedMarketplaceRequestForUsers({
+    userIds: [
+      userProfile?.id || user?.id || '',
+      userProfile?.email || user?.email || '',
+    ],
+    listingId: listing?.sourceId || listing?.id,
+  });
+  const shouldShowRequestedState = Boolean(!isOwnerViewingOwnListing && (existingRequest || cachedRequestedState));
+  const existingRequestHref = existingRequest?.id
+    ? `/account/messages?requestId=${encodeURIComponent(String(existingRequest.id))}`
+    : cachedRequestedState?.requestId
+      ? `/account/messages?requestId=${encodeURIComponent(String(cachedRequestedState.requestId))}`
+      : '';
 
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#fcfbff_0%,#f8fafc_45%,#ffffff_100%)]">
-      <PublicSiteChrome current="marketplace" />
+      {!embeddedInAccount ? <PublicSiteChrome current="marketplace" /> : null}
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-10">
-        <Link to="/marketplace" className="inline-flex items-center gap-2 text-sm font-bold text-violet-700 hover:text-violet-900">
+        <Link
+          to={backHref}
+          className="inline-flex items-center gap-2 text-sm font-bold text-violet-700 hover:text-violet-900"
+        >
           <ArrowLeft className="h-4 w-4" />
-          Back to marketplace
+          {backLabel}
         </Link>
 
         {loading ? (
@@ -126,29 +292,44 @@ const PublicMarketplaceDetail = () => {
 
             <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-amber-700">
-                  Request only
+                <span className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
+                  <img
+                    src={VERIFIED_BADGE_SRC}
+                    alt="Verified"
+                    className="h-4 w-4 rounded-full object-cover"
+                  />
+                  Verified
                 </span>
-                <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-violet-700">
-                  Marketplace
-                </span>
+                {trustSignals.map((signal) => (
+                  <span
+                    key={signal}
+                    className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600"
+                  >
+                    {signal}
+                  </span>
+                ))}
               </div>
 
               <h1 className="mt-5 text-4xl font-black tracking-tight text-slate-950">
                 {listing.title}
               </h1>
-              <p className="mt-3 text-sm leading-6 text-slate-600">
-                {listing.description || listing.shortSpec}
+              <p className="mt-3 text-base font-semibold text-slate-600">
+                {listing.location?.label || listing.location?.city || 'Morocco'}
               </p>
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-3xl bg-violet-50 p-4">
-                  <p className="text-xs font-black uppercase tracking-[0.18em] text-violet-500">Hourly</p>
-                  <p className="mt-2 text-2xl font-black text-slate-950">{listing.hourlyPrice ? formatMoney(listing.hourlyPrice, listing.currencyCode) : '-'}</p>
-                </div>
-                <div className="rounded-3xl bg-emerald-50 p-4">
-                  <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-600">Daily</p>
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-violet-500">Price per day</p>
                   <p className="mt-2 text-2xl font-black text-slate-950">{listing.dailyPrice ? formatMoney(listing.dailyPrice, listing.currencyCode) : '-'}</p>
+                </div>
+                <div className="rounded-3xl bg-slate-50 p-4">
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Deposit</p>
+                  <p className="mt-2 text-2xl font-black text-slate-950">
+                    {listing.depositAmount ? formatMoney(listing.depositAmount, listing.currencyCode) : '-'}
+                  </p>
+                  <p className="mt-2 text-xs font-semibold text-slate-500">
+                    Paid at pickup
+                  </p>
                 </div>
               </div>
 
@@ -157,47 +338,105 @@ const PublicMarketplaceDetail = () => {
                   <MapPin className="h-4 w-4 text-violet-600" />
                   <span>{listing.location?.label || listing.location?.city || 'Morocco'}</span>
                 </div>
-                <div className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3">
-                  <UserRound className="h-4 w-4 text-violet-600" />
-                  <span>{listing.ownerDisplayName || listing.ownerLabel}</span>
-                </div>
-                {listing.depositAmount ? (
-                  <div className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3">
-                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                    <span>Security deposit: {formatMoney(listing.depositAmount, listing.currencyCode)}</span>
-                  </div>
-                ) : null}
-                {[listing.riderCapacity ? `${listing.riderCapacity} seats` : null, listing.powerCcLabel, listing.transmission].filter(Boolean).length ? (
+                {vehicleSpecs.length ? (
                   <div className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3">
                     <Gauge className="h-4 w-4 text-violet-600" />
-                    <span>{[listing.riderCapacity ? `${listing.riderCapacity} seats` : null, listing.powerCcLabel, listing.transmission].filter(Boolean).join(' • ')}</span>
+                    <span>{vehicleSpecs.join(' • ')}</span>
                   </div>
                 ) : null}
               </div>
 
-              <div className="mt-8 rounded-[1.75rem] border border-amber-200 bg-amber-50 p-5">
+              <div className={`mt-8 rounded-[1.75rem] p-5 ${
+                isOwnerViewingOwnListing
+                  ? 'border border-emerald-200 bg-emerald-50'
+                  : 'border border-violet-200 bg-violet-50'
+              }`}>
                 <div className="flex items-start gap-3">
-                  <CalendarClock className="mt-0.5 h-5 w-5 text-amber-700" />
+                  <CalendarClock className={`mt-0.5 h-5 w-5 ${isOwnerViewingOwnListing ? 'text-emerald-700' : 'text-violet-700'}`} />
                   <div>
-                    <p className="font-black text-amber-900">Owner review required</p>
-                    <p className="mt-1 text-sm leading-6 text-amber-800">
-                      Send a request first. The owner or operator will accept, decline, or counter-offer before this becomes a confirmed rental.
+                    <p className={`font-black ${isOwnerViewingOwnListing ? 'text-emerald-900' : 'text-violet-900'}`}>
+                      {isOwnerViewingOwnListing ? 'Open owner workspace' : 'Request this vehicle'}
                     </p>
+                    <p className={`mt-1 text-sm leading-6 ${isOwnerViewingOwnListing ? 'text-emerald-800' : 'text-violet-800'}`}>
+                      {isOwnerViewingOwnListing
+                        ? 'You are viewing your own marketplace vehicle. Manage pricing, availability, listing details, and incoming requests from the owner workspace.'
+                        : 'Owner will review your request before confirmation.'}
+                    </p>
+                    {!isOwnerViewingOwnListing ? (
+                      <p className="mt-3 text-sm font-semibold text-violet-900">
+                        Request → Owner approves → You confirm
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               </div>
 
-              <Link
-                to={`/marketplace/${listing.id}/request`}
-                className="mt-6 inline-flex w-full items-center justify-center rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-4 text-sm font-black text-white shadow-[0_18px_40px_rgba(79,70,229,0.24)] transition hover:-translate-y-0.5"
-              >
-                Request booking
-              </Link>
+              <div className="mt-6 rounded-[1.5rem] border border-slate-200 bg-slate-50 px-5 py-5">
+                <p className="text-sm leading-7 text-slate-700">
+                  {listing.description || listing.shortSpec || 'A clean, ready-to-book vehicle for your next ride.'}
+                </p>
+              </div>
+
+              <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                {isOwnerViewingOwnListing ? (
+                  <Link
+                    to={
+                      listing?.vehiclePublicProfileId
+                        ? `/account/vehicles/${encodeURIComponent(String(listing.vehiclePublicProfileId))}/profile?tab=listing`
+                        : accountBasePath
+                    }
+                    state={{ from: returnPath }}
+                    className="inline-flex flex-1 items-center justify-center rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-4 text-sm font-black text-white shadow-[0_18px_40px_rgba(16,185,129,0.24)] transition hover:-translate-y-0.5"
+                  >
+                    Open owner workspace
+                  </Link>
+                ) : shouldShowRequestedState ? (
+                  <Link
+                    to={existingRequestHref || '#'}
+                    className="inline-flex flex-1 items-center justify-center rounded-2xl border border-slate-300 bg-slate-200 px-5 py-4 text-sm font-black text-slate-700 shadow-[0_10px_24px_rgba(148,163,184,0.16)] transition hover:bg-slate-200"
+                  >
+                    {existingRequestDisplay?.shortLabel || 'Requested'}
+                  </Link>
+                ) : (
+                  <Link
+                    to={isVerifiedAccount ? requestPath : '/account/verification'}
+                    state={isVerifiedAccount ? { from: returnPath } : verificationRedirectState}
+                    className="inline-flex flex-1 items-center justify-center rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-4 text-sm font-black text-white shadow-[0_18px_40px_rgba(79,70,229,0.24)] transition hover:-translate-y-0.5"
+                  >
+                    {isVerifiedAccount ? 'Request booking' : 'Complete verification'}
+                  </Link>
+                )}
+                {!isOwnerViewingOwnListing && existingRequestHref ? (
+                  <Link
+                    to={existingRequestHref}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                  >
+                    Open in messages
+                  </Link>
+                ) : null}
+                {!isOwnerViewingOwnListing && !existingRequest && whatsappHref ? (
+                  <a
+                    href={whatsappHref}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                  >
+                    <Share2 className="h-4 w-4" />
+                    Share on WhatsApp
+                  </a>
+                ) : null}
+              </div>
+              {shouldShowRequestedState ? (
+                <div className="mt-4 rounded-2xl border border-slate-300 bg-slate-100 px-4 py-3 text-sm text-slate-700">
+                  You already have an open request for this vehicle. Continue from Messenger instead of sending another request.
+                </div>
+              ) : null}
             </section>
           </div>
         )}
       </main>
 
+      {!embeddedInAccount ? <PublicSiteFooter /> : null}
       {showVerificationInfo ? (
         <div className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-950/45 p-4 sm:items-center sm:p-6">
           <div className="w-full max-w-md rounded-[2rem] border border-violet-100 bg-white p-6 shadow-[0_30px_80px_rgba(15,23,42,0.22)]">
@@ -207,9 +446,9 @@ const PublicMarketplaceDetail = () => {
                   <BadgeCheck className="h-6 w-6" />
                 </span>
                 <div>
-                  <p className="text-lg font-black text-slate-950">Verified marketplace listing</p>
+                  <p className="text-lg font-black text-slate-950">Verified listing</p>
                   <p className="mt-1 text-sm leading-6 text-slate-600">
-                    This vehicle passed the marketplace visibility checks. Owner details, pricing, and listing setup were reviewed before going live.
+                    This vehicle passed listing checks before going live.
                   </p>
                 </div>
               </div>

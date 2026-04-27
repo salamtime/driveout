@@ -1,8 +1,9 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { supabase } from '../../utils/supabaseClient';
+import { TABLE_NAMES } from '../../config/tableNames';
 
 const TABLES = {
-  ACTIVITY_LOG: 'saharax_0u4w4d_activity_log'
+  ACTIVITY_LOG: TABLE_NAMES.ACTIVITY_LOG
 };
 
 // Async thunks

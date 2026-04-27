@@ -82,7 +82,16 @@ const VehicleGridView: React.FC<VehicleGridViewProps> = ({
           return (
         <article
           key={vehicle.id}
-          className="w-full overflow-hidden rounded-lg border border-gray-200 bg-white text-left shadow-md transition-shadow hover:shadow-lg"
+          role="button"
+          tabIndex={0}
+          onClick={() => onView(vehicle)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onView(vehicle);
+            }
+          }}
+          className="w-full cursor-pointer overflow-hidden rounded-lg border border-gray-200 bg-white text-left shadow-md transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg active:scale-[0.985]"
         >
           <div className="relative">
             {displayImageUrl ? (

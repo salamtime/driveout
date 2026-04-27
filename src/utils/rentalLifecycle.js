@@ -97,6 +97,7 @@ export const getScheduledRentalTimingState = (
 
 export const deriveEffectiveRentalStatus = (rental, timingSettings = DEFAULT_RENTAL_TIMING_SETTINGS) => {
   const rawStatus = String(rental?.rental_status || rental?.status || '').toLowerCase();
+  const websiteBookingStatus = String(rental?.website_booking_status || '').toLowerCase();
   const vehicleStatus = String(rental?.vehicle?.status || '').toLowerCase();
   const statusChangeReason = String(rental?.status_change_reason || '').toLowerCase();
 
@@ -110,6 +111,14 @@ export const deriveEffectiveRentalStatus = (rental, timingSettings = DEFAULT_REN
 
   if (hasHistoricalImpoundStatus) {
     return 'impounded';
+  }
+
+  if (websiteBookingStatus === 'expired') {
+    return 'expired';
+  }
+
+  if (websiteBookingStatus === 'cancelled') {
+    return 'cancelled';
   }
 
   if (['completed', 'cancelled', 'expired'].includes(rawStatus) || rental?.completed_at) {

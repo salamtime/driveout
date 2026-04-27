@@ -4,11 +4,13 @@ import { Shield, Lock, Unlock, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useModulePermissions, AVAILABLE_MODULES } from '../../hooks/useModulePermissions';
 import i18n from '../../i18n';
+import { useAuth } from '../../contexts/AuthContext';
 
 const ModulePermissionsSection = ({ targetUser, onPermissionChange = null }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const { user: currentUser } = useSelector(state => state.auth);
+  const { hasPermission } = useAuth();
   const [showConfirmDialog, setShowConfirmDialog] = useState(null);
   
   const {
@@ -21,7 +23,7 @@ const ModulePermissionsSection = ({ targetUser, onPermissionChange = null }) => 
   } = useModulePermissions(targetUser.id);
   
   // Only Owner and Admin can modify permissions
-  const canModifyPermissions = currentUser?.role === 'owner' || currentUser?.role === 'admin';
+  const canModifyPermissions = hasPermission('User & Role Management');
 
   useEffect(() => {
     // Initialize permissions for new users or users without permissions

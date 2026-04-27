@@ -2,6 +2,8 @@ import { createSupabaseClients } from './supabase.js';
 import { normalizeVehicleImageUrl } from '../../src/utils/vehicleImage.js';
 
 const DEFAULT_CURRENCY = 'MAD';
+const BOOST_REDEMPTIONS_TABLE = process.env.BOOST_REDEMPTIONS_TABLE || 'owner_listing_boost_redemptions';
+const setupErrorCodes = new Set(['42P01', '42501', '42703', '22P02', 'PGRST116', 'PGRST204']);
 const CERTIFIED_FLEET_CITY_PROVIDERS = {
   tangier: {
     city: 'Tangier',
@@ -14,6 +16,22 @@ const safeText = (value, fallback = '') => {
   if (value === null || value === undefined) return fallback;
   const text = String(value).trim();
   return text || fallback;
+};
+
+const isSetupError = (error) => setupErrorCodes.has(String(error?.code || ''));
+
+const loadOptionalQuery = async (factory, fallbackValue) => {
+  try {
+    const result = await factory();
+    if (result?.error) {
+      if (isSetupError(result.error)) return fallbackValue;
+      throw result.error;
+    }
+    return result?.data ?? fallbackValue;
+  } catch (error) {
+    if (isSetupError(error)) return fallbackValue;
+    throw error;
+  }
 };
 
 const formatMoney = (value) => {
@@ -83,6 +101,22 @@ const normalizeModel = (vehicleRow, modelData) =>
       [modelData?.name, modelData?.model].filter(Boolean).join(' '),
     'Vehicle'
   );
+
+const resolveCertifiedListingImage = (vehicleRow, modelData) => {
+  const preferredSources = [
+    modelData?.image_url,
+    modelData?.imageUrl,
+    vehicleRow?.image_url,
+    vehicleRow?.imageUrl,
+  ];
+
+  for (const source of preferredSources) {
+    const normalized = normalizeVehicleImageUrl(source);
+    if (normalized) return normalized;
+  }
+
+  return '/assets/images/atv-placeholder.jpg';
+};
 
 const buildVehicleModelLookups = (modelRows = []) => {
   const byId = new Map();
@@ -301,7 +335,7 @@ const buildCertifiedListing = (vehicleRow, modelData) => {
     model,
     category,
     categoryKey: category.toLowerCase(),
-    imageUrl: normalizeVehicleImageUrl(vehicleRow?.image_url) || '/assets/images/atv-placeholder.jpg',
+    imageUrl: resolveCertifiedListingImage(vehicleRow, modelData),
     riderCapacity: passengerCapacity.max,
     riderCapacityMin: passengerCapacity.min,
     riderCapacityMax: passengerCapacity.max,
@@ -331,6 +365,8 @@ const buildCertifiedListing = (vehicleRow, modelData) => {
 
 const buildMarketplaceListing = (listingRow) => {
   const profile = listingRow?.vehicle_public_profile || {};
+  const pricing = listingRow?.pricing && typeof listingRow.pricing === 'object' ? listingRow.pricing : {};
+  const halfDayPricing = pricing?.half_day && typeof pricing.half_day === 'object' ? pricing.half_day : {};
   const media = Array.isArray(profile?.media) ? profile.media : [];
   const coverImageUrl = profile?.cover_image_url || media.find((item) => item?.is_cover)?.url || media[0]?.url || '';
   const location = {
@@ -339,6 +375,11 @@ const buildMarketplaceListing = (listingRow) => {
     area: safeText(profile?.area_name, profile?.location_name || 'Tangier'),
     label: [profile?.area_name, profile?.city_name].filter(Boolean).join(' - ') || 'Tangier',
   };
+
+  const dailyPrice = formatMoney(listingRow?.daily_price_amount);
+  const halfDayPrice = formatMoney(halfDayPricing?.price);
+  const halfDayMinHours = Number(halfDayPricing?.min_hours || 0) || null;
+  const halfDayMaxHours = Number(halfDayPricing?.max_hours || 0) || null;
 
   return {
     id: `marketplace-${listingRow.id}`,
@@ -362,9 +403,12 @@ const buildMarketplaceListing = (listingRow) => {
     shortSpec: safeText(profile?.short_description, 'Verified marketplace vehicle'),
     description: safeText(profile?.full_description || profile?.short_description, 'Public listing available by request.'),
     location,
-    priceFrom: formatMoney(listingRow?.hourly_price_amount ?? listingRow?.daily_price_amount ?? listingRow?.weekly_price_amount),
-    hourlyPrice: formatMoney(listingRow?.hourly_price_amount),
-    dailyPrice: formatMoney(listingRow?.daily_price_amount),
+    priceFrom: dailyPrice || halfDayPrice || formatMoney(listingRow?.weekly_price_amount),
+    hourlyPrice: 0,
+    dailyPrice,
+    halfDayPrice,
+    halfDayMinHours,
+    halfDayMaxHours,
     depositAmount: formatMoney(listingRow?.deposit_amount),
     includedKm: formatMoney(listingRow?.included_km),
     extraKmRate: formatMoney(listingRow?.extra_km_rate),
@@ -381,6 +425,8 @@ const buildMarketplaceListing = (listingRow) => {
     isAvailable: normalizeMarketplaceStatus(listingRow?.listing_status, 'live') === 'live' && profile?.marketplace_visible !== false,
     detailHref: `/marketplace/marketplace-${listingRow.id}`,
     requestHref: `/marketplace/marketplace-${listingRow.id}/request`,
+    boostScore: Number(listingRow?.boost_score || 0),
+    boostRewards: Array.isArray(listingRow?.boost_rewards) ? listingRow.boost_rewards : [],
     raw: listingRow,
   };
 };
@@ -488,6 +534,23 @@ const fetchCertifiedFleet = async (adminClient) => {
     packageRows = packageData || [];
   }
 
+  let fuelPricingByModelId = new Map();
+  if (vehicleModelIds.length > 0) {
+    try {
+      const fuelPricingRows = await loadOptionalQuery(
+        () =>
+          adminClient
+            .from('fuel_pricing')
+            .select('model_id, price_per_line, hourly_price_per_line, daily_price_per_line')
+            .in('model_id', vehicleModelIds),
+        []
+      );
+      fuelPricingByModelId = new Map((fuelPricingRows || []).map((row) => [String(row.model_id), row]));
+    } catch {
+      fuelPricingByModelId = new Map();
+    }
+  }
+
   let damageDepositPresetsByModelId = {};
   const { data: appSettingsData, error: appSettingsError } = await adminClient
     .from('app_settings')
@@ -514,6 +577,8 @@ const fetchCertifiedFleet = async (adminClient) => {
       fixedAmount: formatMoney(pkg.fixed_amount),
       includedKilometers: formatMoney(pkg.included_kilometers),
       extraKmRate: formatMoney(pkg.extra_km_rate),
+      fuelChargeEnabled: pkg.fuel_charge_enabled === true,
+      fuel_charge_enabled: pkg.fuel_charge_enabled === true,
       kind: pkg.included_kilometers ? 'limited' : 'unlimited',
       durationUnits: Number(pkg.duration_units),
       showOnPrint: pkg.show_on_print === true,
@@ -528,6 +593,7 @@ const fetchCertifiedFleet = async (adminClient) => {
     const listing = buildCertifiedListing(vehicle, modelData);
     const basePrices = basePricesByModelId.get(modelId);
     const packageCatalog = packagesByModelId.get(modelId) || { hourly: [], daily: [] };
+    const fuelPricing = fuelPricingByModelId.get(modelId) || null;
     const damageDepositPresets = getDamageDepositPresetsForLookup(damageDepositPresetsByModelId, [
       modelId,
       modelData?.id,
@@ -550,6 +616,8 @@ const fetchCertifiedFleet = async (adminClient) => {
         hourly: formatMoney(basePrices?.hourly_price ?? listing.hourlyPrice),
         daily: formatMoney(basePrices?.daily_price ?? listing.dailyPrice),
       },
+      fuelLineChargeHourly: formatMoney(fuelPricing?.hourly_price_per_line ?? fuelPricing?.price_per_line),
+      fuelLineChargeDaily: formatMoney(fuelPricing?.daily_price_per_line ?? fuelPricing?.price_per_line),
       depositAmount: defaultDamageDepositPreset?.amount ?? listing.depositAmount,
       defaultDamageDepositPreset,
       packageCatalog,
@@ -581,11 +649,44 @@ const fetchMarketplaceListings = async (adminClient) => {
       profilesById = new Map((profileRows || []).map((row) => [String(row.id), row]));
     }
 
+    const listingIds = rows.map((row) => row.id).filter(Boolean);
+    const activeBoostRows = listingIds.length > 0
+      ? await loadOptionalQuery(
+          () =>
+            adminClient
+              .from(BOOST_REDEMPTIONS_TABLE)
+              .select('listing_id, reward_id, status, ends_at')
+              .in('listing_id', listingIds)
+              .eq('status', 'active'),
+          []
+        )
+      : [];
+
+    const boostsByListingId = new Map();
+    for (const boostRow of activeBoostRows || []) {
+      if (boostRow?.ends_at && new Date(boostRow.ends_at).getTime() <= Date.now()) continue;
+      const key = String(boostRow.listing_id || '');
+      if (!key) continue;
+      const current = boostsByListingId.get(key) || [];
+      current.push(String(boostRow.reward_id || '').trim());
+      boostsByListingId.set(key, current);
+    }
+
+    const getBoostScore = (rewardIds = []) =>
+      rewardIds.reduce((sum, rewardId) => {
+        if (rewardId === 'top_boost_48h') return sum + 50;
+        if (rewardId === 'featured_row_24h') return sum + 30;
+        if (rewardId === 'highlight_badge_7d') return sum + 20;
+        return sum;
+      }, 0);
+
     return rows
       .filter((row) => normalizeMarketplaceStatus(row?.listing_status || row?.status, 'live') === 'live')
       .map((row) =>
         buildMarketplaceListing({
           ...row,
+          boost_rewards: boostsByListingId.get(String(row.id)) || [],
+          boost_score: getBoostScore(boostsByListingId.get(String(row.id)) || []),
           vehicle_public_profile: profilesById.get(String(row.vehicle_public_profile_id)) || {},
         })
       )
@@ -606,6 +707,8 @@ const buildCatalog = async (adminClient, filters = {}) => {
   const sortWeight = { certified_fleet: 0, marketplace: 1 };
 
   filteredListings.sort((left, right) => {
+    const boostDiff = Number(right.boostScore || 0) - Number(left.boostScore || 0);
+    if (boostDiff !== 0) return boostDiff;
     const sourceDiff = (sortWeight[left.inventorySource] ?? 99) - (sortWeight[right.inventorySource] ?? 99);
     if (sourceDiff !== 0) return sourceDiff;
     if (right.isAvailable !== left.isAvailable) return Number(right.isAvailable) - Number(left.isAvailable);
@@ -630,7 +733,9 @@ const buildCatalog = async (adminClient, filters = {}) => {
 
   return {
     listings: filteredListings,
-    featuredListings: allListings.slice(0, 6),
+    featuredListings: [...allListings]
+      .sort((left, right) => Number(right.boostScore || 0) - Number(left.boostScore || 0))
+      .slice(0, 6),
     filters: {
       brands: Array.from(optionSet.brands).sort(),
       countries: Array.from(optionSet.countries).sort(),

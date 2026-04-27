@@ -51,7 +51,7 @@ export const formatRentalPackageAllowanceLabel = (pkg, options = {}) => {
 
   if (rentalType === 'daily') {
     if (durationUnits === 1) {
-      return translate(tr, `${kmLabel} km included for one day`, `${kmLabel} km inclus pour une journée`);
+      return translate(tr, `${kmLabel} km included for 1 day`, `${kmLabel} km inclus pour 1 jour`);
     }
     return translate(tr, `${kmLabel} km included for ${formatQuantity(durationUnits)} days`, `${kmLabel} km inclus pour ${formatQuantity(durationUnits)} jours`);
   }
@@ -61,7 +61,7 @@ export const formatRentalPackageAllowanceLabel = (pkg, options = {}) => {
   }
 
   if (durationUnits === 1) {
-    return translate(tr, `${kmLabel} km included for one hour`, `${kmLabel} km inclus pour une heure`);
+    return translate(tr, `${kmLabel} km included for 1 hour`, `${kmLabel} km inclus pour 1 heure`);
   }
 
   return translate(tr, `${kmLabel} km included for ${formatQuantity(durationUnits)} hours`, `${kmLabel} km inclus pour ${formatQuantity(durationUnits)} heures`);

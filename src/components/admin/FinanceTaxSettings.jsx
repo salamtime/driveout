@@ -8,6 +8,7 @@ import {
   getDefaultTaxSettings 
 } from '../../services/taxSettingsService';
 import toast from 'react-hot-toast';
+import { hasPermission as hasRuntimePermission } from '../../utils/permissionHelpers';
 
 const FinanceTaxSettings = ({ currentUser }) => {
   // State management
@@ -29,7 +30,7 @@ const FinanceTaxSettings = ({ currentUser }) => {
   const [formErrors, setFormErrors] = useState({});
 
   // Check if user has permission to edit (Owner/Admin only)
-  const canEdit = currentUser && (currentUser.role === 'owner' || currentUser.role === 'admin');
+  const canEdit = hasRuntimePermission('System Settings', currentUser);
 
   // Load tax settings on component mount
   useEffect(() => {

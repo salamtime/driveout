@@ -5,9 +5,6 @@
  * - Video: iOS .MOV/HEVC to mp4 conversion
  */
 
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
-
 let ffmpegInstance = null;
 let isFFmpegLoaded = false;
 
@@ -24,6 +21,23 @@ const inferTypeFromName = (name = '') => {
   return '';
 };
 
+let ffmpegDepsPromise = null;
+
+const loadFFmpegDeps = async () => {
+  if (!ffmpegDepsPromise) {
+    ffmpegDepsPromise = Promise.all([
+      import('@ffmpeg/ffmpeg'),
+      import('@ffmpeg/util'),
+    ]).then(([ffmpegModule, utilModule]) => ({
+      FFmpeg: ffmpegModule.FFmpeg,
+      fetchFile: utilModule.fetchFile,
+      toBlobURL: utilModule.toBlobURL,
+    }));
+  }
+
+  return ffmpegDepsPromise;
+};
+
 // ==================== FFmpeg Setup ====================
 
 /**
@@ -33,6 +47,8 @@ const getFFmpeg = async () => {
   if (ffmpegInstance && isFFmpegLoaded) {
     return ffmpegInstance;
   }
+
+  const { FFmpeg, toBlobURL } = await loadFFmpegDeps();
 
   if (!ffmpegInstance) {
     ffmpegInstance = new FFmpeg();
@@ -102,6 +118,7 @@ export const convertToMp4 = async (file, onProgress = () => {}) => {
     console.log('🔄 Starting video conversion to mp4...');
     onProgress(0);
 
+    const { fetchFile } = await loadFFmpegDeps();
     const ffmpeg = await getFFmpeg();
     
     ffmpeg.on('progress', ({ progress }) => {

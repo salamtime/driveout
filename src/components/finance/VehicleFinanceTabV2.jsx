@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { TrendingUp, TrendingDown, DollarSign, Wrench, Fuel, Package, MoreHorizontal, Car, BarChart3, ArrowUpRight, ArrowLeft, Activity, ExternalLink, ReceiptText, WalletCards } from 'lucide-react';
+import { TrendingUp, TrendingDown, DollarSign, Wrench, Fuel, Package, MoreHorizontal, Car, BarChart3, ArrowUpRight, ArrowDownRight, ArrowLeft, Activity, ExternalLink, ReceiptText, WalletCards } from 'lucide-react';
 import { financeApiV2 } from '../../services/financeApiV2';
 import i18n from '../../i18n';
 

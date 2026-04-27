@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Car, Clock3, FileText, Fuel, Wrench } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { TBL } from '../../config/tables';
@@ -8,6 +8,7 @@ import FuelTransactionService from '../../services/FuelTransactionService';
 import MaintenanceTrackingService from '../../services/MaintenanceTrackingService';
 import VehicleReportService from '../../services/VehicleReportService';
 import { formatRentalReference } from '../../utils/rentalReference';
+import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 
 const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
 const PAGE_SIZE = 20;
@@ -63,6 +64,7 @@ const iconByType = {
 };
 
 const VehicleActivityPage = () => {
+  const location = useLocation();
   const { vehicleId } = useParams();
   const navigate = useNavigate();
   const [vehicle, setVehicle] = useState(null);
@@ -232,8 +234,12 @@ const VehicleActivityPage = () => {
   const totalPages = Math.max(1, Math.ceil(activityLog.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
   const paginatedEntries = activityLog.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
+    pathname: location.pathname,
+    isTransitionFlow: loading,
+  });
 
-  if (loading) {
+  if (loading && !suppressBlockingLoader) {
     return (
       <div className="min-h-screen bg-slate-50 p-6">
         <div className="mx-auto max-w-5xl space-y-6">

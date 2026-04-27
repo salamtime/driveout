@@ -5,35 +5,12 @@ import { LanguageProvider } from './contexts/LanguageContext';
 import ProtectedRoute, { AdminRoute, EmployeeRoute, GuideRoute, CustomerRoute } from './components/ProtectedRoute';
 import AdminLayout from './components/layout/AdminLayout';
 import ErrorBoundary from './components/ErrorBoundary';
-import AdminModuleHero from './components/admin/AdminModuleHero';
+import AuthTransitionScreen from './components/auth/AuthTransitionScreen';
 import { isApprovedBusinessOwnerAccount, isBusinessAccountType, isBusinessOwnerAccountType, isPlatformOwnerEmail } from './utils/accountType';
-import PublicVehicleDetail from './pages/PublicVehicleDetail';
-import {
-  LayoutDashboard,
-  CalendarDays,
-  Compass,
-  ClipboardList,
-  Users,
-  Car,
-  WalletCards,
-  Wrench,
-  Fuel,
-  Boxes,
-  CreditCard,
-  Bell,
-  Shield,
-  Settings,
-  FileOutput,
-  FileText,
-  Globe,
-  Store,
-  Building2,
-} from 'lucide-react';
-import PublicInstantBooking from './pages/PublicInstantBooking';
-import PublicBookingRequest from './pages/PublicBookingRequest';
-import PublicTours from './pages/Tours';
-import { buildHostUrl, getHostContext } from './utils/hostContext';
+import RouteLoadingFallback from './components/navigation/RouteLoadingFallback';
+import { buildHostUrl, getHostContext, isPreviewHost } from './utils/hostContext';
 import { configureMasterSupabaseClient, configureSupabaseClient } from './lib/supabase';
+import i18n from './i18n';
 
 const HostDomainRedirect = ({ kind, pathname, tenantSlug }) => {
   const location = useLocation();
@@ -86,6 +63,36 @@ const WorkspaceUnavailableState = ({
   </div>
 );
 
+const resolveHostAwarePath = (host, pathname = '/') => {
+  const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
+
+  if (
+    host.kind === 'tenant' &&
+    host.tenantSlug === 'saharax' &&
+    (normalizedPath.startsWith('/admin') || normalizedPath.startsWith('/guide'))
+  ) {
+    return buildHostUrl({
+      kind: 'admin',
+      pathname: normalizedPath,
+    });
+  }
+
+  return normalizedPath;
+};
+
+const buildMarketplaceLoginHandoffUrl = ({ email = '', redirect = '/customer/dashboard' } = {}) => {
+  const params = new URLSearchParams();
+  if (email) params.set('email', email);
+  if (redirect) params.set('redirect', redirect);
+  params.set('tenantAccess', 'marketplace-customer');
+
+  return buildHostUrl({
+    kind: 'public',
+    pathname: '/login',
+    search: `?${params.toString()}`,
+  });
+};
+
 const isFirstPartyStorefrontRoute = (host, pathname) => {
   if (host.kind !== 'tenant' || host.tenantSlug !== 'saharax') {
     return false;
@@ -94,6 +101,9 @@ const isFirstPartyStorefrontRoute = (host, pathname) => {
   return (
     pathname === '/' ||
     pathname === '/website' ||
+    pathname === '/login' ||
+    pathname === '/register' ||
+    pathname === '/reset-password' ||
     pathname === '/rent' ||
     pathname === '/rentals' ||
     pathname === '/marketplace' ||
@@ -110,10 +120,39 @@ const isFirstPartyStorefrontRoute = (host, pathname) => {
   );
 };
 
+const isUnifiedFirstPartySaharaxRoute = (host, pathname) => {
+  if (isFirstPartyStorefrontRoute(host, pathname)) {
+    return true;
+  }
+
+  if (host.kind !== 'tenant' || host.tenantSlug !== 'saharax') {
+    return false;
+  }
+
+  return (
+    pathname === '/login' ||
+    pathname === '/register' ||
+    pathname === '/reset-password' ||
+    pathname === '/unauthorized' ||
+    pathname === '/pending-approval' ||
+    pathname === '/choose-plan' ||
+    pathname === '/business/workspace' ||
+    pathname === '/profile' ||
+    pathname.startsWith('/account') ||
+    pathname.startsWith('/customer') ||
+    pathname.startsWith('/business')
+  );
+};
+
 const TenantWorkspaceBoot = ({ children }) => {
   const host = getHostContext();
   const location = useLocation();
-  const shouldUsePublicStorefront = isFirstPartyStorefrontRoute(host, location.pathname);
+  const shouldUsePublicStorefront = isUnifiedFirstPartySaharaxRoute(host, location.pathname);
+
+  if (host.kind !== 'tenant' || shouldUsePublicStorefront) {
+    configureMasterSupabaseClient();
+  }
+
   const [state, setState] = useState(() => ({
     status: host.kind === 'tenant' && !shouldUsePublicStorefront ? 'loading' : 'ready',
     error: '',
@@ -177,7 +216,7 @@ const TenantWorkspaceBoot = ({ children }) => {
   }, [host.hostname, host.isLocal, host.kind, host.tenantSlug, shouldUsePublicStorefront]);
 
   if (state.status === 'loading') {
-    return <WorkspaceUnavailableState title="Opening workspace" message="Preparing your isolated tenant workspace..." />;
+    return null;
   }
 
   if (state.status === 'error') {
@@ -221,8 +260,9 @@ const PublicHostRoute = ({ children }) => {
 
 const AdminHostRoute = ({ children }) => {
   const host = getHostContext();
+  const allowPreviewHost = isPreviewHost(host.hostname);
 
-  if (host.kind === 'admin' || host.kind === 'tenant' || host.kind === 'local') {
+  if (host.kind === 'admin' || host.kind === 'tenant' || host.kind === 'local' || allowPreviewHost) {
     return children;
   }
 
@@ -235,6 +275,10 @@ const Landing = lazy(() => import('./pages/Landing'));
 const PublicCatalog = lazy(() => import('./pages/PublicCatalog'));
 const PublicMarketplaceDetail = lazy(() => import('./pages/PublicMarketplaceDetail'));
 const PublicRentRedirect = lazy(() => import('./pages/PublicRentRedirect'));
+const PublicVehicleDetail = lazy(() => import('./pages/PublicVehicleDetail'));
+const PublicInstantBooking = lazy(() => import('./pages/PublicInstantBooking'));
+const PublicBookingRequest = lazy(() => import('./pages/PublicBookingRequest'));
+const PublicTours = lazy(() => import('./pages/Tours'));
 const RentalBooking = lazy(() => import('./pages/RentalBooking'));
 const Rentals = lazy(() => import('./pages/admin/Rentals'));
 const RentalDetails = lazy(() => import('./pages/admin/RentalDetails'));
@@ -244,22 +288,29 @@ const GuideDashboard = lazy(() => import('./pages/guide/Dashboard'));
 const AccountWorkspaceLayout = lazy(() => import('./components/account/AccountWorkspaceLayout'));
 const AccountOverview = lazy(() => import('./pages/account/AccountOverview'));
 const AccountRentals = lazy(() => import('./pages/account/AccountRentals'));
-const AccountTours = lazy(() => import('./pages/account/AccountTours'));
+const AccountRentalDetailsPage = lazy(() => import('./pages/account/AccountRentalDetailsPage'));
+const AccountMarketplaceRequestDetailsPage = lazy(() => import('./pages/account/AccountMarketplaceRequestDetailsPage'));
 const AccountMarketplace = lazy(() => import('./pages/account/AccountMarketplace'));
+const AccountMarketplaceVehicleProfile = lazy(() => import('./pages/account/AccountMarketplaceVehicleProfile'));
+const AccountTours = lazy(() => import('./pages/account/AccountTours'));
+const AccountTourDetailsPage = lazy(() => import('./pages/account/AccountTourDetailsPage'));
 const AccountMessages = lazy(() => import('./pages/account/AccountMessages'));
+const AccountBoost = lazy(() => import('./pages/account/AccountBoost'));
+const AccountRewards = lazy(() => import('./pages/account/AccountRewards'));
 const AccountReviews = lazy(() => import('./pages/account/AccountReviews'));
 const AccountRevenue = lazy(() => import('./pages/account/AccountRevenue'));
 const AccountVerification = lazy(() => import('./pages/account/AccountVerification'));
 const AccountSettings = lazy(() => import('./pages/account/AccountSettings'));
 const Login = lazy(() => import('./pages/auth/Login'));
 const Register = lazy(() => import('./pages/auth/Register'));
+const ResetPassword = lazy(() => import('./pages/auth/ResetPassword'));
 const Unauthorized = lazy(() => import('./pages/auth/Unauthorized'));
 const ProfilePage = lazy(() => import('./components/profile/ProfilePage'));
 const CalendarPage = lazy(() => import('./pages/admin/Calendar'));
 const ToursPage = lazy(() => import('./pages/admin/Tours'));
 const TasksPage = lazy(() => import('./pages/admin/Tasks'));
 const LiveMapPage = lazy(() => import('./pages/admin/LiveMap'));
-const FleetPage = lazy(() => import('./pages/admin/Fleet'));
+const VehicleManagement = lazy(() => import('./components/VehicleManagement'));
 const VehicleProfilePage = lazy(() => import('./pages/admin/VehicleProfile'));
 const VehicleActivityPage = lazy(() => import('./pages/admin/VehicleActivity'));
 const PricingPage = lazy(() => import('./pages/admin/Pricing'));
@@ -270,7 +321,9 @@ const InventoryPage = lazy(() => import('./pages/admin/Inventory'));
 const FinancePage = lazy(() => import('./pages/admin/Finance'));
 const AlertsPage = lazy(() => import('./pages/admin/Alerts'));
 const UserManagement = lazy(() => import('./pages/admin/UserManagement'));
+const AdminCustomerProfilePage = lazy(() => import('./pages/admin/AdminCustomerProfilePage'));
 const VerificationCenterPage = lazy(() => import('./pages/admin/VerificationCenter'));
+const AdminMessagesPage = lazy(() => import('./pages/admin/AdminMessages'));
 const WorkspacesPage = lazy(() => import('./pages/admin/Workspaces'));
 const SettingsPage = lazy(() => import('./pages/admin/Settings'));
 const WebsiteEditorPage = lazy(() => import('./pages/admin/WebsiteEditor'));
@@ -286,227 +339,7 @@ const CameraTest = lazy(() => import('./pages/CameraTest'));
 const TestCustomerDetails = lazy(() => import('./pages/TestCustomerDetails'));
 const ShortUrlRedirect = lazy(() => import('./pages/ShortUrlRedirect'));
 const TourTracker = lazy(() => import('./pages/TourTracker'));
-
-const getModuleLoadingMeta = (pathname) => {
-  const routes = [
-    {
-      match: '/admin/dashboard',
-      eyebrow: 'Dashboard Overview',
-      title: 'Dashboard',
-      description: 'Preparing the dashboard workspace...',
-      icon: LayoutDashboard,
-    },
-    {
-      match: '/admin/calendar',
-      eyebrow: 'Calendar',
-      title: 'Calendar',
-      description: 'Preparing the calendar workspace...',
-      icon: CalendarDays,
-    },
-    {
-      match: '/admin/tours',
-      eyebrow: 'Tours & Bookings',
-      title: 'Tours & Bookings',
-      description: 'Preparing the tours workspace...',
-      icon: Compass,
-    },
-    {
-      match: '/admin/tasks',
-      eyebrow: 'Team Tasks',
-      title: 'Tasks',
-      description: 'Preparing the task workspace...',
-      icon: ClipboardList,
-    },
-    {
-      match: '/admin/rentals',
-      eyebrow: 'Rental Management',
-      title: 'Rental Management',
-      description: 'Preparing the rentals workspace...',
-      icon: ClipboardList,
-    },
-    {
-      match: '/admin/customers',
-      eyebrow: 'Customer Management',
-      title: 'Customer Management',
-      description: 'Preparing the customer workspace...',
-      icon: Users,
-    },
-    {
-      match: '/admin/fleet',
-      eyebrow: 'Fleet Management',
-      title: 'Fleet Management',
-      description: 'Preparing the fleet workspace...',
-      icon: Car,
-    },
-    {
-      match: '/admin/pricing',
-      eyebrow: 'Pricing Management',
-      title: 'Pricing Management',
-      description: 'Preparing the pricing workspace...',
-      icon: WalletCards,
-    },
-    {
-      match: '/admin/maintenance',
-      eyebrow: 'Maintenance',
-      title: 'Maintenance',
-      description: 'Preparing the maintenance workspace...',
-      icon: Wrench,
-    },
-    {
-      match: '/admin/fuel',
-      eyebrow: 'Fuel Management',
-      title: 'Fuel Management',
-      description: 'Preparing the fuel workspace...',
-      icon: Fuel,
-    },
-    {
-      match: '/admin/inventory',
-      eyebrow: 'Inventory',
-      title: 'Inventory',
-      description: 'Preparing the inventory workspace...',
-      icon: Boxes,
-    },
-    {
-      match: '/admin/finance',
-      eyebrow: 'Finance Management',
-      title: 'Finance Management',
-      description: 'Preparing the finance workspace...',
-      icon: CreditCard,
-    },
-    {
-      match: '/admin/alerts',
-      eyebrow: 'Alerts',
-      title: 'Alerts',
-      description: 'Preparing the alerts workspace...',
-      icon: Bell,
-    },
-    {
-      match: '/admin/users',
-      eyebrow: 'User & Role Management',
-      title: 'User & Role Management',
-      description: 'Preparing the users workspace...',
-      icon: Shield,
-    },
-    {
-      match: '/admin/verification',
-      eyebrow: 'Verification Center',
-      title: 'Verification Center',
-      description: 'Preparing the verification queue...',
-      icon: Shield,
-    },
-    {
-      match: '/admin/workspaces',
-      eyebrow: 'Workspaces',
-      title: 'Workspaces',
-      description: 'Preparing tenant workspace controls...',
-      icon: Building2,
-    },
-    {
-      match: '/admin/marketplace',
-      eyebrow: 'Marketplace Review',
-      title: 'Marketplace Review',
-      description: 'Preparing marketplace moderation...',
-      icon: Store,
-    },
-    {
-      match: '/admin/settings',
-      eyebrow: 'System Settings',
-      title: 'System Settings',
-      description: 'Preparing the settings workspace...',
-      icon: Settings,
-    },
-    {
-      match: '/admin/website',
-      eyebrow: 'Website Editor',
-      title: 'Website Editor',
-      description: 'Preparing the website editor...',
-      icon: Globe,
-    },
-    {
-      match: '/admin/export',
-      eyebrow: 'Project Export',
-      title: 'Project Export',
-      description: 'Preparing the export workspace...',
-      icon: FileOutput,
-    },
-  ];
-
-  return routes.find((route) => pathname.startsWith(route.match)) || {
-    eyebrow: 'Module',
-    title: 'Loading Module',
-    description: 'Preparing the workspace...',
-    icon: FileText,
-  };
-};
-
-const RouteLoadingFallback = () => {
-  const location = useLocation();
-  const isPublicStorefrontPath = [
-    '/',
-    '/website',
-    '/rent',
-    '/rentals',
-    '/marketplace',
-    '/tours',
-    '/tour-booking',
-    '/rental-booking',
-  ].some((path) => location.pathname === path || location.pathname.startsWith(`${path}/`));
-
-  if (isPublicStorefrontPath) {
-    return (
-      <div className="min-h-screen bg-[linear-gradient(180deg,#F5F3FF_0%,#ECE9FF_100%)] text-slate-950">
-        <div className="min-h-[76px]" />
-        <section className="min-h-[calc(100vh-76px)] px-5 py-14 sm:px-6 sm:py-20">
-          <div className="mx-auto flex max-w-[620px] flex-col items-center">
-            <div className="text-center">
-              <div className="h-12 w-64 animate-pulse rounded-2xl bg-white/70 shadow-[0_10px_24px_rgba(15,23,42,0.06)] sm:h-16 sm:w-80" />
-              <div className="mt-6 inline-flex items-center justify-center gap-3 rounded-full bg-white/80 px-5 py-3 shadow-sm ring-1 ring-violet-100">
-                <div className="h-4 w-20 animate-pulse rounded-full bg-slate-200" />
-                <div className="h-4 w-16 animate-pulse rounded-full bg-violet-100" />
-              </div>
-            </div>
-
-            <div className="mt-14 grid w-full gap-5">
-              {[0, 1].map((item) => (
-                <div
-                  key={item}
-                  className="flex min-h-[156px] w-full items-center justify-between rounded-[24px] bg-white p-9 shadow-[0_10px_30px_rgba(0,0,0,0.06)] sm:p-10"
-                >
-                  <div className="h-12 w-36 animate-pulse rounded-2xl bg-slate-100 sm:h-14 sm:w-40" />
-                  <div className="h-12 w-12 animate-pulse rounded-full bg-violet-100" />
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      </div>
-    );
-  }
-
-  const meta = getModuleLoadingMeta(location.pathname);
-  const Icon = meta.icon;
-
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <AdminModuleHero
-        className="w-full"
-        icon={<Icon className="h-8 w-8 text-white" />}
-        eyebrow={meta.eyebrow}
-        title={meta.title}
-        description={meta.description}
-      />
-      <div className="max-w-7xl mx-auto p-6">
-        <div className="rounded-2xl border border-violet-100 bg-white p-8 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
-          <div className="flex flex-col items-center justify-center text-center">
-            <div className="mb-4 text-4xl animate-spin">⏳</div>
-            <p className="text-base font-medium text-slate-700">Loading module...</p>
-            <p className="mt-2 text-sm text-slate-500">{meta.description}</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
+const GlobalMessageLauncher = lazy(() => import('./components/messages/GlobalMessageLauncher'));
 
 /**
  * HomeRedirect - Redirects users based on their authentication status and role
@@ -514,26 +347,24 @@ const RouteLoadingFallback = () => {
 const HomeRedirect = () => {
   const { user, userProfile, initialized, session, getBusinessOwnerHomePath } = useAuth();
   const host = getHostContext();
+  const location = useLocation();
+  const shouldUsePublicStorefront = isUnifiedFirstPartySaharaxRoute(host, location.pathname);
+  const isPublicLikeHost = host.kind === 'public' || shouldUsePublicStorefront;
 
   if (!initialized) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin text-4xl mb-4">⏳</div>
-          <p className="text-gray-600">Loading Application...</p>
-        </div>
-      </div>
-    );
+    return <AuthTransitionScreen title="Preparing your workspace" description="We are checking your SaharaX access and loading the right destination." />;
   }
 
-  if (!user) {
-    if (host.kind === 'admin' || host.kind === 'app' || host.kind === 'tenant') {
+  const isAuthenticated = Boolean(session?.user || user);
+
+  if (!isAuthenticated) {
+    if (!isPublicLikeHost && (host.kind === 'admin' || host.kind === 'app' || host.kind === 'tenant')) {
       return <Navigate to="/login" replace />;
     }
     return <Landing />;
   }
 
-  if (host.kind === 'public') {
+  if (isPublicLikeHost) {
     return <Landing />;
   }
 
@@ -550,6 +381,17 @@ const HomeRedirect = () => {
       })
     : null;
 
+  if (host.kind === 'tenant' && role === 'customer' && !approvedBusinessOwner) {
+    return (
+      <ExternalRedirect
+        to={buildMarketplaceLoginHandoffUrl({
+          email: userProfile?.email || session?.user?.email || '',
+          redirect: '/customer/dashboard',
+        })}
+      />
+    );
+  }
+
   if (businessOwnerFreezeRedirect) {
     if (/^https?:\/\//i.test(businessOwnerFreezeRedirect)) {
       return <ExternalRedirect to={businessOwnerFreezeRedirect} />;
@@ -558,7 +400,11 @@ const HomeRedirect = () => {
   }
 
   if ((host.kind === 'tenant' || host.kind === 'app') && ['owner', 'admin', 'employee', 'guide'].includes(role)) {
-    return <Navigate to={role === 'guide' ? '/guide/dashboard' : '/admin/dashboard'} replace />;
+    const redirectTo = resolveHostAwarePath(host, role === 'guide' ? '/guide/dashboard' : '/admin/dashboard');
+    if (/^https?:\/\//i.test(redirectTo)) {
+      return <ExternalRedirect to={redirectTo} />;
+    }
+    return <Navigate to={redirectTo} replace />;
   }
 
   const dashboardPaths = {
@@ -571,7 +417,11 @@ const HomeRedirect = () => {
   };
 
   const redirectTo = dashboardPaths[role] || '/login';
-  return <Navigate to={redirectTo} replace />;
+  const resolvedRedirectTo = resolveHostAwarePath(host, redirectTo);
+  if (/^https?:\/\//i.test(resolvedRedirectTo)) {
+    return <ExternalRedirect to={resolvedRedirectTo} />;
+  }
+  return <Navigate to={resolvedRedirectTo} replace />;
 };
 
 /**
@@ -658,6 +508,29 @@ const GlobalStatePersistence = () => {
   return null;
 };
 
+const AppGlobalMessageLauncher = () => {
+  const location = useLocation();
+  const { user, userProfile } = useAuth();
+
+  if (!user) {
+    return null;
+  }
+
+  const isAdmin = location.pathname.startsWith('/admin');
+  const isFrench = i18n.resolvedLanguage === 'fr';
+
+  return (
+    <Suspense fallback={null}>
+      <GlobalMessageLauncher
+        user={user}
+        userProfile={userProfile}
+        isAdmin={isAdmin}
+        isFrench={isFrench}
+      />
+    </Suspense>
+  );
+};
+
 function App() {
   return (
     <ErrorBoundary name="App-Root">
@@ -686,6 +559,7 @@ function App() {
                 <Route path="/rental-booking" element={<PublicHostRoute><RentalBooking /></PublicHostRoute>} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
+                <Route path="/reset-password" element={<ResetPassword />} />
                 <Route path="/unauthorized" element={<Unauthorized />} />
                 <Route path="/pending-approval" element={
                   <ErrorBoundary name="Pending-Approval">
@@ -763,9 +637,21 @@ function App() {
                   <Route index element={<Navigate to="/account/overview" replace />} />
                   <Route path="overview" element={<AccountOverview />} />
                   <Route path="rentals" element={<AccountRentals />} />
+                  <Route path="rentals/requests/:requestId" element={<AccountMarketplaceRequestDetailsPage />} />
+                  <Route path="rentals/:rentalId" element={<AccountRentalDetailsPage />} />
                   <Route path="tours" element={<AccountTours />} />
-                  <Route path="marketplace" element={<AccountMarketplace />} />
+                  <Route path="tours/:tourId" element={<AccountTourDetailsPage />} />
+                  <Route path="marketplace" element={<PublicCatalog embeddedInAccount />} />
+                  <Route path="marketplace/:listingId" element={<PublicMarketplaceDetail embeddedInAccount />} />
+                  <Route path="marketplace/:listingId/request" element={<PublicBookingRequest embeddedInAccount />} />
+                  <Route path="marketplace/vehicles/:vehicleId" element={<AccountMarketplaceVehicleProfile />} />
+                  <Route path="marketplace/vehicles/:vehicleId/profile" element={<AccountMarketplaceVehicleProfile />} />
+                  <Route path="vehicles" element={<AccountMarketplace />} />
+                  <Route path="vehicles/:vehicleId" element={<AccountMarketplaceVehicleProfile />} />
+                  <Route path="vehicles/:vehicleId/profile" element={<AccountMarketplaceVehicleProfile />} />
                   <Route path="messages" element={<AccountMessages />} />
+                  <Route path="boost" element={<AccountBoost />} />
+                  <Route path="rewards" element={<AccountRewards />} />
                   <Route path="reviews" element={<AccountReviews />} />
                   <Route path="revenue" element={<AccountRevenue />} />
                   <Route path="verification" element={<AccountVerification />} />
@@ -790,32 +676,35 @@ function App() {
                   </AdminHostRoute>
                 }>
                   <Route index element={<Navigate to="/admin/dashboard" replace />} />
-                  <Route path="dashboard" element={<ErrorBoundary name="Admin-Dashboard"><AdminDashboard /></ErrorBoundary>} />
-                  <Route path="calendar" element={<ErrorBoundary name="Calendar-Page"><CalendarPage /></ErrorBoundary>} />
-                  <Route path="tours/*" element={<ErrorBoundary name="Tours-Page"><ToursPage /></ErrorBoundary>} />
-                  <Route path="tasks/*" element={<ErrorBoundary name="Tasks-Page"><TasksPage /></ErrorBoundary>} />
+                  <Route path="dashboard" element={<ErrorBoundary name="Admin-Dashboard"><ProtectedRoute requiredPermissions={['Dashboard']}><AdminDashboard /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="calendar" element={<ErrorBoundary name="Calendar-Page"><ProtectedRoute requiredPermissions={['Calendar']}><CalendarPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="tours/*" element={<ErrorBoundary name="Tours-Page"><ProtectedRoute requiredPermissions={['Tours & Bookings']}><ToursPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="tasks/*" element={<ErrorBoundary name="Tasks-Page"><ProtectedRoute requiredPermissions={['Team Tasks']}><TasksPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="live-map" element={<ErrorBoundary name="Live-Map-Page"><LiveMapPage /></ErrorBoundary>} />
-                  <Route path="rentals" element={<ErrorBoundary name="Rentals-Page"><Rentals /></ErrorBoundary>} />
-                  <Route path="rentals/:id" element={<ErrorBoundary name="Rental-Details"><RentalDetails /></ErrorBoundary>} />
-                  <Route path="customers" element={<ErrorBoundary name="Customer-Management-Dashboard"><CustomerManagementDashboard /></ErrorBoundary>} />
-                  <Route path="fleet" element={<ErrorBoundary name="Fleet-Page"><FleetPage /></ErrorBoundary>} />
-                  <Route path="fleet/:vehicleId" element={<ErrorBoundary name="Vehicle-Profile-Page"><VehicleProfilePage /></ErrorBoundary>} />
-                  <Route path="fleet/:vehicleId/activity" element={<ErrorBoundary name="Vehicle-Activity-Page"><VehicleActivityPage /></ErrorBoundary>} />
-                  <Route path="pricing/*" element={<ErrorBoundary name="Pricing-Page"><PricingPage /></ErrorBoundary>} />
-                  <Route path="maintenance/:id" element={<ErrorBoundary name="Maintenance-Detail"><MaintenanceDetail /></ErrorBoundary>} />
-                  <Route path="maintenance/*" element={<ErrorBoundary name="Maintenance-Page"><MaintenancePage /></ErrorBoundary>} />
-                  <Route path="fuel/*" element={<ErrorBoundary name="Fuel-Page"><FuelPage /></ErrorBoundary>} />
-                  <Route path="inventory/*" element={<ErrorBoundary name="Inventory-Page"><InventoryPage /></ErrorBoundary>} />
-                  <Route path="finance/*" element={<ErrorBoundary name="Finance-Page"><FinancePage /></ErrorBoundary>} />
-                  <Route path="alerts/*" element={<ErrorBoundary name="Alerts-Page"><AlertsPage /></ErrorBoundary>} />
-                  <Route path="users/*" element={<ErrorBoundary name="User-Management-Page"><UserManagement /></ErrorBoundary>} />
-                  <Route path="verification" element={<ErrorBoundary name="Verification-Center"><VerificationCenterPage /></ErrorBoundary>} />
-                  <Route path="workspaces" element={<ErrorBoundary name="Workspaces"><ProtectedRoute requiredRoles={['owner', 'admin']}><WorkspacesPage /></ProtectedRoute></ErrorBoundary>} />
-                  <Route path="marketplace" element={<ErrorBoundary name="Marketplace-Control"><ProtectedRoute forbiddenRoles={['business_owner']}><MarketplaceControlWorkspace /></ProtectedRoute></ErrorBoundary>} />
-                  <Route path="marketplace/:listingId" element={<ErrorBoundary name="Marketplace-Listing-Detail"><ProtectedRoute forbiddenRoles={['business_owner']}><MarketplaceListingDetail /></ProtectedRoute></ErrorBoundary>} />
-                  <Route path="settings/*" element={<ErrorBoundary name="Settings-Page"><SettingsPage /></ErrorBoundary>} />
-                  <Route path="website/*" element={<ErrorBoundary name="Website-Editor-Page"><ProtectedRoute forbiddenRoles={['business_owner']}><WebsiteEditorPage /></ProtectedRoute></ErrorBoundary>} />
-                  <Route path="export/*" element={<ErrorBoundary name="Export-Page"><ProtectedRoute forbiddenRoles={['business_owner']}><ExportPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="rentals" element={<ErrorBoundary name="Rentals-Page"><ProtectedRoute requiredPermissions={['Rental Management']}><Rentals /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="rentals/:id" element={<ErrorBoundary name="Rental-Details"><ProtectedRoute requiredPermissions={['Rental Management']}><RentalDetails /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="customers" element={<ErrorBoundary name="Customer-Management-Dashboard"><ProtectedRoute requiredPermissions={['Customer Management']}><CustomerManagementDashboard /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="customers/profile" element={<ErrorBoundary name="Admin-Customer-Profile"><ProtectedRoute requiredPermissions={['Customer Management']}><AdminCustomerProfilePage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="customers/:customerId/profile" element={<ErrorBoundary name="Admin-Customer-Profile-ById"><ProtectedRoute requiredPermissions={['Customer Management']}><AdminCustomerProfilePage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="fleet" element={<ErrorBoundary name="Fleet-Page"><ProtectedRoute requiredPermissions={['Fleet Management']}><VehicleManagement /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="fleet/:vehicleId" element={<ErrorBoundary name="Vehicle-Profile-Page"><ProtectedRoute requiredPermissions={['Fleet Management']}><VehicleProfilePage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="fleet/:vehicleId/activity" element={<ErrorBoundary name="Vehicle-Activity-Page"><ProtectedRoute requiredPermissions={['Fleet Management']}><VehicleActivityPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="pricing/*" element={<ErrorBoundary name="Pricing-Page"><ProtectedRoute requiredPermissions={['Pricing Management']}><PricingPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="maintenance/:id" element={<ErrorBoundary name="Maintenance-Detail"><ProtectedRoute requiredPermissions={['Quad Maintenance']}><MaintenanceDetail /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="maintenance/*" element={<ErrorBoundary name="Maintenance-Page"><ProtectedRoute requiredPermissions={['Quad Maintenance']}><MaintenancePage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="fuel/*" element={<ErrorBoundary name="Fuel-Page"><ProtectedRoute requiredPermissions={['Fuel Logs']}><FuelPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="inventory/*" element={<ErrorBoundary name="Inventory-Page"><ProtectedRoute requiredPermissions={['Inventory']}><InventoryPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="finance/*" element={<ErrorBoundary name="Finance-Page"><ProtectedRoute requiredPermissions={['Finance Management']}><FinancePage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="alerts/*" element={<ErrorBoundary name="Alerts-Page"><ProtectedRoute requiredPermissions={['Alerts']}><AlertsPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="users/*" element={<ErrorBoundary name="User-Management-Page"><ProtectedRoute requiredPermissions={['User & Role Management']}><UserManagement /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="verification" element={<ErrorBoundary name="Verification-Center"><ProtectedRoute requiredPermissions={['Verification Center']}><VerificationCenterPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="messages" element={<ErrorBoundary name="Admin-Messages"><ProtectedRoute requiredPermissions={['Messages']}><AdminMessagesPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="workspaces" element={<ErrorBoundary name="Workspaces"><ProtectedRoute requiredRoles={['owner', 'admin']} requiredPermissions={['Workspaces']}><WorkspacesPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="marketplace" element={<ErrorBoundary name="Marketplace-Control"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Marketplace Review']}><MarketplaceControlWorkspace /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="marketplace/:listingId" element={<ErrorBoundary name="Marketplace-Listing-Detail"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Marketplace Review']}><MarketplaceListingDetail /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="settings/*" element={<ErrorBoundary name="Settings-Page"><ProtectedRoute requiredPermissions={['System Settings']}><SettingsPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="website/*" element={<ErrorBoundary name="Website-Editor-Page"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['System Settings']}><WebsiteEditorPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="export/*" element={<ErrorBoundary name="Export-Page"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Project Export']}><ExportPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="profile" element={<ErrorBoundary name="Admin-Profile"><ProfilePage /></ErrorBoundary>} />
                 </Route>
 
@@ -824,8 +713,8 @@ function App() {
                   <ErrorBoundary name="Guide-Routes">
                     <GuideRoute>
                       <Routes>
-                        <Route path="dashboard" element={<GuideDashboard />} />
-                        <Route path="tours" element={<ToursPage />} />
+                        <Route path="dashboard" element={<ProtectedRoute requiredPermissions={['Dashboard']}><GuideDashboard /></ProtectedRoute>} />
+                        <Route path="tours" element={<ProtectedRoute requiredPermissions={['Tours & Bookings']}><ToursPage /></ProtectedRoute>} />
                         <Route path="profile" element={<ProfilePage />} />
                       </Routes>
                     </GuideRoute>
@@ -840,7 +729,7 @@ function App() {
                         <Route path="dashboard" element={<Navigate to="/account/overview" replace />} />
                         <Route path="book" element={<div className="p-6"><div className="bg-purple-50 border border-purple-200 rounded-lg p-6"><h2 className="text-lg font-semibold text-purple-900 mb-2">Booking System</h2><p className="text-purple-800">Vehicle booking interface will be implemented here.</p></div></div>} />
                         <Route path="rentals" element={<Navigate to="/account/rentals" replace />} />
-                        <Route path="profile" element={<Navigate to="/account/settings" replace />} />
+                        <Route path="profile" element={<Navigate to="/account/verification" replace />} />
                       </Routes>
                     </CustomerRoute>
                   </ErrorBoundary>
@@ -851,6 +740,7 @@ function App() {
                 {/* Catch-all redirect to home */}
                 <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
+                    <AppGlobalMessageLauncher />
                   </div>
                 </Suspense>
               </ErrorBoundary>

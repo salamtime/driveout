@@ -25,6 +25,7 @@ import i18n from '../i18n';
 import FleetLocationService from '../services/FleetLocationService';
 import WebsiteBookingLifecycleService from '../services/WebsiteBookingLifecycleService';
 import VehicleDispositionService from '../services/VehicleDispositionService';
+import useAdminModalFocus from '../hooks/useAdminModalFocus';
 
 const scheduleBackgroundTask = (callback: () => void) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -175,6 +176,7 @@ const VehicleManagement: React.FC = () => {
   const [showEditModelModal, setShowEditModelModal] = useState(false);
   const [modelEditError, setModelEditError] = useState('');
   const [showMaintenanceSummary, setShowMaintenanceSummary] = useState(false);
+  useAdminModalFocus(showAddForm || showEditModelModal, 'vehicle-form');
 
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [fleetLocations, setFleetLocations] = useState<FleetLocation[]>([]);
@@ -1199,14 +1201,31 @@ const VehicleManagement: React.FC = () => {
     return daysUntilDue <= 30;
   };
 
+  const vehicleModelsById = useMemo(
+    () =>
+      new Map(
+        vehicleModels.map((model) => [String(model.id), model])
+      ),
+    [vehicleModels]
+  );
+
   const displayVehicles = useMemo(
     () =>
-      vehicles.map((vehicle) =>
-        impoundedVehicleIds.has(String(vehicle.id))
-          ? { ...vehicle, status: 'impounded' as const }
-          : vehicle
-      ),
-    [vehicles, impoundedVehicleIds]
+      vehicles.map((vehicle) => {
+        const linkedModel = vehicleModelsById.get(String(vehicle.vehicle_model_id || ''));
+        const displayImageUrl = normalizeVehicleImageUrl(
+          linkedModel?.image_url || vehicle.image_url || ''
+        );
+        const nextVehicle = {
+          ...vehicle,
+          image_url: displayImageUrl,
+        };
+
+        return impoundedVehicleIds.has(String(vehicle.id))
+          ? { ...nextVehicle, status: 'impounded' as const }
+          : nextVehicle;
+      }),
+    [vehicles, impoundedVehicleIds, vehicleModelsById]
   );
   const dispositionByVehicleId = useMemo(
     () => new Map(vehicleDispositions.map((record) => [String(record.vehicle_id), record])),
@@ -1318,7 +1337,6 @@ const VehicleManagement: React.FC = () => {
 
   const isNewVehicle = !viewingVehicle && !editingVehicle;
   const loadFromStorageValue = !isNewVehicle;
-  
   console.log('🔍 VehicleManagement Debug:', {
     isNewVehicle,
     loadFromStorageValue,
@@ -1677,7 +1695,19 @@ const VehicleManagement: React.FC = () => {
               {outOfServiceVehicles.map((vehicle) => {
                 const daysOutOfService = getDaysOutOfService(vehicle);
                 return (
-                  <div key={vehicle.id} className="bg-white rounded-lg shadow-md border-2 border-red-200 overflow-hidden hover:shadow-lg transition-shadow">
+                  <div
+                    key={vehicle.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleView(vehicle)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        handleView(vehicle);
+                      }
+                    }}
+                    className="cursor-pointer overflow-hidden rounded-lg border-2 border-red-200 bg-white shadow-md transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg active:scale-[0.985]"
+                  >
                     {/* Vehicle Image */}
                     <div className="h-48 bg-gray-200 relative">
                       {normalizeVehicleImageUrl(vehicle.image_url) ? (
@@ -1743,13 +1773,19 @@ const VehicleManagement: React.FC = () => {
                       {/* Action Buttons */}
                       <div className="flex gap-2">
                           <button
-                            onClick={() => handleView(vehicle)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleView(vehicle);
+                            }}
                             className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
                           >
                           {tr('Open Profile', 'Ouvrir le profil')}
                         </button>
                         <button
-                          onClick={() => handleReturnToService(vehicle)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleReturnToService(vehicle);
+                          }}
                           className="flex-1 bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-1"
                         >
                           <CheckCircle className="w-4 h-4" />
@@ -1801,7 +1837,19 @@ const VehicleManagement: React.FC = () => {
                 const saleDate = disposition?.event_date || vehicle.sold_date;
                 const buyerName = disposition?.buyer_name || vehicle.sold_buyer_name;
                 return (
-                  <div key={vehicle.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+                  <div
+                    key={vehicle.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleView(vehicle)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        handleView(vehicle);
+                      }
+                    }}
+                    className="cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md active:scale-[0.985]"
+                  >
                     <div className="relative h-44 bg-slate-100">
                       {normalizeVehicleImageUrl(vehicle.image_url) ? (
                         <img
@@ -1849,7 +1897,10 @@ const VehicleManagement: React.FC = () => {
                       ) : null}
                       <button
                         type="button"
-                        onClick={() => handleView(vehicle)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleView(vehicle);
+                        }}
                         className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100"
                       >
                         <ExternalLink className="h-4 w-4" />

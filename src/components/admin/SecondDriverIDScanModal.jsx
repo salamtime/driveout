@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import enhancedUnifiedCustomerService from '../../services/EnhancedUnifiedCustomerService';
 import { uploadFile } from '../../utils/storageUpload';
 import i18n from '../../i18n';
+import useAdminModalFocus from '../../hooks/useAdminModalFocus';
 
 const SecondDriverIDScanModal = ({
   isOpen,
@@ -35,6 +36,7 @@ const SecondDriverIDScanModal = ({
   const [manualUploadedImages, setManualUploadedImages] = useState([]);
   const [manualUploading, setManualUploading] = useState(false);
   const [manualImagePreview, setManualImagePreview] = useState(null);
+  useAdminModalFocus(isOpen, 'second-driver-id-scan');
   
   const [manualData, setManualData] = useState({
     full_name: '',
@@ -225,7 +227,10 @@ const SecondDriverIDScanModal = ({
           toast.info(tr('Image uploaded. You can complete the second driver fields in the form.', "Image téléversée. Vous pouvez compléter les champs du second conducteur dans le formulaire."));
           onClose();
         } else {
-          setScanError(tr('Image uploaded, but OCR is unavailable right now. Please fill the driver details manually.', "Image téléversée, mais l'OCR est indisponible pour le moment. Veuillez remplir manuellement les détails du conducteur."));
+          setScanError(
+            result.ocrError ||
+            tr('Image uploaded, but OCR is unavailable right now. Please fill the driver details manually.', "Image téléversée, mais l'OCR est indisponible pour le moment. Veuillez remplir manuellement les détails du conducteur.")
+          );
           setActiveTab('manual');
           toast.info(tr('Image uploaded. Complete the second driver details manually.', "Image téléversée. Complétez manuellement les détails du second conducteur."));
         }
@@ -247,7 +252,7 @@ const SecondDriverIDScanModal = ({
     } catch (error) {
       console.error('❌ Scan error:', error);
       setScanError(error.message);
-      toast.error(tr('Scan failed', 'Le scan a échoué'));
+      toast.error(error?.message || tr('Scan failed', 'Le scan a échoué'));
       if (!scanOnlyMode) {
         setActiveTab('manual');
       }

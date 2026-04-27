@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { ArrowRight, CheckCircle2, CircleDashed, ShieldCheck, Sparkles } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import VerificationUploadField from './VerificationUploadField';
 import VerificationStatusBadge from './VerificationStatusBadge';
 import VerificationService from '../../services/VerificationService';
@@ -38,28 +39,192 @@ const ProfileVerificationCard = ({ profile }) => {
   }, [loadRequests]);
 
   const latestByType = summary.latestByType || {};
+  const completedCount = summary.approved?.length || 0;
+  const requiredCount = summary.requiredTypes?.length || PROFILE_REQUIRED_VERIFICATIONS.length;
+  const progress = Math.round((completedCount / Math.max(requiredCount, 1)) * 100);
+
+  const checklist = PROFILE_REQUIRED_VERIFICATIONS.map((verificationType) => {
+    const request = latestByType[verificationType];
+    const normalizedStatus = String(request?.status || '').toLowerCase();
+    const complete = normalizedStatus === 'approved';
+    const blocked = ['rejected', 'suspended', 'expired'].includes(normalizedStatus);
+    const stateLabel = complete
+      ? tr('Done', 'Terminé')
+      : blocked
+        ? tr('Fix', 'Corriger')
+        : request
+          ? tr('Waiting', 'En attente')
+          : tr('Next', 'Suivant');
+
+    return {
+      id: verificationType,
+      label: getVerificationTypeLabel(verificationType, language),
+      complete,
+      blocked,
+      stateLabel,
+    };
+  });
+
+  const nextTask = checklist.find((item) => !item.complete) || null;
+  const milestoneLabel = summary.complete
+    ? tr('Owner verification unlocked', 'Vérification propriétaire débloquée')
+    : nextTask
+      ? tr(`Finish ${nextTask.label}`, `Terminer ${nextTask.label}`)
+      : tr('Verification in progress', 'Vérification en cours');
 
   return (
-    <div className="mt-5 rounded-[28px] border border-violet-100 bg-[linear-gradient(135deg,rgba(248,250,252,0.96)_0%,rgba(255,255,255,1)_72%)] p-5 shadow-sm">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+    <div className="mt-5 rounded-[32px] border border-violet-100 bg-[linear-gradient(135deg,rgba(248,250,252,0.98)_0%,rgba(255,255,255,1)_68%)] p-5 shadow-[0_22px_60px_rgba(109,40,217,0.08)] ring-1 ring-violet-200/60">
+      <div className="rounded-[28px] border border-violet-100/90 bg-white/92 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.95)]">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-500">
+              {tr('Owner trust mission', 'Mission confiance propriétaire')}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <span className="inline-flex h-11 w-11 items-center justify-center rounded-[1.1rem] bg-violet-100 text-violet-700 shadow-sm">
+                <ShieldCheck className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <h3 className="text-xl font-black text-slate-950">
+                  {tr('Complete verification', 'Compléter la vérification')}
+                </h3>
+                <p className="mt-1 text-sm font-medium text-slate-500">
+                  {tr(
+                    'Finish the owner checks once, then unlock trusted marketplace workflows.',
+                    'Terminez les contrôles propriétaire une fois, puis débloquez les opérations marketplace vérifiées.'
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+          <VerificationStatusBadge status={summary.status} />
+        </div>
+
+        <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(18rem,0.9fr)]">
+          <div className="rounded-[26px] border border-violet-100 bg-[linear-gradient(135deg,rgba(245,243,255,0.72)_0%,rgba(255,255,255,0.98)_100%)] p-4 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  {tr('Verification progress', 'Progression de vérification')}
+                </p>
+                <div className="mt-2 flex items-end gap-2">
+                  <span className="text-3xl font-black text-slate-950">{progress}%</span>
+                  <span className="pb-1 text-sm font-semibold text-slate-500">
+                    {tr(`${completedCount}/${requiredCount} done`, `${completedCount}/${requiredCount} terminé`)}
+                  </span>
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-2 rounded-full bg-violet-100 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.16em] text-violet-700">
+                <Sparkles className="h-3.5 w-3.5" />
+                {milestoneLabel}
+              </span>
+            </div>
+
+            <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-violet-500 via-indigo-500 to-cyan-400 transition-all duration-500"
+                style={{ width: `${Math.max(6, progress)}%` }}
+              />
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {checklist.map((item) => (
+                <div
+                  key={item.id}
+                  className={`rounded-[22px] border px-4 py-3 ${
+                    item.complete
+                      ? 'border-emerald-200 bg-emerald-50/80'
+                      : item.blocked
+                        ? 'border-rose-200 bg-rose-50/80'
+                        : 'border-slate-200 bg-white/90'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900">{item.label}</p>
+                      <p className="mt-1 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                        {item.stateLabel}
+                      </p>
+                    </div>
+                    <span
+                      className={`inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-2xl ${
+                        item.complete
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : item.blocked
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-violet-100 text-violet-700'
+                      }`}
+                    >
+                      {item.complete ? (
+                        <CheckCircle2 className="h-4 w-4" />
+                      ) : (
+                        <CircleDashed className="h-4 w-4" />
+                      )}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-[26px] border border-slate-200 bg-slate-50/90 p-4 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+              {tr('Next milestone', 'Prochain palier')}
+            </p>
+            <h4 className="mt-2 text-lg font-black text-slate-950">
+              {summary.complete
+                ? tr('You are verified', 'Vous êtes vérifié')
+                : nextTask
+                  ? nextTask.label
+                  : tr('Verification review', 'Revue de vérification')}
+            </h4>
+            <p className="mt-2 text-sm font-medium text-slate-500">
+              {summary.complete
+                ? tr(
+                    'Your owner trust checks are complete. You can move forward with the rest of the workflow.',
+                    'Vos contrôles de confiance propriétaire sont terminés. Vous pouvez avancer dans le reste du parcours.'
+                  )
+                : tr(
+                    'Upload the missing item, then wait for the review team to approve it.',
+                    'Téléversez l’élément manquant, puis attendez que l’équipe de revue l’approuve.'
+                  )}
+            </p>
+
+            <Link
+              to="/account/verification"
+              className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-violet-200 bg-white px-4 py-2.5 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-50"
+            >
+              {summary.complete
+                ? tr('Open verification', 'Ouvrir la vérification')
+                : tr('Open next task', 'Ouvrir la prochaine tâche')}
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+
+            {!summary.complete ? (
+              <p className="mt-3 text-xs font-semibold text-slate-500">
+                {tr(
+                  'Once this mission is approved, your private owner tools stay unlocked.',
+                  'Une fois cette mission approuvée, vos outils propriétaire privé restent débloqués.'
+                )}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-500">
             {tr('Verification', 'Vérification')}
           </p>
-          <h3 className="mt-1 flex items-center gap-2 text-lg font-black text-slate-950">
-            <span className="inline-flex h-9 w-9 items-center justify-center rounded-2xl bg-violet-100 text-violet-700">
-              <ShieldCheck className="h-5 w-5" />
-            </span>
-            {tr('Profile verification', 'Vérification du profil')}
-          </h3>
+          <h3 className="mt-1 text-lg font-black text-slate-950">{tr('Verification details', 'Détails de vérification')}</h3>
           <p className="mt-2 max-w-2xl text-sm font-medium text-slate-500">
             {tr(
-              'Upload the required owner documents once. Approved documents unlock trusted owner workflows.',
-              'Téléversez les documents propriétaire requis une seule fois. Les documents approuvés débloquent les opérations vérifiées.'
+              'Use the upload blocks below to replace, scan, or inspect the files tied to this mission.',
+              'Utilisez les blocs ci-dessous pour remplacer, scanner ou consulter les fichiers liés à cette mission.'
             )}
           </p>
         </div>
-        <VerificationStatusBadge status={summary.status} />
       </div>
 
       <div className="mt-4 grid gap-3">
@@ -80,8 +245,8 @@ const ProfileVerificationCard = ({ profile }) => {
       {!summary.complete && (
         <p className="mt-3 text-xs font-semibold text-slate-500">
           {tr(
-            `${getVerificationTypeLabel('profile_id', language)} must be verified before full owner activation.`,
-            `${getVerificationTypeLabel('profile_id', language)} doit être vérifié avant l’activation complète.`
+            `${getVerificationTypeLabel('profile_id', language)} must be approved before full owner activation.`,
+            `${getVerificationTypeLabel('profile_id', language)} doit être approuvé avant l’activation complète du propriétaire.`
           )}
         </p>
       )}

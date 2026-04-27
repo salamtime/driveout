@@ -1,28 +1,5 @@
-import { normalizePermissionMap as normalizeCatalogPermissionMap } from './permissionCatalog';
-
-// Module name mapping configuration
-const MODULE_NAME_MAP = {
-  // UI module name (lowercase): Server module name (exact match)
-  'dashboard': 'Dashboard',
-  'calendar': 'Calendar',
-  'tours': 'Tours & Bookings',
-  'rentals': 'Rental Management',
-  'customers': 'Customer Management',
-  'fleet': 'Fleet Management',
-  'pricing': 'Pricing Management',
-  'maintenance': 'Quad Maintenance',
-  'fuel': 'Fuel Logs',
-  'inventory': 'Inventory',
-  'finance': 'Financial Reports',
-  'alerts': 'Alerts & Notifications',
-  'users': 'User Management',
-  'verification': 'Verification Center',
-  'workspaces': 'Workspaces',
-  'marketplace': 'Marketplace Review',
-  'settings': 'System Settings',
-  'export': 'Data Export',
-  'admin': 'Administration' // Add this for admin/owner checks
-};
+import { normalizePermissionMap as normalizeCatalogPermissionMap, resolvePermissionKey } from './permissionCatalog';
+import { isBusinessOwnerAccountType, isPlatformAdminEmail, isPlatformOwnerEmail } from './accountType';
 
 // ✅ Permission cache with TTL to prevent repeated permission checks and rate limiting
 const permissionCache = {
@@ -109,8 +86,15 @@ export const hasPermission = (moduleName, user = null) => {
     return cached;
   }
   
-  // For owner role, always return true for all permissions
-  if (userProfile.role === 'owner') {
+  const normalizedRole = String(userProfile.role || '').toLowerCase();
+  const normalizedEmail = String(userProfile.email || '').toLowerCase();
+
+  if (
+    normalizedRole === 'owner' ||
+    normalizedRole === 'admin' ||
+    isPlatformOwnerEmail(normalizedEmail) ||
+    isPlatformAdminEmail(normalizedEmail)
+  ) {
     return permissionCache.set(userProfile.id, cacheKey, true);
   }
   
@@ -120,11 +104,8 @@ export const hasPermission = (moduleName, user = null) => {
     return permissionCache.set(userProfile.id, cacheKey, false);
   }
   
-  // Get the mapped module name, fallback to the input if no mapping
-  const mappedModuleName = MODULE_NAME_MAP[moduleName.toLowerCase()] || moduleName;
+  const mappedModuleName = resolvePermissionKey(moduleName);
   
-  console.log(`🔍 Checking permission: ${moduleName} -> ${mappedModuleName}`);
-
   const directHit = Object.entries(permissionMap).find(([permissionName]) =>
     permissionName.toLowerCase() === mappedModuleName.toLowerCase() ||
     permissionName.toLowerCase() === moduleName.toLowerCase()
@@ -137,7 +118,6 @@ export const hasPermission = (moduleName, user = null) => {
 // ✅ NEW: Clear permission cache (call this when user logs out or permissions change)
 export const clearPermissionCache = () => {
   permissionCache.clear();
-  console.log('🔄 Permission cache cleared');
 };
 
 // Legacy helper for older screens that still group admin + owner together.
@@ -162,8 +142,17 @@ export const canApprovePriceOverrides = (user) => {
 
 export const canEditRentalPrice = (user) => {
   const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
 
-  if (String(userProfile?.role || '').toLowerCase() === 'owner') {
+  if (
+    role === 'owner' ||
+    role === 'admin' ||
+    role === 'business_owner' ||
+    role === 'operator' ||
+    role === 'business' ||
+    role === 'rental_business' ||
+    role.includes('admin')
+  ) {
     return true;
   }
 
@@ -171,7 +160,9 @@ export const canEditRentalPrice = (user) => {
     hasPermission('Edit Rental Cost', userProfile) ||
     hasPermission('Edit Rental Price', userProfile) ||
     hasPermission('Change Rental Price', userProfile) ||
-    hasPermission('Edit Rental Price Without Approval', userProfile)
+    hasPermission('Edit Rental Price Without Approval', userProfile) ||
+    hasPermission('Pricing Management', userProfile) ||
+    hasPermission('Rental Management', userProfile)
   );
 };
 
@@ -243,15 +234,89 @@ export const canChooseTourGuide = (user) => {
   return hasPermission('Choose Tour Guide', userProfile);
 };
 
+export const canRecordReceiveFunds = (user) => {
+  const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+  const email = String(userProfile?.email || '').toLowerCase();
+  const accountType = String(userProfile?.accountType || userProfile?.account_type || '').toLowerCase();
+  const organizationRole = String(userProfile?.organizationRole || userProfile?.organization_role || '').toLowerCase();
+
+  if (
+    role === 'owner' ||
+    role === 'admin' ||
+    role === 'employee' ||
+    role === 'business_owner' ||
+    role.includes('admin') ||
+    organizationRole === 'org_owner' ||
+    organizationRole === 'owner' ||
+    isBusinessOwnerAccountType(accountType) ||
+    isPlatformOwnerEmail(email) ||
+    isPlatformAdminEmail(email)
+  ) {
+    return true;
+  }
+
+  return (
+    hasPermission('Finance Management', userProfile) ||
+    hasPermission('Finance', userProfile) ||
+    hasPermission('Record Receive Funds', userProfile) ||
+    hasPermission('Record Received Funds', userProfile)
+  );
+};
+
+export const canReviewReceiveFunds = (user) => {
+  const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+  const email = String(userProfile?.email || '').toLowerCase();
+  const accountType = String(userProfile?.accountType || userProfile?.account_type || '').toLowerCase();
+  const organizationRole = String(userProfile?.organizationRole || userProfile?.organization_role || '').toLowerCase();
+
+  if (
+    role === 'owner' ||
+    role === 'admin' ||
+    role === 'business_owner' ||
+    role.includes('admin') ||
+    organizationRole === 'org_owner' ||
+    organizationRole === 'owner' ||
+    isBusinessOwnerAccountType(accountType) ||
+    isPlatformOwnerEmail(email) ||
+    isPlatformAdminEmail(email)
+  ) {
+    return true;
+  }
+
+  return (
+    hasPermission('Finance Management', userProfile) ||
+    hasPermission('Finance', userProfile) ||
+    hasPermission('Review Receive Funds', userProfile) ||
+    hasPermission('Review Finance Reconciliation', userProfile)
+  );
+};
+
+export const canAccessOwnerBankMethods = (user) => {
+  const userProfile = user || getCurrentUser();
+  return canRecordReceiveFunds(userProfile);
+};
+
+export const canUseBankDepositMethod = (user) => {
+  const userProfile = user || getCurrentUser();
+  return canRecordReceiveFunds(userProfile);
+};
+
 export const canManageTourPackages = (user) => {
   const userProfile = user || getCurrentUser();
   const role = String(userProfile?.role || '').toLowerCase();
 
-  if (role === 'owner' || role === 'admin') {
+  if (role === 'owner' || role === 'admin' || role.includes('admin')) {
     return true;
   }
 
-  return hasPermission('Manage Tour Packages', userProfile);
+  return (
+    hasPermission('Manage Tour Packages', userProfile) ||
+    hasPermission('Pricing Management', userProfile) ||
+    hasPermission('Tours & Booking', userProfile) ||
+    hasPermission('Tours & Bookings', userProfile)
+  );
 };
 
 export const canAdjustVehicleFuelLevel = (user) => {
@@ -270,10 +335,6 @@ export const canAdjustFuelTankLevel = (user) => {
 
   if (role === 'owner') {
     return true;
-  }
-
-  if (role !== 'admin') {
-    return false;
   }
 
   return hasPermission('Adjust Fuel Tank Level', userProfile);

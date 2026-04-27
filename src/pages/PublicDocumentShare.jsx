@@ -1,34 +1,100 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { ArrowRight, FileText, Lock, Receipt, ShieldCheck } from 'lucide-react';
 import ContractTemplate from '../components/ContractTemplate';
 import ReceiptTemplate from '../components/ReceiptTemplate';
 import i18n from '../i18n';
 import { decodePublicSharePayload } from '../utils/publicSharePayload';
 
+const pageWrapStyle = {
+  background: 'linear-gradient(180deg, #f8f7ff 0%, #f6f8fc 42%, #f8fafc 100%)',
+  minHeight: '100vh',
+  padding: '16px',
+};
+
+const contentWrapStyle = {
+  maxWidth: 1040,
+  margin: '0 auto',
+};
+
+const premiumHeroStyle = {
+  position: 'relative',
+  overflow: 'hidden',
+  borderRadius: 24,
+  border: '1px solid rgba(196,181,253,0.5)',
+  background: 'linear-gradient(135deg, rgba(109,40,217,0.14) 0%, rgba(139,92,246,0.1) 28%, rgba(255,255,255,0.96) 68%, rgba(248,250,252,0.96) 100%)',
+  boxShadow: '0 20px 60px rgba(76,29,149,0.10)',
+  backdropFilter: 'blur(18px)',
+};
+
+const premiumHeroInnerStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'flex-start',
+  gap: 18,
+  flexWrap: 'wrap',
+  padding: '24px',
+};
+
+const premiumSurfaceStyle = {
+  borderRadius: 18,
+  border: '1px solid rgba(226,232,240,0.95)',
+  background: 'rgba(255,255,255,0.84)',
+  boxShadow: '0 16px 40px rgba(15,23,42,0.05)',
+};
+
+const inlinePromptStyle = {
+  ...premiumSurfaceStyle,
+  padding: '16px 18px',
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: 16,
+  flexWrap: 'wrap',
+  background: 'linear-gradient(135deg, rgba(255,255,255,0.94), rgba(245,243,255,0.92))',
+};
+
+const docGridStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+  gap: 18,
+};
+
 const cardBaseStyle = {
   textDecoration: 'none',
-  background: '#fff',
-  border: '1px solid #dbeafe',
-  borderRadius: 16,
-  padding: '18px 20px',
-  boxShadow: '0 10px 25px rgba(59, 130, 246, 0.08)',
+  borderRadius: 18,
+  border: '1px solid rgba(226,232,240,0.95)',
+  background: '#ffffff',
+  boxShadow: '0 16px 38px rgba(15, 23, 42, 0.05)',
   color: '#0f172a',
   display: 'block',
+  padding: '22px',
+  transition: 'transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease',
 };
 
 const SHARE_ITEM_META = {
   contract: {
-    icon: '📄',
+    icon: FileText,
     title: { en: 'Contract', fr: 'Contrat' },
-    subtitle: { en: 'Open the signed rental agreement', fr: 'Ouvrir le contrat de location signe' },
+    subtitle: { en: 'Open the signed rental agreement for this booking.', fr: 'Ouvrir le contrat signé pour cette réservation.' },
+    accent: {
+      tint: 'linear-gradient(135deg, rgba(15,23,42,0.08), rgba(71,85,105,0.04))',
+      border: 'rgba(148,163,184,0.28)',
+      color: '#0f172a',
+    },
   },
   receipt: {
-    icon: '🧾',
+    icon: Receipt,
     title: { en: 'Receipt', fr: 'Recu' },
-    subtitle: { en: 'View the payment receipt', fr: 'Voir le recu de paiement' },
+    subtitle: { en: 'View the payment receipt and final booking record.', fr: 'Voir le reçu de paiement et le récapitulatif final.' },
+    accent: {
+      tint: 'linear-gradient(135deg, rgba(124,58,237,0.14), rgba(16,185,129,0.08))',
+      border: 'rgba(167,139,250,0.34)',
+      color: '#6d28d9',
+    },
   },
   'opening-media': {
-    icon: '📸',
+    icon: FileText,
     title: { en: 'Opening Media', fr: 'Media de depart' },
     subtitle: { en: 'Browse opening photos and videos', fr: 'Parcourir les photos et videos de depart' },
   },
@@ -44,6 +110,68 @@ const SHARE_ITEM_META = {
   },
 };
 
+const PUBLIC_PROMPT_BUTTON = {
+  padding: '10px 16px',
+  borderRadius: 999,
+  fontSize: 14,
+  fontWeight: 700,
+  textDecoration: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
+const documentShellPageStyle = {
+  minHeight: '100vh',
+  background: '#f8fafc',
+  padding: '24px 16px 48px',
+};
+
+const documentShellHeaderStyle = {
+  maxWidth: 960,
+  margin: '0 auto',
+  border: '1px solid #e2e8f0',
+  borderRadius: 28,
+  background: 'rgba(255,255,255,0.96)',
+  boxShadow: '0 18px 50px rgba(15, 23, 42, 0.06)',
+  padding: '24px',
+};
+
+const documentShellCardStyle = {
+  border: '1px solid #e2e8f0',
+  borderRadius: 24,
+  background: '#ffffff',
+  boxShadow: '0 16px 38px rgba(15, 23, 42, 0.05)',
+  padding: '20px 22px',
+};
+
+const renderDocumentLoadingShell = (tr) => (
+  <div style={documentShellPageStyle}>
+    <div style={documentShellHeaderStyle}>
+      <div style={{ height: 12, width: 140, borderRadius: 999, background: '#e2e8f0' }} />
+      <div style={{ height: 40, width: 'min(320px, 72%)', borderRadius: 18, background: '#f1f5f9', marginTop: 14 }} />
+      <div style={{ height: 16, width: 'min(460px, 92%)', borderRadius: 999, background: '#f1f5f9', marginTop: 14 }} />
+    </div>
+    <div style={{ maxWidth: 960, margin: '20px auto 0', display: 'grid', gap: 16 }}>
+      {Array.from({ length: 2 }).map((_, index) => (
+        <div key={index} style={documentShellCardStyle}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ height: 18, width: 116, borderRadius: 999, background: '#f1f5f9' }} />
+              <div style={{ height: 28, width: 'min(280px, 85%)', borderRadius: 16, background: '#f1f5f9', marginTop: 14 }} />
+              <div style={{ height: 15, width: 'min(420px, 92%)', borderRadius: 999, background: '#f8fafc', marginTop: 12 }} />
+            </div>
+            <div style={{ width: 48, height: 48, borderRadius: 18, background: '#f1f5f9' }} />
+          </div>
+        </div>
+      ))}
+    </div>
+    <p style={{ maxWidth: 960, margin: '14px auto 0', color: '#64748b', fontSize: 14, fontWeight: 600 }}>
+      {tr('Preparing rental documents...', 'Préparation des documents de location...')}
+    </p>
+  </div>
+);
+
 export default function PublicDocumentShare() {
   const { token } = useParams();
   const [share, setShare] = useState(null);
@@ -53,7 +181,6 @@ export default function PublicDocumentShare() {
   const language = share?.payload?.language === 'en' ? 'en' : 'fr';
   const isFrench = language === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -152,6 +279,25 @@ export default function PublicDocumentShare() {
   const logoUrl = payload?.settings?.logoUrl || null;
   const stampUrl = payload?.settings?.stampUrl || null;
   const printablePdfUrl = payload?.pdfUrl || null;
+  const accountPrompt = (
+    <div style={inlinePromptStyle} className="no-print">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
+            {tr('Sign in to access full rental history, messages, and follow-up.', 'Connectez-vous pour accéder à l’historique, aux messages et au suivi complet.')}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <a href="/login" style={{ ...PUBLIC_PROMPT_BUTTON, background: '#4f46e5', color: '#fff' }}>
+          {tr('Sign in', 'Se connecter')}
+        </a>
+        <a href="/register" style={{ ...PUBLIC_PROMPT_BUTTON, background: '#fff', color: '#334155', border: '1px solid #cbd5e1' }}>
+          {tr('Create account', 'Créer un compte')}
+        </a>
+      </div>
+    </div>
+  );
 
   const hubItems = useMemo(() => {
     if (share?.share_type !== 'hub') return [];
@@ -160,15 +306,7 @@ export default function PublicDocumentShare() {
   }, [payload?.items, share?.share_type]);
 
   if (loading) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb' }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ width: 48, height: 48, border: '4px solid #dbeafe', borderTopColor: '#2563eb', borderRadius: '50%', margin: '0 auto 16px', animation: 'spin 1s linear infinite' }} />
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-          <p style={{ color: '#6b7280', fontSize: 16 }}>{tr('Loading shared document...', 'Chargement du document partage...')}</p>
-        </div>
-      </div>
-    );
+    return renderDocumentLoadingShell(tr);
   }
 
   if (error || !share) {
@@ -184,49 +322,122 @@ export default function PublicDocumentShare() {
   }
 
   if (share.share_type === 'hub') {
+    const secureLabel = tr('Secure access • Private link', 'Accès sécurisé • Lien privé');
+    const availableLabel = tr(`${hubItems.length} documents available`, `${hubItems.length} documents disponibles`);
     return (
-      <div style={{ background: '#f3f4f6', minHeight: '100vh', padding: '16px' }}>
-        <div style={{ maxWidth: 980, margin: '0 auto' }}>
-          <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: 16, boxShadow: '0 16px 40px rgba(15, 23, 42, 0.06)', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '20px 24px', borderBottom: '3px solid #667eea', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0 }}>
+      <div style={pageWrapStyle}>
+        <div style={contentWrapStyle}>
+          <div style={premiumHeroStyle}>
+            <div style={premiumHeroInnerStyle}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0, flex: 1 }}>
                 <img
                   src={logoUrl || '/assets/logo.jpg'}
-                  alt="Company Logo"
-                  style={{ width: 96, height: 'auto', objectFit: 'contain' }}
+                  alt="SaharaX"
+                  style={{ width: 72, height: 72, objectFit: 'contain', borderRadius: 20, background: '#fff', border: '1px solid rgba(226,232,240,0.9)', padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,0.06)' }}
                   onError={(e) => { e.target.style.display = 'none'; }}
                 />
-                <div style={{ minWidth: 0 }}>
-                  <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, color: '#1f2937' }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#7c3aed' }}>
+                    {tr('Shared Rental Access', 'Accès partagé location')}
+                  </div>
+                  <h1 style={{ margin: '8px 0 0', fontSize: 32, lineHeight: 1.05, fontWeight: 800, letterSpacing: '-0.03em', color: '#0f172a' }}>
                     {tr('Rental Documents', 'Documents de location')}
                   </h1>
-                  <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 15 }}>
-                    {payload?.rentalId || tr('Rental', 'Location')} • {payload?.customerName || tr('Customer', 'Client')}
+                  <p style={{ margin: '10px 0 0', color: '#475569', fontSize: 15, fontWeight: 600 }}>
+                    {[payload?.rentalId || tr('Booking', 'Réservation'), payload?.customerName || tr('Customer', 'Client')].filter(Boolean).join(' • ')}
                   </p>
+                  <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 999, background: 'rgba(255,255,255,0.68)', border: '1px solid rgba(196,181,253,0.45)', color: '#5b21b6', fontSize: 13, fontWeight: 700 }}>
+                    <Lock size={14} />
+                    <span>{secureLabel}</span>
+                  </div>
                 </div>
               </div>
-              <div style={{ color: '#64748b', fontSize: 14, fontWeight: 600 }}>
-                {hubItems.length} {tr(hubItems.length === 1 ? 'item' : 'items', hubItems.length === 1 ? 'element' : 'elements')}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 10, minWidth: 220 }}>
+                <div style={{ alignSelf: 'flex-end', padding: '8px 12px', borderRadius: 999, background: 'rgba(255,255,255,0.68)', border: '1px solid rgba(196,181,253,0.45)', color: '#6d28d9', fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                  {availableLabel}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const firstUrl = hubItems[0]?.url;
+                    if (firstUrl) window.location.href = firstUrl;
+                  }}
+                  style={{
+                    border: 'none',
+                    borderRadius: 16,
+                    padding: '14px 18px',
+                    background: 'linear-gradient(135deg, #7c3aed 0%, #6366f1 100%)',
+                    color: '#fff',
+                    fontSize: 14,
+                    fontWeight: 800,
+                    boxShadow: '0 18px 34px rgba(109,40,217,0.24)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 10,
+                    cursor: 'pointer',
+                    transform: 'translateY(0)',
+                    transition: 'transform 180ms ease, box-shadow 180ms ease',
+                  }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.transform = 'translateY(-1px)';
+                    event.currentTarget.style.boxShadow = '0 22px 38px rgba(109,40,217,0.28)';
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.transform = 'translateY(0)';
+                    event.currentTarget.style.boxShadow = '0 18px 34px rgba(109,40,217,0.24)';
+                  }}
+                >
+                  <ShieldCheck size={16} />
+                  {tr('Open Securely', 'Ouvrir en sécurité')}
+                </button>
               </div>
             </div>
 
-            <div style={{ padding: 24 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
+            <div style={{ padding: '0 24px 24px' }}>
+              {accountPrompt}
+              <div style={{ height: 18 }} />
+              <div style={docGridStyle}>
                 {hubItems.map((item) => {
                   const meta = SHARE_ITEM_META[item.key] || SHARE_ITEM_META.receipt;
+                  const Icon = meta.icon || FileText;
                   return (
-                    <a key={item.key} href={item.url} target="_blank" rel="noreferrer" style={cardBaseStyle}>
-                      <div style={{ width: 44, height: 44, borderRadius: 14, background: 'linear-gradient(135deg, rgba(99,102,241,0.12), rgba(59,130,246,0.08))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>
-                        <span aria-hidden="true">{meta.icon}</span>
+                    <a
+                      key={item.key}
+                      href={item.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={cardBaseStyle}
+                      onMouseEnter={(event) => {
+                        event.currentTarget.style.transform = 'translateY(-3px)';
+                        event.currentTarget.style.boxShadow = '0 22px 42px rgba(15,23,42,0.08)';
+                        event.currentTarget.style.borderColor = 'rgba(167,139,250,0.55)';
+                      }}
+                      onMouseLeave={(event) => {
+                        event.currentTarget.style.transform = 'translateY(0)';
+                        event.currentTarget.style.boxShadow = '0 16px 38px rgba(15, 23, 42, 0.05)';
+                        event.currentTarget.style.borderColor = 'rgba(226,232,240,0.95)';
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+                        <div style={{ width: 58, height: 58, borderRadius: 18, background: meta.accent?.tint || 'linear-gradient(135deg, rgba(99,102,241,0.14), rgba(59,130,246,0.08))', border: `1px solid ${meta.accent?.border || 'rgba(196,181,253,0.35)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.72)' }}>
+                          <Icon size={24} color={meta.accent?.color || '#5b21b6'} />
+                        </div>
+                        <div style={{ padding: '8px 10px', borderRadius: 999, background: '#f8fafc', color: '#64748b', fontSize: 11, fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+                          {tr('Document', 'Document')}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6366f1' }}>
-                        {tr('Open', 'Ouvrir')}
-                      </div>
-                      <div style={{ marginTop: 8, fontSize: 22, fontWeight: 800 }}>
+                      <div style={{ marginTop: 18, fontSize: 24, lineHeight: 1.1, fontWeight: 800, letterSpacing: '-0.02em' }}>
                         {isFrench ? meta.title.fr : meta.title.en}
                       </div>
-                      <div style={{ marginTop: 8, color: '#64748b', lineHeight: 1.5 }}>
+                      <div style={{ marginTop: 10, color: '#64748b', lineHeight: 1.5, fontSize: 15 }}>
                         {isFrench ? meta.subtitle.fr : meta.subtitle.en}
+                      </div>
+                      <div style={{ marginTop: 18 }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderRadius: 14, background: '#f8fafc', border: '1px solid rgba(226,232,240,0.95)', color: '#0f172a', fontSize: 14, fontWeight: 800 }}>
+                          {tr('Open document', 'Ouvrir le document')}
+                          <ArrowRight size={16} />
+                        </span>
                       </div>
                     </a>
                   );
@@ -240,10 +451,15 @@ export default function PublicDocumentShare() {
   }
 
   return (
-    <div style={{ background: '#f3f4f6', minHeight: '100vh', padding: '16px' }}>
+    <div style={pageWrapStyle}>
       <div style={{ maxWidth: 980, margin: '0 auto 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }} className="no-print">
-        <div style={{ color: '#64748b', fontSize: 14, fontWeight: 600 }}>
-          {tr('Mobile-friendly view', 'Vue mobile lisible')}
+        <div>
+          <div style={{ color: '#6366f1', fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            {tr('Shared document', 'Document partagé')}
+          </div>
+          <div style={{ color: '#0f172a', fontSize: 18, fontWeight: 800 }}>
+            {share.share_type === 'contract' ? tr('Rental Contract', 'Contrat de location') : tr('Rental Receipt', 'Reçu de location')}
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {printablePdfUrl && (
@@ -265,11 +481,11 @@ export default function PublicDocumentShare() {
                 gap: 8,
               }}
             >
-              {tr('Open PDF', 'Ouvrir le PDF')}
+              {tr('Open exact PDF', 'Ouvrir le PDF exact')}
             </a>
           )}
           <button
-            onClick={() => window.print()}
+            onClick={() => (printablePdfUrl ? window.open(printablePdfUrl, '_blank', 'noopener,noreferrer') : window.print())}
             style={{
               padding: '10px 20px',
               background: '#2563eb',
@@ -284,12 +500,17 @@ export default function PublicDocumentShare() {
               gap: 8,
             }}
           >
-            {tr('🖨️ Print / Save PDF', '🖨️ Imprimer / enregistrer en PDF')}
+            {printablePdfUrl
+              ? tr('📄 Print exact PDF', '📄 Imprimer le PDF exact')
+              : tr('🖨️ Print / Save PDF', '🖨️ Imprimer / enregistrer en PDF')}
           </button>
         </div>
       </div>
 
       <div style={{ maxWidth: 980, margin: '0 auto' }}>
+        <div style={{ marginBottom: 16 }}>
+          {accountPrompt}
+        </div>
         {share.share_type === 'contract' ? (
           <ContractTemplate rental={rental} logoUrl={logoUrl} stampUrl={stampUrl} language={language} />
         ) : (

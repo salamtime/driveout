@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
   Building2,
@@ -17,6 +17,7 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import i18n from '../../i18n';
 import PhoneInputWithCountryCode from '../../components/forms/PhoneInputWithCountryCode';
+import GrowthLoopApiService from '../../services/GrowthLoopApiService';
 
 const GoogleMark = () => (
   <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24">
@@ -63,12 +64,35 @@ const ACCOUNT_TYPES = [
 const ACTIVE_CITY_OPTIONS = ['Tangier'];
 const DEFAULT_ACTIVE_CITY = ACTIVE_CITY_OPTIONS[0] || 'Tangier';
 const PENDING_ACCOUNT_INTENT_KEY = 'saharax_pending_account_type';
+const SHARE_ATTRIBUTION_KEY = 'saharax_share_attribution';
+
+const getSafeRedirectPath = (value = '') => {
+  const normalized = String(value || '').trim();
+  if (!normalized.startsWith('/')) return '';
+  if (normalized.startsWith('//')) return '';
+  return normalized;
+};
 
 const Register = () => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const { signUp, signInWithGoogle, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const queryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const redirectQuery = getSafeRedirectPath(queryParams.get('redirect'));
+  const prefilledEmail = String(queryParams.get('email') || '').trim();
+  const referralCode = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    const fromQuery = new URLSearchParams(window.location.search).get('ref');
+    if (fromQuery) return fromQuery;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(SHARE_ATTRIBUTION_KEY) || '{}');
+      return stored?.type === 'rewards' ? String(stored.code || '') : '';
+    } catch {
+      return '';
+    }
+  }, []);
 
   const [step, setStep] = useState(1);
   const [error, setError] = useState('');
@@ -78,7 +102,7 @@ const Register = () => {
   const [formData, setFormData] = useState({
     accountType: 'customer',
     fullName: '',
-    email: '',
+    email: prefilledEmail,
     password: '',
     confirmPassword: '',
     phone: '',
@@ -91,11 +115,6 @@ const Register = () => {
     categoriesInterest: [],
     marketplaceEnabled: false
   });
-
-  const selectedAccount = useMemo(
-    () => ACCOUNT_TYPES.find((item) => item.id === formData.accountType) || ACCOUNT_TYPES[0],
-    [formData.accountType]
-  );
 
   const cityOptions = useMemo(() => ACTIVE_CITY_OPTIONS, []);
 
@@ -185,12 +204,26 @@ const Register = () => {
     }
 
     if (user) {
+      if (referralCode) {
+        try {
+          await GrowthLoopApiService.trackSignup({
+            code: referralCode,
+            referredUserId: user.id,
+          });
+          try {
+            window.localStorage.removeItem(SHARE_ATTRIBUTION_KEY);
+          } catch {}
+        } catch (trackingError) {
+          console.warn('Unable to attribute referral signup:', trackingError);
+        }
+      }
+
       const successMessage =
         formData.accountType === 'customer'
           ? tr('Account created. Check your email, then sign in to continue booking.', 'Compte créé. Vérifiez votre e-mail puis connectez-vous pour continuer à réserver.')
           : tr('Account created. Check your email, then sign in to continue your verification setup.', 'Compte créé. Vérifiez votre e-mail puis connectez-vous pour continuer la vérification.');
       setSuccess(successMessage);
-      navigate('/login', {
+      navigate(redirectQuery ? `/login?redirect=${encodeURIComponent(redirectQuery)}` : '/login', {
         replace: true,
         state: { message: successMessage }
       });
@@ -229,13 +262,11 @@ const Register = () => {
     }
   };
 
-  const SelectedIcon = selectedAccount.icon;
-
   return (
     <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(139,92,246,0.16),_transparent_32%),radial-gradient(circle_at_bottom_right,_rgba(34,197,94,0.12),_transparent_30%),linear-gradient(180deg,_#f8f7ff_0%,_#eef2ff_100%)]">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl items-center px-4 py-8 sm:px-6 lg:px-8">
         <div className="grid w-full overflow-hidden rounded-[2rem] border border-violet-100/80 bg-white/90 shadow-[0_30px_90px_rgba(76,29,149,0.12)] backdrop-blur lg:grid-cols-[1fr_0.92fr]">
-          <section className="relative overflow-hidden bg-gradient-to-br from-slate-950 via-violet-900 to-indigo-950 px-6 py-10 text-white sm:px-10 sm:py-12 lg:px-12 lg:py-14">
+          <section className="relative overflow-hidden bg-gradient-to-br from-violet-600 via-violet-700 to-indigo-800 px-6 py-10 text-white sm:px-10 sm:py-12 lg:px-12 lg:py-14">
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(255,255,255,0.16),_transparent_26%),radial-gradient(circle_at_bottom_left,_rgba(255,255,255,0.10),_transparent_34%)]" />
             <div className="relative">
               <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-100 backdrop-blur-sm">
@@ -244,49 +275,26 @@ const Register = () => {
               </div>
 
               <h1 className="mt-8 text-4xl font-semibold tracking-tight sm:text-5xl">
-                {tr('Start the right account from day one', 'Commencez avec le bon compte dès le premier jour')}
+                {tr('Create your SaharaX account', 'Créez votre compte SaharaX')}
               </h1>
               <p className="mt-4 max-w-xl text-base leading-7 text-violet-100 sm:text-lg">
                 {tr(
-                  'Choose how you want to use the platform, then we collect only the fields needed for that path.',
-                  'Choisissez comment vous voulez utiliser la plateforme, puis nous collectons seulement les champs nécessaires pour ce parcours.'
+                  'Pick the account type that matches your goal and continue.',
+                  'Choisissez le type de compte qui correspond à votre objectif.'
                 )}
               </p>
-
-              <div className="mt-10 space-y-4">
-                {ACCOUNT_TYPES.map((account) => {
-                  const Icon = account.icon;
-                  const selected = formData.accountType === account.id;
-                  return (
-                    <div
-                      key={account.id}
-                      className={`rounded-[1.5rem] border p-4 transition ${
-                        selected ? 'border-white/30 bg-white/16' : 'border-white/10 bg-white/8'
-                      }`}
-                    >
-                      <div className="flex items-start gap-4">
-                        <div className={`rounded-2xl p-3 ${selected ? 'bg-white/20 text-white' : 'bg-white/10 text-violet-100'}`}>
-                          <Icon className="h-5 w-5" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-semibold text-white">{account.title[isFrench ? 'fr' : 'en']}</p>
-                            <span className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-violet-100">
-                              {account.badge[isFrench ? 'fr' : 'en']}
-                            </span>
-                          </div>
-                          <p className="mt-2 text-sm text-violet-100/90">{account.description[isFrench ? 'fr' : 'en']}</p>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
             </div>
           </section>
 
           <section className="bg-white/95 px-6 py-8 sm:px-8 sm:py-10 lg:px-10 lg:py-12">
             <div className="mx-auto max-w-xl">
+              <Link
+                to="/website"
+                className="mb-6 inline-flex items-center gap-2 text-sm font-semibold text-violet-600 transition hover:text-violet-700"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                {tr('Back to website', 'Retour au site')}
+              </Link>
               <div className="mb-8">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                   {tr('Account Setup', 'Configuration du compte')}
@@ -296,8 +304,8 @@ const Register = () => {
                 </h2>
                 <p className="mt-3 text-sm leading-6 text-slate-500">
                   {tr(
-                    'We keep this light: choose the account path, set access, then add the onboarding basics.',
-                    'Nous gardons cela léger : choisissez le parcours, définissez l’accès, puis ajoutez les bases d’onboarding.'
+                    'Start with the essentials and continue.',
+                    'Commencez par l’essentiel et continuez.'
                   )}
                 </p>
               </div>
@@ -336,18 +344,6 @@ const Register = () => {
               <form onSubmit={handleSubmit} className="space-y-6">
                 {step === 1 && (
                   <div className="space-y-4">
-                    <div className="rounded-[1.6rem] border border-violet-100 bg-violet-50/70 p-5">
-                      <div className="flex items-center gap-3">
-                        <div className="rounded-2xl bg-white p-3 text-violet-700 shadow-sm">
-                          <SelectedIcon className="h-5 w-5" />
-                        </div>
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">{selectedAccount.title[isFrench ? 'fr' : 'en']}</p>
-                          <p className="text-sm text-slate-600">{selectedAccount.description[isFrench ? 'fr' : 'en']}</p>
-                        </div>
-                      </div>
-                    </div>
-
                     <div className="grid gap-3">
                       {ACCOUNT_TYPES.map((account) => {
                         const Icon = account.icon;
@@ -370,11 +366,7 @@ const Register = () => {
                               <div>
                                 <div className="flex flex-wrap items-center gap-2">
                                   <p className="font-semibold text-slate-900">{account.title[isFrench ? 'fr' : 'en']}</p>
-                                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500">
-                                    {account.badge[isFrench ? 'fr' : 'en']}
-                                  </span>
                                 </div>
-                                <p className="mt-2 text-sm text-slate-600">{account.description[isFrench ? 'fr' : 'en']}</p>
                               </div>
                             </div>
                           </button>
@@ -541,9 +533,6 @@ const Register = () => {
                     {formData.accountType !== 'customer' && (
                       <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
                         <p className="text-sm font-semibold text-slate-900">{tr('Marketplace setup', 'Configuration marketplace')}</p>
-                        <p className="mt-1 text-sm text-slate-600">
-                          {tr('Choose the categories you want to activate first. Verification stays pending until review.', 'Choisissez les catégories à activer d’abord. La vérification reste en attente jusqu’à revue.')}
-                        </p>
 
                         <div className="mt-4 flex flex-wrap gap-2">
                           {['ATV', 'Buggy', 'Motorcycle', 'Electric'].map((category) => {
@@ -640,7 +629,7 @@ const Register = () => {
 
               <div className="mt-8 border-t border-slate-200 pt-6 text-sm text-slate-500">
                 {tr('Already have an account?', 'Vous avez déjà un compte ?')}{' '}
-                <Link to="/login" className="font-medium text-violet-600 transition-colors hover:text-violet-700">
+                <Link to={redirectQuery ? `/login?redirect=${encodeURIComponent(redirectQuery)}` : '/login'} className="font-medium text-violet-600 transition-colors hover:text-violet-700">
                   {tr('Sign in', 'Se connecter')}
                 </Link>
               </div>

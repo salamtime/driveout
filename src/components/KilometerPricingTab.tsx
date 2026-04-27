@@ -13,6 +13,7 @@ interface RentalPackage {
   included_kilometers: number | null;
   extra_km_rate: number | null;
   fixed_amount: number | null;
+  fuel_charge_enabled?: boolean;
   rate_type_id: number;
   is_active: boolean;
   show_on_print?: boolean;
@@ -52,6 +53,7 @@ interface PackageFormData {
   included_kilometers: number | null;
   extra_km_rate: number | null;
   fixed_amount: number | null;
+  fuel_charge_enabled: boolean;
   rate_type_id: number;
   is_active: boolean;
   show_on_print: boolean;
@@ -203,12 +205,14 @@ const KilometerPricingTab: React.FC = () => {
     included_kilometers: null,
     extra_km_rate: null,
     fixed_amount: null,
+    fuel_charge_enabled: false,
     rate_type_id: 1,
     is_active: true,
     show_on_print: false
   });
   const [packageTypeSelection, setPackageTypeSelection] = useState<string>('1');
   const [isUnlimitedKilometers, setIsUnlimitedKilometers] = useState(false);
+  const [fuelLineChargePreview, setFuelLineChargePreview] = useState<number>(0);
 
   useEffect(() => {
     loadData();
@@ -266,6 +270,7 @@ const KilometerPricingTab: React.FC = () => {
       included_kilometers: null,
       extra_km_rate: null,
       fixed_amount: null,
+      fuel_charge_enabled: false,
       rate_type_id: 1,
       is_active: true,
       show_on_print: false
@@ -294,6 +299,7 @@ const KilometerPricingTab: React.FC = () => {
       included_kilometers: pkg.included_kilometers,
       extra_km_rate: pkg.extra_km_rate,
       fixed_amount: pkg.fixed_amount,
+      fuel_charge_enabled: Boolean(pkg.fuel_charge_enabled),
       rate_type_id: pkg.rate_type_id,
       is_active: pkg.is_active,
       show_on_print: pkg.show_on_print === true || pkg.showOnPrint === true
@@ -452,6 +458,47 @@ const KilometerPricingTab: React.FC = () => {
     });
   };
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadFuelLineChargePreview = async () => {
+      if (!formData.vehicle_model_id) {
+        setFuelLineChargePreview(0);
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('fuel_pricing')
+          .select('price_per_line, hourly_price_per_line, daily_price_per_line')
+          .eq('model_id', formData.vehicle_model_id)
+          .single();
+
+        if (error && error.code !== 'PGRST116') throw error;
+        if (cancelled) return;
+
+        const selectedRateType = rateTypes.find((rateType) => rateType.id === formData.rate_type_id);
+        const rateTypeName = String(selectedRateType?.name || '').toLowerCase();
+        const nextPrice = rateTypeName.includes('hour')
+          ? Number(data?.hourly_price_per_line ?? data?.price_per_line ?? 0) || 0
+          : rateTypeName.includes('day')
+            ? Number(data?.daily_price_per_line ?? data?.price_per_line ?? 0) || 0
+            : Number(data?.price_per_line ?? 0) || 0;
+
+        setFuelLineChargePreview(nextPrice);
+      } catch (err) {
+        console.error('Error loading fuel pricing preview for package form:', err);
+        if (!cancelled) setFuelLineChargePreview(0);
+      }
+    };
+
+    loadFuelLineChargePreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [formData.vehicle_model_id, formData.rate_type_id, rateTypes]);
+
   const isPrintSelected = (pkg: RentalPackage | PackageFormData) =>
     pkg.show_on_print === true || pkg.showOnPrint === true;
 
@@ -545,10 +592,19 @@ const KilometerPricingTab: React.FC = () => {
   setError(null);
 
   try {
+    const durationUnits =
+      packageTypeSelection === HALF_HOUR_SELECTION
+        ? 0.5
+        : packageTypeSelection === HALF_DAY_SELECTION
+          ? 4
+          : Number(formData.duration_units || 1) || 1;
+
     const packagePayload = {
       ...formData,
       included_kilometers: isUnlimitedKilometers ? null : formData.included_kilometers,
       extra_km_rate: isUnlimitedKilometers ? 0 : formData.extra_km_rate,
+      duration_units: durationUnits,
+      fuel_charge_enabled: formData.fuel_charge_enabled,
       description:
         packageTypeSelection === HALF_HOUR_SELECTION
           ? [formData.description?.trim(), tr('30 minutes', '30 minutes')]
@@ -609,6 +665,11 @@ const KilometerPricingTab: React.FC = () => {
       errorMessage = tr(
         'Package save is blocked by Supabase table permissions. Apply the rental-km-packages RLS SQL, then try again.',
         "L'enregistrement du package est bloqué par les autorisations de table Supabase. Appliquez le SQL RLS des packages kilométriques, puis réessayez."
+      );
+    } else if (err.message?.includes('fuel_charge_enabled')) {
+      errorMessage = tr(
+        'The database is missing the new package fuel policy column. Run src/migrations/add_fuel_charge_policy_to_rental_packages.sql, then try again.',
+        'La base de données ne contient pas encore la nouvelle colonne de politique carburant du package. Exécutez src/migrations/add_fuel_charge_policy_to_rental_packages.sql, puis réessayez.'
       );
     }
     
@@ -940,6 +1001,14 @@ const KilometerPricingTab: React.FC = () => {
                       {!pkg.extra_km_rate ? tr('Not applied', 'Non appliqué') : `${pkg.extra_km_rate} MAD/km`}
                     </span>
                   </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">{tr('Fuel policy:', 'Politique carburant :')}</span>
+                    <span className={`font-medium ${pkg.fuel_charge_enabled ? 'text-amber-700' : 'text-emerald-700'}`}>
+                      {pkg.fuel_charge_enabled
+                        ? tr('Fuel charge enabled', 'Frais carburant activés')
+                        : tr('Fuel included', 'Carburant inclus')}
+                    </span>
+                  </div>
 
                   {/* Example Calculation for this rate type */}
                   <div className="mt-3 p-2 bg-gray-50 rounded-md text-xs">
@@ -1201,7 +1270,7 @@ const KilometerPricingTab: React.FC = () => {
 
       {/* Package Form Modal */}
       {showPackageForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]">
+        <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]">
           <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] border border-violet-100 bg-white shadow-[0_30px_80px_rgba(76,29,149,0.16)]">
             {/* Modal Header */}
             <div className="flex items-center justify-between bg-[linear-gradient(135deg,#7c3aed_0%,#5b21b6_52%,#4338ca_100%)] px-6 py-5 text-white">
@@ -1472,6 +1541,33 @@ const KilometerPricingTab: React.FC = () => {
                       ? tr('Unlimited packages do not charge extra kilometers.', "Les packages illimités ne facturent pas de kilomètres supplémentaires.")
                       : tr('Price per kilometer beyond the included amount', 'Prix par kilomètre au-delà du montant inclus')}
                   </p>
+                </div>
+
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <label className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={formData.fuel_charge_enabled}
+                      onChange={(e) => handleFormChange('fuel_charge_enabled', e.target.checked)}
+                      className="mt-1 h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                    />
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">
+                        {tr('Enable extra fuel charge', 'Activer les frais carburant')}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-600">
+                        {formData.fuel_charge_enabled
+                          ? tr(
+                              `Fuel is not included in this package. The current configured charge is ${fuelLineChargePreview || 0} MAD per missing line.`,
+                              `Le carburant n’est pas inclus dans ce package. Le tarif configuré actuel est de ${fuelLineChargePreview || 0} MAD par ligne manquante.`
+                            )
+                          : tr(
+                              'Fuel is included in this package. No extra fuel charge rule will be shown.',
+                              'Le carburant est inclus dans ce package. Aucun frais carburant supplémentaire ne sera affiché.'
+                            )}
+                      </p>
+                    </div>
+                  </label>
                 </div>
 
                 {/* Example Preview based on selected rate type */}

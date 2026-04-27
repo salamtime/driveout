@@ -55,7 +55,11 @@ import BusinessOwnerSaaSTable from './admin/BusinessOwnerSaaSTable';
 import { useAuth } from '../contexts/AuthContext';
 import { canEditCustomerProfile } from '../utils/permissionHelpers';
 import { ALL_PERMISSION_KEYS, DEFAULT_STAFF_PERMISSION_KEYS } from '../utils/permissionCatalog';
-import { isPlatformOwnerEmail } from '../utils/accountType';
+import {
+  getManagedAccountTypeMeta,
+  isPlatformOwnerEmail,
+  resolveManagedAccountType,
+} from '../utils/accountType';
 import i18n from '../i18n';
 
 // Supabase client imported from lib/supabase.js
@@ -117,7 +121,7 @@ const isExternalAuthAccount = (authUser) => {
     return false;
   }
 
-  return !accountType || ['customer', 'individual_owner', 'operator', 'business_owner', 'business', 'rental_business'].includes(accountType);
+  return !accountType || ['customer', 'individual_owner', 'private_owner', 'list_my_vehicle', 'operator', 'business_owner', 'business', 'rental_business'].includes(accountType);
 };
 
 const buildCustomerRowFromAuthUser = (authUser) => {
@@ -462,54 +466,10 @@ const isCustomerAppAccount = (customer) => {
   return Boolean(customer?.scan_metadata?.auth_user_id) || source === 'gmail_signup' || customer?.customer_type === 'app_account';
 };
 
-const getExternalAccountType = (customer) => {
-  const normalizedAccountType = String(
-    customer?.account_type ||
-    customer?.scan_metadata?.account_type ||
-    customer?.customer_type ||
-    ''
-  ).toLowerCase();
-  const normalizedSource = String(customer?.data_source || customer?.scan_metadata?.account_source || '').toLowerCase();
+const getExternalAccountType = (customer) => resolveManagedAccountType(customer);
 
-  if (['operator', 'business_owner', 'business', 'rental_business'].includes(normalizedAccountType)) {
-    return 'business_owner';
-  }
-
-  if (['individual_owner', 'private_owner', 'list_my_vehicle'].includes(normalizedAccountType)) {
-    return 'individual_owner';
-  }
-
-  if (normalizedSource.includes('operator') || normalizedSource.includes('business')) {
-    return 'business_owner';
-  }
-
-  if (normalizedSource.includes('owner')) {
-    return 'individual_owner';
-  }
-
-  return 'customer';
-};
-
-const getExternalAccountTypeMeta = (accountType, isFrench) => {
-  if (accountType === 'business_owner') {
-    return {
-      label: isFrench ? 'Propriétaire business' : 'Business Owner',
-      badgeClass: 'bg-amber-100 text-amber-800',
-    };
-  }
-
-  if (accountType === 'individual_owner') {
-    return {
-      label: isFrench ? 'Propriétaire individuel' : 'Individual Owner',
-      badgeClass: 'bg-violet-100 text-violet-800',
-    };
-  }
-
-  return {
-    label: isFrench ? 'Client' : 'Customer',
-    badgeClass: 'bg-sky-100 text-sky-800',
-  };
-};
+const getExternalAccountTypeMeta = (accountType, isFrench) =>
+  getManagedAccountTypeMeta(accountType, (en, fr) => (isFrench ? fr : en));
 
 const getBusinessOwnerAuthUserId = (customer) =>
   String(
@@ -2132,16 +2092,17 @@ const formatFullDate = (dateString) => {
 const CustomerManagementDashboard = () => {
   const isFrench = isFrenchLocale();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canAccessBusinessOwnerRegistry = useMemo(() => {
     const role = String(user?.role || '').trim().toLowerCase();
-    return Boolean(user?.id) && (role === 'admin' || role === 'owner' || isPlatformOwnerEmail(user?.email));
-  }, [user?.email, user?.id, user?.role]);
+    return Boolean(user?.id) && (role === 'owner' || isPlatformOwnerEmail(user?.email) || hasPermission('User & Role Management'));
+  }, [hasPermission, user?.email, user?.id, user?.role]);
   const canCurrentUserEditCustomerProfile = canEditCustomerProfile(user);
-  const canCurrentUserManageBan = user?.role === 'owner' || user?.role === 'admin';
+  const canCurrentUserManageBan = String(user?.role || '').toLowerCase() === 'owner' || hasPermission('Customer Management');
   const [customers, setCustomers] = useState([]);
   const [rentals, setRentals] = useState([]);
   const [marketplaceListings, setMarketplaceListings] = useState([]);
+  const [marketplaceVehicleProfiles, setMarketplaceVehicleProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -2179,7 +2140,7 @@ const CustomerManagementDashboard = () => {
   const [bulkRejectModalOpen, setBulkRejectModalOpen] = useState(false);
   const [bulkRejectReason, setBulkRejectReason] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(12);
+  const [itemsPerPage, setItemsPerPage] = useState(12);
   const [customerProfileNote, setCustomerProfileNote] = useState('');
   const [savingCustomerNote, setSavingCustomerNote] = useState(false);
   const [customerNoteHistory, setCustomerNoteHistory] = useState([]);
@@ -2429,13 +2390,17 @@ const CustomerManagementDashboard = () => {
 
       scheduleBackgroundTask(async () => {
         try {
-          const [rentalsResponse, marketplaceListingsResponse] = await Promise.all([
+          const [rentalsResponse, marketplaceListingsResponse, marketplaceVehicleProfilesResponse] = await Promise.all([
             supabase
               .from(`app_${APP_ID}_rentals`)
               .select('id, customer_id, rental_status, total_amount, created_at'),
             supabase
               .from('app_marketplace_listings')
               .select('id, owner_id, vehicle_public_profile_id, listing_status, created_at')
+              .order('created_at', { ascending: false }),
+            supabase
+              .from('app_vehicle_public_profiles')
+              .select('id, owner_id, created_at')
               .order('created_at', { ascending: false }),
           ]);
 
@@ -2450,10 +2415,17 @@ const CustomerManagementDashboard = () => {
           } else {
             setMarketplaceListings(marketplaceListingsResponse.data || []);
           }
+
+          if (marketplaceVehicleProfilesResponse.error) {
+            setMarketplaceVehicleProfiles([]);
+          } else {
+            setMarketplaceVehicleProfiles(marketplaceVehicleProfilesResponse.data || []);
+          }
         } catch (backgroundError) {
           console.error("❌ Exception loading customer rental aggregates:", backgroundError);
           setRentals([]);
           setMarketplaceListings([]);
+          setMarketplaceVehicleProfiles([]);
         }
       });
       
@@ -2463,6 +2435,7 @@ const CustomerManagementDashboard = () => {
       setCustomers([]);
       setRentals([]);
       setMarketplaceListings([]);
+      setMarketplaceVehicleProfiles([]);
       setTenantProvisioningJobs([]);
     } finally {
       setLoading(false);
@@ -2988,15 +2961,36 @@ const CustomerManagementDashboard = () => {
       listingsByOwnerId.get(ownerId).push(listing);
     });
 
+    const vehiclesByOwnerId = new Map();
+    marketplaceVehicleProfiles.forEach((profile) => {
+      const ownerId = String(profile?.owner_id || '').trim();
+      if (!ownerId) return;
+      if (!vehiclesByOwnerId.has(ownerId)) {
+        vehiclesByOwnerId.set(ownerId, []);
+      }
+      vehiclesByOwnerId.get(ownerId).push(profile);
+    });
+
     const consolidatedProfiles = customers.map(customer => {
       const customerRentals = rentalsByCustomerId.get(customer.id) || [];
       const totalSpent = customerRentals.reduce((sum, rental) => sum + (rental.total_amount || 0), 0);
       const activeRentals = customerRentals.filter(r => String(r.rental_status || '').toLowerCase() === 'active').length;
-      const externalAccountType = getExternalAccountType(customer);
       const authUserId = getBusinessOwnerAuthUserId(customer);
-      const listingRows = authUserId ? (listingsByOwnerId.get(authUserId) || []) : [];
+      const ownerLookupKeys = [...new Set([
+        String(authUserId || '').trim(),
+        String(customer?.id || '').trim(),
+      ].filter(Boolean))];
+      const listingRows = ownerLookupKeys.flatMap((ownerKey) => listingsByOwnerId.get(ownerKey) || []);
+      const vehicleRows = ownerLookupKeys.flatMap((ownerKey) => vehiclesByOwnerId.get(ownerKey) || []);
       const listingsCount = listingRows.length;
+      const vehiclesCount = vehicleRows.length;
       const liveListingsCount = listingRows.filter((row) => String(row?.listing_status || '').trim().toLowerCase() === 'live').length;
+      const externalAccountType = resolveManagedAccountType({
+        ...customer,
+        listingsCount,
+        vehiclesCount,
+        liveListingsCount,
+      });
       const accessStatus = activeRentals > 0 ? 'Active' : 'Inactive';
       const lastRentalActivityAt = customerRentals.reduce((latest, rental) => {
         const candidate = rental?.created_at ? new Date(rental.created_at).getTime() : 0;
@@ -3006,8 +3000,12 @@ const CustomerManagementDashboard = () => {
         const candidate = listing?.created_at ? new Date(listing.created_at).getTime() : 0;
         return candidate > latest ? candidate : latest;
       }, 0);
+      const lastVehicleActivityAt = vehicleRows.reduce((latest, profile) => {
+        const candidate = profile?.created_at ? new Date(profile.created_at).getTime() : 0;
+        return candidate > latest ? candidate : latest;
+      }, 0);
       const lastSignInAt = customer?.last_sign_in_at ? new Date(customer.last_sign_in_at).getTime() : 0;
-      const lastActivityTimestamp = Math.max(lastRentalActivityAt, lastListingActivityAt, lastSignInAt);
+      const lastActivityTimestamp = Math.max(lastRentalActivityAt, lastListingActivityAt, lastVehicleActivityAt, lastSignInAt);
 
       return {
         ...customer,
@@ -3025,7 +3023,7 @@ const CustomerManagementDashboard = () => {
         hasActiveAlertNote: Boolean(customer.scan_metadata?.show_admin_note_alert && customer.scan_metadata?.admin_note),
         activeAlertNote: customer.scan_metadata?.admin_note || '',
         listingsCount,
-        vehiclesCount: listingsCount,
+        vehiclesCount,
         liveListingsCount,
         auth_user_id: authUserId || null,
         planType: getBusinessOwnerPlanType(customer),
@@ -3069,7 +3067,7 @@ const CustomerManagementDashboard = () => {
       const key = customer.externalAccountType || 'customer';
       acc[key] = (acc[key] || 0) + 1;
       return acc;
-    }, { customer: 0, individual_owner: 0, business_owner: 0 });
+    }, { customer: 0, private_owner: 0, business_owner: 0 });
 
     return {
       customers: filteredCustomers,
@@ -3078,13 +3076,13 @@ const CustomerManagementDashboard = () => {
         totalActiveRentals,
         totalRevenue,
         customerAccounts: accountTypeCounts.customer || 0,
-        individualOwners: accountTypeCounts.individual_owner || 0,
+        privateOwners: accountTypeCounts.private_owner || 0,
         businessOwners: accountTypeCounts.business_owner || 0,
       }
       ,
       quickFilterCounts
     };
-  }, [customers, rentals, marketplaceListings, searchTerm, statusFilter, nationalityFilter, accountTypeFilter, quickFilter, isFrench]);
+  }, [customers, rentals, marketplaceListings, marketplaceVehicleProfiles, searchTerm, statusFilter, nationalityFilter, accountTypeFilter, quickFilter, isFrench]);
 
   const availableNationalities = useMemo(() => {
     const nationalities = customers
@@ -3576,9 +3574,32 @@ const CustomerManagementDashboard = () => {
     setViewModalOpen(true);
   };
 
+  const openAdminCustomerProfile = (customer) => {
+    if (!customer) return;
+
+    const params = new URLSearchParams();
+    const resolvedCustomerId = String(customer?.id || '').trim();
+    const resolvedAuthUserId = String(
+      customer?.scan_metadata?.auth_user_id ||
+      customer?.auth_user_id ||
+      customer?.booked_by_user_id ||
+      ''
+    ).trim();
+    const resolvedEmail = normalizeEmail(
+      customer?.email ||
+      customer?.customer_email ||
+      customer?.scan_metadata?.auth_email
+    );
+
+    if (resolvedCustomerId) params.set('customerId', resolvedCustomerId);
+    if (resolvedAuthUserId) params.set('authUserId', resolvedAuthUserId);
+    if (resolvedEmail) params.set('email', resolvedEmail);
+
+    navigate(`/admin/customers/profile${params.toString() ? `?${params.toString()}` : ''}`);
+  };
+
   const openFullPageView = (customer) => {
-    setSelectedCustomer(customer);
-    setFullPageViewOpen(true);
+    openAdminCustomerProfile(customer);
   };
 
   const openEditModal = (customer) => {
@@ -4731,7 +4752,7 @@ const CustomerManagementDashboard = () => {
             {[
               { key: 'all', label: isFrench ? 'Tous les comptes' : 'All Accounts', count: aggregatedData.summary.totalCustomers, activeClass: 'bg-slate-900 text-white' },
               { key: 'customer', label: isFrench ? 'Clients' : 'Customers', count: aggregatedData.summary.customerAccounts, activeClass: 'bg-sky-600 text-white' },
-              { key: 'individual_owner', label: isFrench ? 'Propriétaires individuels' : 'Individual Owners', count: aggregatedData.summary.individualOwners, activeClass: 'bg-violet-600 text-white' },
+              { key: 'private_owner', label: isFrench ? 'Propriétaires privés' : 'Private Owners', count: aggregatedData.summary.privateOwners, activeClass: 'bg-violet-600 text-white' },
               { key: 'business_owner', label: isFrench ? 'Propriétaires business' : 'Business Owners', count: aggregatedData.summary.businessOwners, activeClass: 'bg-amber-600 text-white' },
             ].map((option) => {
               const active = accountTypeFilter === option.key;
@@ -5121,7 +5142,7 @@ const CustomerManagementDashboard = () => {
                                       onClick: () => handleSuspendBusinessOwner(customer),
                                     }
                                   : null,
-                                customer.externalAccountType === 'individual_owner'
+                                customer.externalAccountType === 'private_owner'
                                   ? {
                                       key: 'view-listings',
                                       label: 'View listings',
@@ -5192,6 +5213,23 @@ const CustomerManagementDashboard = () => {
                 <span className="font-semibold text-slate-900">{aggregatedData.customers.length}</span> {isFrench ? 'clients' : 'customers'}
               </p>
             <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600">
+                <span>{isFrench ? 'Par page' : 'Per page'}</span>
+                <select
+                  value={itemsPerPage}
+                  onChange={(event) => {
+                    setItemsPerPage(Number(event.target.value) || 12);
+                    setCurrentPage(1);
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white px-2 py-1 text-sm font-semibold text-slate-900 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
+                >
+                  {[12, 24, 50, 100].map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
                 onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
                 disabled={currentPage === 1}

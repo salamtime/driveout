@@ -15,10 +15,13 @@ CREATE TABLE IF NOT EXISTS rental_extensions (
     extension_price DECIMAL(10, 2) NOT NULL CHECK (extension_price >= 0),
     calculation_method VARCHAR(20) NOT NULL DEFAULT 'auto' CHECK (calculation_method IN ('auto', 'manual')),
     price_source VARCHAR(20) NOT NULL DEFAULT 'tiered' CHECK (price_source IN ('tiered', 'manual', 'negotiated')),
-    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'active', 'completed')),
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'active', 'completed', 'voided')),
     requested_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     approved_at TIMESTAMP WITH TIME ZONE,
-    approved_by_id UUID REFERENCES app_4c3a7a6153_users(id),
+    approved_by_id UUID,
+    voided_at TIMESTAMP WITH TIME ZONE,
+    voided_by UUID,
+    void_reason TEXT,
     started_at TIMESTAMP WITH TIME ZONE,
     completed_at TIMESTAMP WITH TIME ZONE,
     notes TEXT,
@@ -237,11 +240,7 @@ CREATE POLICY "allow_update_extensions" ON rental_extensions
     FOR UPDATE
     TO authenticated
     USING (
-        EXISTS (
-            SELECT 1 FROM app_4c3a7a6153_users u
-            WHERE u.id = auth.uid()
-            AND (u.role IN ('admin', 'owner') OR rental_extensions.requested_at IS NOT NULL)
-        )
+        auth.uid() IS NOT NULL
     );
 
 -- =====================================================

@@ -969,15 +969,23 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
               </div>
             ) : (
             <div className="overflow-x-auto rounded-[1.5rem] bg-white">
-              <table className="w-full">
+              <table className="w-full table-fixed">
+                <colgroup>
+                  <col className="w-[16%]" />
+                  <col className="w-[30%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[18%]" />
+                </colgroup>
                 <thead className="bg-gray-50 border-b">
                   <tr>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Vehicle', 'Vehicule')}</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Type', 'Type')}</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Status', 'Statut')}</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Service Date', 'Date de service')}</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Cost Summary', 'Resume des couts')}</th>
-                    <th className="text-left py-3 px-4 font-medium text-gray-900">{tr('Actions', 'Actions')}</th>
+                    <th className="text-left py-4 px-4 font-medium text-gray-900 align-top">{tr('Vehicle', 'Vehicule')}</th>
+                    <th className="text-left py-4 px-4 font-medium text-gray-900 align-top">{tr('Type', 'Type')}</th>
+                    <th className="text-left py-4 px-4 font-medium text-gray-900 align-top">{tr('Status', 'Statut')}</th>
+                    <th className="text-left py-4 px-4 font-medium text-gray-900 align-top">{tr('Service Date', 'Date de service')}</th>
+                    <th className="text-left py-4 px-4 font-medium text-gray-900 align-top">{tr('Cost Summary', 'Resume des couts')}</th>
+                    <th className="text-left py-4 px-4 font-medium text-gray-900 align-top">{tr('Actions', 'Actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -985,23 +993,23 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                     const financials = getFinancialSummary(record);
                     const maintenanceVisual = getMaintenanceTypeVisual(record.maintenance_type);
                     return (
-                    <tr key={record.id} className="border-b hover:bg-gray-50 align-top">
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          <Car className="w-4 h-4 text-gray-400" />
-                          <span className="font-medium text-gray-900">
+                    <tr key={record.id} className="border-b align-top hover:bg-gray-50">
+                      <td className="py-5 px-4 align-top">
+                        <div className="flex items-start gap-2.5">
+                          <Car className="mt-1 w-4 h-4 flex-shrink-0 text-gray-400" />
+                          <span className="font-medium leading-8 text-gray-900">
                             {getVehicleName(record.vehicle_id)}
                           </span>
                         </div>
                       </td>
-                      <td className="py-3 px-4 text-gray-600">
-                        <div className="space-y-1">
-                          <div className="flex flex-wrap items-center gap-2">
+                      <td className="py-5 px-4 align-top text-gray-600">
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap items-start gap-2">
                             <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${maintenanceVisual.classes}`}>
                               <span>{maintenanceVisual.emoji}</span>
                               <span>{maintenanceVisual.label}</span>
                             </span>
-                            <p className="font-medium text-gray-900">{record.maintenance_type || tr('N/A', 'N/D')}</p>
+                            <p className="pt-0.5 font-medium leading-7 text-gray-900">{record.maintenance_type || tr('N/A', 'N/D')}</p>
                           </div>
                           {record.linked_rental_report && (
                             <div className="flex flex-wrap gap-1.5">
@@ -1014,13 +1022,13 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                             </div>
                           )}
                           {getMaintenanceDescriptionSummary(record) && (
-                            <p className="text-xs text-gray-500 line-clamp-2">{getMaintenanceDescriptionSummary(record)}</p>
+                            <p className="text-xs leading-5 text-gray-500 line-clamp-2">{getMaintenanceDescriptionSummary(record)}</p>
                           )}
                         </div>
                       </td>
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          {getStatusIcon(record.status)}
+                      <td className="py-5 px-4 align-top">
+                        <div className="flex items-start gap-2">
+                          <span className="mt-1 flex-shrink-0">{getStatusIcon(record.status)}</span>
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             MaintenanceTrackingService.getStatusColor(record.status)
                           }`}>
@@ -1028,14 +1036,14 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                           </span>
                         </div>
                       </td>
-                      <td className="py-3 px-4 text-gray-600">
-                        <div className="flex items-center gap-2">
-                          <Calendar className="w-4 h-4 text-gray-400" />
-                          {MaintenanceTrackingService.formatDate(record.service_date)}
+                      <td className="py-5 px-4 align-top text-gray-600">
+                        <div className="flex items-start gap-2">
+                          <Calendar className="mt-1 w-4 h-4 flex-shrink-0 text-gray-400" />
+                          <span className="leading-7">{MaintenanceTrackingService.formatDate(record.service_date)}</span>
                         </div>
                       </td>
-                      <td className="py-3 px-4">
-                        <div className="min-w-[220px] space-y-2">
+                      <td className="py-5 px-4 align-top">
+                        <div className="min-w-[220px] space-y-2.5">
                           <p className="text-sm font-semibold text-gray-900">
                             {MaintenanceTrackingService.formatCurrency(financials.total)}
                           </p>
@@ -1052,8 +1060,8 @@ const MaintenanceListView = ({ onMaintenanceUpdated, onAddMaintenance, initialEd
                           </div>
                         </div>
                       </td>
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
+                      <td className="py-5 px-4 align-top">
+                        <div className="flex flex-wrap items-start gap-2">
                           {record.linked_rental_report?.rental_id && (
                             <Button
                               size="sm"

@@ -2,18 +2,25 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import i18n from '../i18n';
 
+const SHARE_ATTRIBUTION_KEY = 'saharax_share_attribution';
+
 const ShortUrlRedirect = () => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const { code } = useParams();
+  const normalizedCode = (() => {
+    if (!code) return null;
+    const match = String(code).match(/[A-Za-z0-9]{6}/);
+    return match ? match[0] : null;
+  })();
   const [status, setStatus] = useState('loading');
   const [targetUrl, setTargetUrl] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!code) { setError(tr('Invalid link', 'Lien invalide')); setStatus('error'); return; }
+    if (!normalizedCode) { setError(tr('Invalid link', 'Lien invalide')); setStatus('error'); return; }
 
-    fetch(`/api/public-links?resource=short-links&code=${encodeURIComponent(code)}`, {
+    fetch(`/api/growth-links?code=${encodeURIComponent(normalizedCode)}`, {
       method: 'GET',
       headers: {
         Accept: 'application/json',
@@ -22,23 +29,57 @@ const ShortUrlRedirect = () => {
       .then(async (response) => {
         const body = await response.json().catch(() => ({}));
 
-        if (!response.ok || !body?.url) {
-          setError(body?.error || tr('URL not found or has been deleted', "URL introuvable ou supprimée"));
-          setStatus('error');
+        if (response.ok && body?.url) {
+          try {
+            window.localStorage.setItem(
+              SHARE_ATTRIBUTION_KEY,
+              JSON.stringify({
+                code: body.code,
+                type: body.type,
+                createdAt: new Date().toISOString(),
+              })
+            );
+          } catch {}
+
+          setTargetUrl(body.url);
+          setStatus('redirecting');
+
+          try { window.location.href = body.url; } catch {}
+          try { window.location.replace(body.url); } catch {}
           return;
         }
 
-        setTargetUrl(body.url);
-        setStatus('redirecting');
+        fetch(`/api/public-links?resource=short-links&code=${encodeURIComponent(normalizedCode)}`, {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+          },
+        })
+          .then(async (legacyResponse) => {
+            const legacyBody = await legacyResponse.json().catch(() => ({}));
 
-        try { window.location.href = body.url; } catch {}
-        try { window.location.replace(body.url); } catch {}
+            if (!legacyResponse.ok || !legacyBody?.url) {
+              setError(legacyBody?.error || body?.error || tr('URL not found or has been deleted', "URL introuvable ou supprimée"));
+              setStatus('error');
+              return;
+            }
+
+            setTargetUrl(legacyBody.url);
+            setStatus('redirecting');
+
+            try { window.location.href = legacyBody.url; } catch {}
+            try { window.location.replace(legacyBody.url); } catch {}
+          })
+          .catch(() => {
+            setError(tr('Failed to open this link', "Impossible d'ouvrir ce lien"));
+            setStatus('error');
+          });
       })
       .catch(() => {
         setError(tr('Failed to open this link', "Impossible d'ouvrir ce lien"));
         setStatus('error');
       });
-  }, [code, isFrench]);
+  }, [normalizedCode, isFrench]);
 
   if (status === 'redirecting' && targetUrl) {
     return (

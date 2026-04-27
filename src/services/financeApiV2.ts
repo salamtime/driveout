@@ -462,6 +462,8 @@ export interface FinancePaymentProofQueueRow {
   submittedAt: string | null;
   methodLabel: string;
   href?: string;
+  proofUrl?: string;
+  reviewNote?: string;
 }
 
 export interface FinanceWalletAccountRow {
@@ -699,7 +701,7 @@ class FinanceApiServiceV2 {
     const paymentStatus = String(raw?.payment_status || '').toLowerCase();
     const paidAmount = Math.max(0, this.toNumber(raw?.deposit_amount));
 
-    if (paymentStatus === 'unpaid' || paymentStatus === 'pending') {
+    if (!paymentStatus || ['unpaid', 'pending', 'scheduled', 'confirmed', 'active', 'completed', 'cancelled'].includes(paymentStatus)) {
       return 0;
     }
 
@@ -711,7 +713,7 @@ class FinanceApiServiceV2 {
       return paidAmount > 0 ? paidAmount : Math.max(0, totalAmount);
     }
 
-    return paidAmount;
+    return 0;
   }
 
   private getRecognizedIncomingDate(raw: any, fallbackDate: any): string | null {
@@ -1608,6 +1610,8 @@ class FinanceApiServiceV2 {
       .map((row: any) => {
         const meta = this.parseTourBookingMeta(row.notes);
         if (!meta?.groupId) return null;
+        const billedAmount = this.getTourBilledAmount(row, meta);
+        const recognizedAmount = this.getRecognizedIncomingAmount(row, billedAmount);
 
         const customerName =
           row.customer_name ||
@@ -1637,10 +1641,11 @@ class FinanceApiServiceV2 {
           ].filter(Boolean).map((vehicleId: any) => String(vehicleId)))),
           status: row.rental_status || 'scheduled',
           paymentStatus: row.payment_status || 'unpaid',
-          revenue: this.getTourBilledAmount(row, meta),
+          revenue: recognizedAmount,
+          billedAmount,
           recognizedAt: this.getRecognizedIncomingDate(row, meta.scheduledStartAt || row.created_at),
           paidAmount: Math.max(0, this.toNumber(row.deposit_amount)),
-          remainingAmount: Math.max(0, this.toNumber(row.remaining_amount) || (this.getTourBilledAmount(row, meta) - this.getRecognizedIncomingAmount(row, this.getTourBilledAmount(row, meta)))),
+          remainingAmount: Math.max(0, this.toNumber(row.remaining_amount) || (billedAmount - recognizedAmount)),
           refundAmount: row.payment_status === 'refunded' ? this.toNumber(row.total_amount) : 0,
           startAt: meta.scheduledStartAt || row.rental_start_date || row.created_at,
           financeDate:
@@ -4042,10 +4047,11 @@ class FinanceApiServiceV2 {
 
   async getFinanceTrustData(filters: FinanceFiltersV2): Promise<FinanceTrustData> {
     const context = await this.getFinanceContext();
-    const [walletAccountsRaw, walletTransactionsRaw, paymentProofsRaw] = await Promise.all([
+    const [walletAccountsRaw, walletTransactionsRaw, paymentProofsRaw, walletTopupsRaw] = await Promise.all([
       this.safeLoadTable('app_wallet_accounts'),
       this.safeLoadTable('app_wallet_transactions'),
-      this.safeLoadTable('app_payment_proofs')
+      this.safeLoadTable('app_payment_proofs'),
+      this.safeLoadTable('wallet_topups')
     ]);
 
     const rentalCustomerMap = new Map<string, string>();
@@ -4072,6 +4078,7 @@ class FinanceApiServiceV2 {
       bookingKeys.forEach((id) => bookingReferenceMap.set(String(id), entry.rentalId || String(id)));
     });
 
+    const walletTopups = Array.isArray(walletTopupsRaw) ? walletTopupsRaw : [];
     const transactionsByWalletId = new Map<string, any[]>();
     (Array.isArray(walletTransactionsRaw) ? walletTransactionsRaw : []).forEach((row: any) => {
       const walletId = String(row.wallet_account_id || row.wallet_id || '');
@@ -4081,10 +4088,20 @@ class FinanceApiServiceV2 {
       transactionsByWalletId.set(walletId, current);
     });
 
+    const topupsByUserId = new Map<string, any[]>();
+    walletTopups.forEach((row: any) => {
+      const userId = String(row.user_id || '');
+      if (!userId) return;
+      const current = topupsByUserId.get(userId) || [];
+      current.push(row);
+      topupsByUserId.set(userId, current);
+    });
+
     const walletAccounts: FinanceWalletAccountRow[] = (Array.isArray(walletAccountsRaw) ? walletAccountsRaw : [])
       .map((row: any) => {
         const walletId = String(row.id || row.wallet_id || '');
         const transactions = transactionsByWalletId.get(walletId) || [];
+        const topups = topupsByUserId.get(String(row.owner_id || row.user_id || '')) || [];
         const ownerType = String(row.owner_type || row.account_type || 'account');
         const ownerId = String(row.owner_id || row.user_id || row.operator_id || row.individual_owner_id || '');
         const ownerLabel = [
@@ -4101,20 +4118,31 @@ class FinanceApiServiceV2 {
           (row.verified ? 'verified' : 'pending')
         ).toLowerCase();
         const balance = Math.max(0, this.toNumber(row.current_balance ?? row.balance ?? row.wallet_balance));
-        const approvedTopups = transactions
-          .filter((tx) => {
-            const type = String(tx.transaction_type || tx.type || '').toLowerCase();
-            const status = String(tx.status || tx.transaction_status || tx.approval_status || '').toLowerCase();
-            return (type.includes('topup') || type.includes('top_up')) && (status === 'approved' || status === 'completed' || status === 'posted');
-          })
-          .reduce((sum, tx) => sum + Math.max(0, this.toNumber(tx.amount)), 0);
-        const pendingTopups = transactions
-          .filter((tx) => {
-            const type = String(tx.transaction_type || tx.type || '').toLowerCase();
-            const status = String(tx.status || tx.transaction_status || tx.approval_status || '').toLowerCase();
-            return (type.includes('topup') || type.includes('top_up')) && (status === 'pending' || status === 'submitted' || status === 'review');
-          })
-          .reduce((sum, tx) => sum + Math.max(0, this.toNumber(tx.amount)), 0);
+        const approvedTopups = topups.length > 0
+          ? topups
+              .filter((tx: any) => String(tx.status || '').toLowerCase() === 'approved')
+              .reduce((sum: number, tx: any) => sum + Math.max(0, this.toNumber(tx.amount)), 0)
+          : transactions
+              .filter((tx) => {
+                const type = String(tx.transaction_type || tx.type || '').toLowerCase();
+                const status = String(tx.status || tx.transaction_status || tx.approval_status || '').toLowerCase();
+                return (type.includes('topup') || type.includes('top_up')) && (status === 'approved' || status === 'completed' || status === 'posted');
+              })
+              .reduce((sum, tx) => sum + Math.max(0, this.toNumber(tx.amount)), 0);
+        const pendingTopups = topups.length > 0
+          ? topups
+              .filter((tx: any) => {
+                const status = String(tx.status || '').toLowerCase();
+                return status === 'pending' || status === 'submitted' || status === 'review';
+              })
+              .reduce((sum: number, tx: any) => sum + Math.max(0, this.toNumber(tx.amount)), 0)
+          : transactions
+              .filter((tx) => {
+                const type = String(tx.transaction_type || tx.type || '').toLowerCase();
+                const status = String(tx.status || tx.transaction_status || tx.approval_status || '').toLowerCase();
+                return (type.includes('topup') || type.includes('top_up')) && (status === 'pending' || status === 'submitted' || status === 'review');
+              })
+              .reduce((sum, tx) => sum + Math.max(0, this.toNumber(tx.amount)), 0);
         const deductions = transactions
           .filter((tx) => {
             const type = String(tx.transaction_type || tx.type || '').toLowerCase();
@@ -4140,7 +4168,7 @@ class FinanceApiServiceV2 {
       })
       .sort((a, b) => b.balance - a.balance);
 
-    const paymentProofQueue: FinancePaymentProofQueueRow[] = (Array.isArray(paymentProofsRaw) ? paymentProofsRaw : [])
+    const bookingProofQueue: FinancePaymentProofQueueRow[] = (Array.isArray(paymentProofsRaw) ? paymentProofsRaw : [])
       .map((row: any) => {
         const status = String(row.proof_status || row.status || row.approval_status || 'pending').toLowerCase();
         const explicitType = String(row.proof_type || row.type || row.payment_type || row.category || '').toLowerCase();
@@ -4168,6 +4196,22 @@ class FinanceApiServiceV2 {
           href: bookingRef ? `/admin/rentals/${bookingRef}` : proofType === 'wallet' ? '/admin/user-management' : undefined
         };
       })
+    const walletProofQueue: FinancePaymentProofQueueRow[] = walletTopups
+      .map((row: any) => ({
+        id: String(row.id || `wallet-topup-${Math.random()}`),
+        proofType: 'wallet' as const,
+        status: String(row.status || 'pending').toLowerCase(),
+        amount: Math.round(Math.max(0, this.toNumber(row.amount))),
+        customerName: String(row.user_name || row.user_email || 'Unknown customer'),
+        ownerLabel: row.reviewed_by || 'Customer wallet',
+        bookingReference: null,
+        submittedAt: row.created_at || row.updated_at || null,
+        methodLabel: 'bank transfer',
+        href: '/account/revenue',
+        proofUrl: row.proof_url || '',
+        reviewNote: row.review_note || row.note || '',
+      }));
+    const paymentProofQueue: FinancePaymentProofQueueRow[] = [...bookingProofQueue, ...walletProofQueue]
       .sort((a, b) => {
         const rank = (value: string) => {
           if (value === 'pending' || value === 'submitted' || value === 'review') return 3;
@@ -4180,19 +4224,34 @@ class FinanceApiServiceV2 {
         return new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime();
       });
 
-    const approvedTopupsTotal = walletAccounts.reduce((sum, row) => sum + row.approvedTopups, 0);
-    const pendingTopupsTotal = walletAccounts.reduce((sum, row) => sum + row.pendingTopups, 0);
+    const approvedTopupsTotal = walletTopups.length > 0
+      ? walletTopups
+          .filter((row: any) => String(row.status || '').toLowerCase() === 'approved')
+          .reduce((sum: number, row: any) => sum + Math.max(0, this.toNumber(row.amount)), 0)
+      : walletAccounts.reduce((sum, row) => sum + row.approvedTopups, 0);
+    const pendingTopupsTotal = walletTopups.length > 0
+      ? walletTopups
+          .filter((row: any) => {
+            const status = String(row.status || '').toLowerCase();
+            return status === 'pending' || status === 'submitted' || status === 'review';
+          })
+          .reduce((sum: number, row: any) => sum + Math.max(0, this.toNumber(row.amount)), 0)
+      : walletAccounts.reduce((sum, row) => sum + row.pendingTopups, 0);
     const totalWalletBalance = walletAccounts.reduce((sum, row) => sum + row.balance, 0);
     const manualAdjustmentsTotal = (Array.isArray(walletTransactionsRaw) ? walletTransactionsRaw : [])
       .filter((tx: any) => String(tx.transaction_type || tx.type || '').toLowerCase().includes('adjustment'))
       .reduce((sum: number, tx: any) => sum + this.toNumber(tx.amount), 0);
-    const rejectedTopupsTotal = (Array.isArray(walletTransactionsRaw) ? walletTransactionsRaw : [])
-      .filter((tx: any) => {
-        const type = String(tx.transaction_type || tx.type || '').toLowerCase();
-        const status = String(tx.status || tx.transaction_status || tx.approval_status || '').toLowerCase();
-        return (type.includes('topup') || type.includes('top_up')) && status === 'rejected';
-      })
-      .reduce((sum: number, tx: any) => sum + Math.max(0, this.toNumber(tx.amount)), 0);
+    const rejectedTopupsTotal = walletTopups.length > 0
+      ? walletTopups
+          .filter((tx: any) => String(tx.status || '').toLowerCase() === 'rejected')
+          .reduce((sum: number, tx: any) => sum + Math.max(0, this.toNumber(tx.amount)), 0)
+      : (Array.isArray(walletTransactionsRaw) ? walletTransactionsRaw : [])
+          .filter((tx: any) => {
+            const type = String(tx.transaction_type || tx.type || '').toLowerCase();
+            const status = String(tx.status || tx.transaction_status || tx.approval_status || '').toLowerCase();
+            return (type.includes('topup') || type.includes('top_up')) && status === 'rejected';
+          })
+          .reduce((sum: number, tx: any) => sum + Math.max(0, this.toNumber(tx.amount)), 0);
     const deductionsTotal = walletAccounts.reduce((sum, row) => sum + row.deductions, 0);
     const walletLedgerExpectedTotal = Math.round(approvedTopupsTotal + manualAdjustmentsTotal - deductionsTotal);
 

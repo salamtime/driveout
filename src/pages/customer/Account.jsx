@@ -65,7 +65,7 @@ const Account = () => {
 
       try {
         setLoading(true);
-        const data = await customerExperienceService.getCustomerAccountSnapshot(authUser);
+        const data = await customerExperienceService.getCustomerAccountSnapshot(authUser, { forceRefresh: true });
         if (!cancelled) {
           setSnapshot(data);
           syncFormDataFromSnapshot(data);
@@ -96,7 +96,7 @@ const Account = () => {
 
   const reloadSnapshot = async () => {
     if (!authUser) return null;
-    const data = await customerExperienceService.getCustomerAccountSnapshot(authUser);
+    const data = await customerExperienceService.getCustomerAccountSnapshot(authUser, { forceRefresh: true });
     setSnapshot(data);
     return data;
   };
@@ -206,6 +206,14 @@ const Account = () => {
     ...recentBookings.slice(0, 2).map((booking) => ({ ...booking, bucket: 'recent' })),
   ];
 
+  const getBookingBucketLabel = (booking) => {
+    const status = String(booking?.status || booking?.paymentStatus || '').toLowerCase();
+    if (['expired', 'no_show_review'].includes(status)) {
+      return tr('Expired', 'Expirée');
+    }
+    return booking?.bucket === 'upcoming' ? tr('Upcoming', 'À venir') : tr('Recent', 'Récent');
+  };
+
   const formatBookingWindow = (booking) => {
     if (!booking?.startDate) return booking?.dateLabel || '—';
     try {
@@ -231,6 +239,7 @@ const Account = () => {
   const getReservationStatusTone = (booking) => {
     const status = String(booking?.status || booking?.paymentStatus || '').toLowerCase();
     if (status.includes('active') || status.includes('paid')) return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    if (status.includes('expired') || status.includes('no_show_review')) return 'border-slate-200 bg-slate-50 text-slate-700';
     if (status.includes('scheduled') || status.includes('upcoming')) return 'border-violet-200 bg-violet-50 text-violet-700';
     if (status.includes('cancel')) return 'border-rose-200 bg-rose-50 text-rose-700';
     return 'border-slate-200 bg-slate-50 text-slate-600';
@@ -379,7 +388,7 @@ const Account = () => {
                                 <div className="flex flex-wrap items-center gap-2">
                                   <p className="text-sm font-semibold text-slate-900">{booking.modelName}</p>
                                   <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getReservationStatusTone(booking)}`}>
-                                    {booking.bucket === 'upcoming' ? tr('Upcoming', 'À venir') : tr('Recent', 'Récent')}
+                                    {getBookingBucketLabel(booking)}
                                   </span>
                                 </div>
                                 <p className="mt-1 text-sm text-slate-600">{formatBookingWindow(booking)}</p>

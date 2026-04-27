@@ -5,7 +5,7 @@ import {
   Calculator, Info, Phone, Mail, Calendar, MapPin, FileText,
   Upload, Shield, CheckCircle, XCircle, CalendarDays, Car as CarIcon,
   Users, UserPlus, BadgeCheck, FileImage, DownloadCloud, Plus, Minus,
-  ChevronDown, ChevronUp, Eye, Edit2, Trash2, Save, X,
+  ChevronDown, ChevronUp, Eye, Edit2, Trash2, Save, X, MoreHorizontal, RotateCcw,
   Package, Gauge
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
@@ -34,6 +34,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import i18n from '../../i18n';
 import { fetchSystemSettings } from '../../services/systemSettingsApi';
 import { getUsers } from '../../services/UserService';
+import {
+  normalizeCustomerIdentityFields,
+  pickBestExistingCustomerMatch,
+} from '../../utils/customerIdentity';
 
 const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
 const DEFAULT_BOOKING_GRACE_MINUTES = 120;
@@ -118,12 +122,88 @@ const normalizeMoneyInput = (value) => {
   return decimalPart ? `${integerPart}.${decimalPart}` : integerPart;
 };
 
+const getPackageBillingMultiplier = (durationUnits, packageDurationUnits = 1) => {
+  const safeDurationUnits = Number(durationUnits || 0) || 0;
+  const safePackageDurationUnits = Number(packageDurationUnits || 0) || 0;
+  if (safeDurationUnits <= 0) return 0;
+  if (safePackageDurationUnits <= 0) return safeDurationUnits;
+  return Math.max(safeDurationUnits / safePackageDurationUnits, 1);
+};
+
+const calculatePackageTotalIncludedKm = (includedKmPerUnit, durationUnits, packageDurationUnits = 1) => {
+  const safeIncludedKmPerUnit = Number(includedKmPerUnit || 0) || 0;
+  const billingMultiplier = getPackageBillingMultiplier(durationUnits, packageDurationUnits);
+  if (safeIncludedKmPerUnit <= 0 || billingMultiplier <= 0) return null;
+  return safeIncludedKmPerUnit * billingMultiplier;
+};
+
 const formatWholeMad = (value) => {
   const amount = Number(value || 0);
   return new Intl.NumberFormat('en-MA', {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0
   }).format(amount);
+};
+
+const formatDynamicMad = (value) => {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) return '0';
+  return String(Math.trunc(amount));
+};
+
+const getFixedPackageAmount = (data = {}) => {
+  const ratePerUnit =
+    Number(data.selected_package_fixed_amount)
+    || Number(data.selected_package_rate_per_unit)
+    || Number(data.unit_price)
+    || 0;
+
+  const durationUnits = Number(
+    data.rental_type === 'hourly'
+      ? (data.quantity_hours ?? data.quantity_days)
+      : data.quantity_days
+  ) || 0;
+  const packageDurationUnits = Number(
+    data.selected_package_duration_units
+    ?? data.package_duration_units
+    ?? 1
+  ) || 1;
+
+  if (ratePerUnit <= 0 || durationUnits <= 0) return 0;
+  return ratePerUnit * getPackageBillingMultiplier(durationUnits, packageDurationUnits);
+};
+
+const formatRentalDurationLabel = (rentalType, durationUnits, tr) => {
+  const safeDurationUnits = Number(durationUnits || 0) || 0;
+  if (safeDurationUnits <= 0) {
+    return rentalType === 'hourly'
+      ? tr('Hourly package', 'Forfait horaire')
+      : tr('Daily package', 'Forfait journalier');
+  }
+
+  if (rentalType === 'hourly') {
+    if (safeDurationUnits === 0.5) return tr('30 min', '30 min');
+    if (safeDurationUnits === 1) return tr('1 Hour', '1 heure');
+    return tr(`${safeDurationUnits} Hours`, `${safeDurationUnits} heures`);
+  }
+
+  if (safeDurationUnits === 1) return tr('1 day', '1 jour');
+  return tr(`${safeDurationUnits} days`, `${safeDurationUnits} jours`);
+};
+
+const getSelectedPackageDisplayLabel = (data = {}, tr) => {
+  if (!data.use_package_pricing || !data.selected_package_name) {
+    return tr('Standard pricing', 'Tarification standard');
+  }
+
+  const durationUnits = Number(
+    data.rental_type === 'hourly'
+      ? (data.quantity_hours ?? data.quantity_days)
+      : data.quantity_days
+  ) || 0;
+
+  const durationLabel = formatRentalDurationLabel(data.rental_type, durationUnits, tr);
+  return [data.selected_package_name, durationLabel].filter(Boolean).join(' • ');
 };
 
 const getPackageDurationUnits = (pkg = {}) => {
@@ -134,7 +214,60 @@ const getPackageDurationUnits = (pkg = {}) => {
     pkg.packageDurationUnits
   );
 
-  return Number.isFinite(durationUnits) && durationUnits > 0 ? durationUnits : null;
+  if (Number.isFinite(durationUnits) && durationUnits > 0) {
+    return durationUnits;
+  }
+
+  const rawLabel = String(
+    pkg.name ??
+    pkg.package_name ??
+    pkg.title ??
+    pkg.label ??
+    ''
+  ).toLowerCase();
+
+  if (!rawLabel) return null;
+  if (rawLabel.includes('30 min')) return 0.5;
+  if (rawLabel.includes('1.5 hour') || rawLabel.includes('1,5 hour')) return 1.5;
+  if (rawLabel.includes('4 hour')) return 4;
+  if (rawLabel.includes('1 hour') || rawLabel.includes('per hour')) return 1;
+  if (rawLabel.includes('1 day') || rawLabel.includes('per day')) return 1;
+
+  const hourMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*hour/);
+  if (hourMatch) {
+    return Number(String(hourMatch[1]).replace(',', '.')) || null;
+  }
+
+  const dayMatch = rawLabel.match(/(\d+(?:[.,]\d+)?)\s*day/);
+  if (dayMatch) {
+    return Number(String(dayMatch[1]).replace(',', '.')) || null;
+  }
+
+  return null;
+};
+
+const findMatchingDurationPackage = (packages = [], rentalType, durationUnits) => {
+  const safeDurationUnits = Number(durationUnits || 0) || 0;
+  if (!Array.isArray(packages) || packages.length === 0 || !rentalType || safeDurationUnits <= 0) {
+    return null;
+  }
+
+  const matchingPackages = packages.filter((pkg) => {
+    const pkgRateType = String(pkg?.rate_types?.name || '').toLowerCase();
+    if (pkgRateType && pkgRateType !== rentalType) return false;
+    const packageDurationUnits = Number(getPackageDurationUnits(pkg) || 0) || 0;
+    return packageDurationUnits === safeDurationUnits;
+  });
+
+  if (matchingPackages.length > 0) {
+    return [...matchingPackages].sort((a, b) => {
+      const aPrice = Number(a.fixed_amount ?? a.package_rate ?? a.rate ?? a.price ?? 0) || 0;
+      const bPrice = Number(b.fixed_amount ?? b.package_rate ?? b.rate ?? b.price ?? 0) || 0;
+      return aPrice - bPrice;
+    })[0];
+  }
+
+  return null;
 };
 
 const normalizeEditWorkflowFieldValue = (field, value) => {
@@ -177,6 +310,7 @@ const hasEditWorkflowChanges = (nextData = {}, initialData = {}) => {
 const useRentalWizard = (initialData = null, mode = 'create', navigate, options = {}) => {
   const { userProfile } = useAuth();
   const requiresCustomerVerification = Boolean(options.requiresCustomerVerification);
+  const isLightVariant = options.variant === 'light';
   
   // Core form state
   const [formData, setFormData] = useState({
@@ -193,6 +327,7 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
     customer_issue_date: '',
     customer_id_image: null,
     customer_uploaded_images: [], // Multiple manually uploaded images
+    customer_id_scan_history: [],
     
     // Vehicle & Dates
     vehicle_id: '',
@@ -248,6 +383,7 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
     selected_package_included_km_per_unit: null,
     selected_package_total_included_km: null,
     selected_package_extra_rate: 0,
+    selected_package_fuel_charge_enabled: false,
     selected_package_description: '',
     use_package_pricing: false,
     package_overrides_tier: false,
@@ -263,6 +399,7 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
   const [submitting, setSubmitting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successfullySubmitted, setSuccessfullySubmitted] = useState(false);
+  const [successRedirectUrl, setSuccessRedirectUrl] = useState('');
   const [errors, setErrors] = useState({});
   const [success, setSuccess] = useState(null);
   const [dateError, setDateError] = useState(null);
@@ -276,6 +413,7 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
   const [availabilityStatus, setAvailabilityStatus] = useState('unknown');
   const [availablePackages, setAvailablePackages] = useState([]);
   const [isLoadingPackages, setIsLoadingPackages] = useState(false);
+  const [selectedPackageDraft, setSelectedPackageDraft] = useState(null);
   
   // ==================== FUEL CHARGE TOGGLE ====================
   const [fuelChargeEnabled, setFuelChargeEnabled] = useState(false);
@@ -426,10 +564,11 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
   };
   
   // ==================== LOAD FUEL CHARGE SETTINGS ====================
-const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) => {
+const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, usePackagePricing = null) => {
   try {
     const modelId = vehicleModelId || formData.vehicle?.vehicle_model_id;
     const type = rentalType || formData.rental_type || 'daily';
+    const packagePricing = usePackagePricing ?? formData.use_package_pricing;
 
     if (!modelId) {
       setFuelChargeAmount(0);
@@ -460,7 +599,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
     setFuelChargeAmount(pricePerLine);
     // Default: enabled when price > 0, disabled when 0
-    setFuelChargeEnabled((rentalType || formData.rental_type) === 'daily' && pricePerLine > 0);
+    setFuelChargeEnabled(!packagePricing && (rentalType || formData.rental_type) === 'daily' && pricePerLine > 0);
 
   } catch (error) {
     console.error('Error loading fuel charge settings:', error);
@@ -803,14 +942,27 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
   const saveCustomerFromScan = async (scannedData, imageFile = null) => {
     try {
       const customerId = generateCustomerId();
+      const normalizedIdentity = normalizeCustomerIdentityFields({
+        licenceNumber:
+          scannedData.idNumber ||
+          scannedData.document_number ||
+          scannedData.licence_number ||
+          scannedData.license_number ||
+          '',
+        idNumber:
+          scannedData.id_number ||
+          scannedData.document_number ||
+          scannedData.idNumber ||
+          '',
+      });
       
       const customerData = {
         id: customerId,
         full_name: scannedData.fullName || scannedData.full_name || scannedData.name || scannedData.raw_name || '',
         phone: scannedData.phone || '',
         email: scannedData.email || '',
-        licence_number: scannedData.idNumber || scannedData.document_number || scannedData.licence_number || scannedData.license_number || '',
-        id_number: scannedData.idNumber || scannedData.id_number || scannedData.document_number || '',
+        licence_number: normalizedIdentity.licenceNumber || '',
+        id_number: normalizedIdentity.idNumber || '',
         date_of_birth: scannedData.dateOfBirth || scannedData.date_of_birth || scannedData.dob || null,
         nationality: scannedData.nationality || 'Moroccan',
         place_of_birth: scannedData.placeOfBirth || scannedData.place_of_birth || '',
@@ -822,6 +974,52 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         updated_at: new Date().toISOString(),
         customer_type: 'primary'
       };
+
+      const findExistingCustomerFromScan = async () => {
+        const lookupTable = supabase.from('app_4c3a7a6153_customers');
+        const idNumber = String(customerData.id_number || '').trim();
+        const licenceNumber = String(customerData.licence_number || '').trim();
+        const phone = String(customerData.phone || '').trim();
+        const fullName = String(customerData.full_name || '').trim();
+
+        if (idNumber) {
+          const { data } = await lookupTable
+            .select('*')
+            .eq('id_number', idNumber)
+            .limit(1);
+          if (data?.[0]) return data[0];
+        }
+
+        if (licenceNumber) {
+          const { data } = await lookupTable
+            .select('*')
+            .eq('licence_number', licenceNumber)
+            .limit(1);
+          if (data?.[0]) return data[0];
+        }
+
+        if (phone) {
+          const { data } = await lookupTable
+            .select('*')
+            .eq('phone', phone)
+            .limit(1);
+          if (data?.[0]) return data[0];
+        }
+
+        if (fullName) {
+          const { data } = await lookupTable
+            .select('*')
+            .ilike('full_name', fullName)
+            .limit(5);
+          const bestMatch = pickBestExistingCustomerMatch({
+            incomingCustomer: customerData,
+            candidates: data || [],
+          });
+          if (bestMatch?.id) return bestMatch;
+        }
+
+        return null;
+      };
       
       const { data: savedCustomer, error } = await supabase
         .from('app_4c3a7a6153_customers')
@@ -831,11 +1029,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       
       if (error) {
         if (error.code === '23505') {
-          const { data: existingCustomer } = await supabase
-            .from('app_4c3a7a6153_customers')
-            .select('*')
-            .or(`phone.eq.${customerData.phone},licence_number.eq.${customerData.licence_number}`)
-            .maybeSingle();
+          const existingCustomer = await findExistingCustomerFromScan();
           
           if (existingCustomer) {
             return existingCustomer;
@@ -921,6 +1115,10 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       data.damage_deposit === null || data.damage_deposit === undefined || data.damage_deposit === ''
         ? 0
         : Number(data.damage_deposit) || 0;
+    const resolvedTotalIncludedKm =
+      Number(data.selected_package_total_included_km) ||
+      Number(data.package_total_included_km) ||
+      calculatePackageTotalIncludedKm(resolvedIncludedKmPerUnit, resolvedDuration);
 
     const hydratedEditData = {
       ...data,
@@ -945,12 +1143,13 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       selected_package_rate_per_unit: resolvedPackageRate,
       selected_package_included_km: Number(data.selected_package_included_km) || resolvedIncludedKmPerUnit,
       selected_package_included_km_per_unit: resolvedIncludedKmPerUnit,
-      selected_package_total_included_km:
-        Number(data.selected_package_total_included_km) ||
-        Number(data.package_total_included_km) ||
-        resolvedIncludedKmPerUnit ||
-        null,
+      selected_package_total_included_km: resolvedTotalIncludedKm,
       selected_package_extra_rate: resolvedExtraRate,
+      selected_package_fuel_charge_enabled: Boolean(
+        data.selected_package_fuel_charge_enabled ??
+        data.package_fuel_charge_enabled ??
+        linkedPackage?.fuel_charge_enabled
+      ),
       selected_package_description: data.selected_package_description || data.package_description || linkedPackage?.description || '',
       use_package_pricing: resolvedUsePackagePricing,
     };
@@ -1028,8 +1227,9 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     
     const modelId = vehicle.vehicle_model_id;
     const normalizedQuantity = Number(quantity) || 1;
+    let activeBasePrice = 0;
     
-    if ((rentalType === 'hourly' && normalizedQuantity === 1) || (rentalType === 'daily' && normalizedQuantity === 1)) {
+    if (modelId && (rentalType === 'hourly' || rentalType === 'daily')) {
       const { data: basePriceData, error } = await supabase
         .from('app_4c3a7a6153_base_prices')
         .select(rentalType === 'hourly' ? 'hourly_price' : 'daily_price')
@@ -1039,8 +1239,13 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       
       if (!error && basePriceData) {
         const priceField = rentalType === 'hourly' ? 'hourly_price' : 'daily_price';
-        const basePrice = parseFloat(basePriceData[priceField]) || 0;
-        return basePrice;
+        activeBasePrice = parseFloat(basePriceData[priceField]) || 0;
+      }
+    }
+
+    if ((rentalType === 'hourly' && normalizedQuantity === 1) || (rentalType === 'daily' && normalizedQuantity === 1)) {
+      if (activeBasePrice > 0) {
+        return activeBasePrice;
       }
     }
 
@@ -1060,6 +1265,9 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       }
       
       if (!pricingTiers || pricingTiers.length === 0) {
+        if (activeBasePrice > 0) {
+          return activeBasePrice;
+        }
         throw new Error('No pricing tiers found');
       }
       
@@ -1078,6 +1286,10 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
             }
           }
         }
+
+        if (activeBasePrice > 0) {
+          return activeBasePrice;
+        }
       }
       
       if (rentalType === 'daily') {
@@ -1093,6 +1305,10 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
             }
           }
         }
+
+        if (activeBasePrice > 0) {
+          return activeBasePrice;
+        }
       }
       
       if (rentalType === 'weekly') {
@@ -1104,6 +1320,10 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       
     } catch (error) {
       try {
+        if (activeBasePrice > 0 && (rentalType === 'hourly' || rentalType === 'daily')) {
+          return activeBasePrice;
+        }
+
         const { data: modelData, error: modelError } = await supabase
           .from('saharax_0u4w4d_vehicle_models')
           .select('hourly_price, daily_price')
@@ -1337,14 +1557,15 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     setFormData(prev => ({ ...prev, transport_fee: totalTransportFee }));
   };
 
-  const calculateFinancials = () => {
+const calculateFinancials = () => {
   if (isCustomerVerificationOnlyMode) return;
   const isFlatTierTotal = !formData.use_package_pricing && pricingComputationMode === 'flat_total';
+  const durationUnits = Number(formData.quantity_days || 0) || 0;
   const subtotal = formData.use_package_pricing
-    ? (formData.unit_price || 0)
+    ? getFixedPackageAmount(formData)
     : isFlatTierTotal
     ? (formData.unit_price || 0)
-    : (formData.quantity_days || 0) * (formData.unit_price || 0);
+    : durationUnits * (formData.unit_price || 0);
   const total = subtotal + (formData.transport_fee || 0);
   const remaining = total - (formData.deposit_amount || 0);
 
@@ -1621,7 +1842,17 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     }
     
     const endDateTime = new Date(startDateTime.getTime() + (hours * 60 * 60 * 1000));
-    
+    const activeSelectedPackage = availablePackages.find(
+      (pkg) => String(pkg.id || '') === String(formData.selected_package_id || '')
+    );
+    const activeSelectedPackageDurationUnits = getPackageDurationUnits(activeSelectedPackage);
+    const shouldClearSelectedPackage =
+      Boolean(formData.selected_package_id) &&
+      (
+        (hours === 0.5 && activeSelectedPackageDurationUnits !== 0.5) ||
+        (hours === 4 && activeSelectedPackageDurationUnits !== 4) ||
+        (hours !== 0.5 && hours !== 4 && activeSelectedPackageDurationUnits !== 1)
+      );
     setSelectedQuickDuration(hours);
     
     setFormData(prev => ({
@@ -1633,7 +1864,24 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         rental_end_time: endDateTime.toTimeString().slice(0, 5),
         quantity_days: hours,
         quantity_hours: hours,
+        ...(shouldClearSelectedPackage ? {
+          selected_package_id: null,
+          selected_package_name: '',
+          selected_package_fixed_amount: 0,
+          selected_package_rate_per_unit: 0,
+          selected_package_included_km: null,
+          selected_package_included_km_per_unit: null,
+          selected_package_total_included_km: null,
+          selected_package_extra_rate: 0,
+          selected_package_fuel_charge_enabled: false,
+          selected_package_description: '',
+          use_package_pricing: false,
+          package_overrides_tier: false,
+        } : {}),
       }));
+    if (shouldClearSelectedPackage) {
+      setSelectedPackageDraft(null);
+    }
     
     const hourLabel = Number(hours) === 1 ? tr('hour', 'heure') : tr('hours', 'heures');
     toast.success(`✅ ${tr('Rental period set to', 'Période de location définie à')} ${hours} ${hourLabel}`);
@@ -1646,7 +1894,13 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
     if (startDateTime) {
       const endDateTime = new Date(startDateTime.getTime() + (days * 24 * 60 * 60 * 1000));
-
+      const activeSelectedPackage = availablePackages.find(
+        (pkg) => String(pkg.id || '') === String(formData.selected_package_id || '')
+      );
+      const selectedPackageRateType = String(activeSelectedPackage?.rate_types?.name || '').toLowerCase();
+      const shouldClearSelectedPackage =
+        Boolean(formData.selected_package_id) &&
+        selectedPackageRateType !== 'daily';
       setFormData(prev => ({
         ...prev,
         rental_type: 'daily',
@@ -1656,9 +1910,26 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         rental_end_time: endDateTime.toTimeString().slice(0, 5),
         quantity_days: days,
         quantity_hours: null,
+        ...(shouldClearSelectedPackage ? {
+          selected_package_id: null,
+          selected_package_name: '',
+          selected_package_fixed_amount: 0,
+          selected_package_rate_per_unit: 0,
+          selected_package_included_km: null,
+          selected_package_included_km_per_unit: null,
+          selected_package_total_included_km: null,
+          selected_package_extra_rate: 0,
+          selected_package_fuel_charge_enabled: false,
+          selected_package_description: '',
+          use_package_pricing: false,
+          package_overrides_tier: false,
+        } : {}),
       }));
       
       setSelectedQuickDuration(days);
+      if (shouldClearSelectedPackage) {
+        setSelectedPackageDraft(null);
+      }
       
       if (formData.vehicle_id) {
         setTimeout(() => {
@@ -1847,6 +2118,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       newFormData.vehicle_id = value;
 
       if (!value) {
+        setSelectedPackageDraft(null);
         newFormData.selected_package_id = null;
         newFormData.selected_package_name = '';
         newFormData.selected_package_fixed_amount = 0;
@@ -1855,6 +2127,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         newFormData.selected_package_included_km_per_unit = null;
         newFormData.selected_package_total_included_km = null;
         newFormData.selected_package_extra_rate = 0;
+        newFormData.selected_package_fuel_charge_enabled = false;
         newFormData.selected_package_description = '';
         newFormData.use_package_pricing = false;
         newFormData.package_overrides_tier = false;
@@ -1864,6 +2137,75 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         setTimeout(() => {
           autoPopulateUnitPrice();
         }, 100);
+      }
+    }
+
+    if (field === 'selected_package_id') {
+      if (!value) {
+        setSelectedPackageDraft(null);
+        newFormData.selected_package_id = null;
+        newFormData.selected_package_name = '';
+        newFormData.selected_package_fixed_amount = 0;
+        newFormData.selected_package_rate_per_unit = 0;
+        newFormData.selected_package_included_km = null;
+        newFormData.selected_package_included_km_per_unit = null;
+        newFormData.selected_package_total_included_km = null;
+        newFormData.selected_package_extra_rate = 0;
+        newFormData.selected_package_fuel_charge_enabled = false;
+        newFormData.selected_package_description = '';
+        newFormData.use_package_pricing = false;
+        newFormData.package_overrides_tier = false;
+      } else {
+        const matchedPackage = availablePackages.find(
+          (pkg) => String(pkg.id) === String(value)
+        );
+
+        if (matchedPackage) {
+          const packageDurationUnits = getPackageDurationUnits(matchedPackage) || 1;
+          const packageRatePerUnit = Number(matchedPackage.fixed_amount) || 0;
+          const activeDurationUnits = Math.max(
+            Number(
+              newFormData.rental_type === 'hourly'
+                ? (newFormData.quantity_hours ?? newFormData.quantity_days)
+                : newFormData.quantity_days
+            ) || 0,
+            newFormData.rental_type === 'hourly' ? 0.5 : 1
+          );
+
+          newFormData.selected_package_id = matchedPackage.id;
+          newFormData.selected_package_name = matchedPackage.name || '';
+          newFormData.selected_package_fixed_amount = packageRatePerUnit;
+          newFormData.selected_package_rate_per_unit = packageRatePerUnit;
+          newFormData.selected_package_included_km = matchedPackage.included_kilometers || null;
+          newFormData.selected_package_included_km_per_unit = matchedPackage.included_kilometers || null;
+          newFormData.selected_package_total_included_km = calculatePackageTotalIncludedKm(
+            matchedPackage.included_kilometers,
+            activeDurationUnits
+          );
+          newFormData.selected_package_extra_rate = Number(matchedPackage.extra_km_rate) || 0;
+          newFormData.selected_package_fuel_charge_enabled = Boolean(matchedPackage.fuel_charge_enabled);
+          newFormData.selected_package_description = matchedPackage.description || '';
+          newFormData.use_package_pricing = true;
+          newFormData.package_overrides_tier = true;
+          newFormData.unit_price = packageRatePerUnit;
+
+          setSelectedPackageDraft({
+            package_id: matchedPackage.id,
+            package_name: matchedPackage.name || '',
+            package_rate_per_unit: packageRatePerUnit,
+            package_included_km_per_unit: matchedPackage.included_kilometers || null,
+            package_total_included_km: calculatePackageTotalIncludedKm(
+              matchedPackage.included_kilometers,
+              activeDurationUnits
+            ),
+            package_extra_rate: Number(matchedPackage.extra_km_rate) || 0,
+            package_fuel_charge_enabled: Boolean(matchedPackage.fuel_charge_enabled),
+            package_description: matchedPackage.description || '',
+            package_duration_units: packageDurationUnits,
+            use_package_pricing: true,
+            package_overrides_tier: true,
+          });
+        }
       }
     }
 
@@ -1990,6 +2332,9 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         customer_nationality: customerData.nationality || '',
         customer_issue_date: customerData.issue_date || customerData.licence_issue_date || '',
         customer_id_image: customerData.id_scan_url || customerData.customer_id_image || null,
+        customer_id_scan_history: Array.isArray(customerData.scan_metadata?.id_scan_history)
+          ? customerData.scan_metadata.id_scan_history
+          : [],
         customer_uploaded_images: customerData.extra_images ? 
           customerData.extra_images.map((url, index) => ({
             id: `existing_${index}`,
@@ -2037,9 +2382,14 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
           .from('app_4c3a7a6153_customers')
           .select('id, full_name, scan_metadata')
           .eq('id', customerId)
-          .single();
+          .maybeSingle();
 
         if (error) throw error;
+        if (!data) {
+          setCustomerAlert(null);
+          setShowCustomerAlertModal(false);
+          return;
+        }
 
         const scanMetadata = data?.scan_metadata || {};
         if (scanMetadata.is_banned) {
@@ -2140,7 +2490,10 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         customer_place_of_birth: customerData.place_of_birth || prev.customer_place_of_birth,
         customer_nationality: customerData.nationality || prev.customer_nationality,
         customer_issue_date: customerData.issue_date || customerData.licence_issue_date || prev.customer_issue_date,
-        customer_id_image: customerData.customer_id_image || customerData.id_scan_url || image || prev.customer_id_image
+        customer_id_image: customerData.customer_id_image || customerData.id_scan_url || image || prev.customer_id_image,
+        customer_id_scan_history: Array.isArray(customerData.scan_metadata?.id_scan_history)
+          ? customerData.scan_metadata.id_scan_history
+          : prev.customer_id_scan_history
       }));
       
       setIsEmailDirty(false);
@@ -2165,6 +2518,9 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     try {
       const isOcrSkipped = Boolean(scannedData?.ocrSkipped);
       const isOcrUnavailable = Boolean(scannedData?.ocrUnavailable);
+      const captureMethod = scannedData?.ocrSkipped
+        ? (scannedData?.uploadMethod === 'gallery' ? 'imported' : 'saved')
+        : 'scanned';
 
       let savedCustomer = null;
       if (!isOcrSkipped) {
@@ -2191,19 +2547,36 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
           customer_nationality: scannedData.nationality || scannedData.customer_nationality || prev.customer_nationality,
           customer_issue_date: scannedData.issueDate || scannedData.issue_date || scannedData.customer_issue_date || prev.customer_issue_date,
           customer_id_image: scannedData.imageUrl || scannedData.id_scan_url || scannedData.publicUrl || imageFile || scannedData.customer_id_image || prev.customer_id_image,
-          customer_id: scannedData.customer_id || prev.customer_id,
+          customer_id_capture_method: captureMethod,
+          customer_id: savedCustomer?.id || scannedData.customer_id || prev.customer_id,
+          customer_id_scan_history: Array.isArray(savedCustomer?.scan_metadata?.id_scan_history)
+            ? savedCustomer.scan_metadata.id_scan_history
+            : prev.customer_id_scan_history,
         };
         
         return newState;
       });
 
+      setCustomerIdFileName(getCapturedIdFileName(scannedData, imageFile));
+      setCustomerIdCaptureMethod(captureMethod);
+
       if (isOcrSkipped) {
+        if (isLightVariant) {
+          setLightCustomerEditOpen(true);
+          setLightCustomerAdditionalOpen(false);
+        }
+        setCustomerScanNoteTone('success');
         setCustomerScanNote(tr('ID image saved. Enter the customer details manually.', "Image de la pièce enregistrée. Saisissez manuellement les détails du client."));
         toast.success(tr('ID image saved. Enter the customer details manually.', "Image de la pièce enregistrée. Saisissez manuellement les détails du client."));
         return;
       }
 
       if (isOcrUnavailable) {
+        if (isLightVariant) {
+          setLightCustomerEditOpen(true);
+          setLightCustomerAdditionalOpen(false);
+        }
+        setCustomerScanNoteTone('warning');
         setCustomerScanNote(tr('OCR is unavailable right now. Please enter the customer name and license manually.', "L'OCR est indisponible pour le moment. Veuillez saisir manuellement le nom du client et le permis."));
         toast(tr('ID image captured. OCR is unavailable, so please enter the customer details manually.', "L'image de la pièce a été capturée. L'OCR est indisponible, veuillez donc saisir manuellement les détails du client."), {
           icon: '⚠️',
@@ -2211,6 +2584,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         return;
       }
 
+      setCustomerScanNoteTone('neutral');
       setCustomerScanNote('');
       const customerName = scannedData.full_name || scannedData.name || scannedData.customer_name || tr('Customer', 'Client');
       toast.success(`✅ ${tr('Primary customer', 'Client principal')} "${customerName}" ${tr('data updated from scan', 'mis à jour depuis le scan')}`);
@@ -2366,14 +2740,19 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       let finalCustomerId = submissionReadyFormData.customer_id;
       const findExistingCustomerForSubmission = async () => {
         const customerTable = supabase.from('app_4c3a7a6153_customers');
-        const licenceNumber = submissionReadyFormData.customer_licence_number?.trim();
-        const idNumber = submissionReadyFormData.customer_id_number?.trim();
+        const normalizedIdentity = normalizeCustomerIdentityFields({
+          licenceNumber: submissionReadyFormData.customer_licence_number,
+          idNumber: submissionReadyFormData.customer_id_number,
+        });
+        const licenceNumber = normalizedIdentity.licenceNumber?.trim();
+        const idNumber = normalizedIdentity.idNumber?.trim();
         const phoneNumber = submissionReadyFormData.customer_phone?.trim();
         const customerName = submissionReadyFormData.customer_name?.trim();
+        const customerDob = submissionReadyFormData.customer_dob?.trim();
 
         if (licenceNumber) {
           const { data } = await customerTable
-            .select('id')
+            .select('*')
             .eq('licence_number', licenceNumber)
             .limit(1);
           if (data?.[0]?.id) return data[0];
@@ -2381,7 +2760,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
         if (idNumber) {
           const { data } = await customerTable
-            .select('id')
+            .select('*')
             .eq('id_number', idNumber)
             .limit(1);
           if (data?.[0]?.id) return data[0];
@@ -2389,7 +2768,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
         if (phoneNumber) {
           const { data } = await customerTable
-            .select('id')
+            .select('*')
             .eq('phone', phoneNumber)
             .limit(1);
           if (data?.[0]?.id) return data[0];
@@ -2397,28 +2776,50 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
 
         if (customerName) {
           const { data } = await customerTable
-            .select('id')
+            .select('*')
             .ilike('full_name', customerName)
-            .limit(1);
-          if (data?.[0]?.id) return data[0];
+            .limit(5);
+          const bestMatch = pickBestExistingCustomerMatch({
+            incomingCustomer: {
+              full_name: customerName,
+              phone: phoneNumber,
+              date_of_birth: customerDob,
+              licence_number: licenceNumber,
+              id_number: idNumber,
+              nationality: submissionReadyFormData.customer_nationality,
+              email: emailToSubmit,
+            },
+            candidates: data || [],
+          });
+          if (bestMatch?.id) return bestMatch;
         }
 
         return null;
       };
       
       if (!finalCustomerId) {
+        const customerScanHistory = Array.isArray(formData.customer_id_scan_history)
+          ? [...new Set(formData.customer_id_scan_history.map((url) => String(url || '').trim()).filter(Boolean))]
+          : [];
+        const normalizedIdentity = normalizeCustomerIdentityFields({
+          licenceNumber: submissionReadyFormData.customer_licence_number,
+          idNumber: submissionReadyFormData.customer_id_number,
+        });
         const newCustomerId = generateCustomerId();
         const newCustomerData = {
           id: newCustomerId,
           full_name: submissionReadyFormData.customer_name,
           phone: submissionReadyFormData.customer_phone,
           email: emailToSubmit,
-          licence_number: submissionReadyFormData.customer_licence_number || null,
-          id_number: submissionReadyFormData.customer_id_number || null,
+          licence_number: normalizedIdentity.licenceNumber,
+          id_number: normalizedIdentity.idNumber,
           date_of_birth: submissionReadyFormData.customer_dob || null,
           nationality: submissionReadyFormData.customer_nationality || null,
           place_of_birth: submissionReadyFormData.customer_place_of_birth || null,
           id_scan_url: submissionReadyFormData.customer_id_image || null,
+          scan_metadata: customerScanHistory.length > 0
+            ? { id_scan_history: customerScanHistory }
+            : {},
           extra_images: (formData.customer_uploaded_images || [])
             .map(img => img.url)
             .filter(url => url && url.trim() !== ''),
@@ -2446,11 +2847,15 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       } else {
         const { data: existingCustomer, error: checkError } = await supabase
           .from('app_4c3a7a6153_customers')
-          .select('id')
+          .select('id, id_scan_url, scan_metadata')
           .eq('id', finalCustomerId)
           .single();
 
         if (checkError || !existingCustomer) {
+          const normalizedIdentity = normalizeCustomerIdentityFields({
+            licenceNumber: submissionReadyFormData.customer_licence_number,
+            idNumber: submissionReadyFormData.customer_id_number,
+          });
           // Customer ID was pre-generated (e.g. from ID scan) but not yet saved — create it now
           const { data: createdCustomer, error: createError } = await supabase
             .from('app_4c3a7a6153_customers')
@@ -2459,12 +2864,17 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
               full_name: submissionReadyFormData.customer_name,
               phone: submissionReadyFormData.customer_phone,
               email: emailToSubmit,
-              licence_number: submissionReadyFormData.customer_licence_number || null,
-              id_number: submissionReadyFormData.customer_id_number || null,
+              licence_number: normalizedIdentity.licenceNumber,
+              id_number: normalizedIdentity.idNumber,
               date_of_birth: submissionReadyFormData.customer_dob || null,
               nationality: submissionReadyFormData.customer_nationality || null,
               place_of_birth: submissionReadyFormData.customer_place_of_birth || null,
               id_scan_url: submissionReadyFormData.customer_id_image || null,
+              scan_metadata: Array.isArray(formData.customer_id_scan_history) && formData.customer_id_scan_history.length > 0
+                ? {
+                    id_scan_history: [...new Set(formData.customer_id_scan_history.map((url) => String(url || '').trim()).filter(Boolean))]
+                  }
+                : {},
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString()
             }])
@@ -2480,6 +2890,38 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
             }
           } else {
             finalCustomerId = createdCustomer.id;
+          }
+        }
+
+        const localScanHistory = Array.isArray(formData.customer_id_scan_history)
+          ? formData.customer_id_scan_history.map((url) => String(url || '').trim()).filter(Boolean)
+          : [];
+        const existingScanHistory = Array.isArray(existingCustomer?.scan_metadata?.id_scan_history)
+          ? existingCustomer.scan_metadata.id_scan_history.map((url) => String(url || '').trim()).filter(Boolean)
+          : [];
+        const mergedScanHistory = [
+          ...new Set(
+            [
+              ...existingScanHistory,
+              ...localScanHistory,
+            ].filter((url) => url && url !== (existingCustomer?.id_scan_url || submissionReadyFormData.customer_id_image || '').trim())
+          ),
+        ];
+
+        if (mergedScanHistory.length > 0) {
+          const { error: scanHistoryUpdateError } = await supabase
+            .from('app_4c3a7a6153_customers')
+            .update({
+              scan_metadata: {
+                ...(existingCustomer?.scan_metadata || {}),
+                id_scan_history: mergedScanHistory,
+              },
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', finalCustomerId);
+
+          if (scanHistoryUpdateError) {
+            console.warn('Failed to persist customer ID scan history during rental submit:', scanHistoryUpdateError);
           }
         }
       }
@@ -2523,6 +2965,11 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
           nationality: submissionReadyFormData.customer_nationality || null,
           place_of_birth: submissionReadyFormData.customer_place_of_birth || null,
           id_scan_url: submissionReadyFormData.customer_id_image || null,
+          scan_metadata: Array.isArray(formData.customer_id_scan_history) && formData.customer_id_scan_history.length > 0
+            ? {
+                id_scan_history: [...new Set(formData.customer_id_scan_history.map((url) => String(url || '').trim()).filter(Boolean))]
+              }
+            : undefined,
           updated_at: new Date().toISOString(),
         };
 
@@ -2656,10 +3103,49 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         package_name: submissionReadyFormData.selected_package_name || null,
         package_rate_per_unit: submissionReadyFormData.selected_package_rate_per_unit || 0,
         package_included_km_per_unit: submissionReadyFormData.selected_package_included_km_per_unit || null,
-        package_total_included_km: submissionReadyFormData.selected_package_total_included_km || null,
+        package_total_included_km:
+          submissionReadyFormData.selected_package_total_included_km ||
+          calculatePackageTotalIncludedKm(
+            submissionReadyFormData.selected_package_included_km_per_unit,
+            submissionReadyFormData.rental_type === 'hourly'
+              ? (submissionReadyFormData.quantity_hours ?? submissionReadyFormData.quantity_days)
+              : submissionReadyFormData.quantity_days,
+            submissionReadyFormData.selected_package_duration_units ?? submissionReadyFormData.package_duration_units ?? 1
+          ),
         package_extra_rate: submissionReadyFormData.selected_package_extra_rate || 0,
         use_package_pricing: submissionReadyFormData.use_package_pricing || false,
       };
+
+      if (submissionData.use_package_pricing) {
+        const packageRatePerUnit =
+          Number(submissionReadyFormData.selected_package_rate_per_unit) ||
+          Number(submissionReadyFormData.selected_package_fixed_amount) ||
+          Number(submissionData.package_rate_per_unit) ||
+          Number(submissionData.unit_price) ||
+          0;
+        const packageDurationUnits = Number(
+          submissionData.rental_type === 'hourly'
+            ? (submissionData.quantity_hours ?? submissionData.quantity_days)
+            : submissionData.quantity_days
+        ) || 0;
+        const selectedPackageDurationUnits = Number(
+          submissionReadyFormData.selected_package_duration_units
+          ?? submissionReadyFormData.package_duration_units
+          ?? 1
+        ) || 1;
+        const packageSubtotal =
+          packageRatePerUnit > 0 && packageDurationUnits > 0
+            ? packageRatePerUnit * getPackageBillingMultiplier(packageDurationUnits, selectedPackageDurationUnits)
+            : Number(submissionData.total_amount) || 0;
+        const transportTotal = Number(submissionData.transport_fee) || 0;
+        const totalAmount = packageSubtotal + transportTotal;
+        const depositAmount = Number(submissionData.deposit_amount) || 0;
+
+        submissionData.unit_price = packageRatePerUnit;
+        submissionData.package_rate_per_unit = packageRatePerUnit;
+        submissionData.total_amount = totalAmount;
+        submissionData.remaining_amount = Math.max(0, totalAmount - depositAmount);
+      }
 
       if (isCustomerVerificationOnlyMode && initialData) {
         const preservedFields = [
@@ -2795,10 +3281,19 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
       }
       
       if (result && result.success) {
+        const rentalId = result.data.id;
+        const redirectUrl = isLightVariant
+          ? `/admin/rentals/${rentalId}?view=light#ready-to-start`
+          : `/admin/rentals/${rentalId}`;
+        const successPayload = {
+          ...result.data,
+          __uiVariant: options.variant || 'default',
+          __redirectUrl: redirectUrl,
+        };
+
+        setSuccessRedirectUrl(redirectUrl);
         setSuccessfullySubmitted(true);
         setErrors({});
-        
-        const rentalId = result.data.id;
 
         if (mode === 'edit' && initialData?.id && !isCustomerVerificationOnlyMode && rentalId) {
           try {
@@ -2976,8 +3471,27 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
         }
         
         toast.success(successMsg);
+
+        if (onSuccess) {
+          onSuccess(successPayload);
+        } else {
+          navigate(redirectUrl);
+        }
+
+        window.setTimeout(() => {
+          const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+          const stillOnRentalWizard =
+            currentPath === '/admin/rentals' ||
+            currentPath === '/admin/rentals/' ||
+            currentPath.includes('/admin/rentals?') ||
+            currentPath.includes('/admin/rentals#');
+
+          if (stillOnRentalWizard) {
+            window.location.assign(redirectUrl);
+          }
+        }, 1200);
         
-        return { result: result.data, rentalId: result.data.id };
+        return { result: result.data, rentalId: result.data.id, redirectUrl };
       } else {
         throw new Error(result?.error || tr('Unknown rental service error.', 'Erreur inconnue du service de location.'));
       }
@@ -3052,6 +3566,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null) 
     setAvailabilityStatus('unknown');
     setSelectedQuickDuration(null);
     setSuccessfullySubmitted(false);
+    setSuccessRedirectUrl('');
     setSelectedDepositTab(null);
     setCustomDepositAmount('');
   };
@@ -3298,8 +3813,13 @@ useEffect(() => {
     return;
   }
 
-  setFuelChargeEnabled(formData.rental_type === 'daily');
-}, [formData.rental_type]);
+  if (formData.use_package_pricing) {
+    setFuelChargeEnabled(Boolean(formData.selected_package_fuel_charge_enabled));
+    return;
+  }
+
+  setFuelChargeEnabled(formData.rental_type === 'daily' && fuelChargeAmount > 0);
+}, [formData.rental_type, formData.use_package_pricing, formData.selected_package_fuel_charge_enabled, fuelChargeAmount]);
 
   // ==================== RETURN VALUES ====================
   // Fetch KM packages when vehicle changes
@@ -3316,9 +3836,9 @@ useEffect(() => {
       
       // Map rental type to rate_type_id
       if (rentalType === 'hourly') {
-        query = query.eq('rate_type_id', 1); // Hourly = id 1
+        query = query.or('rate_type_id.eq.1,rate_type_id.is.null');
       } else if (rentalType === 'daily') {
-        query = query.eq('rate_type_id', 2); // Daily = id 2
+        query = query.or('rate_type_id.eq.2,rate_type_id.is.null');
       }
       
       const { data, error } = await query.order('fixed_amount', { ascending: true });
@@ -3354,7 +3874,7 @@ useEffect(() => {
           // Fetch packages for this specific model
           const packages = await fetchKMPackages(vehicle.vehicle_model_id, formData.rental_type);
           // Reload fuel pricing for new vehicle model
-          await loadFuelChargeSettings(vehicle.vehicle_model_id, formData.rental_type);
+          await loadFuelChargeSettings(vehicle.vehicle_model_id, formData.rental_type, formData.use_package_pricing);
           
           // Set packages for this specific vehicle model only
           setAvailablePackages(packages);
@@ -3365,7 +3885,9 @@ useEffect(() => {
           
           // If the currently selected package doesn't belong to this vehicle, clear it
           if (formData.selected_package_id) {
-            const selectedPackageStillValid = packages.some(p => p.id === formData.selected_package_id);
+            const selectedPackageStillValid = packages.some(
+              (p) => String(p.id) === String(formData.selected_package_id)
+            );
             if (!selectedPackageStillValid && !shouldPreserveFinancialTerms()) {
               console.log(`⚠️ Previously selected package ${formData.selected_package_id} not valid for this vehicle, clearing...`);
               setFormData(prev => ({
@@ -3377,10 +3899,12 @@ useEffect(() => {
                 selected_package_included_km_per_unit: null,
                 selected_package_total_included_km: null,
                 selected_package_extra_rate: 0,
+                selected_package_fuel_charge_enabled: false,
                 selected_package_description: '',
                 use_package_pricing: false,
                 package_overrides_tier: false
               }));
+              loadFuelChargeSettings(vehicle.vehicle_model_id, formData.rental_type, false);
             }
           }
         } else {
@@ -3422,6 +3946,7 @@ useEffect(() => {
     submitting,
     isSubmitting,
     successfullySubmitted,
+    successRedirectUrl,
     errors,
     success,
     setSuccess,
@@ -3430,6 +3955,8 @@ useEffect(() => {
     availableVehicles,
     availablePackages,
     isLoadingPackages,
+    selectedPackageDraft,
+    setSelectedPackageDraft,
     setAvailablePackages,
     calculatePackagePrice,
     transportFees,
@@ -3446,6 +3973,7 @@ useEffect(() => {
     setShowCustomerAlertModal,
     mode,
     selectedQuickDuration,
+    setSelectedQuickDuration,
     damageDepositConfig,
     selectedDepositTab,
     customDepositAmount,
@@ -3463,6 +3991,7 @@ useEffect(() => {
     handleQuickHourSelect,
     handleQuickDaySelect,
     syncEndDateTimeFromStart,
+    composeDateTime,
     handlePaymentStatusTabClick,
     handleDepositTabClick,
     handleDepositDocumentUpload,
@@ -3473,9 +4002,9 @@ useEffect(() => {
     handleSubmit,
     handleReset,
     getEnabledPresetsForVehicle,
-    composeDateTime,
     calculateQuantityAndPricing,
     calculateFinancials,
+    getDirectPricing,
     customerSearchRef,
     getAggregatedCustomerData,
     fuelChargeEnabled,
@@ -4545,13 +5074,15 @@ const PriceCalculator = ({ formData, onPriceChange, onResetToAuto, autoCalculate
   const isFlatTierTotal = !formData.use_package_pricing && pricingComputationMode === 'flat_total';
 
   const calculateBreakdown = () => {
+    const durationUnits = Number(formData.quantity_days || 0) || 0;
     const rentalCost = formData.use_package_pricing
-      ? (formData.unit_price || 0)
+      ? getFixedPackageAmount(formData)
       : isFlatTierTotal
       ? (formData.unit_price || 0)
-      : (formData.quantity_days || 0) * (formData.unit_price || 0);
+      : durationUnits * (formData.unit_price || 0);
     const transportCost = formData.transport_fee || 0;
-    const fuelCharge = fuelChargeEnabled ? fuelChargeAmount : 0;
+    // Fuel charge is a return-time adjustment rule, not an upfront booking charge.
+    const fuelCharge = 0;
     const total = rentalCost + transportCost + fuelCharge;
     const deposit = formData.deposit_amount || 0;
     const remaining = total - deposit;
@@ -4567,7 +5098,9 @@ const PriceCalculator = ({ formData, onPriceChange, onResetToAuto, autoCalculate
   };
 
   const breakdown = calculateBreakdown();
-  const autoRentalCost = (formData.use_package_pricing || isFlatTierTotal)
+  const autoRentalCost = formData.use_package_pricing
+    ? getFixedPackageAmount({ ...formData, unit_price: autoPrice })
+    : isFlatTierTotal
     ? autoPrice
     : (formData.quantity_days || 0) * autoPrice;
   const autoTotal = autoRentalCost + breakdown.transportCost + breakdown.fuelCharge;
@@ -4717,12 +5250,12 @@ const PriceCalculator = ({ formData, onPriceChange, onResetToAuto, autoCalculate
                     <Package className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />
                     <div className="text-xs text-purple-800">
                       <p className="font-medium">{formData.selected_package_name}</p>
-	                      <p className="mt-1">
-	                        {tr('Package price:', 'Prix du forfait :')} {formData.unit_price?.toFixed(2)} MAD
-	                      </p>
-	                      <p className="mt-1">
-	                        {tr('Duration:', 'Durée :')} {formData.quantity_days === 0.5 ? '30 min' : `${formData.quantity_days} ${formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')) : (formData.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour'))}`}
-	                      </p>
+                      <p className="mt-1">
+                        {tr('Package total:', 'Total du forfait :')} {getFixedPackageAmount(formData).toFixed(2)} MAD
+                      </p>
+                      <p className="mt-1">
+                        {tr('Duration:', 'Durée :')} {formatRentalDurationLabel(formData.rental_type, formData.quantity_days, tr)}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -4846,7 +5379,7 @@ const PriceCalculator = ({ formData, onPriceChange, onResetToAuto, autoCalculate
           <div className="mt-4 rounded-xl border border-slate-200 bg-white/90 px-4 py-3 shadow-sm">
             <div className="space-y-2">
             <div className="flex justify-between">
-              <span className="text-gray-600">{tr('Deposit Paid:', 'Acompte versé :')}</span>
+              <span className="text-gray-600">{tr('Paid Amount:', 'Montant payé :')}</span>
               <span className="font-medium">{breakdown.deposit.toFixed(2)} MAD</span>
             </div>
             <div className="flex justify-between">
@@ -4870,6 +5403,8 @@ const DamageDepositTabs = ({
   formData, 
   enabledPresets, 
   allowCustomDeposit, 
+  includeNoneOption = false,
+  variant = 'default',
   selectedTab, 
   customAmount,
   onTabClick,
@@ -4883,6 +5418,7 @@ const DamageDepositTabs = ({
   const cameraInputRef = useRef(null);
   const hasDocumentSelection = Boolean(formData.damage_deposit_document_url || formData.damage_deposit_document_name);
   const [showDocumentSection, setShowDocumentSection] = useState(hasDocumentSelection);
+  const isLightVariant = variant === 'light';
 
   useEffect(() => {
     if (hasDocumentSelection) {
@@ -4891,6 +5427,11 @@ const DamageDepositTabs = ({
   }, [hasDocumentSelection]);
 
   const tabs = [
+    ...(includeNoneOption ? [{
+      id: 'none',
+      label: tr('None', 'Aucune'),
+      amount: 0
+    }] : []),
     ...enabledPresets.map(preset => ({
       id: preset.label,
       label: preset.label,
@@ -4906,7 +5447,7 @@ const DamageDepositTabs = ({
   if (tabs.length === 0) {
     return (
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
+        <label className={`block mb-1 ${isLightVariant ? 'text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500' : 'text-sm font-medium text-gray-700'}`}>
           {tr('Damage Deposit (MAD)', 'Dépôt de garantie (MAD)')}
         </label>
         <input
@@ -4914,7 +5455,11 @@ const DamageDepositTabs = ({
           value={formData.damage_deposit || ''}
           onChange={(e) => onCustomAmountChange(e.target.value)}
           disabled={disabled}
-          className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+          className={`w-full ${
+            isLightVariant
+              ? 'rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-xl font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500'
+              : 'px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500'
+          } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
           min="0"
           step="1"
           placeholder={tr('Enter amount', 'Saisir un montant')}
@@ -4925,7 +5470,7 @@ const DamageDepositTabs = ({
 
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 mb-2">
+      <label className={`block mb-2 ${isLightVariant ? 'text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500' : 'text-sm font-medium text-gray-700'}`}>
         {tr('Damage Deposit Selection', 'Sélection du dépôt de garantie')}
       </label>
       
@@ -4936,11 +5481,22 @@ const DamageDepositTabs = ({
             type="button"
             onClick={() => onTabClick(tab.id, tab.amount)}
             disabled={disabled}
-            className={`px-4 py-2 rounded-lg border-2 font-medium transition-all text-sm ${
-              selectedTab === tab.id
-                ? 'border-blue-500 bg-blue-50 text-blue-700 ring-2 ring-blue-200'
-                : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
-            } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+            className={`font-medium transition-all text-sm ${
+              isLightVariant
+                ? `rounded-2xl border px-4 py-3 ${
+                    selectedTab === tab.id
+                      ? 'border-violet-500 bg-violet-600 text-white shadow-[0_16px_32px_rgba(124,58,237,0.22)]'
+                      : 'border-slate-200 bg-white text-slate-800 hover:border-violet-300 hover:bg-violet-50/40'
+                  }`
+                : `px-4 py-2 rounded-lg border-2 ${
+                    selectedTab === tab.id
+                      ? 'border-blue-500 bg-blue-50 text-blue-700 ring-2 ring-blue-200'
+                      : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                  }`
+              }
+              ${
+                disabled ? 'opacity-50 cursor-not-allowed' : ''
+              } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <div className="flex flex-col items-center">
               <span className="flex items-center gap-2 font-semibold">
@@ -4964,11 +5520,22 @@ const DamageDepositTabs = ({
             setShowDocumentSection(true);
           }}
           disabled={disabled}
-          className={`px-4 py-2 rounded-lg border-2 font-medium transition-all text-sm ${
-            showDocumentSection || hasDocumentSelection
-              ? 'border-emerald-500 bg-emerald-50 text-emerald-700 ring-2 ring-emerald-200'
-              : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
-          } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+          className={`font-medium transition-all text-sm ${
+            isLightVariant
+              ? `rounded-2xl border px-4 py-3 ${
+                  showDocumentSection || hasDocumentSelection
+                    ? 'border-emerald-400 bg-emerald-50 text-emerald-700 shadow-[0_12px_28px_rgba(16,185,129,0.14)]'
+                    : 'border-slate-200 bg-white text-slate-800 hover:border-emerald-300 hover:bg-emerald-50/40'
+                }`
+              : `px-4 py-2 rounded-lg border-2 ${
+                  showDocumentSection || hasDocumentSelection
+                    ? 'border-emerald-500 bg-emerald-50 text-emerald-700 ring-2 ring-emerald-200'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                }`
+            }
+            ${
+              disabled ? 'opacity-50 cursor-not-allowed' : ''
+            } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
         >
           <span className="flex items-center gap-2 font-semibold">
             <FileText className="h-4 w-4" />
@@ -4989,7 +5556,11 @@ const DamageDepositTabs = ({
               onTabClick('custom', parsedValue);
             }}
             disabled={disabled}
-            className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+            className={`w-full ${
+              isLightVariant
+                ? 'rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-xl font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500'
+                : 'px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500'
+            } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
             min="0"
             step="100"
             placeholder={tr('Enter custom amount (e.g., 8500)', 'Saisir un montant personnalisé (ex. : 8500)')}
@@ -4997,20 +5568,20 @@ const DamageDepositTabs = ({
         </div>
       )}
 
-      {selectedTab && selectedTab !== 'custom' && (
-        <div className="mt-2 text-sm text-gray-600">
+      {selectedTab && selectedTab !== 'custom' && selectedTab !== 'none' && (
+        <div className={`mt-2 ${isLightVariant ? 'text-sm font-medium text-slate-600' : 'text-sm text-gray-600'}`}>
           Selected: <span className="font-medium text-gray-900">{formData.damage_deposit} MAD</span>
         </div>
       )}
 
       {showDocumentSection && (
-      <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4">
+      <div className={`mt-4 rounded-2xl p-4 ${isLightVariant ? 'border border-slate-200 bg-[linear-gradient(180deg,rgba(236,253,245,0.92),rgba(255,255,255,0.98))] shadow-[0_14px_30px_rgba(16,185,129,0.10)]' : 'border border-emerald-200 bg-emerald-50/70'}`}>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold text-emerald-900">
+            <p className={`text-sm font-semibold ${isLightVariant ? 'text-slate-900' : 'text-emerald-900'}`}>
               {tr('Security Document (optional)', 'Document de garantie (optionnel)')}
             </p>
-            <p className="mt-1 text-xs text-emerald-800">
+            <p className={`mt-1 text-xs ${isLightVariant ? 'text-slate-600' : 'text-emerald-800'}`}>
               {tr(
                 'Hold a document in addition to the monetary damage deposit if needed.',
                 'Conservez un document en plus du dépôt de garantie monétaire si nécessaire.'
@@ -5029,7 +5600,7 @@ const DamageDepositTabs = ({
             type="button"
             onClick={() => cameraInputRef.current?.click()}
             disabled={disabled || documentUploading}
-            className={`flex-1 rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-50 ${disabled || documentUploading ? 'cursor-not-allowed opacity-50' : ''}`}
+            className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${isLightVariant ? 'border border-emerald-200 bg-white text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50 shadow-sm' : 'border border-emerald-200 bg-white text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50'} ${disabled || documentUploading ? 'cursor-not-allowed opacity-50' : ''}`}
           >
             <span className="flex items-center justify-center gap-2">
               <FileImage className="h-4 w-4" />
@@ -5040,7 +5611,7 @@ const DamageDepositTabs = ({
             type="button"
             onClick={() => onDocumentTypeSelect?.('National ID')}
             disabled={disabled}
-            className={`flex-1 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 ${disabled || documentUploading ? 'cursor-not-allowed opacity-50' : ''}`}
+            className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${isLightVariant ? 'border border-slate-200 bg-white text-slate-700 hover:border-violet-300 hover:bg-violet-50/40 shadow-sm' : 'border border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'} ${disabled || documentUploading ? 'cursor-not-allowed opacity-50' : ''}`}
           >
             <span className="flex items-center justify-center gap-2">
               <FileText className="h-4 w-4" />
@@ -5051,7 +5622,7 @@ const DamageDepositTabs = ({
             type="button"
             onClick={() => onDocumentTypeSelect?.('Passport')}
             disabled={disabled}
-            className={`flex-1 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+            className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${isLightVariant ? 'border border-slate-200 bg-white text-slate-700 hover:border-violet-300 hover:bg-violet-50/40 shadow-sm' : 'border border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'} ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
           >
             <span className="flex items-center justify-center gap-2">
               <FileText className="h-4 w-4" />
@@ -5070,7 +5641,7 @@ const DamageDepositTabs = ({
         />
 
         {hasDocumentSelection ? (
-          <div className="mt-3 rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm text-gray-700">
+          <div className={`mt-3 rounded-xl bg-white px-4 py-3 text-sm text-gray-700 ${isLightVariant ? 'border border-slate-200 shadow-sm' : 'border border-emerald-200'}`}>
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="font-medium text-gray-900">
@@ -5578,7 +6149,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
         if (usePackagePricing && selectedPackageId && availablePackages.length > 0) {
           const selectedPkg = availablePackages.find(p => p.id === selectedPackageId);
           if (selectedPkg) {
-            // Kilometer rental packages are fixed offers. The duration controls the timer, not the package price.
+            // Rental KM packages are priced per selected rental unit (hour/day).
             fixedPackageAmount = parseFloat(selectedPkg.fixed_amount) || 0;
             packageIncludedKm = selectedPkg.included_kilometers;
             packageExtraRate = parseFloat(selectedPkg.extra_km_rate) || 0;
@@ -5589,7 +6160,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
 
         // If package pricing is active, use it instead of tier pricing
         if (packagePricePerUnit !== null) {
-          const totalAmount = packagePricePerUnit;
+          const totalAmount = packagePricePerUnit * duration;
 
           setPriceInfo({
             basePrice,
@@ -5607,7 +6178,7 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
             packageExtraRate
           });
 
-          console.log(`📦 Package selected: ${packageName}, fixed package price: ${packagePricePerUnit} MAD, duration: ${duration} ${rentalType === 'hourly' ? 'hours' : 'days'}`);
+          console.log(`📦 Package selected: ${packageName}, fixed package price: ${packagePricePerUnit} MAD`);
           return;
         }
 
@@ -5933,6 +6504,165 @@ const VehiclePricePreview = ({ vehicle, rentalType, duration, vehicleModels = []
       )}
     </div>
   );
+};
+
+const LightVehiclePriceLabel = ({ vehicle, rentalType, duration }) => {
+  const [displayPrice, setDisplayPrice] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const calculateDisplayPrice = async () => {
+      if (!vehicle || !rentalType || !duration || duration <= 0) {
+        if (!cancelled) setDisplayPrice(0);
+        return;
+      }
+
+      const normalizedDuration = Number(duration) || 1;
+
+      try {
+        const modelId = vehicle.vehicle_model_id;
+        if (!modelId) {
+          if (!cancelled) setDisplayPrice(0);
+          return;
+        }
+
+        if (rentalType === 'hourly' && normalizedDuration === 0.5) {
+          const { data: packageRows, error: packageError } = await supabase
+            .from('app_4c3a7a6153_rental_km_packages')
+            .select('*, rate_types(name)')
+            .eq('vehicle_model_id', modelId)
+            .eq('is_active', true)
+            .or('rate_type_id.eq.1,rate_type_id.is.null')
+            .order('fixed_amount', { ascending: true });
+
+          if (!packageError) {
+            const matchingPackage = findMatchingDurationPackage(packageRows || [], 'hourly', 0.5);
+            const packagePrice = Number(
+              matchingPackage?.fixed_amount
+              ?? matchingPackage?.package_rate
+              ?? matchingPackage?.rate
+              ?? matchingPackage?.price
+              ?? 0
+            ) || 0;
+
+            if (packagePrice > 0) {
+              if (!cancelled) setDisplayPrice(packagePrice);
+              return;
+            }
+          }
+        }
+
+        let basePrice = 0;
+
+        const { data: basePriceData } = await supabase
+          .from('app_4c3a7a6153_base_prices')
+          .select('hourly_price, daily_price')
+          .eq('vehicle_model_id', modelId)
+          .eq('is_active', true)
+          .single();
+
+        if (basePriceData) {
+          basePrice = rentalType === 'hourly'
+            ? Number(basePriceData.hourly_price) || 0
+            : Number(basePriceData.daily_price) || 0;
+        }
+
+        let resolvedPrice = basePrice;
+
+        if (rentalType === 'hourly' && normalizedDuration > 1) {
+          const { data: pricingTiers } = await supabase
+            .from('pricing_tiers')
+            .select('*')
+            .eq('vehicle_model_id', modelId)
+            .eq('is_active', true)
+            .eq('duration_type', 'hours');
+
+          const matchingTier = (pricingTiers || []).find((tier) => {
+            const minHours = Number(tier.min_hours ?? 0);
+            const maxHours = Number(tier.max_hours ?? 0);
+            const tierPrice = Number(tier.price_amount ?? 0);
+            return tierPrice > 0 && normalizedDuration >= minHours && normalizedDuration <= maxHours;
+          });
+
+          if (matchingTier) {
+            const tierPrice = Number(matchingTier.price_amount) || resolvedPrice;
+            const isFlatTierTotal =
+              matchingTier.calculation_method === 'fixed' && normalizedDuration === 1.5;
+            resolvedPrice = isFlatTierTotal ? tierPrice : tierPrice * normalizedDuration;
+          } else if (basePrice > 0) {
+            resolvedPrice = basePrice * normalizedDuration;
+          }
+        }
+
+        if (rentalType === 'daily' && normalizedDuration > 1) {
+          const { data: pricingTiers } = await supabase
+            .from('pricing_tiers')
+            .select('*')
+            .eq('vehicle_model_id', modelId)
+            .eq('is_active', true)
+            .eq('duration_type', 'days');
+
+          const matchingTier = (pricingTiers || []).find((tier) => {
+            const minDays = Number(tier.min_days ?? 1);
+            const maxDays = Number(tier.max_days ?? Number.MAX_SAFE_INTEGER);
+            const tierPrice = Number(tier.daily_price_amount ?? 0);
+            return tierPrice > 0 && normalizedDuration >= minDays && normalizedDuration <= maxDays;
+          });
+
+          if (matchingTier) {
+            const tierPrice = Number(matchingTier.daily_price_amount) || resolvedPrice;
+            resolvedPrice = tierPrice * normalizedDuration;
+          } else if (basePrice > 0) {
+            resolvedPrice = basePrice * normalizedDuration;
+          }
+        }
+
+        if (!resolvedPrice) {
+          const vehicleModelUpper = String(vehicle.model || '').toUpperCase();
+          if (vehicleModelUpper.includes('AT6')) {
+            resolvedPrice = rentalType === 'hourly' ? 599 : 1999;
+          } else if (vehicleModelUpper.includes('AT10')) {
+            resolvedPrice = rentalType === 'hourly' ? 999 : 3499;
+          } else if (vehicleModelUpper.includes('AT5')) {
+            resolvedPrice = rentalType === 'hourly' ? 399 : 1499;
+          } else {
+            resolvedPrice = rentalType === 'hourly' ? 400 : 1500;
+          }
+        }
+
+        if (!cancelled) {
+          setDisplayPrice(resolvedPrice);
+        }
+      } catch (error) {
+        const vehicleModelUpper = String(vehicle?.model || '').toUpperCase();
+        let fallbackPrice = rentalType === 'hourly' ? 400 : 1500;
+
+        if (vehicleModelUpper.includes('AT6')) {
+          fallbackPrice = rentalType === 'hourly' ? 599 : 1999;
+        } else if (vehicleModelUpper.includes('AT10')) {
+          fallbackPrice = rentalType === 'hourly' ? 999 : 3499;
+        } else if (vehicleModelUpper.includes('AT5')) {
+          fallbackPrice = rentalType === 'hourly' ? 399 : 1499;
+        }
+
+        if (!cancelled) {
+          const fallbackTotal = normalizedDuration > 1
+            ? fallbackPrice * normalizedDuration
+            : fallbackPrice;
+          setDisplayPrice(fallbackTotal);
+        }
+      }
+    };
+
+    calculateDisplayPrice();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [duration, rentalType, vehicle]);
+
+  return <>{formatDynamicMad(displayPrice)} MAD</>;
 };
 
 // ==================== ENHANCED TIER PRICING BREAKDOWN ====================
@@ -6364,6 +7094,26 @@ const KMPackagesTab = ({
   const [showCalculator, setShowCalculator] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState(null);
   const [hasOverridden, setHasOverridden] = useState(false);
+  const activeDurationLabel = formatRentalDurationLabel(rentalType, duration, tr);
+
+  useEffect(() => {
+    if (!selectedPackageId) {
+      setSelectedPackage(null);
+      setExpandedPackage(null);
+      setShowCalculator(false);
+      return;
+    }
+
+    const matchedPackage = packages.find((pkg) => String(pkg.id) === String(selectedPackageId));
+    if (matchedPackage) {
+      setSelectedPackage(matchedPackage);
+      setExpandedPackage((prev) => (prev?.id === matchedPackage.id ? matchedPackage : prev));
+    } else {
+      setSelectedPackage(null);
+      setExpandedPackage(null);
+      setShowCalculator(false);
+    }
+  }, [selectedPackageId, packages]);
 
   // Calculate total included kilometers for the entire duration
   const getTotalIncludedKm = (pkg) => {
@@ -6404,6 +7154,11 @@ const KMPackagesTab = ({
 
   // Handle package selection
   const handlePackageSelect = (pkg) => {
+    const scrollTopBeforeSelection = typeof window !== 'undefined' ? window.scrollY : 0;
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
     if ((selectedPackageId && String(selectedPackageId) === String(pkg.id)) || (selectedPackage?.id && String(selectedPackage.id) === String(pkg.id))) {
       handleClearPackage();
       return;
@@ -6421,17 +7176,26 @@ const KMPackagesTab = ({
     }
 
     setSelectedPackage(pkg);
+    setExpandedPackage(pkg);
+    setShowCalculator(false);
     setHasOverridden(true);
-    onPackageSelect(pkg.id);
-    
+    const activeDurationUnits = Math.max(
+      Number(duration || 0) || 0,
+      rentalType === 'hourly' ? 0.5 : 1
+    );
     // Prepare ALL package data in one object
     const packageData = {
       package_id: pkg.id,
       package_name: pkg.name,
       package_rate_per_unit: ratePerUnit,
       package_included_km_per_unit: pkg.included_kilometers,
-      package_total_included_km: pkg.included_kilometers,
+      package_total_included_km: calculatePackageTotalIncludedKm(
+        pkg.included_kilometers,
+        activeDurationUnits,
+        packageDurationUnits
+      ),
       package_extra_rate: parseFloat(pkg.extra_km_rate) || 0,
+      package_fuel_charge_enabled: Boolean(pkg.fuel_charge_enabled),
       package_description: pkg.description,
       package_duration_units: packageDurationUnits,
       use_package_pricing: true,
@@ -6442,9 +7206,56 @@ const KMPackagesTab = ({
     if (onPackageCalculations) {
       onPackageCalculations(packageData);
     }
+
+    if (setFormData) {
+      setFormData((prev) => {
+        const currentDurationUnits = Math.max(
+          Number(
+            prev.rental_type === 'hourly'
+              ? (prev.quantity_hours ?? prev.quantity_days)
+              : prev.quantity_days
+          ) || 0,
+          prev.rental_type === 'hourly' ? 0.5 : 1
+        );
+        const nextDurationUnits = currentDurationUnits > 0
+          ? currentDurationUnits
+          : (Number.isFinite(packageDurationUnits) && packageDurationUnits > 0
+              ? packageDurationUnits
+              : (prev.rental_type === 'hourly' ? 0.5 : 1));
+        const nextTotalIncludedKm = calculatePackageTotalIncludedKm(
+          pkg.included_kilometers,
+          nextDurationUnits
+        );
+
+        return {
+          ...prev,
+          quantity_days: nextDurationUnits,
+          quantity_hours: prev.rental_type === 'hourly' ? nextDurationUnits : null,
+          selected_package_id: pkg.id,
+          selected_package_name: pkg.name || '',
+          selected_package_fixed_amount: ratePerUnit,
+          selected_package_rate_per_unit: ratePerUnit,
+          selected_package_included_km: pkg.included_kilometers || null,
+          selected_package_included_km_per_unit: pkg.included_kilometers || null,
+          selected_package_total_included_km: nextTotalIncludedKm,
+          selected_package_extra_rate: parseFloat(pkg.extra_km_rate) || 0,
+          selected_package_fuel_charge_enabled: Boolean(pkg.fuel_charge_enabled),
+          selected_package_description: pkg.description || '',
+          use_package_pricing: true,
+          package_overrides_tier: true,
+          unit_price: ratePerUnit,
+        };
+      });
+    }
     
     // Don't update formData directly here - let the parent handle it
     // Don't call onPriceOverride separately
+
+    if (typeof window !== 'undefined') {
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: scrollTopBeforeSelection });
+      });
+    }
     
     toast.success(`Package "${pkg.name}" selected - ${ratePerUnit.toFixed(2)} MAD`);
   };
@@ -6452,8 +7263,9 @@ const KMPackagesTab = ({
   // Handle clear package selection
   const handleClearPackage = () => {
     setSelectedPackage(null);
+    setExpandedPackage(null);
+    setShowCalculator(false);
     setHasOverridden(false);
-    onPackageSelect(null);
     
     if (onPackageCalculations) {
       onPackageCalculations({
@@ -6461,6 +7273,7 @@ const KMPackagesTab = ({
         package_rate_per_unit: 0,
         package_included_km_per_unit: null,
         package_extra_rate: 0,
+        package_fuel_charge_enabled: false,
         package_description: '',
         use_package_pricing: false,
         package_overrides_tier: false,
@@ -6483,8 +7296,23 @@ const KMPackagesTab = ({
         package_overrides_tier: false
       }));
     }
+
+    if (onPackageSelect) {
+      onPackageSelect(null);
+    }
     
     toast.info('Package selection cleared - using standard pricing');
+  };
+
+  const handleClosePackageFocus = () => {
+    const scrollTopBeforeClose = typeof window !== 'undefined' ? window.scrollY : 0;
+    setExpandedPackage(null);
+    setShowCalculator(false);
+    if (typeof window !== 'undefined') {
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: scrollTopBeforeClose });
+      });
+    }
   };
 
   if (packages.length === 0) {
@@ -6498,30 +7326,38 @@ const KMPackagesTab = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <Package className="w-5 h-5 text-purple-600" />
-          <h4 className="font-semibold text-gray-900">
-            {rentalType === 'hourly' ? 'Hourly' : 'Daily'} Packages
-          </h4>
-          <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-            {packages.length} available
-          </span>
-        </div>
-        {selectedPackage && (
-          <span className="text-xs text-purple-600 font-medium">
-            {tr('Tap the selected package again to unselect', 'Appuyez à nouveau sur le forfait sélectionné pour l’annuler')}
-          </span>
-        )}
-      </div>
-
-      {/* Package Selection Tabs - Max 3 tabs */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {packages.map((pkg) => {
+      {!expandedPackage && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {packages.map((pkg) => {
           const isSelected = selectedPackageId === pkg.id || selectedPackage?.id === pkg.id;
           const ratePerUnit = parseFloat(pkg.fixed_amount) || 0;
-          const totalForDuration = ratePerUnit;
-          const totalIncludedKm = pkg.included_kilometers || null;
+          const totalIncludedKm = calculatePackageTotalIncludedKm(pkg.included_kilometers, duration);
+          const packageDurationUnits = getPackageDurationUnits(pkg);
+          const packageDisplayTotal = packageDurationUnits
+            ? ratePerUnit * Math.max((Number(duration || 0) || 0) / packageDurationUnits, 1)
+            : ratePerUnit;
+          const packageDurationLabel = (() => {
+            if (!packageDurationUnits) return rentalType === 'hourly'
+              ? tr('Hourly package', 'Forfait horaire')
+              : tr('Daily package', 'Forfait journalier');
+
+            if (rentalType === 'daily' && Number(duration || 0) > 1) {
+              return formatRentalDurationLabel(rentalType, duration, tr);
+            }
+
+            if (rentalType === 'hourly' && packageDurationUnits === 1 && Number(duration || 0) > 1) {
+              return formatRentalDurationLabel(rentalType, duration, tr);
+            }
+
+            if (rentalType === 'hourly') {
+              if (packageDurationUnits === 0.5) return tr('30 min', '30 min');
+              if (packageDurationUnits === 1) return tr('1 Hour', '1 heure');
+              return tr(`${packageDurationUnits} Hours`, `${packageDurationUnits} heures`);
+            }
+
+            if (packageDurationUnits === 1) return tr('1 day', '1 jour');
+            return tr(`${packageDurationUnits} days`, `${packageDurationUnits} jours`);
+          })();
           
           return (
             <button
@@ -6536,8 +7372,13 @@ const KMPackagesTab = ({
               } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-[0.99]'}`}
             >
               <div className="flex flex-col h-full">
-                <div className="flex items-start justify-between mb-2">
-                  <Gauge className={`w-5 h-5 ${isSelected ? 'text-purple-600' : 'text-gray-400'}`} />
+                <div className="flex items-start justify-between mb-3">
+                  <div className="inline-flex items-center gap-2">
+                    <Gauge className={`w-5 h-5 ${isSelected ? 'text-purple-600' : 'text-gray-400'}`} />
+                    <span className={`text-[11px] font-semibold uppercase tracking-[0.16em] ${isSelected ? 'text-purple-600' : 'text-gray-500'}`}>
+                      {isSelected ? tr('Selected', 'Sélectionné') : tr('Compare', 'Comparer')}
+                    </span>
+                  </div>
                   {isSelected && (
                     <div className="flex h-5 w-5 items-center justify-center rounded-full bg-purple-500 shadow-sm transition-all duration-200 ease-out">
                       <Check className="w-3 h-3 text-white" />
@@ -6545,63 +7386,98 @@ const KMPackagesTab = ({
                   )}
                 </div>
                 
-                <h4 className="font-bold text-gray-900 text-base mb-1">{pkg.name}</h4>
-                
-                <div className="mt-2 space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">{tr('Package price:', 'Prix du forfait :')}</span>
-                    <span className="text-sm font-bold text-purple-700">
-                      {ratePerUnit.toFixed(2)} MAD
-                    </span>
-                  </div>
-                  
-                  {pkg.included_kilometers && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-gray-500">{tr('Included:', 'Inclus :')}</span>
-                      <span className="text-xs font-medium text-gray-700">
-                        {pkg.included_kilometers} km
-                      </span>
-                    </div>
-                  )}
-                  
-                  {totalIncludedKm && (
-                    <div className="flex items-center justify-between pt-1 border-t border-dashed border-gray-200">
-                    <span className="text-xs font-medium text-green-600">{tr('Included limit:', 'Limite incluse :')}</span>
-                      <span className="text-xs font-bold text-green-700">
-                        {totalIncludedKm} km
-                      </span>
-                    </div>
-                  )}
-                  
-                  {pkg.extra_km_rate && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-gray-500">Extra/km:</span>
-                      <span className="text-xs font-medium text-orange-600">
-                        {parseFloat(pkg.extra_km_rate).toFixed(2)} MAD
-                      </span>
-                    </div>
-                  )}
-                </div>
+                <h4 className="font-bold text-gray-900 text-base mb-3">{pkg.name}</h4>
 
-                <div className="mt-3 pt-2 border-t border-gray-100">
-                  <div className="text-xs text-gray-500">
-                    {tr('Fixed package total:', 'Total fixe du forfait :')}
+                <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-3">
+                  <div className="flex items-end justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">
+                        {tr('Duration', 'Durée')}
+                      </div>
+                      <div className="mt-1 text-lg font-bold text-slate-900">
+                        {packageDurationLabel}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">
+                        {tr('Price', 'Prix')}
+                      </div>
+                      <div className="mt-1 text-lg font-bold text-purple-700">
+                        {packageDisplayTotal.toFixed(2)} MAD
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-base font-bold text-purple-700">
-                    {totalForDuration.toFixed(2)} MAD
+
+                  <div className="mt-3 flex items-center justify-between gap-3 border-t border-dashed border-gray-200 pt-3">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">
+                        {tr('Included km', 'KM inclus')}
+                      </div>
+                      <div className="mt-1 text-sm font-bold text-emerald-700">
+                        {totalIncludedKm ? `${totalIncludedKm} km` : tr('Unlimited', 'Illimité')}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">
+                        {tr('Extra/km', 'Suppl./km')}
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-orange-600">
+                        {pkg.extra_km_rate
+                          ? `${parseFloat(pkg.extra_km_rate).toFixed(2)} MAD`
+                          : tr('Not applied', 'Non appliqué')}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                {pkg.description && (
-                  <p className="text-xs text-gray-500 mt-2 line-clamp-2">
-                    {pkg.description}
-                  </p>
-                )}
+                <div className="mt-3 text-xs font-medium text-gray-500">
+                  {isSelected
+                    ? tr('Included in this rental', 'Inclus dans cette location')
+                    : tr('Tap for details', 'Appuyez pour voir')}
+                </div>
               </div>
             </button>
           );
-        })}
-      </div>
+          })}
+        </div>
+      )}
+
+      {expandedPackage && (
+        <div className="rounded-xl border-2 border-purple-500 bg-gradient-to-r from-purple-50 to-indigo-50 p-4 ring-2 ring-purple-200 shadow-md">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-purple-600">
+                {tr('Selected package', 'Forfait sélectionné')}
+              </p>
+              <h4 className="mt-1 text-lg font-bold text-slate-900">{expandedPackage.name}</h4>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                  {activeDurationLabel}
+                </span>
+                <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                  {calculatePackageTotalIncludedKm(expandedPackage.included_kilometers, duration)
+                    ? `${calculatePackageTotalIncludedKm(expandedPackage.included_kilometers, duration)} km ${tr('included', 'inclus')}`
+                    : tr('Unlimited km', 'KM illimités')}
+                </span>
+                <span className="rounded-full bg-purple-50 px-3 py-1 text-xs font-semibold text-purple-700">
+                  {((
+                    (parseFloat(expandedPackage.fixed_amount) || 0)
+                    * (Number(duration || 0) || 0)
+                  ) || 0).toFixed(2)} MAD
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleClosePackageFocus}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-purple-200 bg-white px-3 py-2 text-xs font-semibold text-purple-700 hover:bg-purple-50"
+            >
+              <X className="h-4 w-4" />
+              {tr('Back to packages', 'Retour aux forfaits')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Package Details & Calculator - Collapsible section */}
       {selectedPackage && (
@@ -6614,14 +7490,14 @@ const KMPackagesTab = ({
           >
             <div className="flex items-center gap-2">
               <Calculator className="w-5 h-5 text-purple-600" />
-              <h4 className="font-semibold text-purple-900">Package Calculator</h4>
+              <h4 className="font-semibold text-purple-900">{tr('Package details', 'Détails du forfait')}</h4>
               <span className="text-xs bg-purple-200 text-purple-700 px-2 py-0.5 rounded-full">
                 {selectedPackage.name}
               </span>
             </div>
             <div className="flex items-center gap-3">
               <span className="text-sm text-purple-600">
-                {showCalculator ? 'Hide' : 'Show'} details
+                {showCalculator ? tr('Hide breakdown', 'Masquer le détail') : tr('Show breakdown', 'Afficher le détail')}
               </span>
               {showCalculator ? (
                 <ChevronUp className="w-5 h-5 text-purple-600" />
@@ -6636,9 +7512,9 @@ const KMPackagesTab = ({
             <div className="p-5 bg-white">
               {(() => {
                 const ratePerUnit = parseFloat(selectedPackage.fixed_amount) || 0;
-                const baseRentalCost = ratePerUnit;
+                const baseRentalCost = ratePerUnit * (Number(duration || 0) || 0);
                 const includedKmsPerUnit = selectedPackage.included_kilometers;
-                const totalIncludedKm = includedKmsPerUnit || null;
+                const totalIncludedKm = calculatePackageTotalIncludedKm(includedKmsPerUnit, duration);
                 const extraRate = parseFloat(selectedPackage.extra_km_rate) || 0;
                 
                 // Calculate potential extra charges based on estimate (INFORMATIONAL ONLY)
@@ -6667,32 +7543,28 @@ const KMPackagesTab = ({
                         
                         <div className="flex justify-between items-center">
                           <span className="text-sm text-gray-600">{tr('Package price:', 'Prix du forfait :')}</span>
-                          <span className="text-sm font-bold text-gray-900">{ratePerUnit.toFixed(2)} MAD</span>
+                          <span className="text-sm font-bold text-gray-900">{baseRentalCost.toFixed(2)} MAD</span>
                         </div>
                         
                         <div className="flex justify-between items-center">
                           <span className="text-sm text-gray-600">{tr('Duration:', 'Durée :')}</span>
                           <span className="text-sm font-bold text-gray-900">
-                            {duration} {duration > 1 ? (rentalType === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')) : (rentalType === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour'))}
+                            {activeDurationLabel}
                           </span>
                         </div>
                         
-                        {includedKmsPerUnit && (
-                          <>
-                            <div className="flex justify-between items-center pt-2 border-t border-purple-100">
-                              <span className="text-sm text-gray-600">{tr('Included:', 'Inclus :')}</span>
-                              <span className="text-sm font-medium text-gray-700">
-                                {includedKmsPerUnit} km
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm text-gray-600">{tr('Included limit:', 'Limite incluse :')}</span>
-                              <span className="text-sm font-bold text-green-600">
-                                {totalIncludedKm} km
-                              </span>
-                            </div>
-                          </>
-                        )}
+                        <div className="flex justify-between items-center pt-2 border-t border-purple-100">
+                          <span className="text-sm text-gray-600">{tr('Included:', 'Inclus :')}</span>
+                          <span className="text-sm font-medium text-gray-700">
+                            {includedKmsPerUnit ? `${includedKmsPerUnit} km` : tr('Unlimited', 'Illimité')}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm text-gray-600">{tr('Included limit:', 'Limite incluse :')}</span>
+                          <span className="text-sm font-bold text-green-600">
+                            {totalIncludedKm ? `${totalIncludedKm} km` : tr('Unlimited', 'Illimité')}
+                          </span>
+                        </div>
                         
                         {/* FIXED Package Total - Does NOT include extra km */}
                         <div className="flex justify-between items-center pt-3 border-t border-purple-200 mt-2">
@@ -6921,6 +7793,8 @@ const SimplifiedRentalWizard = ({
   initialStep = 1,
   initialCustomerScanNote = '',
   requiresCustomerVerification = false,
+  customerVerificationCaptureOnly = false,
+  uiVariant = 'default',
 }) => {
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState(1);
@@ -6930,6 +7804,9 @@ const SimplifiedRentalWizard = ({
   const [secondDriverScanEntryMode, setSecondDriverScanEntryMode] = useState('scan');
   const [activeTab, setActiveTab] = useState('basic');
   const [customerScanNote, setCustomerScanNote] = useState(initialCustomerScanNote);
+  const [customerScanNoteTone, setCustomerScanNoteTone] = useState(initialCustomerScanNote ? 'warning' : 'neutral');
+  const [customerIdFileName, setCustomerIdFileName] = useState('');
+  const [customerIdCaptureMethod, setCustomerIdCaptureMethod] = useState('');
   const [countryCode, setCountryCode] = useState('+212');
   const [showCustomerDrawer, setShowCustomerDrawer] = useState(false);
   const [selectedRentalForDrawer, setSelectedRentalForDrawer] = useState(null);
@@ -6939,6 +7816,35 @@ const SimplifiedRentalWizard = ({
   const [filteredVehicles, setFilteredVehicles] = useState([]);
   const [activeModels, setActiveModels] = useState([]);
 
+  const getCapturedIdFileName = useCallback((scannedData, imageFile) => {
+    const explicitName =
+      scannedData?.fileName ||
+      scannedData?.idFileName ||
+      imageFile?.name ||
+      '';
+
+    if (explicitName) {
+      return String(explicitName);
+    }
+
+    const imageUrl =
+      scannedData?.imageUrl ||
+      scannedData?.id_scan_url ||
+      scannedData?.publicUrl ||
+      '';
+
+    if (!imageUrl) {
+      return '';
+    }
+
+    try {
+      const cleanPath = String(imageUrl).split('?')[0];
+      return decodeURIComponent(cleanPath.split('/').pop() || '');
+    } catch {
+      return '';
+    }
+  }, []);
+
   const {
     userProfile,
     formData,
@@ -6947,6 +7853,7 @@ const SimplifiedRentalWizard = ({
     submitting,
     isSubmitting,
     successfullySubmitted,
+    successRedirectUrl,
     errors,
     success,
     setSuccess,
@@ -6964,6 +7871,7 @@ const SimplifiedRentalWizard = ({
     showCustomerAlertModal,
     setShowCustomerAlertModal,
     selectedQuickDuration,
+    setSelectedQuickDuration,
     damageDepositConfig,
     selectedDepositTab,
     customDepositAmount,
@@ -6981,6 +7889,7 @@ const SimplifiedRentalWizard = ({
     handleQuickHourSelect,
     handleQuickDaySelect,
     syncEndDateTimeFromStart,
+    composeDateTime,
     handlePaymentStatusTabClick,
     handleDepositTabClick,
     handleDepositDocumentUpload,
@@ -6992,15 +7901,159 @@ const SimplifiedRentalWizard = ({
     handleReset,
     handleResetAutoPrice,
     getEnabledPresetsForVehicle,
+    getDirectPricing,
     customerSearchRef,
     availablePackages,
     isLoadingPackages,
     calculatePackagePrice,
+    selectedPackageDraft,
+    setSelectedPackageDraft,
     fuelChargeEnabled,
     setFuelChargeEnabled,
     fuelChargeAmount,
+    loadFuelChargeSettings,
     manuallyClearedVehicleRef,
-  } = useRentalWizard(initialData, mode, navigate, { requiresCustomerVerification });
+  } = useRentalWizard(initialData, mode, navigate, {
+    requiresCustomerVerification,
+    variant: uiVariant,
+  });
+
+  const appendSecondaryCustomerIdImage = useCallback(async (savedData, imageFile = null) => {
+    const extraImageUrl = savedData?.imageUrl || savedData?.id_scan_url || savedData?.publicUrl || null;
+    if (!extraImageUrl) {
+      return;
+    }
+
+    const normalizeUrl = (value) => {
+      const trimmed = String(value || '').trim();
+      return trimmed || null;
+    };
+
+    const nextLocalHistory = (prevHistory = [], primaryImage = null) => {
+      const seen = new Set();
+      const normalizedPrimary = normalizeUrl(primaryImage);
+      const values = [
+        ...((Array.isArray(prevHistory) ? prevHistory : []).map(normalizeUrl).filter(Boolean)),
+        normalizeUrl(extraImageUrl),
+      ].filter(Boolean).filter((value) => {
+        if (value === normalizedPrimary || seen.has(value)) return false;
+        seen.add(value);
+        return true;
+      });
+
+      return values;
+    };
+
+    let persistedCustomer = null;
+    let resolvedCustomerId = String(formData.customer_id || '').trim();
+
+    if (!resolvedCustomerId) {
+      const customerTable = supabase.from('app_4c3a7a6153_customers');
+      const licenceNumber = String(formData.customer_licence_number || '').trim();
+      const idNumber = String(formData.customer_id_number || '').trim();
+      const phoneNumber = String(formData.customer_phone || '').trim();
+      const customerName = String(formData.customer_name || '').trim();
+
+      const tryFindCustomer = async (builder) => {
+        const { data, error } = await builder;
+        if (error) throw error;
+        return data?.[0] || null;
+      };
+
+      persistedCustomer =
+        (licenceNumber ? await tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata').eq('licence_number', licenceNumber).limit(1)) : null) ||
+        (idNumber ? await tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata').eq('id_number', idNumber).limit(1)) : null) ||
+        (phoneNumber ? await tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata').eq('phone', phoneNumber).limit(1)) : null) ||
+        (customerName ? await tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata').ilike('full_name', customerName).limit(1)) : null) ||
+        null;
+
+      if (persistedCustomer?.id) {
+        resolvedCustomerId = String(persistedCustomer.id).trim();
+      }
+    }
+
+    if (resolvedCustomerId) {
+      const existingCustomer = persistedCustomer || (() => null)();
+      const fetchedCustomer = existingCustomer || await (async () => {
+        const { data, error: fetchError } = await supabase
+          .from('app_4c3a7a6153_customers')
+          .select('id, id_scan_url, scan_metadata')
+          .eq('id', resolvedCustomerId)
+          .maybeSingle();
+
+        if (fetchError) {
+          throw fetchError;
+        }
+        return data;
+      })();
+
+      if (fetchedCustomer) {
+        const existingHistory = Array.isArray(fetchedCustomer.scan_metadata?.id_scan_history)
+          ? fetchedCustomer.scan_metadata.id_scan_history
+          : [];
+
+        const updatedHistory = nextLocalHistory(existingHistory, fetchedCustomer.id_scan_url);
+        const nextScanMetadata = {
+          ...(fetchedCustomer.scan_metadata || {}),
+          id_scan_history: updatedHistory,
+        };
+
+        const { data: updatedCustomer, error: updateError } = await supabase
+          .from('app_4c3a7a6153_customers')
+          .update({
+            scan_metadata: nextScanMetadata,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', resolvedCustomerId)
+          .select('*')
+          .single();
+
+        if (updateError) {
+          throw updateError;
+        }
+
+        persistedCustomer = updatedCustomer;
+      }
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      customer_id: resolvedCustomerId || prev.customer_id,
+      customer_id_scan_history: nextLocalHistory(
+        persistedCustomer?.scan_metadata?.id_scan_history || prev.customer_id_scan_history || [],
+        prev.customer_id_image
+      ),
+    }));
+
+    setCustomerIdFileName(getCapturedIdFileName(savedData, imageFile));
+    setCustomerScanNoteTone('success');
+    setCustomerScanNote(
+      tr(
+        'Secondary ID image saved successfully.',
+        "L'image d'identité secondaire a bien été enregistrée."
+      )
+    );
+    toast.success(
+      tr(
+        'Secondary ID saved to customer documents.',
+        'La pièce d’identité secondaire a été ajoutée aux documents du client.'
+      )
+    );
+  }, [formData.customer_id, getCapturedIdFileName, setFormData]);
+
+  const effectiveFuelChargeToggleEnabled = formData.use_package_pricing
+    ? Boolean(formData.selected_package_fuel_charge_enabled)
+    : fuelChargeEnabled;
+
+  const handleFuelChargeToggleChange = useCallback((enabled) => {
+    setFuelChargeEnabled(enabled);
+    if (formData.use_package_pricing) {
+      setFormData((prev) => ({
+        ...prev,
+        selected_package_fuel_charge_enabled: enabled,
+      }));
+    }
+  }, [formData.use_package_pricing, setFormData, setFuelChargeEnabled]);
 
   useEffect(() => {
     setCurrentStep(Math.min(Math.max(Number(initialStep) || 1, 1), 3));
@@ -7010,7 +8063,42 @@ const SimplifiedRentalWizard = ({
     setCustomerScanNote(initialCustomerScanNote || '');
   }, [initialCustomerScanNote]);
 
-  const isPackageDurationLocked = Boolean(formData.use_package_pricing || formData.selected_package_id);
+  const isPackageDurationLocked = false;
+
+  useEffect(() => {
+    if (!formData.use_package_pricing) return;
+
+    const includedKmPerUnit = Number(formData.selected_package_included_km_per_unit || 0) || 0;
+    const packageDurationUnits = Number(formData.selected_package_duration_units || 0) || 1;
+    const durationUnits = Math.max(
+      Number(
+        formData.rental_type === 'hourly'
+          ? (formData.quantity_hours ?? formData.quantity_days)
+          : formData.quantity_days
+      ) || 0,
+      formData.rental_type === 'hourly' ? 0.5 : 1
+    );
+    const nextTotalIncludedKm = calculatePackageTotalIncludedKm(
+      includedKmPerUnit,
+      durationUnits,
+      packageDurationUnits
+    );
+
+    if (formData.selected_package_total_included_km !== nextTotalIncludedKm) {
+      setFormData((prev) => ({
+        ...prev,
+        selected_package_total_included_km: nextTotalIncludedKm,
+      }));
+    }
+  }, [
+    formData.use_package_pricing,
+    formData.rental_type,
+    formData.quantity_days,
+    formData.quantity_hours,
+    formData.selected_package_duration_units,
+    formData.selected_package_included_km_per_unit,
+    formData.selected_package_total_included_km,
+  ]);
 
   useEffect(() => {
     if (!availableVehicles || availableVehicles.length === 0) {
@@ -7061,6 +8149,28 @@ const SimplifiedRentalWizard = ({
   }, []);
 
   const isCustomerVerificationOnlyMode = requiresCustomerVerification && mode === 'edit';
+  const isStrictCustomerVerificationCaptureMode = isCustomerVerificationOnlyMode && customerVerificationCaptureOnly;
+  const isLightVariant = uiVariant === 'light';
+  const wizardTopRef = useRef(null);
+  const vehicleStepRef = useRef(null);
+  const lightPackageStepRef = useRef(null);
+  const lightCustomerNameInputRef = useRef(null);
+  const previousVehicleIdRef = useRef(formData.vehicle_id || '');
+  const previousLightHasDurationSelectionRef = useRef(false);
+  const lightSectionTransitionTimeoutRef = useRef(null);
+  const [lightExpandedSection, setLightExpandedSection] = useState('setup');
+  const [lightShowScheduleEditor, setLightShowScheduleEditor] = useState(false);
+  const [lightDurationConfirmed, setLightDurationConfirmed] = useState(false);
+  const [lightRentalTypeDraft, setLightRentalTypeDraft] = useState('');
+  const [showLightActionsMenu, setShowLightActionsMenu] = useState(false);
+  const [lightVehiclePriceMap, setLightVehiclePriceMap] = useState({});
+  const [lightCustomerEditOpen, setLightCustomerEditOpen] = useState(false);
+  const [lightCustomerAdditionalOpen, setLightCustomerAdditionalOpen] = useState(false);
+  const [lightPaymentDetailsOpen, setLightPaymentDetailsOpen] = useState(false);
+  const [lightPaymentSummaryOpen, setLightPaymentSummaryOpen] = useState(false);
+  const [lightPackageDecisionMode, setLightPackageDecisionMode] = useState(
+    formData.use_package_pricing ? 'package' : (formData.vehicle_id ? 'standard' : 'undecided')
+  );
 
   const steps = [
     { number: 1, title: tr('Customer', 'Client'), icon: User },
@@ -7091,9 +8201,787 @@ const SimplifiedRentalWizard = ({
     );
   };
 
+  const selectedVehicle = getSelectedVehicle();
+
+  const animateLightSectionTransition = useCallback((nextSection, targetRef = null) => {
+    if (lightSectionTransitionTimeoutRef.current) {
+      window.clearTimeout(lightSectionTransitionTimeoutRef.current);
+    }
+
+    setLightExpandedSection(null);
+    setLightShowScheduleEditor(false);
+
+    lightSectionTransitionTimeoutRef.current = window.setTimeout(() => {
+      setLightExpandedSection(nextSection);
+      lightSectionTransitionTimeoutRef.current = null;
+
+      if (targetRef?.current) {
+        requestAnimationFrame(() => {
+          targetRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      }
+    }, 180);
+  }, []);
+
+  useEffect(() => () => {
+    if (lightSectionTransitionTimeoutRef.current) {
+      window.clearTimeout(lightSectionTransitionTimeoutRef.current);
+    }
+  }, []);
+  const selectedDurationLabel = (() => {
+    const durationUnits = Number(
+      formData.rental_type === 'hourly'
+        ? (formData.quantity_hours ?? formData.quantity_days)
+        : formData.quantity_days
+    ) || 0;
+
+    if (!durationUnits) return tr('Not set', 'Non défini');
+
+    if (formData.rental_type === 'hourly') {
+      if (durationUnits === 0.5) return tr('30 min', '30 min');
+      if (durationUnits === 1) return tr('1 Hour', '1 heure');
+      return tr(`${durationUnits} Hours`, `${durationUnits} heures`);
+    }
+
+    if (durationUnits === 1) return tr('1 day', '1 jour');
+    return tr(`${durationUnits} days`, `${durationUnits} jours`);
+  })();
+
+  const selectedVehicleLabel = selectedVehicle
+    ? [
+        selectedVehicle.plate_number || null,
+        selectedVehicle.model || selectedVehicle.vehicle_model_name || selectedVehicle.name || tr('Vehicle', 'Véhicule')
+      ].filter(Boolean).join(' · ')
+    : tr('Not selected', 'Non sélectionné');
+
+  const currentDurationUnits = Number(
+    formData.rental_type === 'hourly'
+      ? (formData.quantity_hours ?? formData.quantity_days)
+      : formData.quantity_days
+  ) || 0;
+  const selectedStandardPackage = availablePackages.find(
+    (pkg) => String(pkg.id || '') === String(formData.selected_package_id || '')
+  );
+  const formSelectedPackageSource = formData.use_package_pricing && formData.selected_package_id
+    ? {
+        package_id: formData.selected_package_id,
+        package_name: formData.selected_package_name,
+        package_rate_per_unit: formData.selected_package_rate_per_unit || formData.selected_package_fixed_amount,
+        package_included_km_per_unit: formData.selected_package_included_km_per_unit || formData.selected_package_included_km,
+        package_total_included_km: formData.selected_package_total_included_km,
+        package_extra_rate: formData.selected_package_extra_rate,
+        package_fuel_charge_enabled: formData.selected_package_fuel_charge_enabled,
+        package_description: formData.selected_package_description,
+        package_duration_units: getPackageDurationUnits({
+          duration_units: formData.rental_type === 'hourly' ? 1 : 1,
+          fixed_amount: formData.selected_package_rate_per_unit || formData.selected_package_fixed_amount,
+        }),
+        use_package_pricing: true,
+        package_overrides_tier: true,
+      }
+    : null;
+  const activeStandardPackageSource = selectedPackageDraft?.package_id
+    ? selectedPackageDraft
+    : (selectedStandardPackage || formSelectedPackageSource);
+  const selectedStandardPackageTotal = (() => {
+    if (!activeStandardPackageSource) return getFixedPackageAmount(formData);
+    const packageRate = Number(
+      activeStandardPackageSource.fixed_amount
+      ?? activeStandardPackageSource.package_rate
+      ?? activeStandardPackageSource.package_rate_per_unit
+      ?? activeStandardPackageSource.rate
+      ?? activeStandardPackageSource.price
+      ?? 0
+    ) || 0;
+    const packageDurationUnits = Number(
+      activeStandardPackageSource.package_duration_units
+      ?? activeStandardPackageSource.duration_units
+      ?? getPackageDurationUnits(activeStandardPackageSource)
+      ?? 1
+    ) || 1;
+    if (packageRate <= 0) return getFixedPackageAmount(formData);
+    if (currentDurationUnits <= 0) return packageRate;
+    return packageRate * Math.max(currentDurationUnits / packageDurationUnits, 1);
+  })();
+  const standardPackageSummaryLabel = activeStandardPackageSource
+    ? [
+        activeStandardPackageSource.name
+        || activeStandardPackageSource.package_name
+        || formData.selected_package_name,
+        selectedDurationLabel
+      ].filter(Boolean).join(' • ')
+    : getSelectedPackageDisplayLabel(formData, tr);
+  const hasResolvedStandardPackage = Boolean(
+    activeStandardPackageSource || (formData.use_package_pricing && formData.selected_package_name)
+  );
+
+  const visibleVehicles = filteredVehicles.length > 0
+    ? filteredVehicles
+    : (availableVehicles.length > 0 ? availableVehicles : vehicleModels);
+  const resolveLightVehicleModelId = useCallback((vehicle) => {
+    const directModelId =
+      vehicle?.vehicle_model_id
+      ?? vehicle?.model_id
+      ?? vehicle?.vehicle_model?.id
+      ?? vehicle?.vehicleModelId
+      ?? null;
+
+    if (directModelId) {
+      return directModelId;
+    }
+
+    const vehicleModelName = String(
+      vehicle?.model
+      ?? vehicle?.vehicle_model_name
+      ?? vehicle?.vehicle_model?.model
+      ?? vehicle?.vehicle_model?.name
+      ?? ''
+    ).trim().toLowerCase();
+
+    if (vehicleModelName) {
+      const matchedModel = activeModels.find((model) => {
+        const candidateNames = [model?.model, model?.name]
+          .filter(Boolean)
+          .map((value) => String(value).trim().toLowerCase());
+
+        return candidateNames.some((candidate) =>
+          candidate === vehicleModelName
+          || candidate.endsWith(vehicleModelName)
+          || vehicleModelName.endsWith(candidate)
+        );
+      });
+
+      if (matchedModel?.id) {
+        return matchedModel.id;
+      }
+    }
+
+    return activeModelFilter || null;
+  }, [activeModelFilter, activeModels]);
+  const lightQuickHourOptions = [0.5, 1, 1.5, 2, 3, 4];
+  const lightQuickDayOptions = [1, 2, 3, 4];
+  const currentLightDurationUnits = Number(
+    formData.rental_type === 'hourly'
+      ? (formData.quantity_hours ?? formData.quantity_days)
+      : formData.quantity_days
+  ) || 0;
+  const getLightDurationButtonLabel = (value, rentalType = formData.rental_type) => {
+    if (rentalType === 'hourly') {
+      if (value === 0.5) return tr('30 min', '30 min');
+      if (value === 1) return tr('1 Hour', '1 Heure');
+      if (value === 1.5) return tr('1.5 Hours', '1,5 Heures');
+      return tr(`${value} Hours`, `${value} Heures`);
+    }
+
+    if (value === 1) return tr('1 Day', '1 Jour');
+    return tr(`${value} Days`, `${value} Jours`);
+  };
+  const selectedLightPackage = availablePackages.find(
+    (pkg) => String(pkg.id || '') === String(formData.selected_package_id || '')
+  );
+  const getLightPackagePreviewTotal = (pkg) => {
+    if (!pkg) return 0;
+    const packageRate = Number(pkg.fixed_amount ?? pkg.package_rate ?? pkg.rate ?? pkg.price ?? 0) || 0;
+    const packageDurationUnits = getPackageDurationUnits(pkg) || 1;
+    if (packageRate <= 0) return 0;
+    if (currentLightDurationUnits <= 0) return packageRate;
+    return packageRate * Math.max(currentLightDurationUnits / packageDurationUnits, 1);
+  };
+  const filteredPackageOptions = availablePackages.filter((pkg) => {
+    if (!formData.rental_type) return true;
+    const pkgRateType = pkg.rate_types?.name?.toLowerCase();
+    if (!pkgRateType) return true;
+    if (formData.rental_type === 'hourly') {
+      if (pkgRateType !== 'hourly') return false;
+      const packageDurationUnits = getPackageDurationUnits(pkg);
+      if (!packageDurationUnits) return true;
+      if (currentLightDurationUnits === 0.5) return packageDurationUnits === 0.5;
+      if (currentLightDurationUnits === 4) return packageDurationUnits === 4;
+      return packageDurationUnits === 1;
+    }
+    if (formData.rental_type === 'daily') return pkgRateType === 'daily';
+    return true;
+  });
+  const hasDurationSelection = Boolean(Number(
+    formData.rental_type === 'hourly'
+      ? (formData.quantity_hours ?? formData.quantity_days)
+      : formData.quantity_days
+  ) || 0);
+  const lightHasQuickDurationSelection =
+    selectedQuickDuration !== null &&
+    selectedQuickDuration !== undefined &&
+    Number(selectedQuickDuration) > 0;
+  const isLightStepTwo = isLightVariant && currentStep === 2;
+  const effectiveLightRentalType = isLightStepTwo
+    ? (formData.rental_type || lightRentalTypeDraft || '')
+    : (formData.rental_type || '');
+  const lightHasSetupSelection = isLightStepTwo
+    ? Boolean(effectiveLightRentalType)
+    : hasDurationSelection;
+  const lightHasDurationSelection = isLightStepTwo
+    ? (hasDurationSelection && (lightDurationConfirmed || lightHasQuickDurationSelection))
+    : hasDurationSelection;
+  const hasPackageDecision = formData.use_package_pricing
+    ? Boolean(formData.selected_package_id)
+    : lightPackageDecisionMode === 'standard';
+  const getLightKmPackagePriceForVehicleModel = (vehicleModelId) => {
+    if (!vehicleModelId) return 0;
+    if (!(formData.rental_type === 'hourly' && currentLightDurationUnits === 0.5)) {
+      return 0;
+    }
+
+    const matchingPackage = availablePackages.find((pkg) => {
+      const sameDuration = Number(getPackageDurationUnits(pkg) || 0) === currentLightDurationUnits;
+      const packageModelId = String(
+        pkg.vehicle_model_id
+        ?? pkg.vehicleModelId
+        ?? selectedVehicle?.vehicle_model_id
+        ?? ''
+      );
+      return sameDuration && packageModelId === String(vehicleModelId);
+    });
+
+    return Number(
+      matchingPackage?.fixed_amount
+      ?? matchingPackage?.package_rate
+      ?? matchingPackage?.rate
+      ?? matchingPackage?.price
+      ?? 0
+    ) || 0;
+  };
+  const getLightVehicleDisplayPrice = (vehicle) => {
+    const kmPackagePrice = getLightKmPackagePriceForVehicleModel(vehicle?.vehicle_model_id);
+    if (kmPackagePrice > 0) {
+      return kmPackagePrice;
+    }
+
+    if (
+      formData.rental_type === 'hourly'
+      && currentLightDurationUnits === 0.5
+      && selectedLightPackage
+      && Number(getPackageDurationUnits(selectedLightPackage) || 0) === currentLightDurationUnits
+    ) {
+      const selectedPackagePrice = Number(
+        selectedLightPackage.fixed_amount
+        ?? selectedLightPackage.package_rate
+        ?? selectedLightPackage.rate
+        ?? selectedLightPackage.price
+        ?? 0
+      ) || 0;
+      if (selectedPackagePrice > 0) {
+        return selectedPackagePrice;
+      }
+    }
+
+    const mappedPrice = Number(lightVehiclePriceMap[String(vehicle?.id)] || 0);
+    if (mappedPrice > 0) return mappedPrice;
+
+    const baseUnitPrice = Number(formData.unit_price) || 0;
+    if (baseUnitPrice <= 0) return 0;
+    if (formData.rental_type === 'hourly' && currentLightDurationUnits > 1) {
+      return baseUnitPrice * currentLightDurationUnits;
+    }
+    if (formData.rental_type === 'daily' && currentLightDurationUnits > 1) {
+      return baseUnitPrice * currentLightDurationUnits;
+    }
+    return baseUnitPrice;
+  };
+  const standardLightPreviewTotal = (() => {
+    const selectedVehiclePrice = selectedVehicle ? getLightVehicleDisplayPrice(selectedVehicle) : 0;
+    if (selectedVehiclePrice > 0) return selectedVehiclePrice;
+    const baseUnitPrice = Number(formData.unit_price) || 0;
+    if (baseUnitPrice <= 0) return 0;
+    if (formData.rental_type === 'hourly' && currentLightDurationUnits > 1) {
+      return baseUnitPrice * currentLightDurationUnits;
+    }
+    if (formData.rental_type === 'daily' && currentLightDurationUnits > 1) {
+      return baseUnitPrice * currentLightDurationUnits;
+    }
+    return baseUnitPrice;
+  })();
+  const liveTotalAmount = formData.use_package_pricing
+    ? (selectedLightPackage ? getLightPackagePreviewTotal(selectedLightPackage) : getFixedPackageAmount(formData))
+    : standardLightPreviewTotal;
+  const lightIncludedKmSummary = (() => {
+    const totalKm = Number(formData.selected_package_total_included_km || 0) || 0;
+    if (totalKm > 0) return `${formatDynamicMad(totalKm)} KM`;
+    const perUnitKm = Number(formData.selected_package_included_km_per_unit || 0) || 0;
+    if (perUnitKm > 0) return `${formatDynamicMad(perUnitKm)} KM`;
+    return null;
+  })();
+  const stickySummaryLabel = [
+    selectedVehicle?.plate_number || null,
+    selectedVehicle?.model || selectedVehicle?.name || null,
+    lightHasDurationSelection ? selectedDurationLabel : null,
+    lightIncludedKmSummary,
+    liveTotalAmount > 0 ? `${formatDynamicMad(liveTotalAmount)} MAD` : null,
+  ].filter(Boolean).join(' • ');
+  const setupSummaryLabel = effectiveLightRentalType
+    ? lightHasDurationSelection
+      ? `${effectiveLightRentalType === 'hourly' ? tr('Hourly', 'Horaire') : tr('Daily', 'Journalier')} • ${selectedDurationLabel}`
+      : `${effectiveLightRentalType === 'hourly' ? tr('Hourly', 'Horaire') : tr('Daily', 'Journalier')}`
+    : tr('Rental setup', 'Configuration');
+  const vehicleSummaryLabel = selectedVehicle
+    ? [
+        selectedVehicle.plate_number || null,
+        selectedVehicle.model || selectedVehicle.name || tr('Vehicle', 'Véhicule'),
+        liveTotalAmount > 0 ? `${formatDynamicMad(liveTotalAmount)} MAD` : null,
+      ].filter(Boolean).join(' • ')
+    : tr('Choose vehicle', 'Choisir le véhicule');
+  const packageSummaryLabel = formData.use_package_pricing && formData.selected_package_name
+    ? `${formData.selected_package_name} • ${formatDynamicMad(liveTotalAmount)} MAD`
+    : hasPackageDecision
+      ? tr('Standard pricing', 'Tarification standard')
+      : tr('Choose package', 'Choisir le forfait');
+  const selectedLightPackageDurationLabel = (() => {
+    if (!selectedLightPackage) return null;
+    const packageDurationUnits = getPackageDurationUnits(selectedLightPackage) || 1;
+    if (formData.rental_type === 'daily' && currentLightDurationUnits > 1) {
+      return getLightDurationButtonLabel(currentLightDurationUnits, 'daily');
+    }
+    if (formData.rental_type === 'hourly' && packageDurationUnits === 1 && currentLightDurationUnits > 1) {
+      return getLightDurationButtonLabel(currentLightDurationUnits, 'hourly');
+    }
+    if (packageDurationUnits === 0.5) return tr('30 min', '30 min');
+    return `${packageDurationUnits} ${formData.rental_type === 'hourly' ? tr('Hour', 'heure') : tr('day', 'jour')}`;
+  })();
+  const packageSummaryAccent = (() => {
+    const totalKm = Number(formData.selected_package_total_included_km || 0) || 0;
+    if (totalKm > 0) return `${formatDynamicMad(totalKm)} KM`;
+    const perUnitKm = Number(formData.selected_package_included_km_per_unit || 0) || 0;
+    if (perUnitKm > 0) return `${formatDynamicMad(perUnitKm)} KM`;
+    if (!(formData.use_package_pricing && formData.selected_package_name)) return null;
+    const kmMatch = String(formData.selected_package_name).match(/(\d+\s*km)/i);
+    return kmMatch ? kmMatch[1].toUpperCase().replace(/\s+/g, ' ') : null;
+  })();
+  const packageSummaryRestLabel = (() => {
+    if (!formData.use_package_pricing) return packageSummaryLabel;
+    const durationLabel = selectedLightPackageDurationLabel || formData.selected_package_name;
+    if (!durationLabel) return packageSummaryLabel;
+    return `${durationLabel} • ${formatDynamicMad(liveTotalAmount)} MAD`;
+  })();
+  const lightCustomerReady = Boolean(
+    formData.customer_name?.trim() ||
+    formData.customer_licence_number?.trim() ||
+    formData.customer_phone?.trim()
+  );
+  const lightCustomerCanContinue = !(
+    submitting ||
+    isSubmitting ||
+    successfullySubmitted ||
+    isBannedCustomerBlocked ||
+    (requiresCustomerVerification && (!formData.customer_licence_number?.trim() || !formData.customer_id_image))
+  );
+  const lightPrimaryPaymentAmount = (() => {
+    if (formData.payment_status === 'paid') {
+      return Number(formData.total_amount || getFixedPackageAmount(formData) || formData.unit_price || 0);
+    }
+    if (formData.payment_status === 'partial') {
+      return Number(formData.deposit_amount || 0);
+    }
+    return 0;
+  })();
+  const lightStepThreePackageKmLabel = (() => {
+    const totalKm = Number(formData.selected_package_total_included_km || 0) || 0;
+    if (totalKm > 0) return `${formatDynamicMad(totalKm)} km`;
+    const perUnitKm = Number(formData.selected_package_included_km_per_unit || 0) || 0;
+    if (perUnitKm > 0) return `${formatDynamicMad(perUnitKm)} km`;
+    return null;
+  })();
+  const lightPaymentSummaryLabel = [
+    selectedVehicle?.model || selectedVehicle?.name || null,
+    selectedDurationLabel || null,
+    getSelectedPackageDisplayLabel(formData, tr),
+  ].filter(Boolean).join(' • ');
+  const lightSelectedDepositTab = selectedDepositTab || (
+    Number(formData.damage_deposit || 0) === 0 &&
+    !formData.damage_deposit_document_url &&
+    !formData.damage_deposit_document_name
+      ? 'none'
+      : null
+  );
+
   const handlePhoneChange = (value) => {
     handleInputChange('customer_phone', value);
   };
+
+  useEffect(() => {
+    if (!isLightVariant || currentStep !== 2) return;
+    if (currentLightDurationUnits === 0.5 && lightPackageDecisionMode === 'standard' && !formData.use_package_pricing) {
+      setLightPackageDecisionMode('undecided');
+    }
+  }, [
+    currentLightDurationUnits,
+    currentStep,
+    formData.use_package_pricing,
+    isLightVariant,
+    lightPackageDecisionMode,
+  ]);
+
+  useEffect(() => {
+    if (!formData.vehicle_id) {
+      setLightPackageDecisionMode('undecided');
+      return;
+    }
+
+    if (formData.use_package_pricing && formData.selected_package_id) {
+      setLightPackageDecisionMode('package');
+    }
+  }, [formData.selected_package_id, formData.use_package_pricing, formData.vehicle_id]);
+
+  useEffect(() => {
+    if (!formData.selected_package_id || !formData.rental_type) {
+      return;
+    }
+
+    const selectedPackage = availablePackages.find(
+      (pkg) => String(pkg.id || '') === String(formData.selected_package_id || '')
+    );
+
+    if (!selectedPackage) {
+      return;
+    }
+
+    const currentDurationUnits = Math.max(
+      Number(
+        formData.rental_type === 'hourly'
+          ? (formData.quantity_hours ?? formData.quantity_days)
+          : formData.quantity_days
+      ) || 0,
+      formData.rental_type === 'hourly' ? 0.5 : 1
+    );
+
+    const packageDurationUnits = Number(getPackageDurationUnits(selectedPackage) || 0) || 0;
+
+    const isDurationCompatible = formData.rental_type === 'hourly'
+      ? (
+          (currentDurationUnits === 0.5 && packageDurationUnits === 0.5) ||
+          (currentDurationUnits === 4 && packageDurationUnits === 4) ||
+          (currentDurationUnits !== 0.5 && currentDurationUnits !== 4 && packageDurationUnits === 1)
+        )
+      : packageDurationUnits === 1;
+
+    if (isDurationCompatible) {
+      return;
+    }
+
+    setSelectedPackageDraft(null);
+    setFormData((prev) => ({
+      ...prev,
+      selected_package_id: null,
+      selected_package_name: '',
+      selected_package_fixed_amount: 0,
+      selected_package_rate_per_unit: 0,
+      selected_package_included_km: null,
+      selected_package_included_km_per_unit: null,
+      selected_package_total_included_km: null,
+      selected_package_duration_units: null,
+      selected_package_extra_rate: 0,
+      selected_package_fuel_charge_enabled: false,
+      selected_package_description: '',
+      use_package_pricing: false,
+      package_overrides_tier: false,
+    }));
+  }, [
+    availablePackages,
+    formData.quantity_days,
+    formData.quantity_hours,
+    formData.rental_type,
+    formData.selected_package_id,
+  ]);
+
+  useEffect(() => {
+    if (!selectedPackageDraft?.package_id) return;
+
+    const activeDurationUnits = Math.max(
+      Number(
+        formData.rental_type === 'hourly'
+          ? (formData.quantity_hours ?? formData.quantity_days)
+          : formData.quantity_days
+      ) || 0,
+      formData.rental_type === 'hourly' ? 0.5 : 1
+    );
+
+    const reconciledTotalIncludedKm = calculatePackageTotalIncludedKm(
+      selectedPackageDraft.package_included_km_per_unit,
+      activeDurationUnits,
+      selectedPackageDraft.package_duration_units
+    );
+
+    const needsReconcile =
+      String(formData.selected_package_id || '') !== String(selectedPackageDraft.package_id || '') ||
+      !formData.use_package_pricing ||
+      String(formData.selected_package_name || '') !== String(selectedPackageDraft.package_name || '') ||
+      Number(formData.selected_package_rate_per_unit || 0) !== Number(selectedPackageDraft.package_rate_per_unit || 0) ||
+      Number(formData.selected_package_total_included_km || 0) !== Number(reconciledTotalIncludedKm || 0);
+
+    if (!needsReconcile) return;
+
+    setFormData((prev) => ({
+      ...prev,
+      selected_package_id: selectedPackageDraft.package_id,
+      selected_package_name: selectedPackageDraft.package_name,
+      selected_package_fixed_amount: selectedPackageDraft.package_rate_per_unit,
+      selected_package_rate_per_unit: selectedPackageDraft.package_rate_per_unit,
+      selected_package_included_km: selectedPackageDraft.package_included_km_per_unit,
+      selected_package_included_km_per_unit: selectedPackageDraft.package_included_km_per_unit,
+      selected_package_total_included_km: reconciledTotalIncludedKm,
+      selected_package_duration_units: selectedPackageDraft.package_duration_units,
+      selected_package_extra_rate: selectedPackageDraft.package_extra_rate,
+      selected_package_fuel_charge_enabled: Boolean(selectedPackageDraft.package_fuel_charge_enabled),
+      selected_package_description: selectedPackageDraft.package_description || '',
+      use_package_pricing: true,
+      package_overrides_tier: true,
+      unit_price: selectedPackageDraft.package_rate_per_unit,
+    }));
+  }, [
+    selectedPackageDraft,
+    formData.selected_package_id,
+    formData.selected_package_name,
+    formData.selected_package_rate_per_unit,
+    formData.selected_package_total_included_km,
+    formData.use_package_pricing,
+    formData.rental_type,
+    formData.quantity_days,
+    formData.quantity_hours,
+  ]);
+
+  const clearSelectedPackage = useCallback(() => {
+    setSelectedPackageDraft(null);
+    setFormData((prev) => ({
+      ...prev,
+      selected_package_id: null,
+      selected_package_name: '',
+      selected_package_fixed_amount: 0,
+      selected_package_rate_per_unit: 0,
+      selected_package_included_km: null,
+      selected_package_included_km_per_unit: null,
+      selected_package_total_included_km: null,
+      selected_package_extra_rate: 0,
+      selected_package_fuel_charge_enabled: false,
+      selected_package_description: '',
+      use_package_pricing: false,
+      package_overrides_tier: false,
+    }));
+    setLightPackageDecisionMode('undecided');
+    loadFuelChargeSettings(null, null, false);
+  }, [loadFuelChargeSettings, setFormData]);
+
+  const applyLightPackageSelection = useCallback((pkg) => {
+    if (!pkg) {
+      clearSelectedPackage();
+      return;
+    }
+
+    const packageRate = Number(pkg.fixed_amount ?? pkg.package_rate ?? pkg.rate ?? pkg.price ?? 0) || 0;
+    const includedKmPerUnit = Number(
+      pkg.included_kilometers ?? pkg.included_km ?? pkg.km_limit ?? pkg.kmIncluded ?? 0
+    ) || 0;
+    const extraRate = Number(pkg.extra_km_rate ?? pkg.extra_rate ?? 0) || 0;
+    const fuelChargeEnabledForPackage = Boolean(pkg.fuel_charge_enabled);
+    const packageDurationUnits = getPackageDurationUnits(pkg);
+
+    setFormData((prev) => {
+      const currentDurationUnits = Math.max(
+        Number(
+          prev.rental_type === 'hourly'
+            ? (prev.quantity_hours ?? prev.quantity_days)
+            : prev.quantity_days
+        ) || 0,
+        prev.rental_type === 'hourly' ? 0.5 : 1
+      );
+      const nextDurationUnits = currentDurationUnits > 0
+        ? currentDurationUnits
+        : (Number.isFinite(packageDurationUnits) && packageDurationUnits > 0
+            ? packageDurationUnits
+            : (prev.rental_type === 'hourly' ? 0.5 : 1));
+      const nextTotalIncludedKm = calculatePackageTotalIncludedKm(
+        includedKmPerUnit,
+        nextDurationUnits,
+        packageDurationUnits
+      );
+      const nextFormData = {
+        ...prev,
+        quantity_days: nextDurationUnits,
+        quantity_hours: prev.rental_type === 'hourly' ? nextDurationUnits : null,
+        selected_package_id: pkg.id,
+        selected_package_name: pkg.package_name || pkg.name || '',
+        selected_package_fixed_amount: packageRate,
+        selected_package_rate_per_unit: packageRate,
+        selected_package_included_km: includedKmPerUnit || null,
+        selected_package_included_km_per_unit: includedKmPerUnit || null,
+        selected_package_total_included_km: nextTotalIncludedKm,
+        selected_package_extra_rate: extraRate,
+        selected_package_fuel_charge_enabled: fuelChargeEnabledForPackage,
+        selected_package_description: pkg.description || '',
+        use_package_pricing: true,
+        package_overrides_tier: true,
+        unit_price: packageRate,
+      };
+      syncEndDateTimeFromStart(nextFormData, nextDurationUnits);
+      return nextFormData;
+    });
+
+    setFuelChargeEnabled(fuelChargeEnabledForPackage);
+    setLightPackageDecisionMode('package');
+    if (isLightVariant && currentStep === 2) {
+      setLightExpandedSection('confirm');
+    }
+  }, [clearSelectedPackage, currentStep, isLightVariant, setFormData, setFuelChargeEnabled, syncEndDateTimeFromStart]);
+
+  const chooseStandardPricing = useCallback(() => {
+    clearSelectedPackage();
+    setLightPackageDecisionMode('standard');
+  }, [clearSelectedPackage]);
+
+  const clearLightDurationSelection = useCallback(() => {
+    setSelectedQuickDuration(null);
+    setLightDurationConfirmed(false);
+    setFormData((prev) => ({
+      ...prev,
+      quantity_days: 0,
+      quantity_hours: null,
+      rental_end_date: prev.rental_start_date || prev.rental_end_date,
+      rental_end_time: prev.rental_start_time || '',
+      vehicle_id: '',
+      selected_package_id: null,
+      selected_package_name: '',
+      selected_package_fixed_amount: 0,
+      selected_package_rate_per_unit: 0,
+      selected_package_included_km: null,
+      selected_package_included_km_per_unit: null,
+      selected_package_total_included_km: null,
+      selected_package_extra_rate: 0,
+      selected_package_fuel_charge_enabled: false,
+      selected_package_description: '',
+      use_package_pricing: false,
+      package_overrides_tier: false,
+    }));
+    setLightPackageDecisionMode('undecided');
+  }, [setFormData]);
+
+  const handleLightBack = useCallback(() => {
+    setShowLightActionsMenu(false);
+
+    if (hasPackageDecision) {
+      clearSelectedPackage();
+      setLightExpandedSection('package');
+      setLightPackageDecisionMode('undecided');
+      return;
+    }
+
+    if (formData.vehicle_id) {
+      handleInputChange('vehicle_id', '');
+      setLightExpandedSection('vehicle');
+      setLightPackageDecisionMode('undecided');
+      return;
+    }
+
+    if (hasDurationSelection) {
+      clearLightDurationSelection();
+      setLightExpandedSection('setup');
+      setLightShowScheduleEditor(false);
+      return;
+    }
+
+    if (effectiveLightRentalType) {
+      handleInputChange('rental_type', '');
+      setSelectedQuickDuration(null);
+      setLightDurationConfirmed(false);
+      setLightRentalTypeDraft('');
+      setLightExpandedSection('setup');
+      setLightPackageDecisionMode('undecided');
+      return;
+    }
+
+    if (currentStep > 1) {
+      handleBack();
+    }
+  }, [
+    clearLightDurationSelection,
+    clearSelectedPackage,
+    currentStep,
+    effectiveLightRentalType,
+    formData.vehicle_id,
+    handleInputChange,
+    hasDurationSelection,
+    hasPackageDecision,
+  ]);
+
+  const handleLightStartOver = useCallback(() => {
+    setShowLightActionsMenu(false);
+    setLightExpandedSection('setup');
+    setLightShowScheduleEditor(false);
+    setLightDurationConfirmed(false);
+    setLightRentalTypeDraft('');
+    setLightPackageDecisionMode('undecided');
+    handleReset();
+  }, [handleReset]);
+
+  const handleLightRentalTypeSelect = useCallback((type) => {
+    const startDate = formData.rental_start_date || getMoroccoTodayString();
+    const startTime = formData.rental_start_time || new Date().toTimeString().slice(0, 5);
+
+    if (lightSectionTransitionTimeoutRef.current) {
+      window.clearTimeout(lightSectionTransitionTimeoutRef.current);
+      lightSectionTransitionTimeoutRef.current = null;
+    }
+    previousLightHasDurationSelectionRef.current = false;
+    setLightExpandedSection('setup');
+    setLightShowScheduleEditor(false);
+    setLightDurationConfirmed(false);
+    setLightRentalTypeDraft(type);
+    setLightPackageDecisionMode('undecided');
+    setActiveModelFilter(null);
+    setSelectedQuickDuration(null);
+    setSelectedPackageDraft(null);
+
+    setFormData((prev) => ({
+      ...prev,
+      rental_type: type,
+      rental_start_date: startDate,
+      rental_start_time: startTime,
+      rental_end_date: startDate,
+      rental_end_time: startTime,
+      quantity_days: 0,
+      quantity_hours: null,
+      vehicle_id: '',
+      selected_package_id: null,
+      selected_package_name: '',
+      selected_package_fixed_amount: 0,
+      selected_package_rate_per_unit: 0,
+      selected_package_included_km: null,
+      selected_package_included_km_per_unit: null,
+      selected_package_total_included_km: null,
+      selected_package_extra_rate: 0,
+      selected_package_fuel_charge_enabled: false,
+      selected_package_description: '',
+      use_package_pricing: false,
+      package_overrides_tier: false,
+    }));
+
+    if (errors.rental_type) {
+      setErrors((prev) => ({ ...prev, rental_type: '' }));
+    }
+
+    requestAnimationFrame(() => {
+      wizardTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [errors.rental_type, formData.rental_start_date, formData.rental_start_time, setFormData]);
+
+  const handleLightClose = useCallback(() => {
+    setShowLightActionsMenu(false);
+    onCancel?.();
+  }, [onCancel]);
+
+  const handleLightStepBack = useCallback(() => {
+    setShowLightActionsMenu(false);
+    if (currentStep <= 1) {
+      onCancel?.();
+      return;
+    }
+    setCurrentStep((prev) => Math.max(prev - 1, 1));
+  }, [currentStep, onCancel]);
 
   const customerSectionButtonClass =
     'inline-flex items-center justify-center gap-2 rounded-lg px-5 py-3 text-sm font-bold transition-all shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed';
@@ -7346,13 +9234,30 @@ const SimplifiedRentalWizard = ({
     }
   }, [activeTab]);
 
+  useEffect(() => {
+    if (!isLightVariant || currentStep !== 1) return;
+    if (!lightCustomerEditOpen && !lightCustomerReady) return;
+
+    const timeoutId = window.setTimeout(() => {
+      lightCustomerNameInputRef.current?.focus?.();
+    }, 120);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [currentStep, isLightVariant, lightCustomerEditOpen, lightCustomerReady]);
+
   const previewRentalForDrawer = useMemo(() => ({
     customer_id: formData.customer_id,
     customer_name: formData.customer_name,
     customer_email: formData.customer_email,
     customer_phone: formData.customer_phone,
     customer_licence_number: formData.customer_licence_number,
+    customer_id_number: formData.customer_id_number,
+    customer_dob: formData.customer_dob,
+    customer_place_of_birth: formData.customer_place_of_birth,
+    customer_nationality: formData.customer_nationality,
+    customer_issue_date: formData.customer_issue_date,
     customer_id_image: formData.customer_id_image,
+    customer_id_scan_history: formData.customer_id_scan_history,
     id: selectedRentalForDrawer?.id || 'preview-rental-id',
   }), [
     formData.customer_id,
@@ -7360,20 +9265,51 @@ const SimplifiedRentalWizard = ({
     formData.customer_email,
     formData.customer_phone,
     formData.customer_licence_number,
+    formData.customer_id_number,
+    formData.customer_dob,
+    formData.customer_place_of_birth,
+    formData.customer_nationality,
+    formData.customer_issue_date,
     formData.customer_id_image,
+    formData.customer_id_scan_history,
     selectedRentalForDrawer?.id,
   ]);
+
+  const effectiveDrawerRental = selectedRentalForDrawer || previewRentalForDrawer;
 
   const submitVerificationOnlyFlow = async () => {
     const submissionResult = await handleSubmit();
     if (submissionResult?.rentalId) {
-      navigate(`/admin/rentals/${submissionResult.rentalId}`);
+      navigate(submissionResult.redirectUrl || `/admin/rentals/${submissionResult.rentalId}`);
       return;
     }
     if (onSuccess && submissionResult) {
       setTimeout(() => onSuccess(submissionResult.result), 1000);
     }
   };
+
+  useEffect(() => {
+    if (!successfullySubmitted || !successRedirectUrl) return undefined;
+
+    const navigateTimer = window.setTimeout(() => {
+      navigate(successRedirectUrl);
+    }, 80);
+
+    const hardRedirectTimer = window.setTimeout(() => {
+      const target = new URL(successRedirectUrl, window.location.origin);
+      const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      const targetPath = `${target.pathname}${target.search}${target.hash}`;
+
+      if (currentPath !== targetPath) {
+        window.location.assign(successRedirectUrl);
+      }
+    }, 1400);
+
+    return () => {
+      window.clearTimeout(navigateTimer);
+      window.clearTimeout(hardRedirectTimer);
+    };
+  }, [navigate, successRedirectUrl, successfullySubmitted]);
 
   const handleNext = async () => {
     if (isBannedCustomerBlocked) {
@@ -7399,6 +9335,54 @@ const SimplifiedRentalWizard = ({
     setCurrentStep(prev => Math.max(prev - 1, 1));
   };
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const scrollToTop = () => {
+      wizardTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+
+    const timeoutId = window.setTimeout(scrollToTop, 50);
+    return () => window.clearTimeout(timeoutId);
+  }, [currentStep]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (currentStep !== 2) return;
+
+    const previousVehicleId = previousVehicleIdRef.current;
+    const nextVehicleId = formData.vehicle_id || '';
+    previousVehicleIdRef.current = nextVehicleId;
+
+    if (!nextVehicleId || String(previousVehicleId) === String(nextVehicleId)) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      vehicleStepRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [currentStep, formData.vehicle_id]);
+
+  useEffect(() => {
+    if (!isLightVariant || currentStep !== 2) {
+      previousLightHasDurationSelectionRef.current = lightHasDurationSelection;
+      return;
+    }
+
+    const previousLightHasDurationSelection = previousLightHasDurationSelectionRef.current;
+    previousLightHasDurationSelectionRef.current = lightHasDurationSelection;
+
+    if (!lightHasDurationSelection || previousLightHasDurationSelection || formData.vehicle_id) {
+      return;
+    }
+
+    setLightDurationConfirmed(true);
+    animateLightSectionTransition('vehicle', vehicleStepRef);
+  }, [animateLightSectionTransition, currentStep, formData.vehicle_id, isLightVariant, lightHasDurationSelection]);
+
   const handleFormSubmit = async (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -7419,6 +9403,1423 @@ const SimplifiedRentalWizard = ({
     }
   };
 
+  useEffect(() => {
+    if (!isLightVariant || currentStep !== 2 || !lightHasDurationSelection) {
+      return;
+    }
+
+    if (activeModels.length > 0 && (activeModelFilter === null || activeModelFilter === undefined || activeModelFilter === '')) {
+      setActiveModelFilter(activeModels[0].id);
+    }
+  }, [activeModelFilter, activeModels, currentStep, isLightVariant, lightHasDurationSelection, setActiveModelFilter]);
+
+  useEffect(() => {
+    if (!isLightVariant || currentStep !== 2 || !formData.rental_type || !lightHasDurationSelection || visibleVehicles.length === 0) {
+      setLightVehiclePriceMap({});
+      return;
+    }
+
+    let cancelled = false;
+    const durationUnits = Number(
+      formData.rental_type === 'hourly'
+        ? (formData.quantity_hours ?? formData.quantity_days)
+        : formData.quantity_days
+    ) || 1;
+
+    const loadLightVehiclePrices = async () => {
+      const packageCache = new Map();
+      const entries = await Promise.all(
+        visibleVehicles.map(async (vehicle) => {
+          const resolvedModelId = resolveLightVehicleModelId(vehicle);
+
+          if (formData.rental_type === 'hourly' && durationUnits === 0.5 && resolvedModelId) {
+            const modelId = String(resolvedModelId);
+            if (!packageCache.has(modelId)) {
+              packageCache.set(modelId, fetchKMPackages(resolvedModelId, 'hourly'));
+            }
+            const modelPackages = await packageCache.get(modelId);
+            const matchingPackage = findMatchingDurationPackage(modelPackages || [], 'hourly', durationUnits);
+            if (matchingPackage) {
+              const packagePrice = Number(
+                matchingPackage.fixed_amount ??
+                matchingPackage.package_rate ??
+                matchingPackage.rate ??
+                matchingPackage.price ??
+                0
+              ) || 0;
+              return [String(vehicle.id), packagePrice];
+            }
+          }
+
+          const price = await getDirectPricing(vehicle.id, formData.rental_type, durationUnits);
+          const numericPrice = Number(price) || 0;
+          const totalPrice = (
+            formData.rental_type === 'hourly' || formData.rental_type === 'daily'
+          ) && durationUnits > 1
+            ? numericPrice * durationUnits
+            : numericPrice;
+          return [String(vehicle.id), totalPrice];
+        })
+      );
+
+      if (!cancelled) {
+        setLightVehiclePriceMap(Object.fromEntries(entries));
+      }
+    };
+
+    loadLightVehiclePrices();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentStep,
+    formData.quantity_days,
+    formData.quantity_hours,
+    formData.rental_type,
+    lightHasDurationSelection,
+    isLightVariant,
+    resolveLightVehicleModelId,
+    visibleVehicles,
+  ]);
+
+  useEffect(() => {
+    if (!isLightVariant || currentStep !== 2) return;
+    if (formData.rental_type !== 'hourly' || currentLightDurationUnits !== 0.5) return;
+    if (!formData.vehicle_id || availablePackages.length === 0) return;
+
+    const matchingPackage = findMatchingDurationPackage(availablePackages, 'hourly', 0.5);
+    if (!matchingPackage) return;
+
+    const selectedPackageId = String(formData.selected_package_id || '');
+    if (selectedPackageId === String(matchingPackage.id || '')) return;
+
+    applyLightPackageSelection(matchingPackage);
+  }, [
+    applyLightPackageSelection,
+    availablePackages,
+    currentLightDurationUnits,
+    currentStep,
+    formData.rental_type,
+    formData.selected_package_id,
+    formData.vehicle_id,
+    isLightVariant,
+  ]);
+
+  const renderLightStepTwo = () => (
+    <div className="px-4 pb-36 pt-4 sm:px-6">
+      <div className="space-y-4">
+        {stickySummaryLabel && (
+          <button
+            type="button"
+            onClick={() => {
+              if (!effectiveLightRentalType || !lightHasDurationSelection) setLightExpandedSection('setup');
+              else if (!formData.vehicle_id) setLightExpandedSection('vehicle');
+              else if (!hasPackageDecision) setLightExpandedSection('package');
+            }}
+            className="sticky top-3 z-10 flex w-full items-center justify-between rounded-2xl border border-violet-500 bg-violet-50/95 px-4 py-3 text-left shadow-[0_16px_30px_rgba(79,70,229,0.18)] backdrop-blur"
+          >
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                {tr('Current selection', 'Sélection actuelle')}
+              </p>
+              <p className="mt-1 truncate text-sm font-bold text-slate-900">{stickySummaryLabel}</p>
+            </div>
+            <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-violet-700 shadow-sm">
+              {liveTotalAmount > 0 ? `${formatDynamicMad(liveTotalAmount)} MAD` : tr('In progress', 'En cours')}
+            </span>
+          </button>
+        )}
+
+        <div className="rounded-[22px] border border-violet-200 bg-white/95 shadow-[0_12px_28px_rgba(76,29,149,0.12)] backdrop-blur">
+          {!effectiveLightRentalType ? (
+            <div className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left">
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                  {tr('Rental setup', 'Configuration')}
+                </p>
+                <div className="mt-1 flex items-center gap-3">
+                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-violet-50 text-violet-600 shadow-sm">
+                    <Clock className="h-5 w-5" />
+                  </span>
+                  <h3 className="truncate text-lg font-bold text-slate-900">{tr('Rental setup', 'Configuration')}</h3>
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600">
+                {tr('Choose below', 'Choisir ci-dessous')}
+                <ChevronDown className="h-3.5 w-3.5" />
+              </span>
+            </div>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setLightExpandedSection((prev) => (prev === 'setup' ? null : 'setup'));
+                }}
+                className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                    {tr('Rental setup', 'Configuration')}
+                  </p>
+                  <div className="mt-1 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex items-center gap-3">
+                      <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-violet-50 text-violet-600 shadow-sm">
+                        <Clock className="h-5 w-5" />
+                      </span>
+                      <h3 className="truncate text-lg font-bold text-slate-900">{setupSummaryLabel}</h3>
+                    </div>
+                    <span className="inline-flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                        {tr('Change', 'Modifier')}
+                        {lightHasDurationSelection && <CheckCircle className="h-3.5 w-3.5" />}
+                      </span>
+                      <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                        {lightExpandedSection === 'setup' ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </button>
+
+              {lightExpandedSection === 'setup' && (
+                <div className="space-y-4 border-t border-slate-100 bg-white/70 px-4 pb-4 pt-3 backdrop-blur-[2px]">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3 shadow-sm backdrop-blur-[3px]">
+                    <div className="mb-4 grid grid-cols-2 gap-2">
+                      {['hourly', 'daily'].map((type) => (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => {
+                            handleLightRentalTypeSelect(type);
+                          }}
+                          disabled={successfullySubmitted}
+                          className={`rounded-2xl px-4 py-3 text-center text-sm font-bold transition-all ${
+                            effectiveLightRentalType === type
+                              ? 'bg-violet-600 text-white'
+                              : 'border border-slate-200 bg-white text-slate-800'
+                          } ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          <span className="inline-flex items-center justify-center gap-2">
+                            {type === 'hourly' ? (
+                              <Clock className="h-4 w-4 shrink-0" />
+                            ) : (
+                              <Calendar className="h-4 w-4 shrink-0" />
+                            )}
+                            <span>{type === 'hourly' ? tr('Hourly', 'Horaire') : tr('Daily', 'Journalier')}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mb-4">
+                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                        {tr('Quick duration', 'Durée rapide')}
+                      </p>
+                      <div className={`grid gap-2 ${effectiveLightRentalType === 'hourly' ? 'grid-cols-3' : 'grid-cols-4'}`}>
+                        {(effectiveLightRentalType === 'hourly' ? lightQuickHourOptions : lightQuickDayOptions).map((value) => {
+                          const isSelected = selectedQuickDuration === value;
+                          return (
+                            <button
+                              key={`${effectiveLightRentalType}-${value}`}
+                              type="button"
+                              onClick={() => {
+                                if (effectiveLightRentalType === 'hourly') handleQuickHourSelect(value);
+                                else handleQuickDaySelect(value);
+                                setLightDurationConfirmed(true);
+                                animateLightSectionTransition('vehicle', vehicleStepRef);
+                              }}
+                              className={`rounded-2xl px-2 py-3 text-center text-sm font-bold transition-all ${
+                                isSelected
+                                  ? 'bg-violet-600 text-white'
+                                  : 'border border-slate-200 bg-white text-slate-800 hover:border-violet-300'
+                              }`}
+                            >
+                              <span className="block leading-tight">{getLightDurationButtonLabel(value, effectiveLightRentalType)}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                          {tr('Schedule', 'Planning')}
+                        </p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{formatPeriodDisplay()}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setLightShowScheduleEditor((prev) => !prev)}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                      >
+                        {lightShowScheduleEditor ? tr('Hide', 'Masquer') : tr('Edit', 'Modifier')}
+                      </button>
+                    </div>
+                    {lightShowScheduleEditor && (
+                      <div className="mt-4">
+                        <CollapsibleDatesTimes
+                          formData={formData}
+                          errors={errors}
+                          rentalType={effectiveLightRentalType}
+                          successfullySubmitted={successfullySubmitted}
+                          handleInputChange={handleInputChange}
+                          handleQuickHourSelect={handleQuickHourSelect}
+                          handleQuickDaySelect={handleQuickDaySelect}
+                          selectedQuickDuration={selectedQuickDuration}
+                          showQuickDurationShortcuts={false}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {lightHasDurationSelection && (
+        <div ref={vehicleStepRef} className="rounded-[22px] border border-violet-200 bg-white/95 shadow-[0_12px_28px_rgba(76,29,149,0.12)] backdrop-blur">
+          <button
+            type="button"
+            onClick={() => setLightExpandedSection((prev) => (prev === 'vehicle' ? null : 'vehicle'))}
+            className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-500">
+                {tr('Vehicle', 'Véhicule')}
+              </p>
+              <div className="mt-1 flex items-center justify-between gap-3">
+                <div className="min-w-0 flex items-center gap-3">
+                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 shadow-sm">
+                    <CarIcon className="h-5 w-5" />
+                  </span>
+                  <h3 className="truncate text-lg font-bold text-slate-900">{vehicleSummaryLabel}</h3>
+                </div>
+                {formData.vehicle_id && (
+                  <span className="inline-flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                      {tr('Change', 'Modifier')}
+                      <CheckCircle className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                      {lightExpandedSection === 'vehicle' ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    </span>
+                  </span>
+                )}
+              </div>
+            </div>
+            {!formData.vehicle_id && (
+              <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+                <ChevronDown className="h-4 w-4" />
+              </div>
+            )}
+          </button>
+
+            {lightExpandedSection === 'vehicle' && (
+              <div className="space-y-4 border-t border-slate-100 bg-white/70 px-4 pb-4 pt-3 backdrop-blur-[2px]">
+                {activeModels.length > 0 && (
+                  <div className="-mx-4 overflow-x-auto px-4 pb-1">
+                    <div className="flex min-w-max gap-2">
+                      {activeModels.map((model) => (
+                        <button
+                          key={model.id}
+                          type="button"
+                          onClick={() => setActiveModelFilter(model.id)}
+                          className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all ${
+                            String(activeModelFilter ?? activeModels[0]?.id) === String(model.id)
+                              ? 'bg-violet-600 text-white'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                        >
+                          {model.model || model.name?.split(' ').pop() || tr('Model', 'Modèle')}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="-mx-4 overflow-x-auto overflow-y-visible px-4 py-3">
+                  <div className="flex snap-x snap-mandatory items-stretch gap-3">
+                    {visibleVehicles.map((vehicle) => {
+                      const isSelected = String(formData.vehicle_id || '') === String(vehicle.id || '');
+                      const isAvailable = String(vehicle.status || '').toLowerCase() === 'available' || !vehicle.status;
+                      const mappedLightPrice = lightVehiclePriceMap[String(vehicle.id)];
+                      return (
+                        <button
+                          key={vehicle.id}
+                          type="button"
+                          onClick={() => {
+                            handleInputChange('vehicle_id', vehicle.id || '');
+                            setLightPackageDecisionMode('undecided');
+                            animateLightSectionTransition('package', lightPackageStepRef);
+                          }}
+                          disabled={successfullySubmitted}
+                          className={`min-w-[250px] snap-center rounded-[22px] border p-4 text-left transition-all ${
+                            isSelected
+                              ? 'scale-[1.02] border-violet-500 bg-violet-50/92 shadow-[0_22px_48px_rgba(79,70,229,0.22)] backdrop-blur-[3px]'
+                              : 'border-slate-200 bg-white hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-sm'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                {vehicle.model || vehicle.vehicle_model_name || vehicle.name || tr('Vehicle', 'Véhicule')}
+                              </p>
+                              <p className="mt-1 text-2xl font-bold text-slate-900">
+                                {vehicle.plate_number || tr('N/A', 'N/D')}
+                              </p>
+                            </div>
+                            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isAvailable ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                              {isAvailable ? tr('Available', 'Disponible') : tr('Busy', 'Occupé')}
+                            </span>
+                          </div>
+                          <p className="mt-4 text-2xl font-bold text-slate-900">
+                            {mappedLightPrice !== undefined ? (
+                              `${formatDynamicMad(mappedLightPrice)} MAD`
+                            ) : (
+                              <LightVehiclePriceLabel
+                                vehicle={vehicle}
+                                rentalType={formData.rental_type}
+                                duration={currentLightDurationUnits || 1}
+                              />
+                            )}
+                          </p>
+                          <p className="mt-1 text-xs font-medium text-slate-500">{selectedDurationLabel}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {formData.vehicle_id && (
+        <div ref={lightPackageStepRef} className="rounded-[22px] border border-violet-200 bg-white/95 shadow-[0_12px_28px_rgba(76,29,149,0.12)] backdrop-blur">
+          <button
+            type="button"
+            onClick={() => setLightExpandedSection((prev) => (prev === 'package' ? null : 'package'))}
+            className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-purple-500">
+                {tr('Package', 'Forfait')}
+              </p>
+              <div className="mt-1 flex items-center justify-between gap-3">
+                <div className="min-w-0 flex flex-wrap items-center gap-3">
+                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-purple-50 text-purple-600 shadow-sm">
+                    <DollarSign className="h-5 w-5" />
+                  </span>
+                  {packageSummaryAccent && (
+                    <span className="inline-flex shrink-0 items-center rounded-full bg-violet-100 px-3 py-1.5 text-[13px] font-extrabold uppercase tracking-[0.1em] text-violet-700 shadow-sm">
+                      {packageSummaryAccent}
+                    </span>
+                  )}
+                  <h3 className="min-w-0 truncate text-lg font-bold text-slate-900">
+                    {packageSummaryAccent ? packageSummaryRestLabel : packageSummaryLabel}
+                  </h3>
+                </div>
+                <span className="inline-flex items-center gap-2">
+                  <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold ${
+                    hasPackageDecision
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : 'bg-purple-50 text-purple-700'
+                  }`}>
+                    {tr('Change', 'Modifier')}
+                    {hasPackageDecision && <CheckCircle className="h-3.5 w-3.5" />}
+                  </span>
+                  {hasPackageDecision && (
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                      {lightExpandedSection === 'package' ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    </span>
+                  )}
+                </span>
+              </div>
+            </div>
+            {!hasPackageDecision && (
+              <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+                <ChevronDown className="h-4 w-4" />
+              </div>
+            )}
+          </button>
+
+            {lightExpandedSection === 'package' && (
+              <div className="space-y-4 border-t border-slate-100 bg-white/70 px-4 pb-4 pt-3 backdrop-blur-[2px]">
+                {isLoadingPackages ? (
+                  <div className="rounded-2xl border border-purple-100 bg-purple-50 px-4 py-4 text-sm font-medium text-purple-700">
+                    {tr('Loading packages...', 'Chargement des forfaits...')}
+                  </div>
+                ) : (
+                  <div className="-mx-4 overflow-x-auto overflow-y-visible px-4 py-3">
+                    <div className="flex snap-x snap-mandatory items-stretch gap-3">
+                      {currentLightDurationUnits !== 0.5 && (
+                        <button
+                          type="button"
+                          onClick={chooseStandardPricing}
+                          className={`min-w-[220px] snap-center rounded-[22px] border p-4 text-left transition-all ${
+                            !formData.use_package_pricing && lightPackageDecisionMode === 'standard'
+                              ? 'scale-[1.02] border-violet-500 bg-violet-50/92 shadow-[0_22px_48px_rgba(79,70,229,0.22)] backdrop-blur-[3px]'
+                              : 'border-slate-200 bg-white hover:border-violet-300 hover:shadow-sm'
+                          }`}
+                        >
+                          <p className="text-lg font-bold text-slate-900">{tr('Standard', 'Standard')}</p>
+                          <p className="mt-2 text-sm text-slate-500">{selectedDurationLabel}</p>
+                          <p className="mt-3 text-2xl font-bold text-slate-900">
+                            {formatDynamicMad(standardLightPreviewTotal)} MAD
+                          </p>
+                        </button>
+                      )}
+
+                      {filteredPackageOptions.map((pkg) => {
+                        const isSelected = String(formData.selected_package_id || '') === String(pkg.id || '');
+                        const packageDurationUnits = getPackageDurationUnits(pkg) || 1;
+                        const pkgDurationLabel = (() => {
+                          if (formData.rental_type === 'daily' && currentLightDurationUnits > 1) {
+                            return getLightDurationButtonLabel(currentLightDurationUnits, 'daily');
+                          }
+                          if (formData.rental_type === 'hourly' && packageDurationUnits === 1 && currentLightDurationUnits > 1) {
+                            return getLightDurationButtonLabel(currentLightDurationUnits, 'hourly');
+                          }
+                          if (packageDurationUnits === 0.5) return tr('30 min', '30 min');
+                          return `${packageDurationUnits} ${formData.rental_type === 'hourly' ? tr('Hour', 'heure') : tr('day', 'jour')}`;
+                        })();
+                        const pkgIncludedKm = Number(pkg.included_kilometers ?? pkg.included_km ?? pkg.km_limit ?? 0) || 0;
+                        const pkgRate = Number(pkg.fixed_amount ?? pkg.package_rate ?? pkg.rate ?? pkg.price ?? 0) || 0;
+                        const pkgPreviewTotal = currentLightDurationUnits > 0
+                          ? getLightPackagePreviewTotal(pkg)
+                          : pkgRate;
+                        return (
+                          <button
+                            key={pkg.id}
+                            type="button"
+                            onClick={() => applyLightPackageSelection(pkg)}
+                            className={`min-w-[220px] snap-center rounded-[22px] border p-4 text-left transition-all ${
+                              isSelected
+                                ? 'scale-[1.02] border-violet-500 bg-violet-50/92 shadow-[0_22px_48px_rgba(79,70,229,0.22)] backdrop-blur-[3px]'
+                                : 'border-slate-200 bg-white hover:border-violet-300 hover:shadow-sm'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <span className="inline-flex rounded-full bg-violet-50 px-4 py-1.5 text-base font-black uppercase tracking-[0.06em] text-violet-700 shadow-sm">
+                                {pkgIncludedKm} km
+                              </span>
+                            </div>
+                            <p className="mt-4 text-[15px] font-semibold text-slate-500">{pkgDurationLabel}</p>
+                            <p className="mt-3 text-2xl font-bold text-slate-900">{formatDynamicMad(pkgPreviewTotal)} MAD</p>
+                            {currentLightDurationUnits > 1 && (
+                              <p className="mt-1 text-xs font-medium text-slate-500">
+                                {formData.rental_type === 'daily'
+                                  ? tr('Daily base rate', 'Tarif journalier')
+                                  : tr('Base rate', 'Tarif de base')}: {formatDynamicMad(pkgRate)} MAD
+                              </p>
+                            )}
+                            {isSelected && (
+                              <div className="mt-3 rounded-xl border border-violet-200 bg-white/80 px-3 py-2 text-xs text-slate-600">
+                                <p>{tr('Extra km', 'Km extra')}: {formatDynamicMad(Number(pkg.extra_km_rate || 0))} MAD/km</p>
+                                {Boolean(pkg.fuel_charge_enabled) ? (
+                                  <p className="mt-1">{tr('Fuel not included', 'Carburant non inclus')}</p>
+                                ) : null}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:z-20 sm:mt-6">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          {stickySummaryLabel ? (
+            <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                {selectedVehicle?.plate_number && (
+                  <span className="truncate">{selectedVehicle.plate_number}</span>
+                )}
+                {selectedVehicle?.model && (
+                  <span className="truncate text-slate-600">• {selectedVehicle.model}</span>
+                )}
+                {lightHasDurationSelection && (
+                  <span className="truncate text-slate-600">• {selectedDurationLabel}</span>
+                )}
+                {lightIncludedKmSummary && (
+                  <span className="inline-flex shrink-0 rounded-full bg-violet-50 px-3 py-1 text-xs font-extrabold text-violet-700">
+                    {lightIncludedKmSummary}
+                  </span>
+                )}
+                {liveTotalAmount > 0 && (
+                  <span className="truncate text-slate-900">• {formatDynamicMad(liveTotalAmount)} MAD</span>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div />
+          )}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowLightActionsMenu((prev) => !prev)}
+              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+              {tr('More', 'Plus')}
+            </button>
+            {showLightActionsMenu && (
+              <div className="absolute right-0 top-full mt-2 w-44 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_18px_36px_rgba(15,23,42,0.14)]">
+                <button
+                  type="button"
+                  onClick={handleLightStartOver}
+                  className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-semibold text-amber-700 hover:bg-amber-50"
+                >
+                  <span>{tr('Start over', 'Recommencer')}</span>
+                  <RotateCcw className="h-4 w-4" />
+                </button>
+                {onCancel && (
+                  <button
+                    type="button"
+                    onClick={handleLightClose}
+                    className="flex w-full items-center justify-between border-t border-slate-100 px-4 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    <span>{tr('Close wizard', 'Fermer')}</span>
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {!effectiveLightRentalType ? (
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={handleLightStepBack}
+              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800"
+            >
+              <ChevronLeft className="h-5 w-5" />
+              {tr('Back', 'Retour')}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleLightRentalTypeSelect('hourly')}
+              className="flex items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-4 text-base font-bold text-white"
+            >
+              {tr('Hourly', 'Horaire')}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleLightRentalTypeSelect('daily')}
+              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800"
+            >
+              {tr('Daily', 'Journalier')}
+            </button>
+          </div>
+        ) : !formData.vehicle_id ? (
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleLightStepBack}
+              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800"
+            >
+              <ChevronLeft className="h-5 w-5" />
+              {tr('Back', 'Retour')}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                animateLightSectionTransition('vehicle', vehicleStepRef);
+              }}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-4 text-base font-bold text-white"
+            >
+              {tr('Select vehicle', 'Choisir le véhicule')}
+              <ChevronDown className="h-5 w-5" />
+            </button>
+          </div>
+        ) : !hasPackageDecision ? (
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleLightStepBack}
+              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800"
+            >
+              <ChevronLeft className="h-5 w-5" />
+              {tr('Back', 'Retour')}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                animateLightSectionTransition('package', lightPackageStepRef);
+              }}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-4 text-base font-bold text-white"
+            >
+              {tr('Choose package', 'Choisir le forfait')}
+              <ChevronDown className="h-5 w-5" />
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleLightBack}
+              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800"
+            >
+              <ChevronLeft className="h-5 w-5" />
+              {tr('Back', 'Retour')}
+            </button>
+            <button
+              type="button"
+              onClick={handleNext}
+              className="flex items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-4 text-base font-bold text-white"
+            >
+              {tr('Confirm', 'Confirmer')}
+              <ChevronRight className="h-5 w-5" />
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderLightStepOne = () => (
+    <div className="px-4 pb-36 pt-4 sm:px-6">
+      <div className="space-y-4">
+        {!lightCustomerReady && !lightCustomerEditOpen ? (
+          <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+            <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                  {tr('Customer', 'Client')}
+                </p>
+                <h3 className="mt-1 text-xl font-bold leading-tight text-slate-900">
+                  {tr('Start with ID or manual entry', "Commencez par l'identité ou la saisie manuelle")}
+                </h3>
+              </div>
+            </div>
+            <div className="rounded-[22px] border border-dashed border-violet-200 bg-violet-50/70 px-4 py-6 text-center">
+              <p className="text-sm font-semibold text-slate-700">
+                {tr('Choose how you want to add the customer.', 'Choisissez comment ajouter le client.')}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                    {tr('Primary info', 'Infos principales')}
+                  </p>
+                  <h3 className="mt-1 text-lg font-bold text-slate-900">{tr('Customer', 'Client')}</h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  {!lightCustomerReady && onCancel && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLightCustomerEditOpen(false);
+                        setLightCustomerAdditionalOpen(false);
+                      }}
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                      {tr('Back', 'Retour')}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowIDScanModal(true)}
+                    className="inline-flex items-center gap-2 rounded-full bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700"
+                  >
+                    <FileImage className="h-4 w-4" />
+                    {formData.customer_id_image ? tr('Rescan ID', "Rescanner l'identité") : tr('Scan ID', "Scanner l'identité")}
+                  </button>
+                  {formData.customer_id_image && (
+                    <button
+                      type="button"
+                      onClick={() => setShowIDScanModal(true)}
+                      className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700"
+                    >
+                      <FileImage className="h-4 w-4" />
+                      {tr('Scan second ID', "Scanner la deuxième pièce")}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {formData.customer_id_image && (
+                <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
+                  {(formData.customer_id_capture_method || customerIdCaptureMethod) === 'imported'
+                    ? tr('ID imported', 'Pièce importée')
+                    : (formData.customer_id_capture_method || customerIdCaptureMethod) === 'saved'
+                      ? tr('ID saved', 'Pièce enregistrée')
+                      : tr('ID scanned', 'Pièce scannée')}
+                </div>
+              )}
+
+              <div className="mt-4 space-y-3">
+                <div className="relative" ref={customerSearchRef}>
+                  <label className="text-sm font-semibold text-slate-700">{tr('Customer Name', 'Nom du client')} *</label>
+                  <input
+                    ref={lightCustomerNameInputRef}
+                    type="text"
+                    value={formData.customer_name}
+                    onChange={(e) => handleInputChange('customer_name', e.target.value)}
+                    placeholder={tr('Enter customer name', 'Entrez le nom du client')}
+                    disabled={successfullySubmitted}
+                    className={`mt-2 w-full rounded-xl border bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500 ${
+                      errors.customer_name ? 'border-red-400' : 'border-slate-200'
+                    }`}
+                  />
+                  {errors.customer_name && (
+                    <p className="mt-2 text-xs font-medium text-red-500">{errors.customer_name}</p>
+                  )}
+                  {suggestions.length > 0 && !successfullySubmitted && (
+                    <div className="absolute z-20 mt-2 max-h-60 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                      {suggestions.map((suggestion, index) => (
+                        <button
+                          key={index}
+                          type="button"
+                          onClick={() => handleSuggestionClick(suggestion)}
+                          className="flex w-full items-center gap-3 border-b border-slate-100 px-4 py-3 text-left hover:bg-violet-50 last:border-b-0"
+                        >
+                          <UserSearch className="h-4 w-4 flex-shrink-0 text-slate-500" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-semibold text-slate-800">{suggestion.name}</p>
+                            <p className="truncate text-sm text-slate-500">{suggestion.phone}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-slate-700">{tr('License Number', 'Numéro de permis')} {requiresCustomerVerification ? '*' : ''}</label>
+                  <input
+                    type="text"
+                    value={formData.customer_licence_number}
+                    onChange={(e) => handleInputChange('customer_licence_number', e.target.value)}
+                    placeholder={tr('Enter license number', 'Entrez le numéro du permis')}
+                    disabled={successfullySubmitted}
+                    className={`mt-2 w-full rounded-xl border bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500 ${
+                      errors.customer_licence_number ? 'border-red-400' : 'border-slate-200'
+                    }`}
+                  />
+                </div>
+                <div>
+                  <PhoneInputWithCountryCode
+                    value={formData.customer_phone}
+                    onChange={handlePhoneChange}
+                    error={errors.customer_phone}
+                    disabled={successfullySubmitted}
+                    countryCode={countryCode}
+                    onCountryCodeChange={setCountryCode}
+                    mobileOptimized={true}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[22px] border border-slate-200 bg-white shadow-sm">
+              <button
+                type="button"
+                onClick={() => setLightCustomerAdditionalOpen((prev) => !prev)}
+                className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+              >
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {tr('Additional details', 'Détails supplémentaires')}
+                  </p>
+                  <h3 className="mt-1 text-lg font-bold text-slate-900">{tr('Optional fields', 'Champs optionnels')}</h3>
+                </div>
+                <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+                  {lightCustomerAdditionalOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </div>
+              </button>
+
+              {lightCustomerAdditionalOpen && (
+                <div className="space-y-3 border-t border-slate-100 px-4 pb-4 pt-3">
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700">{tr('Email', 'E-mail')}</label>
+                    <input
+                      type="email"
+                      value={formData.customer_email}
+                      onChange={(e) => handleInputChange('customer_email', e.target.value)}
+                      placeholder="customer@example.com"
+                      disabled={successfullySubmitted}
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="text-sm font-semibold text-slate-700">{tr('Second Driver Name', 'Nom du second conducteur')}</label>
+                      <input
+                        type="text"
+                        value={formData.second_driver_name || ''}
+                        onChange={(event) => handleInputChange('second_driver_name', event.target.value)}
+                        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                        placeholder={tr('Optional', 'Optionnel')}
+                        disabled={successfullySubmitted}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm font-semibold text-slate-700">{tr('Second Driver License', 'Permis du second conducteur')}</label>
+                      <input
+                        type="text"
+                        value={formData.second_driver_license || ''}
+                        onChange={(event) => handleInputChange('second_driver_license', event.target.value)}
+                        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
+                        placeholder={tr('Optional', 'Optionnel')}
+                        disabled={successfullySubmitted}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedRentalForDrawer({
+                        id: 'preview-rental-id',
+                        customer_id: formData.customer_id,
+                        customer_name: formData.customer_name,
+                        customer_email: formData.customer_email,
+                        customer_phone: formData.customer_phone,
+                        customer_licence_number: formData.customer_licence_number,
+                        customer_id_image: formData.customer_id_image
+                      });
+                      setShowCustomerDrawer(true);
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm font-bold text-slate-700"
+                  >
+                    <Eye className="h-4 w-4" />
+                    {tr('View details', 'Voir les détails')}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:z-20 sm:mt-6">
+              <div className={`grid gap-2 sm:ml-auto sm:flex sm:w-full sm:max-w-[820px] sm:items-stretch sm:justify-end ${onCancel ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                {onCancel && (
+                  <button
+                    type="button"
+                    onClick={handleLightClose}
+                    className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-base font-bold text-slate-700 sm:min-w-[180px] sm:flex-none"
+                    disabled={loading || submitting || successfullySubmitted}
+                  >
+                    <ChevronLeft className="h-5 w-5" />
+                    {tr('Back', 'Retour')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowIDScanModal(true)}
+                  className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800 sm:min-w-[220px] sm:flex-none"
+                >
+                  <FileImage className="h-5 w-5" />
+                  {formData.customer_id_image ? tr('Scan second ID', "Scanner la deuxième pièce") : tr('Scan ID', "Scanner l'identité")}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNext}
+                  disabled={!lightCustomerCanContinue}
+                  className="flex items-center justify-center gap-2 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[300px] sm:flex-1"
+                >
+                  {tr('Continue', 'Continuer')}
+                  <ChevronRight className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!lightCustomerReady && !lightCustomerEditOpen && (
+          <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:z-20 sm:mt-6">
+            <div className="space-y-2 sm:space-y-0 sm:flex sm:items-stretch sm:justify-end sm:gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-1 sm:justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowIDScanModal(true)}
+                  className="flex min-h-[68px] items-center justify-center gap-3 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white shadow-[0_16px_36px_rgba(109,40,217,0.28)] sm:min-w-[220px]"
+                  disabled={loading || submitting || successfullySubmitted}
+                >
+                  <FileImage className="h-5 w-5" />
+                  {tr('Scan ID', "Scanner l'identité")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLightCustomerEditOpen(true)}
+                  className="flex min-h-[68px] items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800 sm:min-w-[220px]"
+                  disabled={successfullySubmitted}
+                >
+                  <Edit2 className="h-5 w-5" />
+                  {tr('Manual entry', 'Saisie manuelle')}
+                </button>
+              </div>
+              {onCancel && (
+                <button
+                  type="button"
+                  onClick={handleLightClose}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-base font-bold text-slate-700 sm:w-auto sm:min-w-[180px]"
+                  disabled={loading || submitting || successfullySubmitted}
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                  {tr('Back', 'Retour')}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderStrictVerificationCaptureStep = () => (
+    <div className="p-4 sm:p-6">
+      <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+              {tr('Customer Verification', 'Vérification client')}
+            </p>
+            <h2 className="mt-1 text-xl font-bold text-slate-900">
+              {tr('Capture customer ID', "Capturer l'identité du client")}
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">
+              {tr(
+                'Only scan or import the customer ID to unlock the rental start checklist.',
+                "Scannez ou importez uniquement l'identité du client pour déverrouiller la checklist de démarrage."
+              )}
+            </p>
+          </div>
+          {!successfullySubmitted && (
+            <button
+              type="button"
+              onClick={() => setShowIDScanModal(true)}
+              className={`inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-bold sm:min-w-[220px] ${customerPrimaryButtonClass} ${!formData.customer_id_image ? 'animate-[pulse_0.9s_ease-in-out_infinite] shadow-[0_0_0_4px_rgba(124,58,237,0.12)]' : ''}`}
+              disabled={loading || submitting || successfullySubmitted}
+            >
+              <FileImage className="h-4 w-4" />
+              {formData.customer_id_image ? tr('Rescan ID', "Scanner à nouveau l'identité") : tr('Scan or import ID', "Scanner ou importer l'identité")}
+            </button>
+          )}
+        </div>
+
+        <div className="mt-4 space-y-3">
+          {formData.customer_id_image ? (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+              <span className="min-w-0 truncate">
+                {tr(
+                  `ID captured: ${customerIdFileName || 'Saved image'}`,
+                  `Pièce capturée : ${customerIdFileName || 'Image enregistrée'}`
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setFormData((prev) => ({
+                    ...prev,
+                    customer_id_image: null,
+                  }));
+                  setCustomerIdFileName('');
+                  setCustomerScanNote('');
+                  setCustomerScanNoteTone('neutral');
+                }}
+                className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-white text-emerald-700 transition hover:bg-emerald-100"
+                aria-label={tr('Remove captured ID image', "Supprimer l'image d'identité capturée")}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+              {tr(
+                'Step 1 stays incomplete until the customer ID is scanned or imported.',
+                "L'étape 1 reste incomplète tant que l'identité du client n'est pas scannée ou importée."
+              )}
+            </div>
+          )}
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {tr('Customer', 'Client')}
+              </p>
+              <p className="mt-2 text-sm font-bold text-slate-900">
+                {formData.customer_name || initialData?.customer_name || tr('Not set', 'Non défini')}
+              </p>
+            </div>
+            <div className={`rounded-xl border px-4 py-3 ${formData.customer_licence_number?.trim() ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'}`}>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {tr('License Number', 'Numéro de permis')}
+              </p>
+              <p className={`mt-2 text-sm font-bold ${formData.customer_licence_number?.trim() ? 'text-slate-900' : 'text-amber-800'}`}>
+                {formData.customer_licence_number || tr('Missing', 'Manquant')}
+              </p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {tr('Phone', 'Téléphone')}
+              </p>
+              <p className="mt-2 text-sm font-bold text-slate-900">
+                {formData.customer_phone || initialData?.customer_phone || tr('Not set', 'Non défini')}
+              </p>
+            </div>
+          </div>
+
+          {!formData.customer_licence_number?.trim() && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+              {tr(
+                'A license number is still required before verification can be saved.',
+                "Un numéro de permis est encore requis avant d'enregistrer la vérification."
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderLightStrictVerificationCaptureStep = () => (
+    <div className="px-4 pb-36 pt-4 sm:px-6">
+      <div className="space-y-4">
+        <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                {tr('Customer Verification', 'Vérification client')}
+              </p>
+              <h2 className="mt-1 text-2xl font-bold text-slate-900">
+                {tr('Capture customer ID', "Capturer l'identité du client")}
+              </h2>
+              <p className="mt-2 text-sm font-medium text-slate-600">
+                {tr(
+                  'Scan or import the ID only to complete step 1.',
+                  "Scannez ou importez uniquement l'identité pour terminer l'étape 1."
+                )}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowIDScanModal(true)}
+              className={`inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-bold sm:min-w-[220px] ${customerPrimaryButtonClass} ${!formData.customer_id_image ? 'animate-[pulse_0.9s_ease-in-out_infinite] shadow-[0_0_0_4px_rgba(124,58,237,0.12)]' : ''}`}
+              disabled={loading || submitting || successfullySubmitted}
+            >
+              <FileImage className="h-4 w-4" />
+              {formData.customer_id_image ? tr('Rescan ID', "Scanner à nouveau l'identité") : tr('Scan ID', "Scanner l'identité")}
+            </button>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {formData.customer_id_image ? (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm font-semibold text-emerald-800">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate">
+                    {tr(
+                      `ID captured: ${customerIdFileName || 'Saved image'}`,
+                      `Pièce capturée : ${customerIdFileName || 'Image enregistrée'}`
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData((prev) => ({
+                        ...prev,
+                        customer_id_image: null,
+                      }));
+                      setCustomerIdFileName('');
+                      setCustomerScanNote('');
+                      setCustomerScanNoteTone('neutral');
+                    }}
+                    className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-white text-emerald-700 transition hover:bg-emerald-100"
+                    aria-label={tr('Remove captured ID image', "Supprimer l'image d'identité capturée")}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm font-medium text-amber-800">
+                {tr(
+                  'Customer verification stays incomplete until the ID is scanned or imported.',
+                  "La vérification client reste incomplète tant que l'identité n'est pas scannée ou importée."
+                )}
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  {tr('Customer', 'Client')}
+                </p>
+                <p className="mt-2 text-sm font-bold text-slate-900">
+                  {formData.customer_name || initialData?.customer_name || tr('Not set', 'Non défini')}
+                </p>
+              </div>
+              <div className={`rounded-2xl border px-4 py-4 ${formData.customer_licence_number?.trim() ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'}`}>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  {tr('License Number', 'Numéro de permis')}
+                </p>
+                <p className={`mt-2 text-sm font-bold ${formData.customer_licence_number?.trim() ? 'text-slate-900' : 'text-amber-800'}`}>
+                  {formData.customer_licence_number || tr('Missing', 'Manquant')}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  {tr('Phone', 'Téléphone')}
+                </p>
+                <p className="mt-2 text-sm font-bold text-slate-900">
+                  {formData.customer_phone || initialData?.customer_phone || tr('Not set', 'Non défini')}
+                </p>
+              </div>
+            </div>
+
+            {formData.customer_id_image && (
+              <button
+                type="button"
+                onClick={() => setShowIDScanModal(true)}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700"
+                disabled={loading || submitting || successfullySubmitted}
+              >
+                <FileImage className="h-4 w-4" />
+                {tr('Scan second ID', "Scanner la deuxième pièce")}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:z-20 sm:mt-6">
+          <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex sm:w-full sm:max-w-[640px] sm:items-stretch sm:justify-end">
+            <button
+              type="button"
+              onClick={() => setShowIDScanModal(true)}
+              className={`flex items-center justify-center gap-2 rounded-2xl border px-4 py-4 text-base font-bold sm:min-w-[220px] sm:flex-none ${
+                !formData.customer_id_image
+                  ? 'border-violet-200 bg-violet-50 text-violet-700 animate-[pulse_0.9s_ease-in-out_infinite] shadow-[0_0_0_4px_rgba(124,58,237,0.12)]'
+                  : 'border-slate-200 bg-white text-slate-800'
+              }`}
+              disabled={loading || submitting || successfullySubmitted}
+            >
+              <FileImage className="h-5 w-5" />
+              {formData.customer_id_image ? tr('Scan second ID', "Scanner la deuxième pièce") : tr('Scan ID', "Scanner l'identité")}
+            </button>
+            <button
+              type="button"
+              onClick={handleNext}
+              disabled={!lightCustomerCanContinue || submitting || isSubmitting || successfullySubmitted}
+              className="flex items-center justify-center gap-2 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[300px] sm:flex-1"
+            >
+              {tr('Save verification', 'Enregistrer la vérification')}
+              <CheckCircle className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderLightStepThree = () => (
+    <div className="px-4 pb-36 pt-4 sm:px-6">
+      <div className="space-y-4">
+        <div className="rounded-[22px] border border-slate-200 bg-white shadow-sm">
+          <button
+            type="button"
+            onClick={() => setLightPaymentSummaryOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                {tr('Current selection', 'Sélection actuelle')}
+              </p>
+              <p className="mt-1 truncate text-sm font-bold text-slate-900">{lightPaymentSummaryLabel}</p>
+              <p className="mt-2 text-xl font-bold text-slate-900">
+                {tr('Total', 'Total')}: {(Number(formData.total_amount) || getFixedPackageAmount(formData) || Number(formData.unit_price) || 0).toFixed(0)} MAD
+              </p>
+            </div>
+            <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+              {lightPaymentSummaryOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </div>
+          </button>
+
+          {lightPaymentSummaryOpen && (
+            <div className="space-y-2 border-t border-slate-100 px-4 pb-4 pt-3 text-sm font-medium text-slate-700">
+              <div className="flex justify-between gap-3">
+                <span>{tr('Customer', 'Client')}</span>
+                <span className="text-right">{formData.customer_name || tr('Not set', 'Non défini')}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>{tr('Vehicle', 'Véhicule')}</span>
+                <span className="text-right">{selectedVehicleLabel}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>{tr('Period', 'Période')}</span>
+                <span className="text-right">{selectedDurationLabel}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>{tr('Package', 'Forfait')}</span>
+                <span className="text-right">
+                  {[
+                    getSelectedPackageDisplayLabel(formData, tr),
+                    lightStepThreePackageKmLabel,
+                  ].filter(Boolean).join(' • ')}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+            {tr('Payment method', 'Mode de paiement')}
+          </p>
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            {[
+              ['paid', tr('Paid', 'Payé')],
+              ['partial', tr('Partial', 'Partiel')],
+              ['unpaid', tr('Pending', 'En attente')],
+            ].map(([status, label]) => (
+              <button
+                key={status}
+                type="button"
+                onClick={() => handlePaymentStatusTabClick(status)}
+                className={`rounded-2xl px-4 py-4 text-center text-sm font-bold transition-all ${
+                  formData.payment_status === status
+                    ? 'bg-violet-600 text-white'
+                    : 'border border-slate-200 bg-white text-slate-800'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+            {tr('Amount', 'Montant')}
+          </p>
+          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+            <input
+              type="text"
+              inputMode="decimal"
+              value={formData.deposit_amount}
+              onFocus={(e) => {
+                if (String(formData.deposit_amount || '') === '0') {
+                  e.target.select();
+                }
+              }}
+              onChange={(e) => handleInputChange('deposit_amount', normalizeMoneyInput(e.target.value))}
+              disabled={successfullySubmitted}
+              className="w-full bg-transparent text-3xl font-bold text-slate-900 outline-none"
+              placeholder="0"
+            />
+            {formData.payment_status === 'partial' && (
+              <p className="mt-2 text-sm font-semibold text-amber-700">
+                {tr('Remaining', 'Restant')}: {Math.max((Number(formData.total_amount) || getFixedPackageAmount(formData) || 0) - Number(formData.deposit_amount || 0), 0).toFixed(0)} MAD
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+            {tr('Deposit', 'Caution')}
+          </p>
+          <div className="mt-3">
+            <DamageDepositTabs
+              formData={formData}
+              enabledPresets={getEnabledPresetsForVehicle(formData.vehicle_id)}
+              allowCustomDeposit={damageDepositConfig.allowCustomDeposit}
+              includeNoneOption
+              variant="light"
+              selectedTab={lightSelectedDepositTab}
+              customAmount={customDepositAmount}
+              onTabClick={handleDepositTabClick}
+              onCustomAmountChange={setCustomDepositAmount}
+              onDocumentUpload={handleDepositDocumentUpload}
+              onDocumentTypeSelect={handleDepositDocumentTypeSelect}
+              onDocumentClear={handleDepositDocumentClear}
+              documentUploading={depositDocumentUploading}
+              disabled={successfullySubmitted}
+            />
+          </div>
+        </div>
+
+        <div className="rounded-[22px] border border-slate-200 bg-white shadow-sm">
+          <button
+            type="button"
+            onClick={() => setLightPaymentDetailsOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+          >
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('More details', 'Plus de détails')}
+              </p>
+            </div>
+            <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+              {lightPaymentDetailsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </div>
+          </button>
+          {lightPaymentDetailsOpen && (
+            <div className="space-y-4 border-t border-slate-100 px-4 pb-4 pt-3">
+              <FuelChargeToggle
+                enabled={effectiveFuelChargeToggleEnabled}
+                onToggle={handleFuelChargeToggleChange}
+                amount={fuelChargeAmount}
+                rentalType={formData.rental_type}
+                disabled={successfullySubmitted}
+              />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  {tr('Accessories / Notes', 'Accessoires / notes')}
+                </label>
+                <textarea
+                  value={formData.accessories}
+                  onChange={(e) => handleInputChange('accessories', e.target.value)}
+                  disabled={successfullySubmitted}
+                  className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  rows="3"
+                  placeholder={tr('Any additional accessories or notes...', 'Tout accessoire ou note supplémentaire...')}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleBack}
+              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800"
+            >
+              <ChevronLeft className="h-5 w-5" />
+              {tr('Back', 'Retour')}
+            </button>
+            <button
+              type="submit"
+              onClick={() => {
+                explicitSubmitRef.current = true;
+              }}
+              className={`flex items-center justify-center gap-2 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white ${
+                (submitting || isSubmitting) ? 'animate-bounce' : ''
+              }`}
+              disabled={submitting || isSubmitting || successfullySubmitted}
+            >
+              {tr('Confirm', 'Confirmer')}
+              <ChevronRight className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   if (successfullySubmitted) {
     return (
       <div className="max-w-4xl mx-auto p-4">
@@ -7428,13 +10829,22 @@ const SimplifiedRentalWizard = ({
             {tr('✅ Rental Successfully Created!', '✅ Location créée avec succès !')}
           </h2>
           <p className="text-gray-600">{tr('Redirecting to rental details...', 'Redirection vers les détails de la location...')}</p>
+          {successRedirectUrl && (
+            <button
+              type="button"
+              onClick={() => window.location.assign(successRedirectUrl)}
+              className="mt-6 rounded-2xl bg-violet-700 px-6 py-3 text-base font-bold text-white shadow-[0_14px_32px_rgba(76,29,149,0.22)] hover:bg-violet-800"
+            >
+              {tr('Open rental details', 'Ouvrir les détails de la location')}
+            </button>
+          )}
         </div>
       </div>
     );
   }
 
   return (
-    <div className="max-w-4xl mx-auto p-4">
+    <div ref={wizardTopRef} className="max-w-4xl mx-auto p-4">
       <ProgressStepper currentStep={isCustomerVerificationOnlyMode ? 1 : currentStep} steps={displayedSteps} />
 
       {errors.general && (
@@ -7460,6 +10870,9 @@ const SimplifiedRentalWizard = ({
 
       <form onSubmit={handleFormSubmit} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         {currentStep === 1 && (
+          isStrictCustomerVerificationCaptureMode
+            ? (isLightVariant ? renderLightStrictVerificationCaptureStep() : renderStrictVerificationCaptureStep())
+            : isLightVariant ? renderLightStepOne() : (
           <div className="p-4 sm:p-6">
             {/* Simplified Header - Removed subtitle text */}
             <div className="flex flex-col gap-3 mb-4">
@@ -7478,7 +10891,7 @@ const SimplifiedRentalWizard = ({
                       }
                       setShowIDScanModal(true);
                     }}
-                    className={`${customerPrimaryButtonClass} w-full`}
+                    className={`${customerPrimaryButtonClass} w-full ${requiresCustomerVerification && !formData.customer_id_image ? 'animate-[pulse_0.9s_ease-in-out_infinite] shadow-[0_0_0_4px_rgba(124,58,237,0.12)]' : ''}`}
                     disabled={loading || submitting || successfullySubmitted}
                   >
                     <FileImage className="w-4 h-4" />
@@ -7489,21 +10902,55 @@ const SimplifiedRentalWizard = ({
                     </span>
                   </button>
                 )}
-                {activeTab !== 'additional' && customerScanNote && (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+                {activeTab !== 'additional' && formData.customer_id_image && (
+                  <div className="flex items-center justify-between gap-3 rounded-lg bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700">
+                    <p className="min-w-0 truncate">
+                      {tr(
+                        `ID captured: ${customerIdFileName || 'Saved image'}`,
+                        `Pièce capturée : ${customerIdFileName || 'Image enregistrée'}`
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          customer_id_image: null,
+                        }));
+                        setCustomerIdFileName('');
+                        setCustomerScanNote('');
+                        setCustomerScanNoteTone('neutral');
+                      }}
+                      className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-white text-violet-600 hover:bg-violet-100"
+                      aria-label={tr('Remove captured ID image', "Supprimer l'image d'identité capturée")}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+                {activeTab !== 'additional' && customerScanNote && !requiresCustomerVerification && (
+                  <div className={`rounded-lg px-4 py-3 text-sm font-medium ${
+                    customerScanNoteTone === 'success'
+                      ? 'border border-emerald-200 bg-emerald-50 text-emerald-800'
+                      : customerScanNoteTone === 'info'
+                        ? 'border border-blue-200 bg-blue-50 text-blue-800'
+                        : 'border border-amber-200 bg-amber-50 text-amber-800'
+                  }`}>
                     {customerScanNote}
                   </div>
                 )}
                 {activeTab !== 'additional' && requiresCustomerVerification && !formData.customer_id_image && (
-                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
-                    {tr('ID scan required. Please scan or import the customer ID before saving verification.', "Scan d'identité requis. Veuillez scanner ou importer l'identité du client avant d'enregistrer la vérification.")}
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+                    {tr('Add a customer ID scan or import an image to finish verification.', "Ajoutez un scan de pièce d'identité ou importez une image pour terminer la vérification.")}
                   </div>
                 )}
 
                 {formData.customer_name && (
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
                       setSelectedRentalForDrawer({
                         id: 'preview-rental-id',
                         customer_id: formData.customer_id,
@@ -7511,7 +10958,13 @@ const SimplifiedRentalWizard = ({
                         customer_email: formData.customer_email,
                         customer_phone: formData.customer_phone,
                         customer_licence_number: formData.customer_licence_number,
-                        customer_id_image: formData.customer_id_image
+                        customer_id_number: formData.customer_id_number,
+                        customer_dob: formData.customer_dob,
+                        customer_place_of_birth: formData.customer_place_of_birth,
+                        customer_nationality: formData.customer_nationality,
+                        customer_issue_date: formData.customer_issue_date,
+                        customer_id_image: formData.customer_id_image,
+                        customer_id_scan_history: formData.customer_id_scan_history,
                       });
                       setShowCustomerDrawer(true);
                     }}
@@ -7602,16 +11055,32 @@ const SimplifiedRentalWizard = ({
               </div>
             </CollapsibleSection>
           </div>
+          )
         )}
 
         {currentStep === 2 && (
+          isLightVariant ? renderLightStepTwo() : (
           <div className="p-4 sm:p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-6">{tr('Vehicle & Rental Period', 'Véhicule et période de location')}</h2>
+          <h2 className="text-xl font-bold text-gray-900">{tr('Vehicle & Rental Period', 'Véhicule et période de location')}</h2>
+          <p className="mt-2 mb-6 text-sm text-gray-600">
+            {tr(
+              'Set the rental shape first, then choose the vehicle and package.',
+              'Définissez d’abord la location, puis choisissez le véhicule et le forfait.'
+            )}
+          </p>
             
             <div className="space-y-6">
-              <div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-4 flex items-center gap-2">
+                  <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-700">
+                    {tr('Step 1', 'Étape 1')}
+                  </span>
+                  <span className="text-sm font-semibold text-slate-700">
+                    {tr('Rental setup', 'Configuration')}
+                  </span>
+                </div>
                 <label className="block text-sm font-medium text-gray-700 mb-3">
-                  Rental Type
+                  {tr('Rental type', 'Type de location')}
                 </label>
                 <div className="flex gap-2">
                   {['hourly', 'daily'].map((type) => (
@@ -7631,7 +11100,9 @@ const SimplifiedRentalWizard = ({
                           {type.charAt(0).toUpperCase() + type.slice(1)}
                         </span>
                         <span className="text-xs text-gray-500 mt-1">
-                          {type === 'hourly' ? 'Flexible timing' : '24-hour periods'}
+                          {type === 'hourly'
+                            ? tr('Flexible timing', 'Horaire flexible')
+                            : tr('24-hour periods', 'Périodes de 24 h')}
                         </span>
                       </div>
                     </button>
@@ -7645,15 +11116,15 @@ const SimplifiedRentalWizard = ({
                     <div className="flex items-center gap-2">
                       <Clock className="w-5 h-5 text-blue-600" />
                       <h3 className="font-semibold text-blue-800 text-sm sm:text-base">
-                        Quick Select Duration
+                        {tr('Quick duration', 'Durée rapide')}
                       </h3>
                     </div>
                   </div>
                   
                   {formData.rental_type === 'hourly' && (
                     <div>
-                      <div className="grid grid-cols-4 gap-2 mb-2">
-                        {[1, 1.5, 2, 3].map((hours) => (
+                      <div className="grid grid-cols-3 gap-2 mb-2">
+                        {[0.5, 1, 1.5, 2, 3, 4].map((hours) => (
                           <button
                             key={hours}
                             type="button"
@@ -7665,9 +11136,9 @@ const SimplifiedRentalWizard = ({
                                 : 'bg-white hover:bg-blue-50 text-gray-700 border-2 border-blue-100 hover:border-blue-300'
                             } ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
                           >
-                            <span className="text-lg font-bold">{hours}</span>
+                            <span className="text-lg font-bold">{hours === 0.5 ? '30' : hours}</span>
                             <span className="text-xs mt-0.5">
-                              {hours === 1 ? 'Hour' : 'Hours'}
+                              {hours === 0.5 ? 'min' : hours === 1 ? 'Hour' : 'Hours'}
                             </span>
                           </button>
                         ))}
@@ -7724,22 +11195,114 @@ const SimplifiedRentalWizard = ({
                 </div>
               )}
 
-              {/* KM Packages Section - Appears when rental type is selected, positioned under filter by model */}
+              <div ref={vehicleStepRef}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+                    {tr('Step 2', 'Étape 2')}
+                  </span>
+                  <span className="text-sm font-semibold text-slate-700">
+                    {tr('Choose vehicle', 'Choisir le véhicule')}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    {tr('Available vehicles', 'Véhicules disponibles')} * ({filteredVehicles.length > 0 ? filteredVehicles.length : availableVehicles.length} {tr('available', 'disponibles')})
+                  </label>
+                  {formData.rental_type && formData.quantity_days > 0 && (
+                    <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
+                      {formData.quantity_days} {formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? tr('hours selected', 'heures sélectionnées') : tr('days selected', 'jours sélectionnés')) : (formData.rental_type === 'hourly' ? tr('hour selected', 'heure sélectionnée') : tr('day selected', 'jour sélectionné'))}
+                    </span>
+                  )}
+                </div>
+                {!selectedVehicle ? (
+                  <VehicleCardGrid
+                    vehicles={filteredVehicles.length > 0 ? filteredVehicles : (availableVehicles.length > 0 ? availableVehicles : vehicleModels)}
+                    selectedId={formData.vehicle_id}
+                    showSearchBar={activeModelFilter === null}
+                    onSelect={(vehicleId) => {
+                      handleInputChange('vehicle_id', vehicleId || '');
+                    }}
+                    disabled={loading || successfullySubmitted}
+                    rentalType={formData.rental_type}
+                    duration={formData.quantity_days}
+                    availablePackages={availablePackages}
+                    selectedPackageId={formData.selected_package_id}
+                    usePackagePricing={formData.use_package_pricing}
+                  />
+                ) : (
+                  <div className="rounded-xl border-2 border-emerald-500 bg-gradient-to-r from-emerald-50 to-teal-50 p-4 ring-2 ring-emerald-200 shadow-md">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+                          {tr('Selected vehicle', 'Véhicule sélectionné')}
+                        </p>
+                        <h4 className="mt-1 text-lg font-bold text-slate-900">
+                          {selectedVehicle.plate_number || tr('No plate', 'Sans plaque')}
+                        </h4>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                            {selectedVehicle.model || selectedVehicle.name || tr('Vehicle', 'Véhicule')}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleInputChange('vehicle_id', '')}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                      >
+                        <X className="h-4 w-4" />
+                        {tr('Back to vehicles', 'Retour aux véhicules')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {errors.vehicle_id && (
+                  <p className="text-red-500 text-xs mt-1">{errors.vehicle_id}</p>
+                )}
+                {formData.rental_type && formData.quantity_days > 0 && !formData.vehicle_id && (
+                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-center gap-2 text-blue-700">
+                      <Info className="w-4 h-4" />
+                      <span className="text-sm">{tr('Choose a vehicle to unlock live pricing', 'Choisissez un véhicule pour afficher le prix en direct')}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* KM Packages Section - shown after vehicle selection to keep the flow decision-first */}
               {formData.rental_type && (
                 <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm mb-4 min-h-[150px]">
-                  <div className="flex items-center gap-2 mb-4">
-                    <Package className="w-5 h-5 text-purple-600" />
-                    <h3 className="font-semibold text-gray-900">{tr('KM Packages', 'Forfaits kilométriques')}</h3>
-                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-                      {formData.rental_type === 'hourly' ? tr('Hourly packages', 'Forfaits horaires') : tr('Daily packages', 'Forfaits journaliers')}
+                  <div className="mb-3 flex items-center gap-2">
+                    <span className="rounded-full bg-purple-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-purple-700">
+                      {tr('Step 3', 'Étape 3')}
+                    </span>
+                    <span className="text-sm font-semibold text-slate-700">
+                      {tr('Choose package', 'Choisir le forfait')}
                     </span>
                   </div>
+                  <div className="mb-4">
+                    <div className="flex items-center gap-2">
+                      <Package className="w-5 h-5 text-purple-600" />
+                      <h3 className="font-semibold text-gray-900">{tr('Packages', 'Forfaits')}</h3>
+                    </div>
+                  </div>
+
+                  {!formData.vehicle_id && (
+                    <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                      <div className="flex items-center gap-2 text-gray-600">
+                        <Package className="w-5 h-5" />
+                        <span className="text-sm">
+                          {tr('Pick a vehicle first to load matching packages.', 'Choisissez d’abord un véhicule pour charger les forfaits correspondants.')}
+                        </span>
+                      </div>
+                    </div>
+                  )}
 
                   {formData.vehicle_id && !isLoadingPackages && availablePackages.length === 0 && (
                     <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
                       <div className="flex items-center gap-2 text-gray-600">
                         <Package className="w-5 h-5" />
-                        <span className="text-sm">{tr('No', 'Aucun')} {formData.rental_type === 'hourly' ? tr('hourly', 'horaire') : tr('daily', 'journalier')} {tr('packages available for this vehicle', 'disponible pour ce véhicule')}</span>
+                        <span className="text-sm">{tr('No package options are available for this vehicle yet.', 'Aucun forfait n’est encore disponible pour ce véhicule.')}</span>
                       </div>
                     </div>
                   )}
@@ -7756,12 +11319,21 @@ const SimplifiedRentalWizard = ({
                   {formData.vehicle_id && formData.rental_type && availablePackages.length > 0 && (
                     <div className="transition-all duration-200 ease-out opacity-100 translate-y-0">
                       <KMPackagesTab
-                        packages={availablePackages.filter(pkg => {
-                          // Filter packages by rental type: hourly packages for hourly, daily for daily
+                        packages={availablePackages.filter((pkg) => {
                           if (!formData.rental_type) return true;
                           const pkgRateType = pkg.rate_types?.name?.toLowerCase();
-                          if (!pkgRateType) return true; // Show packages without a rate type
-                          if (formData.rental_type === 'hourly') return pkgRateType === 'hourly';
+                          if (!pkgRateType) return true;
+
+                          if (formData.rental_type === 'hourly') {
+                            if (pkgRateType !== 'hourly') return false;
+                            const durationUnits = Number((formData.quantity_hours ?? formData.quantity_days) || 0) || 0;
+                            const packageDurationUnits = getPackageDurationUnits(pkg);
+                            if (!packageDurationUnits) return true;
+                            if (durationUnits === 0.5) return packageDurationUnits === 0.5;
+                            if (durationUnits === 4) return packageDurationUnits === 4;
+                            return packageDurationUnits === 1;
+                          }
+
                           if (formData.rental_type === 'daily') return pkgRateType === 'daily';
                           return true;
                         })}
@@ -7773,6 +11345,7 @@ const SimplifiedRentalWizard = ({
                           console.log('📦 Package calculations received:', packageData);
 
                           if (!packageData?.use_package_pricing && !packageData?.package_id) {
+                            setSelectedPackageDraft(null);
                             setFormData(prev => ({
                               ...prev,
                               selected_package_id: null,
@@ -7783,68 +11356,84 @@ const SimplifiedRentalWizard = ({
                               selected_package_included_km_per_unit: null,
                               selected_package_total_included_km: null,
                               selected_package_extra_rate: 0,
+                              selected_package_fuel_charge_enabled: false,
                               selected_package_description: '',
                               use_package_pricing: false,
                               package_overrides_tier: false
                             }));
+                            loadFuelChargeSettings(null, null, false);
                             return;
                           }
                           
                           const packageDurationUnits = Number(packageData.package_duration_units);
-
-                          if (!Number.isFinite(packageDurationUnits) || packageDurationUnits <= 0) {
-                            toast.error(tr(
-                              'Package duration is missing. Please set the package duration in Pricing before using it.',
-                              'La durée du forfait est manquante. Veuillez définir la durée du forfait dans la tarification avant de l’utiliser.'
-                            ));
-                            return;
-                          }
-                          const totalIncludedKm = packageData.package_total_included_km ?? packageData.package_included_km_per_unit ?? null;
+                          setSelectedPackageDraft({
+                            package_id: packageData.package_id,
+                            package_name: packageData.package_name,
+                            package_rate_per_unit: packageData.package_rate_per_unit,
+                            package_included_km_per_unit: packageData.package_included_km_per_unit,
+                            package_total_included_km: packageData.package_total_included_km,
+                            package_extra_rate: packageData.package_extra_rate,
+                            package_fuel_charge_enabled: Boolean(packageData.package_fuel_charge_enabled),
+                            package_description: packageData.package_description,
+                            package_duration_units: packageDurationUnits,
+                            use_package_pricing: true,
+                            package_overrides_tier: true,
+                          });
                           
-                          // Update form data with package info in a SINGLE state update
                           setFormData(prev => {
+                            const currentDurationUnits = Math.max(
+                              Number(
+                                prev.rental_type === 'hourly'
+                                  ? (prev.quantity_hours ?? prev.quantity_days)
+                                  : prev.quantity_days
+                              ) || 0,
+                              prev.rental_type === 'hourly' ? 0.5 : 1
+                            );
+                            const nextDurationUnits = currentDurationUnits > 0
+                              ? currentDurationUnits
+                              : (Number.isFinite(packageDurationUnits) && packageDurationUnits > 0
+                                  ? packageDurationUnits
+                                  : (prev.rental_type === 'hourly' ? 0.5 : 1));
+                            const nextTotalIncludedKm = calculatePackageTotalIncludedKm(
+                              packageData.package_included_km_per_unit,
+                              nextDurationUnits,
+                              packageDurationUnits
+                            );
                             console.log('📦 Updating from price:', prev.unit_price, 'to:', packageData.package_rate_per_unit);
                             
                             const newFormData = {
                               ...prev,
-                              quantity_days: packageDurationUnits,
-                              quantity_hours: prev.rental_type === 'hourly' ? packageDurationUnits : null,
-                              // Package identification
+                              quantity_days: nextDurationUnits,
+                              quantity_hours: prev.rental_type === 'hourly' ? nextDurationUnits : null,
                               selected_package_id: packageData.package_id,
                               selected_package_name: packageData.package_name,
-                              
-                              // Package rates
                               selected_package_fixed_amount: packageData.package_rate_per_unit,
                               selected_package_rate_per_unit: packageData.package_rate_per_unit,
-                              
-                              // Kilometer limits
                               selected_package_included_km: packageData.package_included_km_per_unit,
                               selected_package_included_km_per_unit: packageData.package_included_km_per_unit,
-                              selected_package_total_included_km: totalIncludedKm,
-                              
-                              // Extra rates
+                              selected_package_total_included_km: nextTotalIncludedKm,
+                              selected_package_duration_units: packageDurationUnits,
                               selected_package_extra_rate: packageData.package_extra_rate,
+                              selected_package_fuel_charge_enabled: Boolean(packageData.package_fuel_charge_enabled),
                               selected_package_description: packageData.package_description,
-                              
-                              // CRITICAL: Set package pricing flags FIRST
                               use_package_pricing: true,
                               package_overrides_tier: true,
-                              
-                              // CRITICAL: Override the unit price with package rate
                               unit_price: packageData.package_rate_per_unit
                             };
-                            syncEndDateTimeFromStart(newFormData, packageDurationUnits);
+                            syncEndDateTimeFromStart(newFormData, nextDurationUnits);
                             
                             console.log('📦 Final form data update:', {
                               old_price: prev.unit_price,
                               new_price: newFormData.unit_price,
                               package_duration_units: packageDurationUnits,
+                              active_duration_units: nextDurationUnits,
                               use_package_pricing: newFormData.use_package_pricing,
                               package_rate: packageData.package_rate_per_unit
                             });
                             
                             return newFormData;
                           });
+                          setFuelChargeEnabled(Boolean(packageData.package_fuel_charge_enabled));
                         }}
                         onPriceOverride={(newUnitPrice) => {
                           console.log('💰 Price override called with:', newUnitPrice);
@@ -7861,122 +11450,118 @@ const SimplifiedRentalWizard = ({
                 </div>
               )}
 
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <label className="block text-sm font-medium text-gray-700">
-                    {tr('Select a vehicle', 'Sélectionnez un véhicule')} * ({filteredVehicles.length > 0 ? filteredVehicles.length : availableVehicles.length} {tr('available', 'disponibles')})
-                  </label>
-                  {formData.rental_type && formData.quantity_days > 0 && (
-                    <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
-                      {formData.quantity_days} {formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? tr('hours selected', 'heures sélectionnées') : tr('days selected', 'jours sélectionnés')) : (formData.rental_type === 'hourly' ? tr('hour selected', 'heure sélectionnée') : tr('day selected', 'jour sélectionné'))}
-                    </span>
-                  )}
-                </div>
-                <VehicleCardGrid
-                  vehicles={filteredVehicles.length > 0 ? filteredVehicles : (availableVehicles.length > 0 ? availableVehicles : vehicleModels)}
-                  selectedId={formData.vehicle_id}
-                  showSearchBar={activeModelFilter === null}
-                  onSelect={(vehicleId) => {
-                    handleInputChange('vehicle_id', vehicleId || '');
-                  }}
-                  disabled={loading || successfullySubmitted}
-                  rentalType={formData.rental_type}
-                  duration={formData.quantity_days}
-                  availablePackages={availablePackages}
-                  selectedPackageId={formData.selected_package_id}
-                  usePackagePricing={formData.use_package_pricing}
-                />
-                {errors.vehicle_id && (
-                  <p className="text-red-500 text-xs mt-1">{errors.vehicle_id}</p>
-                )}
-                {formData.rental_type && formData.quantity_days > 0 && !formData.vehicle_id && (
-                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                    <div className="flex items-center gap-2 text-blue-700">
-                      <Info className="w-4 h-4" />
-                      <span className="text-sm">{tr('Select a vehicle to see real-time pricing', 'Sélectionnez un véhicule pour voir le prix en temps réel')}</span>
-                    </div>
+              <div className="rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-50 to-white p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      {tr('Rental summary', 'Résumé de location')}
+                    </p>
+                    <h3 className="mt-1 text-base font-bold text-slate-900">
+                      {tr('Current selection', 'Sélection actuelle')}
+                    </h3>
                   </div>
-                )}
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      {tr('Type', 'Type')}
+                    </p>
+                    <p className="mt-1 text-sm font-bold text-slate-900">
+                      {formData.rental_type
+                        ? (formData.rental_type === 'hourly' ? tr('Hourly', 'Horaire') : tr('Daily', 'Journalier'))
+                        : tr('Not set', 'Non défini')}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      {tr('Duration', 'Durée')}
+                    </p>
+                    <p className="mt-1 text-sm font-bold text-slate-900">
+                      {selectedDurationLabel}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      {tr('Vehicle', 'Véhicule')}
+                    </p>
+                    <p className="mt-1 text-sm font-bold text-slate-900">
+                      {selectedVehicleLabel}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      {tr('Package', 'Forfait')}
+                    </p>
+                    <p className="mt-1 text-sm font-bold text-slate-900">
+                      {standardPackageSummaryLabel}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+                      {tr('Live total', 'Total en direct')}
+                    </p>
+                    {(() => {
+                      const durationUnits = Number(formData.quantity_days || 0) || 0;
+                      const packageTotal = hasResolvedStandardPackage
+                        ? selectedStandardPackageTotal
+                        : getFixedPackageAmount(formData);
+                      const rateAmount = hasResolvedStandardPackage
+                        ? packageTotal
+                        : (Number(formData.unit_price) || 0);
+                      const shouldShowFormula = durationUnits > 0 && rateAmount > 0;
+                      const unitLabel = formData.rental_type === 'hourly'
+                        ? tr('hr', 'h')
+                        : tr('day', 'jour');
+
+                      if (hasResolvedStandardPackage && packageTotal > 0) {
+                        return (
+                          <p className="mt-1 text-[11px] font-medium text-emerald-700/80">
+                            {tr('Fixed package total', 'Total fixe du forfait')}
+                          </p>
+                        );
+                      }
+
+                      return shouldShowFormula ? (
+                        <p className="mt-1 text-[11px] font-medium text-emerald-700/80">
+                          {`${rateAmount.toFixed(2)} × ${durationUnits} ${unitLabel}`}
+                        </p>
+                      ) : null;
+                    })()}
+                    <p className="mt-1 text-sm font-bold text-emerald-800">
+                      {(hasResolvedStandardPackage
+                        ? selectedStandardPackageTotal
+                        : (Number(formData.total_amount) || Number(formData.unit_price) || 0)
+                      ).toFixed(2)} MAD
+                    </p>
+                  </div>
+                </div>
               </div>
-
-              <CollapsibleSection title={tr('Transport Options', 'Options de transport')} defaultOpen={false}>
-                <div className="space-y-3">
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      checked={formData.pickup_transport}
-                      onChange={(e) => handleInputChange('pickup_transport', e.target.checked)}
-                      disabled={successfullySubmitted}
-                      className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                    />
-                    <span className="text-gray-700">
-                      {tr('Pick-up Transport', 'Transport aller')} (+{transportFees.pickup_fee.toFixed(2)} MAD)
-                    </span>
-                  </label>
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      checked={formData.dropoff_transport}
-                      onChange={(e) => handleInputChange('dropoff_transport', e.target.checked)}
-                      disabled={successfullySubmitted}
-                      className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                    />
-                    <span className="text-gray-700">
-                      {tr('Drop-off Transport', 'Transport retour')} (+{transportFees.dropoff_fee.toFixed(2)} MAD)
-                    </span>
-                  </label>
-                </div>
-              </CollapsibleSection>
-
-              <CollapsibleSection title={tr('Pickup & Drop-off Locations', 'Lieux de prise en charge et de retour')} defaultOpen={false}>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      {tr('Pickup Location', 'Lieu de prise en charge')}
-                    </label>
-                    <select
-                      value={formData.pickup_location}
-                      onChange={(e) => handleInputChange('pickup_location', e.target.value)}
-                      disabled={successfullySubmitted}
-                      className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      <option value="Office">{tr('Office', 'Bureau')}</option>
-                      <option value="Hotel">{tr('Hotel', 'Hôtel')}</option>
-                      <option value="Airport">{tr('Airport', 'Aéroport')}</option>
-                      <option value="Custom">{tr('Custom Location', 'Lieu personnalisé')}</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      {tr('Drop-off Location', 'Lieu de retour')}
-                    </label>
-                    <select
-                      value={formData.dropoff_location}
-                      onChange={(e) => handleInputChange('dropoff_location', e.target.value)}
-                      disabled={successfullySubmitted}
-                      className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      <option value="Office">{tr('Office', 'Bureau')}</option>
-                      <option value="Hotel">{tr('Hotel', 'Hôtel')}</option>
-                      <option value="Airport">{tr('Airport', 'Aéroport')}</option>
-                      <option value="Custom">{tr('Custom Location', 'Lieu personnalisé')}</option>
-                    </select>
-                  </div>
-                </div>
-              </CollapsibleSection>
             </div>
           </div>
+          )
         )}
 
     
 
 {currentStep === 3 && (
+  isLightVariant ? renderLightStepThree() : (
   <div className="p-4 sm:p-6">
-    <h2 className="text-xl font-bold text-gray-900 mb-6">{tr('Review & Payment', 'Vérification et paiement')}</h2>
+    <h2 className="text-xl font-bold text-gray-900">{tr('Review & Payment', 'Vérification et paiement')}</h2>
+    <p className="mt-2 mb-6 text-sm text-gray-600">
+      {tr(
+        'Review the booking once, then capture payment and deposit details.',
+        'Vérifiez la réservation une fois, puis saisissez le paiement et le dépôt.'
+      )}
+    </p>
     
     <div className="space-y-6">
       {/* Rental Summary with Package Info */}
-      <div className="bg-gray-50 rounded-lg p-4">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <h3 className="font-semibold text-gray-900 mb-3">{tr('Rental Summary', 'Résumé de la location')}</h3>
         <div className="space-y-2">
           <div className="flex justify-between">
@@ -8009,81 +11594,48 @@ const SimplifiedRentalWizard = ({
             <span className="text-gray-600">{tr('Type:', 'Type :')}</span>
             <span className="font-medium capitalize">{formData.rental_type}</span>
           </div>
-          
-          {/* Package Information */}
-          {formData.use_package_pricing && formData.selected_package_name && (
-            <div className="mt-3 pt-3 border-t border-gray-200">
-              <div className="flex items-center gap-2 mb-2">
-                <Package className="w-4 h-4 text-purple-600" />
-                <span className="text-sm font-semibold text-purple-700">{tr('Selected Package', 'Forfait sélectionné')}</span>
-              </div>
-              <div className="bg-purple-50 rounded-lg p-3">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm text-purple-700">{tr('Package:', 'Forfait :')}</span>
-                  <span className="text-sm font-bold text-purple-700">{formData.selected_package_name}</span>
-                </div>
-                <div className="flex justify-between items-center mb-1">
-                  <span className="text-xs text-gray-600">{tr('Package price:', 'Prix du forfait :')}</span>
-                  <span className="text-xs font-semibold">{formData.selected_package_rate_per_unit?.toFixed(2)} MAD</span>
-                </div>
-                {formData.selected_package_included_km && (
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="text-xs text-gray-600">{tr('Included KM:', 'KM inclus :')}</span>
-                    <span className="text-xs font-semibold">{formData.selected_package_included_km} km</span>
-                  </div>
-                )}
-                {formData.selected_package_extra_rate > 0 && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-gray-600">{tr('Extra KM rate:', 'Tarif KM supplémentaire :')}</span>
-                    <span className="text-xs font-semibold text-orange-600">{formData.selected_package_extra_rate.toFixed(2)} MAD/km</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
       {/* Price Calculator with Package Info */}
-      <PriceCalculator 
-        formData={formData} 
-        onPriceChange={handleInputChange} 
-        onResetToAuto={handleResetAutoPrice}
-        autoCalculatedPrice={autoCalculatedPrice} 
-        userProfile={userProfile} 
-        disabled={successfullySubmitted} 
-        fuelChargeEnabled={fuelChargeEnabled}
-        fuelChargeAmount={fuelChargeAmount}
-        pricingComputationMode={pricingComputationMode}
-        pricingComputationLabel={pricingComputationLabel}
-      />
+      {!formData.use_package_pricing && (
+        <PriceCalculator 
+          formData={formData} 
+          onPriceChange={handleInputChange} 
+          onResetToAuto={handleResetAutoPrice}
+          autoCalculatedPrice={autoCalculatedPrice} 
+          userProfile={userProfile} 
+          disabled={successfullySubmitted} 
+          fuelChargeEnabled={fuelChargeEnabled}
+          fuelChargeAmount={fuelChargeAmount}
+          pricingComputationMode={pricingComputationMode}
+          pricingComputationLabel={pricingComputationLabel}
+        />
+      )}
 
       {/* Package Summary if selected */}
       {formData.use_package_pricing && formData.selected_package_name && (
-        <div className="bg-purple-50 rounded-xl p-4 border-2 border-purple-200">
+        <div className="rounded-xl border border-purple-200 bg-white p-4 shadow-sm">
           <div className="flex items-center gap-2 mb-3">
             <Package className="w-5 h-5 text-purple-600" />
             <h3 className="font-semibold text-purple-900">{tr('Package Summary', 'Résumé du forfait')}</h3>
-            <span className="text-xs bg-purple-200 text-purple-700 px-2 py-0.5 rounded-full">
-              {tr('Active', 'Actif')}
-            </span>
           </div>
           
           <div className="space-y-3">
             <div className="flex justify-between items-center">
               <span className="text-sm text-gray-600">{tr('Package:', 'Forfait :')}</span>
-              <span className="text-sm font-bold text-purple-700">{formData.selected_package_name}</span>
+              <span className="text-sm font-bold text-purple-700">{getSelectedPackageDisplayLabel(formData, tr)}</span>
             </div>
             
 	            <div className="flex justify-between items-center">
-	              <span className="text-sm text-gray-600">{tr('Package price:', 'Prix du forfait :')}</span>
-	              <span className="text-sm font-bold text-gray-900">{formData.selected_package_rate_per_unit?.toFixed(2)} MAD</span>
+	              <span className="text-sm text-gray-600">{tr('Package total:', 'Total du forfait :')}</span>
+	              <span className="text-sm font-bold text-gray-900">{getFixedPackageAmount(formData).toFixed(2)} MAD</span>
 	            </div>
             
             <div className="flex justify-between items-center">
               <span className="text-sm text-gray-600">{tr('Duration:', 'Durée :')}</span>
 	              <span className="text-sm font-bold text-gray-900">
-	                {formData.quantity_days === 0.5 ? '30 min' : `${formData.quantity_days} ${formData.quantity_days > 1 ? (formData.rental_type === 'hourly' ? 'hours' : 'days') : (formData.rental_type === 'hourly' ? 'hour' : 'day')}`}
+	                {formatRentalDurationLabel(formData.rental_type, formData.quantity_days, tr)}
 	              </span>
 	            </div>
             
@@ -8096,6 +11648,12 @@ const SimplifiedRentalWizard = ({
 	                    {formData.selected_package_included_km_per_unit} km
 	                  </span>
 	                </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600">{tr('Total included km:', 'Total km inclus :')}</span>
+                    <span className="text-sm font-medium text-gray-700">
+                      {formData.selected_package_total_included_km || 0} km
+                    </span>
+                  </div>
 	              </>
 	            )}
             
@@ -8107,33 +11665,48 @@ const SimplifiedRentalWizard = ({
                 </span>
               </div>
             )}
+
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-600">{tr('Fuel policy:', 'Politique carburant :')}</span>
+              <span className={`text-sm font-medium ${formData.selected_package_fuel_charge_enabled ? 'text-amber-600' : 'text-emerald-700'}`}>
+                {formData.selected_package_fuel_charge_enabled
+                  ? tr('Fuel charged separately', 'Carburant facturé séparément')
+                  : tr('Fuel included', 'Carburant inclus')}
+              </span>
+            </div>
+
+            {formData.selected_package_fuel_charge_enabled && fuelChargeAmount > 0 && (
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">{tr('Fuel line charge:', 'Frais par ligne carburant :')}</span>
+                <span className="text-sm font-medium text-amber-600">
+                  {fuelChargeAmount.toFixed(2)} MAD/{tr('line', 'ligne')}
+                </span>
+              </div>
+            )}
             
             <div className="flex justify-between items-center pt-3 border-t border-purple-200">
               <span className="text-base font-semibold text-purple-900">{tr('Package Total:', 'Total du forfait :')}</span>
 	              <span className="text-xl font-bold text-purple-700">
-	                {formData.selected_package_rate_per_unit?.toFixed(2)} MAD
+	                {getFixedPackageAmount(formData).toFixed(2)} MAD
 	              </span>
             </div>
             
-            <div className="text-xs text-purple-600 mt-2 bg-white p-2 rounded">
-              <div className="flex items-start gap-2">
-                <Info className="w-4 h-4 text-purple-500 mt-0.5 flex-shrink-0" />
-                <div>
-	                  {formData.selected_package_included_km_per_unit && (
-	                    <span>{tr('Total included:', 'Total inclus :')} {formData.selected_package_included_km_per_unit} km. </span>
-	                  )}
-                  {formData.selected_package_extra_rate > 0 && (
-                    <span>{tr('Extra km:', 'Km supplémentaires :')} {formData.selected_package_extra_rate.toFixed(2)} MAD/km.</span>
-                  )}
-                </div>
+            {formData.selected_package_extra_rate > 0 && (
+              <div className="rounded-lg border border-purple-100 bg-purple-50 px-3 py-2 text-xs text-purple-700">
+                {tr('Extra km will be billed at', 'Le km supplémentaire sera facturé à')} {formData.selected_package_extra_rate.toFixed(2)} MAD/km
               </div>
-            </div>
+            )}
+            {formData.selected_package_fuel_charge_enabled && fuelChargeAmount > 0 && (
+              <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                {tr('Fuel is not included. Missing fuel lines will be charged at', "Le carburant n'est pas inclus. Les lignes manquantes seront facturées à")} {fuelChargeAmount.toFixed(2)} MAD/{tr('line', 'ligne')}
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* Tier Pricing Breakdown (only if no package selected) */}
-      {!formData.use_package_pricing && formData.quantity_days > 1 ? (
+      {!formData.use_package_pricing && formData.quantity_days > 1 && (
         <TierPricingBreakdown 
           vehicleName={(() => {
             const vehicle = availableVehicles.find(v => v.id == formData.vehicle_id) || 
@@ -8150,29 +11723,10 @@ const SimplifiedRentalWizard = ({
           availableVehicles={availableVehicles}
           pricingComputationMode={pricingComputationMode}
         />
-      ) : !formData.use_package_pricing && (
-        <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-200">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
-              <Info className="w-5 h-5 text-blue-600" />
-            </div>
-            <div className="min-w-0">
-              <h4 className="font-bold text-blue-900 text-base sm:text-lg">{tr('Standard Rate Applied', 'Tarif standard appliqué')}</h4>
-              <p className="text-blue-600 text-sm mt-1">
-                {formData.quantity_days || 0} {formData.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour')} 
-                {tr(' rental at ', ' de location à ')}{formData.unit_price?.toFixed(2) || '0.00'} MAD
-                {formData.rental_type === 'hourly' ? tr('/hour', '/heure') : tr('/day', '/jour')}
-              </p>
-              <p className="text-xs text-blue-500 mt-2">
-                {tr('Tier pricing applies for 2+ ', 'La tarification par paliers s’applique à partir de 2 ')}{formData.rental_type === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')}
-              </p>
-            </div>
-          </div>
-        </div>
       )}
 
       {/* Payment Details */}
-      <div className="space-y-4">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-4">
         <h3 className="font-semibold text-gray-900">{tr('Payment Details', 'Détails du paiement')}</h3>
         
         <div>
@@ -8200,7 +11754,7 @@ const SimplifiedRentalWizard = ({
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            {tr('Deposit Amount (MAD)', 'Montant du dépôt (MAD)')}
+            {tr('Paid Amount (MAD)', 'Montant payé (MAD)')}
           </label>
           <input
             type="text"
@@ -8237,8 +11791,8 @@ const SimplifiedRentalWizard = ({
       {/* Fuel Charge Toggle */}
 <div className="mt-4">
   <FuelChargeToggle
-    enabled={fuelChargeEnabled}
-    onToggle={setFuelChargeEnabled}
+    enabled={effectiveFuelChargeToggleEnabled}
+    onToggle={handleFuelChargeToggleChange}
     amount={fuelChargeAmount}
     rentalType={formData.rental_type}
     disabled={successfullySubmitted}
@@ -8307,8 +11861,10 @@ const SimplifiedRentalWizard = ({
       </div>
     </div>
   </div>
+  )
 )}
 
+        {!isLightVariant && (
         <div className="rounded-b-xl border-t border-slate-200 bg-slate-50 p-4 sm:p-6">
           <div className="flex flex-col gap-3 sm:flex-row">
             <div className="flex-1 flex gap-3">
@@ -8422,15 +11978,26 @@ const SimplifiedRentalWizard = ({
             </div>
           </div>
         </div>
+        )}
       </form>
 
       {showIDScanModal && (
         <EnhancedUnifiedIDScanModal
+          saveWithoutOcrOnly={Boolean(formData.customer_id_image)}
           isOpen={showIDScanModal}
           onClose={() => {
             setShowIDScanModal(false);
           }}
           onScanComplete={(scannedData, imageFile) => {
+            if (isLightVariant) {
+              setLightCustomerEditOpen(true);
+              setLightCustomerAdditionalOpen(false);
+              setCustomerIdCaptureMethod('scanned');
+              setFormData(prev => ({
+                ...prev,
+                customer_id_capture_method: 'scanned',
+              }));
+            }
             handleIDScanComplete(scannedData, imageFile);
             setShowIDScanModal(false);
           }}
@@ -8439,8 +12006,53 @@ const SimplifiedRentalWizard = ({
             setShowIDScanModal(false);
           }}
           onImageSaved={(savedData, imageFile) => {
+            if (formData.customer_id_image) {
+              appendSecondaryCustomerIdImage(savedData, imageFile)
+                .catch((error) => {
+                  console.error('❌ Failed to save secondary customer ID image:', error);
+                  setCustomerScanNoteTone('warning');
+                  setCustomerScanNote(
+                    tr(
+                      'Unable to save the secondary ID image. Please try again.',
+                      "Impossible d'enregistrer la pièce d'identité secondaire. Veuillez réessayer."
+                    )
+                  );
+                  toast.error(
+                    tr(
+                      'Failed to save secondary ID image.',
+                      "Échec de l'enregistrement de la pièce d'identité secondaire."
+                    )
+                  );
+                })
+                .finally(() => {
+                  setShowIDScanModal(false);
+                });
+              return;
+            }
+            if (isLightVariant) {
+              setLightCustomerEditOpen(true);
+              setLightCustomerAdditionalOpen(false);
+              const captureMethod = savedData?.uploadMethod === 'gallery' ? 'imported' : 'saved';
+              setCustomerIdCaptureMethod(captureMethod);
+              setFormData(prev => ({
+                ...prev,
+                customer_id_capture_method: captureMethod,
+              }));
+            }
             handleIDScanComplete(savedData, imageFile);
             setShowIDScanModal(false);
+          }}
+          onImageSaveStateChange={(state) => {
+            if (state === 'saving') {
+              setCustomerScanNoteTone('info');
+              setCustomerScanNote(tr('Saving ID image...', "Enregistrement de l'image d'identité..."));
+            } else if (state === 'saved') {
+              setCustomerScanNoteTone('success');
+              setCustomerScanNote(tr('ID image saved successfully. Continue by entering the customer details manually.', "L'image d'identité a bien été enregistrée. Continuez en saisissant manuellement les détails du client."));
+            } else if (state === 'error') {
+              setCustomerScanNoteTone('warning');
+              setCustomerScanNote(tr('Unable to save the ID image. Please try again.', "Impossible d'enregistrer l'image d'identité. Veuillez réessayer."));
+            }
           }}
           customerId={formData.customer_id}
           autoProcessOnSelect={false}
@@ -8512,7 +12124,8 @@ const SimplifiedRentalWizard = ({
             setShowCustomerDrawer(false);
             setSelectedRentalForDrawer(null);
           }}
-          rental={previewRentalForDrawer}
+          rental={effectiveDrawerRental}
+          customerId={effectiveDrawerRental?.customer_id || formData.customer_id || null}
           secondDrivers={secondDrivers}
         />
       )}

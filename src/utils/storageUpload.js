@@ -5,8 +5,8 @@ const DEFAULT_IMAGE_SETTINGS = {
     maxWidth: 1400,
     maxHeight: 1400,
     quality: 0.6,
-    format: 'image/webp',
-    extension: 'webp',
+    format: 'image/jpeg',
+    extension: 'jpg',
   },
   photo: {
     maxWidth: 1600,
@@ -83,6 +83,42 @@ const getOptimizationProfile = (bucket, pathPrefix, optimizationProfile) => {
   return 'photo';
 };
 
+const isAbortLikeUploadError = (error) => {
+  const message = String(error?.message || error || '').toLowerCase();
+  const name = String(error?.name || '').toLowerCase();
+
+  return (
+    name === 'aborterror' ||
+    message.includes('aborterror') ||
+    message.includes('signal is aborted') ||
+    message.includes('signal has been aborted') ||
+    message.includes('the operation was aborted') ||
+    message.includes('body stream already read')
+  );
+};
+
+const isRetryableUploadError = (error) => {
+  const message = String(error?.message || error || '').toLowerCase();
+
+  return (
+    isAbortLikeUploadError(error) ||
+    message.includes('networkerror') ||
+    message.includes('failed to fetch') ||
+    message.includes('load failed') ||
+    message.includes('timeout') ||
+    message.includes('network request failed')
+  );
+};
+
+const isAlreadyExistsUploadError = (error) => {
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    message.includes('already exists') ||
+    message.includes('duplicate') ||
+    message.includes('resource already exists')
+  );
+};
+
 export const optimizeFileForUpload = async (file, options = {}) => {
   if (!isBrowserFile(file) || !isCompressibleImage(file)) {
     return {
@@ -100,6 +136,20 @@ export const optimizeFileForUpload = async (file, options = {}) => {
     options.pathPrefix,
     options.optimizationProfile
   );
+
+  // Keep legal docs and scan inputs in their original form.
+  // This avoids client-side canvas stalls on repeated uploads and preserves OCR quality.
+  if (profile === 'document') {
+    return {
+      file,
+      contentType: file?.type || 'application/octet-stream',
+      extension: file?.name?.split('.').pop()?.toLowerCase() || 'bin',
+      optimized: false,
+      originalSize: file?.size || 0,
+      finalSize: file?.size || 0,
+    };
+  }
+
   const settings = DEFAULT_IMAGE_SETTINGS[profile];
 
   try {
@@ -176,24 +226,48 @@ export const uploadFile = async (file, options = {}) => {
     const cleanName = fileName || `${timestamp}_${randomId}.${fileExt}`;
     const filePath = pathPrefix ? `${pathPrefix}/${cleanName}` : cleanName;
 
-    const { data, error } = await supabase.storage
-      .from(bucket)
-      .upload(filePath, uploadTarget, {
-        cacheControl: '3600',
-        upsert: false,
-        contentType: optimizedUpload.contentType,
-      });
+    let uploadData = null;
+    let uploadError = null;
 
-    if (error) throw error;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const result = await supabase.storage
+        .from(bucket)
+        .upload(filePath, uploadTarget, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: optimizedUpload.contentType,
+        });
+
+      uploadData = result.data || null;
+      uploadError = result.error || null;
+
+      if (!uploadError) {
+        break;
+      }
+
+      // If the first upload likely succeeded but the client lost the response,
+      // retrying the same path can come back as "already exists". Treat that as success.
+      if (isAlreadyExistsUploadError(uploadError)) {
+        uploadData = { path: filePath };
+        uploadError = null;
+        break;
+      }
+
+      if (!isRetryableUploadError(uploadError) || attempt === 3) {
+        throw uploadError;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 450 * attempt));
+    }
 
     const {
       data: { publicUrl },
-    } = supabase.storage.from(bucket).getPublicUrl(data.path);
+    } = supabase.storage.from(bucket).getPublicUrl(uploadData.path);
 
     return {
       success: true,
       url: publicUrl,
-      path: data.path,
+      path: uploadData.path,
       optimized: optimizedUpload.optimized,
       originalSize: optimizedUpload.originalSize,
       finalSize: optimizedUpload.finalSize,

@@ -10,7 +10,18 @@ const PhotoCapture = ({
   requirements, 
   onPhotosCapture, 
   onError,
-  disabled = false 
+  disabled = false,
+  title = 'Photo Documentation',
+  subtitle = '',
+  hideHeader = false,
+  hideInstructions = false,
+  squarePreview = false,
+  captureLabel = 'Take Photo',
+  submitLabel = '',
+  retakeLabel = 'Retake All Photos',
+  loadingLabel = 'Initializing camera...',
+  importLabel = '',
+  onImportClick = null,
 }) => {
   const [stream, setStream] = useState(null);
   const [capturedPhotos, setCapturedPhotos] = useState([]);
@@ -19,21 +30,47 @@ const PhotoCapture = ({
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const isMountedRef = useRef(false);
+  const cameraRequestIdRef = useRef(0);
+
+  const stopCameraStream = () => {
+    const activeStream = streamRef.current;
+    if (activeStream) {
+      activeStream.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setStream(null);
+  };
 
   // Initialize camera on component mount
   useEffect(() => {
+    isMountedRef.current = true;
     initializeCamera();
-    return cleanup;
+    return () => {
+      isMountedRef.current = false;
+      cameraRequestIdRef.current += 1;
+      stopCameraStream();
+      capturedPhotos.forEach((photo) => {
+        if (photo.url) {
+          URL.revokeObjectURL(photo.url);
+        }
+      });
+    };
   }, []);
 
-  const cleanup = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-    }
-  };
+  useEffect(() => {
+    streamRef.current = stream;
+  }, [stream]);
 
   const initializeCamera = async () => {
+    const requestId = cameraRequestIdRef.current + 1;
+    cameraRequestIdRef.current = requestId;
     try {
+      stopCameraStream();
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { 
           facingMode: 'environment',
@@ -41,14 +78,23 @@ const PhotoCapture = ({
           height: { ideal: 720 }
         }
       });
+
+      if (!isMountedRef.current || cameraRequestIdRef.current !== requestId) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       
       setStream(mediaStream);
+      streamRef.current = mediaStream;
       
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
       }
       
     } catch (err) {
+      if (!isMountedRef.current || cameraRequestIdRef.current !== requestId) {
+        return;
+      }
       console.error('Camera initialization failed:', err);
       setError('Camera access failed. Please allow camera permissions.');
       onError?.(err.message);
@@ -152,22 +198,30 @@ const PhotoCapture = ({
   const minPhotos = requirements?.minPhotos || 3;
   const maxPhotos = requirements?.maxPhotos || 5;
   const canSubmit = capturedPhotos.length >= minPhotos;
+  const resolvedSubtitle = subtitle || `Capture ${minPhotos}-${maxPhotos} photos • ${capturedPhotos.length}/${maxPhotos} taken`;
+  const resolvedSubmitLabel = submitLabel || `Submit Photos (${capturedPhotos.length})`;
+  const previewClassName = squarePreview ? 'aspect-square' : '';
+  const shouldShowImport = typeof onImportClick === 'function';
 
   return (
     <div className="w-full max-w-md mx-auto bg-white rounded-lg shadow-lg overflow-hidden">
       {/* Header */}
-      <div className="bg-green-600 text-white p-4">
-        <h3 className="text-lg font-semibold flex items-center">
-          <Camera className="mr-2" size={20} />
-          Photo Documentation
-        </h3>
-        <p className="text-sm opacity-90 mt-1">
-          Capture {minPhotos}-{maxPhotos} photos • {capturedPhotos.length}/{maxPhotos} taken
-        </p>
-      </div>
+      {!hideHeader ? (
+        <div className="bg-green-600 text-white p-4">
+          <h3 className="text-lg font-semibold flex items-center">
+            <Camera className="mr-2" size={20} />
+            {title}
+          </h3>
+          {resolvedSubtitle ? (
+            <p className="text-sm opacity-90 mt-1">
+              {resolvedSubtitle}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Camera Preview */}
-      <div className="relative bg-black" style={{ height: '280px' }}>
+      <div className={`relative bg-black ${previewClassName}`} style={squarePreview ? undefined : { height: '280px' }}>
         <video
           ref={videoRef}
           autoPlay
@@ -182,14 +236,6 @@ const PhotoCapture = ({
           <div className="absolute inset-0 bg-white opacity-70 animate-pulse"></div>
         )}
         
-        {/* Camera Grid Lines */}
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="w-full h-full grid grid-cols-3 grid-rows-3">
-            {Array.from({ length: 9 }).map((_, i) => (
-              <div key={i} className="border border-white border-opacity-20"></div>
-            ))}
-          </div>
-        </div>
       </div>
 
       {/* Hidden canvas for photo capture */}
@@ -233,14 +279,27 @@ const PhotoCapture = ({
       <div className="p-4 space-y-3">
         {/* Capture Button */}
         {stream && capturedPhotos.length < maxPhotos && (
-          <button
-            onClick={capturePhoto}
-            disabled={disabled || isCapturing}
-            className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-3 px-4 rounded-lg flex items-center justify-center font-medium"
-          >
-            <Camera className="mr-2" size={20} />
-            {isCapturing ? 'Capturing...' : 'Take Photo'}
-          </button>
+          <div className="space-y-2">
+            <button
+              onClick={capturePhoto}
+              disabled={disabled || isCapturing}
+              className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-3 px-4 rounded-lg flex items-center justify-center font-medium"
+            >
+              <Camera className="mr-2" size={20} />
+              {isCapturing ? 'Capturing...' : captureLabel}
+            </button>
+
+            {shouldShowImport ? (
+              <button
+                type="button"
+                onClick={onImportClick}
+                disabled={disabled}
+                className="w-full border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 disabled:bg-gray-100 disabled:text-gray-400 py-3 px-4 rounded-lg flex items-center justify-center font-medium transition"
+              >
+                {importLabel || 'Import'}
+              </button>
+            ) : null}
+          </div>
         )}
 
         {/* Action Buttons */}
@@ -252,7 +311,7 @@ const PhotoCapture = ({
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 px-4 rounded-lg flex items-center justify-center font-medium"
               >
                 <CheckCircle className="mr-2" size={20} />
-                Submit Photos ({capturedPhotos.length})
+                {resolvedSubmitLabel}
               </button>
             )}
             
@@ -261,7 +320,7 @@ const PhotoCapture = ({
               className="w-full bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-lg flex items-center justify-center font-medium"
             >
               <Trash2 className="mr-2" size={16} />
-              Retake All Photos
+              {retakeLabel}
             </button>
           </div>
         )}
@@ -270,24 +329,26 @@ const PhotoCapture = ({
         {!stream && !error && (
           <div className="text-center py-4">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600 mx-auto mb-2"></div>
-            <p className="text-gray-600 text-sm">Initializing camera...</p>
+            <p className="text-gray-600 text-sm">{loadingLabel}</p>
           </div>
         )}
       </div>
 
       {/* Instructions */}
-      <div className="px-4 pb-4">
-        <div className="bg-green-50 p-3 rounded-lg border border-green-200">
-          <h4 className="text-sm font-semibold text-green-800 mb-2">Photo Instructions:</h4>
-          <ul className="text-xs text-green-700 space-y-1">
-            <li>• Take {minPhotos}-{maxPhotos} clear photos from different angles</li>
-            <li>• Ensure good lighting and focus</li>
-            <li>• Capture all relevant details and conditions</li>
-            <li>• Tap photos to delete if needed</li>
-            <li>• Submit when you have enough photos</li>
-          </ul>
+      {!hideInstructions ? (
+        <div className="px-4 pb-4">
+          <div className="bg-green-50 p-3 rounded-lg border border-green-200">
+            <h4 className="text-sm font-semibold text-green-800 mb-2">Photo Instructions:</h4>
+            <ul className="text-xs text-green-700 space-y-1">
+              <li>• Take {minPhotos}-{maxPhotos} clear photos from different angles</li>
+              <li>• Ensure good lighting and focus</li>
+              <li>• Capture all relevant details and conditions</li>
+              <li>• Tap photos to delete if needed</li>
+              <li>• Submit when you have enough photos</li>
+            </ul>
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 };

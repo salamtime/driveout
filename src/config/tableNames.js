@@ -19,6 +19,7 @@ export const TABLE_NAMES = {
   TOUR_PACKAGES: 'app_687f658e98_tour_packages',
   TOUR_BOOKINGS: 'app_687f658e98_tour_bookings',
   TOUR_PACKAGE_MODEL_PRICES: 'app_687f658e98_tour_package_model_prices',
+  ACTIVITY_LOG: 'app_687f658e98_activity_log',
   
   // Vehicle related tables
   VEHICLES: 'saharax_0u4w4d_vehicles',

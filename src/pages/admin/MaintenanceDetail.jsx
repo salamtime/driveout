@@ -8,6 +8,7 @@ import { formatRentalReference } from '../../utils/rentalReference';
 import { formatMaintenanceReference } from '../../utils/maintenanceReference';
 import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
 import i18n from '../../i18n';
+import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import {
   ArrowLeft,
   Edit,
@@ -53,6 +54,10 @@ export default function MaintenanceDetail() {
   const [showEditForm, setShowEditForm] = useState(false);
   const [editingRecord, setEditingRecord] = useState(null);
   const [loadingEdit, setLoadingEdit] = useState(false);
+  const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
+    pathname: location.pathname,
+    isTransitionFlow: loading,
+  });
 
   const handleBack = () => {
     if (location.state?.from === 'rental') {
@@ -133,7 +138,7 @@ export default function MaintenanceDetail() {
     setEditingRecord(null);
   };
 
-  if (loading) {
+  if (loading && !suppressBlockingLoader) {
     return (
       <div className="flex items-center justify-center min-h-96">
         <div className="text-center">

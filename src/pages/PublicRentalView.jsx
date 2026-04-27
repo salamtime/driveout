@@ -6,6 +6,57 @@ import { decodePublicSharePayload } from '../utils/publicSharePayload';
 import DynamicPricingService from '../services/DynamicPricingService';
 import i18n from '../i18n';
 
+const documentShellPageStyle = {
+  minHeight: '100vh',
+  background: '#f8fafc',
+  padding: '24px 16px 48px',
+};
+
+const documentShellHeaderStyle = {
+  maxWidth: 960,
+  margin: '0 auto',
+  border: '1px solid #e2e8f0',
+  borderRadius: 28,
+  background: 'rgba(255,255,255,0.96)',
+  boxShadow: '0 18px 50px rgba(15, 23, 42, 0.06)',
+  padding: '24px',
+};
+
+const documentShellCardStyle = {
+  border: '1px solid #e2e8f0',
+  borderRadius: 24,
+  background: '#ffffff',
+  boxShadow: '0 16px 38px rgba(15, 23, 42, 0.05)',
+  padding: '20px 22px',
+};
+
+const renderDocumentLoadingShell = (tr) => (
+  <div style={documentShellPageStyle}>
+    <div style={documentShellHeaderStyle}>
+      <div style={{ height: 12, width: 140, borderRadius: 999, background: '#e2e8f0' }} />
+      <div style={{ height: 40, width: 'min(320px, 72%)', borderRadius: 18, background: '#f1f5f9', marginTop: 14 }} />
+      <div style={{ height: 16, width: 'min(460px, 92%)', borderRadius: 999, background: '#f1f5f9', marginTop: 14 }} />
+    </div>
+    <div style={{ maxWidth: 960, margin: '20px auto 0', display: 'grid', gap: 16 }}>
+      {Array.from({ length: 2 }).map((_, index) => (
+        <div key={index} style={documentShellCardStyle}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ height: 18, width: 116, borderRadius: 999, background: '#f1f5f9' }} />
+              <div style={{ height: 28, width: 'min(280px, 85%)', borderRadius: 16, background: '#f1f5f9', marginTop: 14 }} />
+              <div style={{ height: 15, width: 'min(420px, 92%)', borderRadius: 999, background: '#f8fafc', marginTop: 12 }} />
+            </div>
+            <div style={{ width: 48, height: 48, borderRadius: 18, background: '#f1f5f9' }} />
+          </div>
+        </div>
+      ))}
+    </div>
+    <p style={{ maxWidth: 960, margin: '14px auto 0', color: '#64748b', fontSize: 14, fontWeight: 600 }}>
+      {tr('Preparing rental documents...', 'Préparation des documents de location...')}
+    </p>
+  </div>
+);
+
 const hasRecordedReturnFuel = (rental) => {
   return rental?.end_fuel_level !== null && rental?.end_fuel_level !== undefined ||
     String(rental?.rental_status || '').toLowerCase() === 'completed';
@@ -74,7 +125,6 @@ export default function PublicRentalView() {
   const [logoUrl, setLogoUrl] = useState(null);
   const [stampUrl, setStampUrl] = useState(null);
   const [galleryMedia, setGalleryMedia] = useState([]);
-
   const applySharedOverrides = (baseRental, decodedPayload = null) => {
     if (!baseRental) return baseRental;
     const overrides = decodedPayload?.overrides;
@@ -280,15 +330,7 @@ export default function PublicRentalView() {
     };
   }, [rental, type]);
 
-  if (loading) return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb' }}>
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ width: 48, height: 48, border: '4px solid #dbeafe', borderTopColor: '#2563eb', borderRadius: '50%', margin: '0 auto 16px', animation: 'spin 1s linear infinite' }} />
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-        <p style={{ color: '#6b7280', fontSize: 16 }}>{tr('Loading document...', 'Chargement du document...')}</p>
-      </div>
-    </div>
-  );
+  if (loading) return renderDocumentLoadingShell(tr);
 
   if (error) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9fafb' }}>
@@ -313,6 +355,50 @@ export default function PublicRentalView() {
     rental?.sharedLinks && typeof rental.sharedLinks === 'object'
       ? rental.sharedLinks
       : {};
+  const accountPrompt = (
+    <div
+      style={{
+        background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(59,130,246,0.05))',
+        border: '1px solid rgba(99,102,241,0.18)',
+        borderRadius: 16,
+        padding: '16px 18px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: 16,
+        flexWrap: 'wrap',
+      }}
+      className="no-print"
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+        <img
+          src={logoUrl || '/assets/logo.jpg'}
+          alt="SaharaX"
+          style={{ width: 54, height: 54, objectFit: 'contain', borderRadius: 14, background: '#fff', border: '1px solid rgba(148,163,184,0.2)', padding: 6 }}
+          onError={(e) => { e.target.style.display = 'none'; }}
+        />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6366f1' }}>
+            {tr('More in your account', 'Plus dans votre compte')}
+          </div>
+          <div style={{ marginTop: 4, fontSize: 16, fontWeight: 800, color: '#0f172a' }}>
+            {tr('Sign in to see more rental details', 'Connectez-vous pour voir plus de détails')}
+          </div>
+          <div style={{ marginTop: 4, color: '#64748b', fontSize: 14 }}>
+            {tr('Open your account for messages, trip history, and full rental follow-up.', 'Ouvrez votre compte pour les messages, l’historique et le suivi complet de la location.')}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <a href="/login" style={{ padding: '10px 16px', borderRadius: 999, fontSize: 14, fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#4f46e5', color: '#fff' }}>
+          {tr('Sign in', 'Se connecter')}
+        </a>
+        <a href="/register" style={{ padding: '10px 16px', borderRadius: 999, fontSize: 14, fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#fff', color: '#334155', border: '1px solid #cbd5e1' }}>
+          {tr('Sign up', "S'inscrire")}
+        </a>
+      </div>
+    </div>
+  );
   const printablePdfUrl =
     type === 'receipt'
       ? (sharedLinks.receiptPdf || null)
@@ -656,8 +742,13 @@ export default function PublicRentalView() {
         }}
         className="no-print"
       >
-        <div style={{ color: '#64748b', fontSize: 14, fontWeight: 600 }}>
-          {tr('Mobile-friendly view', 'Vue mobile lisible')}
+        <div>
+          <div style={{ color: '#6366f1', fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            {tr('Shared document', 'Document partagé')}
+          </div>
+          <div style={{ color: '#0f172a', fontSize: 18, fontWeight: 800 }}>
+            {type === 'contract' ? tr('Rental Contract', 'Contrat de location') : tr('Rental Receipt', 'Reçu de location')}
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {printablePdfUrl && (
@@ -679,11 +770,11 @@ export default function PublicRentalView() {
                 gap: 8
               }}
             >
-              {tr('Open PDF', 'Ouvrir le PDF')}
+              {tr('Open exact PDF', 'Ouvrir le PDF exact')}
             </a>
           )}
           <button
-            onClick={() => window.print()}
+            onClick={() => (printablePdfUrl ? window.open(printablePdfUrl, '_blank', 'noopener,noreferrer') : window.print())}
             style={{
               padding: '10px 20px',
               background: '#2563eb',
@@ -698,13 +789,18 @@ export default function PublicRentalView() {
               gap: 8
             }}
           >
-            {tr('🖨️ Print / Save PDF', '🖨️ Imprimer / enregistrer en PDF')}
+            {printablePdfUrl
+              ? tr('📄 Print exact PDF', '📄 Imprimer le PDF exact')
+              : tr('🖨️ Print / Save PDF', '🖨️ Imprimer / enregistrer en PDF')}
           </button>
         </div>
       </div>
 
       {/* Document */}
       <div style={{ maxWidth: 980, margin: '0 auto' }}>
+        <div style={{ marginBottom: 16 }}>
+          {accountPrompt}
+        </div>
         {type === 'contract' ? (
           <ContractTemplate rental={displayRental || rental} logoUrl={logoUrl} stampUrl={stampUrl} language={documentLanguage} />
         ) : (

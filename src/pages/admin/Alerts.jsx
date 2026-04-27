@@ -24,10 +24,11 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
+import AdminWorkspaceLoadingShell from '../../components/admin/AdminWorkspaceLoadingShell';
 import alertService from '../../services/AlertService';
 import fuelService from '../../services/FuelService';
 import inventoryAlertsService from '../../services/AlertsService';
@@ -35,6 +36,7 @@ import { TABLE_NAMES } from '../../config/tableNames';
 import { shortenUrl } from '../../services/UrlShortenerService';
 import { buildTourTrackingUrl } from '../../services/tourTrackingService';
 import i18n from '../../i18n';
+import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 
 const RETURN_DUE_SOON_HOURS = 48;
 const TOUR_BOOKING_MARKER = '[tour_booking]';
@@ -200,6 +202,7 @@ const getAlertRoute = (alert) => {
 
 const Alerts = () => {
   const isFrench = isFrenchLocale();
+  const location = useLocation();
   const navigate = useNavigate();
   const { session, user } = useAuth();
   const [alerts, setAlerts] = useState([]);
@@ -216,6 +219,10 @@ const Alerts = () => {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const alertsRefreshTimeoutRef = useRef(null);
+  const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
+    pathname: location.pathname,
+    isTransitionFlow: loading && !hasLoadedOnce,
+  });
 
   const loadFleetAlerts = useCallback(async () => {
     try {
@@ -842,28 +849,8 @@ const Alerts = () => {
     }));
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-50">
-        <AdminModuleHero
-          icon={<Bell className="h-8 w-8 text-white" />}
-          eyebrow={tr('Alerts', 'Alertes')}
-          title={tr('Alerts', 'Alertes')}
-          description=""
-          className="w-full"
-        />
-        <div className="p-4 sm:p-6">
-          <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
-            <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-              <div className="text-5xl leading-none animate-pulse">⏳</div>
-              <h2 className="text-xl font-semibold text-slate-900">
-                {tr('Loading alerts...', 'Chargement des alertes...')}
-              </h2>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+  if (loading && !suppressBlockingLoader) {
+    return <AdminWorkspaceLoadingShell eyebrow={tr('Alerts', 'Alertes')} title={tr('Alerts', 'Alertes')} description={tr('Preparing the alerts workspace...', 'Préparation de l’espace alertes...')} cardRows={1} />;
   }
 
   return (
@@ -878,7 +865,7 @@ const Alerts = () => {
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all hover:bg-white/20 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700 disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
             {tr('Refresh', 'Actualiser')}

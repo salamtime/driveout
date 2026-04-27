@@ -116,7 +116,7 @@ export const resolveShortCode = async (shortCode) => {
   try {
     const { data, error } = await supabase
       .from(SHORT_LINKS_TABLE)
-      .select('original_url, expires_at')
+      .select('original_url, expires_at, document_type')
       .eq('short_code', shortCode)
       .maybeSingle();
     if (error || !data) return null;
@@ -124,7 +124,9 @@ export const resolveShortCode = async (shortCode) => {
       .update({ last_accessed_at: new Date().toISOString() })
       .eq('short_code', shortCode)
       .then(() => {});
-    return { url: data.original_url, expired: new Date(data.expires_at) < new Date() };
+    const nonExpiring = ['other', 'tour_tracking'].includes(String(data.document_type || '').trim().toLowerCase());
+    const expired = nonExpiring ? false : (data.expires_at ? new Date(data.expires_at) < new Date() : false);
+    return { url: data.original_url, expired };
   } catch {
     return null;
   }

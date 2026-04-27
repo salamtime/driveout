@@ -1,5 +1,9 @@
 import { supabase } from '../lib/supabase.js';
 import MaintenanceService from './MaintenanceService.js';
+import {
+  normalizeCustomerIdentityFields,
+  pickBestExistingCustomerMatch,
+} from '../utils/customerIdentity.js';
 
 const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
 
@@ -139,8 +143,16 @@ class TransactionalRentalService {
         phone: customerData.phone || customerData.customer_phone,
         date_of_birth: customerData.date_of_birth || customerData.customer_dob || null,
         nationality: customerData.nationality || customerData.customer_nationality || null,
-        licence_number: customerData.licence_number || customerData.customer_licence_number || null,
-        id_number: customerData.id_number || customerData.customer_id_number || null,
+        ...(() => {
+          const normalized = normalizeCustomerIdentityFields({
+            licenceNumber: customerData.licence_number || customerData.customer_licence_number || null,
+            idNumber: customerData.id_number || customerData.customer_id_number || null,
+          });
+          return {
+            licence_number: normalized.licenceNumber,
+            id_number: normalized.idNumber,
+          };
+        })(),
         id_scan_url: customerData.id_scan_url || null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -188,8 +200,12 @@ class TransactionalRentalService {
           const { data } = await customerTable
             .select('*')
             .ilike('full_name', fullName)
-            .limit(1);
-          if (data?.[0]) return data[0];
+            .limit(5);
+          const bestMatch = pickBestExistingCustomerMatch({
+            incomingCustomer: sanitizedCustomerData,
+            candidates: data || [],
+          });
+          if (bestMatch?.id) return bestMatch;
         }
 
         return null;
@@ -481,6 +497,14 @@ class TransactionalRentalService {
     if ('status' in sanitized) {
       console.warn('🚨 CRITICAL FIX: Removing invalid "status" field from rental data');
       delete sanitized.status;
+    }
+
+    // Frontend-only pricing helpers must never be written to the rentals table.
+    if ('package_duration_units' in sanitized) {
+      delete sanitized.package_duration_units;
+    }
+    if ('selected_package_duration_units' in sanitized) {
+      delete sanitized.selected_package_duration_units;
     }
 
     // List of ALL possible date fields that need validation (convert empty strings to null)
@@ -807,6 +831,8 @@ class TransactionalRentalService {
       delete dbRentalData.selected_vehicle_model_snapshot;
       delete dbRentalData.selected_vehicle_selected_by;
       delete dbRentalData.selected_vehicle_selected_at;
+      delete dbRentalData.package_duration_units;
+      delete dbRentalData.selected_package_duration_units;
       console.log('🧹 CRITICAL FIX: Removed non-existent database fields: status, linked_display_id, booking_range, vehicle, selected vehicle snapshot fields');
       
       // FINAL CRITICAL FIX: Double-check customer_id is in final payload
@@ -1041,6 +1067,13 @@ class TransactionalRentalService {
       delete dbRentalData.linked_display_id;
       delete dbRentalData.booking_range;
       delete dbRentalData.vehicle;
+      delete dbRentalData.selected_vehicle_id_snapshot;
+      delete dbRentalData.selected_vehicle_plate_snapshot;
+      delete dbRentalData.selected_vehicle_model_snapshot;
+      delete dbRentalData.selected_vehicle_selected_by;
+      delete dbRentalData.selected_vehicle_selected_at;
+      delete dbRentalData.package_duration_units;
+      delete dbRentalData.selected_package_duration_units;
       
       console.log('🔧 FIXED: Mapped rental data for update (with linkage):', dbRentalData);
       

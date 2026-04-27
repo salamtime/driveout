@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, Calendar, Car, Check, Clock3, DollarSign, Edit, FileText, Gauge, Shield, StickyNote, Wrench, X, Fuel, ExternalLink, MapPin } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Calendar, Car, Check, Clock3, DollarSign, Edit, FileText, Gauge, MoreHorizontal, Shield, StickyNote, Wrench, X, Fuel, ExternalLink, MapPin } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { TBL } from '../../config/tables';
 import DocumentUpload from '../../components/DocumentUpload';
@@ -103,6 +103,21 @@ const formatReportLabel = (report) => {
   return formatStatus(report?.report_type || tr('report', 'rapport'));
 };
 
+const normalizeMaintenanceSummaryText = (text) => {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+
+  const switchedMatch = raw.match(/(Rental\s+[A-Z0-9-]+\s+switched from\s+)(.+?)(\s+to\s+)(.+?)(\.|$)/i);
+  if (switchedMatch) {
+    const [, prefix, fromVehicle, middle, toVehicle] = switchedMatch;
+    const fromDisplay = String(fromVehicle || '').trim();
+    const toDisplay = String(toVehicle || '').trim();
+    return `${prefix}${fromDisplay}${middle}${toDisplay}.`;
+  }
+
+  return raw;
+};
+
 const formatMaintenanceSummary = (record) => {
   if (!record) return '';
 
@@ -132,14 +147,16 @@ const formatMaintenanceSummary = (record) => {
     return summaryBits.join(' • ');
   }
 
-  return String(record.description || '')
+  return normalizeMaintenanceSummaryText(
+    String(record.description || '')
     .replace(/Vehicle report ID:\s*[^\n|]+/gi, '')
     .replace(/Rental reference:\s*([a-f0-9-]{8,})/gi, (_, rentalId) => `Location ${formatRentalReference(rentalId)}`)
     .replace(/\n+/g, ' • ')
     .replace(/\s*\|\s*/g, ' • ')
     .replace(/\s{2,}/g, ' ')
     .replace(/ • $/, '')
-    .trim();
+    .trim()
+  );
 };
 
 const statusClasses = {
@@ -868,8 +885,21 @@ const VehicleProfile = () => {
         throw new Error(result?.error || 'Failed to adjust fuel level');
       }
 
-      await refreshFuelPanel();
+      setVehicleFuelState((current) => ({
+        ...current,
+        ...(result?.state || {}),
+        current_fuel_lines: result?.state?.current_fuel_lines ?? nextLines,
+        current_fuel_liters:
+          result?.state?.current_fuel_liters ??
+          FuelTransactionService.linesToLiters(
+            nextLines,
+            current?.tank_capacity_liters || vehicleFuelState?.tank_capacity_liters || undefined
+          ),
+      }));
       setFuelAdjustOpen(false);
+      void refreshFuelPanel().catch((refreshError) => {
+        console.error('Failed to refresh fuel panel after fuel adjust:', refreshError);
+      });
     } catch (fuelAdjustError) {
       console.error('Failed to adjust vehicle fuel level:', fuelAdjustError);
       window.alert(`Failed to adjust fuel level: ${fuelAdjustError.message || 'Unknown error'}`);
@@ -1070,6 +1100,11 @@ const VehicleProfile = () => {
   const hasValidInsuranceExpiry = insuranceExpiryDate && !Number.isNaN(insuranceExpiryDate.getTime());
   const insuranceExpired = hasValidInsuranceExpiry && insuranceExpiryDate < new Date();
   const latestTaxRecord = annualTaxRecords[0] || null;
+  const publicListingUrl =
+    vehicle?.public_listing_url ||
+    vehicle?.listing_url ||
+    vehicle?.share_url ||
+    '';
   const vehicleFinanceCostRows = useMemo(() => {
     if (!vehicleFinanceOverview) return [];
 
@@ -1086,9 +1121,10 @@ const VehicleProfile = () => {
   }, [vehicleFinanceOverview]);
   const profileTabs = [
     { key: 'overview', label: tr('Overview', "Vue d'ensemble"), icon: Car },
-    { key: 'documents', label: tr('Documents', 'Documents'), icon: FileText },
-    { key: 'legal', label: tr('Legal', 'Juridique'), icon: Shield },
+    { key: 'listing', label: tr('Listing', 'Annonce'), icon: FileText },
+    { key: 'bookings', label: tr('Bookings', 'Réservations'), icon: Calendar },
     { key: 'finance', label: tr('Finance', 'Finance'), icon: DollarSign },
+    { key: 'legal', label: tr('Legal & documents', 'Légal & documents'), icon: Shield },
   ];
 
   if (loading) {
@@ -1137,7 +1173,7 @@ const VehicleProfile = () => {
     <div className="min-h-screen bg-slate-50">
       <AdminModuleHero
         icon={<Car className="h-8 w-8 text-white" />}
-        eyebrow={tr('Fleet Management', 'Gestion de flotte')}
+        eyebrow={tr('Vehicles', 'Véhicules')}
         title={vehicle.name}
         description={vehicle.plate_number ? `${vehicle.plate_number} • ${vehicle.model || tr('Vehicle Profile', 'Profil véhicule')}` : tr('Vehicle profile', 'Profil véhicule')}
       />
@@ -1166,6 +1202,10 @@ const VehicleProfile = () => {
                 </span>
                 <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
                       {vehicle.model || tr('Model not set', 'Modèle non défini')}
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                  <MapPin className="h-3.5 w-3.5 text-slate-500" />
+                  {vehicle.location_name || tr('Location not set', 'Emplacement non défini')}
                 </span>
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
@@ -1196,37 +1236,57 @@ const VehicleProfile = () => {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-          {isEditing ? (
-            <>
-              <button
-                type="button"
-                onClick={handleCancelEdit}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100"
-              >
-                <X className="w-4 h-4" />
-                {tr('Cancel', 'Annuler')}
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={saving}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01] disabled:opacity-60"
-              >
-                <Check className="w-4 h-4" />
-                {saving ? tr('Saving...', 'Enregistrement...') : tr('Save Changes', 'Enregistrer les modifications')}
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setIsEditing(true)}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01]"
-            >
-              <Edit className="w-4 h-4" />
-              {tr('Edit Vehicle', 'Modifier le véhicule')}
-            </button>
-          )}
-        </div>
+            {isEditing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+                >
+                  <X className="w-4 h-4" />
+                  {tr('Cancel', 'Annuler')}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01] disabled:opacity-60"
+                >
+                  <Check className="w-4 h-4" />
+                  {saving ? tr('Saving...', 'Enregistrement...') : tr('Save', 'Enregistrer')}
+                </button>
+              </>
+            ) : (
+              <>
+                {publicListingUrl ? (
+                  <a
+                    href={publicListingUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    {tr('View public listing', 'Voir la fiche publique')}
+                  </a>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setIsEditing(true)}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.24)] transition-all hover:scale-[1.01]"
+                >
+                  <Edit className="w-4 h-4" />
+                  {tr('Edit listing', 'Modifier l’annonce')}
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-slate-600 transition-colors hover:bg-slate-50"
+                  title={tr('More actions', 'Plus d’actions')}
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1483,7 +1543,7 @@ const VehicleProfile = () => {
           ) : null}
 
           {activeProfileTab === 'legal' ? (
-          <SectionCard title={tr('Legal & Administrative', 'Juridique et administratif')} description={tr('Registration and insurance information.', 'Informations d’immatriculation et d’assurance.')} icon={Shield}>
+          <SectionCard title={tr('Registration & insurance', 'Immatriculation & assurance')} description={tr('Keep legal identifiers, registration dates, and insurance coverage details here.', 'Conservez ici les identifiants légaux, les dates d’immatriculation et les détails de couverture d’assurance.')} icon={Shield}>
             <dl>
               <EditableRow label={tr('Registration Number', "Numéro d'immatriculation administratif")} editing={isEditing} viewValue={vehicle.registration_number}>
                 <input value={formData.registration_number} onChange={(e) => handleChange('registration_number', e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
@@ -1709,7 +1769,7 @@ const VehicleProfile = () => {
           </SectionCard>
           ) : null}
 
-          {activeProfileTab === 'documents' ? (
+          {activeProfileTab === 'legal' ? (
           <div id="vehicle-documents-media">
           <SectionCard title={tr('Documents & Media', 'Documents et médias')} description={tr('Vehicle image, legal files, and uploaded documents.', 'Photo du véhicule, documents légaux et fichiers téléversés.')} icon={FileText}>
             {isEditing ? (
@@ -1739,7 +1799,7 @@ const VehicleProfile = () => {
                 </div>
               </div>
             ) : null}
-            <VehicleDocuments
+          <VehicleDocuments
               vehicleId={vehicle.id}
               documents={vehicleDocuments}
               loadFromStorage={true}
@@ -1751,29 +1811,50 @@ const VehicleProfile = () => {
           </div>
           ) : null}
 
+          {activeProfileTab === 'listing' ? (
+          <SectionCard
+            title={tr('Listing readiness', 'Préparation de l’annonce')}
+            description={tr('Pricing, availability, rules, and safety stay consolidated here.', 'Tarifs, disponibilités, règles et sécurité restent regroupés ici.')}
+            icon={FileText}
+            action={(
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-violet-700"
+              >
+                {tr('Submit for approval', 'Soumettre pour validation')}
+              </button>
+            )}
+          >
+            <HistoryEmptyState
+              title={tr('Listing details will appear here', "Les détails de l’annonce apparaîtront ici")}
+              description={tr('Connect pricing, availability, and safety data to finish the listing tab.', 'Connectez tarifs, disponibilité et sécurité pour finaliser l’onglet annonce.')}
+            />
+          </SectionCard>
+          ) : null}
+
           {activeProfileTab === 'overview' ? (
-          <SectionCard title={tr('Notes', 'Notes')} description={tr('Operational notes and internal system notes for the team.', "Notes opérationnelles et notes internes de l'équipe.")} icon={StickyNote}>
+          <SectionCard title={tr('Notes', 'Notes')} description={tr('Keep short operational notes attached to this vehicle.', "Conservez des notes opérationnelles courtes sur ce véhicule.")} icon={StickyNote}>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="rounded-xl border border-violet-100 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Additional Notes', 'Notes supplémentaires')}</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('Operational note', 'Note opérationnelle')}</p>
                 {isEditing ? (
                   <textarea
                     value={formData.general_notes}
                     onChange={(e) => handleChange('general_notes', e.target.value)}
-                    rows={8}
+                    rows={6}
                     className="mt-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                   />
                 ) : (
-                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{vehicle.general_notes || tr('No additional notes yet.', 'Aucune note supplémentaire pour le moment.')}</p>
+                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{vehicle.general_notes || tr('No operational notes yet.', 'Aucune note opérationnelle pour le moment.')}</p>
                 )}
               </div>
               <div className="rounded-xl border border-violet-100 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('System Notes', 'Notes système')}</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{tr('System note', 'Note système')}</p>
                 {isEditing ? (
                   <textarea
                     value={formData.notes}
                     onChange={(e) => handleChange('notes', e.target.value)}
-                    rows={8}
+                    rows={6}
                     className="mt-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                   />
                 ) : (
@@ -1866,7 +1947,7 @@ const VehicleProfile = () => {
           </SectionCard>
           ) : null}
 
-          {activeProfileTab === 'overview' ? (
+          {activeProfileTab === 'bookings' ? (
           <SectionCard
             title={tr('Rental History', 'Historique locations')}
             description={tr('Open linked rentals for this vehicle.', 'Ouvrez les locations liées à ce véhicule.')}
@@ -1914,6 +1995,19 @@ const VehicleProfile = () => {
                 })}
               </div>
             )}
+          </SectionCard>
+          ) : null}
+
+          {activeProfileTab === 'bookings' ? (
+          <SectionCard
+            title={tr('Incoming Requests', 'Demandes entrantes')}
+            description={tr('Pending marketplace requests and reservations for this vehicle.', 'Demandes marketplace et réservations en attente pour ce véhicule.')}
+            icon={Calendar}
+          >
+            <HistoryEmptyState
+              title={tr('No incoming requests yet', 'Aucune demande pour le moment')}
+              description={tr('Requests will appear here as customers submit bookings.', 'Les demandes apparaîtront ici dès que les clients soumettent des réservations.')}
+            />
           </SectionCard>
           ) : null}
 

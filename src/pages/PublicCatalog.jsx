@@ -1,13 +1,59 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, BadgePercent, Check, ChevronLeft, ChevronRight, Info } from 'lucide-react';
+import { ArrowLeft, CarFront, Check, ChevronLeft, ChevronRight, CirclePlus, Info, SlidersHorizontal, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import PublicCatalogService from '../services/PublicCatalogService';
 import DynamicPricingService from '../services/DynamicPricingService';
+import PublicBookingService from '../services/PublicBookingService';
+import CustomerExperienceService from '../services/CustomerExperienceService';
+import { useAuth } from '../contexts/AuthContext';
+import { resolveManagedAccountType } from '../utils/accountType';
 import PublicListingCard from '../components/public/PublicListingCard';
 import PublicSiteChrome from '../components/public/PublicSiteChrome';
+import PublicSiteFooter from '../components/public/PublicSiteFooter';
 import { buildInstantBookingHref } from '../utils/publicBookingFlow';
 import { formatRentalPackageAllowanceLabel } from '../utils/rentalPackageLabels';
+import { resolveReturnPath } from '../utils/navigationReturn';
+import { markMarketplaceListingRequested } from '../utils/marketplaceRequestCache';
+
+const LAST_OWNER_VEHICLE_ID_KEY = 'saharax_last_owner_vehicle_id';
+const LAST_OWNER_VEHICLE_COUNT_KEY = 'saharax_last_owner_vehicle_count';
+const OWNER_VEHICLE_IDS_KEY = 'saharax_owner_vehicle_ids';
+
+const buildOwnerVehicleStorageKey = (baseKey, userId = '') => {
+  const normalizedUserId = String(userId || '').trim();
+  return normalizedUserId ? `${baseKey}:${normalizedUserId}` : baseKey;
+};
+
+const getKnownOwnerVehicleCount = (userId = '') => {
+  if (typeof window === 'undefined') return 0;
+
+  try {
+    const savedCount = Number.parseInt(
+      window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_COUNT_KEY, userId)) || '0',
+      10
+    );
+    const savedIds = JSON.parse(
+      window.localStorage.getItem(buildOwnerVehicleStorageKey(OWNER_VEHICLE_IDS_KEY, userId)) || '[]'
+    );
+    const idCount = Array.isArray(savedIds) ? savedIds.map((item) => String(item || '').trim()).filter(Boolean).length : 0;
+    const hasLastVehicle = Boolean(
+      String(window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, userId)) || '').trim()
+    );
+    return Math.max(Number.isFinite(savedCount) ? savedCount : 0, idCount, hasLastVehicle ? 1 : 0);
+  } catch {
+    return 0;
+  }
+};
+
+const ListVehicleIcon = ({ className = '' }) => (
+  <span className={`relative inline-flex ${className}`}>
+    <CarFront className="h-full w-full" />
+    <span className="absolute -right-1 -top-1 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white">
+      <CirclePlus className="h-3.5 w-3.5 text-violet-600" />
+    </span>
+  </span>
+);
 
 const CERTIFIED_BADGE_SRC =
   '/images/certified-badge.png';
@@ -139,10 +185,11 @@ const groupModelListings = (listings = []) => {
   });
 };
 
-const PublicCatalog = () => {
+const PublicCatalog = ({ embeddedInAccount = false, accountBasePath = '/account/marketplace' }) => {
   const { i18n } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
+  const { user, userProfile, startPrivateOwnerSetup } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [catalog, setCatalog] = useState({
     listings: [],
@@ -175,10 +222,127 @@ const PublicCatalog = () => {
   const [selectedVehicleId, setSelectedVehicleId] = useState(null);
   const [vehicleDirection, setVehicleDirection] = useState(0);
   const [vehicleTransitioning, setVehicleTransitioning] = useState(false);
+  const [showMarketplaceFilters, setShowMarketplaceFilters] = useState(false);
+  const [existingMarketplaceRequests, setExistingMarketplaceRequests] = useState({});
   const touchStartXRef = useRef(null);
-  const isMarketplacePage = location.pathname.startsWith('/marketplace');
+  const isMarketplacePage = location.pathname.startsWith('/marketplace') || location.pathname.startsWith(accountBasePath);
+  const backLink = useMemo(
+    () => resolveReturnPath(location, '/website'),
+    [location]
+  );
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
+  const managedAccountType = resolveManagedAccountType({
+    account_type:
+      userProfile?.accountType ||
+      user?.user_metadata?.account_type ||
+      user?.app_metadata?.account_type ||
+      '',
+    data_source:
+      userProfile?.dataSource ||
+      user?.user_metadata?.account_source ||
+      user?.app_metadata?.account_source ||
+      '',
+  });
+  const knownOwnerVehicleCount = useMemo(() => getKnownOwnerVehicleCount(user?.id), [user?.id]);
+  const showListVehicleCta =
+    embeddedInAccount &&
+    isMarketplacePage &&
+    managedAccountType !== 'business_owner' &&
+    knownOwnerVehicleCount === 0;
+
+  useEffect(() => {
+    let active = true;
+
+    const loadExistingMarketplaceRequests = async () => {
+      if (!isMarketplacePage || !(userProfile?.id || user?.id)) {
+        setExistingMarketplaceRequests({});
+        return;
+      }
+
+      try {
+        const [publicRows, customerRows] = await Promise.all([
+          PublicBookingService.getExistingMarketplaceRequests().catch(() => []),
+          user?.id || user?.email
+            ? CustomerExperienceService.getCustomerMarketplaceRequests(user).catch(() => [])
+            : Promise.resolve([]),
+        ]);
+        if (!active) return;
+
+        const nextMap = {};
+        const rows = [...(Array.isArray(publicRows) ? publicRows : []), ...(Array.isArray(customerRows) ? customerRows : [])];
+
+        rows.forEach((row) => {
+          const rawListingId = String(row?.listing_id || '').trim();
+          const normalizedListingId = String(row?.listingId || '').trim();
+          const vehiclePublicProfileId = String(row?.vehicle_public_profile_id || '').trim();
+          const normalizedVehiclePublicProfileId = String(row?.vehiclePublicProfileId || '').trim();
+
+          if (rawListingId) {
+            nextMap[rawListingId] = row;
+            nextMap[`marketplace-${rawListingId}`] = row;
+          }
+
+          if (normalizedListingId) {
+            nextMap[normalizedListingId] = row;
+            nextMap[`marketplace-${normalizedListingId}`] = row;
+          }
+
+          if (vehiclePublicProfileId) {
+            nextMap[vehiclePublicProfileId] = row;
+          }
+
+          if (normalizedVehiclePublicProfileId) {
+            nextMap[normalizedVehiclePublicProfileId] = row;
+          }
+        });
+
+        const cacheIdentities = [
+          userProfile?.id || '',
+          user?.id || '',
+          userProfile?.email || '',
+          user?.email || '',
+        ]
+          .map((value) => String(value || '').trim().toLowerCase())
+          .filter(Boolean);
+
+        rows.forEach((row) => {
+          const cacheListingIds = [
+            row?.listing_id,
+            row?.listingId,
+            row?.vehicle_public_profile_id,
+            row?.vehiclePublicProfileId,
+            row?.listingId,
+          ]
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+
+          cacheIdentities.forEach((identity) => {
+            cacheListingIds.forEach((listingKey) => {
+              markMarketplaceListingRequested({
+                userId: identity,
+                listingId: listingKey,
+                requestId: row?.id,
+                status: row?.request_status || row?.requestStatus || 'requested',
+              });
+            });
+          });
+        });
+
+        setExistingMarketplaceRequests(nextMap);
+      } catch {
+        if (active) {
+          setExistingMarketplaceRequests({});
+        }
+      }
+    };
+
+    void loadExistingMarketplaceRequests();
+
+    return () => {
+      active = false;
+    };
+  }, [isMarketplacePage, user?.id, userProfile?.id]);
 
   const filters = useMemo(
     () => ({
@@ -187,6 +351,7 @@ const PublicCatalog = () => {
       source: isMarketplacePage ? 'marketplace' : 'certified_fleet',
       brand: searchParams.get('brand') || 'all',
       city: searchParams.get('city') || 'all',
+      priceRange: searchParams.get('priceRange') || 'all',
       search: searchParams.get('search') || '',
     }),
     [isMarketplacePage, searchParams]
@@ -230,6 +395,13 @@ const PublicCatalog = () => {
     setSearchParams(next, { replace: true });
   };
 
+  const handleStartOwnerSetup = () => {
+    void startPrivateOwnerSetup({ source: 'account_marketplace' });
+    navigate('/account/vehicles/new/profile?tab=overview', {
+      state: { from: '/account/marketplace' },
+    });
+  };
+
   const certifiedCityOptions = useMemo(() => {
     return ['Tangier'];
   }, []);
@@ -244,9 +416,31 @@ const PublicCatalog = () => {
     return PublicCatalogService.getCertifiedFleetProviderByCity(city);
   }, [safeCertifiedCityFilter]);
 
+  const marketplaceListings = useMemo(() => {
+    return catalog.listings
+      .filter((listing) => listing.inventorySource === 'marketplace')
+      .filter((listing) => {
+        if (filters.city !== 'all' && String(listing.location?.city || '').toLowerCase() !== String(filters.city).toLowerCase()) {
+          return false;
+        }
+        if (filters.brand !== 'all') {
+          const listingType = String(listing.brand || listing.category || '').toLowerCase();
+          if (listingType !== String(filters.brand).toLowerCase()) {
+            return false;
+          }
+        }
+
+        const listingPrice = Number(listing.dailyPrice || listing.halfDayPrice || listing.priceFrom || 0);
+        if (filters.priceRange === 'under-1000') return listingPrice > 0 && listingPrice < 1000;
+        if (filters.priceRange === '1000-2000') return listingPrice >= 1000 && listingPrice <= 2000;
+        if (filters.priceRange === '2000-plus') return listingPrice > 2000;
+        return true;
+      });
+  }, [catalog.listings, filters.brand, filters.city, filters.priceRange]);
+
   const visibleListings = useMemo(() => {
     if (filters.flow !== 'instant') {
-      return catalog.listings.filter((listing) => listing.inventorySource === 'marketplace');
+      return marketplaceListings;
     }
 
     const certified = catalog.listings.filter((listing) => listing.inventorySource === 'certified_fleet');
@@ -266,7 +460,7 @@ const PublicCatalog = () => {
             }));
 
     return groupModelListings(previewSeed);
-  }, [catalog.featuredListings, catalog.listings, safeCertifiedCityFilter, filters.flow]);
+  }, [catalog.featuredListings, catalog.listings, marketplaceListings, safeCertifiedCityFilter, filters.flow]);
 
   const certifiedCitySections = useMemo(() => {
     if (filters.flow !== 'instant') return [];
@@ -444,6 +638,42 @@ const PublicCatalog = () => {
     }
   }, [qrVehicleSections, rentalType, selectedChoice, selectedDurationUnits]);
 
+  const marketplaceCityOptions = useMemo(
+    () => ['all', ...catalog.filters.cities.filter(Boolean)],
+    [catalog.filters.cities]
+  );
+
+  const marketplaceVehicleTypeOptions = useMemo(() => {
+    const rawOptions = catalog.filters.categories?.length
+      ? catalog.filters.categories
+      : catalog.filters.brands;
+
+    return ['all', ...(rawOptions || []).filter(Boolean).filter((value) => String(value).toLowerCase() !== 'unknown')];
+  }, [catalog.filters.brands, catalog.filters.categories]);
+
+  const marketplacePriceOptions = useMemo(
+    () => ([
+      { value: 'all', label: tr('All prices', 'Tous les prix') },
+      { value: 'under-1000', label: tr('Under 1,000 MAD', 'Moins de 1 000 MAD') },
+      { value: '1000-2000', label: tr('1,000–2,000 MAD', '1 000–2 000 MAD') },
+      { value: '2000-plus', label: tr('2,000+ MAD', '2 000+ MAD') },
+    ]),
+    [tr]
+  );
+
+  const marketplaceVehicleTypeLabel = useMemo(() => {
+    if (filters.brand !== 'all') return filters.brand;
+    const firstType = marketplaceVehicleTypeOptions.find((value) => value !== 'all');
+    return firstType || tr('Vehicle type', 'Type de véhicule');
+  }, [filters.brand, marketplaceVehicleTypeOptions, tr]);
+
+  const marketplaceCityLabel = filters.city === 'all' ? tr('Tangier', 'Tanger') : filters.city;
+  const marketplaceResultsLabel = tr(
+    `${visibleListings.length} vehicle${visibleListings.length === 1 ? '' : 's'} available`,
+    `${visibleListings.length} véhicule${visibleListings.length === 1 ? '' : 's'} disponible${visibleListings.length === 1 ? '' : 's'}`
+  );
+  const marketplaceHeading = `${marketplaceVehicleTypeLabel} ${tr('in', 'à')} ${marketplaceCityLabel}`;
+
   const handleSelectPackage = (listing, pkg) => {
     setSelectedChoice({
       listingId: listing.id,
@@ -495,77 +725,48 @@ const PublicCatalog = () => {
 
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)]">
-      <PublicSiteChrome current={isMarketplacePage ? 'marketplace' : 'rent'} />
+      {!embeddedInAccount ? <PublicSiteChrome current={isMarketplacePage ? 'marketplace' : 'rent'} /> : null}
       <main className={`mx-auto ${isMarketplacePage ? 'max-w-7xl' : 'max-w-3xl'} px-4 py-4 sm:px-6 sm:py-6`}>
         <section className="space-y-4">
-          <button
-            type="button"
-            onClick={() => navigate('/website')}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
-            title="Back to website"
-            aria-label="Back to website"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </button>
+          {!embeddedInAccount && backLink ? (
+            <button
+              type="button"
+              onClick={() => navigate(backLink)}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
+              title="Back"
+              aria-label="Back"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </button>
+          ) : null}
 
           {isMarketplacePage ? (
             <>
-              <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                {['all', ...catalog.filters.cities].map((city) => (
-                  <button
-                    key={city}
-                    type="button"
-                    onClick={() => setFilter('city', city)}
-                    className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold transition ${
-                      filters.city === city
-                        ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white shadow-sm'
-                        : 'bg-white text-slate-700 shadow-sm ring-1 ring-violet-100 hover:bg-violet-50'
-                    }`}
-                  >
-                    {city === 'all' ? 'All cities' : city}
-                  </button>
-                ))}
-              </div>
-
               <div className="flex flex-wrap items-center gap-3">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
-                  Vehicle Type
+                <span className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-violet-100">
+                  {marketplaceCityLabel}
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-violet-100">
+                  {String(marketplaceVehicleTypeLabel).toLowerCase().includes('segway') ? (
+                    <img
+                      src={SEGWAY_LOGO_SRC}
+                      alt={marketplaceVehicleTypeLabel}
+                      className="h-5 w-auto object-contain"
+                    />
+                  ) : null}
+                  <span>{marketplaceVehicleTypeLabel}</span>
                 </span>
                 <button
                   type="button"
-                  className="inline-flex items-center rounded-full border border-violet-200 bg-white px-3 py-2 shadow-sm ring-1 ring-violet-100"
+                  onClick={() => setShowMarketplaceFilters(true)}
+                  className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-violet-100 transition hover:bg-violet-50"
                 >
-                  <img
-                    src={SEGWAY_LOGO_SRC}
-                    alt="Segway"
-                    className="h-6 w-auto object-contain"
-                  />
+                  <SlidersHorizontal className="h-4 w-4" />
+                  <span>{tr('Filters', 'Filtres')}</span>
                 </button>
-                <span className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-violet-100">
-                  Marketplace
-                </span>
               </div>
             </>
           ) : null}
-
-          {isMarketplacePage && (
-            <div className="flex flex-wrap gap-2">
-              {['all', ...catalog.filters.brands].map((brand) => (
-                <button
-                  key={brand}
-                  type="button"
-                  onClick={() => setFilter('brand', brand)}
-                  className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-                    filters.brand === brand
-                      ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white shadow-sm'
-                      : 'bg-white text-slate-700 shadow-sm ring-1 ring-violet-100 hover:bg-violet-50'
-                  }`}
-                >
-                  {brand === 'all' ? 'All brands' : brand}
-                </button>
-              ))}
-            </div>
-          )}
         </section>
 
         <section className="mt-6">
@@ -578,12 +779,25 @@ const PublicCatalog = () => {
                 {loading
                   ? 'Loading available vehicles...'
                   : isMarketplacePage
-                    ? `${visibleListings.length} private listings ready`
+                    ? marketplaceHeading
                     : safeCertifiedCityFilter === 'all'
                       ? `${renderedCertifiedSections.length} cities live`
                       : `${visibleListings.length} models ready`}
               </h2>
+              {isMarketplacePage && !loading ? (
+                <p className="mt-2 text-sm text-slate-500">{marketplaceResultsLabel}</p>
+              ) : null}
             </div>
+            {showListVehicleCta ? (
+              <button
+                type="button"
+                onClick={handleStartOwnerSetup}
+                className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_16px_34px_rgba(79,70,229,0.18)] transition duration-200 hover:-translate-y-1 hover:shadow-[0_20px_40px_rgba(79,70,229,0.22)] active:translate-y-0 active:scale-[0.99]"
+              >
+                <ListVehicleIcon className="h-4 w-4" />
+                {tr('List your vehicle', 'Louer votre véhicule')}
+              </button>
+            ) : null}
             {!isMarketplacePage && (
               <div className="inline-flex items-center gap-2">
                 <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-violet-100">
@@ -618,16 +832,16 @@ const PublicCatalog = () => {
             </div>
           ) : visibleListings.length === 0 ? (
             <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-10 text-center shadow-sm">
-              <h3 className="text-xl font-semibold text-slate-900">No vehicles match these filters yet.</h3>
+              <h3 className="text-xl font-semibold text-slate-900">{tr('More vehicles coming soon', 'Plus de véhicules bientôt disponibles')}</h3>
               <p className="mt-2 text-slate-600">
-                Clear one or two filters to broaden the browse area, or switch back to all listings.
+                {tr('Try adjusting filters.', 'Essayez d’ajuster les filtres.')}
               </p>
               <button
                 type="button"
                 onClick={() => setSearchParams({}, { replace: true })}
                 className="mt-5 rounded-full bg-gradient-to-r from-violet-500 to-indigo-600 px-5 py-3 text-sm font-semibold text-white"
               >
-                Reset filters
+                {tr('Reset filters', 'Réinitialiser les filtres')}
               </button>
             </div>
           ) : (
@@ -763,7 +977,7 @@ const PublicCatalog = () => {
                                 switchVehicleByOffset(-1);
                               }}
                               disabled={!canGoPreviousVehicle}
-                              className="absolute left-3 top-32 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/80 bg-white/90 text-slate-700 shadow-[0_12px_30px_rgba(15,23,42,0.16)] backdrop-blur transition hover:bg-white disabled:opacity-35"
+                              className="absolute left-3 top-32 z-10 inline-flex h-12 w-12 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.16)] transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-violet-600 hover:text-white hover:shadow-[0_16px_36px_rgba(124,58,237,0.26)] disabled:opacity-35 disabled:hover:translate-y-0 disabled:hover:scale-100"
                               aria-label={tr('Previous vehicle', 'Véhicule précédent')}
                             >
                               <ChevronLeft className="h-5 w-5" />
@@ -775,7 +989,7 @@ const PublicCatalog = () => {
                                 switchVehicleByOffset(1);
                               }}
                               disabled={!canGoNextVehicle}
-                              className="absolute right-3 top-32 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/80 bg-white/90 text-slate-700 shadow-[0_12px_30px_rgba(15,23,42,0.16)] backdrop-blur transition hover:bg-white disabled:opacity-35"
+                              className="absolute right-3 top-32 z-10 inline-flex h-12 w-12 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.16)] transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-violet-600 hover:text-white hover:shadow-[0_16px_36px_rgba(124,58,237,0.26)] disabled:opacity-35 disabled:hover:translate-y-0 disabled:hover:scale-100"
                               aria-label={tr('Next vehicle', 'Véhicule suivant')}
                             >
                               <ChevronRight className="h-5 w-5" />
@@ -964,7 +1178,17 @@ const PublicCatalog = () => {
               ) : (
                 <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:gap-8">
                   {visibleListings.map((listing) => (
-                    <PublicListingCard key={listing.id} listing={listing} />
+                    <PublicListingCard
+                      key={listing.id}
+                      listing={listing}
+                      embeddedInAccount={embeddedInAccount}
+                      accountBasePath={accountBasePath}
+                      existingRequest={
+                        existingMarketplaceRequests[String(listing?.sourceId || listing?.id)] ||
+                        existingMarketplaceRequests[String(listing?.id || '')] ||
+                        null
+                      }
+                    />
                   ))}
                 </div>
               )}
@@ -1012,6 +1236,86 @@ const PublicCatalog = () => {
           </div>
         </div>
       )}
+      {isMarketplacePage && showMarketplaceFilters ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/40 px-4 py-4 sm:items-center">
+          <div className="w-full max-w-lg rounded-[28px] bg-white p-6 shadow-[0_30px_90px_rgba(15,23,42,0.24)]">
+            <div className="flex items-start justify-between gap-4">
+              <p className="text-lg font-semibold text-slate-900">{tr('Filters', 'Filtres')}</p>
+              <button
+                type="button"
+                onClick={() => setShowMarketplaceFilters(false)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200"
+                aria-label={tr('Close filters', 'Fermer les filtres')}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-6 space-y-6">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{tr('City', 'Ville')}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {marketplaceCityOptions.map((city) => (
+                    <button
+                      key={city}
+                      type="button"
+                      onClick={() => setFilter('city', city)}
+                      className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                        filters.city === city
+                          ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white shadow-sm'
+                          : 'bg-slate-50 text-slate-700 ring-1 ring-slate-200 hover:bg-violet-50'
+                      }`}
+                    >
+                      {city === 'all' ? tr('All cities', 'Toutes les villes') : city}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{tr('Vehicle type', 'Type de véhicule')}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {marketplaceVehicleTypeOptions.map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setFilter('brand', type)}
+                      className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                        filters.brand === type
+                          ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white shadow-sm'
+                          : 'bg-slate-50 text-slate-700 ring-1 ring-slate-200 hover:bg-violet-50'
+                      }`}
+                    >
+                      {type === 'all' ? tr('All types', 'Tous les types') : type}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{tr('Price range', 'Fourchette de prix')}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {marketplacePriceOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setFilter('priceRange', option.value)}
+                      className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                        filters.priceRange === option.value
+                          ? 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white shadow-sm'
+                          : 'bg-slate-50 text-slate-700 ring-1 ring-slate-200 hover:bg-violet-50'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {!embeddedInAccount ? <PublicSiteFooter /> : null}
       {!isMarketplacePage ? (
         <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-3 backdrop-blur">
           <div className="mx-auto max-w-3xl">

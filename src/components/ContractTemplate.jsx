@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from '../lib/supabase';
+import { calculateSimpleRentalPricing } from '../utils/simpleRentalPricing';
 import i18n from '../i18n';
 
 const getRentalDurationUnits = (rental) =>
@@ -22,27 +23,68 @@ const getEffectiveRentalBaseTotal = (rental, hasPackage = false, packageRate = n
   return rate * duration;
 };
 
+const normalizeContractPackageCandidate = (pkg = {}) => ({
+  ...pkg,
+  includedKilometers: Number(pkg?.includedKilometers ?? pkg?.included_kilometers ?? 0) || 0,
+  extraKmRate: Number(pkg?.extraKmRate ?? pkg?.extra_km_rate ?? 0) || 0,
+});
+
+const formatContractDurationFlow = (minutes, billedHours, tr) => {
+  const safeMinutes = Number(minutes || 0);
+  const safeBilledHours = Number(billedHours || 0);
+  if (safeMinutes <= 0) return tr('Rental duration recorded in the schedule below.', 'La durée de location est indiquée dans le planning ci-dessous.');
+  if (safeMinutes === 30) return tr('30 minutes used', '30 minutes utilisées');
+  if (safeMinutes < 60) return tr(`${safeMinutes} minutes used`, `${safeMinutes} minutes utilisées`);
+  const hours = (safeMinutes / 60).toFixed(safeMinutes % 60 === 0 ? 0 : 1);
+  return tr(
+    `${hours} hours used • ${safeBilledHours} billed hour${safeBilledHours === 1 ? '' : 's'}`,
+    `${String(hours).replace('.', ',')} heures utilisées • ${safeBilledHours} heure${safeBilledHours > 1 ? 's' : ''} facturée${safeBilledHours > 1 ? 's' : ''}`
+  );
+};
+
 const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
   const isFrench = language === 'fr';
   if (!rental) return <div className="p-10 text-center">{isFrench ? 'Aucune donnée de location disponible.' : 'No rental data available.'}</div>;
   const tr = (en, fr) => (isFrench ? fr : en);
 
   const [basePrices, setBasePrices] = useState([]);
+  const [kilometerPackages, setKilometerPackages] = useState([]);
   const [loadingPrices, setLoadingPrices] = useState(true);
+  const vehicleName = rental.vehicle?.name || rental.vehicle_details?.name || "N/A";
+  const plateNumber = rental.vehicle?.plate_number || rental.vehicle_details?.plate_number || "N/A";
+  const vehicleModelId = rental.vehicle?.vehicle_model?.id || rental.vehicle?.vehicle_model_id;
 
   // Fetch base prices from database
   useEffect(() => {
     const loadBasePrices = async () => {
       try {
-        const { data, error } = await supabase
-          .from('app_4c3a7a6153_base_prices')
-          .select('*')
-          .eq('is_active', true);
+        const [
+          { data, error },
+          { data: packageData, error: packageError },
+        ] = await Promise.all([
+          supabase
+            .from('app_4c3a7a6153_base_prices')
+            .select('*')
+            .eq('is_active', true),
+          vehicleModelId
+            ? supabase
+                .from('app_4c3a7a6153_rental_km_packages')
+                .select('*')
+                .eq('is_active', true)
+                .eq('vehicle_model_id', vehicleModelId)
+                .order('included_kilometers', { ascending: true })
+            : Promise.resolve({ data: [], error: null }),
+        ]);
         
         if (error) {
           console.error('❌ Error loading base prices:', error);
         } else {
           setBasePrices(data || []);
+        }
+        if (packageError) {
+          console.error('❌ Error loading contract km packages:', packageError);
+        } else {
+          setKilometerPackages(packageData || []);
         }
       } catch (error) {
         console.error('❌ Exception loading base prices:', error);
@@ -52,7 +94,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
     };
 
     loadBasePrices();
-  }, []);
+  }, [vehicleModelId]);
 
   // Data mapping logic
   const customerName = rental.customer_name || rental.linkedCustomerProfile?.full_name || rental.linkedCustomerProfile?.name || "N/A";
@@ -63,9 +105,6 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
     rental.linkedCustomerProfile?.customer_phone ||
     "N/A";
   const license = rental.customer_license_number || rental.customer_licence_number || "N/A";
-  const vehicleName = rental.vehicle?.name || rental.vehicle_details?.name || "N/A";
-  const plateNumber = rental.vehicle?.plate_number || rental.vehicle_details?.plate_number || "N/A";
-  const vehicleModelId = rental.vehicle?.vehicle_model?.id || rental.vehicle?.vehicle_model_id;
   const startDate = rental.started_at || rental.start_date || rental.rental_start_date;
   const endDate = rental.actual_end_date || rental.end_date || rental.rental_end_date;
   
@@ -237,6 +276,59 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
       isDaily: isDaily
     };
   }, [rental, vehicleName, vehicleModelId, basePrices, hasPackage]);
+
+  const contractPackageCatalog = React.useMemo(() => {
+    const catalog = (Array.isArray(kilometerPackages) ? kilometerPackages : []).map(normalizeContractPackageCandidate);
+    const linked = rental?.package ? normalizeContractPackageCandidate(rental.package) : null;
+    const all = linked ? [...catalog, linked] : catalog;
+
+    return all
+      .filter((pkg) => Number(pkg?.includedKilometers || 0) > 0)
+      .filter((pkg, index, arr) => arr.findIndex((entry) => String(entry.id || entry.includedKilometers) === String(pkg.id || pkg.includedKilometers)) === index)
+      .sort((left, right) => Number(left.includedKilometers || 0) - Number(right.includedKilometers || 0));
+  }, [kilometerPackages, rental?.package]);
+
+  const contractPricingFlow = React.useMemo(() => {
+    const startTime = rental?.started_at || rental?.start_date || rental?.rental_start_date || null;
+    const endTime = rental?.actual_end_date || rental?.end_date || rental?.rental_end_date || null;
+    const totalKmUsed = rental?.total_kilometers_driven ||
+      ((rental?.ending_odometer && rental?.start_odometer)
+        ? Number(rental.ending_odometer) - Number(rental.start_odometer)
+        : 0);
+
+    const hourlyRate = rental?.rental_type === 'daily'
+      ? ((Number(rental?.daily_rate || rental?.vehicle?.daily_rate || rental?.vehicle?.vehicle_model?.daily_price || 0) || 0) / 24)
+      : (Number(rental?.hourly_rate || rental?.vehicle?.hourly_rate || rental?.vehicle?.vehicle_model?.hourly_price || rental?.unit_price || 0) || 0);
+
+    return calculateSimpleRentalPricing({
+      startTime,
+      endTime,
+      gracePeriodMinutes: 60,
+      hourlyRate,
+      totalKmUsed,
+      packages: contractPackageCatalog,
+    });
+  }, [contractPackageCatalog, rental]);
+
+  const contractDistanceUpgrade = React.useMemo(() => {
+    if (!contractPricingFlow?.selectedPackage || contractPackageCatalog.length < 2) return null;
+    const finalLimit = Number(contractPricingFlow.packageLimitKm || 0);
+    const finalIndex = contractPackageCatalog.findIndex((pkg) => Number(pkg.includedKilometers || 0) === finalLimit);
+    if (finalIndex <= 0) return null;
+
+    const previousPackage = contractPackageCatalog[finalIndex - 1];
+    const previousLimit = Number(previousPackage?.includedKilometers || 0);
+    const kmUsed = Number(contractPricingFlow.kmUsed || 0);
+    if (kmUsed <= previousLimit) return null;
+
+    return {
+      previousPackage,
+      previousLimit,
+      finalPackage: contractPricingFlow.selectedPackage,
+      finalLimit,
+      kmUsed,
+    };
+  }, [contractPackageCatalog, contractPricingFlow]);
 
   const formatContractDate = (dateString) => {
     if (!dateString) return 'N/A';
@@ -443,6 +535,138 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
             {formatCurrency(breakdown.savings)} MAD ({breakdown.savingsPercentage}%)
           </span>
         </div>
+      </div>
+    );
+  };
+
+  const RentalFlowDisplay = () => {
+    if (!hasPackage || !packageBreakdown) return null;
+
+    const bookedPlanName = packageBreakdown.name;
+    const finalPlanName = contractPricingFlow?.selectedPackage?.name || bookedPlanName;
+    const kmUsed = Number(contractPricingFlow?.kmUsed || 0);
+    const finalLimit = Number(contractPricingFlow?.packageLimitKm || packageBreakdown.totalIncludedKm || 0);
+    const overflowKm = Number(contractPricingFlow?.packageOverflowKm || 0);
+
+    return (
+      <div style={{
+        marginBottom: '24px',
+        padding: '18px',
+        background: '#f8fafc',
+        borderRadius: '12px',
+        border: '1px solid #cbd5e1'
+      }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          marginBottom: '14px'
+        }}>
+          <div style={{
+            width: '34px',
+            height: '34px',
+            background: 'linear-gradient(135deg, #0f766e 0%, #0ea5a4 100%)',
+            borderRadius: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}>
+            <svg style={{ width: '16px', height: '16px', color: 'white' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17l3 3 3-3m0-10l-3-3-3 3m3-3v16" />
+            </svg>
+          </div>
+          <div>
+            <h4 style={{ fontSize: '15px', fontWeight: '700', margin: 0, color: '#0f172a' }}>
+              {tr('Rental flow summary', 'Résumé du déroulement')}
+            </h4>
+            <p style={{ fontSize: '12px', margin: '3px 0 0 0', color: '#475569' }}>
+              {tr('Operational summary only. Prices stay on the receipt.', 'Résumé opérationnel uniquement. Les prix restent sur le reçu.')}
+            </p>
+          </div>
+        </div>
+
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gap: '12px'
+        }}>
+          <div style={{ background: 'white', borderRadius: '10px', padding: '12px', border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+              {tr('Time used', 'Temps utilisé')}
+            </div>
+            <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>
+              {formatContractDurationFlow(contractPricingFlow?.durationMinutes, contractPricingFlow?.billedHours, tr)}
+            </div>
+          </div>
+
+          <div style={{ background: 'white', borderRadius: '10px', padding: '12px', border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+              {tr('Plan chosen at booking', 'Plan choisi à la réservation')}
+            </div>
+            <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>
+              {bookedPlanName}
+            </div>
+          </div>
+
+          <div style={{ background: 'white', borderRadius: '10px', padding: '12px', border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+              {tr('Distance used', 'Distance utilisée')}
+            </div>
+            <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>
+              {kmUsed} km
+            </div>
+          </div>
+
+          <div style={{ background: 'white', borderRadius: '10px', padding: '12px', border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+              {tr('Final distance plan', 'Plan distance final')}
+            </div>
+            <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>
+              {finalPlanName}
+            </div>
+            <div style={{ fontSize: '12px', color: '#475569', marginTop: '4px' }}>
+              {tr(`Included limit: ${finalLimit} km`, `Limite incluse : ${finalLimit} km`)}
+            </div>
+          </div>
+        </div>
+
+        {contractDistanceUpgrade ? (
+          <div style={{
+            marginTop: '12px',
+            padding: '12px',
+            background: '#ecfeff',
+            border: '1px solid #a5f3fc',
+            borderRadius: '10px'
+          }}>
+            <div style={{ fontSize: '12px', fontWeight: '700', color: '#155e75', marginBottom: '4px' }}>
+              {tr('Automatic distance-plan update', 'Mise à jour automatique du plan distance')}
+            </div>
+            <div style={{ fontSize: '12px', color: '#155e75', lineHeight: 1.6 }}>
+              {tr(
+                `The trip finished above the ${contractDistanceUpgrade.previousLimit} km plan, so the rental moved to the next valid plan at ${contractDistanceUpgrade.finalLimit} km to match the real mileage.`,
+                `Le trajet a dépassé le plan de ${contractDistanceUpgrade.previousLimit} km, donc la location est passée au plan valable suivant à ${contractDistanceUpgrade.finalLimit} km pour correspondre au kilométrage réel.`
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {overflowKm > 0 ? (
+          <div style={{
+            marginTop: '12px',
+            padding: '12px',
+            background: '#fff7ed',
+            border: '1px solid #fdba74',
+            borderRadius: '10px',
+            fontSize: '12px',
+            color: '#9a3412',
+            lineHeight: 1.6
+          }}>
+            {tr(
+              `${overflowKm} km still sits above the current distance plan and may be handled separately on the financial receipt.`,
+              `${overflowKm} km dépasse encore le plan distance actuel et pourra être traité séparément sur le reçu financier.`
+            )}
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -947,6 +1171,8 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
               </div>
             </div>
           </div>
+
+          <RentalFlowDisplay />
 
           {/* ODOMETER SECTION - Enhanced */}
           <div style={{

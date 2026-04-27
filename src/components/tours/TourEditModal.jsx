@@ -3,10 +3,13 @@ import { useTranslation } from 'react-i18next';
 import { useSelector } from 'react-redux';
 import { X, Save, Calendar, Clock, Users, DollarSign, MapPin, FileText, Image, Tag, Trash2 } from 'lucide-react';
 import { usePermissions } from '../../hooks/usePermissions';
+import { useAuth } from '../../contexts/AuthContext';
+import { canManageTourPackages } from '../../utils/permissionHelpers';
 
 const TourEditModal = ({ isOpen, onClose, tour, onSave, onDelete, isSaving }) => {
   const { t } = useTranslation();
   const { user } = useSelector(state => state.auth);
+  const { userProfile } = useAuth();
   const permissions = usePermissions();
   const [formData, setFormData] = useState({
     id: null,
@@ -204,7 +207,7 @@ const TourEditModal = ({ isOpen, onClose, tour, onSave, onDelete, isSaving }) =>
     }
   };
 
-  const canDelete = user && (user.role === 'owner' || user.role === 'admin' || permissions.isAdmin || permissions.isOwner);
+  const canDelete = canManageTourPackages(userProfile) || permissions.isAdmin || permissions.isOwner;
 
   const tourTypes = [
     { value: 'city', label: t('tours.types.city', 'City Tour') },

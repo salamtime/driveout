@@ -7,10 +7,11 @@ import { fetchTourBookings } from '../../services/tourBookingService';
 import { buildTourTrackingUrl, fetchRecentTrackedTours, fetchTourTrackingLogs, groupTrackingLogsByTour } from '../../services/tourTrackingService';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import i18n from '../../i18n';
+import { TABLE_NAMES } from '../../config/tableNames';
 
 const TOUR_BOOKING_MARKER = '[tour_booking]';
-const TOUR_BOOKINGS_TABLE = 'app_687f658e98_tour_bookings';
-const ACTIVITY_LOG_TABLE = 'app_687f658e98_activity_log';
+const TOUR_BOOKINGS_TABLE = TABLE_NAMES.TOUR_BOOKINGS;
+const ACTIVITY_LOG_TABLE = TABLE_NAMES.ACTIVITY_LOG;
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || '';
 const MAPBOX_STYLE = 'mapbox://styles/saharax/cmn2feqnl004t01sdfvvb1616';
 const MAX_POINT_ACCURACY_METERS = 25;
@@ -771,7 +772,7 @@ const LiveMap = () => {
           <>
             <Link
               to="/admin/tours?tab=schedule"
-              className="inline-flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition-all duration-200 hover:border-violet-200 hover:text-violet-700"
             >
               <Compass className="h-4 w-4" />
               {tr('Schedule', 'Planning')}
@@ -779,7 +780,7 @@ const LiveMap = () => {
             <button
               type="button"
               onClick={() => loadMapData(true)}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition-all duration-200 hover:border-violet-200 hover:text-violet-700"
             >
               <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
               {tr('Refresh', 'Actualiser')}

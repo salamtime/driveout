@@ -8,6 +8,12 @@ import {
   PLATFORM_TENANT_WORKSPACE_POOL_TABLE,
 } from './supabase.js';
 
+const createHttpError = (status, message) => {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+};
+
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 
 const normalizeUrl = (value = '') => {
@@ -265,7 +271,10 @@ const dispatchProvisioningAutomation = async ({ job, tenant, businessAccount, us
   const { url, secret } = getProvisioningWebhookConfig();
 
   if (!url) {
-    throw new Error('Tenant provisioning worker is not configured. Set TENANT_PROVISIONING_WEBHOOK_URL before starting automatic provisioning.');
+    throw createHttpError(
+      409,
+      'Tenant provisioning worker is not configured. Set TENANT_PROVISIONING_WEBHOOK_URL before starting automatic provisioning.'
+    );
   }
 
   const response = await fetch(url, {
@@ -286,7 +295,10 @@ const dispatchProvisioningAutomation = async ({ job, tenant, businessAccount, us
   const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(body?.error || body?.message || `Provisioning webhook failed with ${response.status}`);
+    throw createHttpError(
+      response.status >= 400 && response.status < 600 ? response.status : 502,
+      body?.error || body?.message || `Provisioning webhook failed with ${response.status}`
+    );
   }
 
   return {
@@ -551,6 +563,15 @@ export default async function handler(req, res) {
     }
 
     if (action === 'start') {
+      const webhookConfig = getProvisioningWebhookConfig();
+      if (!webhookConfig.url) {
+        res.status(409).json({
+          error: 'Tenant provisioning worker is not configured. Set TENANT_PROVISIONING_WEBHOOK_URL before starting automatic provisioning.',
+          code: 'tenant_provisioning_worker_not_configured',
+        });
+        return;
+      }
+
       const { data: businessAccountForAutomation, error: businessAccountForAutomationError } = await adminClient
         .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
         .select('*')
@@ -898,6 +919,6 @@ export default async function handler(req, res) {
     res.status(200).json({ job: updatedJob, tenant: updatedTenant });
     return;
   } catch (error) {
-    res.status(500).json({ error: error.message || 'Failed to process tenant provisioning' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to process tenant provisioning' });
   }
 }

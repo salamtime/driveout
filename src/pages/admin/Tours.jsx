@@ -606,6 +606,12 @@ const syncDriverSlots = (drivers = [], quadCount = 1) => {
   }));
 };
 
+const getRequiredSecondDriverCount = (ridersCount = 1, quadCount = 1) => {
+  const safeQuads = Math.max(1, Number(quadCount || 1));
+  const safeRiders = Math.max(1, Number(ridersCount || 1));
+  return Math.max(0, Math.min(safeQuads, safeRiders - safeQuads));
+};
+
 const hasAnyDriverValue = (driver) =>
   Boolean(
     String(driver?.fullName || '').trim() ||
@@ -1048,7 +1054,7 @@ const ToursPage = () => {
         {
           event: '*',
           schema: 'public',
-          table: 'app_687f658e98_activity_log',
+          table: TABLE_NAMES.ACTIVITY_LOG,
           filter: 'resource_type=eq.tour_tracking',
         },
         queueTrackedToursReload
@@ -1476,6 +1482,10 @@ const ToursPage = () => {
     () => syncDriverSlots(bookingForm.secondaryDrivers, bookingForm.quadCount),
     [bookingForm.secondaryDrivers, bookingForm.quadCount]
   );
+  const requiredSecondDriverCount = useMemo(
+    () => getRequiredSecondDriverCount(bookingForm.ridersCount, bookingForm.quadCount),
+    [bookingForm.ridersCount, bookingForm.quadCount]
+  );
   const activePrimaryDriver = primaryDrivers[activeDriverQuadIndex] || createEmptyDriver();
   const activeSecondaryDriver = secondaryDrivers[activeDriverQuadIndex] || createEmptyDriver();
   const activePrimaryDriverSearchTerm = String(activePrimaryDriver.fullName || '').trim();
@@ -1519,7 +1529,9 @@ const ToursPage = () => {
     };
   }, [bookingStep, activeDriverQuadIndex, activePrimaryDriverSearchTerm]);
   const secondDriverOpen =
-    secondDriverOpenByQuad[activeDriverQuadIndex] ?? hasAnyDriverValue(activeSecondaryDriver);
+    activeDriverQuadIndex < requiredSecondDriverCount
+      ? true
+      : (secondDriverOpenByQuad[activeDriverQuadIndex] ?? hasAnyDriverValue(activeSecondaryDriver));
 
   useEffect(() => {
     if (activeDriverQuadIndex > Math.max(0, Number(bookingForm.quadCount || 1) - 1)) {
@@ -2261,7 +2273,7 @@ const ToursPage = () => {
         created_at: new Date().toISOString(),
       }));
 
-      const { error } = await supabase.from('app_687f658e98_activity_log').insert(logs);
+      const { error } = await supabase.from(TABLE_NAMES.ACTIVITY_LOG).insert(logs);
       if (error) {
         console.warn('Unable to write tour return activity logs:', error);
       }
@@ -2279,7 +2291,7 @@ const ToursPage = () => {
         userProfile?.email ||
         'Team Member';
 
-      const { error } = await supabase.from('app_687f658e98_activity_log').insert({
+      const { error } = await supabase.from(TABLE_NAMES.ACTIVITY_LOG).insert({
         action: actionType,
         user_email: userProfile?.email || actorName,
         details: {
@@ -2309,7 +2321,7 @@ const ToursPage = () => {
     setTourActivityLoading(true);
     try {
       const { data, error } = await supabase
-        .from('app_687f658e98_activity_log')
+        .from(TABLE_NAMES.ACTIVITY_LOG)
         .select('*')
         .filter('details->>groupId', 'eq', tour.groupId)
         .order('created_at', { ascending: false })
@@ -2640,17 +2652,27 @@ const ToursPage = () => {
       }
       for (let index = 0; index < secondaryDrivers.length; index += 1) {
         const driver = secondaryDrivers[index];
-        if (!hasAnyDriverValue(driver)) continue;
+        const secondDriverRequired = index < requiredSecondDriverCount;
+        if (!secondDriverRequired && !hasAnyDriverValue(driver)) continue;
         if (!String(driver.fullName || '').trim()) {
-          toast.error(tr(`Enter the second driver name for quad ${index + 1}`, `Saisissez le nom du second conducteur pour le quad ${index + 1}`));
+          toast.error(
+            secondDriverRequired
+              ? tr(`Enter the second rider name for quad ${index + 1}`, `Saisissez le nom du deuxième passager pour le quad ${index + 1}`)
+              : tr(`Enter the second driver name for quad ${index + 1}`, `Saisissez le nom du second conducteur pour le quad ${index + 1}`)
+          );
           return false;
         }
         if (!hasDriverContactMethod(driver)) {
           toast.error(
-            tr(
-              `Enter the second driver WhatsApp or email for quad ${index + 1}`,
-              `Saisissez le WhatsApp ou l'e-mail du second conducteur pour le quad ${index + 1}`
-            )
+            secondDriverRequired
+              ? tr(
+                `Enter the second rider WhatsApp or email for quad ${index + 1}`,
+                `Saisissez le WhatsApp ou l'e-mail du deuxième passager pour le quad ${index + 1}`
+              )
+              : tr(
+                `Enter the second driver WhatsApp or email for quad ${index + 1}`,
+                `Saisissez le WhatsApp ou l'e-mail du second conducteur pour le quad ${index + 1}`
+              )
           );
           return false;
         }
@@ -2664,7 +2686,11 @@ const ToursPage = () => {
           return false;
         }
         if (currentPackage?.requiresLicense && !String(driver.licenseNumber || '').trim()) {
-          toast.error(tr(`Enter the second driver license number for quad ${index + 1}`, `Saisissez le numéro de permis du second conducteur pour le quad ${index + 1}`));
+          toast.error(
+            secondDriverRequired
+              ? tr(`Enter the second rider license number for quad ${index + 1}`, `Saisissez le numéro de permis du deuxième passager pour le quad ${index + 1}`)
+              : tr(`Enter the second driver license number for quad ${index + 1}`, `Saisissez le numéro de permis du second conducteur pour le quad ${index + 1}`)
+          );
           return false;
         }
       }
@@ -3683,6 +3709,14 @@ const ToursPage = () => {
                     ))}
                   </div>
                   <p className="mt-3 text-xs text-slate-500">{tr('Maximum two riders per quad.', 'Maximum deux passagers par quad.')}</p>
+                  {requiredSecondDriverCount > 0 ? (
+                    <p className="mt-2 text-xs font-semibold text-violet-700">
+                      {tr(
+                        `${requiredSecondDriverCount} second rider slot${requiredSecondDriverCount === 1 ? '' : 's'} will be required automatically in the driver roster.`,
+                        `${requiredSecondDriverCount} emplacement${requiredSecondDriverCount === 1 ? '' : 's'} pour un deuxième passager sera requis automatiquement dans la fiche conducteurs.`
+                      )}
+                    </p>
+                  ) : null}
                 </div>
 
                 {canSelectTourGuide ? (
@@ -3750,6 +3784,11 @@ const ToursPage = () => {
                             }`}
                           >
                             <p className="text-sm font-semibold">Quad {index + 1}</p>
+                            {index < requiredSecondDriverCount ? (
+                              <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-violet-600">
+                                {tr('2 riders required', '2 passagers requis')}
+                              </p>
+                            ) : null}
                             <p className={`mt-1 text-xs font-semibold ${complete ? 'text-violet-600' : 'text-slate-400'}`}>
                               {complete ? 'Ready' : 'Needs details'}
                             </p>
@@ -3920,16 +3959,21 @@ const ToursPage = () => {
                       <div className="mt-5 rounded-xl border border-dashed border-slate-200 bg-slate-50/80 p-4">
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={() => {
+                            if (activeDriverQuadIndex < requiredSecondDriverCount) return;
                             setSecondDriverOpenByQuad((prev) => ({
                               ...prev,
                               [activeDriverQuadIndex]: !(prev[activeDriverQuadIndex] ?? hasAnyDriverValue(activeSecondaryDriver)),
-                            }))
-                          }
+                            }));
+                          }}
                           className="flex w-full items-start justify-between gap-4 text-left"
                         >
                           <div>
-                            <p className="text-sm font-semibold text-slate-900">{tr('Optional second driver', 'Second conducteur optionnel')}</p>
+                            <p className="text-sm font-semibold text-slate-900">
+                              {activeDriverQuadIndex < requiredSecondDriverCount
+                                ? tr('Second rider required', 'Deuxième passager requis')
+                                : tr('Optional second driver', 'Second conducteur optionnel')}
+                            </p>
                             {hasAnyDriverValue(activeSecondaryDriver) && (
                               <p className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
                                 {activeSecondaryDriver.fullName || tr('Details added', 'Détails ajoutés')}
@@ -3937,7 +3981,11 @@ const ToursPage = () => {
                             )}
                           </div>
                           <span className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs font-semibold text-violet-700 shadow-sm">
-                            {secondDriverOpen ? tr('Hide', 'Masquer') : tr('Add second driver', 'Ajouter un second conducteur')}
+                            {activeDriverQuadIndex < requiredSecondDriverCount
+                              ? tr('Required', 'Requis')
+                              : secondDriverOpen
+                                ? tr('Hide', 'Masquer')
+                                : tr('Add second driver', 'Ajouter un second conducteur')}
                             <ChevronRight className={`h-4 w-4 transition-transform ${secondDriverOpen ? 'rotate-90' : ''}`} />
                           </span>
                         </button>
@@ -4274,7 +4322,7 @@ const ToursPage = () => {
         <button
           type="button"
           onClick={() => setActiveTab('bookings')}
-          className="fixed bottom-6 right-6 z-50 inline-flex items-center gap-2 rounded-[1.6rem] border border-violet-500/80 bg-gradient-to-r from-violet-600 via-violet-600 to-indigo-700 px-5 py-4 text-white shadow-[0_18px_36px_rgba(79,70,229,0.28)] transition-all duration-200 hover:scale-[1.01] hover:from-violet-700 hover:to-indigo-800 active:scale-[0.99] sm:bottom-8 sm:right-8 sm:px-6 sm:py-4"
+          className="app-floating-primary fixed bottom-6 right-6 z-50 inline-flex items-center gap-2 rounded-[1.6rem] border border-violet-500/80 bg-gradient-to-r from-violet-600 via-violet-600 to-indigo-700 px-5 py-4 text-white shadow-[0_18px_36px_rgba(79,70,229,0.28)] transition-all duration-200 hover:scale-[1.01] hover:from-violet-700 hover:to-indigo-800 active:scale-[0.99] sm:bottom-8 sm:right-8 sm:px-6 sm:py-4"
           aria-label={tr('Book now', 'Réserver maintenant')}
         >
           <span className="inline-flex h-8 w-8 items-center justify-center rounded-2xl bg-white/16 ring-1 ring-white/20">

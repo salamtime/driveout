@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import MarketplaceAdminService from '../../services/MarketplaceAdminService';
 import MarketplaceModerationModal from '../../components/admin/MarketplaceModerationModal';
+import MessageWidget from '../../components/messages/MessageWidget';
+import { useAuth } from '../../contexts/AuthContext';
 import i18n from '../../i18n';
 
 const statusTone = (status) => {
@@ -63,8 +65,33 @@ const computeQuality = (detail) => {
   return { score, missing, mediaCount };
 };
 
+const buildOwnerProfileHref = (detail) => {
+  const params = new URLSearchParams();
+  const resolvedCustomerId = String(
+    detail?.owner?.customerId ||
+    detail?.owner?.customer_id ||
+    detail?.ownerCustomerId ||
+    ''
+  ).trim();
+  const resolvedAuthUserId = String(
+    detail?.owner?.id ||
+    detail?.ownerId ||
+    detail?.owner_id ||
+    detail?.ownerUserId ||
+    ''
+  ).trim();
+  const resolvedEmail = String(detail?.owner?.email || '').trim().toLowerCase();
+
+  if (resolvedCustomerId) params.set('customerId', resolvedCustomerId);
+  if (resolvedAuthUserId) params.set('authUserId', resolvedAuthUserId);
+  if (resolvedEmail) params.set('email', resolvedEmail);
+
+  return `/admin/customers/profile${params.toString() ? `?${params.toString()}` : ''}`;
+};
+
 const MarketplaceListingDetail = () => {
   const { listingId } = useParams();
+  const { user, userProfile } = useAuth();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const [loading, setLoading] = useState(true);
@@ -129,6 +156,20 @@ const MarketplaceListingDetail = () => {
   const history = Array.isArray(detail.moderationHistory) ? detail.moderationHistory : [];
   const quality = computeQuality(detail);
   const currentListingStatus = String(detail.listingStatus || '').toLowerCase();
+  const ownerUserId = String(detail?.owner?.id || detail?.ownerId || detail?.owner_id || detail?.ownerUserId || '').trim();
+  const ownerProfileHref = buildOwnerProfileHref(detail);
+  const ownerName = detail.owner?.fullName || detail.ownerDisplayName || '—';
+  const ownerIdentity = [detail.ownerType, detail.owner?.companyName].filter(Boolean).join(' • ');
+  const ownerLocation = [detail.cityName, detail.areaName, detail.countryName].filter(Boolean).join(' • ');
+  const adminLabel = String(
+    userProfile?.username ||
+    userProfile?.fullName ||
+    userProfile?.full_name ||
+    user?.user_metadata?.username ||
+    user?.user_metadata?.full_name ||
+    user?.email ||
+    'Admin'
+  ).trim();
 
   const reload = async () => {
     const result = await MarketplaceAdminService.getListingDetail(listingId);
@@ -170,30 +211,98 @@ const MarketplaceListingDetail = () => {
         </div>
       ) : null}
 
-      <div className="rounded-[2rem] border border-violet-100 bg-[radial-gradient(circle_at_top_left,_rgba(124,58,237,0.18),_transparent_35%),linear-gradient(135deg,_#ffffff_0%,_#f5f3ff_100%)] p-6 shadow-sm sm:p-8">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="rounded-[2.2rem] border border-violet-100 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.06)] sm:p-8">
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_360px] xl:items-start">
           <div>
             <p className="text-xs font-black uppercase tracking-[0.24em] text-violet-600">
               {tr('Marketplace submission', 'Soumission marketplace')}
             </p>
             <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950">{detail.title}</h1>
-            <p className="mt-2 text-sm text-slate-600">
-              {[detail.ownerDisplayName, detail.cityName, detail.areaName].filter(Boolean).join(' • ')}
-            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <span className={`rounded-full px-3 py-1.5 text-xs font-black uppercase tracking-[0.14em] ${statusTone(detail.listingStatus)}`}>
+                {String(detail.listingStatus || '').replace(/_/g, ' ')}
+              </span>
+              <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">
+                {detail.ownerType}
+              </span>
+              <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">
+                {detail.bookingMode}
+              </span>
+              <span className={`rounded-full px-3 py-1.5 text-xs font-bold ${moderationTone(detail.moderationStatus)}`}>
+                {String(detail.moderationStatus || 'not_reviewed').replace(/_/g, ' ')}
+              </span>
+            </div>
+            <div className="mt-6 grid gap-4 md:grid-cols-3">
+              <div className="rounded-[1.6rem] border border-slate-100 bg-slate-50/80 px-4 py-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">
+                  {tr('Owner', 'Propriétaire')}
+                </p>
+                <p className="mt-2 text-base font-bold text-slate-950">{ownerName}</p>
+                {ownerIdentity ? <p className="mt-1 text-sm font-medium text-slate-500">{ownerIdentity}</p> : null}
+              </div>
+              <div className="rounded-[1.6rem] border border-slate-100 bg-slate-50/80 px-4 py-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">
+                  {tr('Location', 'Localisation')}
+                </p>
+                <p className="mt-2 text-base font-bold text-slate-950">{ownerLocation || '—'}</p>
+                <p className="mt-1 text-sm font-medium text-slate-500">{detail.pickupLocationName || detail.pickupAddress || detail.cityName || '—'}</p>
+              </div>
+              <div className="rounded-[1.6rem] border border-slate-100 bg-slate-50/80 px-4 py-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">
+                  {tr('Visibility', 'Visibilité')}
+                </p>
+                <p className="mt-2 text-base font-bold text-slate-950">{currentListingStatus === 'live' ? tr('Live on marketplace', 'En direct sur marketplace') : tr('Waiting on moderation', 'En attente de modération')}</p>
+                <p className="mt-1 text-sm font-medium text-slate-500">
+                  {currentListingStatus === 'live'
+                    ? tr('Publicly visible right now.', 'Visible publiquement maintenant.')
+                    : tr('Still moving through the review pipeline.', 'Encore dans le pipeline de revue.')}
+                </p>
+              </div>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <span className={`rounded-full px-3 py-1.5 text-xs font-black uppercase tracking-[0.14em] ${statusTone(detail.listingStatus)}`}>
-              {String(detail.listingStatus || '').replace(/_/g, ' ')}
-            </span>
-            <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">
-              {detail.ownerType}
-            </span>
-            <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">
-              {detail.bookingMode}
-            </span>
-            <span className={`rounded-full px-3 py-1.5 text-xs font-bold ${moderationTone(detail.moderationStatus)}`}>
-              {String(detail.moderationStatus || 'not_reviewed').replace(/_/g, ' ')}
-            </span>
+
+          <div className="rounded-[1.9rem] border border-violet-100 bg-violet-50/60 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
+            <div className="flex items-start gap-3">
+              <div className="rounded-2xl bg-white p-3 text-violet-700 shadow-sm">
+                <UserRound className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[11px] font-black uppercase tracking-[0.24em] text-violet-500">
+                  {tr('Owner profile', 'Profil propriétaire')}
+                </p>
+                <h2 className="mt-2 text-xl font-black tracking-tight text-slate-950">{ownerName}</h2>
+                {ownerIdentity ? <p className="mt-1 text-sm font-medium text-slate-500">{ownerIdentity}</p> : null}
+              </div>
+            </div>
+            <div className="mt-5 space-y-3 rounded-[1.5rem] border border-white/70 bg-white/80 px-4 py-4 text-sm text-slate-700">
+              <div>
+                <span className="font-semibold text-slate-500">{tr('Email', 'Email')}</span>
+                <p className="mt-1 font-semibold text-slate-900 break-all">{detail.owner?.email || '—'}</p>
+              </div>
+              <div>
+                <span className="font-semibold text-slate-500">{tr('Phone', 'Téléphone')}</span>
+                <p className="mt-1 font-semibold text-slate-900">{detail.owner?.phone || '—'}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-2xl bg-slate-50 px-3 py-3">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">{tr('Total listings', 'Total listings')}</p>
+                  <p className="mt-2 text-lg font-black text-slate-950">{detail.owner?.totalListings || 0}</p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 px-3 py-3">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">{tr('Live listings', 'Listings live')}</p>
+                  <p className="mt-2 text-lg font-black text-slate-950">{detail.owner?.liveListings || 0}</p>
+                </div>
+              </div>
+              <div className="pt-1">
+                <Link
+                  to={ownerProfileHref}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-white px-4 py-3 text-sm font-bold text-violet-700 transition hover:border-violet-300 hover:bg-violet-50"
+                >
+                  <UserRound className="h-4 w-4" />
+                  {tr('Open owner profile', 'Ouvrir le profil propriétaire')}
+                </Link>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -219,7 +328,7 @@ const MarketplaceListingDetail = () => {
               </div>
               <div>
                 <h2 className="text-lg font-bold text-slate-950">{tr('Vehicle information', 'Informations vehicule')}</h2>
-                <p className="mt-1 text-sm text-slate-600">{tr('Full submission details entered by the owner.', 'Details complets saisis par le proprietaire.')}</p>
+                <p className="mt-1 text-sm text-slate-600">{tr('Listing details and submission data.', 'Détails du listing et données de soumission.')}</p>
               </div>
             </div>
             <div className="mt-6 grid gap-4 md:grid-cols-2">
@@ -244,7 +353,7 @@ const MarketplaceListingDetail = () => {
               </div>
               <div>
                 <h2 className="text-lg font-bold text-slate-950">{tr('Media', 'Medias')}</h2>
-                <p className="mt-1 text-sm text-slate-600">{tr('Cover image and submitted gallery.', 'Image couverture et galerie soumise.')}</p>
+                <p className="mt-1 text-sm text-slate-600">{tr('Cover image and gallery used for review.', 'Image de couverture et galerie utilisées pour la revue.')}</p>
               </div>
             </div>
             {media.length === 0 ? (
@@ -315,6 +424,13 @@ const MarketplaceListingDetail = () => {
                 </div>
               </div>
               <div><span className="font-semibold text-slate-500">{tr('Join date', "Date d'inscription")}</span><p className="mt-1 font-semibold text-slate-900">{detail.owner?.joinDate || '—'}</p></div>
+              <Link
+                to={ownerProfileHref}
+                className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+              >
+                <UserRound className="h-4 w-4" />
+                {tr('Open owner profile', 'Ouvrir le profil propriétaire')}
+              </Link>
             </div>
           </section>
 
@@ -418,7 +534,7 @@ const MarketplaceListingDetail = () => {
                 disabled={Boolean(actionLoading)}
                 className="flex w-full items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60"
               >
-                {tr('Message owner', 'Message proprietaire')}
+                {tr('Send review feedback', 'Envoyer le retour')}
               </button>
               {currentListingStatus === 'approved' ? (
                 <button
@@ -543,6 +659,45 @@ const MarketplaceListingDetail = () => {
           if (!modalMode) return;
           const ok = await runAction(modalMode, payload);
           if (ok) setModalMode(null);
+        }}
+      />
+
+      <MessageWidget
+        contextType="listing"
+        contextId={String(listingId || detail?.id || '')}
+        contextLabel={tr('Listing', 'Listing')}
+        contextTitle={detail.title || tr('Marketplace listing', 'Listing marketplace')}
+        contextSubtitle={tr('Moderation thread with the owner', 'Fil de modération avec le propriétaire')}
+        contextStatus={String(detail.listingStatus || '').replace(/_/g, ' ')}
+        family="marketplace"
+        threadType="marketplace_moderation"
+        currentUserId={user?.id}
+        currentUserLabel={adminLabel}
+        currentSenderRole="admin"
+        isFrench={isFrench}
+        tr={tr}
+        isAdmin
+        allowInternalNotes
+        allowThreadStateControls
+        replyTarget={ownerUserId ? {
+          userId: ownerUserId,
+          role: 'owner',
+          label: detail.owner?.fullName || detail.ownerDisplayName || '',
+          email: detail.owner?.email || '',
+        } : null}
+        seedThread={{
+          id: `marketplace-moderation-${listingId}`,
+          thread_key: '',
+          family: 'marketplace',
+          thread_type: 'marketplace_moderation',
+          entity_type: 'listing',
+          entity_id: String(listingId || detail?.id || ''),
+          subject: detail.title || 'Marketplace listing',
+          metadata: {
+            adminHref: `/admin/marketplace/${encodeURIComponent(String(listingId || detail?.id || ''))}`,
+            href: '/account/marketplace',
+          },
+          messages: [],
         }}
       />
     </div>

@@ -4,11 +4,25 @@
  * Uses FFmpeg.wasm for client-side video transcoding
  */
 
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
-
 let ffmpegInstance = null;
 let isFFmpegLoaded = false;
+
+let ffmpegDepsPromise = null;
+
+const loadFFmpegDeps = async () => {
+  if (!ffmpegDepsPromise) {
+    ffmpegDepsPromise = Promise.all([
+      import('@ffmpeg/ffmpeg'),
+      import('@ffmpeg/util'),
+    ]).then(([ffmpegModule, utilModule]) => ({
+      FFmpeg: ffmpegModule.FFmpeg,
+      fetchFile: utilModule.fetchFile,
+      toBlobURL: utilModule.toBlobURL,
+    }));
+  }
+
+  return ffmpegDepsPromise;
+};
 
 /**
  * Initialize FFmpeg instance (lazy loading)
@@ -18,6 +32,8 @@ const getFFmpeg = async () => {
   if (ffmpegInstance && isFFmpegLoaded) {
     return ffmpegInstance;
   }
+
+  const { FFmpeg, toBlobURL } = await loadFFmpegDeps();
 
   if (!ffmpegInstance) {
     ffmpegInstance = new FFmpeg();
@@ -96,6 +112,7 @@ export const convertToMp4 = async (file, onProgress = () => {}) => {
     console.log('🔄 Starting video conversion to mp4...');
     onProgress(0);
 
+    const { fetchFile } = await loadFFmpegDeps();
     const ffmpeg = await getFFmpeg();
     
     // Set up progress monitoring

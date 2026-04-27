@@ -4,6 +4,89 @@ import path from 'path'
 import { pathToFileURL } from 'url'
 import fs from 'fs'
 
+const createManualChunks = (id) => {
+  if (!id.includes('node_modules')) {
+    return undefined
+  }
+
+  if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) {
+    return 'react-vendor'
+  }
+
+  if (id.includes('/react-router/') || id.includes('/react-router-dom/')) {
+    return 'router-vendor'
+  }
+
+  if (id.includes('/@supabase/')) {
+    return 'supabase-vendor'
+  }
+
+  if (
+    id.includes('/@radix-ui/') ||
+    id.includes('/@headlessui/') ||
+    id.includes('/@heroicons/') ||
+    id.includes('/lucide-react/') ||
+    id.includes('/sonner/') ||
+    id.includes('/framer-motion/')
+  ) {
+    return 'ui-vendor'
+  }
+
+  if (
+    id.includes('/@mui/') ||
+    id.includes('/@emotion/')
+  ) {
+    return 'mui-vendor'
+  }
+
+  if (
+    id.includes('/@stripe/react-stripe-js/') ||
+    id.includes('/@stripe/stripe-js/') ||
+    id.includes('/stripe/')
+  ) {
+    return 'payments-vendor'
+  }
+
+  if (id.includes('/firebase/')) {
+    return 'firebase-vendor'
+  }
+
+  if (
+    id.includes('/jspdf/') ||
+    id.includes('/html2canvas/') ||
+    id.includes('/jszip/') ||
+    id.includes('/file-saver/') ||
+    id.includes('/react-to-print/')
+  ) {
+    return 'documents-vendor'
+  }
+
+  if (
+    id.includes('/@ffmpeg/')
+  ) {
+    return 'ffmpeg-vendor'
+  }
+
+  if (
+    id.includes('/heic2any/') ||
+    id.includes('/heic-convert/') ||
+    id.includes('/sharp/')
+  ) {
+    return 'image-conversion-vendor'
+  }
+
+  if (
+    id.includes('/@reduxjs/') ||
+    id.includes('/react-redux/') ||
+    id.includes('/redux-persist/') ||
+    id.includes('/@tanstack/react-query/')
+  ) {
+    return 'state-vendor'
+  }
+
+  return undefined
+}
+
 const readRequestBody = (request) =>
   new Promise((resolve, reject) => {
     let body = ''
@@ -106,6 +189,11 @@ const createLocalApiPlugin = () => ({
 
         if (normalizedPath === '/me/profile') {
           nextQuery.set('resource', 'profile')
+          return `/me?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/me/booking-identity') {
+          nextQuery.set('resource', 'booking-identity')
           return `/me?${nextQuery.toString()}`
         }
 
@@ -309,7 +397,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), createGeminiProxyDevPlugin(geminiApiKey), createLocalApiPlugin()],
     server: {
-      host: 'localhost',
+      host: true,
       port: 5173,
       strictPort: true,
     },
@@ -323,9 +411,13 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
       emptyOutDir: true,
       sourcemap: false,
+      chunkSizeWarningLimit: 600,
       rollupOptions: {
         input: {
           main: path.resolve(__dirname, 'index.html'),
+        },
+        output: {
+          manualChunks: createManualChunks,
         },
       },
     },

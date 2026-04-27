@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { requestPasswordResetEmail } from './emailApi';
 
 // Define role permissions
 const ROLE_PERMISSIONS = {
@@ -84,11 +85,10 @@ export class AuthService {
 
   static async resetPassword(email) {
     try {
-      const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`
+      const data = await requestPasswordResetEmail({
+        email,
+        redirectTo: `${window.location.origin}/reset-password`,
       });
-
-      if (error) throw error;
       return data;
     } catch (error) {
       console.error('Reset password error:', error);

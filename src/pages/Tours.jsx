@@ -5,22 +5,33 @@ import {
   ArrowRight,
   ChevronDown,
   ChevronUp,
+  Clock,
   ExternalLink,
   Image as ImageIcon,
   Instagram,
+  Contact,
   MapPin,
   Minus,
   Play,
   Plus,
   Route,
+  Share2,
   X,
   XCircle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
 import PhoneInputWithCountryCode from '../components/forms/PhoneInputWithCountryCode';
 import PublicSiteChrome from '../components/public/PublicSiteChrome';
+import PublicSiteFooter from '../components/public/PublicSiteFooter';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchTourPackages } from '../services/tourPackageService';
+import { shortenUrl } from '../services/UrlShortenerService';
+import i18n from '../i18n';
+import {
+  DEFAULT_STOREFRONT_TENANT_SLUG,
+  getCanonicalStorefrontOrigin,
+} from '../utils/storefrontHost';
 
 const GLOBAL_TOUR_PRICING_KEY = '__global_tour_pricing__';
 const DEFAULT_CITY = 'Tangier';
@@ -38,9 +49,9 @@ const getTourBookingReference = (payload = {}) =>
 const formatDuration = (hours) => {
   const numeric = Number(hours || 0);
   if (!Number.isFinite(numeric) || numeric <= 0) return 'Duration set by guide';
-  if (numeric === 1) return '1 hour';
-  if (numeric % 1 === 0) return `${numeric.toFixed(0)} hours`;
-  return `${numeric.toFixed(1)} hours`;
+  if (numeric === 1) return '1 Hour';
+  if (numeric % 1 === 0) return `${numeric.toFixed(0)} Hours`;
+  return `${numeric.toFixed(1)} Hours`;
 };
 
 const formatMoney = (value) => `${Number(value || 0).toLocaleString('en-MA')} MAD`;
@@ -53,6 +64,16 @@ const formatDisplayText = (value, fallback = '') => {
   if (!isAllLowercase) return text;
 
   return text.replace(/\b\w/g, (match) => match.toUpperCase());
+};
+
+const normalizeDifficultyLabel = (value = '') => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const lowered = raw.toLowerCase();
+  if (lowered.startsWith('easy')) return 'Easy';
+  if (lowered.startsWith('medium') || lowered.startsWith('med')) return 'Medium';
+  if (lowered.startsWith('difficult') || lowered.startsWith('hard')) return 'Difficult';
+  return formatDisplayText(raw, '');
 };
 
 const normalizeVehicleImageUrl = (url) => {
@@ -72,6 +93,7 @@ const normalizeMediaUrl = (value) => {
 };
 
 const isInstagramUrl = (value) => /instagram\.com/i.test(String(value || ''));
+const isVideoUrl = (value) => /\.(mp4|mov|webm|m4v|avi)(\?|#|$)/i.test(String(value || ''));
 
 const stripLegacyTourRules = (value) => {
   const text = String(value || '');
@@ -91,11 +113,23 @@ const modelLabel = (model) => {
   return [name, variant].filter(Boolean).join(' ').trim() || 'Selected model';
 };
 
+const resolveModelRiderCapacity = (model) => {
+  const min = Number(model?.capacityMin || model?.capacity_min || 0) || 0;
+  const max = Number(model?.capacityMax || model?.capacity_max || 0) || 0;
+  const resolved = Math.max(max, min, 0);
+  if (resolved > 0) return resolved;
+
+  const label = modelLabel(model).toUpperCase();
+  if (label.includes('AT6')) return 2;
+  if (label.includes('AT5')) return 1;
+  return 1;
+};
+
 const modelCapacityLabel = (model) => {
   const min = Number(model?.capacityMin || model?.capacity_min || 0) || 0;
   const max = Number(model?.capacityMax || model?.capacity_max || 0) || 0;
   if (min > 0 && max > 0 && min !== max) return `${min}-${max} riders`;
-  const seats = max || min || 1;
+  const seats = resolveModelRiderCapacity(model);
   return seats === 1 ? '1 rider' : `${seats} riders`;
 };
 
@@ -110,6 +144,14 @@ const clampRidersToCapacity = (riders, maxCapacity) => {
   return Math.min(safeRiders, safeMax);
 };
 
+const getMinimumRidersForSelection = (selectedModelCounts = {}) => {
+  const totalSelected = Object.values(selectedModelCounts || {}).reduce(
+    (sum, count) => sum + Math.max(0, Number(count || 0)),
+    0
+  );
+  return Math.max(1, totalSelected || 1);
+};
+
 const getPackagePriceRows = ({ rows = [], packageId, durationHours }) => {
   const duration = normalizeDuration(durationHours);
   const activeRows = rows.filter((row) => row?.is_active !== false && Number(row?.price_mad || 0) > 0);
@@ -120,13 +162,23 @@ const getPackagePriceRows = ({ rows = [], packageId, durationHours }) => {
       normalizeDuration(row.duration_hours) === duration
   );
 
-  if (exact.length > 0) return exact;
-
-  return activeRows.filter(
+  const globalRows = activeRows.filter(
     (row) =>
       String(row.package_id) === GLOBAL_TOUR_PRICING_KEY &&
       normalizeDuration(row.duration_hours) === duration
   );
+
+  if (exact.length > 0) {
+    if (globalRows.length === 0) return exact;
+    const seen = new Set(exact.map((row) => String(row.vehicle_model_id || '')));
+    const merged = [
+      ...exact,
+      ...globalRows.filter((row) => !seen.has(String(row.vehicle_model_id || ''))),
+    ];
+    return merged;
+  }
+
+  return globalRows;
 };
 
 const getTourStartingPrice = ({ rows = [], packageId, durationHours, pkg }) => {
@@ -185,7 +237,8 @@ const normalizeMediaItem = (item, fallbackCaption = '') => {
     source.thumbnail || source.thumbnail_url || source.previewUrl || source.preview_url || source.poster || ''
   );
   const isInstagram = rawType === 'instagram' || isInstagramUrl(rawUrl) || isInstagramUrl(externalUrl);
-  const type = isInstagram ? 'instagram' : rawType === 'video' ? 'video' : 'image';
+  const isVideo = rawType === 'video' || isVideoUrl(rawUrl) || isVideoUrl(externalUrl);
+  const type = isInstagram ? 'instagram' : isVideo ? 'video' : 'image';
   const primaryUrl = isInstagram ? '' : normalizeMediaUrl(rawUrl);
   const caption = String(source.caption || fallbackCaption || '').trim();
 
@@ -199,6 +252,12 @@ const normalizeMediaItem = (item, fallbackCaption = '') => {
     duration: normalizeMediaDuration(source.duration),
   };
 };
+
+const normalizeStopMedia = (items = [], fallbackCaption = '') =>
+  (Array.isArray(items) ? items : [])
+    .map((media) => normalizeMediaItem(media, fallbackCaption))
+    .filter((media) => media.url || media.thumbnailUrl || media.externalUrl)
+    .slice(0, 3);
 
 const rankMediaItem = (item) => {
   if (item.type === 'image') return 0;
@@ -216,7 +275,11 @@ const buildPublicTour = (pkg, pricingRows, vehicleModels) => {
         { type: 'end', title: 'Back to base', note: 'Tour complete', duration_minutes: 0 },
       ];
   const orderedRouteStops = routeStops
-    .map((stop, index) => ({ ...stop, sort_order: Number(stop.sort_order || index + 1) }))
+    .map((stop, index) => ({
+      ...stop,
+      sort_order: Number(stop.sort_order || index + 1),
+      media: normalizeStopMedia(stop.media || [], stop.title || pkg.name || pkg.publicTitle),
+    }))
     .sort((left, right) => left.sort_order - right.sort_order);
 
   const priceRows = getPackagePriceRows({
@@ -233,15 +296,15 @@ const buildPublicTour = (pkg, pricingRows, vehicleModels) => {
         label: modelLabel(model),
         price: Number(row.price_mad || 0),
         imageUrl: modelCardImage(model),
-        capacityMin: Number(model?.capacity_min || 0) || 0,
-        capacityMax: Number(model?.capacity_max || 0) || 1,
+        capacityMin: Number(model?.capacity_min || model?.capacityMin || 0) || 0,
+        capacityMax: resolveModelRiderCapacity(model),
       };
     })
     .filter((row) => row.modelId && row.price > 0)
     .sort((left, right) => left.price - right.price || left.label.localeCompare(right.label));
 
   const normalizedMedia = [
-    ...(pkg.coverImageUrl ? [{ url: pkg.coverImageUrl, caption: pkg.publicTitle || pkg.name, type: 'image' }] : []),
+    ...(pkg.coverImageUrl ? [{ url: pkg.coverImageUrl, caption: pkg.name || pkg.publicTitle, type: 'image' }] : []),
     ...(Array.isArray(pkg.mediaGallery) ? pkg.mediaGallery : []),
   ]
     .map((item) => normalizeMediaItem(item, pkg.publicTitle || pkg.name))
@@ -257,21 +320,22 @@ const buildPublicTour = (pkg, pricingRows, vehicleModels) => {
   const instagramItems = normalizedMedia.filter((item) => item.type === 'instagram').slice(0, 3);
   const media = [...uploadedImages, ...uploadedVideos, ...instagramItems].slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS);
 
+  const resolvedName = stripLegacyTourRules(pkg.name) || stripLegacyTourRules(pkg.publicTitle);
   return {
     ...pkg,
-    title: formatDisplayText(stripLegacyTourRules(pkg.publicTitle) || stripLegacyTourRules(pkg.name), 'Tour Package'),
+    title: formatDisplayText(resolvedName, 'Tour Package'),
     summary: stripLegacyTourRules(pkg.publicSummary) || stripLegacyTourRules(pkg.description),
     routeLabel: formatDisplayText(stripLegacyTourRules(pkg.routeLabel) || stripLegacyTourRules(pkg.routeType), 'Guided route'),
     routeType: formatDisplayText(pkg.routeType, 'Route'),
-    durationLabel: pkg.durationDisplay || formatDuration(pkg.duration),
+    durationLabel: formatDuration(pkg.duration),
     routeStops: orderedRouteStops,
     hasCustomRouteStops,
     media,
     highlights: Array.isArray(pkg.publicHighlights)
       ? pkg.publicHighlights.map((highlight) => highlight?.label || highlight).filter(Boolean).slice(0, 4)
       : [],
-    stopCount: Number(pkg.stopCount || orderedRouteStops.length || 0),
-    difficultyLabel: pkg.difficultyLabel || '',
+    stopCount: orderedRouteStops.length > 0 ? orderedRouteStops.length : Number(pkg.stopCount || 0),
+    difficultyLabel: normalizeDifficultyLabel(pkg.difficultyLabel),
     modelOptions,
     startingPrice: getTourStartingPrice({
       rows: pricingRows,
@@ -282,29 +346,53 @@ const buildPublicTour = (pkg, pricingRows, vehicleModels) => {
   };
 };
 
-const RouteRoadmap = ({ stops = [] }) => (
-  <div className="rounded-[24px] border border-violet-100 bg-violet-50/50 p-5">
-    <div className="space-y-4">
-      {stops.map((stop, index) => (
-        <div key={`${stop.id || stop.title || stop.kind}-${index}`} className="grid grid-cols-[24px_1fr] gap-4">
-          <div className="flex flex-col items-center">
-            <div className={`h-4 w-4 rounded-full ${index === 0 || index === stops.length - 1 ? 'bg-violet-700' : 'bg-white ring-4 ring-violet-200'}`} />
-            {index < stops.length - 1 && <div className="mt-2 h-full min-h-8 w-px bg-violet-200" />}
-          </div>
-          <div className="pb-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-bold text-slate-950">{stop.title || 'Route point'}</p>
-              {Number(stop.duration_minutes || 0) > 0 && (
-                <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-violet-700">
-                  {stop.duration_minutes} min
-                </span>
-              )}
-            </div>
-            {stop.note ? <p className="mt-1 text-sm font-medium text-slate-500">{stop.note}</p> : null}
-          </div>
+const RouteRoadmap = ({ stops = [], onOpenMedia }) => (
+  <div className="space-y-4">
+    {stops.map((stop, index) => (
+      <div key={`${stop.id || stop.title || stop.kind}-${index}`} className="grid grid-cols-[24px_1fr] gap-4">
+        <div className="flex flex-col items-center">
+          <div className={`h-4 w-4 rounded-full ${index === 0 || index === stops.length - 1 ? 'bg-violet-700' : 'bg-white ring-4 ring-violet-200'}`} />
+          {index < stops.length - 1 && <div className="mt-2 h-full min-h-8 w-px bg-violet-200" />}
         </div>
-      ))}
-    </div>
+        <div className="rounded-[20px] border border-violet-200 bg-white p-4 shadow-[0_10px_24px_rgba(124,58,237,0.08)]">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-bold text-slate-950">{stop.title || 'Route point'}</p>
+            {Number(stop.duration_minutes || 0) > 0 && (
+              <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-bold text-violet-700">
+                {stop.duration_minutes} min
+              </span>
+            )}
+          </div>
+          {stop.note ? <p className="mt-1 text-sm font-medium text-slate-500">{stop.note}</p> : null}
+          {Array.isArray(stop.media) && stop.media.length > 0 ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {stop.media.slice(0, 3).map((mediaItem, mediaIndex) => (
+                <button
+                  key={`${mediaItem.url || mediaItem.thumbnailUrl || mediaIndex}`}
+                  type="button"
+                  onClick={() => onOpenMedia?.(stop, mediaIndex)}
+                  className="group relative h-10 w-10 overflow-hidden rounded-xl border border-violet-100 bg-slate-100 shadow-[0_6px_16px_rgba(15,23,42,0.12)]"
+                  aria-label={`Open media for ${stop.title || 'stop'}`}
+                >
+                  {mediaItem.type === 'video' ? (
+                    <video src={mediaItem.url} muted playsInline className="h-full w-full object-cover" />
+                  ) : (
+                    <img src={mediaItem.thumbnailUrl || mediaItem.url} alt={mediaItem.caption || stop.title || 'Stop media'} className="h-full w-full object-cover" />
+                  )}
+                  {mediaItem.type === 'video' ? (
+                    <span className="absolute inset-0 flex items-center justify-center bg-slate-900/35 text-white">
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/90 text-violet-700 shadow-sm">
+                        <Play className="h-2.5 w-2.5 fill-violet-700 text-violet-700" />
+                      </span>
+                    </span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    ))}
   </div>
 );
 
@@ -327,12 +415,21 @@ const TourMediaItem = ({ item, title, active = false, compact = false, onClick }
       aria-label={isInstagram ? `Open Instagram for ${title}` : `Open media for ${title}`}
     >
       {thumbnail ? (
-        <img
-          src={thumbnail}
-          alt={item.caption || title}
-          loading="lazy"
-          className="h-full w-full object-cover"
-        />
+        isVideo ? (
+          <video
+            src={item.url || thumbnail}
+            muted
+            playsInline
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <img
+            src={thumbnail}
+            alt={item.caption || title}
+            loading="lazy"
+            className="h-full w-full object-cover"
+          />
+        )
       ) : (
         <div className={`flex h-full w-full items-center justify-center ${isInstagram ? 'bg-[linear-gradient(180deg,#fde7ff_0%,#ede9fe_100%)]' : 'bg-slate-200'}`}>
           {isInstagram ? <Instagram className="h-5 w-5 text-violet-700" /> : <ImageIcon className="h-5 w-5 text-slate-500" />}
@@ -348,6 +445,9 @@ const TourMediaItem = ({ item, title, active = false, compact = false, onClick }
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-white/88 shadow-[0_8px_18px_rgba(15,23,42,0.15)]">
               <Play className="ml-0.5 h-4 w-4 fill-slate-950 text-slate-950" />
             </span>
+          </span>
+          <span className="absolute right-2 top-2 rounded-full bg-violet-600/95 px-2 py-1 text-[10px] font-black uppercase tracking-[0.08em] text-white shadow-sm">
+            Video
           </span>
           {item.duration ? (
             <span className="absolute bottom-2 right-2 rounded-full bg-slate-950/78 px-2 py-1 text-[10px] font-black text-white">
@@ -373,7 +473,37 @@ const TourMediaPreviewStrip = ({ media = [], title, onOpenPreview }) => {
   const modalStartIndex = firstModalIndex >= 0 ? firstModalIndex : 0;
 
   return (
-    <div className="flex items-center gap-3 rounded-[22px] border border-violet-100 bg-white/92 px-3 py-3 shadow-[0_14px_34px_rgba(79,70,229,0.08)]">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (previewItems.every((item) => item.type === 'instagram')) {
+          const firstInstagram = previewItems.find((item) => item.externalUrl);
+          if (firstInstagram?.externalUrl) {
+            window.open(firstInstagram.externalUrl, '_blank', 'noopener,noreferrer');
+            return;
+          }
+        }
+        onOpenPreview?.(modalStartIndex);
+      }}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          if (previewItems.every((item) => item.type === 'instagram')) {
+            const firstInstagram = previewItems.find((item) => item.externalUrl);
+            if (firstInstagram?.externalUrl) {
+              window.open(firstInstagram.externalUrl, '_blank', 'noopener,noreferrer');
+              return;
+            }
+          }
+          onOpenPreview?.(modalStartIndex);
+        }
+      }}
+      className="flex items-center gap-3 rounded-[22px] border border-violet-100 bg-white/92 px-3 py-3 shadow-[0_14px_34px_rgba(79,70,229,0.08)] transition hover:-translate-y-0.5 hover:border-violet-200 hover:shadow-[0_18px_40px_rgba(79,70,229,0.12)] focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+      aria-label="Open media gallery"
+    >
       <div className="flex items-center gap-2">
         {previewItems.map((item, index) => (
           <TourMediaItem
@@ -392,24 +522,12 @@ const TourMediaPreviewStrip = ({ media = [], title, onOpenPreview }) => {
           />
         ))}
       </div>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          if (previewItems.every((item) => item.type === 'instagram')) {
-            const firstInstagram = previewItems.find((item) => item.externalUrl);
-            if (firstInstagram?.externalUrl) {
-              window.open(firstInstagram.externalUrl, '_blank', 'noopener,noreferrer');
-              return;
-            }
-          }
-          onOpenPreview?.(modalStartIndex);
-        }}
-        className="ml-auto inline-flex items-center gap-2 rounded-full bg-violet-50 px-3 py-2 text-xs font-black text-violet-700 transition hover:bg-violet-100"
+      <span
+        className="ml-auto inline-flex h-9 w-9 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 shadow-sm transition group-hover:bg-violet-100"
+        aria-hidden="true"
       >
-        View media
-        <ArrowRight className="h-3.5 w-3.5" />
-      </button>
+        <ArrowRight className="h-4 w-4" />
+      </span>
     </div>
   );
 };
@@ -645,10 +763,7 @@ const MediaModal = ({ tour, initialIndex = 0, onClose }) => {
   if (!activeItem) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/48 px-4 py-6 backdrop-blur-sm"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/48 px-4 py-6 backdrop-blur-sm">
       <div
         className="w-full max-w-5xl rounded-[32px] bg-white p-5 shadow-[0_30px_100px_rgba(15,23,42,0.24)] transition duration-200 animate-[fadeIn_.18s_ease]"
         onClick={(event) => event.stopPropagation()}
@@ -785,6 +900,9 @@ const MediaModal = ({ tour, initialIndex = 0, onClose }) => {
 };
 
 const Tours = () => {
+  useTranslation();
+  const isFrench = i18n.resolvedLanguage === 'fr';
+  const tr = (en, fr) => (isFrench ? fr : en);
   const { user } = useAuth();
   const isAuthenticated = Boolean(user);
   const navigate = useNavigate();
@@ -798,11 +916,12 @@ const Tours = () => {
   const [reloadToken, setReloadToken] = useState(0);
   const [selectedPackageId, setSelectedPackageId] = useState('');
   const [activeModelId, setActiveModelId] = useState('');
-  const [showAllTours, setShowAllTours] = useState(false);
   const [mediaTour, setMediaTour] = useState(null);
   const [mediaIndex, setMediaIndex] = useState(0);
+  const [roadmapOpen, setRoadmapOpen] = useState(false);
   const [bookingDetailsOpen, setBookingDetailsOpen] = useState(false);
   const [contactInfoOpen, setContactInfoOpen] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
   const [bookingForm, setBookingForm] = useState({
     date: '',
     time: '',
@@ -843,6 +962,10 @@ const Tours = () => {
     };
   }, [reloadToken]);
 
+  useEffect(() => {
+    setRoadmapOpen(false);
+  }, [selectedPackageId]);
+
   const tours = useMemo(() => {
     return packages
       .filter((pkg) => pkg.is_active !== false && pkg.websiteVisible === true)
@@ -867,13 +990,16 @@ const Tours = () => {
   const selectedQuadCount = selectedModelMix.reduce((sum, model) => sum + Number(model.count || 0), 0);
   const maxRiderCapacity = Math.max(
     1,
-    selectedModelMix.reduce((sum, model) => sum + (Math.max(1, Number(model.capacityMax || model.capacityMin || 1)) * Number(model.count || 0)), 0) || 1
+    selectedModelMix.reduce((sum, model) => sum + (resolveModelRiderCapacity(model) * Number(model.count || 0)), 0) || 1
   );
   const totalPrice = selectedModelMix.reduce((sum, model) => sum + (Number(model.price || 0) * Number(model.count || 0)), 0);
   const selectedModelSummary = selectedModelMix.map((model) => `${model.count} × ${model.label}`).join(' · ');
-  const bookingStickySummary = `${selectedQuadCount || 0} ${selectedQuadCount === 1 ? 'ATV' : 'ATVs'} • ${bookingForm.ridersCount || 1} ${Number(bookingForm.ridersCount || 1) === 1 ? 'Rider' : 'Riders'}`;
-  const visibleTours = showAllTours ? tours : tours.slice(0, 2);
-  const hiddenToursCount = Math.max(0, tours.length - visibleTours.length);
+  const bookingStickyDuration = selectedTour?.durationLabel || (selectedTour?.duration ? formatDuration(selectedTour.duration) : '');
+  const bookingStickySummary = `${selectedQuadCount || 0} ${selectedQuadCount === 1 ? 'ATV' : 'ATVs'} • ${bookingForm.ridersCount || 1} ${Number(bookingForm.ridersCount || 1) === 1 ? 'Rider' : 'Riders'}${bookingStickyDuration ? ` • ${bookingStickyDuration}` : ''}`;
+  const visibleTours = tours;
+  const displayedTours = selectedPackageId
+    ? tours.filter((tour) => String(tour.id) === String(selectedPackageId))
+    : visibleTours;
 
   useEffect(() => {
     if (!selectedTour) return;
@@ -885,7 +1011,10 @@ const Tours = () => {
   useEffect(() => {
     setBookingForm((current) => ({
       ...current,
-      ridersCount: clampRidersToCapacity(current.ridersCount, maxRiderCapacity),
+      ridersCount: clampRidersToCapacity(
+        Math.max(current.ridersCount || 1, getMinimumRidersForSelection(current.selectedModelCounts)),
+        maxRiderCapacity
+      ),
     }));
   }, [maxRiderCapacity]);
 
@@ -906,7 +1035,14 @@ const Tours = () => {
     setBookingSuccess(null);
     setBookingForm((current) => ({
       ...current,
-      ridersCount: 1,
+      ridersCount: isSelected ? 1 : clampRidersToCapacity(
+        getMinimumRidersForSelection(
+          preferredModel?.modelId
+            ? { [preferredModel.modelId]: 1 }
+            : {}
+        ),
+        preferredModel ? resolveModelRiderCapacity(preferredModel) : 1
+      ),
       selectedModelCounts: isSelected
         ? {}
         : preferredModel?.modelId
@@ -928,6 +1064,10 @@ const Tours = () => {
 
       return {
         ...current,
+        ridersCount: clampRidersToCapacity(
+          Math.max(current.ridersCount || 1, getMinimumRidersForSelection({ [modelId]: 1 })),
+          resolveModelRiderCapacity(selectedTour.modelOptions.find((model) => String(model.modelId) === String(modelId)) || {})
+        ),
         selectedModelCounts: {
           [modelId]: 1,
         },
@@ -943,12 +1083,23 @@ const Tours = () => {
       const totalCount = Object.values(currentCounts).reduce((sum, count) => sum + Number(count || 0), 0);
       if (totalCount >= Number(selectedTour.maxQuads || 1)) return current;
 
+      const nextCounts = {
+        ...currentCounts,
+        [modelId]: Number(currentCounts[modelId] || 0) + 1,
+      };
+      const nextCapacity = selectedTour.modelOptions.reduce((sum, model) => {
+        const count = Number(nextCounts[model.modelId] || 0);
+        if (count <= 0) return sum;
+        return sum + (resolveModelRiderCapacity(model) * count);
+      }, 0);
+
       return {
         ...current,
-        selectedModelCounts: {
-          ...currentCounts,
-          [modelId]: Number(currentCounts[modelId] || 0) + 1,
-        },
+        ridersCount: clampRidersToCapacity(
+          Math.max(current.ridersCount || 1, getMinimumRidersForSelection(nextCounts)),
+          nextCapacity || 1
+        ),
+        selectedModelCounts: nextCounts,
       };
     });
   };
@@ -966,8 +1117,18 @@ const Tours = () => {
         nextCounts[modelId] = nextValue;
       }
 
+      const nextCapacity = (selectedTour?.modelOptions || []).reduce((sum, model) => {
+        const count = Number(nextCounts[model.modelId] || 0);
+        if (count <= 0) return sum;
+        return sum + (resolveModelRiderCapacity(model) * count);
+      }, 0);
+
       return {
         ...current,
+        ridersCount: clampRidersToCapacity(
+          Math.max(1, Math.min(Number(current.ridersCount || 1), Math.max(1, nextCapacity || 1))),
+          Math.max(1, nextCapacity || 1)
+        ),
         selectedModelCounts: nextCounts,
       };
     });
@@ -975,6 +1136,12 @@ const Tours = () => {
 
   const openMediaPreview = (tour, index = 0) => {
     setMediaTour(tour);
+    setMediaIndex(index);
+  };
+
+  const openMediaPreviewList = (title, media, index = 0) => {
+    if (!Array.isArray(media) || media.length === 0) return;
+    setMediaTour({ title, media });
     setMediaIndex(index);
   };
 
@@ -1056,6 +1223,56 @@ const Tours = () => {
     }
   };
 
+  const handleShareTours = async () => {
+    if (isSharing || typeof window === 'undefined') return;
+
+    setIsSharing(true);
+
+    try {
+      const shareParams = new URLSearchParams();
+      shareParams.set('lang', isFrench ? 'fr' : 'en');
+      if (selectedCity) {
+        shareParams.set('city', selectedCity);
+      }
+
+      const storefrontOrigin = getCanonicalStorefrontOrigin({
+        host: window.location.host,
+        protocol: window.location.protocol,
+        tenantSlug: DEFAULT_STOREFRONT_TENANT_SLUG,
+      });
+      const fullShareUrl = `${storefrontOrigin}/share/tours${shareParams.toString() ? `?${shareParams.toString()}` : ''}`;
+      const shortShareUrl = await shortenUrl(fullShareUrl, null, 'other');
+      const shareUrl = shortShareUrl || fullShareUrl;
+      const shareTitle = tr('Choose your SaharaX tour', 'Choisissez votre tour SaharaX');
+      const shareText = tr(
+        'Open guided SaharaX tours in the right language.',
+        'Ouvrez les tours guidés SaharaX dans la bonne langue.'
+      );
+
+      if (navigator.share) {
+        await navigator.share({
+          title: shareTitle,
+          text: shareText,
+          url: shareUrl,
+        });
+        return;
+      }
+
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+        toast.success(tr('Share link copied', 'Lien de partage copié'));
+        return;
+      }
+
+      window.prompt(tr('Copy this link', 'Copiez ce lien'), shareUrl);
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      toast.error(tr('Unable to create share link', 'Impossible de créer le lien de partage'));
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)]">
       <PublicSiteChrome current="tours" />
@@ -1073,17 +1290,27 @@ const Tours = () => {
 
         <div className="mt-10 text-center">
           <h1 className="text-[44px] font-black leading-[0.95] tracking-tight text-slate-950 sm:text-6xl">
-            Choose your tour
+            {tr('Choose your tour', 'Choisissez votre tour')}
           </h1>
-          <div className="mt-6 inline-flex items-center gap-3 rounded-full bg-white/80 px-5 py-3 text-sm font-bold text-slate-700 shadow-sm ring-1 ring-violet-100">
+          <div className="mt-4 inline-flex flex-wrap items-center justify-center gap-3 rounded-full border border-violet-100 bg-white/90 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm">
             <MapPin className="h-4 w-4 text-violet-700" />
             {selectedCity}
-            <Link to="/website" className="text-violet-700 transition hover:text-violet-900">Change</Link>
+            <Link to="/website" className="text-violet-700 transition hover:text-violet-900">{tr('Change', 'Changer')}</Link>
+            <button
+              type="button"
+              onClick={handleShareTours}
+              disabled={isSharing}
+              className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-50/40 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label={tr('Share this page', 'Partager cette page')}
+            >
+              <Share2 className="h-4 w-4 text-emerald-700" />
+              <span>{isSharing ? tr('Preparing...', 'Préparation...') : tr('Share', 'Partager')}</span>
+            </button>
           </div>
         </div>
       </section>
 
-      <main className="mx-auto max-w-6xl px-5 pb-20 sm:px-6">
+      <main className="mx-auto max-w-6xl px-5 pb-[calc(env(safe-area-inset-bottom,0px)+6.5rem)] sm:px-6 lg:pb-20">
         {loading ? (
           <LoadingTours />
         ) : loadError ? (
@@ -1104,7 +1331,7 @@ const Tours = () => {
           />
         ) : (
           <div className="space-y-5">
-            {visibleTours.map((tour) => {
+            {displayedTours.map((tour) => {
               const selected = String(selectedPackageId) === String(tour.id);
               const hasBookableModelPricing = tour.modelOptions.length > 0;
               const hasVisiblePrice = Number(tour.startingPrice || 0) > 0;
@@ -1119,8 +1346,8 @@ const Tours = () => {
                   onClick={() => {
                     toggleTourSelection(tour);
                   }}
-                  className={`relative cursor-pointer rounded-[32px] border bg-white p-6 shadow-[0_18px_45px_rgba(79,70,229,0.07)] transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.018] hover:shadow-[0_26px_64px_rgba(79,70,229,0.13)] active:translate-y-0 active:scale-[0.982] ${
-                    selected ? 'border-violet-400 ring-4 ring-violet-100' : 'border-violet-100'
+                  className={`relative cursor-pointer rounded-[24px] border p-5 shadow-sm transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:border-violet-300 hover:shadow-[0_18px_40px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.985] ${
+                    selected ? 'border-violet-500 bg-white shadow-[0_18px_40px_rgba(108,92,231,0.12)]' : 'border-slate-200 bg-white'
                   }`}
                 >
                   {selected ? (
@@ -1130,7 +1357,7 @@ const Tours = () => {
                         event.stopPropagation();
                         toggleTourSelection(tour);
                       }}
-                      className="absolute right-5 top-5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-full border border-violet-200 bg-white text-violet-700 shadow-sm transition hover:bg-violet-50"
+                      className="absolute right-5 top-5 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-violet-200 bg-white text-violet-700 shadow-sm transition hover:bg-violet-50"
                       aria-label={`Close ${tour.title}`}
                       title="Close"
                     >
@@ -1139,22 +1366,22 @@ const Tours = () => {
                   ) : null}
                   <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0">
-                      <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-600">{tour.routeLabel}</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-600">{tour.routeLabel}</p>
                       <h2 className="mt-3 text-3xl font-black tracking-tight text-slate-950">{tour.title}</h2>
-                      {tour.summary ? <p className="mt-3 max-w-2xl text-sm font-semibold leading-6 text-slate-500">{tour.summary}</p> : null}
+                      {tour.summary ? <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-slate-500">{tour.summary}</p> : null}
                       <div className="mt-5 flex flex-wrap gap-2">
-                        <span className="rounded-full bg-violet-50 px-3 py-1.5 text-xs font-black text-violet-700">{tour.durationLabel}</span>
-                        <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black capitalize text-slate-700">{tour.routeType}</span>
-                        <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-700">{tour.stopCount} stops</span>
+                        <span className="rounded-full bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700">{tour.durationLabel}</span>
+                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold capitalize text-slate-700">{tour.routeType}</span>
+                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700">{tour.stopCount} stops</span>
                         {tour.difficultyLabel ? (
-                          <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-700">{tour.difficultyLabel}</span>
+                          <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700">{tour.difficultyLabel}</span>
                         ) : null}
                       </div>
                     </div>
 
                     <div className="shrink-0 text-left lg:text-right">
-                      <p className="text-xs font-black uppercase tracking-[0.22em] text-slate-400">From</p>
-                      <p className={`mt-2 text-3xl font-black ${hasVisiblePrice ? 'text-slate-950' : 'text-slate-400'}`}>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">From</p>
+                      <p className={`mt-2 text-2xl font-black leading-none ${hasVisiblePrice ? 'text-slate-950' : 'text-slate-400'}`}>
                         {hasVisiblePrice ? formatMoney(tour.startingPrice) : 'Price on request'}
                       </p>
                       {tour.media.length > 0 ? (
@@ -1186,9 +1413,8 @@ const Tours = () => {
                     <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">
                       {selected ? 'Hide details' : 'View details'}
                     </span>
-                    <span className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50/70 px-3 py-1.5 text-xs font-black text-violet-700">
-                      {selected ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                      {selected ? 'Tap to collapse' : 'Tap to open'}
+                    <span className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-violet-100 bg-violet-50/70 text-violet-700">
+                      {selected ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                     </span>
                   </div>
 
@@ -1198,7 +1424,37 @@ const Tours = () => {
                       onClick={(event) => event.stopPropagation()}
                     >
                       <div className="space-y-4">
-                        <RouteRoadmap stops={tour.routeStops} />
+                        <div className="overflow-hidden rounded-[24px] border border-violet-200 bg-white shadow-[0_14px_34px_rgba(124,58,237,0.12)]">
+                          <button
+                            type="button"
+                            onClick={() => setRoadmapOpen((current) => !current)}
+                            className="group relative flex w-full flex-col items-center justify-center gap-2 overflow-hidden rounded-[24px] bg-white px-5 py-4 text-center shadow-[0_12px_28px_rgba(109,92,255,0.18)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_36px_rgba(109,92,255,0.22)]"
+                          >
+                            <p className="text-sm font-black uppercase tracking-[0.22em] text-slate-900">Roadmap</p>
+                            <p className="text-sm font-semibold text-violet-600">
+                              {tour.stopCount} {tour.stopCount === 1 ? 'stop' : 'stops'} · {roadmapOpen ? 'Hide' : 'View'} details
+                            </p>
+                            <span
+                              className={`inline-flex h-9 w-9 items-center justify-center rounded-full border text-violet-700 shadow-sm transition duration-150 ease-out ${
+                                roadmapOpen
+                                  ? 'border-violet-500 bg-violet-600 text-white shadow-[0_10px_22px_rgba(124,58,237,0.28)]'
+                                  : 'border-violet-100 bg-violet-50/90'
+                              }`}
+                            >
+                              {roadmapOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                            </span>
+                          </button>
+                          {roadmapOpen && (
+                            <div className="px-5 pb-5 pt-4">
+                              <RouteRoadmap
+                                stops={tour.routeStops}
+                                onOpenMedia={(stop, index) =>
+                                  openMediaPreviewList(stop.title || tour.title, stop.media || [], index)
+                                }
+                              />
+                            </div>
+                          )}
+                        </div>
                         {tour.highlights.length > 0 && (
                           <div className="flex flex-wrap gap-2">
                             {tour.highlights.map((highlight) => (
@@ -1210,7 +1466,13 @@ const Tours = () => {
                         )}
                       </div>
 
-                      <div className="flex flex-col rounded-[28px] border border-violet-100 bg-violet-50/60 p-5 pb-8 shadow-[0_18px_45px_rgba(79,70,229,0.07)] lg:pb-28">
+                      <div
+                        className={
+                          bookingSuccess && String(selectedPackageId) === String(tour.id)
+                            ? 'flex flex-col rounded-[28px] border border-violet-100 bg-violet-50/60 p-5 pb-8 shadow-[0_18px_45px_rgba(79,70,229,0.07)] lg:pb-28'
+                            : 'flex flex-col pb-8 lg:pb-28'
+                        }
+                      >
                         {bookingSuccess && String(selectedPackageId) === String(tour.id) ? (
                           <div className="space-y-4">
                             <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-600">Reservation received</p>
@@ -1309,8 +1571,7 @@ const Tours = () => {
                           </div>
                         ) : (
                           <>
-                            <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-600">Book now</p>
-                            <div className="mt-4 space-y-3">
+                            <div className="space-y-4">
                               {hasBookableModelPricing ? (
                                 <>
                                   <TourModelPicker
@@ -1340,71 +1601,91 @@ const Tours = () => {
                                 </div>
                               )}
 
-                              <div className="rounded-[20px] bg-white px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
-                                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Selection</p>
-                                <div className="mt-2 flex items-center justify-between gap-3">
-                                  <p className="min-w-0 truncate text-sm font-black text-slate-950">
-                                    {selectedModelSummary || 'No ATV selected yet'}
-                                  </p>
-                                  <span className="shrink-0 text-sm font-semibold text-slate-500">{bookingStickySummary}</span>
-                                </div>
-                              </div>
-
-                              <div className="overflow-hidden rounded-[22px] bg-white shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+                              <div className={`overflow-hidden rounded-[22px] border ${bookingDetailsOpen ? 'border-violet-300 bg-white shadow-[0_18px_40px_rgba(124,58,237,0.18)]' : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(124,58,237,0.12)]'}`}>
                                 <button
                                   type="button"
                                   onClick={() => setBookingDetailsOpen((current) => !current)}
                                   className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
                                 >
-                                  <div>
-                                    <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Booking details</p>
-                                    <p className="mt-1 text-sm font-semibold text-slate-500">
-                                      {bookingForm.date || bookingForm.time
-                                        ? `${bookingForm.date || 'Choose date'}${bookingForm.time ? ` • ${bookingForm.time}` : ''}`
-                                        : 'Date, time, and riders'}
-                                    </p>
+                                  <div className="flex items-start gap-3">
+                                    <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-violet-700 shadow-sm">
+                                      <Clock className="h-5 w-5" />
+                                    </span>
+                                    <div>
+                                      <p className="text-xs font-black uppercase tracking-[0.18em] text-violet-600">Book time</p>
+                                      <p className="mt-1 text-sm font-semibold text-slate-700">
+                                        {bookingForm.date || bookingForm.time
+                                          ? `${bookingForm.date || 'Choose date'}${bookingForm.time ? ` • ${bookingForm.time}` : ''}`
+                                          : 'Select your date & time to continue'}
+                                      </p>
+                                      {!bookingForm.date && !bookingForm.time ? (
+                                        <p className="mt-1 text-xs font-semibold text-violet-600">Required step</p>
+                                      ) : null}
+                                    </div>
                                   </div>
-                                  {bookingDetailsOpen ? <ChevronUp className="h-5 w-5 text-slate-500" /> : <ChevronDown className="h-5 w-5 text-slate-500" />}
+                                  {bookingDetailsOpen ? <ChevronUp className="h-5 w-5 text-violet-700" /> : <ChevronDown className="h-5 w-5 text-violet-700" />}
                                 </button>
                                 {bookingDetailsOpen ? (
-                                  <div className="space-y-3 border-t border-slate-100 px-4 py-4">
+                                  <div className="space-y-3 border-t border-violet-100 px-4 py-4">
                                     <div className="grid grid-cols-2 gap-3">
                                       <input type="date" value={bookingForm.date} onChange={(event) => updateBooking('date', event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300 focus:bg-white" />
                                       <input type="time" value={bookingForm.time} onChange={(event) => updateBooking('time', event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300 focus:bg-white" />
                                     </div>
-                                    <label className="block rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
-                                      <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Riders</span>
-                                      <input
-                                        type="number"
-                                        min="1"
-                                        max={maxRiderCapacity}
-                                        value={bookingForm.ridersCount}
-                                        onChange={(event) => updateBooking('ridersCount', clampRidersToCapacity(event.target.value, maxRiderCapacity))}
-                                        className="mt-2 w-full bg-transparent text-sm font-bold text-slate-900 outline-none"
-                                      />
-                                    </label>
+                                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                                      <div className="flex items-center justify-between gap-3">
+                                        <span className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">Riders</span>
+                                        <span className="text-xs font-bold text-violet-700">
+                                          Up to {maxRiderCapacity} {maxRiderCapacity === 1 ? 'rider' : 'riders'}
+                                        </span>
+                                      </div>
+                                      <div className="mt-3 flex flex-wrap gap-2">
+                                        {Array.from({ length: maxRiderCapacity }, (_, index) => {
+                                          const riderValue = index + 1;
+                                          const active = Number(bookingForm.ridersCount || 1) === riderValue;
+                                          return (
+                                            <button
+                                              key={riderValue}
+                                              type="button"
+                                              onClick={() => updateBooking('ridersCount', riderValue)}
+                                              className={`rounded-full px-4 py-2 text-sm font-black transition ${
+                                                active
+                                                  ? 'bg-violet-700 text-white shadow-[0_12px_28px_rgba(124,58,237,0.18)]'
+                                                  : 'border border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:text-violet-700'
+                                              }`}
+                                            >
+                                              {riderValue} {riderValue === 1 ? 'Rider' : 'Riders'}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
                                   </div>
                                 ) : null}
                               </div>
 
-                              <div className="overflow-hidden rounded-[22px] bg-white shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+                              <div className={`overflow-hidden rounded-[22px] border ${contactInfoOpen ? 'border-violet-300 bg-white shadow-[0_18px_40px_rgba(124,58,237,0.18)]' : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(124,58,237,0.12)]'}`}>
                                 <button
                                   type="button"
                                   onClick={() => setContactInfoOpen((current) => !current)}
                                   className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
                                 >
-                                  <div>
-                                    <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Contact info</p>
-                                    <p className="mt-1 text-sm font-semibold text-slate-500">
-                                      {bookingForm.customerName || bookingForm.customerPhone
-                                        ? `${bookingForm.customerName || 'Name'}${bookingForm.customerPhone ? ' • WhatsApp ready' : ''}`
-                                        : 'Name, WhatsApp, and optional email'}
-                                    </p>
+                                  <div className="flex items-start gap-3">
+                                    <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-violet-700 shadow-sm">
+                                      <Contact className="h-5 w-5" />
+                                    </span>
+                                    <div>
+                                      <p className="text-xs font-black uppercase tracking-[0.18em] text-violet-600">Contact info</p>
+                                      <p className="mt-1 text-sm font-semibold text-slate-700">
+                                        {bookingForm.customerName || bookingForm.customerPhone
+                                          ? `${bookingForm.customerName || 'Name'}${bookingForm.customerPhone ? ' • WhatsApp ready' : ''}`
+                                          : 'Name, WhatsApp, and email'}
+                                      </p>
+                                    </div>
                                   </div>
-                                  {contactInfoOpen ? <ChevronUp className="h-5 w-5 text-slate-500" /> : <ChevronDown className="h-5 w-5 text-slate-500" />}
+                                  {contactInfoOpen ? <ChevronUp className="h-5 w-5 text-violet-700" /> : <ChevronDown className="h-5 w-5 text-violet-700" />}
                                 </button>
                                 {contactInfoOpen ? (
-                                  <div className="space-y-3 border-t border-slate-100 px-4 py-4">
+                                  <div className="space-y-3 border-t border-violet-100 px-4 py-4">
                                     <input value={bookingForm.customerName} onChange={(event) => updateBooking('customerName', event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300 focus:bg-white" placeholder="Full name" />
                                     <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-1 py-1">
                                       <PhoneInputWithCountryCode
@@ -1416,6 +1697,26 @@ const Tours = () => {
                                     <input type="email" value={bookingForm.customerEmail} onChange={(event) => updateBooking('customerEmail', event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-violet-300 focus:bg-white" placeholder="Email optional" />
                                   </div>
                                 ) : null}
+                              </div>
+
+                              <div className="rounded-[20px] bg-white px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
+                                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Selection</p>
+                                <div className="mt-2 flex items-center justify-between gap-3">
+                                  {selectedModelMix.length > 0 ? (
+                                    <div className="min-w-0 space-y-1 text-sm font-black text-slate-950">
+                                      {selectedModelMix.map((model) => (
+                                        <div key={model.modelId} className="truncate">
+                                          {model.count} × {model.label}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <p className="min-w-0 truncate text-sm font-black text-slate-950">
+                                      No ATV selected yet
+                                    </p>
+                                  )}
+                                  <span className="shrink-0 text-sm font-semibold text-slate-500">{bookingStickySummary}</span>
+                                </div>
                               </div>
                             </div>
 
@@ -1446,15 +1747,6 @@ const Tours = () => {
                 </article>
               );
             })}
-            {hiddenToursCount > 0 ? (
-              <button
-                type="button"
-                onClick={() => setShowAllTours((current) => !current)}
-                className="text-sm font-semibold text-violet-700"
-              >
-                {showAllTours ? 'See fewer options' : 'See more options'}
-              </button>
-            ) : null}
           </div>
         )}
       </main>
@@ -1481,6 +1773,7 @@ const Tours = () => {
         </div>
       ) : null}
 
+      <PublicSiteFooter />
       <MediaModal tour={mediaTour} initialIndex={mediaIndex} onClose={() => setMediaTour(null)} />
     </div>
   );

@@ -11,6 +11,9 @@ export const getCurrentHostname = () => {
   return String(window.location.hostname || '').toLowerCase();
 };
 
+export const isPreviewHost = (hostname = getCurrentHostname()) =>
+  String(hostname || '').toLowerCase().endsWith('.vercel.app');
+
 export const getHostContext = (hostname = getCurrentHostname()) => {
   const normalizedHostname = String(hostname || '').toLowerCase();
   const localTenantSlug = typeof window !== 'undefined'

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import { supabase } from '../utils/supabaseClient';
-import { ALL_PERMISSION_KEYS } from '../utils/permissionCatalog';
+import { ALL_PERMISSION_KEYS, DEFAULT_STAFF_PERMISSION_KEYS } from '../utils/permissionCatalog';
 
 export const AVAILABLE_MODULES = ALL_PERMISSION_KEYS;
 
@@ -162,9 +162,9 @@ export const useModulePermissions = (userId = null) => {
         if (userRole === 'owner' || userRole === 'admin') {
           hasAccess = true;
         } else if (userRole === 'guide') {
-          hasAccess = ['Dashboard', 'Tours & Booking', 'Booking Management', 'Fleet Management', 'Alerts'].includes(module);
+          hasAccess = ['Dashboard', 'Tours & Bookings', 'Choose Tour Guide', 'Alerts'].includes(module);
         } else if (userRole === 'employee') {
-          hasAccess = ['Dashboard', 'Booking Management', 'Fleet Management'].includes(module);
+          hasAccess = DEFAULT_STAFF_PERMISSION_KEYS.includes(module);
         }
 
         return {

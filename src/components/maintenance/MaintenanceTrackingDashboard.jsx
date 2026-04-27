@@ -5,12 +5,14 @@ import { Button } from '../ui/button';
 import MaintenanceTrackingService from '../../services/MaintenanceTrackingService';
 import VehicleReportService from '../../services/VehicleReportService';
 import appWarmupService from '../../services/AppWarmupService';
+import useAdminModalFocus from '../../hooks/useAdminModalFocus';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatRentalReference } from '../../utils/rentalReference';
 import { getMaintenanceTypeVisual } from '../../utils/maintenanceVisuals';
 import AddMaintenanceForm from './AddMaintenanceForm';
 import MaintenanceListView from './MaintenanceListView';
 import AdminModuleHero from '../admin/AdminModuleHero';
+import AdminMobileStatsRow from '../admin/AdminMobileStatsRow';
 import i18n from '../../i18n';
 import {
   Plus, 
@@ -258,6 +260,7 @@ const MaintenanceTrackingDashboard = () => {
   const [dashboardSourceFilter, setDashboardSourceFilter] = useState('all');
   const [selectedRecordForDelete, setSelectedRecordForDelete] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  useAdminModalFocus(showDeleteModal, 'maintenance-delete');
   const softActionButtonClass = 'rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-slate-900';
   const primaryActionButtonClass = 'rounded-2xl bg-violet-600 text-white shadow-sm hover:bg-violet-700';
   const dangerActionButtonClass = 'rounded-2xl border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800';
@@ -559,8 +562,8 @@ const MaintenanceTrackingDashboard = () => {
       )}
 
       {/* Tab Navigation */}
-      <div className="mb-6 mt-6 rounded-[1.75rem] border border-slate-200 bg-white px-4 py-3 shadow-sm">
-        <nav className="flex gap-3 overflow-x-auto">
+      <div className="mb-6 mt-6 rounded-[1.75rem] border border-slate-200 bg-white px-3 py-3 shadow-sm sm:px-4">
+        <nav className="-mx-1 flex gap-3 overflow-x-auto px-1">
           <button
             onClick={() => setActiveTab('dashboard')}
             className={`inline-flex items-center rounded-2xl px-4 py-2.5 font-semibold text-sm whitespace-nowrap transition ${
@@ -593,7 +596,7 @@ const MaintenanceTrackingDashboard = () => {
       {activeTab === 'dashboard' && (
         <div className="space-y-6">
           {/* Quick Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <AdminMobileStatsRow>
             <Card className="rounded-[1.75rem] border-slate-200 bg-white shadow-sm">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
@@ -607,7 +610,6 @@ const MaintenanceTrackingDashboard = () => {
                 </div>
               </CardContent>
             </Card>
-
             <Card className="rounded-[1.75rem] border-slate-200 bg-white shadow-sm">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
@@ -621,7 +623,6 @@ const MaintenanceTrackingDashboard = () => {
                 </div>
               </CardContent>
             </Card>
-
             <Card className="rounded-[1.75rem] border-slate-200 bg-white shadow-sm">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
@@ -635,7 +636,6 @@ const MaintenanceTrackingDashboard = () => {
                 </div>
               </CardContent>
             </Card>
-
             <Card className="rounded-[1.75rem] border-slate-200 bg-white shadow-sm">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
@@ -651,7 +651,7 @@ const MaintenanceTrackingDashboard = () => {
                 </div>
               </CardContent>
             </Card>
-          </div>
+          </AdminMobileStatsRow>
 
           {/* Main Content Grid */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -1115,7 +1115,7 @@ const MaintenanceTrackingDashboard = () => {
       {!showAddForm && (
         <button
           onClick={() => setShowAddForm(true)}
-          className="sm:hidden fixed bottom-6 right-6 z-50 inline-flex items-center gap-2 rounded-[1.6rem] border border-violet-500/80 bg-gradient-to-r from-violet-600 via-violet-600 to-indigo-700 px-5 py-4 text-white shadow-[0_18px_36px_rgba(79,70,229,0.28)] transition-all duration-200 hover:scale-[1.01] hover:from-violet-700 hover:to-indigo-800 active:scale-[0.99]"
+          className="app-floating-primary sm:hidden fixed bottom-6 right-6 z-50 inline-flex items-center gap-2 rounded-[1.6rem] border border-violet-500/80 bg-gradient-to-r from-violet-600 via-violet-600 to-indigo-700 px-5 py-4 text-white shadow-[0_18px_36px_rgba(79,70,229,0.28)] transition-all duration-200 hover:scale-[1.01] hover:from-violet-700 hover:to-indigo-800 active:scale-[0.99]"
           aria-label={tr('Add Maintenance', 'Ajouter une maintenance')}
         >
           <span className="inline-flex h-8 w-8 items-center justify-center rounded-2xl bg-white/16 ring-1 ring-white/20">

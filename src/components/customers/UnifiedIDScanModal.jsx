@@ -1,8 +1,9 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X, Upload, Camera, Loader2, CheckCircle, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import geminiVisionOCR from '../../services/ocr/geminiVisionOcr';
 import unifiedCustomerService from '../../services/UnifiedCustomerService';
 import i18n from '../../i18n';
+import useAdminModalFocus from '../../hooks/useAdminModalFocus';
 
 /**
  * UnifiedIDScanModal - Enhanced with comprehensive debugging and raw data display
@@ -38,6 +39,7 @@ const UnifiedIDScanModal = ({
   const [savedCustomer, setSavedCustomer] = useState(null);
   
   const fileInputRef = useRef(null);
+  useAdminModalFocus(isOpen, 'unified-id-scan');
 
   const handleImageSelect = (e) => {
     const file = e.target.files[0];

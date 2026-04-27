@@ -52,18 +52,18 @@ const normalizeVehicleModel = (model = {}) => ({
 let cachedTourPackages = null;
 let cachedTourPackagesAt = 0;
 let inFlightTourPackagesRequest = null;
-const TOUR_PACKAGES_CACHE_TTL_MS = 60 * 1000;
+
+const clearTourPackagesCache = () => {
+  cachedTourPackages = null;
+  cachedTourPackagesAt = 0;
+  inFlightTourPackagesRequest = null;
+};
 
 /**
  * Fetch all active tour packages
  * @returns {Promise<{data: Array|null, error: Error|null}>}
  */
 export const fetchTourPackages = async () => {
-  const now = Date.now();
-  if (cachedTourPackages && now - cachedTourPackagesAt < TOUR_PACKAGES_CACHE_TTL_MS) {
-    return cachedTourPackages;
-  }
-
   if (inFlightTourPackagesRequest) {
     return inFlightTourPackagesRequest;
   }
@@ -126,6 +126,7 @@ export const createTourPackage = async (tourPackage) => {
     method: 'POST',
     body: JSON.stringify(basePayload),
   });
+  clearTourPackagesCache();
   return { data: response?.data || null, error: null };
 };
 
@@ -141,6 +142,34 @@ export const updateTourPackage = async (id, updates) => {
     method: 'PATCH',
     body: JSON.stringify({ id, ...basePayload }),
   });
+  clearTourPackagesCache();
+  return { data: response?.data || null, error: null };
+};
+
+export const updateTourPackageMedia = async (id, mediaGallery = [], coverImageUrl = '') => {
+  const response = await adminApiRequest('/api/tour-packages', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      id,
+      action: 'update-media',
+      mediaGallery,
+      coverImageUrl,
+    }),
+  });
+  clearTourPackagesCache();
+  return { data: response?.data || null, error: null };
+};
+
+export const updateTourPackageRoadmap = async (id, routeStops = []) => {
+  const response = await adminApiRequest('/api/tour-packages', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      id,
+      action: 'update-roadmap',
+      routeStops,
+    }),
+  });
+  clearTourPackagesCache();
   return { data: response?.data || null, error: null };
 };
 
@@ -153,6 +182,7 @@ export const deleteTourPackage = async (id) => {
   await adminApiRequest(`/api/tour-packages?id=${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
+  clearTourPackagesCache();
   return { data: { id }, error: null };
 };
 

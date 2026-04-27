@@ -6,6 +6,41 @@
       "maxDuration": 60
     }
   },
+  "headers": [
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache, must-revalidate, max-age=0"
+        }
+      ]
+    },
+    {
+      "source": "/index.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache, must-revalidate, max-age=0"
+        }
+      ]
+    },
+    {
+      "source": "/((?!api/|assets/|images/|favicon.ico|og-image.png|.*\\..*).*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache, must-revalidate, max-age=0"
+        }
+      ]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/growth-links?resource=leaderboard&action=distribute",
+      "schedule": "0 0 * * 1"
+    }
+  ],
   "redirects": [
     {
       "source": "/",
@@ -17,10 +52,16 @@
     }
   ],
   "rewrites": [
+    { "source": "/api/health", "destination": "/api/public-links?resource=health" },
     { "source": "/share/rent/:listingId", "destination": "/api/public-links?resource=share-vehicle&listingId=:listingId" },
+    { "source": "/share/experience", "destination": "/api/public-links?resource=share-experience" },
+    { "source": "/share/tours", "destination": "/api/public-links?resource=share-tours" },
     { "source": "/api/public-catalog", "destination": "/api/public-links?resource=public-catalog" },
     { "source": "/api/public-pricing", "destination": "/api/public-links?resource=public-pricing" },
     { "source": "/api/public-bookings", "destination": "/api/public-links?resource=public-bookings" },
+    { "source": "/api/public-rentals/:id", "destination": "/api/public-links?resource=public-rental&id=:id" },
+    { "source": "/api/boost", "destination": "/api/growth-links?resource=boost" },
+    { "source": "/api/message-media-maintenance", "destination": "/api/messages?action=cleanup-media" },
     { "source": "/api/tour-packages", "destination": "/api/tour-bookings?resource=packages" },
     { "source": "/api/tour-tracking", "destination": "/api/tour-bookings?resource=tracking" },
     { "source": "/api/admin/users", "destination": "/api/admin-users" },

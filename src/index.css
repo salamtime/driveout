@@ -115,8 +115,390 @@ html, body, #root {
   100% { transform: scale(1); }
 }
 
+@keyframes packageSaveBounce {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  28% {
+    transform: translateY(-3px) scale(1.035);
+  }
+  56% {
+    transform: translateY(0) scale(0.99);
+  }
+  78% {
+    transform: translateY(-1px) scale(1.012);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes quickDateTapBounce {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  32% {
+    transform: translateY(-2px) scale(1.04);
+  }
+  58% {
+    transform: translateY(0) scale(0.985);
+  }
+  82% {
+    transform: translateY(-1px) scale(1.012);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
 .animate-pulsate {
   animation: pulsate 2s infinite;
+}
+
+.package-save-bounce {
+  animation: packageSaveBounce 0.46s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.quick-date-tap-bounce {
+  animation: quickDateTapBounce 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+@keyframes chatBubbleRise {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chatBubbleOwn {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.92);
+  }
+  34% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1.032);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chatBubbleReceive {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.975);
+  }
+  42% {
+    opacity: 1;
+    transform: translateY(-1px) scale(1.008);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chatBubbleSend {
+  0% {
+    opacity: 0;
+    transform: translateY(16px) scale(0.9);
+  }
+  32% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.04);
+  }
+  62% {
+    opacity: 1;
+    transform: translateY(1px) scale(0.992);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chatBubbleIncomingFresh {
+  0% {
+    box-shadow: 0 0 0 rgba(124,58,237,0);
+    transform: translateY(4px) scale(0.992);
+  }
+  20% {
+    box-shadow: 0 0 0 6px rgba(124,58,237,0.08);
+    transform: translateY(0) scale(1.01);
+  }
+  100% {
+    box-shadow: 0 14px 34px rgba(124,58,237,0.12);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chatNewDivider {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes chatMessageToastEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chatDrawerEnter {
+  0% {
+    opacity: 0;
+    transform: translateX(18px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes chatWidgetPulse {
+  0% {
+    transform: translateY(0) scale(1);
+    box-shadow: 0 20px 50px rgba(15,23,42,0.18);
+  }
+  50% {
+    transform: translateY(-1px) scale(1.015);
+    box-shadow: 0 24px 56px rgba(124,58,237,0.22);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    box-shadow: 0 20px 50px rgba(15,23,42,0.18);
+  }
+}
+
+.chat-bubble-own {
+  animation: chatBubbleOwn 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-bubble-receive {
+  animation: chatBubbleReceive 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-bubble-send {
+  animation: chatBubbleSend 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-bubble-incoming-fresh {
+  animation:
+    chatBubbleReceive 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+    chatBubbleIncomingFresh 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-new-divider {
+  animation: chatNewDivider 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-message-toast {
+  animation: chatMessageToastEnter 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow:
+    0 24px 60px rgba(15, 23, 42, 0.14),
+    0 10px 28px rgba(124, 58, 237, 0.12);
+}
+
+.chat-copy-label {
+  font-family: 'Inter', 'Roboto', sans-serif;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.chat-copy-title {
+  font-family: 'Inter', 'Roboto', sans-serif;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.chat-copy-body {
+  font-family: 'Inter', 'Roboto', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.6;
+}
+
+.chat-copy-body-compact {
+  font-family: 'Inter', 'Roboto', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.5;
+}
+
+.chat-copy-meta {
+  font-family: 'Inter', 'Roboto', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.5;
+}
+
+.app-floating-primary {
+  transition:
+    margin-right 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+body[data-sx-floating-widget-active="true"] .app-floating-primary {
+  margin-right: 5.75rem;
+}
+
+@media (min-width: 640px) {
+  body[data-sx-floating-widget-active="true"] .app-floating-primary {
+    margin-right: 6.25rem;
+  }
+}
+
+.chat-presence-strip {
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    border-color 180ms ease,
+    transform 180ms ease,
+    box-shadow 180ms ease;
+  border: 1px solid transparent;
+}
+
+.chat-presence-live {
+  background: rgba(124, 58, 237, 0.08);
+  color: rgb(109, 40, 217);
+  border-color: rgba(124, 58, 237, 0.12);
+  box-shadow: 0 12px 24px rgba(124, 58, 237, 0.1);
+}
+
+.chat-presence-online {
+  background: rgba(16, 185, 129, 0.08);
+  color: rgb(4, 120, 87);
+  border-color: rgba(16, 185, 129, 0.14);
+  box-shadow: 0 12px 24px rgba(16, 185, 129, 0.08);
+}
+
+.chat-presence-away {
+  background: rgba(148, 163, 184, 0.12);
+  color: rgb(71, 85, 105);
+  border-color: rgba(148, 163, 184, 0.16);
+}
+
+.chat-presence-dot {
+  position: relative;
+  display: inline-flex;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+
+.chat-presence-dot::after {
+  content: '';
+  position: absolute;
+  inset: -0.18rem;
+  border-radius: 9999px;
+  opacity: 0;
+}
+
+.chat-presence-dot-online {
+  background: rgb(16, 185, 129);
+}
+
+.chat-presence-dot-online::after {
+  background: rgba(16, 185, 129, 0.18);
+  opacity: 1;
+  animation: chatWidgetPulse 1.8s ease-in-out infinite;
+}
+
+.chat-presence-dot-typing {
+  background: rgb(124, 58, 237);
+}
+
+.chat-presence-dot-typing::after {
+  background: rgba(124, 58, 237, 0.18);
+  opacity: 1;
+  animation: chatWidgetPulse 1.25s ease-in-out infinite;
+}
+
+.chat-presence-dot-away {
+  background: rgb(148, 163, 184);
+}
+
+.chat-drawer-enter {
+  animation: chatDrawerEnter 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-widget-pulse {
+  animation: chatWidgetPulse 1.8s ease-in-out infinite;
+}
+
+.chat-presence-pill {
+  transition: background-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.package-save-button {
+  position: relative;
+  transform: translateY(0) scale(1);
+  transition:
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    opacity 180ms ease;
+  will-change: transform, box-shadow;
+}
+
+.package-save-button:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.012);
+}
+
+.package-save-button:active:not(:disabled) {
+  transform: translateY(1px) scale(0.985);
+}
+
+.package-save-button:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 4px rgba(167, 139, 250, 0.18),
+    0 14px 30px rgba(79, 70, 229, 0.18);
+}
+
+.package-save-button-dirty:hover:not(:disabled) {
+  box-shadow: 0 16px 30px rgba(16, 185, 129, 0.16);
+}
+
+.package-save-button-saved {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.7),
+    0 8px 18px rgba(16, 185, 129, 0.08);
+}
+
+.package-save-button-saved:hover:not(:disabled) {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.8),
+    0 14px 26px rgba(16, 185, 129, 0.12);
 }
 /* Hide scrollbar for Chrome, Safari and Opera */
 .scrollbar-hide::-webkit-scrollbar {

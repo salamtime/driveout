@@ -42,6 +42,7 @@ export const defaultSystemSettings = {
   returnReminderHours: 2,
   rentalGracePeriodMinutes: 60,
   rentalSoftLockMinutes: 45,
+  extraHourThresholdMinutes: 25,
   whatsappEnabled: true,
   emailNotifications: true,
   smsNotifications: false,
@@ -59,7 +60,7 @@ export const defaultSystemSettings = {
   mapProvider: 'mapbox',
   mapboxPublicToken: '',
   ocrProvider: 'gemini',
-  geminiProxyPath: '/api/gemini-proxy',
+  geminiProxyPath: '/api/system-settings?action=gemini-proxy',
   whatsappDefaultCountryCode: '+212',
   storageBucket: 'rental-documents',
   requireTwoFactorForAdmins: false,
@@ -68,11 +69,18 @@ export const defaultSystemSettings = {
   allowEmployeeSettingsView: true,
   writeAuditLogs: true,
   allowLiveTrackingRetry: true,
+  autoSendContractEmailAfterCreation: false,
   tourDepartureBufferMinutes: 15,
   tourAutoReceiptRequired: true,
   tourDefaultLicensePolicy: 'route_based',
   tourGuideTrackingRequired: true,
-};
+  messagingPhotoSharingEnabled: true,
+  messagingMaxPhotosPerMessage: 3,
+  messagingPhotoRetentionDays: 7,
+  messagingDraftRetentionHours: 24,
+  messagingAllowCameraCapture: true,
+  rentalDetailsDefaultView: 'standard',
+  };
 
 const normalizeSettings = (value = {}) => {
   const merged = { ...defaultSystemSettings, ...(value || {}) };
@@ -86,6 +94,18 @@ const normalizeSettings = (value = {}) => {
   merged.operatingDays = Array.isArray(merged.operatingDays)
     ? merged.operatingDays.map((day) => String(day).toLowerCase())
     : defaultSystemSettings.operatingDays;
+
+  merged.messagingMaxPhotosPerMessage = Math.max(1, Math.min(10, Number(merged.messagingMaxPhotosPerMessage ?? defaultSystemSettings.messagingMaxPhotosPerMessage) || defaultSystemSettings.messagingMaxPhotosPerMessage));
+  merged.messagingPhotoRetentionDays = Math.max(1, Math.min(30, Number(merged.messagingPhotoRetentionDays ?? defaultSystemSettings.messagingPhotoRetentionDays) || defaultSystemSettings.messagingPhotoRetentionDays));
+  merged.messagingDraftRetentionHours = Math.max(1, Math.min(168, Number(merged.messagingDraftRetentionHours ?? defaultSystemSettings.messagingDraftRetentionHours) || defaultSystemSettings.messagingDraftRetentionHours));
+  merged.extraHourThresholdMinutes = Math.max(0, Math.min(120, Number(merged.extraHourThresholdMinutes ?? defaultSystemSettings.extraHourThresholdMinutes) || defaultSystemSettings.extraHourThresholdMinutes));
+  merged.messagingPhotoSharingEnabled = Boolean(merged.messagingPhotoSharingEnabled);
+  merged.messagingAllowCameraCapture = Boolean(merged.messagingAllowCameraCapture);
+  merged.autoSendContractEmailAfterCreation = Boolean(merged.autoSendContractEmailAfterCreation);
+  merged.rentalDetailsDefaultView =
+    String(merged.rentalDetailsDefaultView || '').toLowerCase() === 'light'
+      ? 'light'
+      : 'standard';
 
   return merged;
 };
@@ -126,6 +146,7 @@ const fromTableRow = (row = {}) => normalizeSettings({
   returnReminderHours: row.return_reminder_hours,
   rentalGracePeriodMinutes: row.rental_grace_period_minutes,
   rentalSoftLockMinutes: row.rental_soft_lock_minutes,
+  extraHourThresholdMinutes: row.extra_hour_threshold_minutes,
   whatsappEnabled: row.whatsapp_enabled,
   emailNotifications: row.email_notifications,
   smsNotifications: row.sms_notifications,
@@ -152,10 +173,17 @@ const fromTableRow = (row = {}) => normalizeSettings({
   allowEmployeeSettingsView: row.allow_employee_settings_view,
   writeAuditLogs: row.write_audit_logs,
   allowLiveTrackingRetry: row.allow_live_tracking_retry,
+  autoSendContractEmailAfterCreation: row.auto_send_contract_email_after_creation,
   tourDepartureBufferMinutes: row.tour_departure_buffer_minutes,
   tourAutoReceiptRequired: row.tour_auto_receipt_required,
   tourDefaultLicensePolicy: row.tour_default_license_policy,
   tourGuideTrackingRequired: row.tour_guide_tracking_required,
+  messagingPhotoSharingEnabled: row.messaging_photo_sharing_enabled,
+  messagingMaxPhotosPerMessage: row.messaging_max_photos_per_message,
+  messagingPhotoRetentionDays: row.messaging_photo_retention_days,
+  messagingDraftRetentionHours: row.messaging_draft_retention_hours,
+  messagingAllowCameraCapture: row.messaging_allow_camera_capture,
+  rentalDetailsDefaultView: row.rental_details_default_view,
 });
 
 const toTableRow = (settings = {}) => {
@@ -197,6 +225,7 @@ const toTableRow = (settings = {}) => {
     return_reminder_hours: normalized.returnReminderHours,
     rental_grace_period_minutes: normalized.rentalGracePeriodMinutes,
     rental_soft_lock_minutes: normalized.rentalSoftLockMinutes,
+    extra_hour_threshold_minutes: normalized.extraHourThresholdMinutes,
     whatsapp_enabled: normalized.whatsappEnabled,
     email_notifications: normalized.emailNotifications,
     sms_notifications: normalized.smsNotifications,
@@ -223,10 +252,17 @@ const toTableRow = (settings = {}) => {
     allow_employee_settings_view: normalized.allowEmployeeSettingsView,
     write_audit_logs: normalized.writeAuditLogs,
     allow_live_tracking_retry: normalized.allowLiveTrackingRetry,
+    auto_send_contract_email_after_creation: normalized.autoSendContractEmailAfterCreation,
     tour_departure_buffer_minutes: normalized.tourDepartureBufferMinutes,
     tour_auto_receipt_required: normalized.tourAutoReceiptRequired,
     tour_default_license_policy: normalized.tourDefaultLicensePolicy,
     tour_guide_tracking_required: normalized.tourGuideTrackingRequired,
+    messaging_photo_sharing_enabled: normalized.messagingPhotoSharingEnabled,
+    messaging_max_photos_per_message: normalized.messagingMaxPhotosPerMessage,
+    messaging_photo_retention_days: normalized.messagingPhotoRetentionDays,
+    messaging_draft_retention_hours: normalized.messagingDraftRetentionHours,
+    messaging_allow_camera_capture: normalized.messagingAllowCameraCapture,
+    rental_details_default_view: normalized.rentalDetailsDefaultView,
   };
 };
 

@@ -51,6 +51,10 @@ class PublicCatalogService {
   static catalogCache = new Map();
   static cacheTtlMs = 60 * 1000;
 
+  static clearCache() {
+    this.catalogCache.clear();
+  }
+
   static async fetchServerCatalog(action = 'catalog', params = {}) {
     if (typeof fetch !== 'function') {
       throw new Error('Fetch is not available');

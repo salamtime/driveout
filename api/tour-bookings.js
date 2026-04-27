@@ -1,7 +1,12 @@
 import { authenticateRequest } from './_lib/auth.js';
-import { createSupabaseClients } from './_lib/supabase.js';
+import { APP_USERS_TABLE, createSupabaseClients } from './_lib/supabase.js';
 import { handleTourPackages } from './_lib/tourPackagesShared.js';
 import { handleTourTracking } from './_lib/tourTrackingShared.js';
+import {
+  EMAIL_SENDERS,
+  buildBookingConfirmationEmail,
+  sendResendEmail,
+} from './_lib/email.js';
 
 const TOUR_BOOKINGS_TABLE = 'app_687f658e98_tour_bookings';
 const TOUR_PACKAGES_TABLE = 'app_687f658e98_tour_packages';
@@ -10,6 +15,24 @@ const TOUR_BOOKING_MARKER = '[tour_booking]';
 const GLOBAL_TOUR_PRICING_KEY = '__global_tour_pricing__';
 
 const json = (res, status, body) => res.status(status).json(body);
+
+const isTourBookingsSchemaUnavailable = (error) => {
+  const code = String(error?.code || '').trim();
+  const message = String(error?.message || error?.details || '').toLowerCase();
+  return (
+    code === '42P01' ||
+    code === '42703' ||
+    code === '42501' ||
+    code === 'PGRST204' ||
+    code === 'PGRST205' ||
+    message.includes('tour_bookings') ||
+    message.includes('tour_packages') ||
+    message.includes('tour_package_model_prices') ||
+    message.includes('does not exist') ||
+    message.includes('permission denied') ||
+    message.includes('schema cache')
+  );
+};
 
 const parseBody = (body) => {
   if (!body) return {};
@@ -24,6 +47,114 @@ const parseBody = (body) => {
 };
 
 const createBookingId = () => crypto.randomUUID();
+
+const normalizeEmail = (value = '') => String(value || '').trim().toLowerCase();
+
+const getRequestOrigin = (req) => {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const host = forwardedHost || String(req.headers.host || '').trim();
+  const proto = forwardedProto || (host.includes('localhost') ? 'http' : 'https');
+  return host ? `${proto}://${host}` : 'https://saharax.driveout.io';
+};
+
+const formatDateTimeForEmail = (value, locale = 'en-MA') => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat(locale, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+};
+
+const formatMoneyForEmail = (value, currency = 'MAD', locale = 'en-MA') =>
+  `${new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(Number(value || 0))} ${currency}`;
+
+const getSafeAccountPath = (groupId) => `/account/tours/${encodeURIComponent(String(groupId || ''))}`;
+
+const buildAccountAccessUrls = ({ publicOrigin, accountPath, email = '', hasAccount = false }) => {
+  const safePath = String(accountPath || '').startsWith('/') ? String(accountPath) : '/account/tours';
+  const normalizedEmail = normalizeEmail(email);
+  const loginUrl = `${publicOrigin}/login?redirect=${encodeURIComponent(safePath)}`;
+  const signUpUrl = `${publicOrigin}/register?redirect=${encodeURIComponent(safePath)}${normalizedEmail ? `&email=${encodeURIComponent(normalizedEmail)}` : ''}`;
+
+  return {
+    openBookingUrl: hasAccount ? loginUrl : signUpUrl,
+    signInUrl: loginUrl,
+    signUpUrl,
+  };
+};
+
+const lookupExistingAccountByEmail = async (adminClient, email) => {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return false;
+
+  const { data, error } = await adminClient
+    .from(APP_USERS_TABLE)
+    .select('id')
+    .ilike('email', normalized)
+    .limit(1);
+
+  if (error) {
+    console.warn('tour booking account lookup failed:', error?.message || error);
+    return false;
+  }
+
+  return Boolean(data?.[0]?.id);
+};
+
+const sendTourBookingConfirmationEmail = async ({
+  adminClient,
+  requestOrigin,
+  groupId,
+  packageName,
+  totalAmount,
+  scheduledStart,
+  customerName,
+  customerEmail,
+  quadCount,
+  ridersCount,
+}) => {
+  const normalizedEmail = normalizeEmail(customerEmail);
+  if (!normalizedEmail) return;
+
+  const hasAccount = await lookupExistingAccountByEmail(adminClient, normalizedEmail);
+  const accessUrls = buildAccountAccessUrls({
+    publicOrigin: requestOrigin,
+    accountPath: getSafeAccountPath(groupId),
+    email: normalizedEmail,
+    hasAccount,
+  });
+
+  const emailPayload = buildBookingConfirmationEmail({
+    bookingType: 'tour',
+    customerName,
+    bookingReference: groupId,
+    hasAccount,
+    openBookingUrl: accessUrls.openBookingUrl,
+    signInUrl: accessUrls.signInUrl,
+    signUpUrl: accessUrls.signUpUrl,
+    summaryRows: [
+      { label: 'Tour', value: String(packageName || 'Tour booking') },
+      { label: 'Scheduled for', value: formatDateTimeForEmail(scheduledStart) },
+      { label: 'Guests', value: `${Number(ridersCount || quadCount || 1)} guest${Number(ridersCount || quadCount || 1) > 1 ? 's' : ''}` },
+      { label: 'Quads', value: `${Number(quadCount || 1)}` },
+      { label: 'Total', value: formatMoneyForEmail(totalAmount) },
+    ],
+  });
+
+  await sendResendEmail({
+    from: EMAIL_SENDERS.bookings,
+    to: normalizedEmail,
+    subject: emailPayload.subject,
+    html: emailPayload.html,
+    replyTo: 'bookings@send.saharax.driveout.io',
+  });
+};
 
 const extractMarkedJson = (text, marker) => {
   const source = String(text || '');
@@ -167,7 +298,12 @@ const readBookingsFromTable = async (adminClient) => {
     .select('*')
     .order('created_at', { ascending: false });
 
-  if (error) throw error;
+  if (error) {
+    if (isTourBookingsSchemaUnavailable(error)) {
+      return [];
+    }
+    throw error;
+  }
   return Array.isArray(data) ? data.map(fromTableRow) : [];
 };
 
@@ -219,7 +355,7 @@ const getPublicTourPrice = async (adminClient, { packageId, vehicleModelId, dura
   return Number(globalRows?.[0]?.price_mad || 0);
 };
 
-const createPublicTourBooking = async (body = {}) => {
+const createPublicTourBooking = async (req, body = {}) => {
   const packageId = String(body.packageId || body.package_id || '').trim();
   const vehicleModelId = String(body.vehicleModelId || body.vehicle_model_id || '').trim();
   const requestedMix = normalizeSelectedModelMix(body.selectedModelMix || body.selected_model_mix);
@@ -347,6 +483,21 @@ const createPublicTourBooking = async (body = {}) => {
   );
 
   const createdRows = await insertBookings(adminClient, rows);
+  void sendTourBookingConfirmationEmail({
+    adminClient,
+    requestOrigin: getRequestOrigin(req),
+    groupId,
+    packageName: packageRow.name,
+    totalAmount,
+    scheduledStart: scheduledStart.toISOString(),
+    customerName,
+    customerEmail,
+    quadCount,
+    ridersCount,
+  }).catch((emailError) => {
+    console.warn('tour booking confirmation email failed:', emailError?.message || emailError);
+  });
+
   return {
     status: 200,
     body: {
@@ -394,6 +545,27 @@ const updateBookingRows = async (adminClient, updates = []) => {
   return changedRows;
 };
 
+const deleteBookingRows = async (adminClient, rowIds = []) => {
+  const normalizedRowIds = rowIds.filter(Boolean).map(String);
+  if (normalizedRowIds.length === 0) return [];
+
+  const { data: existingRows, error: loadError } = await adminClient
+    .from(TOUR_BOOKINGS_TABLE)
+    .select('*')
+    .in('id', normalizedRowIds);
+
+  if (loadError) throw loadError;
+
+  const { error: deleteError } = await adminClient
+    .from(TOUR_BOOKINGS_TABLE)
+    .delete()
+    .in('id', normalizedRowIds);
+
+  if (deleteError) throw deleteError;
+
+  return Array.isArray(existingRows) ? existingRows.map(fromTableRow) : [];
+};
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -406,7 +578,7 @@ export default async function handler(req, res) {
     return handleTourTracking(req, res, json);
   }
 
-  if (!['GET', 'POST', 'PATCH'].includes(req.method)) {
+  if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(req.method)) {
     return json(res, 405, { error: 'Method not allowed' });
   }
 
@@ -414,7 +586,7 @@ export default async function handler(req, res) {
 
   if (req.method === 'POST' && body?.publicBooking === true) {
     try {
-      const result = await createPublicTourBooking(body);
+      const result = await createPublicTourBooking(req, body);
       return json(res, result.status, result.body);
     } catch (error) {
       return json(res, 500, { error: error.message || 'Unknown error' });
@@ -431,13 +603,23 @@ export default async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       const rows = await readBookingsFromTable(adminClient);
-      return json(res, 200, { success: true, rows });
+      return json(res, 200, { success: true, rows, setup_required: false });
     }
 
     if (req.method === 'POST') {
       const rows = Array.isArray(body?.rows) ? body.rows : [];
       const createdRows = await insertBookings(adminClient, rows);
       return json(res, 200, { success: true, rows: createdRows });
+    }
+
+    if (req.method === 'DELETE') {
+      const rowIds = Array.isArray(body?.rowIds) ? body.rowIds : [];
+      if (rowIds.length === 0) {
+        return json(res, 400, { error: 'rowIds array is required' });
+      }
+
+      const rows = await deleteBookingRows(adminClient, rowIds);
+      return json(res, 200, { success: true, rows });
     }
 
     const updates = Array.isArray(body?.updates) ? body.updates : [];
@@ -448,6 +630,9 @@ export default async function handler(req, res) {
     const rows = await updateBookingRows(adminClient, updates);
     return json(res, 200, { success: true, rows });
   } catch (error) {
+    if (req.method === 'GET' && isTourBookingsSchemaUnavailable(error)) {
+      return json(res, 200, { success: true, rows: [], setup_required: true });
+    }
     return json(res, 500, { error: error.message || 'Unknown error' });
   }
 }

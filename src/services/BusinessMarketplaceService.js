@@ -1,4 +1,17 @@
 import { supabase } from '../lib/supabase';
+import VehicleService from './VehicleService';
+import VerificationService from './VerificationService';
+import RentalEventService from './RentalEventService';
+import { adminApiRequest } from './adminApi';
+import { createTimedRequestCache } from '../utils/requestCache';
+import {
+  getMarketplaceApprovalHoldExpiry,
+  getMarketplaceChatGraceExpiry,
+  getMarketplaceMoneyBreakdown,
+  getMarketplaceRequestDisplay,
+  isMarketplaceChatUnlocked,
+  normalizeMarketplaceRequestLifecycleStatus,
+} from '../utils/marketplaceRequestState';
 
 const VEHICLE_PROFILES_TABLE = 'app_vehicle_public_profiles';
 const MARKETPLACE_LISTINGS_TABLE = 'app_marketplace_listings';
@@ -14,6 +27,7 @@ const REQUIRED_PROFILE_COLUMNS = new Set([
 ]);
 
 const setupErrorCodes = new Set(['42P01', '42501', '42703', '22P02', 'PGRST116', 'PGRST204']);
+const businessMarketplaceCache = createTimedRequestCache(30000);
 
 const safeNumber = (value) => {
   const next = Number(value);
@@ -29,6 +43,11 @@ const optionalNumber = (value) => {
 const optionalInteger = (value) => {
   const next = optionalNumber(value);
   return next === null ? null : Math.trunc(next);
+};
+
+const optionalDateString = (value) => {
+  const next = String(value || '').trim();
+  return next || null;
 };
 
 const toStringArray = (value) => {
@@ -61,6 +80,38 @@ const normalizeStatus = (status) => {
   return aliases[normalized] || normalized;
 };
 
+const getVehicleVerificationGateMessage = (summary = null) => {
+  const missing = Array.isArray(summary?.missing) ? summary.missing : [];
+  if (missing.length > 0) {
+    return 'Complete vehicle verification first. Required legal documents are still missing before listing review can begin.';
+  }
+
+  const status = String(summary?.status || '').trim().toLowerCase();
+  if (status === 'pending') {
+    return 'Vehicle verification is still pending. Wait for admin approval before sending the listing for review.';
+  }
+  if (status === 'rejected' || status === 'suspended' || status === 'expired') {
+    return 'Vehicle verification must be approved first. Review the verification feedback, update the documents, and try again.';
+  }
+
+  return 'Vehicle verification must be approved before listing review can begin.';
+};
+
+const ensureVehicleVerificationReady = async (vehicleId) => {
+  if (!vehicleId) {
+    throw new Error('Save the vehicle first, then complete vehicle verification before sending the listing for review.');
+  }
+
+  const result = await VerificationService.getEntityVerificationSummary('vehicle', vehicleId);
+  const summary = result?.summary || null;
+
+  if (!summary?.complete || String(summary?.status || '').toLowerCase() !== 'approved') {
+    throw new Error(getVehicleVerificationGateMessage(summary));
+  }
+
+  return summary;
+};
+
 const getMissingSchemaColumn = (error) => {
   const message = String(error?.message || error?.details || '');
   const singleQuoteMatch = message.match(/'([^']+)'\s+column/i);
@@ -74,6 +125,8 @@ const getNotNullSchemaColumn = (error) => {
   const match = message.match(/null value in column "([^"]+)"/i);
   return match?.[1] || null;
 };
+
+const isUuidLike = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim());
 
 const getLegacyVehicleRefId = ({ ownerId, formData }) => {
   const existingRef = formData?.rawProfile?.vehicle_ref_id || formData?.vehicleRefId;
@@ -98,18 +151,265 @@ const getLegacyMarketplaceColumnValue = ({ column, ownerId, formData }) => {
   return legacyValues[column];
 };
 
+const inferVehicleShotType = (item = {}, index = 0) => {
+  const explicitShotType = String(item?.shot_type || item?.shotType || '').trim().toLowerCase();
+  if (explicitShotType) return explicitShotType;
+  if (Boolean(item?.is_cover)) return 'hero';
+
+  const haystack = [
+    item?.name,
+    item?.url,
+    item?.storagePath,
+    item?.storage_path,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (/(^|[^a-z])(hero)([^a-z]|$)/.test(haystack)) return 'hero';
+  if (/(^|[^a-z])(context)([^a-z]|$)/.test(haystack)) return 'context';
+  if (/(^|[^a-z])(detail)([^a-z]|$)/.test(haystack)) return 'detail';
+
+  return REQUIRED_VEHICLE_PHOTO_TYPES[index] || null;
+};
+
+const assignVehiclePhotoSlots = (items = []) => {
+  const normalizedItems = Array.isArray(items) ? items.map((item) => ({ ...item })) : [];
+  const usedSlots = new Set();
+  const unassignedIndexes = [];
+
+  normalizedItems.forEach((item, index) => {
+    const shotType = String(item?.shot_type || '').trim().toLowerCase();
+    if (REQUIRED_VEHICLE_PHOTO_TYPES.includes(shotType) && !usedSlots.has(shotType)) {
+      usedSlots.add(shotType);
+      item.shot_type = shotType;
+      return;
+    }
+
+    item.shot_type = null;
+    unassignedIndexes.push(index);
+  });
+
+  REQUIRED_VEHICLE_PHOTO_TYPES.forEach((slot) => {
+    if (usedSlots.has(slot)) return;
+    const nextIndex = unassignedIndexes.shift();
+    if (nextIndex === undefined) return;
+    normalizedItems[nextIndex].shot_type = slot;
+    usedSlots.add(slot);
+  });
+
+  return normalizedItems.map((item, index) => ({
+    ...item,
+    shot_type: item.shot_type || null,
+    is_cover: item.shot_type === 'hero' || (item.is_cover && !normalizedItems.some((entry, entryIndex) => entryIndex !== index && entry.shot_type === 'hero')),
+  }));
+};
+
 const toArrayMedia = (media) => {
   if (Array.isArray(media)) {
-    return media.filter((item) => item?.url).map((item, index) => ({
+    const normalizedItems = media.filter((item) => item?.url).map((item, index) => ({
       id: item.id || `media-${index + 1}`,
       url: String(item.url || '').trim(),
       type: item.type || 'image',
       name: item.name || `Image ${index + 1}`,
-      is_cover: Boolean(item.is_cover),
+      is_cover: Boolean(item.is_cover) || inferVehicleShotType(item, index) === 'hero',
+      shot_type: inferVehicleShotType(item, index),
+      quality_status: String(item.quality_status || item.qualityStatus || '').trim().toLowerCase() || null,
     }));
+
+    return assignVehiclePhotoSlots(normalizedItems);
   }
 
   return [];
+};
+
+const normalizeExecutionPhotos = (photos) =>
+  (Array.isArray(photos) ? photos : [])
+    .map((photo, index) => ({
+      id: String(photo?.id || `execution-photo-${index}`).trim(),
+      kind: String(photo?.kind || 'photo').trim().toLowerCase() || 'photo',
+      bucket: String(photo?.bucket || '').trim(),
+      storagePath: String(photo?.storagePath || photo?.storage_path || '').trim(),
+      publicUrl: String(photo?.publicUrl || photo?.public_url || '').trim(),
+      thumbnailUrl: String(photo?.thumbnailUrl || photo?.thumbnail_url || photo?.publicUrl || photo?.public_url || '').trim(),
+      mimeType: String(photo?.mimeType || photo?.mime_type || '').trim().toLowerCase(),
+      originalFilename: String(photo?.originalFilename || photo?.original_filename || '').trim(),
+      fileSize: Number(photo?.fileSize || photo?.file_size || 0) || 0,
+      uploadedAt: photo?.uploadedAt || photo?.uploaded_at || null,
+    }))
+    .filter((photo) => photo.publicUrl || photo.thumbnailUrl);
+
+export const REQUIRED_VEHICLE_PHOTO_TYPES = ['hero', 'context', 'detail'];
+
+export const getVehiclePhotoRequirementStatus = (media) => {
+  const normalizedMedia = toArrayMedia(media);
+  const byType = REQUIRED_VEHICLE_PHOTO_TYPES.reduce((accumulator, type) => {
+    accumulator[type] = normalizedMedia.find((item) => item.shot_type === type) || null;
+    return accumulator;
+  }, {});
+  const missingTypes = REQUIRED_VEHICLE_PHOTO_TYPES.filter((type) => !byType[type]);
+
+  return {
+    media: normalizedMedia,
+    totalCount: normalizedMedia.length,
+    byType,
+    missingTypes,
+    hasMinimumCount: normalizedMedia.length >= 3,
+    isComplete: normalizedMedia.length >= 3 && missingTypes.length === 0,
+  };
+};
+
+const normalizeFleetVehicleForOwnerForm = (fleetVehicle = {}) => ({
+  vehicleRefId: fleetVehicle?.id || '',
+  vehicleRefTable: 'saharax_0u4w4d_vehicles',
+  currentOdometer: fleetVehicle?.current_odometer ?? '',
+  engineHours: fleetVehicle?.engine_hours ?? '',
+  lastOilChangeDate: fleetVehicle?.last_oil_change_date || '',
+  lastOilChangeOdometer: fleetVehicle?.last_oil_change_odometer ?? '',
+  nextOilChangeDue: fleetVehicle?.next_oil_change_due || '',
+  nextOilChangeOdometer: fleetVehicle?.next_oil_change_odometer ?? '',
+  registrationNumber: fleetVehicle?.registration_number || '',
+  registrationDate: fleetVehicle?.registration_date || '',
+  registrationExpiryDate: fleetVehicle?.registration_expiry_date || '',
+  insurancePolicyNumber: fleetVehicle?.insurance_policy_number || '',
+  insuranceProvider: fleetVehicle?.insurance_provider || '',
+  insuranceExpiryDate: fleetVehicle?.insurance_expiry_date || '',
+  purchaseCostMad: fleetVehicle?.purchase_cost_mad ?? '',
+  purchaseDate: fleetVehicle?.purchase_date || '',
+  purchaseSupplier: fleetVehicle?.purchase_supplier || '',
+  purchaseInvoiceUrl: fleetVehicle?.purchase_invoice_url || '',
+});
+
+const buildFleetVehiclePayload = (formData = {}, fallbackName = '', ownerId = null) => ({
+  name:
+    String(formData.vehicleDisplayName || '').trim() ||
+    String(fallbackName || '').trim() ||
+    [formData.brandName, formData.modelName].filter(Boolean).join(' ').trim() ||
+    'Owner vehicle',
+  owner_user_id: ownerId || null,
+  model: String(formData.modelName || '').trim() || null,
+  vehicle_type: String(formData.categoryCode || 'atv').trim() || 'atv',
+  plate_number: String(formData.plateNumber || '').trim() || null,
+  image_url: String(formData.coverImageUrl || '').trim() || null,
+  power_cc: optionalInteger(formData.engineCc),
+  capacity: optionalInteger(formData.seats),
+  color: String(formData.color || '').trim() || null,
+  status: String(formData.fleetStatus || 'available').trim() || 'available',
+  features: toStringArray(formData.extras),
+  current_odometer: optionalNumber(formData.currentOdometer),
+  engine_hours: optionalNumber(formData.engineHours),
+  last_oil_change_date: optionalDateString(formData.lastOilChangeDate),
+  last_oil_change_odometer: optionalNumber(formData.lastOilChangeOdometer),
+  next_oil_change_due: optionalDateString(formData.nextOilChangeDue),
+  next_oil_change_odometer: optionalNumber(formData.nextOilChangeOdometer),
+  registration_number: String(formData.registrationNumber || '').trim() || null,
+  registration_date: optionalDateString(formData.registrationDate),
+  registration_expiry_date: optionalDateString(formData.registrationExpiryDate),
+  insurance_policy_number: String(formData.insurancePolicyNumber || '').trim() || null,
+  insurance_provider: String(formData.insuranceProvider || '').trim() || null,
+  insurance_expiry_date: optionalDateString(formData.insuranceExpiryDate),
+  purchase_cost_mad: optionalNumber(formData.purchaseCostMad),
+  purchase_date: optionalDateString(formData.purchaseDate),
+  purchase_supplier: String(formData.purchaseSupplier || '').trim() || null,
+  purchase_invoice_url: String(formData.purchaseInvoiceUrl || '').trim() || null,
+  general_notes: String(formData.shortDescription || '').trim() || null,
+  notes: String(formData.fullDescription || '').trim() || null,
+});
+
+const resolveLinkedFleetVehicleId = (profile = {}, formData = null) => {
+  const directId =
+    profile?.linked_fleet_vehicle_id ||
+    profile?.fleet_vehicle_id ||
+    profile?.vehicle_ref_id ||
+    formData?.vehicleRefId ||
+    null;
+
+  if (directId === null || directId === undefined || directId === '') {
+    return null;
+  }
+
+  const numericId = Number(directId);
+  if (Number.isFinite(numericId)) {
+    return numericId;
+  }
+
+  return String(directId || '').trim() || null;
+};
+
+const fetchLinkedFleetVehicle = async (profile) => {
+  const linkedFleetVehicleId = resolveLinkedFleetVehicleId(profile);
+  if (linkedFleetVehicleId) {
+    const { data, error } = await supabase
+      .from('saharax_0u4w4d_vehicles')
+      .select('*')
+      .eq('id', linkedFleetVehicleId)
+      .maybeSingle();
+
+    if (!error && data) {
+      return data;
+    }
+
+    if (error) {
+      console.warn('Unable to load linked fleet vehicle for owner profile:', error.message);
+    }
+  }
+
+  const fallbackPlateNumber = String(profile?.plate_number || '').trim();
+  const fallbackOwnerId = String(profile?.owner_id || '').trim();
+  if (!fallbackPlateNumber || !fallbackOwnerId) {
+    return null;
+  }
+
+  const { data: fallbackVehicle, error: fallbackError } = await supabase
+    .from('saharax_0u4w4d_vehicles')
+    .select('*')
+    .eq('plate_number', fallbackPlateNumber)
+    .eq('owner_user_id', fallbackOwnerId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (fallbackError) {
+    console.warn('Unable to load fallback linked fleet vehicle for owner profile:', fallbackError.message);
+    return null;
+  }
+
+  return fallbackVehicle || null;
+};
+
+const persistFleetLinkOnProfile = async ({ profileId, ownerId, fleetVehicleId }) => {
+  if (!profileId || !ownerId || !fleetVehicleId) return;
+
+  const normalizedFleetVehicleId = Number(fleetVehicleId);
+  let compatibleLinkPayload = Number.isFinite(normalizedFleetVehicleId)
+    ? {
+        linked_fleet_vehicle_id: normalizedFleetVehicleId,
+        fleet_vehicle_id: normalizedFleetVehicleId,
+        vehicle_ref_table: 'saharax_0u4w4d_vehicles',
+      }
+    : {
+        vehicle_ref_id: isUuidLike(fleetVehicleId) ? String(fleetVehicleId) : null,
+        vehicle_ref_table: 'saharax_0u4w4d_vehicles',
+      };
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const { error } = await supabase
+      .from(VEHICLE_PROFILES_TABLE)
+      .update(compatibleLinkPayload)
+      .eq('id', profileId)
+      .eq('owner_id', ownerId);
+
+    if (!error) return;
+
+    const missingColumn = getMissingSchemaColumn(error);
+    if (missingColumn && Object.prototype.hasOwnProperty.call(compatibleLinkPayload, missingColumn)) {
+      const { [missingColumn]: _removed, ...nextPayload } = compatibleLinkPayload;
+      compatibleLinkPayload = nextPayload;
+      continue;
+    }
+
+    throw error;
+  }
 };
 
 const enrichVehiclesWithModeration = async (ownerId, vehicles, listingsByProfileId) => {
@@ -162,11 +462,28 @@ const enrichVehiclesWithModeration = async (ownerId, vehicles, listingsByProfile
       adminFeedback: listing?.admin_feedback || latestHistory?.feedback || '',
       moderationStatus: normalizeStatus(listing?.moderation_status || vehicle.moderationStatus || 'not_reviewed'),
       latestOwnerMessage: latestMessage?.body || '',
+      latestOwnerMessageAt: latestMessage?.created_at || null,
+      latestOwnerMessageType: latestMessage?.message_type || 'message',
+      latestOwnerMessageSenderType: latestMessage?.sender_type || 'admin',
     };
   });
 };
 
 export const getMarketplaceStatusLabel = (status) => {
+  const requestStatus = normalizeMarketplaceRequestLifecycleStatus(status);
+  const requestLabels = {
+    pending: 'Pending owner reply',
+    countered: 'Counter-offer',
+    pre_approved: 'Approved by owner',
+    approved: 'Booking confirmed',
+    declined: 'Declined',
+    completed: 'Completed',
+    expired: 'Expired',
+  };
+  if (requestLabels[requestStatus]) {
+    return requestLabels[requestStatus];
+  }
+
   const normalized = normalizeStatus(status);
   const labels = {
     draft: 'Draft',
@@ -181,6 +498,20 @@ export const getMarketplaceStatusLabel = (status) => {
 };
 
 export const getMarketplaceStatusTone = (status) => {
+  const requestStatus = normalizeMarketplaceRequestLifecycleStatus(status);
+  const requestTones = {
+    pending: 'bg-amber-100 text-amber-800 ring-amber-200',
+    countered: 'bg-violet-100 text-violet-800 ring-violet-200',
+    pre_approved: 'bg-sky-100 text-sky-800 ring-sky-200',
+    approved: 'bg-emerald-100 text-emerald-800 ring-emerald-200',
+    declined: 'bg-rose-100 text-rose-800 ring-rose-200',
+    completed: 'bg-slate-100 text-slate-700 ring-slate-200',
+    expired: 'bg-slate-100 text-slate-500 ring-slate-200',
+  };
+  if (requestTones[requestStatus]) {
+    return requestTones[requestStatus];
+  }
+
   const normalized = normalizeStatus(status);
   const tones = {
     draft: 'bg-slate-100 text-slate-700 ring-slate-200',
@@ -217,6 +548,9 @@ const normalizeOwnerVehicle = (profile, listing) => {
     bookingMode: listing?.booking_mode || 'request',
     hourlyPrice: safeNumber(listing?.hourly_price_amount),
     dailyPrice: safeNumber(listing?.daily_price_amount),
+    halfDayPrice: safeNumber(listing?.pricing?.half_day?.price),
+    halfDayMinHours: safeNumber(listing?.pricing?.half_day?.min_hours),
+    halfDayMaxHours: safeNumber(listing?.pricing?.half_day?.max_hours),
     weeklyPrice: safeNumber(listing?.weekly_price_amount),
     depositAmount: safeNumber(listing?.deposit_amount ?? profile?.deposit_amount),
     currencyCode: listing?.currency_code || 'MAD',
@@ -225,6 +559,9 @@ const normalizeOwnerVehicle = (profile, listing) => {
     changesRequestedAt: listing?.changes_requested_at || null,
     resubmittedAt: listing?.resubmitted_at || null,
     latestOwnerMessage: '',
+    latestOwnerMessageAt: null,
+    latestOwnerMessageType: 'message',
+    latestOwnerMessageSenderType: 'admin',
     submittedAt: listing?.submitted_at || null,
     reviewedAt: listing?.reviewed_at || null,
     publishedAt: listing?.published_at || null,
@@ -235,14 +572,55 @@ const normalizeOwnerVehicle = (profile, listing) => {
 };
 
 const normalizeOwnerRequest = (request, listing, profile) => {
-  const status = normalizeStatus(request?.request_status || 'pending');
+  const status = normalizeMarketplaceRequestLifecycleStatus(request || 'pending');
+  const requestDisplay = getMarketplaceRequestDisplay(status);
   const title =
     listing?.title ||
     [profile?.brand_name, profile?.model_name].filter(Boolean).join(' ') ||
     'Marketplace request';
+  const counterOffer = request?.counter_offer && typeof request.counter_offer === 'object' ? request.counter_offer : {};
+  const duration = safeNumber(request.duration);
+  const rentalType = String(request.rental_type || 'hourly').trim().toLowerCase();
+  const estimatedAmount = safeNumber(counterOffer?.price_amount) > 0
+    ? safeNumber(counterOffer?.price_amount)
+    : rentalType === 'daily'
+      ? safeNumber(listing?.daily_price_amount) * Math.max(1, duration)
+      : safeNumber(listing?.hourly_price_amount) * Math.max(1, duration);
+  const money = getMarketplaceMoneyBreakdown({ estimatedAmount });
+  const rawOwnerExecution = counterOffer?.owner_execution && typeof counterOffer.owner_execution === 'object'
+    ? counterOffer.owner_execution
+    : {};
+  const ownerExecution = {
+    handoffChecked: Boolean(rawOwnerExecution.handoffChecked),
+    handoffMediaReady: Boolean(rawOwnerExecution.handoffMediaReady),
+    handoffPhotos: normalizeExecutionPhotos(rawOwnerExecution.handoffPhotos),
+    startOdometer: rawOwnerExecution.startOdometer ?? null,
+    startFuelLevel: rawOwnerExecution.startFuelLevel ?? null,
+    legalDocsChecked: Boolean(rawOwnerExecution.legalDocsChecked),
+    depositConfirmed: Boolean(rawOwnerExecution.depositConfirmed),
+    contractSigned: Boolean(rawOwnerExecution.contractSigned),
+    startReadyAt: rawOwnerExecution.startReadyAt || null,
+    startedAt: rawOwnerExecution.startedAt || null,
+    returnPendingAt: rawOwnerExecution.returnPendingAt || null,
+    returnMediaReady: Boolean(rawOwnerExecution.returnMediaReady),
+    returnPhotos: normalizeExecutionPhotos(rawOwnerExecution.returnPhotos),
+    returnOdometer: rawOwnerExecution.returnOdometer ?? null,
+    returnFuelLevel: rawOwnerExecution.returnFuelLevel ?? null,
+    issueReviewed: Boolean(rawOwnerExecution.issueReviewed),
+    issueReported: Boolean(rawOwnerExecution.issueReported),
+    depositReviewed: Boolean(rawOwnerExecution.depositReviewed),
+    depositOutcome: String(rawOwnerExecution.depositOutcome || '').trim().toLowerCase(),
+    returnSavedAt: rawOwnerExecution.returnSavedAt || null,
+  };
 
   return {
     id: request.id,
+    requestReference: String(
+      request?.requestReference ||
+      request?.request_reference ||
+      request?.reference ||
+      ''
+    ).trim(),
     listingId: request.listing_id,
     vehiclePublicProfileId: request.vehicle_public_profile_id,
     ownerId: request.owner_id,
@@ -252,12 +630,16 @@ const normalizeOwnerRequest = (request, listing, profile) => {
     customerPhone: request.customer_phone || '',
     requestedStartAt: request.requested_start_at || null,
     requestedEndAt: request.requested_end_at || null,
-    rentalType: request.rental_type || 'hourly',
-    duration: safeNumber(request.duration),
+    rentalType,
+    duration,
     requestStatus: status,
+    requestStatusLabel: requestDisplay.label,
+    requestStatusTone: requestDisplay.tone,
     customerMessage: request.customer_message || '',
     ownerResponse: request.owner_response || '',
-    counterOffer: request.counter_offer || {},
+    counterOffer,
+    holdExpiresAt: getMarketplaceApprovalHoldExpiry(counterOffer, request.accepted_at || null),
+    chatGraceExpiresAt: getMarketplaceChatGraceExpiry(counterOffer, request.approved_at || null),
     createdAt: request.created_at || null,
     updatedAt: request.updated_at || request.created_at || null,
     acceptedAt: request.accepted_at || null,
@@ -266,19 +648,32 @@ const normalizeOwnerRequest = (request, listing, profile) => {
     listingTitle: title,
     listingStatus: normalizeStatus(listing?.listing_status || 'draft'),
     currencyCode: listing?.currency_code || 'MAD',
-    hourlyPrice: safeNumber(listing?.hourly_price_amount),
+    estimatedAmount: money.estimatedAmount,
+    commissionAmount: safeNumber(counterOffer?.platform_fee_amount) || money.commissionAmount,
+    ownerPayoutAmount: money.ownerPayoutAmount,
+    depositAmount: safeNumber(counterOffer?.damage_deposit_amount || request?.damage_deposit || request?.deposit_amount || listing?.deposit_amount),
+    platformFeeStatus: String(counterOffer?.platform_fee_status || '').trim().toLowerCase(),
+    damageDepositStatus: String(counterOffer?.damage_deposit_status || '').trim().toLowerCase(),
+    chatUnlockedAt: request?.approved_at || counterOffer?.chat_unlocked_at || null,
     dailyPrice: safeNumber(listing?.daily_price_amount),
+    halfDayPrice: safeNumber(listing?.pricing?.half_day?.price),
+    halfDayMinHours: safeNumber(listing?.pricing?.half_day?.min_hours),
+    halfDayMaxHours: safeNumber(listing?.pricing?.half_day?.max_hours),
+    hourlyPrice: safeNumber(listing?.hourly_price_amount),
     coverImageUrl: profile?.cover_image_url || '',
     cityName: profile?.city_name || 'Tangier',
     areaName: profile?.area_name || '',
     ownerDisplayName: profile?.owner_display_name || '',
+    chatUnlocked: isMarketplaceChatUnlocked(status),
+    readOnlyReason: requestDisplay.readOnlyReason,
+    ownerExecution,
     rawRequest: request,
     rawListing: listing || null,
     rawProfile: profile || null,
   };
 };
 
-export const normalizeOwnerVehicleForForm = (profile, listing) => {
+export const normalizeOwnerVehicleForForm = (profile, listing, linkedFleetVehicle = null) => {
   const media = toArrayMedia(profile?.media);
   const availability = toObject(profile?.availability);
   const specs = toObject(profile?.specs);
@@ -312,10 +707,10 @@ export const normalizeOwnerVehicleForForm = (profile, listing) => {
     extraKmRate: listing?.extra_km_rate ?? profile?.extra_km_rate ?? '',
     coverImageUrl: profile?.cover_image_url || media.find((item) => item.is_cover)?.url || media[0]?.url || '',
     media,
-    hourlyPriceAmount: listing?.hourly_price_amount ?? '',
     dailyPriceAmount: listing?.daily_price_amount ?? '',
-    weeklyPriceAmount: listing?.weekly_price_amount ?? '',
-    monthlyPriceAmount: listing?.monthly_price_amount ?? '',
+    halfDayPriceAmount: listing?.pricing?.half_day?.price ?? '',
+    halfDayMinHours: listing?.pricing?.half_day?.min_hours ?? '',
+    halfDayMaxHours: listing?.pricing?.half_day?.max_hours ?? '',
     currencyCode: listing?.currency_code || 'MAD',
     seasonalPricing: Array.isArray(listing?.seasonal_pricing) ? listing.seasonal_pricing : [],
     listingTitle: listing?.title || '',
@@ -353,7 +748,6 @@ export const normalizeOwnerVehicleForForm = (profile, listing) => {
     workingHoursEnd: workingHours?.end || '',
     blockedDates: toStringArray(profile?.blocked_dates),
     advanceNoticeHours: profile?.advance_notice_hours ?? '',
-    minimumBookingHours: profile?.minimum_booking_hours ?? '',
     maximumBookingDays: profile?.maximum_booking_days ?? '',
     availabilityNote: availability?.note || '',
     termsTemplateKey: profile?.terms_template_key || 'standard_owner_terms',
@@ -371,8 +765,10 @@ export const normalizeOwnerVehicleForForm = (profile, listing) => {
     inspectionCompleted: Boolean(safetyInfo?.inspection_completed),
     safetyNotes: safetyInfo?.notes || '',
     verificationNotes: profile?.verification_notes || '',
+    ...normalizeFleetVehicleForOwnerForm(linkedFleetVehicle),
     rawProfile: profile || null,
     rawListing: listing || null,
+    rawFleetVehicle: linkedFleetVehicle || null,
   };
 };
 
@@ -435,7 +831,6 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
     },
     blocked_dates: toStringArray(formData.blockedDates),
     advance_notice_hours: optionalInteger(formData.advanceNoticeHours),
-    minimum_booking_hours: optionalInteger(formData.minimumBookingHours),
     maximum_booking_days: optionalInteger(formData.maximumBookingDays),
     terms_template_key: String(formData.termsTemplateKey || '').trim() || null,
     custom_terms_text: String(formData.customTermsText || '').trim() || null,
@@ -481,24 +876,26 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
     owner_id: ownerId,
     owner_type: normalizedOwnerType,
     listing_status: nextListingStatus,
-    review_status: submitForReview ? 'pending' : normalizeStatus(existingListing?.review_status || 'not_submitted'),
-    moderation_status: submitForReview ? 'pending' : normalizeStatus(existingListing?.moderation_status || 'not_reviewed'),
+    review_status: submitForReview ? 'pending_review' : normalizeStatus(existingListing?.review_status || 'not_submitted'),
+    moderation_status: submitForReview ? 'pending_review' : normalizeStatus(existingListing?.moderation_status || 'not_reviewed'),
     booking_mode: 'request',
     title: String(formData.listingTitle || `${profilePayload.brand_name} ${profilePayload.model_name}`).trim(),
     currency_code: String(formData.currencyCode || 'MAD').trim() || 'MAD',
-    hourly_price_amount: optionalNumber(formData.hourlyPriceAmount),
     daily_price_amount: optionalNumber(formData.dailyPriceAmount),
-    weekly_price_amount: optionalNumber(formData.weeklyPriceAmount),
-    monthly_price_amount: optionalNumber(formData.monthlyPriceAmount),
+    hourly_price_amount: null,
+    weekly_price_amount: null,
+    monthly_price_amount: null,
     deposit_amount: optionalNumber(formData.depositAmount),
     included_km: optionalInteger(formData.mileageLimitKm),
     extra_km_rate: optionalNumber(formData.extraKmRate),
     seasonal_pricing: Array.isArray(formData.seasonalPricing) ? formData.seasonalPricing : [],
     pricing: {
-      hourly: optionalNumber(formData.hourlyPriceAmount),
       daily: optionalNumber(formData.dailyPriceAmount),
-      weekly: optionalNumber(formData.weeklyPriceAmount),
-      monthly: optionalNumber(formData.monthlyPriceAmount),
+      half_day: {
+        price: optionalNumber(formData.halfDayPriceAmount),
+        min_hours: optionalInteger(formData.halfDayMinHours),
+        max_hours: optionalInteger(formData.halfDayMaxHours),
+      },
       currency: String(formData.currencyCode || 'MAD').trim() || 'MAD',
       seasonal_pricing: Array.isArray(formData.seasonalPricing) ? formData.seasonalPricing : [],
     },
@@ -521,14 +918,25 @@ export const validateOwnerVehicleForm = (formData, submitForReview = false) => {
   if (!String(formData.cityName || '').trim()) errors.cityName = 'City is required.';
 
   if (submitForReview) {
-    if (!formData.hourlyPriceAmount && !formData.dailyPriceAmount && !formData.weeklyPriceAmount && !formData.monthlyPriceAmount) {
-      errors.pricing = 'Add at least one rental price before review.';
+    if (!formData.dailyPriceAmount && !formData.halfDayPriceAmount) {
+      errors.pricing = 'Add a daily or half-day price before review.';
+    }
+    if (formData.halfDayPriceAmount && (!formData.halfDayMinHours || !formData.halfDayMaxHours)) {
+      errors.halfDayHours = 'Set the half-day minimum and maximum hours before review.';
+    }
+    if (Number(formData.halfDayMinHours || 0) > Number(formData.halfDayMaxHours || 0) && formData.halfDayMinHours && formData.halfDayMaxHours) {
+      errors.halfDayHours = 'Half-day maximum hours must be greater than or equal to minimum hours.';
     }
     if (formData.depositAmount === '' || formData.depositAmount === null || formData.depositAmount === undefined) {
       errors.depositAmount = 'Security deposit is required before review.';
     }
-    if (!String(formData.coverImageUrl || '').trim() && toArrayMedia(formData.media).length === 0) {
-      errors.media = 'Add at least one image URL before review.';
+    const photoRequirements = getVehiclePhotoRequirementStatus(formData.media);
+    if (!photoRequirements.isComplete) {
+      if (!photoRequirements.hasMinimumCount) {
+        errors.media = 'Add at least 3 vehicle photos before review.';
+      } else {
+        errors.media = `Add the missing required photo types before review: ${photoRequirements.missingTypes.join(', ')}.`;
+      }
     }
   }
 
@@ -536,66 +944,103 @@ export const validateOwnerVehicleForm = (formData, submitForReview = false) => {
 };
 
 class BusinessMarketplaceService {
+  static async getOwnerVehicleCount(ownerId) {
+    if (!ownerId) {
+      return { count: 0, setupRequired: false, error: null };
+    }
+
+    return businessMarketplaceCache.get(
+      `owner-vehicle-count:${String(ownerId)}`,
+      async () => {
+        const { count, error } = await supabase
+          .from(VEHICLE_PROFILES_TABLE)
+          .select('id', { count: 'exact', head: true })
+          .eq('owner_id', ownerId);
+
+        if (error) {
+          return {
+            count: 0,
+            setupRequired: setupErrorCodes.has(String(error.code || '')),
+            error,
+          };
+        }
+
+        return {
+          count: Number(count || 0),
+          setupRequired: false,
+          error: null,
+        };
+      },
+      { ttl: 45000 }
+    );
+  }
+
   static async getOwnerVehicles(ownerId) {
     if (!ownerId) {
       return { vehicles: [], setupRequired: false, error: null };
     }
 
-    const { data: profiles, error: profileError } = await supabase
-      .from(VEHICLE_PROFILES_TABLE)
-      .select('*')
-      .eq('owner_id', ownerId)
-      .order('updated_at', { ascending: false });
+    return businessMarketplaceCache.get(
+      `owner-vehicles:${String(ownerId)}`,
+      async () => {
+        const { data: profiles, error: profileError } = await supabase
+          .from(VEHICLE_PROFILES_TABLE)
+          .select('*')
+          .eq('owner_id', ownerId)
+          .order('updated_at', { ascending: false });
 
-    if (profileError) {
-      return {
-        vehicles: [],
-        setupRequired: setupErrorCodes.has(String(profileError.code || '')),
-        error: profileError,
-      };
-    }
+        if (profileError) {
+          return {
+            vehicles: [],
+            setupRequired: setupErrorCodes.has(String(profileError.code || '')),
+            error: profileError,
+          };
+        }
 
-    const profileRows = profiles || [];
-    const profileIds = profileRows.map((profile) => profile.id).filter(Boolean);
+        const profileRows = profiles || [];
+        const profileIds = profileRows.map((profile) => profile.id).filter(Boolean);
 
-    let listingsByProfileId = new Map();
-    if (profileIds.length > 0) {
-      const { data: listings, error: listingError } = await supabase
-        .from(MARKETPLACE_LISTINGS_TABLE)
-        .select('*')
-        .in('vehicle_public_profile_id', profileIds)
-        .order('updated_at', { ascending: false });
+        let listingsByProfileId = new Map();
+        if (profileIds.length > 0) {
+          const { data: listings, error: listingError } = await supabase
+            .from(MARKETPLACE_LISTINGS_TABLE)
+            .select('*')
+            .in('vehicle_public_profile_id', profileIds)
+            .order('updated_at', { ascending: false });
 
-      if (listingError) {
-        return {
-          vehicles: profileRows.map((profile) => normalizeOwnerVehicle(profile, null)),
-          setupRequired: setupErrorCodes.has(String(listingError.code || '')),
-          error: listingError,
-        };
-      }
+          if (listingError) {
+            return {
+              vehicles: profileRows.map((profile) => normalizeOwnerVehicle(profile, null)),
+              setupRequired: setupErrorCodes.has(String(listingError.code || '')),
+              error: listingError,
+            };
+          }
 
-      listingsByProfileId = new Map(
-        (listings || []).map((listing) => [String(listing.vehicle_public_profile_id), listing])
-      );
-    }
+          listingsByProfileId = new Map(
+            (listings || []).map((listing) => [String(listing.vehicle_public_profile_id), listing])
+          );
+        }
 
-    const normalizedVehicles = profileRows.map((profile) =>
-      normalizeOwnerVehicle(profile, listingsByProfileId.get(String(profile.id)))
+        const normalizedVehicles = profileRows.map((profile) =>
+          normalizeOwnerVehicle(profile, listingsByProfileId.get(String(profile.id)))
+        );
+
+        try {
+          return {
+            vehicles: await enrichVehiclesWithModeration(ownerId, normalizedVehicles, listingsByProfileId),
+            setupRequired: false,
+            error: null,
+          };
+        } catch (moderationError) {
+          return {
+            vehicles: normalizedVehicles,
+            setupRequired: setupErrorCodes.has(String(moderationError.code || '')),
+            error: moderationError,
+          };
+        }
+      },
+      { ttl: 30000 }
     );
-
-    try {
-      return {
-        vehicles: await enrichVehiclesWithModeration(ownerId, normalizedVehicles, listingsByProfileId),
-        setupRequired: false,
-        error: null,
-      };
-    } catch (moderationError) {
-      return {
-        vehicles: normalizedVehicles,
-        setupRequired: setupErrorCodes.has(String(moderationError.code || '')),
-        error: moderationError,
-      };
-    }
   }
 
   static async getOwnerVehicle(ownerId, vehicleId) {
@@ -639,7 +1084,8 @@ class BusinessMarketplaceService {
       };
     }
 
-    const vehicle = normalizeOwnerVehicleForForm(profile, listing);
+    const linkedFleetVehicle = await fetchLinkedFleetVehicle(profile);
+    const vehicle = normalizeOwnerVehicleForForm(profile, listing, linkedFleetVehicle);
 
     if (!listing?.id) {
       return {
@@ -691,9 +1137,11 @@ class BusinessMarketplaceService {
         })),
         ownerMessages: (messagesResponse.data || []).map((item) => ({
           id: item.id,
+          senderId: item.sender_id || null,
           senderType: item.sender_type || 'admin',
           messageType: item.message_type || 'message',
           body: item.body || '',
+          metadata: item.metadata && typeof item.metadata === 'object' ? item.metadata : {},
           createdAt: item.created_at || null,
         })),
       },
@@ -702,16 +1150,71 @@ class BusinessMarketplaceService {
     };
   }
 
-  static async saveOwnerVehicle({ ownerId, accountType, metadata, vehicleId, formData, submitForReview = false }) {
-    if (!ownerId) {
-      throw new Error('You must be signed in to save a marketplace vehicle.');
+  static async submitOwnerVehicleForReview({ ownerId, vehicleId, accountType, metadata = {} }) {
+    if (!ownerId || !vehicleId) {
+      throw new Error('You must choose a vehicle before submitting it for approval.');
     }
 
+    await ensureVehicleVerificationReady(vehicleId);
+
+    const result = await this.getOwnerVehicle(ownerId, vehicleId);
+    if (result?.error) {
+      throw result.error;
+    }
+
+    if (!result?.vehicle) {
+      throw new Error('Vehicle not found.');
+    }
+
+    return this.saveOwnerVehicle({
+      ownerId,
+      accountType,
+      metadata,
+      vehicleId,
+      formData: result.vehicle,
+      submitForReview: true,
+      saveListing: true,
+    });
+  }
+
+  static async saveOwnerVehicle({ ownerId, accountType, metadata, vehicleId, formData, submitForReview = false, saveListing = false }) {
+    if (!ownerId) {
+      throw new Error('You must be signed in to save a vehicle.');
+    }
+
+    const shouldSaveListing = Boolean(submitForReview || saveListing);
     const errors = validateOwnerVehicleForm(formData, submitForReview);
     if (Object.keys(errors).length > 0) {
       const firstError = Object.values(errors)[0];
       throw new Error(firstError);
     }
+
+    const apiResult = await adminApiRequest('/api/owner-vehicles', {
+      method: 'POST',
+      body: JSON.stringify({
+        vehicleId,
+        accountType,
+        metadata,
+        formData,
+        submitForReview,
+        saveListing,
+      }),
+    });
+
+    businessMarketplaceCache.invalidate((key) =>
+      key === `owner-vehicle-count:${String(ownerId)}` ||
+      key === `owner-vehicles:${String(ownerId)}` ||
+      key.startsWith(`owner-requests:${String(ownerId)}:`)
+    );
+
+    return {
+      vehicle: normalizeOwnerVehicleForForm(
+        apiResult?.vehicle?.profile || null,
+        apiResult?.vehicle?.listing || null,
+        apiResult?.vehicle?.fleetVehicle || null
+      ),
+      submitted: Boolean(apiResult?.submitted),
+    };
 
     let existingListing = null;
     if (vehicleId) {
@@ -739,7 +1242,7 @@ class BusinessMarketplaceService {
     let savedProfile;
     let compatibleProfilePayload = { ...profilePayload };
 
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
       const { data, error } = vehicleId
         ? await supabase
             .from(VEHICLE_PROFILES_TABLE)
@@ -761,7 +1264,7 @@ class BusinessMarketplaceService {
 
       const missingColumn = getMissingSchemaColumn(error);
       if (missingColumn && Object.prototype.hasOwnProperty.call(compatibleProfilePayload, missingColumn)) {
-        if (REQUIRED_PROFILE_COLUMNS.has(missingColumn)) {
+        if (shouldSaveListing && REQUIRED_PROFILE_COLUMNS.has(missingColumn)) {
           throw new Error(
             `Marketplace vehicle setup is incomplete: required column "${missingColumn}" is missing in app_vehicle_public_profiles. Run the latest marketplace compatibility SQL patch, then save again.`
           );
@@ -791,131 +1294,208 @@ class BusinessMarketplaceService {
       throw new Error('Unable to save vehicle profile with the current marketplace schema.');
     }
 
-    const listingWithProfile = {
-      ...listingPayload,
-      vehicle_public_profile_id: savedProfile.id,
+    const fleetVehiclePayload = buildFleetVehiclePayload(formData, [
+      savedProfile?.brand_name,
+      savedProfile?.model_name,
+    ].filter(Boolean).join(' '), ownerId);
+    let linkedFleetVehicleId =
+      savedProfile?.linked_fleet_vehicle_id ||
+      savedProfile?.fleet_vehicle_id ||
+      formData?.vehicleRefId ||
+      null;
+
+    if (fleetVehiclePayload?.plate_number) {
+      const existingFleetVehicleResult = await VehicleService.getVehicleByPlate(fleetVehiclePayload.plate_number);
+      const existingFleetVehicle = existingFleetVehicleResult?.success ? existingFleetVehicleResult.vehicle : null;
+
+      if (
+        existingFleetVehicle?.id &&
+        existingFleetVehicle?.owner_user_id &&
+        String(existingFleetVehicle.owner_user_id) !== String(ownerId)
+      ) {
+        throw new Error('This plate number is already used by another vehicle.');
+      }
+
+      if (existingFleetVehicle?.id) {
+        linkedFleetVehicleId = existingFleetVehicle.id;
+      } else if (!linkedFleetVehicleId) {
+        const ownerFleetVehicleResult = await VehicleService.getVehicleByOwnerAndPlate(
+          ownerId,
+          fleetVehiclePayload.plate_number
+        );
+        if (ownerFleetVehicleResult?.success && ownerFleetVehicleResult?.vehicle?.id) {
+          linkedFleetVehicleId = ownerFleetVehicleResult.vehicle.id;
+        }
+      }
+    }
+
+    if (!linkedFleetVehicleId && formData?.rawFleetVehicle?.id) {
+      linkedFleetVehicleId = formData.rawFleetVehicle.id;
+    }
+
+    const fleetResult = linkedFleetVehicleId
+      ? await VehicleService.updateVehicle(linkedFleetVehicleId, fleetVehiclePayload)
+      : await VehicleService.createVehicle(fleetVehiclePayload);
+
+    if (!fleetResult?.success || !fleetResult?.vehicle?.id) {
+      throw new Error(fleetResult?.error || 'Unable to create the linked fleet vehicle record.');
+    }
+
+    await persistFleetLinkOnProfile({
+      profileId: savedProfile.id,
+      ownerId,
+      fleetVehicleId: fleetResult.vehicle.id,
+    });
+
+    const linkedProfile = {
+      ...savedProfile,
+      linked_fleet_vehicle_id: fleetResult.vehicle.id,
+      fleet_vehicle_id: fleetResult.vehicle.id,
+      vehicle_ref_table: 'saharax_0u4w4d_vehicles',
     };
 
-    let savedListing;
-    let compatibleListingPayload = { ...listingWithProfile };
+    let savedListing = existingListing || null;
 
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      const { data, error } = existingListing?.id
-        ? await supabase
-            .from(MARKETPLACE_LISTINGS_TABLE)
-            .update(compatibleListingPayload)
-            .eq('id', existingListing.id)
-            .eq('owner_id', ownerId)
-            .select('*')
-            .single()
-        : await supabase
-            .from(MARKETPLACE_LISTINGS_TABLE)
-            .insert(compatibleListingPayload)
-            .select('*')
-            .single();
-
-      if (!error) {
-        savedListing = data;
-        break;
+    if (shouldSaveListing || existingListing?.id) {
+      if (submitForReview) {
+        await ensureVehicleVerificationReady(fleetResult.vehicle.id);
       }
 
-      const missingColumn = getMissingSchemaColumn(error);
-      if (missingColumn && Object.prototype.hasOwnProperty.call(compatibleListingPayload, missingColumn)) {
-        const { [missingColumn]: _removed, ...nextPayload } = compatibleListingPayload;
-        compatibleListingPayload = nextPayload;
-        continue;
+      const listingWithProfile = {
+        ...listingPayload,
+        vehicle_public_profile_id: linkedProfile.id,
+      };
+
+      let compatibleListingPayload = { ...listingWithProfile };
+
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const { data, error } = existingListing?.id
+          ? await supabase
+              .from(MARKETPLACE_LISTINGS_TABLE)
+              .update(compatibleListingPayload)
+              .eq('id', existingListing.id)
+              .eq('owner_id', ownerId)
+              .select('*')
+              .single()
+          : await supabase
+              .from(MARKETPLACE_LISTINGS_TABLE)
+              .insert(compatibleListingPayload)
+              .select('*')
+              .single();
+
+        if (!error) {
+          savedListing = data;
+          break;
+        }
+
+        const missingColumn = getMissingSchemaColumn(error);
+        if (missingColumn && Object.prototype.hasOwnProperty.call(compatibleListingPayload, missingColumn)) {
+          const { [missingColumn]: _removed, ...nextPayload } = compatibleListingPayload;
+          compatibleListingPayload = nextPayload;
+          continue;
+        }
+
+        throw error;
       }
 
-      throw error;
+      if (!savedListing) {
+        throw new Error('Unable to save marketplace listing with the current schema.');
+      }
     }
 
-    if (!savedListing) {
-      throw new Error('Unable to save marketplace listing with the current schema.');
-    }
+    businessMarketplaceCache.invalidate((key) =>
+      key === `owner-vehicle-count:${String(ownerId)}` ||
+      key === `owner-vehicles:${String(ownerId)}` ||
+      key.startsWith(`owner-requests:${String(ownerId)}:`)
+    );
 
     return {
-      vehicle: normalizeOwnerVehicleForForm(savedProfile, savedListing),
+      vehicle: normalizeOwnerVehicleForForm(linkedProfile, savedListing, fleetResult.vehicle),
       submitted: submitForReview,
     };
   }
 
-  static async getOwnerRequests(ownerId, status = 'all') {
+  static async getOwnerRequests(ownerId, status = 'all', options = {}) {
     if (!ownerId) {
       return { requests: [], setupRequired: false, error: null };
     }
 
-    let query = supabase
-      .from(BOOKING_REQUESTS_TABLE)
-      .select('*')
-      .eq('owner_id', ownerId)
-      .order('created_at', { ascending: false });
-
-    if (status && status !== 'all') {
-      query = query.eq('request_status', status);
-    }
-
-    const { data: requests, error: requestError } = await query;
-
-    if (requestError) {
-      return {
-        requests: [],
-        setupRequired: setupErrorCodes.has(String(requestError.code || '')),
-        error: requestError,
-      };
-    }
-
-    const requestRows = requests || [];
-    const listingIds = [...new Set(requestRows.map((request) => request.listing_id).filter(Boolean))];
-
-    let listingsById = new Map();
-    let profilesById = new Map();
-
-    if (listingIds.length > 0) {
-      const { data: listings, error: listingError } = await supabase
-        .from(MARKETPLACE_LISTINGS_TABLE)
-        .select('*')
-        .eq('owner_id', ownerId)
-        .in('id', listingIds);
-
-      if (listingError) {
-        return {
-          requests: requestRows.map((request) => normalizeOwnerRequest(request, null, null)),
-          setupRequired: setupErrorCodes.has(String(listingError.code || '')),
-          error: listingError,
-        };
-      }
-
-      listingsById = new Map((listings || []).map((listing) => [String(listing.id), listing]));
-      const profileIds = [...new Set((listings || []).map((listing) => listing.vehicle_public_profile_id).filter(Boolean))];
-
-      if (profileIds.length > 0) {
-        const { data: profiles, error: profileError } = await supabase
-          .from(VEHICLE_PROFILES_TABLE)
+    return businessMarketplaceCache.get(
+      `owner-requests:${String(ownerId)}:${String(status || 'all')}`,
+      async () => {
+        let query = supabase
+          .from(BOOKING_REQUESTS_TABLE)
           .select('*')
           .eq('owner_id', ownerId)
-          .in('id', profileIds);
+          .order('created_at', { ascending: false });
 
-        if (profileError) {
+        if (status && status !== 'all') {
+          query = query.eq('request_status', status);
+        }
+
+        const { data: requests, error: requestError } = await query;
+
+        if (requestError) {
           return {
-            requests: requestRows.map((request) => normalizeOwnerRequest(request, listingsById.get(String(request.listing_id)), null)),
-            setupRequired: setupErrorCodes.has(String(profileError.code || '')),
-            error: profileError,
+            requests: [],
+            setupRequired: setupErrorCodes.has(String(requestError.code || '')),
+            error: requestError,
           };
         }
 
-        profilesById = new Map((profiles || []).map((profile) => [String(profile.id), profile]));
-      }
-    }
+        const requestRows = requests || [];
+        const listingIds = [...new Set(requestRows.map((request) => request.listing_id).filter(Boolean))];
 
-    return {
-      requests: requestRows.map((request) => {
-        const listing = listingsById.get(String(request.listing_id)) || null;
-        const profile = listing ? profilesById.get(String(listing.vehicle_public_profile_id)) || null : null;
-        return normalizeOwnerRequest(request, listing, profile);
-      }),
-      setupRequired: false,
-      error: null,
-    };
+        let listingsById = new Map();
+        let profilesById = new Map();
+
+        if (listingIds.length > 0) {
+          const { data: listings, error: listingError } = await supabase
+            .from(MARKETPLACE_LISTINGS_TABLE)
+            .select('*')
+            .in('id', listingIds);
+
+          if (listingError) {
+            return {
+              requests: requestRows.map((request) => normalizeOwnerRequest(request, null, null)),
+              setupRequired: setupErrorCodes.has(String(listingError.code || '')),
+              error: listingError,
+            };
+          }
+
+          listingsById = new Map((listings || []).map((listing) => [String(listing.id), listing]));
+          const profileIds = [...new Set((listings || []).map((listing) => listing.vehicle_public_profile_id).filter(Boolean))];
+
+          if (profileIds.length > 0) {
+            const { data: profiles, error: profileError } = await supabase
+              .from(VEHICLE_PROFILES_TABLE)
+              .select('*')
+              .in('id', profileIds);
+
+            if (profileError) {
+              return {
+                requests: requestRows.map((request) => normalizeOwnerRequest(request, listingsById.get(String(request.listing_id)), null)),
+                setupRequired: setupErrorCodes.has(String(profileError.code || '')),
+                error: profileError,
+              };
+            }
+
+            profilesById = new Map((profiles || []).map((profile) => [String(profile.id), profile]));
+          }
+        }
+
+        return {
+          requests: requestRows.map((request) => {
+            const listing = listingsById.get(String(request.listing_id)) || null;
+            const profile = listing ? profilesById.get(String(listing.vehicle_public_profile_id)) || null : null;
+            return normalizeOwnerRequest(request, listing, profile);
+          }),
+          setupRequired: false,
+          error: null,
+        };
+      },
+      { ttl: 20000, forceRefresh: options.forceRefresh }
+    );
   }
 
   static async updateOwnerRequest(ownerId, requestId, updates) {
@@ -923,34 +1503,205 @@ class BusinessMarketplaceService {
       throw new Error('Missing request context.');
     }
 
-    const { data, error } = await supabase
+    let compatibleUpdates = { ...updates };
+
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const { data, error } = await supabase
+        .from(BOOKING_REQUESTS_TABLE)
+        .update(compatibleUpdates)
+        .eq('id', requestId)
+        .eq('owner_id', ownerId)
+        .select('*')
+        .single();
+
+      if (!error) {
+        businessMarketplaceCache.invalidate((key) =>
+          key.startsWith(`owner-requests:${String(ownerId)}:`) ||
+          key === `owner-vehicles:${String(ownerId)}` ||
+          key === `owner-vehicle-count:${String(ownerId)}`
+        );
+        return data;
+      }
+
+      const missingColumn = getMissingSchemaColumn(error);
+      if (missingColumn && Object.prototype.hasOwnProperty.call(compatibleUpdates, missingColumn)) {
+        const { [missingColumn]: _removed, ...nextUpdates } = compatibleUpdates;
+        compatibleUpdates = nextUpdates;
+        continue;
+      }
+
+      throw error;
+    }
+
+    throw new Error('Unable to update marketplace request.');
+  }
+
+  static async saveOwnerExecution(ownerId, requestId, executionDraft, requestStatus = null) {
+    if (!ownerId || !requestId) {
+      throw new Error('Missing request context.');
+    }
+
+    const { data: existingRequest, error } = await supabase
       .from(BOOKING_REQUESTS_TABLE)
-      .update(updates)
+      .select('counter_offer, request_status')
       .eq('id', requestId)
       .eq('owner_id', ownerId)
-      .select('*')
-      .single();
+      .maybeSingle();
 
-    if (error) throw error;
-    return data;
+    if (error) {
+      throw error;
+    }
+
+    const existingCounterOffer =
+      existingRequest?.counter_offer && typeof existingRequest.counter_offer === 'object'
+        ? existingRequest.counter_offer
+        : {};
+    const currentRequestStatus = normalizeMarketplaceRequestLifecycleStatus(existingRequest || 'pending');
+
+    const normalizedExecutionDraft = executionDraft && typeof executionDraft === 'object'
+      ? executionDraft
+      : {};
+
+    const updates = {
+      counter_offer: {
+        ...existingCounterOffer,
+        owner_execution: {
+          handoffChecked: Boolean(normalizedExecutionDraft.handoffChecked),
+          handoffMediaReady: Boolean(normalizedExecutionDraft.handoffMediaReady),
+          handoffPhotos: normalizeExecutionPhotos(normalizedExecutionDraft.handoffPhotos),
+          startOdometer: normalizedExecutionDraft.startOdometer ?? null,
+          startFuelLevel: normalizedExecutionDraft.startFuelLevel ?? null,
+          legalDocsChecked: Boolean(normalizedExecutionDraft.legalDocsChecked),
+          depositConfirmed: Boolean(normalizedExecutionDraft.depositConfirmed),
+          contractSigned: Boolean(normalizedExecutionDraft.contractSigned),
+          startReadyAt: normalizedExecutionDraft.startReadyAt || null,
+          startedAt: normalizedExecutionDraft.startedAt || null,
+          returnPendingAt: normalizedExecutionDraft.returnPendingAt || null,
+          returnMediaReady: Boolean(normalizedExecutionDraft.returnMediaReady),
+          returnPhotos: normalizeExecutionPhotos(normalizedExecutionDraft.returnPhotos),
+          returnOdometer: normalizedExecutionDraft.returnOdometer ?? null,
+          returnFuelLevel: normalizedExecutionDraft.returnFuelLevel ?? null,
+          issueReviewed: Boolean(normalizedExecutionDraft.issueReviewed),
+          issueReported: Boolean(normalizedExecutionDraft.issueReported),
+          depositReviewed: Boolean(normalizedExecutionDraft.depositReviewed),
+          depositOutcome: String(normalizedExecutionDraft.depositOutcome || '').trim().toLowerCase(),
+          returnSavedAt: normalizedExecutionDraft.returnSavedAt || null,
+        },
+      },
+    };
+
+    if (requestStatus) {
+      const normalizedNextStatus = normalizeMarketplaceRequestLifecycleStatus(requestStatus);
+      const validTransition =
+        (normalizedNextStatus === 'active' && currentRequestStatus === 'approved') ||
+        (normalizedNextStatus === 'completed' && currentRequestStatus === 'active');
+
+      if (!validTransition) {
+        throw new Error('This rental is not ready for that action yet.');
+      }
+
+      const hasCompleteHandoff =
+        Boolean(normalizedExecutionDraft.handoffChecked) &&
+        Boolean(normalizedExecutionDraft.handoffMediaReady) &&
+        Number.isFinite(Number(normalizedExecutionDraft.startOdometer)) &&
+        Number(normalizedExecutionDraft.startOdometer) >= 0 &&
+        Number.isFinite(Number(normalizedExecutionDraft.startFuelLevel)) &&
+        Boolean(normalizedExecutionDraft.legalDocsChecked) &&
+        Boolean(normalizedExecutionDraft.depositConfirmed) &&
+        Boolean(normalizedExecutionDraft.contractSigned) &&
+        Boolean(normalizedExecutionDraft.startReadyAt);
+
+      const hasCompleteReturn =
+        Boolean(normalizedExecutionDraft.returnPendingAt) &&
+        Boolean(normalizedExecutionDraft.returnMediaReady) &&
+        Number.isFinite(Number(normalizedExecutionDraft.returnOdometer)) &&
+        Number(normalizedExecutionDraft.returnOdometer) >= 0 &&
+        (
+          !Number.isFinite(Number(normalizedExecutionDraft.startOdometer)) ||
+          Number(normalizedExecutionDraft.returnOdometer) >= Number(normalizedExecutionDraft.startOdometer)
+        ) &&
+        Number.isFinite(Number(normalizedExecutionDraft.returnFuelLevel)) &&
+        Boolean(normalizedExecutionDraft.issueReviewed);
+
+      if (normalizedNextStatus === 'active' && !hasCompleteHandoff) {
+        throw new Error('Finish the handoff checklist before starting this rental.');
+      }
+
+      if (normalizedNextStatus === 'completed' && !hasCompleteReturn) {
+        throw new Error('Finish the return review before ending this rental.');
+      }
+
+      updates.request_status = requestStatus;
+      if (requestStatus === 'active') {
+        updates.closed_at = null;
+      }
+      if (requestStatus === 'completed') {
+        updates.closed_at = new Date().toISOString();
+      }
+    }
+
+    const updatedRequest = await this.updateOwnerRequest(ownerId, requestId, updates);
+
+    if (requestStatus === 'active') {
+      await RentalEventService.recordEvent({
+        rentalId: requestId,
+        eventType: 'started',
+        actor: 'owner',
+        metadata: {
+          ownerId,
+          startedAt: normalizedExecutionDraft.startedAt || new Date().toISOString(),
+        },
+      });
+    }
+
+    if (requestStatus === 'completed') {
+      await RentalEventService.recordEvent({
+        rentalId: requestId,
+        eventType: 'ended',
+        actor: 'owner',
+        metadata: {
+          ownerId,
+          endedAt: normalizedExecutionDraft.returnSavedAt || new Date().toISOString(),
+          issueReported: Boolean(normalizedExecutionDraft.issueReported),
+        },
+      });
+    }
+
+    return updatedRequest;
   }
 
-  static acceptRequest(ownerId, requestId, message = '') {
-    return this.updateOwnerRequest(ownerId, requestId, {
-      request_status: 'accepted',
-      owner_response: String(message || '').trim() || 'Accepted by owner.',
-      accepted_at: new Date().toISOString(),
-      closed_at: null,
+  static async acceptRequest(ownerId, requestId, message = '') {
+    return adminApiRequest('/api/me?resource=owner-marketplace-request-approval', {
+      method: 'POST',
+      body: JSON.stringify({
+        ownerId,
+        requestId,
+        message: String(message || '').trim() || 'Approved by owner.',
+      }),
     });
   }
 
-  static declineRequest(ownerId, requestId, reason = '') {
-    return this.updateOwnerRequest(ownerId, requestId, {
+  static async declineRequest(ownerId, requestId, reason = '') {
+    const declinedAt = new Date().toISOString();
+    const updatedRequest = await this.updateOwnerRequest(ownerId, requestId, {
       request_status: 'declined',
       owner_response: String(reason || '').trim() || 'Declined by owner.',
-      declined_at: new Date().toISOString(),
-      closed_at: new Date().toISOString(),
+      declined_at: declinedAt,
+      closed_at: declinedAt,
     });
+
+    await RentalEventService.recordEvent({
+      rentalId: requestId,
+      eventType: 'declined',
+      actor: 'owner',
+      metadata: {
+        ownerId,
+        declinedAt,
+        reason: String(reason || '').trim() || 'Declined by owner.',
+      },
+    });
+
+    return updatedRequest;
   }
 
   static sendCounterOffer(ownerId, requestId, counterOffer = {}) {

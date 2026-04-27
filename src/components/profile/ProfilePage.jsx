@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { useAuth } from '../../contexts/AuthContext';
@@ -10,6 +11,7 @@ import ProfilePictureUpload from './ProfilePictureUpload';
 import ProfileSettings from './ProfileSettings';
 import ProfileVerificationCard from '../verification/ProfileVerificationCard';
 import LoadingSpinner from '../common/LoadingSpinner';
+import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 
 const roleClassName = {
   owner: 'border-emerald-200 bg-emerald-50 text-emerald-700',
@@ -273,6 +275,7 @@ const BusinessOwnerSubscriptionCard = ({
 };
 
 const ProfilePage = () => {
+  const location = useLocation();
   const { t } = useTranslation();
   const tr = (key, fallback) => t(key, { defaultValue: fallback });
   const { user, userProfile, getUserRole, updateCurrentUserProfile } = useAuth();
@@ -285,6 +288,10 @@ const ProfilePage = () => {
   const [activityLog, setActivityLog] = useState([]);
   const [tenantLogoUrl, setTenantLogoUrl] = useState('');
   const inheritedTenantLogoUrl = getTenantLogoFallback();
+  const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
+    pathname: location.pathname,
+    isTransitionFlow: loading && !profile,
+  });
 
   const splitName = useCallback((name = '') => UserProfileService.splitFullName(name), []);
 
@@ -558,7 +565,7 @@ const ProfilePage = () => {
     }));
   };
 
-  if (loading && !profile) {
+  if (loading && !profile && !suppressBlockingLoader) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <LoadingSpinner size="large" />

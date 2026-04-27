@@ -39,12 +39,26 @@ export const paymentStatusColors = {
   },
 };
 
+export const normalizePaymentStatus = (status, remainingAmount = null) => {
+  const statusLower = String(status || 'unpaid').toLowerCase();
+  const normalizedRemaining =
+    remainingAmount === null || remainingAmount === undefined
+      ? null
+      : Math.max(0, Number(remainingAmount) || 0);
+
+  if (normalizedRemaining !== null && normalizedRemaining <= 0) {
+    return 'paid';
+  }
+
+  return paymentStatusColors[statusLower] ? statusLower : 'unpaid';
+};
+
 /**
  * A helper function to get the appropriate color and label for a given payment status.
  * @param {string} status - The payment status (e.g., 'paid', 'unpaid').
  * @returns {{text: string, background: string, label: string}}
  */
-export const getPaymentStatusStyle = (status) => {
-  const statusLower = status?.toLowerCase() || 'unpaid';
+export const getPaymentStatusStyle = (status, remainingAmount = null) => {
+  const statusLower = normalizePaymentStatus(status, remainingAmount);
   return paymentStatusColors[statusLower] || paymentStatusColors.default;
 };

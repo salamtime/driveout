@@ -7,27 +7,10 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { Loader2, ArrowLeft, Shield, CheckSquare, Square } from 'lucide-react';
-import { ALL_PERMISSION_KEYS, MODULE_PERMISSION_KEYS, PERMISSION_GROUPS, normalizePermissionMap as normalizeCatalogPermissionMap } from '../../../utils/permissionCatalog';
+import { ALL_PERMISSION_KEYS, MODULE_PERMISSION_KEYS, PERMISSION_GROUPS, buildDefaultPermissionsForRole, normalizePermissionMap as normalizeCatalogPermissionMap } from '../../../utils/permissionCatalog';
 import { updateUserProfile } from '../../../services/UserService';
 
-const buildPermissionsForRole = (role) => {
-  const normalizedRole = String(role || 'employee').toLowerCase();
-
-  return ALL_PERMISSION_KEYS.reduce((acc, permissionKey) => {
-    if (normalizedRole === 'owner') {
-      acc[permissionKey] = true;
-      return acc;
-    }
-
-    acc[permissionKey] = false;
-
-    if (permissionKey === 'Require Extension Approval') {
-      acc[permissionKey] = true;
-    }
-
-    return acc;
-  }, {});
-};
+const buildPermissionsForRole = (role) => buildDefaultPermissionsForRole(role);
 
 const UserPermissions = () => {
   const { id } = useParams();

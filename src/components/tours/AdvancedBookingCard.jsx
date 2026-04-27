@@ -8,6 +8,8 @@ import { useFleetAvailability } from '../../hooks/useFleetAvailability';
 import FleetStatusIndicator from '../fleet/FleetStatusIndicator';
 import QuadSelectionModal from './QuadSelectionModal';
 import toast from 'react-hot-toast';
+import { useAuth } from '../../contexts/AuthContext';
+import { canManageTourPackages } from '../../utils/permissionHelpers';
 
 const AdvancedBookingCard = ({ 
   tour, 
@@ -23,6 +25,7 @@ const AdvancedBookingCard = ({
   
   const { t } = useTranslation();
   const dispatch = useDispatch();
+  const { userProfile } = useAuth();
   const [selectedDate, setSelectedDate] = useState('');
   const [selectedTime, setSelectedTime] = useState('');
   const [participants, setParticipants] = useState([]);
@@ -43,7 +46,7 @@ const AdvancedBookingCard = ({
   console.log('🚨 AdvancedBookingCard DEBUG - User email:', user?.email);
   
   // Multiple approaches to check edit access for "demo owner"
-  const hasEditAccess1 = user && (user.role === 'owner' || user.role === 'admin');
+  const hasEditAccess1 = canManageTourPackages(userProfile);
   const hasEditAccess2 = userRoles && (userRoles.includes('owner') || userRoles.includes('admin'));
   const hasEditAccess3 = user?.email === 'owner_demo@saharax.com' || user?.email === 'owner@saharax.com';
   const hasEditAccess4 = userRoles && userRoles.some(role => 

@@ -32,6 +32,20 @@ export const LanguageProvider = ({ children }) => {
   }, [currentLanguage]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      const urlLang = String(params.get('lang') || '').trim().toLowerCase();
+      if (LANGUAGES[urlLang] && urlLang !== currentLanguage) {
+        localStorage.setItem('app_language', urlLang);
+        localStorage.setItem('saharax_language', urlLang);
+        applyI18nLanguage(urlLang);
+        setCurrentLanguage(urlLang);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     const syncLanguageFromSystemSettings = async () => {

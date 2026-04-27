@@ -701,6 +701,67 @@ class FuelTransactionService {
     return new Map((data || []).map((vehicle) => [Number(vehicle.id), vehicle]));
   }
 
+  async getRentalVehicleLookup(rentalIds = []) {
+    const uniqueRentalIds = Array.from(
+      new Set((rentalIds || []).filter(Boolean).map((value) => String(value)))
+    );
+
+    if (!uniqueRentalIds.length) {
+      return new Map();
+    }
+
+    const rentalsTableExists = await this.tableExists(RENTALS_TABLE);
+    if (!rentalsTableExists) {
+      return new Map();
+    }
+
+    const { data, error } = await supabase
+      .from(RENTALS_TABLE)
+      .select('id, vehicle_id')
+      .in('id', uniqueRentalIds);
+
+    if (error) {
+      return new Map();
+    }
+
+    const vehicleLookup = await this.getVehicleLookup((data || []).map((row) => row.vehicle_id));
+    return new Map(
+      (data || [])
+        .filter((row) => row?.id)
+        .map((row) => [String(row.id), vehicleLookup.get(Number(row.vehicle_id)) || null])
+    );
+  }
+
+  async getRentalReferenceLookup(rentalIds = []) {
+    const uniqueRentalIds = Array.from(
+      new Set((rentalIds || []).filter(Boolean).map((value) => String(value)))
+    );
+
+    if (!uniqueRentalIds.length) {
+      return new Map();
+    }
+
+    const rentalsTableExists = await this.tableExists(RENTALS_TABLE);
+    if (!rentalsTableExists) {
+      return new Map();
+    }
+
+    const { data, error } = await supabase
+      .from(RENTALS_TABLE)
+      .select('id, rental_id')
+      .in('id', uniqueRentalIds);
+
+    if (error) {
+      return new Map();
+    }
+
+    return new Map(
+      (data || [])
+        .filter((row) => row?.id)
+        .map((row) => [String(row.id), row.rental_id || null])
+    );
+  }
+
   async getVehicleModelsForFuelState() {
     if (this.vehicleModelTankCapacitySupport === false) {
       const fallbackResult = await supabase
@@ -987,7 +1048,32 @@ class FuelTransactionService {
       return [];
     }
 
-    return data || [];
+    const rows = data || [];
+    const rentalIds = rows.filter((row) => row.rental_id).map((row) => row.rental_id);
+    const directVehicleLookup = await this.getVehicleLookup(rows.map((row) => row.vehicle_id));
+    const [rentalVehicleLookup, rentalReferenceLookup] = await Promise.all([
+      this.getRentalVehicleLookup(
+        rows
+          .filter((row) => !row.vehicle_id && row.rental_id)
+          .map((row) => row.rental_id)
+      ),
+      this.getRentalReferenceLookup(rentalIds),
+    ]);
+
+    return rows.map((row) => {
+      const rentalVehicle = row.rental_id ? rentalVehicleLookup.get(String(row.rental_id)) || null : null;
+      const vehicle = directVehicleLookup.get(Number(row.vehicle_id)) || rentalVehicle || null;
+      const vehicleId = row.vehicle_id || vehicle?.id || null;
+      const rentalReference = row.rental_reference || (row.rental_id ? rentalReferenceLookup.get(String(row.rental_id)) || null : null);
+      return {
+        ...row,
+        vehicle_id: vehicleId,
+        rental_reference: rentalReference,
+        vehicle,
+        [this.vehiclesTable]: vehicle,
+        saharax_0u4w4d_vehicles: vehicle,
+      };
+    });
   }
 
   async logFuelOperation(logData = {}) {
@@ -1103,9 +1189,25 @@ class FuelTransactionService {
       return {};
     }
 
+    const isRebuildFallback = (candidate = {}) => {
+      const source = String(candidate.last_source || candidate.last_fuel_source || '').toLowerCase();
+      return !source || source === 'unknown' || source === 'history_rebuild';
+    };
+
     return validCandidates.reduce((best, candidate) => {
       if (!best) {
         return candidate;
+      }
+
+      const bestIsFallback = isRebuildFallback(best);
+      const candidateIsFallback = isRebuildFallback(candidate);
+
+      if (bestIsFallback && !candidateIsFallback) {
+        return candidate;
+      }
+
+      if (!bestIsFallback && candidateIsFallback) {
+        return best;
       }
 
       const bestTimestamp = this.getTransactionTimestamp(best);
@@ -1643,9 +1745,15 @@ class FuelTransactionService {
       return { success: true, skipped: true };
     }
 
+    const vehicleKey = String(vehicleId);
     const rentalSnapshots = await this.getLatestRentalFuelSnapshots();
     const derivedStateMap = await this.getDerivedVehicleFuelStateMap(rentalSnapshots);
-    const latestState = derivedStateMap.get(vehicleId) || rentalSnapshots.get(vehicleId) || {
+    const latestState =
+      derivedStateMap.get(vehicleKey) ||
+      derivedStateMap.get(vehicleId) ||
+      rentalSnapshots.get(vehicleKey) ||
+      rentalSnapshots.get(vehicleId) ||
+      {
       vehicle_id: vehicleId,
       current_fuel_liters: 0,
       current_fuel_lines: 0,
@@ -1801,16 +1909,6 @@ class FuelTransactionService {
     const isRentalFuelSnapshot =
       transaction.transaction_type === 'rental_opening_level' ||
       transaction.transaction_type === 'rental_closing_level';
-    const amount =
-      Number(transaction.amount) ||
-      Number(transaction.liters) ||
-      Number(transaction.liters_added) ||
-      Number(transaction.liters_taken) ||
-      0;
-    const cost =
-      Number(transaction.cost) ||
-      Number(transaction.total_cost) ||
-      0;
     const linesBefore = transaction.fuel_lines_before ?? null;
     const linesAfter = transaction.fuel_lines_after ?? null;
     const litersBefore =
@@ -1819,6 +1917,21 @@ class FuelTransactionService {
     const litersAfter =
       transaction.liters_after ??
       (linesAfter !== null && linesAfter !== undefined ? linesToLiters(linesAfter) : null);
+    const isManualAdjustment = transaction.transaction_type === 'manual_adjustment';
+    const amount =
+      isManualAdjustment && litersBefore !== null && litersAfter !== null
+        ? roundTo(Number(litersAfter) - Number(litersBefore), 2)
+        : (
+          Number(transaction.amount) ||
+          Number(transaction.liters) ||
+          Number(transaction.liters_added) ||
+          Number(transaction.liters_taken) ||
+          0
+        );
+    const cost =
+      Number(transaction.cost) ||
+      Number(transaction.total_cost) ||
+      0;
 
     return {
       ...transaction,
@@ -1936,7 +2049,7 @@ class FuelTransactionService {
 
     const { data, error } = await supabase
       .from(RENTALS_TABLE)
-      .select('id, start_fuel_level, end_fuel_level')
+      .select('id, vehicle_id, start_fuel_level, end_fuel_level')
       .in('id', uniqueIds);
 
     if (error) {
@@ -2007,6 +2120,11 @@ class FuelTransactionService {
           .filter((log) => (log.transaction_type === 'rental_opening_level' || log.transaction_type === 'rental_closing_level') && log.rental_id)
           .map((log) => log.rental_id)
       );
+      const rentalReferenceLookup = await this.getRentalReferenceLookup(
+        operationLogs
+          .filter((log) => log.rental_id)
+          .map((log) => log.rental_id)
+      );
 
       const rentalOpeningSnapshots = new Map();
       for (const log of [...operationLogs].sort(
@@ -2052,14 +2170,46 @@ class FuelTransactionService {
           rentalFuelLevels?.start_fuel_level !== null && rentalFuelLevels?.start_fuel_level !== undefined
             ? linesToLiters(rentalFuelLevels.start_fuel_level)
             : null;
+        const isRentalOpening = log.transaction_type === 'rental_opening_level';
+        const isRentalClosing = log.transaction_type === 'rental_closing_level';
+        const overrideFuelLinesBefore =
+          isRentalClosing && rentalFuelLevels?.start_fuel_level !== null && rentalFuelLevels?.start_fuel_level !== undefined
+            ? rentalFuelLevels.start_fuel_level
+            : log.fuel_lines_before;
+        const overrideFuelLinesAfter =
+          isRentalOpening && rentalFuelLevels?.start_fuel_level !== null && rentalFuelLevels?.start_fuel_level !== undefined
+            ? rentalFuelLevels.start_fuel_level
+            : isRentalClosing && rentalFuelLevels?.end_fuel_level !== null && rentalFuelLevels?.end_fuel_level !== undefined
+              ? rentalFuelLevels.end_fuel_level
+              : log.fuel_lines_after;
+        const overrideLitersBefore =
+          overrideFuelLinesBefore !== null && overrideFuelLinesBefore !== undefined
+            ? linesToLiters(overrideFuelLinesBefore)
+            : log.liters_before;
+        const overrideLitersAfter =
+          overrideFuelLinesAfter !== null && overrideFuelLinesAfter !== undefined
+            ? linesToLiters(overrideFuelLinesAfter)
+            : log.liters_after;
         const derivedAmount = this.deriveRentalFuelLogAmount(
-          log,
+          {
+            ...log,
+            fuel_lines_before: overrideFuelLinesBefore,
+            fuel_lines_after: overrideFuelLinesAfter,
+            liters_before: overrideLitersBefore,
+            liters_after: overrideLitersAfter,
+          },
           log.rental_id
             ? (rentalOpeningSnapshots.get(String(log.rental_id)) ?? rentalOpeningLitersFromTable)
             : null
         );
         const mapped = this.mapTransactionRecord({
           ...log,
+          vehicle_id: log.vehicle_id || rentalFuelLevels?.vehicle_id || null,
+          rental_reference: log.rental_reference || (log.rental_id ? rentalReferenceLookup.get(String(log.rental_id)) || null : null),
+          fuel_lines_before: overrideFuelLinesBefore,
+          fuel_lines_after: overrideFuelLinesAfter,
+          liters_before: overrideLitersBefore,
+          liters_after: overrideLitersAfter,
           id: `log-${log.id}`,
           amount: derivedAmount !== undefined ? derivedAmount : log.amount,
         });
@@ -3220,6 +3370,26 @@ class FuelTransactionService {
         .maybeSingle();
 
       if (!directError && directState) {
+        const source = String(directState.last_source || '').toLowerCase();
+        const isFallbackState = !source || source === 'unknown' || source === 'history_rebuild';
+        if (isFallbackState) {
+          const transactionResult = await this.getAllTransactions({
+            vehicleId,
+            limit: 200,
+            offset: 0,
+          });
+          const scopedTransactions = (transactionResult?.transactions || [])
+            .filter((transaction) => String(transaction.vehicle_id) === String(vehicleId));
+
+          if (scopedTransactions.length > 0) {
+            const states = await this.getVehicleFuelStates();
+            const matchedState = states.find((state) => String(state.id) === String(vehicleId) || String(state.vehicle_id) === String(vehicleId));
+            if (matchedState) {
+              return matchedState;
+            }
+          }
+        }
+
         return {
           ...directState,
           id: vehicleId,

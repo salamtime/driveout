@@ -10,6 +10,7 @@ import {
   deleteTourPackageModelPrice,
   deleteTourPackageModelPricesForModel,
   fetchTourPackageModelPrices,
+  getTourPriceForModelAndDuration,
   upsertTourPackageModelPrice,
 } from '../../../services/tourPackagePricingService';
 
@@ -47,6 +48,7 @@ const TourPackagePricingManager = ({
   allowedDurations = [],
   embedded = false,
   showPackagePicker = true,
+  onPricingRowsChange,
 }) => {
   const [packages, setPackages] = useState([]);
   const [vehicleModels, setVehicleModels] = useState([]);
@@ -58,8 +60,11 @@ const TourPackagePricingManager = ({
   const [customDuration, setCustomDuration] = useState('');
   const [extraDurations, setExtraDurations] = useState([]);
   const [savingRowId, setSavingRowId] = useState('');
+  const [savingSelection, setSavingSelection] = useState(false);
   const [vehicleModelToAdd, setVehicleModelToAdd] = useState('');
-  const effectivePackageId = String((embedded ? GLOBAL_TOUR_PRICING_KEY : controlledPackageId || selectedPackageId) || GLOBAL_TOUR_PRICING_KEY);
+  const touchedPricesRef = React.useRef(new Set());
+  const effectivePackageId = String((embedded ? controlledPackageId || selectedPackageId || GLOBAL_TOUR_PRICING_KEY : controlledPackageId || selectedPackageId) || GLOBAL_TOUR_PRICING_KEY);
+  const isGlobalDefaults = String(effectivePackageId) === GLOBAL_TOUR_PRICING_KEY;
 
   const loadData = async () => {
     setLoading(true);
@@ -106,13 +111,16 @@ const TourPackagePricingManager = ({
     }
 
     if (pricingResult.status === 'fulfilled') {
-      setPricingRows(Array.isArray(pricingResult.value) ? pricingResult.value : []);
+      const nextPricingRows = Array.isArray(pricingResult.value) ? pricingResult.value : [];
+      setPricingRows(nextPricingRows);
+      onPricingRowsChange?.(nextPricingRows);
     } else {
       console.error('Failed to load tour pricing rows:', pricingResult.reason);
       if (!nextError) {
         nextError = pricingResult.reason?.message || 'Could not load tour pricing.';
       }
       setPricingRows([]);
+      onPricingRowsChange?.([]);
     }
 
     setError(nextError);
@@ -121,7 +129,7 @@ const TourPackagePricingManager = ({
 
   useEffect(() => {
     loadData();
-  }, [controlledPackageId, showPackagePicker, embedded]);
+  }, [controlledPackageId, showPackagePicker, embedded, onPricingRowsChange]);
 
   useEffect(() => {
     if (controlledPackageId || embedded) return;
@@ -130,31 +138,14 @@ const TourPackagePricingManager = ({
     }
   }, [packages, selectedPackageId, controlledPackageId, embedded]);
 
-  useEffect(() => {
-    setDraftRows((current) => {
-      const persistedDrafts = createRowDrafts(pricingRows, effectivePackageId);
-      const nextDrafts = { ...persistedDrafts };
-
-      Object.entries(current || {}).forEach(([modelId, draft]) => {
-        if (!nextDrafts[modelId]) {
-          nextDrafts[modelId] = draft;
-        }
-      });
-
-      return nextDrafts;
-    });
-
-    const dynamicDurations = Array.from(
-      new Set(
-        pricingRows
-          .filter((row) => String(row.package_id) === effectivePackageId)
-          .map((row) => Number(row.duration_hours))
-          .filter((value) => Number.isFinite(value) && value > 0)
-      )
-    ).sort((a, b) => a - b);
-
-    setExtraDurations(dynamicDurations.filter((value) => !TOUR_PRICING_DEFAULT_DURATIONS.includes(value)));
-  }, [pricingRows, effectivePackageId]);
+  const dynamicDurations = useMemo(() => Array.from(
+    new Set(
+      pricingRows
+        .filter((row) => String(row.package_id) === effectivePackageId)
+        .map((row) => Number(row.duration_hours))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    )
+  ).sort((a, b) => a - b), [pricingRows, effectivePackageId]);
 
   const selectedPackage = useMemo(
     () => controlledPackage || packages.find((pkg) => String(pkg.id) === String(controlledPackageId || selectedPackageId)) || null,
@@ -168,8 +159,23 @@ const TourPackagePricingManager = ({
           .filter((value) => Number.isFinite(value) && value > 0)
       : [];
 
+    if (embedded && !isGlobalDefaults && externalDurations.length > 0) {
+      return Array.from(new Set(externalDurations)).sort((a, b) => a - b);
+    }
+
     return Array.from(new Set([...TOUR_PRICING_DEFAULT_DURATIONS, ...externalDurations, ...extraDurations])).sort((a, b) => a - b);
-  }, [allowedDurations, extraDurations]);
+  }, [allowedDurations, embedded, extraDurations, isGlobalDefaults]);
+
+  const getDefaultPrice = (modelId, duration) => {
+    if (isGlobalDefaults) return 0;
+    const price = getTourPriceForModelAndDuration({
+      rows: pricingRows,
+      packageId: GLOBAL_TOUR_PRICING_KEY,
+      vehicleModelId: modelId,
+      durationHours: duration,
+    });
+    return Number(price || 0);
+  };
 
   const configuredModelIds = useMemo(
     () => Object.keys(draftRows || {}).filter((modelId) => vehicleModels.some((model) => String(model.id) === String(modelId))),
@@ -193,6 +199,16 @@ const TourPackagePricingManager = ({
     [vehicleModels, configuredModelIds]
   );
 
+  useEffect(() => {
+    setExtraDurations((current) => {
+      const next = dynamicDurations.filter((value) => !TOUR_PRICING_DEFAULT_DURATIONS.includes(value));
+      if (current.length === next.length && current.every((value, index) => value === next[index])) {
+        return current;
+      }
+      return next;
+    });
+  }, [dynamicDurations]);
+
   const missingDurationLabels = useMemo(() => {
     return durations.filter((duration) => {
       return !configuredModels.some((model) => {
@@ -202,13 +218,80 @@ const TourPackagePricingManager = ({
     });
   }, [durations, configuredModels, draftRows]);
 
+  useEffect(() => {
+    const persistedDrafts = createRowDrafts(pricingRows, effectivePackageId);
+    const nextDrafts = { ...persistedDrafts };
+
+    Object.entries(draftRows || {}).forEach(([modelId, draft]) => {
+      if (!nextDrafts[modelId]) {
+        nextDrafts[modelId] = draft;
+        return;
+      }
+
+      // Preserve in-flight edits over persisted rows.
+      nextDrafts[modelId] = {
+        ...nextDrafts[modelId],
+        prices: {
+          ...(nextDrafts[modelId]?.prices || {}),
+          ...(draft?.prices || {}),
+        },
+      };
+    });
+
+    if (!isGlobalDefaults) {
+      Object.keys(nextDrafts).forEach((modelId) => {
+        const rowDraft = nextDrafts[modelId] || { prices: {} };
+        const nextPrices = { ...(rowDraft.prices || {}) };
+        durations.forEach((duration) => {
+          const durationKey = String(Number(duration));
+          const touchKey = `${modelId}::${durationKey}`;
+          const currentValue = nextPrices[durationKey];
+          if ((currentValue === undefined || currentValue === '' || Number(currentValue) === 0) && !touchedPricesRef.current.has(touchKey)) {
+            const defaultPrice = getDefaultPrice(modelId, duration);
+            if (defaultPrice > 0) {
+              nextPrices[durationKey] = defaultPrice;
+            }
+          }
+        });
+        nextDrafts[modelId] = {
+          vehicle_model_id: rowDraft.vehicle_model_id || modelId,
+          prices: nextPrices,
+        };
+      });
+    }
+
+    const currentKeys = Object.keys(draftRows || {});
+    const nextKeys = Object.keys(nextDrafts);
+    const shallowEqual =
+      currentKeys.length === nextKeys.length &&
+      nextKeys.every((key) => {
+        const currentPrices = draftRows?.[key]?.prices || {};
+        const nextPrices = nextDrafts?.[key]?.prices || {};
+        const currentPriceKeys = Object.keys(currentPrices);
+        const nextPriceKeys = Object.keys(nextPrices);
+        if (currentPriceKeys.length !== nextPriceKeys.length) return false;
+        return nextPriceKeys.every((priceKey) => currentPrices[priceKey] === nextPrices[priceKey]);
+      });
+
+    if (!shallowEqual) {
+      setDraftRows(nextDrafts);
+    }
+  }, [pricingRows, effectivePackageId, durations, isGlobalDefaults, draftRows]);
+
   const packageRows = useMemo(
     () => pricingRows.filter((row) => String(row.package_id) === effectivePackageId),
     [pricingRows, effectivePackageId]
   );
+  const packageDuration = Number(durations[0] || selectedPackage?.duration || 1);
+  const packageDurationKey = String(Number(packageDuration));
+  const packageDurationRows = useMemo(
+    () => packageRows.filter((row) => Number(row.duration_hours) === Number(packageDuration)),
+    [packageRows, packageDuration]
+  );
 
   const handlePriceChange = (modelId, duration, value) => {
     const durationKey = String(Number(duration));
+    touchedPricesRef.current.add(`${modelId}::${durationKey}`);
     setDraftRows((current) => ({
       ...current,
       [modelId]: {
@@ -244,15 +327,75 @@ const TourPackagePricingManager = ({
         toast.error('Ce modèle de véhicule est déjà ajouté');
         return current;
       }
+      const nextPrices = {};
+      durations.forEach((duration) => {
+        const durationKey = String(Number(duration));
+        const defaultPrice = getDefaultPrice(modelId, duration);
+        nextPrices[durationKey] = defaultPrice > 0 ? defaultPrice : '';
+      });
       return {
         ...current,
         [modelId]: {
           vehicle_model_id: modelId,
-          prices: {},
+          prices: nextPrices,
         },
       };
     });
     setVehicleModelToAdd('');
+  };
+
+  const toggleModelSelection = (modelId) => {
+    const currentPrice = Number(draftRows?.[modelId]?.prices?.[packageDurationKey] || 0);
+    if (currentPrice > 0) {
+      handlePriceChange(modelId, packageDuration, '');
+      return;
+    }
+    const defaultPrice = getDefaultPrice(modelId, packageDuration);
+    if (!defaultPrice) {
+      toast.error('Set a default price first');
+      return;
+    }
+    handlePriceChange(modelId, packageDuration, defaultPrice);
+  };
+
+  const savePackageSelection = async () => {
+    if (!effectivePackageId || isGlobalDefaults) return;
+    setSavingSelection(true);
+    try {
+      const existingRowsByModel = new Map(
+        packageDurationRows.map((row) => [String(row.vehicle_model_id), row])
+      );
+      const operations = [];
+      vehicleModels.forEach((model) => {
+        const modelId = String(model.id);
+        const price = Number(draftRows?.[modelId]?.prices?.[packageDurationKey] || 0);
+        const existing = existingRowsByModel.get(modelId);
+        if (price > 0) {
+          operations.push(
+            upsertTourPackageModelPrice({
+              id: existing?.id,
+              package_id: effectivePackageId,
+              vehicle_model_id: modelId,
+              duration_hours: packageDuration,
+              price_mad: price,
+              is_active: true,
+            })
+          );
+        } else if (existing?.id) {
+          operations.push(deleteTourPackageModelPrice(existing.id));
+        }
+      });
+      await Promise.all(operations);
+      const refreshed = await fetchTourPackageModelPrices();
+      setPricingRows(refreshed || []);
+      onPricingRowsChange?.(refreshed || []);
+      toast.success('Package pricing saved');
+    } catch (saveError) {
+      console.error('Failed to save package pricing selection:', saveError);
+      toast.error(saveError.message || 'Could not save package pricing');
+    } finally {
+      setSavingSelection(false);
+    }
   };
 
   const handleRemoveDuration = async (durationToRemove) => {
@@ -277,6 +420,7 @@ const TourPackagePricingManager = ({
       setExtraDurations((current) => current.filter((value) => Number(value) !== normalizedDuration));
       const refreshed = await fetchTourPackageModelPrices();
       setPricingRows(refreshed || []);
+      onPricingRowsChange?.(refreshed || []);
       toast.success(`Removed ${formatDurationLabel(normalizedDuration)} pricing column`);
     } catch (removeError) {
       console.error('Failed to remove tour duration:', removeError);
@@ -329,9 +473,56 @@ const TourPackagePricingManager = ({
         )
       );
 
-      const refreshed = await fetchTourPackageModelPrices();
+      let refreshed = await fetchTourPackageModelPrices();
+
+      if (isGlobalDefaults) {
+        const activePackages = Array.isArray(packages)
+          ? packages.filter((pkg) => pkg?.is_active !== false && String(pkg.id))
+          : [];
+        const globalRows = (refreshed || [])
+          .filter(
+            (row) =>
+              String(row.package_id) === GLOBAL_TOUR_PRICING_KEY &&
+              String(row.vehicle_model_id) === String(modelId) &&
+              Number(row.price_mad || 0) > 0
+          )
+          .map((row) => ({
+            duration_hours: Number(row.duration_hours),
+            price_mad: Number(row.price_mad || 0),
+          }));
+
+        const syncOps = [];
+        activePackages.forEach((pkg) => {
+          globalRows.forEach((globalRow) => {
+            const existingPackageRow = (refreshed || []).find(
+              (row) =>
+                String(row.package_id) === String(pkg.id) &&
+                String(row.vehicle_model_id) === String(modelId) &&
+                Number(row.duration_hours) === Number(globalRow.duration_hours)
+            );
+
+            syncOps.push(
+              upsertTourPackageModelPrice({
+                id: existingPackageRow?.id,
+                package_id: pkg.id,
+                vehicle_model_id: modelId,
+                duration_hours: globalRow.duration_hours,
+                price_mad: globalRow.price_mad,
+                is_active: true,
+              })
+            );
+          });
+        });
+
+        if (syncOps.length > 0) {
+          await Promise.all(syncOps);
+          refreshed = await fetchTourPackageModelPrices();
+        }
+      }
+
       setPricingRows(refreshed || []);
-      toast.success('Tour model pricing saved');
+      onPricingRowsChange?.(refreshed || []);
+      toast.success(isGlobalDefaults ? 'Default pricing saved and synced' : 'Tour model pricing saved');
     } catch (saveError) {
       console.error('Failed to save tour model pricing:', saveError);
       toast.error(saveError.message || 'Could not save model pricing');
@@ -351,6 +542,7 @@ const TourPackagePricingManager = ({
       });
       const refreshed = await fetchTourPackageModelPrices();
       setPricingRows(refreshed || []);
+      onPricingRowsChange?.(refreshed || []);
       toast.success('Model pricing removed');
     } catch (removeError) {
       console.error('Failed to remove model pricing:', removeError);
@@ -457,54 +649,67 @@ const TourPackagePricingManager = ({
           </div>
 
           <div className={`rounded-2xl border p-5 ${embedded ? 'border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)]' : 'border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80'}`}>
-            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Durations</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {durations.map((duration) => (
-                <div
-                  key={duration}
-                  className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700"
-                >
-                  {formatDurationLabel(duration)}
-                  {extraDurations.includes(duration) ? (
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveDuration(duration)}
-                      className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-bold text-violet-700 transition hover:bg-violet-200"
-                    >
-                      Remove
-                    </button>
-                  ) : (
-                    <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-slate-500">
-                      Default
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-            {!embedded && (
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">
+              {embedded && !isGlobalDefaults ? 'Package Duration' : 'Durations'}
+            </p>
+            {embedded && !isGlobalDefaults ? (
+              <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700">
+                <span>{formatDurationLabel(durations[0] || selectedPackage?.duration || 1)}</span>
+                <span className="rounded-full bg-violet-50 px-3 py-1 text-[11px] font-bold text-violet-600">
+                  Locked by package
+                </span>
+              </div>
+            ) : (
               <>
-                <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-                  <input
-                    type="number"
-                    min="0.5"
-                    step="0.5"
-                    value={customDuration}
-                    onChange={(event) => setCustomDuration(event.target.value)}
-                    className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 sm:max-w-[180px]"
-                    placeholder="Add duration"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddDuration}
-                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
-                  >
-                    <Plus className="h-4 w-4" />
-                    Add Duration
-                  </button>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {durations.map((duration) => (
+                    <div
+                      key={duration}
+                      className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700"
+                    >
+                      {formatDurationLabel(duration)}
+                      {extraDurations.includes(duration) ? (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveDuration(duration)}
+                          className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-bold text-violet-700 transition hover:bg-violet-200"
+                        >
+                          Remove
+                        </button>
+                      ) : (
+                        <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-slate-500">
+                          Default
+                        </span>
+                      )}
+                    </div>
+                  ))}
                 </div>
-                <p className="mt-3 text-xs text-slate-500">
-                  Default timing columns are 1h, 1.5h, and 2h. Any other timing is added manually here.
-                </p>
+                {(!embedded || isGlobalDefaults) && (
+                  <>
+                    <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                      <input
+                        type="number"
+                        min="0.5"
+                        step="0.5"
+                        value={customDuration}
+                        onChange={(event) => setCustomDuration(event.target.value)}
+                        className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 sm:max-w-[180px]"
+                        placeholder="Add duration"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddDuration}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+                      >
+                        <Plus className="h-4 w-4" />
+                        Add Duration
+                      </button>
+                    </div>
+                    <p className="mt-3 text-xs text-slate-500">
+                      Default timing columns are 1h, 1.5h, and 2h. Any other timing is added manually here.
+                    </p>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -519,37 +724,39 @@ const TourPackagePricingManager = ({
           </div>
         )}
 
-        <div className={`rounded-2xl border p-5 ${embedded ? 'border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)]' : 'border-transparent bg-transparent p-0 shadow-none'}`}>
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div>
-            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Pricing Matrix</p>
-            <h3 className="mt-2 text-xl font-semibold text-slate-900">Price each model by duration</h3>
+        {!(embedded && !isGlobalDefaults) && (
+          <div className={`rounded-2xl border p-5 ${embedded ? 'border-slate-200 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)]' : 'border-transparent bg-transparent p-0 shadow-none'}`}>
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Pricing Matrix</p>
+              <h3 className="mt-2 text-xl font-semibold text-slate-900">Price each model by duration</h3>
+            </div>
+            <div className="flex w-full flex-col gap-3 xl:w-auto xl:flex-row">
+              <select
+                value={vehicleModelToAdd}
+                onChange={(event) => setVehicleModelToAdd(event.target.value)}
+                className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 xl:min-w-[280px]"
+              >
+                <option value="">Add vehicle model</option>
+                {modelOptions.map((model) => (
+                  <option key={model.id} value={model.id} disabled={model.alreadyAdded}>
+                    {modelLabel(model)}{model.alreadyAdded ? ' — added' : ''}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleAddVehicleModel}
+                disabled={!vehicleModelToAdd}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:bg-violet-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+              >
+                <Plus className="h-4 w-4" />
+                Add vehicle model
+              </button>
+            </div>
+            </div>
           </div>
-          <div className="flex w-full flex-col gap-3 xl:w-auto xl:flex-row">
-            <select
-              value={vehicleModelToAdd}
-              onChange={(event) => setVehicleModelToAdd(event.target.value)}
-              className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 xl:min-w-[280px]"
-            >
-              <option value="">Add vehicle model</option>
-              {modelOptions.map((model) => (
-                <option key={model.id} value={model.id} disabled={model.alreadyAdded}>
-                  {modelLabel(model)}{model.alreadyAdded ? ' — added' : ''}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={handleAddVehicleModel}
-              disabled={!vehicleModelToAdd}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:bg-violet-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
-            >
-              <Plus className="h-4 w-4" />
-              Add vehicle model
-            </button>
-          </div>
-          </div>
-        </div>
+        )}
 
           {!embedded && (
           <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-medium text-violet-700">
@@ -557,8 +764,84 @@ const TourPackagePricingManager = ({
           </div>
         )}
 
-        <div className="mt-5 space-y-4">
-          {configuredModels.length === 0 ? (
+          <div className="mt-5 space-y-4">
+          {(embedded && !isGlobalDefaults) ? (
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.05)]">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-600/80">Step 2</p>
+                  <h3 className="mt-2 text-xl font-semibold text-slate-900">Select the quad models for this package</h3>
+                  <p className="mt-1 text-sm text-slate-500">Prices are pulled from default pricing for {formatDurationLabel(packageDuration)}.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={savePackageSelection}
+                  disabled={savingSelection}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  {savingSelection ? <RefreshCw className="h-4 w-4 animate-spin" /> : null}
+                  Save package pricing
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {vehicleModels.map((model) => {
+                  const modelId = String(model.id);
+                  const defaultPrice = getDefaultPrice(modelId, packageDuration);
+                  const currentPrice = Number(draftRows?.[modelId]?.prices?.[packageDurationKey] || 0);
+                  const isSelected = currentPrice > 0;
+                  return (
+                    <div
+                      key={modelId}
+                      className={`flex flex-col gap-3 rounded-2xl border px-4 py-4 text-left transition ${
+                        isSelected
+                          ? 'border-violet-300 bg-violet-50 shadow-[0_12px_30px_rgba(124,58,237,0.15)]'
+                          : 'border-slate-200 bg-white hover:border-violet-200'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="text-sm font-semibold text-slate-900">{modelLabel(model)}</span>
+                        <button
+                          type="button"
+                          onClick={() => toggleModelSelection(modelId)}
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold transition ${
+                            isSelected
+                              ? 'bg-violet-600 text-white hover:bg-violet-700'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                        >
+                          {isSelected ? 'Selected' : 'Tap to add'}
+                        </button>
+                      </div>
+                      <div className="text-lg font-black text-slate-900">
+                        {defaultPrice > 0 ? `${defaultPrice.toLocaleString('en-MA')} MAD` : 'Set default price'}
+                      </div>
+                      <div className="text-xs font-semibold text-slate-500">
+                        Duration: {formatDurationLabel(packageDuration)}
+                      </div>
+                      {isSelected && (
+                        <div className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+                          <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Edit price (optional)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={draftRows?.[modelId]?.prices?.[packageDurationKey] ?? ''}
+                            onChange={(event) => handlePriceChange(modelId, packageDuration, event.target.value)}
+                            className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-base font-black text-slate-900 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            placeholder="MAD"
+                          />
+                          <p className="mt-2 text-[11px] font-medium text-slate-500">
+                            Adjust here, then use <span className="font-semibold text-emerald-700">Save package pricing</span>.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : configuredModels.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
               Add a vehicle model to start pricing this package timing matrix.
             </div>
@@ -571,7 +854,9 @@ const TourPackagePricingManager = ({
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                     <div>
                       <p className="text-lg font-black text-slate-900">{modelLabel(model)}</p>
-                      <p className="mt-1 text-sm text-slate-500">Fill the durations you want staff to sell.</p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {embedded && !isGlobalDefaults ? 'Set the package price for this model.' : 'Fill the durations you want staff to sell.'}
+                      </p>
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -594,27 +879,59 @@ const TourPackagePricingManager = ({
                     </div>
                   </div>
 
-                  <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(220px,1.2fr)_repeat(3,minmax(140px,1fr))]">
-                    {durations.map((duration) => {
-                      const durationKey = String(Number(duration));
-                      return (
-                        <div key={`${rowKey}-${durationKey}`} className="rounded-xl border border-slate-200 bg-white p-4">
-                          <label className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                            {formatDurationLabel(duration)}
-                          </label>
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={rowDraft.prices?.[durationKey] ?? ''}
-                            onChange={(event) => handlePriceChange(rowKey, duration, event.target.value)}
-                            className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base font-black text-slate-900"
-                            placeholder="MAD"
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
+                  {embedded && !isGlobalDefaults ? (
+                    <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(220px,1fr)_minmax(180px,220px)]">
+                      <div className="rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-sm font-semibold text-slate-600">
+                        Duration: {formatDurationLabel(durations[0] || selectedPackage?.duration || 1)}
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-white p-4">
+                        <label className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                          Package price
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={rowDraft.prices?.[String(Number(durations[0] || selectedPackage?.duration || 1))] ?? ''}
+                          onChange={(event) => handlePriceChange(rowKey, durations[0] || selectedPackage?.duration || 1, event.target.value)}
+                          className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base font-black text-slate-900 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                          placeholder="MAD"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(220px,1.2fr)_repeat(3,minmax(140px,1fr))]">
+                      {durations.map((duration) => {
+                        const durationKey = String(Number(duration));
+                        const defaultPrice = getDefaultPrice(rowKey, duration);
+                        const currentPrice = Number(rowDraft.prices?.[durationKey] || 0);
+                        const isAutoFilled = !isGlobalDefaults && defaultPrice > 0 && currentPrice === defaultPrice;
+                        return (
+                          <div key={`${rowKey}-${durationKey}`} className="rounded-xl border border-slate-200 bg-white p-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <label className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                {formatDurationLabel(duration)}
+                              </label>
+                              {isAutoFilled ? (
+                                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-600">
+                                  Auto
+                                </span>
+                              ) : null}
+                            </div>
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={rowDraft.prices?.[durationKey] ?? ''}
+                              onChange={(event) => handlePriceChange(rowKey, duration, event.target.value)}
+                              className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base font-black text-slate-900 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                              placeholder="MAD"
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })

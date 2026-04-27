@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   Bell,
   Briefcase,
   CalendarDays,
   Image as ImageIcon,
   KeyRound,
+  MessageSquareMore,
   RefreshCw,
   Save,
   Settings2,
@@ -17,8 +19,10 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useLanguageContext } from '../../contexts/LanguageContext';
 import { defaultSystemSettings, fetchSystemSettings, saveSystemSettings } from '../../services/systemSettingsApi';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
+import AdminWorkspaceLoadingShell from '../../components/admin/AdminWorkspaceLoadingShell';
 import i18n from '../../i18n';
 import { supabase } from '../../lib/supabase';
+import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 
 const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
 const SAHARAX_DEFAULT_STAMP_URL = '/assets/stamp.png';
@@ -46,6 +50,7 @@ const getTabItems = (isFrench) => [
   { id: 'rentalRules', label: isFrench ? 'Règles de location' : 'Rental Rules', icon: CalendarDays },
   { id: 'finance', label: isFrench ? 'Finance & taxes' : 'Finance & Tax', icon: Shield },
   { id: 'notifications', label: isFrench ? 'Notifications' : 'Notifications', icon: Bell },
+  { id: 'messaging', label: isFrench ? 'Messagerie' : 'Messaging', icon: MessageSquareMore },
   { id: 'security', label: isFrench ? 'Sécurité & accès' : 'Security & Access', icon: KeyRound },
 ];
 
@@ -127,7 +132,8 @@ const AssetPreview = ({ label, url, emptyLabel, bucketLabel }) => (
 );
 
 const SettingsPage = () => {
-  const { userProfile } = useAuth();
+  const location = useLocation();
+  const { userProfile, hasPermission } = useAuth();
   const { setLanguage } = useLanguageContext();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tabs = getTabItems(isFrench);
@@ -140,6 +146,10 @@ const SettingsPage = () => {
     stamp: false,
   });
   const brandingContext = useMemo(() => getBrandingContext(), []);
+  const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
+    pathname: location.pathname,
+    isTransitionFlow: loading,
+  });
 
   const [businessForm, setBusinessForm] = useState({
     companyName: '',
@@ -167,6 +177,7 @@ const SettingsPage = () => {
     emailNotifications: true,
     smsNotifications: false,
     pushNotifications: true,
+    rentalDetailsDefaultView: 'standard',
   });
 
   const [notificationsForm, setNotificationsForm] = useState({
@@ -174,6 +185,7 @@ const SettingsPage = () => {
     returnReminderHours: 2,
     rentalGracePeriodMinutes: 60,
     rentalSoftLockMinutes: 45,
+    extraHourThresholdMinutes: 25,
     whatsappEnabled: true,
     emailNotifications: true,
     smsNotifications: false,
@@ -189,9 +201,17 @@ const SettingsPage = () => {
     allowEmployeeSettingsView: true,
     writeAuditLogs: true,
     allowLiveTrackingRetry: true,
+    autoSendContractEmailAfterCreation: false,
+  });
+  const [messagingForm, setMessagingForm] = useState({
+    messagingPhotoSharingEnabled: true,
+    messagingMaxPhotosPerMessage: 3,
+    messagingPhotoRetentionDays: 7,
+    messagingDraftRetentionHours: 24,
+    messagingAllowCameraCapture: true,
   });
 
-  const canEdit = userProfile?.role === 'owner' || userProfile?.role === 'admin';
+  const canEdit = hasPermission('System Settings');
   const brandingBucket = settings.storageBucket || defaultSystemSettings.storageBucket || 'rental-documents';
 
   const overviewCards = useMemo(
@@ -216,8 +236,13 @@ const SettingsPage = () => {
         value: `${settings.pickupTransportFee || 0} / ${settings.dropoffTransportFee || 0} MAD`,
         hint: 'Pickup and drop-off defaults saved in system settings.',
       },
+      {
+        label: 'Messaging Policy',
+        value: settings.messagingPhotoSharingEnabled ? 'Photo sharing on' : 'Photo sharing off',
+        hint: `${settings.messagingPhotoRetentionDays || 7} day media retention, ${settings.messagingMaxPhotosPerMessage || 3} photo max`,
+      },
     ],
-    [businessForm.currency, operationsForm, settings.pickupTransportFee, settings.dropoffTransportFee]
+    [businessForm.currency, operationsForm, settings.pickupTransportFee, settings.dropoffTransportFee, settings.messagingPhotoSharingEnabled, settings.messagingPhotoRetentionDays, settings.messagingMaxPhotosPerMessage]
   );
 
   const loadSettingsHub = async () => {
@@ -251,12 +276,17 @@ const SettingsPage = () => {
         emailNotifications: mergedSettings.emailNotifications !== false,
         smsNotifications: Boolean(mergedSettings.smsNotifications),
         pushNotifications: mergedSettings.pushNotifications !== false,
+        rentalDetailsDefaultView:
+          String(mergedSettings.rentalDetailsDefaultView || '').toLowerCase() === 'light'
+            ? 'light'
+            : 'standard',
       });
       setNotificationsForm({
         bookingReminderHours: Number(mergedSettings.bookingReminderHours) || 24,
         returnReminderHours: Number(mergedSettings.returnReminderHours) || 2,
         rentalGracePeriodMinutes: Number(mergedSettings.rentalGracePeriodMinutes ?? mergedSettings.rental_grace_period_minutes) || 120,
         rentalSoftLockMinutes: Number(mergedSettings.rentalSoftLockMinutes ?? mergedSettings.rental_soft_lock_minutes) || 90,
+        extraHourThresholdMinutes: Number(mergedSettings.extraHourThresholdMinutes ?? mergedSettings.extra_hour_threshold_minutes) || 25,
         whatsappEnabled: mergedSettings.whatsappEnabled !== false,
         emailNotifications: mergedSettings.emailNotifications !== false,
         smsNotifications: Boolean(mergedSettings.smsNotifications),
@@ -271,6 +301,14 @@ const SettingsPage = () => {
         allowEmployeeSettingsView: mergedSettings.allowEmployeeSettingsView !== false,
         writeAuditLogs: mergedSettings.writeAuditLogs !== false,
         allowLiveTrackingRetry: mergedSettings.allowLiveTrackingRetry !== false,
+        autoSendContractEmailAfterCreation: Boolean(mergedSettings.autoSendContractEmailAfterCreation),
+      });
+      setMessagingForm({
+        messagingPhotoSharingEnabled: Boolean(mergedSettings.messagingPhotoSharingEnabled),
+        messagingMaxPhotosPerMessage: Math.max(1, Number(mergedSettings.messagingMaxPhotosPerMessage) || 3),
+        messagingPhotoRetentionDays: Math.max(1, Number(mergedSettings.messagingPhotoRetentionDays) || 7),
+        messagingDraftRetentionHours: Math.max(1, Number(mergedSettings.messagingDraftRetentionHours) || 24),
+        messagingAllowCameraCapture: mergedSettings.messagingAllowCameraCapture !== false,
       });
     } catch (error) {
       console.error('Failed to load settings hub:', error);
@@ -393,6 +431,10 @@ const SettingsPage = () => {
       emailNotifications: operationsForm.emailNotifications,
       smsNotifications: operationsForm.smsNotifications,
       pushNotifications: operationsForm.pushNotifications,
+      rentalDetailsDefaultView:
+        String(operationsForm.rentalDetailsDefaultView || '').toLowerCase() === 'light'
+          ? 'light'
+          : 'standard',
       operatingHours: {
         start: operationsForm.operatingStart,
         end: operationsForm.operatingEnd,
@@ -443,12 +485,15 @@ const SettingsPage = () => {
   const handleRentalRulesSave = async () => {
     const normalizedGraceMinutes = Math.max(0, Math.min(120, Number(notificationsForm.rentalGracePeriodMinutes) || 0));
     const normalizedSoftLockMinutes = Math.max(0, Math.min(normalizedGraceMinutes || 120, Number(notificationsForm.rentalSoftLockMinutes) || 0));
+    const normalizedExtraHourMinutes = Math.max(0, Math.min(120, Number(notificationsForm.extraHourThresholdMinutes) || 0));
 
     await persistSettings('Rental rules', {
       rentalGracePeriodMinutes: normalizedGraceMinutes,
       rentalSoftLockMinutes: normalizedSoftLockMinutes,
+      extraHourThresholdMinutes: normalizedExtraHourMinutes,
       rental_grace_period_minutes: normalizedGraceMinutes,
       rental_soft_lock_minutes: normalizedSoftLockMinutes,
+      extra_hour_threshold_minutes: normalizedExtraHourMinutes,
     });
   };
 
@@ -460,6 +505,17 @@ const SettingsPage = () => {
       allowEmployeeSettingsView: securityForm.allowEmployeeSettingsView,
       writeAuditLogs: securityForm.writeAuditLogs,
       allowLiveTrackingRetry: securityForm.allowLiveTrackingRetry,
+      autoSendContractEmailAfterCreation: securityForm.autoSendContractEmailAfterCreation,
+    });
+  };
+
+  const handleMessagingSave = async () => {
+    await persistSettings('Messaging', {
+      messagingPhotoSharingEnabled: Boolean(messagingForm.messagingPhotoSharingEnabled),
+      messagingMaxPhotosPerMessage: Math.max(1, Math.min(10, Number(messagingForm.messagingMaxPhotosPerMessage) || 3)),
+      messagingPhotoRetentionDays: Math.max(1, Math.min(30, Number(messagingForm.messagingPhotoRetentionDays) || 7)),
+      messagingDraftRetentionHours: Math.max(1, Math.min(168, Number(messagingForm.messagingDraftRetentionHours) || 24)),
+      messagingAllowCameraCapture: Boolean(messagingForm.messagingAllowCameraCapture),
     });
   };
 
@@ -783,6 +839,23 @@ const SettingsPage = () => {
                 onChange={(e) => setOperationsForm((current) => ({ ...current, maxRentalDuration: e.target.value }))}
               />
             </div>
+            <div className="md:col-span-2">
+              <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Mode par défaut des détails de location' : 'Default Rental Details Mode'}</label>
+              <select
+                className={FIELD_CLASS}
+                value={operationsForm.rentalDetailsDefaultView}
+                disabled={!canEdit}
+                onChange={(e) => setOperationsForm((current) => ({ ...current, rentalDetailsDefaultView: e.target.value }))}
+              >
+                <option value="standard">{isFrench ? 'Standard' : 'Standard'}</option>
+                <option value="light">{isFrench ? 'Light' : 'Light'}</option>
+              </select>
+              <p className="mt-2 text-xs text-slate-500">
+                {isFrench
+                  ? 'Définit la vue qui s’ouvre par défaut pour l’équipe dans les détails de location. La vue avancée reste toujours disponible dans la page.'
+                  : 'Sets which rental-details view opens by default for staff. The advanced view stays available inside the page at all times.'}
+              </p>
+            </div>
           </div>
 
           <div>
@@ -1003,6 +1076,26 @@ const SettingsPage = () => {
                 : 'Defines when the booking should start being flagged as late before auto-release.'}
             </p>
           </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">
+              {isFrench ? "Seuil d’heure supplémentaire (minutes)" : 'Extra Hour Threshold (minutes)'}
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="120"
+              className={FIELD_CLASS}
+              value={notificationsForm.extraHourThresholdMinutes}
+              disabled={!canEdit}
+              onChange={(e) => setNotificationsForm((current) => ({ ...current, extraHourThresholdMinutes: e.target.value }))}
+            />
+            <p className="mt-2 text-xs text-slate-500">
+              {isFrench
+                ? "Après ce délai, l’heure suivante est facturée."
+                : 'After this time, the next hour is charged.'}
+            </p>
+          </div>
         </div>
 
         <div className="rounded-[1.75rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
@@ -1024,6 +1117,11 @@ const SettingsPage = () => {
               {isFrench
                 ? 'Il n’existe pas de seconde période distincte pour les locations horaires aujourd’hui: cette même règle est la source de vérité.'
                 : 'There is no second separate hourly grace today: this same rule is the source of truth.'}
+            </p>
+            <p>
+              {isFrench
+                ? "Le seuil d’annulation d’extension prépare la prochaine règle: si le client revient très tôt dans l’heure ajoutée, cette extension pourra être annulée automatiquement."
+                : 'The extension void threshold prepares the next rule: if the customer comes back very early in the added hour, that extension can be voided automatically.'}
             </p>
           </div>
         </div>
@@ -1175,6 +1273,108 @@ const SettingsPage = () => {
             disabled={!canEdit}
             onChange={(value) => setSecurityForm((current) => ({ ...current, allowLiveTrackingRetry: value }))}
           />
+          <ToggleCard
+            title={isFrench ? "Auto-envoyer le contrat par e-mail après création" : 'Auto-send contract email after creation'}
+            description={isFrench ? "Désactivé par défaut. Si activé, l'e-mail du contrat part dès que la signature du contrat est finalisée. L'envoi manuel reste toujours disponible." : 'Off by default. If enabled, the contract email sends as soon as contract signing is completed. Manual send always stays available.'}
+            checked={securityForm.autoSendContractEmailAfterCreation}
+            disabled={!canEdit}
+            onChange={(value) => setSecurityForm((current) => ({ ...current, autoSendContractEmailAfterCreation: value }))}
+          />
+        </div>
+      </div>
+    </SectionCard>
+  );
+
+  const renderMessaging = () => (
+    <SectionCard
+      title={isFrench ? 'Messagerie' : 'Messaging'}
+      description={isFrench ? "Règles système pour la messagerie rapide entre staff, admins, owners et clients. Définissez ici les garde-fous avant d'activer le partage photo." : 'System rules for fast messaging between staff, admins, owners, and customers. Define the guardrails here before enabling photo sharing.'}
+      action={
+        <button
+          type="button"
+          onClick={handleMessagingSave}
+          disabled={!canEdit || savingSection === 'Messaging'}
+          className={PRIMARY_BUTTON_CLASS}
+        >
+          {savingSection === 'Messaging' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          {isFrench ? 'Enregistrer la messagerie' : 'Save Messaging'}
+        </button>
+      }
+    >
+      <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+        <div className="space-y-5">
+          <div className="grid gap-5 md:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Photos max par message' : 'Max Photos Per Message'}</label>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                className={FIELD_CLASS}
+                value={messagingForm.messagingMaxPhotosPerMessage}
+                disabled={!canEdit}
+                onChange={(e) => setMessagingForm((current) => ({ ...current, messagingMaxPhotosPerMessage: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Conservation photo (jours)' : 'Photo Retention (days)'}</label>
+              <input
+                type="number"
+                min="1"
+                max="30"
+                className={FIELD_CLASS}
+                value={messagingForm.messagingPhotoRetentionDays}
+                disabled={!canEdit}
+                onChange={(e) => setMessagingForm((current) => ({ ...current, messagingPhotoRetentionDays: e.target.value }))}
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Expiration des brouillons (heures)' : 'Draft Expiry (hours)'}</label>
+              <input
+                type="number"
+                min="1"
+                max="168"
+                className={FIELD_CLASS}
+                value={messagingForm.messagingDraftRetentionHours}
+                disabled={!canEdit}
+                onChange={(e) => setMessagingForm((current) => ({ ...current, messagingDraftRetentionHours: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-[1.75rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 p-5">
+            <p className="text-sm font-semibold text-slate-900">{isFrench ? 'Politique recommandée' : 'Recommended Policy'}</p>
+            <div className="mt-3 space-y-2 text-sm text-slate-600">
+              <p>{isFrench ? 'Utilisez les photos seulement pour partager rapidement une information opérationnelle.' : 'Use photos only for quick operational information sharing.'}</p>
+              <p>{isFrench ? 'Conservez les textes plus longtemps, mais laissez les médias expirer rapidement pour limiter le coût de stockage.' : 'Keep text longer, but let media expire quickly to keep storage costs low.'}</p>
+              <p>{isFrench ? 'Commencez avec 1 à 3 photos max par message pour rester simple et léger.' : 'Start with 1 to 3 photos max per message to keep the experience simple and light.'}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <ToggleCard
+            title={isFrench ? 'Activer le partage photo' : 'Enable Photo Sharing'}
+            description={isFrench ? "Permet aux utilisateurs d'envoyer des photos depuis l'album ou la caméra dans les threads pris en charge." : 'Lets users send photos from album or camera in supported threads.'}
+            checked={messagingForm.messagingPhotoSharingEnabled}
+            disabled={!canEdit}
+            onChange={(value) => setMessagingForm((current) => ({ ...current, messagingPhotoSharingEnabled: value }))}
+          />
+          <ToggleCard
+            title={isFrench ? 'Autoriser la caméra' : 'Allow Camera Capture'}
+            description={isFrench ? "Laisse l'utilisateur prendre une photo directement depuis le chat, en plus de l'album." : 'Lets the user take a photo directly from chat in addition to choosing from the album.'}
+            checked={messagingForm.messagingAllowCameraCapture}
+            disabled={!canEdit}
+            onChange={(value) => setMessagingForm((current) => ({ ...current, messagingAllowCameraCapture: value }))}
+          />
+          <div className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-semibold text-slate-900">{isFrench ? 'Ce que ce réglage couvre maintenant' : 'What This Covers Right Now'}</p>
+            <div className="mt-3 space-y-2 text-sm text-slate-500">
+              <p>{isFrench ? 'Activation et limites du futur partage photo dans Messenger.' : 'Enablement and limits for upcoming photo sharing inside Messenger.'}</p>
+              <p>{isFrench ? 'Fenêtre de suppression automatique des médias de chat.' : 'Auto-delete window for chat media.'}</p>
+              <p>{isFrench ? 'Durée de vie des brouillons avant nettoyage.' : 'Draft lifetime before cleanup.'}</p>
+            </div>
+          </div>
         </div>
       </div>
     </SectionCard>
@@ -1192,6 +1392,8 @@ const SettingsPage = () => {
         return renderFinance();
       case 'notifications':
         return renderNotifications();
+      case 'messaging':
+        return renderMessaging();
       case 'security':
         return renderSecurity();
       case 'overview':
@@ -1213,7 +1415,7 @@ const SettingsPage = () => {
             type="button"
             onClick={loadSettingsHub}
             disabled={loading}
-            className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20 disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all duration-200 hover:border-violet-200 hover:text-violet-700 disabled:opacity-60"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             {isFrench ? 'Actualiser les paramètres' : 'Refresh Settings'}
@@ -1248,15 +1450,8 @@ const SettingsPage = () => {
         </div>
 
         <div className="px-4 py-6 sm:px-6">
-          {loading ? (
-            <div className="rounded-[2rem] border border-violet-200/70 bg-gradient-to-r from-violet-50/90 to-indigo-50/80 px-6 py-16 text-center">
-              <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-                <div className="text-5xl leading-none animate-pulse">⏳</div>
-                <h2 className="text-xl font-semibold text-slate-900">
-                  {isFrench ? 'Chargement des paramètres système...' : 'Loading system settings...'}
-                </h2>
-              </div>
-            </div>
+          {loading && !suppressBlockingLoader ? (
+            <AdminWorkspaceLoadingShell eyebrow={isFrench ? 'Paramètres système' : 'System Settings'} title={isFrench ? 'Paramètres système' : 'System Settings'} description={isFrench ? 'Préparation de l’espace paramètres système...' : 'Preparing the system settings workspace...'} cardRows={1} />
           ) : (
             renderContent()
           )}

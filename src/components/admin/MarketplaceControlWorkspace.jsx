@@ -17,7 +17,32 @@ import {
 import MarketplaceAdminService from '../../services/MarketplaceAdminService';
 import MarketplaceModerationModal from './MarketplaceModerationModal';
 import AdminModuleHero from './AdminModuleHero';
+import AdminMobileStatsRow from './AdminMobileStatsRow';
 import i18n from '../../i18n';
+import { buildAdminMarketplaceListingPath } from '../../utils/marketplaceAdminLinks';
+
+const buildOwnerProfileHref = (row) => {
+  const params = new URLSearchParams();
+  const resolvedCustomerId = String(
+    row?.ownerCustomerId ||
+    row?.customerId ||
+    row?.customer_id ||
+    ''
+  ).trim();
+  const resolvedAuthUserId = String(
+    row?.ownerUserId ||
+    row?.owner_user_id ||
+    row?.user_id ||
+    ''
+  ).trim();
+  const resolvedEmail = String(row?.ownerEmail || row?.email || '').trim().toLowerCase();
+
+  if (resolvedCustomerId) params.set('customerId', resolvedCustomerId);
+  if (resolvedAuthUserId) params.set('authUserId', resolvedAuthUserId);
+  if (resolvedEmail) params.set('email', resolvedEmail);
+
+  return `/admin/customers/profile${params.toString() ? `?${params.toString()}` : ''}`;
+};
 
 const statusTone = (status) => {
   const normalized = String(status || '').toLowerCase();
@@ -117,11 +142,11 @@ const MarketplaceControlWorkspace = () => {
     return (
       <div className="mt-4 flex flex-wrap gap-2">
         <Link
-          to={`/admin/marketplace/${row.id}`}
+          to={buildAdminMarketplaceListingPath(row?.id)}
           className={`${buttonClass} border border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:text-violet-700`}
         >
           <SquareArrowOutUpRight className="h-3.5 w-3.5" />
-          {tr('Open details', 'Ouvrir les details')}
+          {tr('Open vehicle', 'Ouvrir le véhicule')}
         </Link>
         {['pending_review', 'pending', 'draft', 'rejected'].includes(status) ? (
           <button
@@ -185,7 +210,7 @@ const MarketplaceControlWorkspace = () => {
           className={`${buttonClass} border border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:text-violet-700`}
         >
           <UserRound className="h-3.5 w-3.5" />
-          {tr('Message owner', 'Message proprietaire')}
+          {tr('Send review feedback', 'Envoyer le retour')}
         </button>
       </div>
     );
@@ -193,27 +218,51 @@ const MarketplaceControlWorkspace = () => {
 
   return (
     <div className="space-y-6">
-      <AdminModuleHero
-        icon={<ClipboardList className="h-6 w-6 text-white" />}
-        eyebrow={tr('Marketplace Review', 'Revue marketplace')}
-        title={tr('Marketplace moderation and visibility', 'Modération et visibilité marketplace')}
-        description={tr(
-          'Review the public supply pipeline: drafts, pending review listings, live visibility, and the split between operators and independent owners.',
-          'Revoyez le pipeline d’offre publique : brouillons, listings en attente de revue, visibilité en direct et répartition entre opérateurs et propriétaires indépendants.'
-        )}
-        actions={(
-          <button
-            type="button"
-            onClick={loadSnapshot}
-            disabled={loading}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-bold text-white backdrop-blur-sm transition hover:bg-white/15"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            {tr('Refresh', 'Actualiser')}
-          </button>
-        )}
-        className="overflow-hidden rounded-none"
-      />
+      <div className="hidden sm:block">
+        <AdminModuleHero
+          icon={<ClipboardList className="h-6 w-6 text-white" />}
+          eyebrow={tr('Marketplace Review', 'Revue marketplace')}
+          title={tr('Marketplace moderation and visibility', 'Modération et visibilité marketplace')}
+          description={tr(
+            'Review the public supply pipeline: drafts, pending review listings, live visibility, and the split between operators and independent owners.',
+            'Revoyez le pipeline d’offre publique : brouillons, listings en attente de revue, visibilité en direct et répartition entre opérateurs et propriétaires indépendants.'
+          )}
+          actions={(
+            <button
+              type="button"
+              onClick={loadSnapshot}
+              disabled={loading}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-bold text-white backdrop-blur-sm transition hover:bg-white/15"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              {tr('Refresh', 'Actualiser')}
+            </button>
+          )}
+          className="overflow-hidden rounded-none"
+        />
+      </div>
+
+      <div className="sm:hidden px-4 pt-5">
+        <div className="rounded-[1.75rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+            {tr('Marketplace Review', 'Revue marketplace')}
+          </p>
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <h1 className="text-2xl font-bold text-slate-900">
+              {tr('Marketplace', 'Marketplace')}
+            </h1>
+            <button
+              type="button"
+              onClick={loadSnapshot}
+              disabled={loading}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              {tr('Refresh', 'Actualiser')}
+            </button>
+          </div>
+        </div>
+      </div>
 
       {loading ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
@@ -242,7 +291,7 @@ const MarketplaceControlWorkspace = () => {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <AdminMobileStatsRow>
         <div className="rounded-[1.75rem] border border-violet-100 bg-violet-50/80 p-5">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -279,7 +328,7 @@ const MarketplaceControlWorkspace = () => {
             <ClipboardList className="h-8 w-8 text-slate-500" />
           </div>
         </div>
-      </div>
+      </AdminMobileStatsRow>
 
       <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -305,13 +354,25 @@ const MarketplaceControlWorkspace = () => {
                     <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">{row.bookingMode}</span>
                   </div>
                   <p className="mt-3 font-semibold text-slate-900">{row.title}</p>
-                  {row.ownerDisplayName || row.cityName ? (
-                    <p className="mt-1 text-sm text-slate-500">
-                      {[row.ownerDisplayName, row.cityName].filter(Boolean).join(' • ')}
+                  <div className="mt-3 rounded-2xl border border-violet-100 bg-violet-50/70 px-4 py-3">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-violet-500">
+                      {tr('Owner', 'Propriétaire')}
                     </p>
-                  ) : null}
+                    <p className="mt-2 text-sm font-bold text-slate-950">{row.ownerDisplayName || '—'}</p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {[row.cityName, row.areaName].filter(Boolean).join(' • ') || tr('No city set', 'Ville non définie')}
+                    </p>
+                  </div>
                   {row.shortDescription ? (
                     <p className="mt-2 line-clamp-2 text-sm text-slate-600">{row.shortDescription}</p>
+                  ) : null}
+                  {row.latestOwnerMessage ? (
+                    <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-sky-700">
+                        {tr('Latest sent message', 'Dernier message envoyé')}
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-sm text-sky-900">{row.latestOwnerMessage}</p>
+                    </div>
                   ) : null}
                   <p className="mt-1 text-sm text-slate-600">
                     {tr('Price from', 'Prix à partir de')} {row.price || 0} MAD • {tr('Deposit', 'Caution')} {row.depositAmount || 0} MAD
@@ -319,6 +380,15 @@ const MarketplaceControlWorkspace = () => {
                   {row.rejectionReason ? (
                     <p className="mt-2 rounded-xl bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{row.rejectionReason}</p>
                   ) : null}
+                  <div className="mt-4">
+                    <Link
+                      to={buildOwnerProfileHref(row)}
+                      className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-4 py-2 text-xs font-bold text-violet-700 transition hover:border-violet-300 hover:bg-violet-50"
+                    >
+                      <UserRound className="h-3.5 w-3.5" />
+                      {tr('Open owner profile', 'Ouvrir le profil propriétaire')}
+                    </Link>
+                  </div>
                   {renderListingActions(row)}
                 </div>
               ))
@@ -374,7 +444,24 @@ const MarketplaceControlWorkspace = () => {
                       </span>
                     </div>
                     <p className="mt-3 font-semibold text-slate-900">{row.title}</p>
-                    <p className="mt-1 text-sm text-slate-600">{tr('Booking mode', 'Mode de réservation')}: {row.bookingMode}</p>
+                    <div className="mt-3 rounded-2xl border border-violet-100 bg-violet-50/70 px-4 py-3">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-violet-500">
+                        {tr('Owner', 'Propriétaire')}
+                      </p>
+                      <p className="mt-2 text-sm font-bold text-slate-950">{row.ownerDisplayName || '—'}</p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {tr('Booking mode', 'Mode de réservation')}: {row.bookingMode || '—'}
+                      </p>
+                    </div>
+                    <div className="mt-4">
+                      <Link
+                        to={buildOwnerProfileHref(row)}
+                        className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-4 py-2 text-xs font-bold text-violet-700 transition hover:border-violet-300 hover:bg-violet-50"
+                      >
+                        <UserRound className="h-3.5 w-3.5" />
+                        {tr('Open owner profile', 'Ouvrir le profil propriétaire')}
+                      </Link>
+                    </div>
                     {renderListingActions(row)}
                   </div>
                 ))

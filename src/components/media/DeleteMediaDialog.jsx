@@ -98,7 +98,7 @@ const DeleteMediaDialog = ({
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-gray-700">{tr('Phase:', 'Phase :')}</span>
                   <span className="text-sm text-gray-900 capitalize">
-                    {mediaData.phase === 'out' ? tr('Opening', 'Ouverture') : tr('Closing', 'Clôture')}
+                    {mediaData.phaseLabel || (mediaData.phase === 'out' ? tr('Opening', 'Ouverture') : tr('Closing', 'Clôture'))}
                   </span>
                 </div>
 

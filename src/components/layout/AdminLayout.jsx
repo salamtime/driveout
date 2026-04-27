@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLanguageContext } from '../../contexts/LanguageContext';
 import RentalMediaRetentionService from '../../services/RentalMediaRetentionService';
+import MessageMediaRetentionService from '../../services/MessageMediaRetentionService';
 import WebsiteBookingExpiryService from '../../services/WebsiteBookingExpiryService';
 import appWarmupService from '../../services/AppWarmupService';
 import FuelTransactionService from '../../services/FuelTransactionService';
@@ -12,6 +13,7 @@ import { fetchSystemSettings, SYSTEM_SETTINGS_UPDATED_EVENT } from '../../servic
 import { prefetchAdminModuleChunk, prewarmAdminModuleChunks } from '../../utils/adminModulePreloader';
 import { isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../../utils/accountType';
 import OptimizedAvatar from '../common/OptimizedAvatar';
+import MessageService from '../../services/MessageService';
 import {
   LayoutDashboard,
   CalendarDays,
@@ -38,6 +40,7 @@ import {
   Store,
   CircleHelp,
   Building2,
+  MessageSquare,
 } from 'lucide-react';
 
 const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
@@ -86,6 +89,7 @@ const getTrialDaysRemaining = (trialEndsAt) => {
  */
 const AdminLayout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [modalFocusDepth, setModalFocusDepth] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
   const [isTablet, setIsTablet] = useState(false);
   const [taskStats, setTaskStats] = useState({ active: 0, my: 0, open: 0, attention: 0, unreadComments: 0 });
@@ -122,59 +126,67 @@ const AdminLayout = () => {
   const navigationModules = [
     {
       id: 'dashboard',
-      name: isFrench ? 'Aperçu du tableau de bord' : 'Dashboard Overview',
+      name: isFrench ? 'Dashboard' : 'Dashboard Overview',
       icon: LayoutDashboard,
       accent: 'from-violet-500 to-indigo-600',
       path: '/admin/dashboard',
-      moduleName: 'dashboard'
+      moduleName: 'Dashboard'
     },
     {
       id: 'calendar',
       name: isFrench ? 'Calendrier' : 'Calendar',
       icon: CalendarDays,
-      accent: 'from-sky-500 to-blue-600',
+      accent: 'from-blue-500 to-sky-600',
       path: '/admin/calendar',
-      moduleName: 'calendar'
+      moduleName: 'Calendar'
     },
     {
       id: 'tours',
-      name: isFrench ? 'Tours et réservations' : 'Tours & Bookings',
+      name: isFrench ? 'Tours & réservations' : 'Tours & Bookings',
       icon: Compass,
       accent: 'from-fuchsia-500 to-violet-600',
       path: '/admin/tours',
-      moduleName: 'tours'
+      moduleName: 'Tours & Bookings'
+    },
+    {
+      id: 'live-map',
+      name: isFrench ? 'Carte live' : 'Live Map',
+      icon: Home,
+      accent: 'from-emerald-500 to-green-600',
+      path: '/admin/live-map',
+      moduleName: 'Live Map'
     },
     {
       id: 'rentals',
-      name: isFrench ? 'Gestion des locations' : 'Rental-Management',
+      name: isFrench ? 'Gestion locations' : 'Rental Management',
       icon: ClipboardList,
-      accent: 'from-indigo-500 to-violet-600',
+      accent: 'from-violet-500 to-purple-600',
       path: '/admin/rentals',
-      moduleName: 'rentals'
+      moduleName: 'Rental Management'
     },
     {
       id: 'customers',
       name: isFrench ? 'Gestion clients' : 'Customer Management',
       icon: Users,
-      accent: 'from-cyan-500 to-sky-600',
+      accent: 'from-sky-500 to-blue-600',
       path: '/admin/customers',
-      moduleName: 'customers'
+      moduleName: 'Customer Management'
     },
     {
       id: 'fleet',
-      name: isFrench ? 'Gestion de flotte' : 'Fleet Management',
+      name: isFrench ? 'Gestion flotte' : 'Fleet Management',
       icon: Car,
       accent: 'from-blue-500 to-indigo-600',
       path: '/admin/fleet',
-      moduleName: 'fleet'
+      moduleName: 'Fleet Management'
     },
     {
       id: 'pricing',
-      name: isFrench ? 'Gestion des prix' : 'Pricing Management',
+      name: isFrench ? 'Gestion tarifs' : 'Pricing Management',
       icon: WalletCards,
-      accent: 'from-emerald-500 to-teal-600',
+      accent: 'from-emerald-500 to-green-600',
       path: '/admin/pricing',
-      moduleName: 'pricing'
+      moduleName: 'Pricing Management'
     },
     {
       id: 'maintenance',
@@ -182,15 +194,15 @@ const AdminLayout = () => {
       icon: Wrench,
       accent: 'from-amber-500 to-orange-600',
       path: '/admin/maintenance',
-      moduleName: 'maintenance'
+      moduleName: 'Quad Maintenance'
     },
     {
       id: 'fuel',
-      name: isFrench ? 'Journal carburant' : 'Fuel Logs',
+      name: isFrench ? 'Logs carburant' : 'Fuel Logs',
       icon: Fuel,
-      accent: 'from-lime-500 to-emerald-600',
+      accent: 'from-teal-500 to-emerald-600',
       path: '/admin/fuel',
-      moduleName: 'fuel'
+      moduleName: 'Fuel Logs'
     },
     {
       id: 'inventory',
@@ -198,79 +210,87 @@ const AdminLayout = () => {
       icon: Boxes,
       accent: 'from-slate-500 to-slate-700',
       path: '/admin/inventory',
-      moduleName: 'inventory'
+      moduleName: 'Inventory'
     },
     {
       id: 'finance',
-      name: isFrench ? 'Gestion financière' : 'Finance Management',
+      name: isFrench ? 'Finance' : 'Finance',
       icon: CreditCard,
       accent: 'from-emerald-500 to-green-600',
       path: '/admin/finance',
-      moduleName: 'finance'
+      moduleName: 'Finance Management'
     },
     {
       id: 'alerts',
       name: isFrench ? 'Alertes' : 'Alerts',
       icon: Bell,
-      accent: 'from-rose-500 to-red-600',
+      accent: 'from-rose-500 to-pink-600',
       path: '/admin/alerts',
-      moduleName: 'alerts'
+      moduleName: 'Alerts'
     },
     {
       id: 'users',
-      name: isFrench ? 'Utilisateurs et rôles' : 'User & Role Management',
-      icon: Shield,
-      accent: 'from-purple-500 to-fuchsia-600',
+      name: isFrench ? 'Utilisateurs' : 'User Management',
+      icon: Users,
+      accent: 'from-slate-600 to-slate-800',
       path: '/admin/users',
-      moduleName: 'users'
+      moduleName: 'User & Role Management'
     },
     {
       id: 'verification',
-      name: isFrench ? 'Centre de vérification' : 'Verification Center',
+      name: isFrench ? 'Vérification' : 'Verification',
       icon: Shield,
       accent: 'from-violet-500 to-indigo-600',
       path: '/admin/verification',
-      moduleName: 'verification'
+      moduleName: 'Verification Center'
+    },
+    {
+      id: 'messages',
+      name: isFrench ? 'Centre de messages' : 'Message Center',
+      icon: MessageSquare,
+      accent: 'from-violet-500 to-fuchsia-600',
+      path: '/admin/messages',
+      moduleName: 'Messages'
     },
     {
       id: 'workspaces',
-      name: isFrench ? 'Espaces de travail' : 'Workspaces',
+      name: isFrench ? 'Workspaces' : 'Workspaces',
       icon: Building2,
-      accent: 'from-indigo-500 to-slate-700',
+      accent: 'from-slate-500 to-slate-700',
       path: '/admin/workspaces',
-      moduleName: 'workspaces'
+      moduleName: 'Workspaces'
     },
     {
       id: 'marketplace',
-      name: isFrench ? 'Revue marketplace' : 'Marketplace Review',
+      name: isFrench ? 'Marketplace' : 'Marketplace',
       icon: Store,
-      accent: 'from-amber-500 to-orange-600',
+      accent: 'from-fuchsia-500 to-violet-600',
       path: '/admin/marketplace',
-      moduleName: 'marketplace'
-    },
-    {
-      id: 'settings',
-      name: isFrench ? 'Paramètres système' : 'System Settings',
-      icon: Settings,
-      accent: 'from-slate-500 to-slate-700',
-      path: '/admin/settings',
-      moduleName: 'settings'
+      moduleName: 'Marketplace Review'
     },
     {
       id: 'website',
-      name: isFrench ? 'Editeur du site' : 'Website Editor',
+      name: isFrench ? 'Site web' : 'Website',
       icon: Globe,
-      accent: 'from-violet-500 to-fuchsia-600',
+      accent: 'from-sky-500 to-indigo-600',
       path: '/admin/website',
-      moduleName: 'settings'
+      moduleName: 'System Settings'
     },
     {
       id: 'export',
-      name: isFrench ? 'Export projet' : 'Project Export',
+      name: isFrench ? 'Export' : 'Export',
       icon: FileOutput,
-      accent: 'from-teal-500 to-cyan-600',
+      accent: 'from-slate-500 to-slate-700',
       path: '/admin/export',
-      moduleName: 'export'
+      moduleName: 'Project Export'
+    },
+    {
+      id: 'settings',
+      name: isFrench ? 'Paramètres' : 'Settings',
+      icon: Settings,
+      accent: 'from-slate-500 to-slate-700',
+      path: '/admin/settings',
+      moduleName: 'System Settings'
     }
   ];
 
@@ -414,6 +434,44 @@ const AdminLayout = () => {
   }, [location.pathname]);
 
   useEffect(() => {
+    const handleAdminModalOpen = () => {
+      setSidebarOpen(false);
+      setProfileMenuOpen(false);
+      setModalFocusDepth((current) => current + 1);
+    };
+
+    const handleAdminModalClose = () => {
+      setModalFocusDepth((current) => Math.max(0, current - 1));
+    };
+
+    window.addEventListener('admin:modal-open', handleAdminModalOpen);
+    window.addEventListener('admin:modal-close', handleAdminModalClose);
+    return () => {
+      window.removeEventListener('admin:modal-open', handleAdminModalOpen);
+      window.removeEventListener('admin:modal-close', handleAdminModalClose);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (modalFocusDepth === 0) {
+      return undefined;
+    }
+
+    const resetIfNoModal = () => {
+      if (typeof document === 'undefined') return;
+      const modalOpen = document.querySelector(
+        '[data-admin-modal-open="true"], [role="dialog"][data-state="open"], [role="dialog"][aria-modal="true"]'
+      );
+      if (!modalOpen) {
+        setModalFocusDepth(0);
+      }
+    };
+
+    const timer = window.setTimeout(resetIfNoModal, 300);
+    return () => window.clearTimeout(timer);
+  }, [modalFocusDepth, location.pathname]);
+
+  useEffect(() => {
     if (!userProfile || !hasPermission('fuel')) {
       return undefined;
     }
@@ -473,6 +531,34 @@ const AdminLayout = () => {
   }, [userProfile, location.pathname]);
 
   useEffect(() => {
+    const userId = String(user?.id || '').trim();
+    if (!userId) return undefined;
+
+    const displayLabel = String(
+      userProfile?.fullName ||
+      userProfile?.display_name ||
+      userProfile?.email ||
+      user?.user_metadata?.full_name ||
+      user?.user_metadata?.name ||
+      user?.email ||
+      'Admin'
+    ).trim();
+
+    const workspaceRole = String(
+      userProfile?.role ||
+      user?.user_metadata?.role ||
+      'admin'
+    ).trim().toLowerCase() || 'admin';
+
+    return MessageService.startWorkspacePresence({
+      userId,
+      userLabel: displayLabel,
+      userRole: workspaceRole,
+      pagePath: location.pathname,
+    });
+  }, [user?.id, user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name, user?.user_metadata?.role, userProfile?.fullName, userProfile?.display_name, userProfile?.email, userProfile?.role, location.pathname]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const runAutomaticRentalMediaCleanup = async () => {
@@ -492,6 +578,33 @@ const AdminLayout = () => {
 
     if (userProfile?.role) {
       runAutomaticRentalMediaCleanup();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [userProfile?.role]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const runAutomaticMessageMediaCleanup = async () => {
+      try {
+        const result = await MessageMediaRetentionService.maybeRunAutomaticCleanup(
+          userProfile?.role
+        );
+        if (!cancelled && result?.ran) {
+          console.log('🧹 Automatic message media cleanup completed:', result);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Automatic message media cleanup skipped:', error);
+        }
+      }
+    };
+
+    if (userProfile?.role) {
+      runAutomaticMessageMediaCleanup();
     }
 
     return () => {
@@ -564,6 +677,8 @@ const AdminLayout = () => {
 
   const shouldShowHamburger = isMobile || isTablet;
   const shouldFixSidebar = !isMobile && !isTablet;
+  const shouldHideSidebarForModal = modalFocusDepth > 0;
+  const shouldCollapseDesktopSidebar = shouldFixSidebar && shouldHideSidebarForModal;
   const previewBusinessOwnerId = new URLSearchParams(location.search).get('business_owner_id');
   const subscriptionStatus = String(userProfile?.subscriptionStatus || user?.user_metadata?.subscription_status || '').toLowerCase();
   const trialDaysRemaining = getTrialDaysRemaining(userProfile?.trialEndsAt || user?.user_metadata?.trial_ends_at);
@@ -676,7 +791,10 @@ const AdminLayout = () => {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50 flex">
+    <div
+      className="min-h-screen bg-slate-50 flex"
+      style={{ '--workspace-mobile-header-offset': shouldShowHamburger ? '4rem' : '0px' }}
+    >
       {shouldShowHamburger && sidebarOpen && (
         <div 
           className="fixed inset-0 z-[9999] bg-slate-950/45 backdrop-blur-[2px]"
@@ -689,14 +807,17 @@ const AdminLayout = () => {
           ? 'static'
           : 'fixed'
         }
-        inset-y-0 left-0 z-[10000] w-[19rem] transform transition-transform duration-300 ease-in-out
+        inset-y-0 left-0 z-[10000] transform transition-all duration-300 ease-in-out
         flex flex-col h-full
+        ${shouldCollapseDesktopSidebar ? 'w-0 min-w-0 opacity-0 pointer-events-none' : 'w-[19rem]'}
         ${shouldShowHamburger 
           ? (sidebarOpen ? 'translate-x-0' : '-translate-x-full')
-          : 'translate-x-0'
+          : shouldHideSidebarForModal
+            ? '-translate-x-full pointer-events-none'
+            : 'translate-x-0'
         }
       `}>
-        <div className="m-3 flex h-full flex-col overflow-hidden rounded-[30px] border border-violet-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(245,247,255,0.98)_100%)] shadow-[0_26px_70px_rgba(76,29,149,0.10)] backdrop-blur">
+        <div className={`m-3 flex h-full flex-col overflow-hidden rounded-[30px] border border-violet-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(245,247,255,0.98)_100%)] shadow-[0_26px_70px_rgba(76,29,149,0.10)] backdrop-blur transition-opacity duration-200 ${shouldCollapseDesktopSidebar ? 'opacity-0' : 'opacity-100'}`}>
         <div className="flex-shrink-0 border-b border-violet-100/80 px-5 py-5">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -826,7 +947,7 @@ const AdminLayout = () => {
       </div>
 
       <div className={`flex-1 flex flex-col overflow-hidden ${shouldFixSidebar ? 'ml-0' : ''}`}>
-        <header className="relative z-[90] isolate h-16 border-b border-slate-200 bg-white/90 backdrop-blur-sm shadow-sm flex items-center justify-between px-4 lg:px-6">
+        <header className={`isolate h-16 border-b border-slate-200 bg-white/90 backdrop-blur-xl shadow-sm flex items-center justify-between px-4 lg:px-6 ${shouldShowHamburger ? 'fixed inset-x-0 top-0 z-[80]' : 'sticky top-0'} ${shouldHideSidebarForModal ? 'z-[20]' : shouldShowHamburger ? 'z-[80]' : 'z-[90]'}`}>
           <div className="flex items-center space-x-4">
             {shouldShowHamburger && (
               <button
@@ -974,10 +1095,11 @@ const AdminLayout = () => {
           </div>
         ) : null}
 
-        <main key={activeLanguage} className="flex-1 overflow-y-auto bg-gray-50">
+        <main key={activeLanguage} className={`flex-1 overflow-y-auto bg-gray-50 ${shouldShowHamburger ? 'pt-[calc(var(--workspace-mobile-header-offset)+0.75rem)]' : ''}`}>
           <Outlet />
         </main>
       </div>
+
     </div>
   );
 };

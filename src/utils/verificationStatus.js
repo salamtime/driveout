@@ -1,13 +1,14 @@
 export const VERIFICATION_BUCKET = 'verification-documents';
 
-export const VERIFICATION_STATUSES = ['pending', 'approved', 'rejected', 'suspended', 'expired'];
+export const VERIFICATION_STATUSES = ['pending', 'approved', 'rejected', 'suspended', 'expired', 'archived'];
 
 export const VERIFICATION_LABELS = {
   pending: { en: 'Pending review', fr: 'En attente' },
   approved: { en: 'Verified', fr: 'Vérifié' },
-  rejected: { en: 'Rejected', fr: 'Rejeté' },
+  rejected: { en: 'Replacement requested', fr: 'Remplacement demandé' },
   suspended: { en: 'Suspended', fr: 'Suspendu' },
   expired: { en: 'Expired', fr: 'Expiré' },
+  archived: { en: 'Archived', fr: 'Archivé' },
   missing: { en: 'Required', fr: 'Requis' },
 };
 
@@ -42,6 +43,8 @@ export const getVerificationBadgeClass = (status) => {
       return 'border-orange-200 bg-orange-50 text-orange-700';
     case 'expired':
       return 'border-amber-200 bg-amber-50 text-amber-700';
+    case 'archived':
+      return 'border-slate-200 bg-slate-100 text-slate-600';
     case 'missing':
       return 'border-slate-200 bg-slate-50 text-slate-600';
     default:
@@ -50,6 +53,9 @@ export const getVerificationBadgeClass = (status) => {
 };
 
 export const getLatestVerificationByType = (requests = []) => requests.reduce((acc, request) => {
+  if (String(request?.status || '').trim().toLowerCase() === 'archived') {
+    return acc;
+  }
   if (!acc[request.verification_type]) {
     acc[request.verification_type] = request;
   }

@@ -1,15 +1,65 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ChevronRight, Home, LayoutDashboard, LogOut, Menu, X } from 'lucide-react';
+import { ChevronRight, LogOut, Menu, X } from 'lucide-react';
 import i18n from '../../i18n';
-import { ACCOUNT_WORKSPACE_SECTIONS, getAccountWorkspaceSection } from './accountWorkspaceConfig';
+import {
+  ACCOUNT_WORKSPACE_MODES,
+  getAccountWorkspaceSectionByPath,
+  getAccountWorkspaceSection,
+  getAccountWorkspaceSectionsForMode,
+} from './accountWorkspaceConfig';
 import { useAuth } from '../../contexts/AuthContext';
-import { isApprovedBusinessOwnerAccount, isBusinessAccountType, isBusinessOwnerAccountType, isPlatformOwnerEmail } from '../../utils/accountType';
+import {
+  isApprovedBusinessOwnerAccount,
+  isPlatformOwnerEmail,
+  resolveManagedAccountType,
+} from '../../utils/accountType';
 import { useLanguageContext } from '../../contexts/LanguageContext';
+import MessageService from '../../services/MessageService';
+import BusinessMarketplaceService from '../../services/BusinessMarketplaceService';
+import CustomerExperienceService from '../../services/CustomerExperienceService';
+import VerificationService from '../../services/VerificationService';
+import { getCurrentLocationPath } from '../../utils/navigationReturn';
 
 const SAHARAX_LOGO_SRC = '/assets/logo.jpg';
+const WEBSITE_HOME_HREF = '/website';
 const ACCOUNT_MENU_PERSIST_KEY = 'saharax_account_menu_open';
 const ACCOUNT_RETURN_PATH_KEY = 'saharax_account_return_path';
+const LAST_OWNER_VEHICLE_ID_KEY = 'saharax_last_owner_vehicle_id';
+const LAST_OWNER_VEHICLE_COUNT_KEY = 'saharax_last_owner_vehicle_count';
+const OWNER_VEHICLE_IDS_KEY = 'saharax_owner_vehicle_ids';
+const NAV_GROUPS = [
+  { id: 'main', label: { en: 'Main', fr: 'Principal' }, items: ['overview', 'marketplace', 'rentals', 'messages'] },
+  { id: 'owner-tools', label: { en: 'Owner tools', fr: 'Outils propriétaire' }, items: ['my-vehicles', 'verification', 'boost'] },
+  { id: 'finance', label: { en: 'Finance', fr: 'Finance' }, items: ['revenue', 'rewards'] },
+  { id: 'account', label: { en: 'Account', fr: 'Compte' }, items: ['reviews', 'tours', 'settings'] },
+];
+
+const buildOwnerVehicleStorageKey = (baseKey, userId = '') => {
+  const normalizedUserId = String(userId || '').trim();
+  return normalizedUserId ? `${baseKey}:${normalizedUserId}` : baseKey;
+};
+
+const getKnownOwnerVehicleCount = (userId = '') => {
+  if (typeof window === 'undefined') return 0;
+
+  try {
+    const savedCount = Number.parseInt(
+      window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_COUNT_KEY, userId)) || '0',
+      10
+    );
+    const savedIds = JSON.parse(
+      window.localStorage.getItem(buildOwnerVehicleStorageKey(OWNER_VEHICLE_IDS_KEY, userId)) || '[]'
+    );
+    const idCount = Array.isArray(savedIds) ? savedIds.map((item) => String(item || '').trim()).filter(Boolean).length : 0;
+    const hasLastVehicle = Boolean(
+      String(window.localStorage.getItem(buildOwnerVehicleStorageKey(LAST_OWNER_VEHICLE_ID_KEY, userId)) || '').trim()
+    );
+    return Math.max(Number.isFinite(savedCount) ? savedCount : 0, idCount, hasLastVehicle ? 1 : 0);
+  } catch {
+    return 0;
+  }
+};
 
 const AccountWorkspaceLayout = () => {
   const isFrench = i18n.resolvedLanguage === 'fr';
@@ -27,6 +77,7 @@ const AccountWorkspaceLayout = () => {
   const { setLanguage } = useLanguageContext();
   const tr = (en, fr) => (isFrench ? fr : en);
   const activeLanguage = i18n.resolvedLanguage === 'fr' ? 'fr' : 'en';
+  const [dbOwnerVehicleCount, setDbOwnerVehicleCount] = useState(0);
 
   const normalizedRole = String(userProfile?.role || '').toLowerCase();
   const normalizedEmail = String(userProfile?.email || user?.email || '').toLowerCase();
@@ -38,7 +89,11 @@ const AccountWorkspaceLayout = () => {
   ).toLowerCase();
   const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
   const approvedBusinessOwner = !platformOwnerOverride && isApprovedBusinessOwnerAccount(user?.user_metadata || user?.app_metadata || {});
-  const businessOwnerFreezeRedirect = !platformOwnerOverride && isBusinessOwnerAccountType(normalizedAccountType)
+  const managedAccountType = resolveManagedAccountType({
+    account_type: normalizedAccountType,
+    data_source: userProfile?.dataSource || user?.user_metadata?.account_source || user?.app_metadata?.account_source || '',
+  });
+  const businessOwnerHomePath = !platformOwnerOverride && managedAccountType === 'business_owner'
     ? getBusinessOwnerHomePath({
         account_type: normalizedAccountType,
         verification_status: userProfile?.verificationStatus || user?.user_metadata?.verification_status || user?.app_metadata?.verification_status,
@@ -47,23 +102,99 @@ const AccountWorkspaceLayout = () => {
     : null;
   const canOpenAdminPanel = ['owner', 'admin', 'employee', 'guide', 'business_owner'].includes(normalizedRole) || approvedBusinessOwner;
   const adminHref = normalizedRole === 'guide' ? '/guide/dashboard' : '/admin/dashboard';
-  const showBusinessWorkspaceAction = Boolean(businessOwnerFreezeRedirect || canOpenAdminPanel);
-  const businessWorkspaceHref = businessOwnerFreezeRedirect || adminHref;
+  const businessOwnerAllowedPaths = useMemo(() => {
+    const candidates = [
+      businessOwnerHomePath,
+      '/account/vehicles',
+      '/account/boost',
+      '/account/verification',
+      '/account/messages',
+      '/account/settings',
+      '/account/wallet',
+      '/account/rewards',
+      '/account/revenue',
+      '/account/profile',
+    ].filter(Boolean);
+
+    return Array.from(new Set(candidates));
+  }, [businessOwnerHomePath]);
+  const knownOwnerVehicleCount = useMemo(
+    () => getKnownOwnerVehicleCount(user?.id),
+    [location.pathname, user?.id]
+  );
+  const effectiveOwnerVehicleCount = Math.max(knownOwnerVehicleCount, dbOwnerVehicleCount);
+  const isInsideOwnerFlow = ['/account/vehicles', '/account/boost', '/account/verification'].some((path) =>
+    location.pathname === path || location.pathname.startsWith(`${path}/`)
+  );
+  const workspaceAccountType = useMemo(() => {
+    if (managedAccountType === 'business_owner') {
+      return 'business_owner';
+    }
+
+    if (
+      isInsideOwnerFlow
+    ) {
+      return 'private_owner';
+    }
+
+    if (managedAccountType === 'private_owner' && effectiveOwnerVehicleCount > 0) {
+      return 'private_owner';
+    }
+
+    if (effectiveOwnerVehicleCount > 0) {
+      return 'private_owner';
+    }
+
+    return 'customer';
+  }, [effectiveOwnerVehicleCount, isInsideOwnerFlow, managedAccountType]);
+  const workspaceMode = workspaceAccountType === 'customer'
+    ? ACCOUNT_WORKSPACE_MODES.service
+    : effectiveOwnerVehicleCount > 0
+      ? ACCOUNT_WORKSPACE_MODES.owner
+      : ACCOUNT_WORKSPACE_MODES.ownerSetup;
   const visibleSections = useMemo(
-    () =>
-      ACCOUNT_WORKSPACE_SECTIONS.filter((section) => {
-        if (section.id === 'marketplace' || section.id === 'revenue') {
-          return isBusinessAccountType(normalizedAccountType) || canOpenAdminPanel;
-        }
-        return true;
-      }),
-    [normalizedAccountType, canOpenAdminPanel]
+    () => getAccountWorkspaceSectionsForMode(workspaceMode),
+    [workspaceMode]
   );
+  const matchedSection = useMemo(
+    () => getAccountWorkspaceSectionByPath(location.pathname),
+    [location.pathname]
+  );
+  const currentSectionId = useMemo(() => {
+    if (
+      location.pathname === '/account/vehicles' ||
+      location.pathname.startsWith('/account/vehicles/') ||
+      location.pathname.startsWith('/account/marketplace/vehicles/')
+    ) {
+      return 'my-vehicles';
+    }
+    return visibleSections.find((section) => location.pathname === section.href || location.pathname.startsWith(`${section.href}/`))?.id || 'overview';
+  }, [location.pathname, visibleSections]);
   const currentSection = getAccountWorkspaceSection(
-    visibleSections.find((section) => location.pathname === section.href || location.pathname.startsWith(`${section.href}/`))?.id || 'overview'
+    currentSectionId
   );
+  const isMessagesSection = currentSectionId === 'messages';
   const accountLabel = userProfile?.fullName || userProfile?.email || user?.email || tr('Signed in', 'Connecté');
-  const accountSubtitle = userProfile?.role || tr('Customer', 'Client');
+  const accountAvatarUrl = String(
+    userProfile?.profile_picture_url ||
+    userProfile?.avatar_url ||
+    user?.user_metadata?.profile_picture_url ||
+    user?.user_metadata?.avatar_url ||
+    ''
+  ).trim();
+  const groupedSections = useMemo(() => {
+    const visibleLookup = new Map(visibleSections.map((section) => [section.id, section]));
+    return NAV_GROUPS
+      .map((group) => ({
+        ...group,
+        sections: group.items.map((itemId) => visibleLookup.get(itemId)).filter(Boolean),
+      }))
+      .filter((group) => group.sections.length > 0);
+  }, [visibleSections]);
+  const accountHomeHref = useMemo(
+    () => visibleSections.find((section) => section.id === 'overview')?.href || '/account/overview',
+    [visibleSections]
+  );
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -105,29 +236,156 @@ const AccountWorkspaceLayout = () => {
     }
   }, [menuOpen]);
 
-  const handleNavigate = (href) => {
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [location.pathname]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadOwnerVehicleCount = async () => {
+      if (!user?.id || managedAccountType === 'business_owner') {
+        setDbOwnerVehicleCount(0);
+        return;
+      }
+
+      try {
+        const result = await BusinessMarketplaceService.getOwnerVehicleCount(user.id);
+        if (!cancelled) {
+          setDbOwnerVehicleCount(Number(result?.count || 0));
+        }
+      } catch {
+        if (!cancelled) {
+          setDbOwnerVehicleCount(0);
+        }
+      }
+    };
+
+    void loadOwnerVehicleCount();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [managedAccountType, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return undefined;
+
+    const warmWorkspace = () => {
+      void import('../../pages/account/AccountOverview');
+      void import('../../pages/account/AccountRentals');
+      void import('../../pages/account/AccountMessages');
+      void import('../../pages/account/AccountRevenue');
+      void import('../../pages/account/AccountVerification');
+      void import('../../pages/account/AccountMarketplace');
+
+      void CustomerExperienceService.getCustomerAccountSnapshot(user).catch(() => null);
+      void CustomerExperienceService.getCustomerMarketplaceRequests(user).catch(() => []);
+      void CustomerExperienceService.getCustomerRentalHistory(user).catch(() => []);
+      void VerificationService.getEntityVerificationSummary('user', user.id).catch(() => null);
+      if (managedAccountType !== 'business_owner') {
+        void BusinessMarketplaceService.getOwnerVehicleCount(user.id).catch(() => null);
+      }
+    };
+
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      const idleId = window.requestIdleCallback(warmWorkspace, { timeout: 1200 });
+      return () => window.cancelIdleCallback?.(idleId);
+    }
+
+    const timeoutId = window.setTimeout(warmWorkspace, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [managedAccountType, user?.id]);
+
+  useEffect(() => {
+    if (workspaceAccountType !== 'business_owner') return;
+    if (!businessOwnerHomePath) return;
+    const isAllowedOwnerPath = businessOwnerAllowedPaths.some((allowedPath) =>
+      location.pathname === allowedPath || location.pathname.startsWith(`${allowedPath}/`)
+    );
+    if (isAllowedOwnerPath) {
+      return;
+    }
+    navigate(businessOwnerHomePath, { replace: true });
+  }, [businessOwnerAllowedPaths, businessOwnerHomePath, location.pathname, navigate, workspaceAccountType]);
+
+  useEffect(() => {
+    const userId = String(user?.id || '').trim();
+    if (!userId) return undefined;
+
+    const displayLabel = String(
+      userProfile?.fullName ||
+      userProfile?.display_name ||
+      userProfile?.email ||
+      user?.user_metadata?.full_name ||
+      user?.user_metadata?.name ||
+      user?.email ||
+      'User'
+    ).trim();
+
+    const workspaceRole = String(
+      userProfile?.role ||
+      normalizedAccountType ||
+      user?.user_metadata?.role ||
+      'customer'
+    ).trim().toLowerCase() || 'customer';
+
+    return MessageService.startWorkspacePresence({
+      userId,
+      userLabel: displayLabel,
+      userRole: workspaceRole,
+      pagePath: location.pathname,
+    });
+  }, [user?.id, user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name, user?.user_metadata?.role, userProfile?.fullName, userProfile?.display_name, userProfile?.email, userProfile?.role, normalizedAccountType, location.pathname]);
+
+  useEffect(() => {
     setMenuOpen(false);
+  }, [location.pathname, location.search, location.hash]);
+
+  useEffect(() => {
+    if (!matchedSection) return;
+    const sectionVisible = visibleSections.some((section) => section.id === matchedSection.id);
+    if (sectionVisible) return;
+    navigate('/account/overview', { replace: true });
+  }, [matchedSection, visibleSections, navigate]);
+
+  const handleNavigate = (item) => {
+    setMenuOpen(false);
+    const href = item?.href || '/account/overview';
+    const currentPath = getCurrentLocationPath(location);
+    const shouldPreserveReturnPath =
+      item?.id === 'verification' &&
+      (
+        location.pathname === '/account/vehicles' ||
+        location.pathname.startsWith('/account/vehicles/') ||
+        location.pathname.startsWith('/account/marketplace/vehicles/')
+      );
+
+    if (shouldPreserveReturnPath) {
+      navigate(href, {
+        state: {
+          from: currentPath,
+        },
+      });
+      return;
+    }
+
     navigate(href);
   };
 
-  const handleReturnToWebsite = () => {
-    let targetHref = '/website';
-    try {
-      const savedHref = window.sessionStorage.getItem(ACCOUNT_RETURN_PATH_KEY);
-      if (savedHref) {
-        targetHref = savedHref;
-      }
-      window.sessionStorage.setItem(ACCOUNT_MENU_PERSIST_KEY, '1');
-    } catch (error) {
-      console.warn('Failed to restore account return path:', error);
-    }
-    navigate(targetHref);
+  const resolveSectionHref = (item) => {
+    return item.href;
   };
 
   const handleSignOut = async () => {
     setMenuOpen(false);
     await signOut();
-    navigate('/website', { replace: true });
+    navigate(WEBSITE_HOME_HREF, { replace: true });
+  };
+
+  const handleReturnToWebsite = () => {
+    setMenuOpen(false);
+    navigate(WEBSITE_HOME_HREF);
   };
 
   const renderNavItems = () => (
@@ -139,78 +397,107 @@ const AccountWorkspaceLayout = () => {
         overscrollBehavior: 'contain',
       }}
     >
-      {visibleSections.map((item) => {
-        const Icon = item.icon;
-        const isActive = location.pathname === item.href || location.pathname.startsWith(`${item.href}/`);
-        return (
-          <Link
-            key={item.id}
-            to={item.href}
-            className={`
-              group relative block w-full overflow-hidden rounded-2xl border px-3.5 py-3 text-left transition-all duration-200
-              ${isActive
-                ? 'border-violet-200 bg-gradient-to-r from-violet-50 via-white to-indigo-50 text-violet-900 shadow-[0_16px_38px_rgba(79,70,229,0.12)]'
-                : 'border-transparent bg-white/70 text-slate-700 hover:border-slate-200 hover:bg-white hover:shadow-sm'
-              }
-            `}
-          >
-            <div className="flex items-center gap-3">
-              <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${item.accent} text-white shadow-sm`}>
-                <Icon className="h-5 w-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className={`truncate text-sm font-semibold ${isActive ? 'text-violet-900' : 'text-slate-800'}`}>
-                  {item.label[isFrench ? 'fr' : 'en']}
-                </div>
-                <div className={`mt-0.5 text-xs ${isActive ? 'text-violet-600' : 'text-slate-500'}`}>
-                  {isActive ? tr('Current workspace', 'Espace actuel') : tr('Open page', 'Ouvrir la page')}
-                </div>
-              </div>
-              <ChevronRight className={`h-4 w-4 flex-shrink-0 transition-transform ${isActive ? 'text-violet-600' : 'text-slate-400 group-hover:translate-x-0.5'}`} />
-            </div>
-          </Link>
-        );
-      })}
+      {groupedSections.map((group) => (
+        <section key={group.id} className="space-y-2">
+          <p className="px-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+            {group.label[isFrench ? 'fr' : 'en']}
+          </p>
+          <div className="space-y-2">
+            {group.sections.map((item) => {
+              const Icon = item.icon;
+              const itemHref = resolveSectionHref(item);
+              const isPrimary = group.id === 'main';
+              const isActive = item.id === currentSectionId || location.pathname === itemHref || location.pathname.startsWith(`${itemHref}/`);
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleNavigate(item)}
+                  className={`
+                    group relative block min-h-[44px] w-full overflow-hidden rounded-[1.15rem] border px-3 py-3 text-left transition-all duration-200
+                    ${isActive
+                      ? 'border-violet-200 bg-gradient-to-r from-violet-50 via-white to-indigo-50 text-violet-900 shadow-[0_16px_38px_rgba(79,70,229,0.12)]'
+                      : isPrimary
+                        ? 'border-slate-200 bg-white text-slate-800 shadow-sm hover:border-violet-200 hover:shadow-[0_16px_30px_rgba(79,70,229,0.08)]'
+                        : 'border-transparent bg-white/70 text-slate-700 hover:border-slate-200 hover:bg-white hover:shadow-sm'
+                    }
+                  `}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[1rem] bg-gradient-to-br ${item.accent} text-white shadow-sm`}>
+                      <Icon className="h-4.5 w-4.5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className={`truncate text-sm font-semibold ${isActive ? 'text-violet-900' : 'text-slate-800'}`}>
+                        {item.label[isFrench ? 'fr' : 'en']}
+                      </div>
+                    </div>
+                    <ChevronRight className={`h-4 w-4 flex-shrink-0 transition-transform ${isActive ? 'text-violet-600' : 'text-slate-400 group-hover:translate-x-0.5'}`} />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ))}
     </nav>
   );
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#eef2ff_46%,#ffffff_100%)]">
-      <header className="sticky top-0 z-40 border-b border-violet-100/80 bg-white/88 backdrop-blur-xl">
+    <div
+      className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_44%,#ffffff_100%)]"
+      style={{ '--workspace-mobile-header-offset': '5rem' }}
+    >
+      <header className="fixed inset-x-0 top-0 z-[80] border-b border-violet-100/80 bg-white/88 backdrop-blur-xl">
         <div className="mx-auto max-w-7xl px-4 sm:px-6">
-          <div className="flex h-20 items-center justify-between gap-4">
+          <div className="flex h-20 items-center justify-between gap-4 pl-16 md:pl-0">
             <div className="flex items-center gap-3">
               <button
                 type="button"
                 onClick={() => setMenuOpen(true)}
-                className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-violet-100 bg-white text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-50"
+                className="fixed left-4 top-4 z-50 inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-violet-100 bg-white text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-50 md:static md:shadow-sm"
                 aria-label="Open account menu"
               >
                 <Menu className="h-5 w-5" />
               </button>
 
-              <Link to="/website" className="flex items-center gap-3">
+              <div className="flex flex-col gap-1">
+                <button
+                  type="button"
+                  onClick={handleReturnToWebsite}
+                  className="hidden w-fit items-center gap-1 text-xs font-medium text-slate-500 transition hover:text-violet-700 md:inline-flex"
+                >
+                  <span aria-hidden="true">←</span>
+                  <span>{tr('Back to website', 'Retour au site')}</span>
+                </button>
+
+                <Link to={accountHomeHref} className="flex items-center gap-3">
                 <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
                   <img src={SAHARAX_LOGO_SRC} alt="SaharaX" className="h-full w-full object-contain" />
                 </div>
                 <div>
                   <p className="text-sm font-semibold tracking-[0.12em] text-violet-600">SaharaX</p>
-                  <p className="text-sm text-slate-500">{tr('My profile workspace', 'Mon espace profil')}</p>
+                  <p className="text-sm text-slate-500">{tr('My profile', 'Mon profil')}</p>
                 </div>
-              </Link>
-            </div>
-
-            <div className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50/80 px-4 py-2 text-sm font-semibold text-violet-700">
-              {currentSection.label[isFrench ? 'fr' : 'en']}
+                </Link>
+              </div>
             </div>
           </div>
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 sm:py-6">
-        <main className="min-w-0">
-          <Outlet />
-        </main>
+      <div className="mx-auto max-w-7xl px-4 pb-[calc(env(safe-area-inset-bottom,0px)+4.5rem)] pt-[calc(var(--workspace-mobile-header-offset)+1rem)] sm:px-6 sm:pb-6 sm:pt-24">
+        {isMessagesSection ? (
+          <main className="min-w-0">
+            <Outlet />
+          </main>
+        ) : (
+          <div className="overflow-hidden rounded-[34px] border border-white/70 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.92),rgba(255,255,255,0.72)_38%,rgba(245,243,255,0.72)_100%)] shadow-[0_24px_70px_rgba(76,29,149,0.08)] backdrop-blur">
+            <main className="min-w-0 p-4 sm:p-6">
+              <Outlet />
+            </main>
+          </div>
+        )}
       </div>
 
       {menuOpen ? (
@@ -223,56 +510,62 @@ const AccountWorkspaceLayout = () => {
           }}
         >
           <div className="fixed inset-0 bg-slate-950/38 backdrop-blur-[2px]" onClick={() => setMenuOpen(false)} />
-          <div className="relative inset-y-0 left-0 z-50 w-[19rem] max-w-[88vw] transform transition-transform duration-300 ease-in-out">
-            <div className="m-3 flex h-[calc(100dvh-1.5rem)] flex-col overflow-hidden rounded-[30px] border border-violet-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(245,247,255,0.98)_100%)] shadow-[0_26px_70px_rgba(76,29,149,0.10)] backdrop-blur">
-            <div className="border-b border-violet-100/80 px-5 py-5">
+          <div className="relative inset-y-0 left-0 z-50 w-[18rem] max-w-[86vw] transform transition-transform duration-300 ease-in-out">
+            <div className="m-3 flex h-[calc(100dvh-1.5rem)] flex-col overflow-hidden rounded-[28px] border border-violet-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(245,247,255,0.98)_100%)] shadow-[0_24px_64px_rgba(76,29,149,0.10)] backdrop-blur">
+            <div className="border-b border-violet-100/80 px-4 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
+                  <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[1rem] border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
                     <img src={SAHARAX_LOGO_SRC} alt="SaharaX" className="h-full w-full object-contain" />
                   </div>
                   <div>
-                    <div className="text-base font-semibold text-slate-900">SaharaX</div>
-                    <div className="mt-0.5 text-xs font-medium text-slate-500">{tr('Private workspace', 'Espace privé')}</div>
+                    <div className="text-[15px] font-semibold text-slate-900">SaharaX</div>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setMenuOpen(false)}
-                  className="flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition-colors hover:text-slate-700"
+                  className="flex h-9 w-9 items-center justify-center rounded-[1rem] border border-slate-200 bg-white text-slate-500 transition-colors hover:text-slate-700"
                   aria-label="Close account menu"
                 >
-                  <X className="h-5 w-5" />
+                  <X className="h-4.5 w-4.5" />
                 </button>
               </div>
 
-              <div className="mt-3 space-y-3">
-                <div className="flex items-center gap-3 rounded-2xl border border-violet-100 bg-white/85 px-3 py-2 shadow-sm">
-                  <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
-                    <span className="text-sm font-semibold text-slate-700">
-                      {(accountLabel || 'S').charAt(0).toUpperCase()}
-                    </span>
+              <div className="mt-3 space-y-2.5">
+                <div className="flex items-center gap-2.5 rounded-[1.15rem] border border-violet-100 bg-white/85 px-2.5 py-2 shadow-sm">
+                  <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[0.95rem] border border-violet-100 bg-white p-1 shadow-sm">
+                    {accountAvatarUrl ? (
+                      <img
+                        src={accountAvatarUrl}
+                        alt={accountLabel}
+                        className="h-full w-full rounded-[0.8rem] object-cover"
+                      />
+                    ) : (
+                      <span className="text-sm font-semibold text-slate-700">
+                        {(accountLabel || 'S').charAt(0).toUpperCase()}
+                      </span>
+                    )}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold text-slate-900">{accountLabel}</div>
-                    <div className="text-xs capitalize text-slate-500">{accountSubtitle}</div>
                   </div>
-                  <div className="inline-flex rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
+                  <div className="inline-flex rounded-[1rem] border border-violet-100 bg-white p-1 shadow-sm">
                     {[
                       { code: 'fr', label: 'FR' },
                       { code: 'en', label: 'EN' },
                     ].map((language) => {
                       const active = activeLanguage === language.code;
-                      return (
-                        <button
-                          key={language.code}
-                          type="button"
-                          onClick={() => setLanguage(language.code)}
-                          className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all ${
-                            active
-                              ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_10px_24px_rgba(79,70,229,0.24)]'
-                              : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'
-                          }`}
+                        return (
+                          <button
+                            key={language.code}
+                            type="button"
+                            onClick={() => setLanguage(language.code)}
+                            className={`rounded-[0.85rem] px-3 py-1.5 text-sm font-semibold transition-all ${
+                              active
+                                ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_10px_24px_rgba(79,70,229,0.24)]'
+                                : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'
+                            }`}
                           aria-pressed={active}
                         >
                           {language.label}
@@ -285,36 +578,21 @@ const AccountWorkspaceLayout = () => {
                 <button
                   type="button"
                   onClick={handleReturnToWebsite}
-                  className="flex w-full items-center justify-between gap-3 rounded-2xl border border-violet-100 bg-white/85 px-3 py-3 text-left shadow-sm transition hover:border-violet-200 hover:bg-violet-50/70"
+                  className="flex w-full items-center justify-between rounded-[1.15rem] border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-600 transition hover:border-violet-200 hover:text-violet-700"
                 >
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">{tr('Back to website', 'Retour au site')}</div>
-                    <div className="mt-0.5 text-xs text-slate-500">
-                      {tr('Return to the public website and browsing flow.', 'Retournez au site public et à la navigation principale.')}
-                    </div>
-                  </div>
-                  <ArrowLeft className="h-4 w-4 flex-shrink-0 text-violet-600" />
+                  <span>{tr('Return to website', 'Retour au site')}</span>
+                  <ChevronRight className="h-4 w-4" />
                 </button>
               </div>
             </div>
 
             {renderNavItems()}
 
-            <div className="space-y-2 border-t border-violet-100/80 bg-white/80 p-4">
-              {showBusinessWorkspaceAction ? (
-                <button
-                  type="button"
-                  onClick={() => handleNavigate(businessWorkspaceHref)}
-                  className="flex w-full items-center gap-3 rounded-2xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:border-violet-200 hover:bg-violet-100"
-                >
-                  <LayoutDashboard className="h-4 w-4" />
-                  <span>{tr('Business workspace', 'Espace business')}</span>
-                </button>
-              ) : null}
+            <div className="space-y-2 border-t border-violet-100/80 bg-white/80 p-3.5">
               <button
                 type="button"
                 onClick={handleSignOut}
-                className="flex w-full items-center gap-3 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-600 transition hover:bg-rose-100"
+                className="flex w-full items-center gap-3 rounded-[1.15rem] border border-rose-100 bg-rose-50 px-3.5 py-2.5 text-sm font-semibold text-rose-600 transition hover:bg-rose-100"
               >
                 <LogOut className="h-4 w-4" />
                 <span>{tr('Sign out', 'Déconnexion')}</span>

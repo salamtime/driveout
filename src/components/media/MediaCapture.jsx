@@ -7,7 +7,14 @@ import i18n from '../../i18n';
 const MediaCapture = ({ 
   phase = 'opening', 
   onComplete,
-  existingMedia = []
+  existingMedia = [],
+  allowVideo = true,
+  maxFiles = null,
+  title = '',
+  instructions = [],
+  completeLabel = '',
+  uploadLabel = '',
+  useDefaultInstructions = true,
 }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
@@ -22,6 +29,35 @@ const MediaCapture = ({
   const videoRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
+  const maxAllowedFiles = Number.isFinite(Number(maxFiles)) && Number(maxFiles) > 0 ? Number(maxFiles) : null;
+  const isSingleFileMode = maxAllowedFiles === 1;
+
+  const appendCapturedItems = (nextItems) => {
+    setCapturedFiles((prev) => {
+      const safeItems = Array.isArray(nextItems) ? nextItems.filter(Boolean) : [];
+      if (!safeItems.length) return prev;
+
+      if (isSingleFileMode) {
+        prev.forEach((item) => {
+          if (item?.url) {
+            URL.revokeObjectURL(item.url);
+          }
+        });
+        return [safeItems[safeItems.length - 1]];
+      }
+
+      const merged = [...prev, ...safeItems];
+      if (!maxAllowedFiles) return merged;
+
+      const trimmed = merged.slice(0, maxAllowedFiles);
+      merged.slice(maxAllowedFiles).forEach((item) => {
+        if (item?.url) {
+          URL.revokeObjectURL(item.url);
+        }
+      });
+      return trimmed;
+    });
+  };
 
   useEffect(() => {
     return () => {
@@ -36,16 +72,53 @@ const MediaCapture = ({
 
   const startCamera = async (type) => {
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: type === 'video'
-      });
+      let mediaStream;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment',
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: type === 'video'
+        });
+      } catch (primaryError) {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: type === 'video'
+        });
+      }
       
       setStream(mediaStream);
       setRecordingType(type);
       
       if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
+        const videoElement = videoRef.current;
+        videoElement.srcObject = mediaStream;
+        videoElement.muted = true;
+        videoElement.playsInline = true;
+        videoElement.autoplay = true;
+
+        await new Promise((resolve) => {
+          const handleReady = async () => {
+            try {
+              await videoElement.play();
+            } catch (playError) {
+              console.error('Error playing camera preview:', playError);
+            }
+            resolve();
+          };
+
+          if (videoElement.readyState >= 1) {
+            void handleReady();
+            return;
+          }
+
+          videoElement.onloadedmetadata = () => {
+            videoElement.onloadedmetadata = null;
+            void handleReady();
+          };
+        });
       }
     } catch (error) {
       console.error('Error accessing camera:', error);
@@ -82,7 +155,7 @@ const MediaCapture = ({
       const file = new File([blob], `photo_${Date.now()}.jpg`, { type: 'image/jpeg' });
       const url = URL.createObjectURL(blob);
       
-      setCapturedFiles(prev => [...prev, {
+      appendCapturedItems([{
         file,
         url,
         type: 'photo',
@@ -114,7 +187,7 @@ const MediaCapture = ({
       // Calculate duration
       const duration = Math.floor((Date.now() - recordingStartTime) / 1000);
       
-      setCapturedFiles(prev => [...prev, {
+      appendCapturedItems([{
         file,
         url,
         type: 'video',
@@ -163,7 +236,11 @@ const MediaCapture = ({
   const handleFileUpload = (event) => {
     const files = Array.from(event.target.files);
     
-    files.forEach(file => {
+    const acceptedFiles = maxAllowedFiles
+      ? files.slice(0, isSingleFileMode ? 1 : Math.max(0, maxAllowedFiles - capturedFiles.length))
+      : files;
+
+    acceptedFiles.forEach(file => {
       const url = URL.createObjectURL(file);
       const type = file.type.startsWith('image/') ? 'photo' : 'video';
       
@@ -172,7 +249,7 @@ const MediaCapture = ({
         const video = document.createElement('video');
         video.preload = 'metadata';
         video.onloadedmetadata = () => {
-          setCapturedFiles(prev => [...prev, {
+          appendCapturedItems([{
             file,
             url,
             type,
@@ -183,7 +260,7 @@ const MediaCapture = ({
         };
         video.src = url;
       } else {
-        setCapturedFiles(prev => [...prev, {
+        appendCapturedItems([{
           file,
           url,
           type,
@@ -192,7 +269,15 @@ const MediaCapture = ({
       }
     });
     
-    toast.success(tr(`${files.length} file(s) uploaded`, `${files.length} fichier(s) téléversé(s)`));
+    if (files.length > acceptedFiles.length) {
+      toast.success(
+        isSingleFileMode
+          ? tr('Photo updated', 'Photo mise à jour')
+          : tr(`${acceptedFiles.length} file(s) uploaded`, `${acceptedFiles.length} fichier(s) téléversé(s)`)
+      );
+    } else {
+      toast.success(tr(`${acceptedFiles.length} file(s) uploaded`, `${acceptedFiles.length} fichier(s) téléversé(s)`));
+    }
   };
 
   const handleComplete = () => {
@@ -214,47 +299,67 @@ const MediaCapture = ({
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const instructionTitle = title || (phase === 'opening'
+    ? tr('Opening Documentation', "Documentation d'ouverture")
+    : tr('Closing Documentation', 'Documentation de clôture'));
+  const instructionItems = instructions.length
+    ? instructions
+    : useDefaultInstructions && phase === 'opening'
+      ? [
+          tr("Capture photos and videos of the vehicle's current condition", "Capturez des photos et vidéos de l'état actuel du véhicule"),
+          tr('Document any existing damage, scratches, or issues', 'Documentez tout dommage, rayure ou problème existant'),
+          tr('Include interior and exterior views', "Incluez des vues intérieures et extérieures"),
+          tr('Record odometer reading', 'Enregistrez le kilométrage'),
+        ]
+      : useDefaultInstructions
+        ? [
+          tr('At least one video is required for closing documentation', 'Au moins une vidéo est requise pour la documentation de clôture'),
+          tr("Document the vehicle's condition upon return", "Documentez l'état du véhicule au retour"),
+          tr('Capture any new damage or issues', 'Capturez tout nouveau dommage ou problème'),
+          tr('Record final odometer reading', 'Enregistrez le kilométrage final'),
+          tr('Include fuel level documentation', 'Incluez la documentation du niveau de carburant'),
+        ]
+        : [];
+  const resolvedCompleteLabel = completeLabel || (isFrench
+    ? `Terminer la documentation ${phase === 'opening' ? "d'ouverture" : 'de clôture'}`
+    : `Complete ${phase === 'opening' ? 'Opening' : 'Closing'} Documentation`);
+  const resolvedUploadLabel = uploadLabel || tr('Upload Files', 'Téléverser des fichiers');
+  const shouldShowInstructions = Boolean(String(title || '').trim()) || instructionItems.length > 0;
+
   return (
     <div className="space-y-6">
       {/* Instructions */}
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <div className="flex items-start">
-          <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 mr-3 flex-shrink-0" />
-          <div className="text-sm text-blue-900">
-            <p className="font-semibold mb-2">
-              {phase === 'opening' ? tr('Opening Documentation', "Documentation d'ouverture") : tr('Closing Documentation', 'Documentation de clôture')}
-            </p>
-            <ul className="list-disc list-inside space-y-1">
-              {phase === 'opening' ? (
-                <>
-                  <li>{tr("Capture photos and videos of the vehicle's current condition", "Capturez des photos et vidéos de l'état actuel du véhicule")}</li>
-                  <li>{tr('Document any existing damage, scratches, or issues', 'Documentez tout dommage, rayure ou problème existant')}</li>
-                  <li>{tr('Include interior and exterior views', "Incluez des vues intérieures et extérieures")}</li>
-                  <li>{tr('Record odometer reading', 'Enregistrez le kilométrage')}</li>
-                </>
-              ) : (
-                <>
-                  <li>{tr('At least one video is required for closing documentation', 'Au moins une vidéo est requise pour la documentation de clôture')}</li>
-                  <li>{tr("Document the vehicle's condition upon return", "Documentez l'état du véhicule au retour")}</li>
-                  <li>{tr('Capture any new damage or issues', 'Capturez tout nouveau dommage ou problème')}</li>
-                  <li>{tr('Record final odometer reading', 'Enregistrez le kilométrage final')}</li>
-                  <li>{tr('Include fuel level documentation', 'Incluez la documentation du niveau de carburant')}</li>
-                </>
-              )}
-            </ul>
+      {shouldShowInstructions ? (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-start">
+            <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 mr-3 flex-shrink-0" />
+            <div className="text-sm text-blue-900">
+              {String(title || '').trim() ? (
+                <p className="font-semibold mb-2">
+                  {instructionTitle}
+                </p>
+              ) : null}
+              {instructionItems.length ? (
+                <ul className="list-disc list-inside space-y-1">
+                  {instructionItems.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
 
       {/* Camera View */}
       {stream && (
-        <div className="relative bg-black rounded-lg overflow-hidden">
+        <div className="relative mx-auto w-full max-w-[320px] overflow-hidden rounded-[28px] bg-black aspect-square">
           <video
             ref={videoRef}
             autoPlay
             playsInline
             muted
-            className="w-full h-auto"
+            className="h-full w-full object-cover"
           />
           
           {isRecording && (
@@ -274,7 +379,7 @@ const MediaCapture = ({
               </button>
             )}
             
-            {recordingType === 'video' && !isRecording && (
+            {allowVideo && recordingType === 'video' && !isRecording && (
               <button
                 onClick={startRecording}
                 className="bg-red-600 text-white p-4 rounded-full hover:bg-red-700 transition-colors"
@@ -283,7 +388,7 @@ const MediaCapture = ({
               </button>
             )}
             
-            {recordingType === 'video' && isRecording && (
+            {allowVideo && recordingType === 'video' && isRecording && (
               <button
                 onClick={stopRecording}
                 className="bg-white text-gray-900 p-4 rounded-full hover:bg-gray-100 transition-colors"
@@ -304,7 +409,7 @@ const MediaCapture = ({
 
       {/* Capture Controls */}
       {!stream && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className={`grid grid-cols-1 gap-4 ${allowVideo ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
           <button
             onClick={() => startCamera('photo')}
             className="flex items-center justify-center space-x-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors"
@@ -313,21 +418,23 @@ const MediaCapture = ({
             <span>{tr('Take Photo', 'Prendre une photo')}</span>
           </button>
           
-          <button
-            onClick={() => startCamera('video')}
-            className="flex items-center justify-center space-x-2 bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 transition-colors"
-          >
-            <Video className="w-5 h-5" />
-            <span>{tr('Record Video', 'Enregistrer une vidéo')}</span>
-          </button>
+          {allowVideo ? (
+            <button
+              onClick={() => startCamera('video')}
+              className="flex items-center justify-center space-x-2 bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 transition-colors"
+            >
+              <Video className="w-5 h-5" />
+              <span>{tr('Record Video', 'Enregistrer une vidéo')}</span>
+            </button>
+          ) : null}
           
           <label className="flex items-center justify-center space-x-2 bg-gray-600 text-white px-6 py-3 rounded-lg hover:bg-gray-700 transition-colors cursor-pointer">
             <Upload className="w-5 h-5" />
-            <span>{tr('Upload Files', 'Téléverser des fichiers')}</span>
+            <span>{resolvedUploadLabel}</span>
             <input
               type="file"
-              multiple
-              accept="image/*,video/*"
+              multiple={!isSingleFileMode}
+              accept={allowVideo ? 'image/*,video/*' : 'image/*'}
               onChange={handleFileUpload}
               className="hidden"
             />
@@ -389,7 +496,7 @@ const MediaCapture = ({
           className="flex items-center space-x-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
           <Check className="w-5 h-5" />
-          <span>{isFrench ? `Terminer la documentation ${phase === 'opening' ? "d'ouverture" : 'de clôture'}` : `Complete ${phase === 'opening' ? 'Opening' : 'Closing'} Documentation`}</span>
+          <span>{resolvedCompleteLabel}</span>
         </button>
       </div>
     </div>

@@ -1,16 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, BadgePercent, Check, ChevronLeft, ChevronRight, Eye, Info, Share2, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Check, ChevronLeft, ChevronRight, Eye, Info, MapPin, Share2, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import i18n from '../i18n';
 import PublicCatalogService from '../services/PublicCatalogService';
 import DynamicPricingService from '../services/DynamicPricingService';
 import { shortenUrl } from '../services/UrlShortenerService';
+import { fetchSystemSettings } from '../services/systemSettingsApi';
 import PublicSiteChrome from '../components/public/PublicSiteChrome';
+import PublicSiteFooter from '../components/public/PublicSiteFooter';
 import { normalizeVehicleImageUrl } from '../utils/vehicleImage';
 import { getDefaultInstantBookingPackage } from '../utils/publicBookingFlow';
 import { formatRentalPackageAllowanceLabel } from '../utils/rentalPackageLabels';
+import { calculateSimpleRentalPricing } from '../utils/simpleRentalPricing';
 import {
   DEFAULT_STOREFRONT_TENANT_SLUG,
   getCanonicalStorefrontOrigin,
@@ -50,6 +53,11 @@ const isHalfDayPackage = (pkg) => /half[\s-]?day/i.test(String(pkg?.name || ''))
 const isHalfHourPackage = (pkg) =>
   /half[\s-]?hour/i.test(String(pkg?.name || '')) ||
   /30[\s-]?(min|minute|minutes)/i.test(String(pkg?.name || ''));
+const listingHasHalfHourPackage = (listing, rentalType = 'hourly') => {
+  if (!listing) return false;
+  const packages = Array.isArray(listing?.packageCatalog?.[rentalType]) ? listing.packageCatalog[rentalType] : [];
+  return packages.some((pkg) => isHalfHourPackage(pkg));
+};
 
 const PACKAGE_QUERY_KEYS = [
   'packageId',
@@ -66,6 +74,20 @@ const clearPackageSearchParams = (params) => {
 
 const formatPackageDisplayName = (pkg, rentalType, tr) => {
   return formatRentalPackageAllowanceLabel(pkg, { rentalType, tr });
+};
+
+const formatTripDurationLabel = (units, rentalType, tr) => {
+  const safeUnits = Math.max(rentalType === 'hourly' ? 0.5 : 1, Number(units || 1));
+  if (rentalType === 'daily') {
+    return safeUnits === 1
+      ? tr('1 day trip', 'Trajet de 1 jour')
+      : tr(`${safeUnits} day trip`, `Trajet de ${safeUnits} jours`);
+  }
+
+  if (safeUnits === 0.5) return tr('30 min trip', 'Trajet de 30 min');
+  return safeUnits === 1
+    ? tr('1 hour trip', 'Trajet de 1 heure')
+    : tr(`${safeUnits} hour trip`, `Trajet de ${safeUnits} heures`);
 };
 
 const sortPublicPackages = (
@@ -121,6 +143,88 @@ const normalizePackageDisplayPrice = (amount) => {
   return lastDigit === 9 ? rounded : rounded + (9 - lastDigit);
 };
 
+const getTripBadge = (pkg, rentalType, tr) => {
+  if (!pkg) return null;
+  const includedKilometers = Number(pkg?.includedKilometers || 0);
+
+  if (rentalType === 'hourly' && [15, 17].includes(includedKilometers)) {
+    return {
+      label: tr('Most popular', 'Le plus populaire'),
+      icon: '🔥',
+      className: 'bg-orange-50 text-orange-700 ring-1 ring-orange-200',
+    };
+  }
+
+  if (isHalfDayPackage(pkg) || pkg?.kind === 'unlimited') {
+    return {
+      label: tr('Best value', 'Meilleur rapport'),
+      icon: '⭐',
+      className: 'bg-fuchsia-50 text-fuchsia-700 ring-1 ring-fuchsia-200',
+    };
+  }
+
+  return null;
+};
+
+const getPackageFuelChargeEnabled = (pkg) => {
+  const rawValue = pkg?.fuelChargeEnabled ?? pkg?.fuel_charge_enabled ?? false;
+
+  if (typeof rawValue === 'string') {
+    const normalizedValue = rawValue.trim().toLowerCase();
+    return normalizedValue === 'true' || normalizedValue === '1' || normalizedValue === 'yes';
+  }
+
+  if (typeof rawValue === 'number') {
+    return rawValue === 1;
+  }
+
+  return rawValue === true;
+};
+
+const TripCard = ({
+  badge,
+  duration,
+  price,
+  currencyCode,
+  includedDistance,
+  benefit,
+  selected,
+  onClick,
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`relative w-full rounded-2xl bg-white px-4 py-4 text-left shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition duration-200 hover:-translate-y-0.5 ${
+      selected
+        ? 'scale-[1.02] border-2 border-black bg-[#FAFAFA]'
+        : 'border border-slate-200 hover:border-slate-300'
+    }`}
+  >
+    {selected ? (
+      <span className="absolute right-4 top-4 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black text-white">
+        <Check className="h-4 w-4" />
+      </span>
+    ) : null}
+
+    {badge ? (
+      <span className={`inline-flex rounded-full px-2 py-1 text-[12px] font-semibold ${badge.className}`}>
+        {badge.icon} {badge.label}
+      </span>
+    ) : (
+      <span className="inline-flex h-6" aria-hidden="true" />
+    )}
+
+    <div className="mt-3">
+      <p className="text-sm font-bold text-slate-900">{duration}</p>
+      <p className="mt-1 text-[2rem] font-black leading-none tracking-tight text-slate-950">
+        {price} <span className="text-base font-bold">{currencyCode}</span>
+      </p>
+      <p className="mt-3 text-sm font-medium text-slate-700">{includedDistance}</p>
+      {benefit ? <p className="mt-1 text-xs font-medium text-slate-500">{benefit}</p> : null}
+    </div>
+  </button>
+);
+
 const buildVehicleChoices = (listings = [], city) => {
   const grouped = new Map();
   const normalizedCity = String(city || '').toLowerCase();
@@ -164,21 +268,49 @@ const PublicVehicleDetail = () => {
   const [showCertifiedInfo, setShowCertifiedInfo] = useState(false);
   const [activeConditionInfo, setActiveConditionInfo] = useState(null);
   const [durationUnitPrices, setDurationUnitPrices] = useState({});
-  const [selectedDurationUnits, setSelectedDurationUnits] = useState(Number(searchParams.get('durationUnits') || 1) || 1);
+  const [selectedDurationUnits, setSelectedDurationUnits] = useState(() => {
+    const requestedUnits = Number(searchParams.get('durationUnits') || 1) || 1;
+    return requestedUnits === 0.5 ? 0.5 : Math.max(1, requestedUnits);
+  });
   const [hasInteractedWithDuration, setHasInteractedWithDuration] = useState(false);
   const [showVehicleDetails, setShowVehicleDetails] = useState(false);
   const [showMorePackages, setShowMorePackages] = useState(false);
   const [expandedPackageId, setExpandedPackageId] = useState(null);
+  const [focusedPackageId, setFocusedPackageId] = useState(null);
+  const [activeTripDetailsId, setActiveTripDetailsId] = useState(null);
   const [showConditions, setShowConditions] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const [gracePeriodMinutes, setGracePeriodMinutes] = useState(60);
   const [vehicleDirection, setVehicleDirection] = useState(0);
   const [vehicleTransitioning, setVehicleTransitioning] = useState(false);
   const touchStartXRef = useRef(null);
+  const lastAutoSearchStringRef = useRef('');
   const cityOverride = searchParams.get('city') || '';
   const rentalType = searchParams.get('rentalType') || 'hourly';
   const selectedPackageId = searchParams.get('packageId') || null;
   const durationUnitsParam = searchParams.get('durationUnits') || '';
   const currentSearchString = searchParams.toString();
+
+  useEffect(() => {
+    let active = true;
+
+    const loadTimingSettings = async () => {
+      try {
+        const settings = await fetchSystemSettings();
+        if (!active) return;
+        setGracePeriodMinutes(Number(settings?.rentalGracePeriodMinutes || settings?.rental_grace_period_minutes || 60) || 60);
+      } catch {
+        if (!active) return;
+        setGracePeriodMinutes(60);
+      }
+    };
+
+    loadTimingSettings();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -202,7 +334,7 @@ const PublicVehicleDetail = () => {
       setError('');
 
       try {
-        PublicCatalogService.catalogCache.delete('public-catalog-certified');
+        PublicCatalogService.clearCache();
         const nextListing = await PublicCatalogService.getListingById(listingId, cityOverride);
         if (!active) return;
 
@@ -255,35 +387,13 @@ const PublicVehicleDetail = () => {
     const configuredPackages = Array.isArray(currentListing?.packageCatalog?.[rentalType])
       ? currentListing.packageCatalog[rentalType]
       : [];
-    const hasUnlimitedPackage = configuredPackages.some((pkg) => pkg?.kind === 'unlimited');
-    const defaultUnlimitedAmount = Number(currentListing?.unlimitedRates?.[rentalType] || 0);
-    const normalizedPackages = !hasUnlimitedPackage && defaultUnlimitedAmount > 0
-      ? [
-          ...configuredPackages,
-          {
-            id: `base-unlimited-${currentListing.id}-${rentalType}`,
-            name: tr('Unlimited KM', 'KM illimités'),
-            fixedAmount: defaultUnlimitedAmount,
-            includedKilometers: null,
-            extraKmRate: 0,
-            kind: 'unlimited',
-            durationUnits: rentalType === 'daily' ? 1 : 1,
-          },
-        ]
-      : configuredPackages;
     return sortPublicPackages(
-      normalizedPackages,
+      configuredPackages,
       rentalType,
       selectedDurationUnits,
       hasInteractedWithDuration
     );
   }, [currentListing, hasInteractedWithDuration, rentalType, selectedDurationUnits, tr]);
-
-  useEffect(() => {
-    const requestedUnits = Number(durationUnitsParam || 1) || 1;
-    if (Number(selectedDurationUnits || 1) === requestedUnits) return;
-    setSelectedDurationUnits(requestedUnits);
-  }, [durationUnitsParam, selectedDurationUnits]);
 
   useEffect(() => {
     let cancelled = false;
@@ -298,7 +408,7 @@ const PublicVehicleDetail = () => {
       }
 
       try {
-        const durations = [1, 2, 3];
+        const durations = rentalType === 'hourly' ? [1, 2, 3, 4] : [1, 2, 3];
         const priceRows = await Promise.all(
           durations.map(async (units) => {
             if (rentalType === 'daily') {
@@ -336,11 +446,29 @@ const PublicVehicleDetail = () => {
     () => packageCards.find((pkg) => isHalfHourPackage(pkg)) || null,
     [packageCards]
   );
+  const halfDayPackage = useMemo(
+    () => packageCards.find((pkg) => isHalfDayPackage(pkg)) || null,
+    [packageCards]
+  );
   const standardDurationPackage = useMemo(
     () => packageCards.find((pkg) => !isHalfHourPackage(pkg) && !isHalfDayPackage(pkg)) || null,
     [packageCards]
   );
-  const durationOptions = rentalType === 'hourly' ? [0.5, 1, 2, 3] : [1, 2, 3];
+  const durationOptions = rentalType === 'hourly' ? [0.5, 1, 2, 3, 4] : [1, 2, 3];
+  const replaceSearchParamsIfChanged = (nextParams) => {
+    const nextString = nextParams.toString();
+    if (!nextString || nextString === currentSearchString) return;
+    if (lastAutoSearchStringRef.current === nextString) return;
+    lastAutoSearchStringRef.current = nextString;
+    setSearchParams(nextParams, { replace: true });
+  };
+
+  useEffect(() => {
+    if (lastAutoSearchStringRef.current === currentSearchString) {
+      lastAutoSearchStringRef.current = '';
+    }
+  }, [currentSearchString]);
+
   const normalizedSelectedDurationUnits = useMemo(() => {
     const rawUnits = Number(selectedDurationUnits || 1);
 
@@ -352,9 +480,20 @@ const PublicVehicleDetail = () => {
   }, [durationOptions, selectedDurationUnits, selectedPackage]);
 
   useEffect(() => {
-    if (Number(selectedDurationUnits || 1) === normalizedSelectedDurationUnits) return;
-    setSelectedDurationUnits(normalizedSelectedDurationUnits);
-  }, [normalizedSelectedDurationUnits, selectedDurationUnits]);
+    const requestedUnits = Number(durationUnitsParam || 1) || 1;
+    const nextUnits = selectedPackage
+      ? (
+          isHalfHourPackage(selectedPackage)
+            ? 0.5
+            : isHalfDayPackage(selectedPackage)
+              ? 4
+              : Math.max(1, requestedUnits)
+        )
+      : (requestedUnits === 0.5 ? 0.5 : Math.max(1, requestedUnits));
+
+    if (Number(selectedDurationUnits || 1) === nextUnits) return;
+    setSelectedDurationUnits(nextUnits);
+  }, [durationUnitsParam, selectedDurationUnits, selectedPackage]);
 
   useEffect(() => {
     if (!packageCards.length) return;
@@ -375,21 +514,24 @@ const PublicVehicleDetail = () => {
           ? 4
           : Math.max(1, Number(defaultPackage.durationUnits || 1) || 1)
     ));
-    if (next.toString() !== currentSearchString) {
-      setSearchParams(next, { replace: true });
-    }
-  }, [currentListing, currentSearchString, packageCards, rentalType, searchParams, selectedPackageId, setSearchParams]);
+    replaceSearchParamsIfChanged(next);
+  }, [currentListing, currentSearchString, packageCards, rentalType, searchParams, selectedPackageId]);
 
   useEffect(() => {
-    const normalizedUnits = String(normalizedSelectedDurationUnits);
-    if (durationUnitsParam === normalizedUnits) return;
+    if (!selectedPackage) return;
+
+    const lockedUnits = isHalfHourPackage(selectedPackage)
+      ? '0.5'
+      : isHalfDayPackage(selectedPackage)
+        ? '4'
+        : null;
+
+    if (!lockedUnits || durationUnitsParam === lockedUnits) return;
 
     const next = new URLSearchParams(searchParams);
-    next.set('durationUnits', normalizedUnits);
-    if (next.toString() !== currentSearchString) {
-      setSearchParams(next, { replace: true });
-    }
-  }, [currentSearchString, durationUnitsParam, normalizedSelectedDurationUnits, searchParams, setSearchParams]);
+    next.set('durationUnits', lockedUnits);
+    replaceSearchParamsIfChanged(next);
+  }, [durationUnitsParam, searchParams, selectedPackage]);
 
   const getSelectedDurationForPackage = (pkg) =>
     isHalfHourPackage(pkg)
@@ -440,7 +582,9 @@ const PublicVehicleDetail = () => {
     return `${baseKilometers} km`;
   };
 
-  const showDurationSelector = !(selectedPackage && isHalfDayPackage(selectedPackage));
+  const getTripDurationLabel = (pkg) => formatTripDurationLabel(getSelectedDurationForPackage(pkg), rentalType, tr);
+
+  const showDurationSelector = true;
   const displayBrand = currentListing?.brand || 'Segway';
   const displayModel = currentListing?.model || currentListing?.title || 'AT6';
   const riderSummary = currentListing?.riderCapacity === 1
@@ -462,11 +606,31 @@ const PublicVehicleDetail = () => {
   }, [packageCards, rentalType]);
 
   const hiddenPackageCards = useMemo(() => {
+    const excludedIds = new Set();
+
+    if (rentalType === 'hourly' && halfHourPackage) {
+      excludedIds.add(String(halfHourPackage.id));
+    }
+    if (rentalType === 'hourly' && halfDayPackage) {
+      excludedIds.add(String(halfDayPackage.id));
+    }
+
     const primaryIds = new Set(primaryPackageCards.map((pkg) => String(pkg.id)));
-    return packageCards.filter((pkg) => !primaryIds.has(String(pkg.id)));
-  }, [packageCards, primaryPackageCards]);
+    return packageCards.filter((pkg) => {
+      const packageId = String(pkg.id);
+      if (primaryIds.has(packageId)) return false;
+      if (excludedIds.has(packageId)) return false;
+      return true;
+    });
+  }, [halfDayPackage, halfHourPackage, packageCards, primaryPackageCards, rentalType]);
 
   const visiblePackageCards = useMemo(() => {
+    if (rentalType === 'hourly' && normalizedSelectedDurationUnits === 0.5 && halfHourPackage) {
+      return [halfHourPackage];
+    }
+    if (rentalType === 'hourly' && normalizedSelectedDurationUnits === 4 && halfDayPackage) {
+      return [halfDayPackage];
+    }
     if (showMorePackages) {
       return [...primaryPackageCards, ...hiddenPackageCards];
     }
@@ -476,11 +640,21 @@ const PublicVehicleDetail = () => {
     }
 
     return primaryPackageCards;
-  }, [hiddenPackageCards, primaryPackageCards, selectedPackage, showMorePackages]);
+  }, [halfDayPackage, halfHourPackage, hiddenPackageCards, normalizedSelectedDurationUnits, primaryPackageCards, rentalType, selectedPackage, showMorePackages]);
+
+  const activeTripDetails = useMemo(
+    () => packageCards.find((pkg) => String(pkg.id) === String(activeTripDetailsId)) || null,
+    [activeTripDetailsId, packageCards]
+  );
+  const activeFuelLineCharge = rentalType === 'daily'
+    ? Number(currentListing?.fuelLineChargeDaily || 0) || 0
+    : Number(currentListing?.fuelLineChargeHourly || 0) || 0;
 
   useEffect(() => {
     setShowMorePackages(false);
     setExpandedPackageId(null);
+    setFocusedPackageId(null);
+    setActiveTripDetailsId(null);
   }, [rentalType]);
 
   const activeProvider = useMemo(() => {
@@ -489,6 +663,8 @@ const PublicVehicleDetail = () => {
 
   const switchVehicle = (nextVehicleId) => {
     if (!nextVehicleId || String(nextVehicleId) === String(activeVehicleId)) return;
+    const nextListing = vehicleChoices.find((item) => String(item.id) === String(nextVehicleId));
+    const keepHalfHour = rentalType === 'hourly' && Number(selectedDurationUnits || 1) === 0.5 && listingHasHalfHourPackage(nextListing, rentalType);
     const currentIndex = vehicleChoices.findIndex((item) => String(item.id) === String(activeVehicleId));
     const nextIndex = vehicleChoices.findIndex((item) => String(item.id) === String(nextVehicleId));
     setVehicleDirection(nextIndex > currentIndex ? 1 : -1);
@@ -497,8 +673,15 @@ const PublicVehicleDetail = () => {
     setShowVehicleDetails(false);
     setShowMorePackages(false);
     setExpandedPackageId(null);
+    setFocusedPackageId(null);
+    setActiveTripDetailsId(null);
     const nextSearch = new URLSearchParams(searchParams);
     clearPackageSearchParams(nextSearch);
+    if (!keepHalfHour && rentalType === 'hourly' && Number(selectedDurationUnits || 1) === 0.5) {
+      nextSearch.set('durationUnits', '1');
+      setSelectedDurationUnits(1);
+      setHasInteractedWithDuration(false);
+    }
     if (nextSearch.toString() !== currentSearchString) {
       setSearchParams(nextSearch, { replace: true });
     }
@@ -529,6 +712,8 @@ const PublicVehicleDetail = () => {
   };
 
   const handleSelectPackage = (pkg) => {
+    setFocusedPackageId(null);
+    setActiveTripDetailsId(pkg.id);
     const next = new URLSearchParams(searchParams);
     next.set('rentalType', rentalType);
     clearPackageSearchParams(next);
@@ -549,6 +734,9 @@ const PublicVehicleDetail = () => {
     if (rentalType === 'hourly' && safeUnits === 0.5 && halfHourPackage) {
       clearPackageSearchParams(next);
       next.set('packageId', String(halfHourPackage.id));
+    } else if (rentalType === 'hourly' && safeUnits === 4 && halfDayPackage) {
+      clearPackageSearchParams(next);
+      next.set('packageId', String(halfDayPackage.id));
     } else if (selectedPackage && (isHalfHourPackage(selectedPackage) || isHalfDayPackage(selectedPackage))) {
       if (standardDurationPackage) {
         clearPackageSearchParams(next);
@@ -819,7 +1007,7 @@ const PublicVehicleDetail = () => {
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_48%,#ffffff_100%)]">
       <PublicSiteChrome current="rent" />
-      <div className="px-6 py-10">
+      <div className="px-6 pt-10 pb-[calc(env(safe-area-inset-bottom,0px)+7rem)]">
       <div className="mx-auto max-w-6xl">
         <div className="mb-6 flex items-center justify-between">
           <button
@@ -831,32 +1019,43 @@ const PublicVehicleDetail = () => {
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
-          <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowCertifiedInfo(true)}
+            className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-2.5 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-violet-100 transition hover:border-violet-300 hover:bg-violet-50/40"
+            aria-label={tr('Open certified fleet details', 'Ouvrir les détails de la flotte certifiée')}
+          >
+            <img
+              src={CERTIFIED_BADGE_SRC}
+              alt={tr('Certified fleet', 'Flotte certifiée')}
+              className="h-6 w-6 object-contain"
+            />
+            <span>{tr(currentListing.badge, 'Flotte certifiée')}</span>
+            <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-violet-50 text-violet-700 ring-1 ring-violet-200">
+              <Eye className="h-3.5 w-3.5" />
+            </span>
+          </button>
+        </div>
+
+        <div className="mb-8 text-center">
+          <h1 className="text-[44px] font-black leading-[0.95] tracking-tight text-slate-950 sm:text-6xl">
+            {tr('Rent', 'Location')}
+          </h1>
+          <div className="mt-4 inline-flex flex-wrap items-center justify-center gap-3 rounded-full border border-violet-100 bg-white/90 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm">
+            <MapPin className="h-4 w-4 text-violet-700" />
+            {currentListing?.location?.city || tr('Tangier', 'Tanger')}
+            <Link to="/website" className="text-violet-700 transition hover:text-violet-900">
+              {tr('Change', 'Changer')}
+            </Link>
             <button
               type="button"
               onClick={handleShareListing}
               disabled={isSharing}
-              className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-50/40 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-emerald-100 transition hover:border-emerald-300 hover:bg-emerald-50/40 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-60"
               aria-label={tr('Share this vehicle', 'Partager ce véhicule')}
             >
               <Share2 className="h-4 w-4 text-emerald-700" />
               <span>{isSharing ? tr('Preparing...', 'Préparation...') : tr('Share', 'Partager')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowCertifiedInfo(true)}
-              className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white px-2.5 py-2 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-violet-100 transition hover:border-violet-300 hover:bg-violet-50/40"
-              aria-label={tr('Open certified fleet details', 'Ouvrir les détails de la flotte certifiée')}
-            >
-              <img
-                src={CERTIFIED_BADGE_SRC}
-                alt={tr('Certified fleet', 'Flotte certifiée')}
-                className="h-6 w-6 object-contain"
-              />
-              <span>{tr(currentListing.badge, 'Flotte certifiée')}</span>
-              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-violet-50 text-violet-700 ring-1 ring-violet-200">
-                <Eye className="h-3.5 w-3.5" />
-              </span>
             </button>
           </div>
         </div>
@@ -913,7 +1112,7 @@ const PublicVehicleDetail = () => {
                     switchVehicleByOffset(-1);
                   }}
                   disabled={!canGoPreviousVehicle}
-                  className="absolute left-3 top-1/2 z-10 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/80 bg-white/90 text-slate-800 shadow-[0_14px_34px_rgba(15,23,42,0.18)] backdrop-blur transition hover:bg-white disabled:opacity-30"
+                  className="absolute left-3 top-1/2 z-10 inline-flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.16)] transition duration-200 ease-out hover:-translate-y-[calc(50%+2px)] hover:scale-[1.04] hover:bg-violet-600 hover:text-white hover:shadow-[0_16px_36px_rgba(124,58,237,0.26)] disabled:opacity-30 disabled:hover:scale-100 disabled:hover:translate-y-[-50%]"
                   aria-label={tr('Previous vehicle', 'Véhicule précédent')}
                 >
                   <ChevronLeft className="h-6 w-6" />
@@ -925,7 +1124,7 @@ const PublicVehicleDetail = () => {
                     switchVehicleByOffset(1);
                   }}
                   disabled={!canGoNextVehicle}
-                  className="absolute right-3 top-1/2 z-10 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/80 bg-white/90 text-slate-800 shadow-[0_14px_34px_rgba(15,23,42,0.18)] backdrop-blur transition hover:bg-white disabled:opacity-30"
+                  className="absolute right-3 top-1/2 z-10 inline-flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.16)] transition duration-200 ease-out hover:-translate-y-[calc(50%+2px)] hover:scale-[1.04] hover:bg-violet-600 hover:text-white hover:shadow-[0_16px_36px_rgba(124,58,237,0.26)] disabled:opacity-30 disabled:hover:scale-100 disabled:hover:translate-y-[-50%]"
                   aria-label={tr('Next vehicle', 'Véhicule suivant')}
                 >
                   <ChevronRight className="h-6 w-6" />
@@ -1041,10 +1240,12 @@ const PublicVehicleDetail = () => {
 
             <div className="pt-1">
               <h2 className="text-[1.35rem] font-bold tracking-tight text-slate-950 sm:text-[1.45rem]">
-                {tr('Choose your package', 'Choisissez votre forfait')}
+                {tr('Choose your trip length', 'Choisissez la durée du trajet')}
               </h2>
               <p className="mt-3 text-sm font-medium text-slate-500">
-                {currentListing.isAvailable ? tr('Available now', 'Disponible maintenant') : tr('Currently unavailable', 'Actuellement indisponible')}
+                {currentListing.isAvailable
+                  ? tr('We calculate the time automatically and keep the best distance match ready for this trip.', 'Nous calculons le temps automatiquement et gardons la meilleure distance adaptée prête pour ce trajet.')
+                  : tr('Currently unavailable', 'Actuellement indisponible')}
               </p>
             </div>
 
@@ -1070,7 +1271,9 @@ const PublicVehicleDetail = () => {
                 {durationOptions.map((units) => {
                   const isSelected = units === 0.5
                     ? Boolean(selectedPackage && isHalfHourPackage(selectedPackage))
-                    : normalizedSelectedDurationUnits === units && !(selectedPackage && isHalfHourPackage(selectedPackage));
+                    : units === 4
+                      ? Boolean(selectedPackage && isHalfDayPackage(selectedPackage))
+                      : normalizedSelectedDurationUnits === units && !(selectedPackage && (isHalfHourPackage(selectedPackage) || isHalfDayPackage(selectedPackage)));
                   return (
                     <button
                       key={`${rentalType}-${units}`}
@@ -1104,120 +1307,28 @@ const PublicVehicleDetail = () => {
             <div className="space-y-3">
               {visiblePackageCards.map((pkg) => {
                 const isSelected = selectedPackage?.id === pkg.id;
-                const isExpanded = expandedPackageId === pkg.id;
-                const label = isPromoPackage(pkg, rentalType)
-                  ? tr('Most popular', 'Le plus populaire')
-                  : isHalfDayPackage(pkg)
-                    ? tr('Best value', 'Meilleur choix')
-                    : null;
+                const badge = getTripBadge(pkg, rentalType, tr);
+                const benefit = pkg.extraKmRate
+                  ? tr(`${pkg.extraKmRate} MAD/km extra`, `${pkg.extraKmRate} MAD/km extra`)
+                  : tr('Fuel, helmet, insurance', 'Carburant, casque, assurance');
 
                 return (
-                  <div
+                  <TripCard
                     key={pkg.id}
+                    badge={badge}
+                    duration={getTripDurationLabel(pkg)}
+                    price={getEffectivePackagePrice(pkg)}
+                    currencyCode={currentListing.currencyCode}
+                    includedDistance={`${getDisplayedIncludedKilometers(pkg)} ${tr('included', 'inclus')}`}
+                    benefit={benefit}
+                    selected={isSelected}
                     onClick={() => handleSelectPackage(pkg)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        handleSelectPackage(pkg);
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    aria-pressed={isSelected}
-                    className={`w-full rounded-[24px] border p-4 text-left transition active:scale-[0.98] ${
-                      isSelected
-                        ? 'border-violet-500 bg-violet-50/60 shadow-[0_18px_40px_rgba(108,92,231,0.12)]'
-                        : 'border-slate-200 bg-white shadow-sm hover:border-violet-300'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-slate-900">
-                          {formatPackageDisplayName(pkg, rentalType, tr)}
-                        </p>
-                        <p className="mt-3 text-2xl font-black leading-none text-slate-950">
-                          {getEffectivePackagePrice(pkg)} {currentListing.currencyCode}
-                        </p>
-                        {label ? (
-                          <span className={`mt-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-semibold ${
-                            isPromoPackage(pkg, rentalType)
-                              ? 'bg-[linear-gradient(135deg,#ef4444_0%,#f97316_100%)] text-white'
-                              : 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100'
-                          }`}>
-                            {isPromoPackage(pkg, rentalType) ? <BadgePercent className="h-3.5 w-3.5" /> : null}
-                            {isPromoPackage(pkg, rentalType) ? `🔥 ${label}` : label}
-                          </span>
-                        ) : null}
-                      </div>
-
-                      <div className="flex flex-col items-end gap-2">
-                        <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
-                          {rentalType === 'hourly' ? tr('Hourly', 'Par heure') : tr('Daily', 'Par jour')}
-                        </span>
-                        {isSelected ? (
-                          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-violet-600 text-white shadow-sm">
-                            <Check className="h-4 w-4" />
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <div className="mt-4">
-                      <p className="text-sm text-slate-600">
-                        {tr('Includes: fuel • helmet • insurance', 'Comprend : carburant • casque • assurance')}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setExpandedPackageId((current) => (current === pkg.id ? null : pkg.id));
-                        }}
-                        className="mt-2 text-sm font-semibold text-violet-700"
-                      >
-                        {isExpanded ? tr('details ↑', 'détails ↑') : tr('details ↓', 'détails ↓')}
-                      </button>
-                    </div>
-
-                    {isExpanded ? (
-                      <div className="mt-4 rounded-[20px] border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between gap-3">
-                            <span>{tr('Registration', 'Immatriculation')}</span>
-                            <span className="font-semibold text-slate-900">{tr('Included', 'Inclus')}</span>
-                          </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <span>{tr('RC insurance', 'Assurance RC')}</span>
-                            <span className="font-semibold text-slate-900">{tr('Included', 'Inclus')}</span>
-                          </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <span>{tr('Helmet', 'Casque')}</span>
-                            <span className="font-semibold text-slate-900">{tr('Included', 'Inclus')}</span>
-                          </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <span>{tr('Fuel', 'Carburant')}</span>
-                            <span className="font-semibold text-slate-900">
-                              {rentalType === 'daily' ? tr('Not included', 'Non inclus') : tr('Included', 'Inclus')}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <span>{tr('Included km', 'Km inclus')}</span>
-                            <span className="font-semibold text-slate-900">{getDisplayedIncludedKilometers(pkg)}</span>
-                          </div>
-                          {pkg.kind !== 'unlimited' ? (
-                            <div className="flex items-center justify-between gap-3">
-                              <span>{tr('Extra km cost', 'Coût km supplémentaire')}</span>
-                              <span className="font-semibold text-slate-900">{pkg.extraKmRate} MAD/km</span>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
+                  />
                 );
               })}
             </div>
 
-            {hiddenPackageCards.length > 0 ? (
+            {hiddenPackageCards.length > 0 && !(rentalType === 'hourly' && [0.5, 4].includes(normalizedSelectedDurationUnits)) ? (
               <button
                 type="button"
                 onClick={() => setShowMorePackages((current) => !current)}
@@ -1274,7 +1385,22 @@ const PublicVehicleDetail = () => {
       </div>
       </div>
       <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-3 backdrop-blur">
-        <div className="mx-auto max-w-2xl">
+        <div className="mx-auto max-w-2xl space-y-3">
+          {selectedPackage ? (
+            <div className="flex items-center justify-between gap-4 rounded-[20px] border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-900">
+                  {getTripDurationLabel(selectedPackage)} • {getDisplayedIncludedKilometers(selectedPackage)}
+                </p>
+                <p className="mt-1 text-xs font-medium text-slate-500">
+                  {formatPackageDisplayName(selectedPackage, rentalType, tr)}
+                </p>
+              </div>
+              <p className="shrink-0 text-2xl font-black tracking-tight text-slate-950">
+                {getEffectivePackagePrice(selectedPackage)} {currentListing.currencyCode}
+              </p>
+            </div>
+          ) : null}
           <button
             type="button"
             onClick={selectedPackage ? handleBookSelectedPackage : undefined}
@@ -1287,10 +1413,109 @@ const PublicVehicleDetail = () => {
           >
             {selectedPackage
               ? `${tr('Continue', 'Continuer')} — ${getEffectivePackagePrice(selectedPackage)} ${currentListing.currencyCode}`
-              : tr('Select a package ↑', 'Sélectionnez un forfait ↑')}
+              : tr('Choose a trip ↑', 'Choisissez un trajet ↑')}
           </button>
         </div>
       </div>
+      <PublicSiteFooter />
+      {activeTripDetails ? (
+        (() => {
+          const activeTripFuelChargeEnabled = getPackageFuelChargeEnabled(activeTripDetails);
+          return (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/35 p-4 sm:items-center"
+          onClick={() => setActiveTripDetailsId(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.22)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
+                  {getTripDurationLabel(activeTripDetails)}
+                </p>
+                <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-950">
+                  {getEffectivePackagePrice(activeTripDetails)} {currentListing.currencyCode}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTripDetailsId(null)}
+                className="rounded-full border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                {tr('Close', 'Fermer')}
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-3 text-sm text-slate-700">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span>{tr('Included distance', 'Distance incluse')}</span>
+                  <span className="font-semibold text-slate-950">{getDisplayedIncludedKilometers(activeTripDetails)}</span>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span>{tr('Fuel', 'Carburant')}</span>
+                  <span className="font-semibold text-slate-950">
+                    {activeTripFuelChargeEnabled
+                      ? tr('Not included', 'Non inclus')
+                      : tr('Included', 'Inclus')}
+                  </span>
+                </div>
+                {activeTripFuelChargeEnabled ? (
+                  <p className="mt-2 text-xs font-medium text-slate-500">
+                    {activeFuelLineCharge > 0
+                      ? tr(
+                          `Missing fuel will be charged at ${activeFuelLineCharge} MAD per line.`,
+                          `Le carburant manquant sera facturé à ${activeFuelLineCharge} MAD par ligne.`
+                        )
+                      : tr(
+                          'Missing fuel may be charged separately at return.',
+                          'Le carburant manquant peut être facturé séparément au retour.'
+                        )}
+                  </p>
+                ) : null}
+                {activeTripFuelChargeEnabled && activeFuelLineCharge > 0 ? (
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <span>{tr('Fuel line charge', 'Frais par ligne')}</span>
+                    <span className="font-semibold text-slate-950">
+                      {activeFuelLineCharge} MAD/{tr('line', 'ligne')}
+                    </span>
+                  </div>
+                ) : null}
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span>{tr('Helmet', 'Casque')}</span>
+                  <span className="font-semibold text-slate-950">{tr('Included', 'Inclus')}</span>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span>{tr('Insurance', 'Assurance')}</span>
+                  <span className="font-semibold text-slate-950">{tr('Included', 'Inclus')}</span>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span>{tr('Extra km', 'Km supplémentaire')}</span>
+                  <span className="font-semibold text-slate-950">
+                    {activeTripDetails.extraKmRate ? `${activeTripDetails.extraKmRate} MAD/km` : tr('On request', 'Sur demande')}
+                  </span>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span>{tr('Late return policy', 'Politique de retard')}</span>
+                  <span className="font-semibold text-slate-950">{gracePeriodMinutes} min</span>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span>{tr('Deposit', 'Caution')}</span>
+                  <span className="font-semibold text-slate-950">{currentListing.depositAmount || 0} {currentListing.currencyCode}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+          );
+        })()
+      ) : null}
       {showCertifiedInfo ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4" onClick={() => setShowCertifiedInfo(false)}>
           <div
@@ -1324,7 +1549,7 @@ const PublicVehicleDetail = () => {
                 {tr('• Direct booking from our managed fleet', '• Réservation directe depuis notre flotte gérée')}
               </div>
               <div className="rounded-2xl bg-violet-50 px-4 py-3 ring-1 ring-violet-100">
-                {tr('• Verified pricing and package rules', '• Tarifs et règles de forfait vérifiés')}
+                {tr('• Verified pricing and trip rules', '• Tarifs et règles du trajet vérifiés')}
               </div>
               <div className="rounded-2xl bg-violet-50 px-4 py-3 ring-1 ring-violet-100">
                 {tr('• Pickup support from the local certified partner', '• Assistance de retrait par le partenaire certifié local')}

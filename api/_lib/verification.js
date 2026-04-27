@@ -9,11 +9,50 @@ export const VERIFICATION_STATUSES = new Set(['pending', 'approved', 'rejected',
 export const VERIFICATION_ENTITY_TYPES = new Set(['user', 'vehicle']);
 
 const VEHICLE_REQUIRED_TYPES = ['vehicle_registration', 'vehicle_insurance'];
-const USER_REQUIRED_TYPES = ['profile_id'];
+const USER_REQUIRED_TYPES = ['profile_id', 'driver_license'];
 
 const getRequiredTypes = (entityType) => (
   entityType === 'vehicle' ? VEHICLE_REQUIRED_TYPES : USER_REQUIRED_TYPES
 );
+
+const isVerificationPersistenceUnavailable = (error) => {
+  const code = String(error?.code || '').trim();
+  const message = String(error?.message || error?.details || '').toLowerCase();
+  return (
+    code === '42P01' ||
+    code === '42703' ||
+    code === '22P02' ||
+    code === '42501' ||
+    code === 'PGRST204' ||
+    code === 'PGRST205' ||
+    message.includes('verification_status') ||
+    message.includes('verification_summary') ||
+    message.includes('profile_verification_status') ||
+    message.includes('insurance_expires_at') ||
+    message.includes('is_listable') ||
+    message.includes('permission denied') ||
+    message.includes('schema cache')
+  );
+};
+
+const parseVerificationNotes = (notes) => {
+  const raw = String(notes || '').trim();
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const isRemovedVerificationRow = (row) => Boolean(parseVerificationNotes(row?.notes)?.removedAt);
+const isArchivedVerificationRow = (row) => {
+  const metadata = parseVerificationNotes(row?.notes);
+  return String(row?.status || '').trim().toLowerCase() === 'archived' || Boolean(metadata?.archivedAt);
+};
+const getActiveVerificationRows = (rows = []) => rows.filter((row) => !isArchivedVerificationRow(row));
 
 export const expireInsuranceVerifications = async (adminClient) => {
   const { data, error } = await adminClient
@@ -63,12 +102,13 @@ export const getEntityVerificationRows = async (adminClient, entityType, entityI
     throw error;
   }
 
-  return data || [];
+  return (data || []).filter((row) => !isRemovedVerificationRow(row));
 };
 
 export const buildVerificationSummary = (rows, entityType) => {
+  const activeRows = getActiveVerificationRows(rows);
   const latestByType = {};
-  rows.forEach((row) => {
+  activeRows.forEach((row) => {
     if (!latestByType[row.verification_type]) {
       latestByType[row.verification_type] = row;
     }
@@ -118,19 +158,35 @@ export const buildVerificationSummary = (rows, entityType) => {
 export const refreshEntityVerificationSummary = async (adminClient, entityType, entityId) => {
   const rows = await getEntityVerificationRows(adminClient, entityType, entityId);
   const summary = buildVerificationSummary(rows, entityType);
+  const normalizedEntityId = String(entityId || '').trim();
+  const numericVehicleEntityId = Number(normalizedEntityId);
+  const canPersistOnFleetVehicle =
+    normalizedEntityId !== '' &&
+    Number.isFinite(numericVehicleEntityId) &&
+    String(Math.trunc(numericVehicleEntityId)) === normalizedEntityId;
 
   if (entityType === 'vehicle') {
-    const { error } = await adminClient
-      .from(VEHICLES_TABLE)
-      .update({
-        verification_status: summary.status,
-        verification_summary: summary,
-        insurance_expires_at: summary.insuranceExpiresAt,
-        is_listable: summary.complete,
-      })
-      .eq('id', entityId);
+    if (canPersistOnFleetVehicle) {
+      const { error } = await adminClient
+        .from(VEHICLES_TABLE)
+        .update({
+          verification_status: summary.status,
+          verification_summary: summary,
+          insurance_expires_at: summary.insuranceExpiresAt,
+          is_listable: summary.complete,
+        })
+        .eq('id', numericVehicleEntityId);
 
-    if (error) throw error;
+      if (error) {
+        if (isVerificationPersistenceUnavailable(error)) {
+          console.warn('Vehicle verification summary persistence unavailable:', error.message || error);
+        } else {
+          throw error;
+        }
+      }
+    } else {
+      console.warn('Skipping fleet vehicle verification summary persistence for non-numeric vehicle entity id:', normalizedEntityId);
+    }
   }
 
   if (entityType === 'user') {
@@ -142,7 +198,13 @@ export const refreshEntityVerificationSummary = async (adminClient, entityType, 
       })
       .eq('id', entityId);
 
-    if (error) throw error;
+    if (error) {
+      if (isVerificationPersistenceUnavailable(error)) {
+        console.warn('User verification summary persistence unavailable:', error.message || error);
+      } else {
+        throw error;
+      }
+    }
   }
 
   return summary;

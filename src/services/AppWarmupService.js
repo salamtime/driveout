@@ -4,6 +4,7 @@ import { financeApiV2 } from './financeApiV2';
 import criticalModuleCacheService from './CriticalModuleCacheService';
 import rentalSummaryService from './RentalSummaryService';
 import sharedQueryCacheService from './SharedQueryCacheService';
+import { supabase } from '../lib/supabase';
 
 const WARM_RENTALS_SNAPSHOT_KEY = 'app:warm-rentals:default';
 const WARM_RENTALS_TTL_MS = 60 * 1000;
@@ -294,6 +295,11 @@ class AppWarmupService {
 
     this.activeWarmupPromise = (async () => {
       try {
+        const { data: { session } = {} } = await supabase.auth.getSession();
+        if (!session?.access_token) {
+          return;
+        }
+
         this.markWarmupStarted();
         await Promise.allSettled([
           this.warmFuelManagement(),

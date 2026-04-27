@@ -100,7 +100,9 @@ class VehicleService {
             model,
             vehicle_type,
             plate_number,
-            status
+            status,
+            image_url,
+            location_id
           `)
           .order('name', { ascending: true });
 
@@ -254,23 +256,97 @@ class VehicleService {
   }
 
   /**
+   * Find an existing owner vehicle by plate number.
+   */
+  async getVehicleByOwnerAndPlate(ownerId, plateNumber) {
+    const normalizedPlateNumber = String(plateNumber || '').trim();
+    if (!ownerId || !normalizedPlateNumber) {
+      return { success: true, vehicle: null };
+    }
+
+    try {
+      const { data: vehicle, error } = await supabase
+        .from('saharax_0u4w4d_vehicles')
+        .select('*')
+        .eq('owner_user_id', ownerId)
+        .eq('plate_number', normalizedPlateNumber)
+        .order('id', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+      return { success: true, vehicle: vehicle || null };
+    } catch (error) {
+      console.error('❌ Error loading vehicle by owner and plate:', error);
+      return { success: false, error: error.message, vehicle: null };
+    }
+  }
+
+  /**
+   * Find any existing vehicle by plate number.
+   */
+  async getVehicleByPlate(plateNumber) {
+    const normalizedPlateNumber = String(plateNumber || '').trim();
+    if (!normalizedPlateNumber) {
+      return { success: true, vehicle: null };
+    }
+
+    try {
+      const { data: vehicle, error } = await supabase
+        .from('saharax_0u4w4d_vehicles')
+        .select('*')
+        .eq('plate_number', normalizedPlateNumber)
+        .order('id', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+      return { success: true, vehicle: vehicle || null };
+    } catch (error) {
+      console.error('❌ Error loading vehicle by plate:', error);
+      return { success: false, error: error.message, vehicle: null };
+    }
+  }
+
+  /**
    * Create new vehicle
    */
   async createVehicle(vehicleData) {
     try {
       console.log('💾 Creating new vehicle...');
+      let compatiblePayload = {
+        ...vehicleData,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      let vehicle = null;
 
-      const { data: vehicle, error } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .insert([{
-          ...vehicleData,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }])
-        .select()
-        .single();
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const { data, error } = await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .insert([compatiblePayload])
+          .select()
+          .single();
 
-      if (error) throw error;
+        if (!error) {
+          vehicle = data;
+          break;
+        }
+
+        const missingColumnMatch = String(error?.message || error?.details || '').match(/column "([^"]+)"/i);
+        const missingColumn = missingColumnMatch?.[1] || null;
+        if (String(error?.code || '') === '42703' && missingColumn && Object.prototype.hasOwnProperty.call(compatiblePayload, missingColumn)) {
+          const { [missingColumn]: _removed, ...nextPayload } = compatiblePayload;
+          compatiblePayload = nextPayload;
+          continue;
+        }
+
+        throw error;
+      }
+
+      if (!vehicle) {
+        throw new Error('Unable to create vehicle with the current fleet schema.');
+      }
 
       // Clear cache
       this.clearCache();
@@ -278,6 +354,14 @@ class VehicleService {
       console.log('✅ Vehicle created successfully');
       return { success: true, vehicle };
     } catch (error) {
+      const duplicatePlateConstraint = String(error?.message || error?.details || '').includes('plate_number_key')
+        || String(error?.constraint || '') === 'saharax_0u4w4d_vehicles_plate_number_key';
+      if (String(error?.code || '') === '23505' && duplicatePlateConstraint) {
+        const existingVehicle = await this.getVehicleByOwnerAndPlate(vehicleData?.owner_user_id, vehicleData?.plate_number);
+        if (existingVehicle?.success && existingVehicle?.vehicle) {
+          return { success: true, vehicle: existingVehicle.vehicle };
+        }
+      }
       console.error('❌ Error creating vehicle:', error);
       return { success: false, error: error.message };
     }
@@ -289,18 +373,39 @@ class VehicleService {
   async updateVehicle(id, updates) {
     try {
       console.log('📝 Updating vehicle...', id);
+      let compatiblePayload = {
+        ...updates,
+        updated_at: new Date().toISOString(),
+      };
+      let vehicle = null;
 
-      const { data: vehicle, error } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .update({
-          ...updates,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id)
-        .select()
-        .single();
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const { data, error } = await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .update(compatiblePayload)
+          .eq('id', id)
+          .select()
+          .single();
 
-      if (error) throw error;
+        if (!error) {
+          vehicle = data;
+          break;
+        }
+
+        const missingColumnMatch = String(error?.message || error?.details || '').match(/column "([^"]+)"/i);
+        const missingColumn = missingColumnMatch?.[1] || null;
+        if (String(error?.code || '') === '42703' && missingColumn && Object.prototype.hasOwnProperty.call(compatiblePayload, missingColumn)) {
+          const { [missingColumn]: _removed, ...nextPayload } = compatiblePayload;
+          compatiblePayload = nextPayload;
+          continue;
+        }
+
+        throw error;
+      }
+
+      if (!vehicle) {
+        throw new Error('Unable to update vehicle with the current fleet schema.');
+      }
 
       // Clear cache
       this.clearCache();
@@ -308,6 +413,20 @@ class VehicleService {
       console.log('✅ Vehicle updated successfully');
       return { success: true, vehicle };
     } catch (error) {
+      const duplicatePlateConstraint = String(error?.message || error?.details || '').includes('plate_number_key')
+        || String(error?.constraint || '') === 'saharax_0u4w4d_vehicles_plate_number_key';
+      if (String(error?.code || '') === '23505' && duplicatePlateConstraint) {
+        const existingVehicle = await this.getVehicleByPlate(updates?.plate_number);
+        if (existingVehicle?.success && existingVehicle?.vehicle) {
+          const sameOwner =
+            !updates?.owner_user_id ||
+            !existingVehicle.vehicle.owner_user_id ||
+            String(existingVehicle.vehicle.owner_user_id) === String(updates.owner_user_id);
+          if (sameOwner) {
+            return { success: true, vehicle: existingVehicle.vehicle };
+          }
+        }
+      }
       console.error('❌ Error updating vehicle:', error);
       return { success: false, error: error.message };
     }

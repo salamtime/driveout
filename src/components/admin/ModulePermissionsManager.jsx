@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import { supabase } from '../../utils/supabaseClient';
 import i18n from '../../i18n';
+import { useAuth } from '../../contexts/AuthContext';
 
 const MODULES = [
   { id: 'Dashboard', name: 'Dashboard', icon: '📊' },
@@ -25,8 +26,9 @@ const ModulePermissionsManager = ({ user, isExpanded, onPermissionChange }) => {
   const [loading, setLoading] = useState(false);
   const [updating, setUpdating] = useState({});
   const { user: currentUser, userRole } = useSelector(state => state.auth);
+  const { hasPermission } = useAuth();
 
-  const canManagePermissions = userRole === 'owner' || userRole === 'admin';
+  const canManagePermissions = String(userRole || '').toLowerCase() === 'owner' || hasPermission('User & Role Management');
   const APP_ID = 'b30c02e74da644baad4668e3587d86b1';
 
   useEffect(() => {

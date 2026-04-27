@@ -9,6 +9,8 @@ import {
   DRIVEOUT_BASE_DOMAIN,
 } from '../../src/utils/storefrontHost.js';
 import { renderVehicleShareHtml } from './shareVehicleHandler.js';
+import { buildExperienceShareCopy, renderExperienceShareHtml } from './shareExperienceHandler.js';
+import { buildToursShareCopy, renderToursShareHtml } from './shareToursHandler.js';
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const SHORT_LINKS_TABLE = process.env.SHORT_LINKS_TABLE || 'short_links';
@@ -34,6 +36,56 @@ const parseShareVehicleUrl = (value) => {
       origin: parsed.origin,
       listingId,
       lang,
+      query,
+      targetUrl: value,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const parseShareExperienceUrl = (value) => {
+  try {
+    const parsed = new URL(value);
+    const match = parsed.pathname.match(/^\/share\/experience$/i);
+    if (!match) return null;
+
+    const lang = String(parsed.searchParams.get('lang') || 'en').trim().toLowerCase() === 'fr' ? 'fr' : 'en';
+    const city = String(parsed.searchParams.get('city') || 'Tangier').trim() || 'Tangier';
+    const query = {};
+    parsed.searchParams.forEach((queryValue, key) => {
+      query[key] = queryValue;
+    });
+
+    return {
+      origin: parsed.origin,
+      lang,
+      city,
+      query,
+      targetUrl: value,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const parseShareToursUrl = (value) => {
+  try {
+    const parsed = new URL(value);
+    const match = parsed.pathname.match(/^\/share\/tours$/i);
+    if (!match) return null;
+
+    const lang = String(parsed.searchParams.get('lang') || 'en').trim().toLowerCase() === 'fr' ? 'fr' : 'en';
+    const city = String(parsed.searchParams.get('city') || 'Tangier').trim() || 'Tangier';
+    const query = {};
+    parsed.searchParams.forEach((queryValue, key) => {
+      query[key] = queryValue;
+    });
+
+    return {
+      origin: parsed.origin,
+      lang,
+      city,
       query,
       targetUrl: value,
     };
@@ -103,11 +155,21 @@ const isCrawlerRequest = (req) => {
   ].some((token) => userAgent.includes(token));
 };
 
+const NON_EXPIRING_SHORT_LINK_TYPES = new Set([
+  'other',
+  'tour_tracking',
+]);
+
+const shouldExpireShortLink = (documentType = '') =>
+  !NON_EXPIRING_SHORT_LINK_TYPES.has(String(documentType || '').trim().toLowerCase());
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
 
   const action = String(req.query?.action || '').trim().toLowerCase();
-  const code = String(req.query?.code || '').trim();
+  const rawCode = String(req.query?.code || '').trim();
+  const codeMatch = rawCode.match(/[A-Za-z0-9]{6}/);
+  const code = codeMatch ? codeMatch[0] : '';
 
   try {
     const { adminClient } = createSupabaseClients();
@@ -115,7 +177,7 @@ export default async function handler(req, res) {
     if (req.method === 'GET' && code) {
       const { data, error } = await adminClient
         .from(SHORT_LINKS_TABLE)
-        .select('original_url, expires_at, click_count')
+        .select('original_url, expires_at, click_count, document_type')
         .eq('short_code', code)
         .maybeSingle();
 
@@ -127,7 +189,9 @@ export default async function handler(req, res) {
         return json(res, 404, { error: 'URL not found or has been deleted' });
       }
 
-      const isExpired = data.expires_at ? new Date(data.expires_at) < new Date() : false;
+      const isExpired = shouldExpireShortLink(data.document_type)
+        ? (data.expires_at ? new Date(data.expires_at) < new Date() : false)
+        : false;
       if (isExpired) {
         return json(res, 410, { error: 'This link has expired' });
       }
@@ -148,6 +212,8 @@ export default async function handler(req, res) {
 
       if (wantsHtml && crawlerRequest) {
         const shareVehicle = parseShareVehicleUrl(data.original_url);
+        const shareExperience = parseShareExperienceUrl(data.original_url);
+        const shareTours = parseShareToursUrl(data.original_url);
 
         if (shareVehicle) {
           const vehicle = await fetchPublicVehicleShareData(shareVehicle.listingId, shareVehicle.lang);
@@ -160,6 +226,32 @@ export default async function handler(req, res) {
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           res.setHeader('Cache-Control', 'public, s-maxage=600, stale-while-revalidate=86400');
           res.end(renderVehicleShareHtml(shareVehicle.lang, copy, vehicle, shareUrl, imageUrl, data.original_url));
+          return;
+        }
+
+        if (shareExperience) {
+          const copy = buildExperienceShareCopy(shareExperience.lang, shareExperience.city);
+          const shareOrigin = shareExperience.origin || buildAppOrigin(req);
+          const shareUrl = `${shareOrigin}/s/${encodeURIComponent(code)}`;
+          const imageUrl = `${shareOrigin}/assets/logo.jpg`;
+
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          res.setHeader('Cache-Control', 'public, s-maxage=600, stale-while-revalidate=86400');
+          res.end(renderExperienceShareHtml(shareExperience.lang, copy, shareUrl, imageUrl, data.original_url));
+          return;
+        }
+
+        if (shareTours) {
+          const copy = buildToursShareCopy(shareTours.lang, shareTours.city);
+          const shareOrigin = shareTours.origin || buildAppOrigin(req);
+          const shareUrl = `${shareOrigin}/s/${encodeURIComponent(code)}`;
+          const imageUrl = `${shareOrigin}/assets/logo.jpg`;
+
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          res.setHeader('Cache-Control', 'public, s-maxage=600, stale-while-revalidate=86400');
+          res.end(renderToursShareHtml(shareTours.lang, copy, shareUrl, imageUrl, data.original_url));
           return;
         }
 
@@ -191,13 +283,15 @@ export default async function handler(req, res) {
 
       const { requestOrigin, origins } = getAllowedOrigins(req);
       const shareVehicle = parseShareVehicleUrl(originalUrl);
+      const shareExperience = parseShareExperienceUrl(originalUrl);
+      const shareTours = parseShareToursUrl(originalUrl);
       if (!requestOrigin || !isAllowedOriginalUrl(originalUrl, origins)) {
         return json(res, 400, { error: 'Invalid originalUrl origin' });
       }
 
       const existingQuery = adminClient
         .from(SHORT_LINKS_TABLE)
-        .select('short_code')
+        .select('id, short_code, expires_at, document_type')
         .eq('original_url', originalUrl)
         .eq('document_type', documentType)
         .limit(1);
@@ -210,13 +304,27 @@ export default async function handler(req, res) {
         return json(res, 500, { error: existingError.message || 'Failed to lookup existing short link' });
       }
 
-      const existingShortCode = existingRows?.[0]?.short_code;
+      const existingLink = existingRows?.[0] || null;
+      const existingShortCode = existingLink?.short_code;
       if (existingShortCode) {
-        const shortOrigin = shareVehicle?.origin || requestOrigin;
+        const isExistingExpired = shouldExpireShortLink(existingLink?.document_type)
+          ? (existingLink?.expires_at ? new Date(existingLink.expires_at) < new Date() : false)
+          : false;
+        if (!shouldExpireShortLink(documentType) && existingLink?.id && existingLink?.expires_at) {
+          await adminClient
+            .from(SHORT_LINKS_TABLE)
+            .update({ expires_at: null })
+            .eq('id', existingLink.id);
+        }
+        if (isExistingExpired && shouldExpireShortLink(documentType)) {
+          // fall through and create a fresh code for expiring/sensitive link types
+        } else {
+        const shortOrigin = shareVehicle?.origin || shareExperience?.origin || shareTours?.origin || requestOrigin;
         return json(res, 200, {
           shortCode: existingShortCode,
           shortUrl: `${shortOrigin}/s/${existingShortCode}`,
         });
+        }
       }
 
       let nextCode = generateCode();
@@ -231,8 +339,13 @@ export default async function handler(req, res) {
         nextCode = generateCode();
       }
 
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7);
+      const expires = shouldExpireShortLink(documentType)
+        ? (() => {
+            const next = new Date();
+            next.setDate(next.getDate() + 7);
+            return next.toISOString();
+          })()
+        : null;
 
       const { error: insertError } = await adminClient
         .from(SHORT_LINKS_TABLE)
@@ -241,7 +354,7 @@ export default async function handler(req, res) {
           short_code: nextCode,
           rental_id: rentalId,
           document_type: documentType,
-          expires_at: expires.toISOString(),
+          expires_at: expires,
           click_count: 0,
         });
 
@@ -251,7 +364,7 @@ export default async function handler(req, res) {
 
       return json(res, 200, {
         shortCode: nextCode,
-        shortUrl: `${shareVehicle?.origin || requestOrigin}/s/${nextCode}`,
+        shortUrl: `${shareVehicle?.origin || shareExperience?.origin || shareTours?.origin || requestOrigin}/s/${nextCode}`,
       });
     }
 

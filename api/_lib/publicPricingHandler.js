@@ -1,4 +1,5 @@
 import { createSupabaseClients } from './supabase.js';
+import { calculateSimpleRentalPricing, DEFAULT_SIMPLE_RENTAL_GRACE_MINUTES } from '../../src/utils/simpleRentalPricing.js';
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -26,52 +27,6 @@ const getFallbackPrice = (rentalType, modelType = '') => {
     rentalType === 'weekly' ? 5000 : 1500;
 };
 
-const findMatchingHourlyPrice = (tiers, hours) => {
-  for (const tier of tiers || []) {
-    if (tier.min_hours !== null && tier.max_hours !== null && tier.price_amount) {
-      const min = parseFloat(tier.min_hours);
-      const max = parseFloat(tier.max_hours);
-
-      if (hours >= min && hours <= max) {
-        return parseFloat(tier.price_amount);
-      }
-    }
-  }
-
-  return 0;
-};
-
-const findMatchingDailyPrice = (tiers, days) => {
-  if (days === 1) {
-    const oneDayTier = (tiers || []).find((tier) => {
-      if (!tier.daily_price_amount) return false;
-
-      const min = tier.min_days ? parseInt(tier.min_days, 10) : null;
-      const max = tier.max_days ? parseInt(tier.max_days, 10) : null;
-      return min === 1 && max === 1;
-    });
-
-    if (oneDayTier) {
-      return parseFloat(oneDayTier.daily_price_amount);
-    }
-
-    return 0;
-  }
-
-  for (const tier of tiers || []) {
-    if (tier.daily_price_amount) {
-      const min = tier.min_days ? parseInt(tier.min_days, 10) : 1;
-      const max = tier.max_days ? parseInt(tier.max_days, 10) : Infinity;
-
-      if (days >= min && days <= max) {
-        return parseFloat(tier.daily_price_amount);
-      }
-    }
-  }
-
-  return 0;
-};
-
 const loadVehicleContext = async (adminClient, vehicleId) => {
   const { data: vehicleData, error: vehicleError } = await adminClient
     .from('saharax_0u4w4d_vehicles')
@@ -92,17 +47,6 @@ const loadVehicleContext = async (adminClient, vehicleId) => {
   return { vehicleData, modelInfo };
 };
 
-const loadActiveTiers = async (adminClient, vehicleModelId) => {
-  const { data: tiers, error } = await adminClient
-    .from('pricing_tiers')
-    .select('*')
-    .eq('vehicle_model_id', vehicleModelId)
-    .eq('is_active', true);
-
-  if (error) throw error;
-  return tiers || [];
-};
-
 const loadBasePrice = async (adminClient, vehicleModelId) => {
   const { data, error } = await adminClient
     .from('app_4c3a7a6153_base_prices')
@@ -113,6 +57,28 @@ const loadBasePrice = async (adminClient, vehicleModelId) => {
 
   if (error) throw error;
   return data || null;
+};
+
+const loadGracePeriodMinutes = async (adminClient) => {
+  try {
+    const { data, error } = await adminClient
+      .from('app_settings')
+      .select('id, rental_grace_period_minutes, rentalGracePeriodMinutes')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (error || !data) return DEFAULT_SIMPLE_RENTAL_GRACE_MINUTES;
+
+    const gracePeriodMinutes = Number(
+      data?.rentalGracePeriodMinutes ??
+      data?.rental_grace_period_minutes ??
+      DEFAULT_SIMPLE_RENTAL_GRACE_MINUTES
+    );
+
+    return Number.isFinite(gracePeriodMinutes) ? gracePeriodMinutes : DEFAULT_SIMPLE_RENTAL_GRACE_MINUTES;
+  } catch {
+    return DEFAULT_SIMPLE_RENTAL_GRACE_MINUTES;
+  }
 };
 
 const parseQuantity = (value, fallback = 1) => {
@@ -138,6 +104,7 @@ export default async function publicPricingHandler(req, res) {
 
   try {
     const { adminClient } = createSupabaseClients();
+    const gracePeriodMinutes = await loadGracePeriodMinutes(adminClient);
 
     if (action === 'vehicle') {
       const vehicleId = String(req.query?.vehicleId || '').trim();
@@ -146,25 +113,25 @@ export default async function publicPricingHandler(req, res) {
       }
 
       const { vehicleData, modelInfo } = await loadVehicleContext(adminClient, vehicleId);
-      const tiers = await loadActiveTiers(adminClient, vehicleData.vehicle_model_id);
-
-      let price = 0;
-      if (rentalType === 'hourly') {
-        price = findMatchingHourlyPrice(tiers, quantity);
-      } else if (rentalType === 'daily') {
-        price = findMatchingDailyPrice(tiers, quantity);
-      } else if (rentalType === 'weekly') {
-        price = findMatchingDailyPrice(tiers, quantity * 7);
-      }
-
-      if (price > 0) {
-        return json(res, 200, { price, source: 'tier', tierMatched: true });
-      }
 
       const basePrice = await loadBasePrice(adminClient, vehicleData.vehicle_model_id);
       if (basePrice) {
         if (rentalType === 'hourly' && basePrice.hourly_price) {
-          return json(res, 200, { price: parseFloat(basePrice.hourly_price) || 0, source: 'base_price', tierMatched: false });
+          const pricing = calculateSimpleRentalPricing({
+            startTime: new Date(0),
+            endTime: new Date(Number(quantity || 1) * 60 * 60 * 1000),
+            gracePeriodMinutes,
+            hourlyRate: parseFloat(basePrice.hourly_price) || 0,
+            totalKmUsed: 0,
+            packages: [],
+          });
+          return json(res, 200, {
+            price: pricing.totalPrice,
+            source: 'base_price',
+            tierMatched: false,
+            billedHours: pricing.billedHours,
+            gracePeriodMinutes,
+          });
         }
 
         if ((rentalType === 'daily' || rentalType === 'weekly') && basePrice.daily_price) {
@@ -178,7 +145,21 @@ export default async function publicPricingHandler(req, res) {
       }
 
       if (rentalType === 'hourly' && modelInfo?.hourly_price) {
-        return json(res, 200, { price: parseFloat(modelInfo.hourly_price) || 0, source: 'model', tierMatched: false });
+        const pricing = calculateSimpleRentalPricing({
+          startTime: new Date(0),
+          endTime: new Date(Number(quantity || 1) * 60 * 60 * 1000),
+          gracePeriodMinutes,
+          hourlyRate: parseFloat(modelInfo.hourly_price) || 0,
+          totalKmUsed: 0,
+          packages: [],
+        });
+        return json(res, 200, {
+          price: pricing.totalPrice,
+          source: 'model',
+          tierMatched: false,
+          billedHours: pricing.billedHours,
+          gracePeriodMinutes,
+        });
       }
 
       if ((rentalType === 'daily' || rentalType === 'weekly') && modelInfo?.daily_price) {
@@ -191,9 +172,20 @@ export default async function publicPricingHandler(req, res) {
       }
 
       return json(res, 200, {
-        price: getFallbackPrice(rentalType, modelInfo?.model || ''),
+        price:
+          rentalType === 'hourly'
+            ? calculateSimpleRentalPricing({
+                startTime: new Date(0),
+                endTime: new Date(Number(quantity || 1) * 60 * 60 * 1000),
+                gracePeriodMinutes,
+                hourlyRate: getFallbackPrice('hourly', modelInfo?.model || ''),
+              }).totalPrice
+            : rentalType === 'weekly'
+              ? getFallbackPrice('daily', modelInfo?.model || '') * quantity * 7
+              : getFallbackPrice('daily', modelInfo?.model || '') * quantity,
         source: 'fallback',
         tierMatched: false,
+        gracePeriodMinutes,
       });
     }
 
@@ -209,12 +201,6 @@ export default async function publicPricingHandler(req, res) {
       .maybeSingle();
 
     if (modelError) throw modelError;
-
-    const tiers = await loadActiveTiers(adminClient, vehicleModelId);
-    const tierPrice = findMatchingDailyPrice(tiers, quantity);
-    if (tierPrice > 0) {
-      return json(res, 200, { price: tierPrice, source: 'tier', tierMatched: true });
-    }
 
     const basePrice = await loadBasePrice(adminClient, vehicleModelId);
     if (basePrice?.daily_price) {

@@ -1,13 +1,24 @@
 import { forwardRef } from "react";
-import jsPDF from "jspdf";
-import html2canvas from "html2canvas";
 import i18n from "../i18n";
+
+const loadPdfTools = async () => {
+  const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+    import('jspdf'),
+    import('html2canvas'),
+  ]);
+
+  return { jsPDF, html2canvas };
+};
 
 const getRentalKilometerPackage = (rental) => {
   const pkg = rental?.package;
   if (!pkg) return null;
 
-  const hasLinkedPackage = Boolean(rental?.package_id || pkg?.id);
+  const hasLinkedPackage = Boolean(
+    rental?.package_id ||
+    rental?.selected_package_id ||
+    rental?.package?.id
+  );
   const hasKmConfig =
     pkg.included_kilometers !== null && pkg.included_kilometers !== undefined ||
     pkg.extra_km_rate !== null && pkg.extra_km_rate !== undefined;
@@ -19,6 +30,24 @@ const getRentalDurationUnits = (rental) =>
   rental?.rental_type === 'hourly'
     ? (rental?.quantity_hours ?? rental?.quantity_days ?? 1)
     : (rental?.quantity_days ?? 1);
+
+const getPackageTotalIncludedKilometers = (rental, pkg = null) => {
+  const resolvedPackage = pkg || getRentalKilometerPackage(rental);
+  if (!resolvedPackage) return 0;
+
+  const appliedIncludedKm = Number.parseFloat(
+    rental?.included_kilometers_applied ??
+    rental?.package_total_included_km ??
+    rental?.selected_package_total_included_km ??
+    0
+  ) || 0;
+  if (appliedIncludedKm > 0) return appliedIncludedKm;
+
+  const includedPerUnit = Number.parseFloat(resolvedPackage?.included_kilometers || 0) || 0;
+  if (!includedPerUnit) return 0;
+
+  return includedPerUnit * Number(getRentalDurationUnits(rental) || 1);
+};
 
 const isFlatHourlyTierRental = (rental, hasPackage = false) => {
   const duration = Number(getRentalDurationUnits(rental));
@@ -91,7 +120,7 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
     
     // Get package details
     const includedKm = rental.included_kilometers_applied ||
-                       kilometerPackage?.included_kilometers ||
+                       getPackageTotalIncludedKilometers(rental, kilometerPackage) ||
                        0;
     const rate = rental.extra_km_rate_applied ||
                  kilometerPackage?.extra_km_rate ||
@@ -160,8 +189,10 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
 
   const finalSignatureUrl = getCorrectSignatureUrl(signature_url);
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
     const input = document.getElementById("rental-contract-to-print");
+    const { jsPDF, html2canvas } = await loadPdfTools();
+
     html2canvas(input, {
       scale: 2,
       useCORS: true,

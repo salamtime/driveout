@@ -1,10 +1,7 @@
-import JSZip from 'jszip';
-import { saveAs } from 'file-saver';
-
 // Completely authentication-free project archiver
 class ProjectArchiver {
   constructor() {
-    this.zip = new JSZip();
+    this.zip = null;
     this.fileCount = 0;
     this.processedCount = 0;
     this.onProgress = null;
@@ -468,6 +465,11 @@ export function cn(...inputs) {
 
   async generateArchive(projectName = 'project-export') {
     try {
+      const [{ default: JSZip }, { saveAs }] = await Promise.all([
+        import('jszip'),
+        import('file-saver'),
+      ]);
+
       // Reset counters
       this.processedCount = 0;
       this.zip = new JSZip();

@@ -1,16 +1,26 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase.js';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, Activity, Fuel, WalletCards, ChevronDown, ClipboardList } from 'lucide-react';
-import { useAuth } from '@/contexts/AuthContext.jsx';
-import AdminModuleHero from '../../components/admin/AdminModuleHero';
+import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, ArrowDownToLine, Activity, Fuel, WalletCards, ChevronDown, ClipboardList, RefreshCw, Download, FileText, Banknote, Landmark, Loader2, X } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { useAuth } from '../../contexts/AuthContext';
+import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
+import AdminWorkspaceLoadingShell from '../../components/admin/AdminWorkspaceLoadingShell';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { shortenUrl } from '../../services/UrlShortenerService';
-import { getUsers } from '../../services/UserService';
+import { getStaffDirectory } from '../../services/UserService';
 import { getTaskStats } from '../../services/TaskService';
 import { buildTourTrackingUrl } from '../../services/tourTrackingService';
+import { uploadFile } from '../../utils/storageUpload';
+import { normalizeAdminRecipients } from '../../utils/receiveFundsUi';
+import { buildExpenseNote, loadExpenseLabelPresets, saveExpenseLabelPresets, uniqueLabels } from '../../utils/expenseLabels';
+import PhotoCapture from '../../components/video/PhotoCapture';
 import i18n from '../../i18n';
+import { isBusinessOwnerAccountType, isPlatformAdminEmail, isPlatformOwnerEmail } from '../../utils/accountType';
+import { canAccessOwnerBankMethods, canRecordReceiveFunds, canUseBankDepositMethod } from '../../utils/permissionHelpers';
+import { receiveFundsService } from '../../services/receiveFundsService';
+import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 
 const TOUR_BOOKING_MARKER = '[tour_booking]';
 const DASHBOARD_CACHE_TTL_MS = 15000;
@@ -147,6 +157,13 @@ const formatNumber = (num) => {
 };
 
 const formatCurrency = (num = 0) => `${Number(num || 0).toLocaleString()} MAD`;
+const todayInputKey = () => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 const localToday = () => {
   const d = new Date();
@@ -533,7 +550,7 @@ const sendGuideLocateMessage = async (tour) => {
 };
 
 // Overview Statistics Component
-const OverviewStats = ({ stats, loading, urgentStats }) => {
+const OverviewStats = ({ stats, loading, urgentStats, showRevenueTotals = true, todayRevenue = 0 }) => {
   const statItems = [
     {
       icon: <Car className="w-6 h-6 text-blue-500" />,
@@ -562,12 +579,14 @@ const OverviewStats = ({ stats, loading, urgentStats }) => {
     },
     {
       icon: <DollarSign className="w-6 h-6 text-purple-500" />,
-      label: tr('Total Revenue', 'Revenu total'),
-      value: `${formatNumber(stats.revenue)} MAD`,
+      label: showRevenueTotals ? tr('Total Revenue', 'Revenu total') : tr("Today's Revenue", "Revenu du jour"),
+      value: `${formatNumber(showRevenueTotals ? stats.revenue : todayRevenue)} MAD`,
       color: 'purple',
       link: '/admin/finance',
-      change: tr('+12% from last month', '+12% par rapport au mois dernier'),
-      changeColor: 'green'
+      change: showRevenueTotals
+        ? tr('+12% from last month', '+12% par rapport au mois dernier')
+        : tr('Paid revenue recorded today', 'Revenu payé enregistré aujourd’hui'),
+      changeColor: showRevenueTotals ? 'green' : 'gray'
     },
     {
       icon: <Calendar className="w-6 h-6 text-indigo-500" />,
@@ -1392,6 +1411,783 @@ const RecentBookings = ({ bookings, loading, collapsed, onToggle }) => {
   );
 };
 
+const DASHBOARD_RECEIVE_METHODS = [
+  {
+    key: 'cash',
+    title: tr('Cash', 'Espèces'),
+    subtitle: tr('Collected in person', 'Collecté en main propre'),
+    icon: Banknote,
+    activeClass: 'border-emerald-300 bg-emerald-50 shadow-[0_16px_34px_rgba(16,185,129,0.14)] text-emerald-700',
+  },
+  {
+    key: 'bank_deposit',
+    title: tr('Bank Deposit', 'Dépôt bancaire'),
+    subtitle: tr('Received to bank account', 'Reçu sur compte bancaire'),
+    icon: Landmark,
+    activeClass: 'border-violet-300 bg-violet-50 shadow-[0_16px_34px_rgba(124,58,237,0.14)] text-violet-700',
+  },
+  {
+    key: 'wire_transfer',
+    title: tr('Bank Transfer', 'Virement bancaire'),
+    subtitle: tr('Transferred between accounts', 'Transféré entre comptes'),
+    icon: ArrowDownToLine,
+    activeClass: 'border-sky-300 bg-sky-50 shadow-[0_16px_34px_rgba(14,165,233,0.14)] text-sky-700',
+  },
+];
+
+const DashboardReceiveFundsDrawer = ({
+  open,
+  onClose,
+  onRecorded,
+  userProfile,
+}) => {
+  const [saving, setSaving] = useState(false);
+  const [composerMode, setComposerMode] = useState('funds');
+  const [expenseModeReady, setExpenseModeReady] = useState(false);
+  const [showDateInput, setShowDateInput] = useState(false);
+  const [adminRecipients, setAdminRecipients] = useState([]);
+  const [adminsLoading, setAdminsLoading] = useState(false);
+  const [receiptFile, setReceiptFile] = useState(null);
+  const [receiptPreviewUrl, setReceiptPreviewUrl] = useState('');
+  const [showReceiptCapture, setShowReceiptCapture] = useState(false);
+  const [expenseLabelPresets, setExpenseLabelPresets] = useState([]);
+  const [selectedExpenseLabels, setSelectedExpenseLabels] = useState([]);
+  const [newExpenseLabel, setNewExpenseLabel] = useState('');
+  const [showExpenseNote, setShowExpenseNote] = useState(false);
+  const [expenseSaveFeedback, setExpenseSaveFeedback] = useState(null);
+  const receiptCaptureRef = useRef(null);
+  const receiptImportInputRef = useRef(null);
+  const amountInputRef = useRef(null);
+  const canUseOwnerBankMethods = canAccessOwnerBankMethods(userProfile);
+  const canUseBankDeposit = canUseBankDepositMethod(userProfile);
+  const [form, setForm] = useState({
+    method: 'cash',
+    amount: '',
+    receivedDate: todayInputKey(),
+    receivedByAdminUserId: '',
+    receivedByAdminDisplayName: '',
+    note: '',
+  });
+  const isExpenseMode = composerMode === 'expense';
+  const expenseLabelsScopeId = String(
+    userProfile?.organization_id ||
+    userProfile?.organizationId ||
+    userProfile?.workspace_id ||
+    userProfile?.workspaceId ||
+    'shared'
+  ).trim() || 'shared';
+  const selectedReceiveMethod = DASHBOARD_RECEIVE_METHODS.find((method) => method.key === form.method) || DASHBOARD_RECEIVE_METHODS[0];
+
+  const resetDrawerForm = (mode = composerMode, recipients = adminRecipients) => {
+    setForm({
+      method: 'cash',
+      amount: '',
+      receivedDate: todayInputKey(),
+      receivedByAdminUserId: mode === 'funds' ? (recipients[0]?.id || '') : '',
+      receivedByAdminDisplayName: mode === 'funds' ? (recipients[0]?.label || '') : '',
+      note: '',
+    });
+    setReceiptFile(null);
+    setShowDateInput(false);
+    setShowReceiptCapture(false);
+    setSelectedExpenseLabels([]);
+    setNewExpenseLabel('');
+    setShowExpenseNote(false);
+    setExpenseSaveFeedback(null);
+  };
+
+  const handleReceiptImport = (event) => {
+    const nextFile = event.target.files?.[0] || null;
+    if (!nextFile) return;
+    setReceiptFile(nextFile);
+    setShowReceiptCapture(false);
+    event.target.value = '';
+  };
+
+  useEffect(() => {
+    setExpenseLabelPresets(loadExpenseLabelPresets(expenseLabelsScopeId));
+  }, [expenseLabelsScopeId]);
+
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      setSaving(false);
+      setComposerMode('funds');
+      resetDrawerForm('funds', adminRecipients);
+    }
+  }, [adminRecipients, open]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadExpenseModeReady = async () => {
+      try {
+        const ready = await receiveFundsService.checkExpensesTableExists();
+        if (isActive) {
+          setExpenseModeReady(Boolean(ready));
+        }
+      } catch (_error) {
+        if (isActive) {
+          setExpenseModeReady(false);
+        }
+      }
+    };
+
+    void loadExpenseModeReady();
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showReceiptCapture) return undefined;
+
+    const scrollToCapture = () => {
+      receiptCaptureRef.current?.scrollIntoView({
+        behavior: 'auto',
+        block: 'start',
+      });
+    };
+
+    scrollToCapture();
+    const timeoutId = window.setTimeout(scrollToCapture, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [showReceiptCapture]);
+
+  useEffect(() => {
+    if (!canUseBankDeposit && form.method === 'bank_deposit') {
+      setForm((current) => ({ ...current, method: 'cash' }));
+      return;
+    }
+
+    if (!canUseOwnerBankMethods && form.method === 'wire_transfer') {
+      setForm((current) => ({ ...current, method: 'cash' }));
+    }
+  }, [canUseBankDeposit, canUseOwnerBankMethods, form.method]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadAdmins = async () => {
+      try {
+        setAdminsLoading(true);
+        const users = await getStaffDirectory();
+        if (!isActive) return;
+        const nextAdmins = normalizeAdminRecipients(users);
+        setAdminRecipients(nextAdmins);
+        setForm((current) => {
+          if (current.receivedByAdminUserId || nextAdmins.length === 0) {
+            return current;
+          }
+          return {
+            ...current,
+            receivedByAdminUserId: nextAdmins[0].id,
+            receivedByAdminDisplayName: nextAdmins[0].label,
+          };
+        });
+      } catch (error) {
+        console.error('Failed to load admin recipients:', error);
+        if (isActive) {
+          setAdminRecipients([]);
+        }
+      } finally {
+        if (isActive) {
+          setAdminsLoading(false);
+        }
+      }
+    };
+
+    if (open) {
+      void loadAdmins();
+    }
+
+    return () => {
+      isActive = false;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!receiptFile) {
+      setReceiptPreviewUrl('');
+      return undefined;
+    }
+
+    const objectUrl = URL.createObjectURL(receiptFile);
+    setReceiptPreviewUrl(objectUrl);
+
+    return () => {
+      URL.revokeObjectURL(objectUrl);
+    };
+  }, [receiptFile]);
+
+  useEffect(() => {
+    if (!open || !isExpenseMode) return;
+    const timeoutId = window.setTimeout(() => {
+      amountInputRef.current?.focus();
+      amountInputRef.current?.select?.();
+    }, 40);
+    return () => window.clearTimeout(timeoutId);
+  }, [open, isExpenseMode]);
+
+  if (!open) return null;
+
+  const compactExpenseDateLabel = (() => {
+    const baseLabel = new Date(`${form.receivedDate}T12:00:00`).toLocaleDateString(
+      isFrenchLocale() ? 'fr-FR' : 'en-US',
+      { month: 'short', day: 'numeric' }
+    );
+    if (form.receivedDate === todayInputKey()) {
+      return tr(`Today • ${baseLabel}`, `Aujourd'hui • ${baseLabel}`);
+    }
+    return new Date(`${form.receivedDate}T12:00:00`).toLocaleDateString(
+      isFrenchLocale() ? 'fr-FR' : 'en-US',
+      { weekday: 'short', month: 'short', day: 'numeric' }
+    );
+  })();
+
+  const handleSave = async () => {
+    try {
+      if (!isExpenseMode && adminRecipients.length > 0 && !form.receivedByAdminUserId) {
+        toast.error(tr('Choose which admin received the funds.', "Choisissez l'admin qui a reçu les fonds."));
+        return;
+      }
+
+      setSaving(true);
+      let receiptUpload = null;
+      if (receiptFile) {
+        const scopeId = String(
+          userProfile?.organization_id ||
+            userProfile?.organizationId ||
+            userProfile?.workspace_id ||
+            userProfile?.workspaceId ||
+            'shared'
+        ).trim();
+        receiptUpload = await uploadFile(receiptFile, {
+          bucket: 'rental-documents',
+          pathPrefix: `receive-funds/${scopeId}`,
+          optimizationProfile: 'document',
+        });
+        if (!receiptUpload?.success) {
+          throw new Error(receiptUpload?.error || tr('Receipt upload failed.', "L'envoi du reçu a échoué."));
+        }
+      }
+      if (isExpenseMode) {
+        await receiveFundsService.recordExpense(
+          {
+            amount: form.amount,
+            receivedDate: form.receivedDate,
+            note: form.note,
+            labels: selectedExpenseLabels,
+            receiptImageUrl: receiptUpload?.url || '',
+          },
+          userProfile
+        );
+        setExpenseSaveFeedback({
+          label: selectedExpenseLabels[0] || tr('Expense', 'Dépense'),
+          amount: Number(form.amount || 0),
+        });
+        resetDrawerForm('expense');
+        setComposerMode('expense');
+      } else {
+        await receiveFundsService.recordEntry(
+          {
+            amount: form.amount,
+            method: form.method,
+            receivedDate: form.receivedDate,
+            receivedByAdminUserId: form.receivedByAdminUserId,
+            receivedByAdminDisplayName: form.receivedByAdminDisplayName,
+            note: form.note,
+            receiptImageUrl: receiptUpload?.url || '',
+            receiptImagePath: receiptUpload?.path || '',
+          },
+          userProfile
+        );
+        toast.success(tr('Funds recorded successfully.', 'Fonds enregistrés avec succès.'));
+        onClose?.();
+      }
+      onRecorded?.();
+    } catch (error) {
+      toast.error(
+        error?.message ||
+          (isExpenseMode
+            ? tr('Could not record expense.', "Impossible d'enregistrer la dépense.")
+            : tr('Could not record funds.', "Impossible d'enregistrer les fonds."))
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddExpenseLabel = () => {
+    const normalized = uniqueLabels([newExpenseLabel])[0];
+    if (!normalized) return;
+    const nextPresets = uniqueLabels([...expenseLabelPresets, normalized]);
+    setExpenseLabelPresets(nextPresets);
+    saveExpenseLabelPresets(expenseLabelsScopeId, nextPresets);
+    setSelectedExpenseLabels([normalized]);
+    setNewExpenseLabel('');
+    setExpenseSaveFeedback(null);
+  };
+
+  const handleToggleExpenseLabel = (label) => {
+    setSelectedExpenseLabels((current) =>
+      current.some((item) => item.toLowerCase() === String(label).toLowerCase()) ? [] : [label]
+    );
+    setExpenseSaveFeedback(null);
+  };
+
+  const handleRemoveExpenseLabelPreset = (label) => {
+    const nextPresets = expenseLabelPresets.filter((item) => item.toLowerCase() !== String(label).toLowerCase());
+    setExpenseLabelPresets(nextPresets);
+    saveExpenseLabelPresets(expenseLabelsScopeId, nextPresets);
+    setSelectedExpenseLabels((current) => current.filter((item) => item.toLowerCase() !== String(label).toLowerCase()));
+    setExpenseSaveFeedback(null);
+  };
+
+  const openExpenseMode = async () => {
+    const ready = await receiveFundsService.refreshExpensesTableExists();
+    setExpenseModeReady(Boolean(ready));
+
+    if (!ready) {
+      toast.error(
+        tr(
+          'Add Expense needs the finance_expenses table. Run the finance expenses migration first.',
+          "Ajouter une dépense nécessite la table finance_expenses. Exécutez d'abord la migration des dépenses finance."
+        )
+      );
+      return;
+    }
+
+    setComposerMode('expense');
+    resetDrawerForm('expense');
+  };
+
+  const expenseNotePreview = buildExpenseNote(form.note, selectedExpenseLabels);
+
+  return (
+    <div className="fixed inset-0 z-[90] flex justify-end">
+      <button
+        type="button"
+        aria-label={tr('Close Record Funds', 'Fermer Enregistrer des fonds')}
+        className="absolute inset-0 bg-slate-950/35 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
+      <aside className="relative flex h-full w-full max-w-[560px] flex-col overflow-y-auto border-l border-violet-100 bg-[linear-gradient(180deg,#f3edff_0%,#f8f5ff_52%,#ffffff_100%)] p-4 shadow-[0_24px_80px_rgba(15,23,42,0.22)] sm:p-5">
+        <div className="rounded-[30px] border border-white/80 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">
+                {isExpenseMode ? tr('Add Expense', 'Ajouter une dépense') : tr('Record Funds', 'Enregistrer des fonds')}
+              </p>
+              <h2 className="mt-3 text-3xl font-bold tracking-[-0.04em] text-slate-950">
+                {isExpenseMode ? tr('Purchase Expense', "Dépense d'achat") : selectedReceiveMethod.title}
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:border-violet-200 hover:text-violet-700"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="mt-6 rounded-[22px] border border-slate-200 bg-slate-50 p-1.5">
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setComposerMode('funds');
+                  resetDrawerForm('funds');
+                }}
+                className={`rounded-[18px] px-4 py-3 text-left transition ${
+                  !isExpenseMode ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-600 hover:bg-white/70'
+                }`}
+              >
+                <p className="text-sm font-semibold">{tr('Record Funds', 'Enregistrer des fonds')}</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void openExpenseMode();
+                }}
+                className={`rounded-[18px] px-4 py-3 text-left transition ${
+                  isExpenseMode ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-600 hover:bg-white/70'
+                }`}
+              >
+                <p className="text-sm font-semibold">{tr('Add Expense', 'Ajouter une dépense')}</p>
+              </button>
+            </div>
+          </div>
+
+          {!isExpenseMode ? (
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            {DASHBOARD_RECEIVE_METHODS.filter((method) => {
+              if (method.key === 'cash') return true;
+              if (method.key === 'bank_deposit') return canUseBankDeposit;
+              if (method.key === 'wire_transfer') return canUseOwnerBankMethods;
+              return false;
+            }).map((method) => {
+              const Icon = method.icon;
+              const isActive = form.method === method.key;
+              return (
+                <button
+                  key={method.key}
+                  type="button"
+                  onClick={() => setForm((current) => ({ ...current, method: method.key }))}
+                  className={`rounded-[24px] border px-5 py-5 text-left transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:translate-y-0 active:scale-[0.985] ${
+                    isActive
+                      ? method.activeClass
+                      : 'border-slate-200 bg-white text-slate-700 shadow-[0_12px_30px_rgba(15,23,42,0.04)] hover:border-violet-200 hover:bg-violet-50/50'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-lg font-semibold">{method.title}</p>
+                      <p className="mt-1 text-sm text-slate-500">{method.subtitle}</p>
+                    </div>
+                    <div className="rounded-2xl border border-current/10 bg-white/80 p-3">
+                      <Icon className="h-5 w-5" />
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          ) : null}
+
+          <div className="mt-6 rounded-[28px] border border-violet-100 bg-[#faf7ff] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
+            <label className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+              {tr('Amount', 'Montant')}
+            </label>
+            <div className="mt-3 flex items-end justify-between gap-4 rounded-[24px] border border-white bg-white px-5 py-4 shadow-[0_16px_36px_rgba(79,70,229,0.08)]">
+              <input
+                ref={amountInputRef}
+                type={isExpenseMode ? 'text' : 'number'}
+                inputMode="decimal"
+                value={form.amount}
+                onChange={(event) => {
+                  const nextValue = isExpenseMode
+                    ? event.target.value.replace(/[^0-9.,]/g, '')
+                    : event.target.value;
+                  setForm((current) => ({ ...current, amount: nextValue }));
+                  setExpenseSaveFeedback(null);
+                }}
+                placeholder="0"
+                autoFocus={isExpenseMode}
+                className="w-full appearance-none border-0 bg-transparent p-0 text-4xl font-bold tracking-[-0.04em] text-slate-950 outline-none placeholder:text-slate-300 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              />
+              <span className="pb-1 text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">MAD</span>
+            </div>
+          </div>
+
+          {isExpenseMode ? (
+            <div className="mt-6 rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.05)]">
+              <label className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                {tr('Labels', 'Labels')}
+              </label>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {expenseLabelPresets.map((label) => {
+                  const isSelected = selectedExpenseLabels.some((item) => item.toLowerCase() === label.toLowerCase());
+                  return (
+                    <div key={label} className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleExpenseLabel(label)}
+                        className={`rounded-full border px-3 py-2 text-sm font-semibold transition ${
+                          isSelected
+                            ? 'border-violet-300 bg-violet-50 text-violet-700'
+                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-violet-200 hover:bg-white'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveExpenseLabelPreset(label)}
+                        className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400 transition hover:text-rose-600"
+                        aria-label={`${tr('Remove', 'Retirer')} ${label}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 flex gap-2">
+                <input
+                  type="text"
+                  value={newExpenseLabel}
+                  onChange={(event) => setNewExpenseLabel(event.target.value)}
+                  placeholder={tr('Add label', 'Ajouter un label')}
+                  className="flex-1 rounded-[20px] border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:bg-white"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddExpenseLabel}
+                  className="inline-flex items-center justify-center rounded-[20px] border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                >
+                  + {tr('Add', 'Ajouter')}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-6 grid gap-4 sm:grid-cols-[0.8fr_1.2fr]">
+            <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.05)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                {isExpenseMode ? tr('Expense Date', 'Date de dépense') : tr('Deposit Date', 'Date du dépôt')}
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowDateInput((value) => !value)}
+                className="mt-3 inline-flex w-full items-center justify-between rounded-[20px] border border-slate-200 bg-slate-50 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:bg-white"
+              >
+                <span>{isExpenseMode ? compactExpenseDateLabel : new Date(`${form.receivedDate}T12:00:00`).toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+                <Calendar className="h-4 w-4 text-violet-500" />
+              </button>
+              {showDateInput ? (
+                <input
+                  type="date"
+                  value={form.receivedDate}
+                  onChange={(event) => {
+                    setForm((current) => ({ ...current, receivedDate: event.target.value }));
+                    setExpenseSaveFeedback(null);
+                  }}
+                  className="mt-3 w-full rounded-[18px] border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 outline-none transition focus:border-violet-300"
+                />
+              ) : null}
+            </div>
+
+            {!isExpenseMode ? (
+            <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.05)]">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                  {tr('Sent to admin', 'Envoyé à un admin')}
+                </label>
+                {adminsLoading ? <Loader2 className="h-4 w-4 animate-spin text-violet-500" /> : null}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {adminRecipients.map((admin) => {
+                  const isActive = form.receivedByAdminUserId === admin.id;
+                  return (
+                    <button
+                      key={admin.id}
+                      type="button"
+                      onClick={() =>
+                        setForm((current) => ({
+                          ...current,
+                          receivedByAdminUserId: admin.id,
+                          receivedByAdminDisplayName: admin.label,
+                        }))
+                      }
+                      className={`rounded-full border px-3 py-2 text-sm font-semibold transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:translate-y-0 active:scale-[0.97] ${
+                        isActive
+                          ? 'border-violet-300 bg-violet-50 text-violet-700'
+                          : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-violet-200 hover:bg-white'
+                      }`}
+                    >
+                      {admin.label}
+                    </button>
+                  );
+                })}
+                {!adminsLoading && adminRecipients.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    {tr('No admin recipients found.', "Aucun admin trouvé.")}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            ) : null}
+
+          </div>
+
+          <div className="mt-6 rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.05)]">
+            <input
+              ref={receiptImportInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleReceiptImport}
+            />
+            <div className="flex items-center justify-between gap-3">
+              <label className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                {tr('Receipt image', 'Image du reçu')}
+              </label>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowReceiptCapture((current) => !current);
+                    setExpenseSaveFeedback(null);
+                  }}
+                  className={`inline-flex items-center rounded-full border px-3 py-2 text-xs font-bold uppercase tracking-[0.16em] transition ${
+                    showReceiptCapture
+                      ? 'border-violet-300 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.12)]'
+                      : 'border-violet-200 bg-white text-violet-700 hover:border-violet-300 hover:bg-violet-50'
+                  }`}
+                >
+                  {showReceiptCapture ? tr('Close photo', 'Fermer la photo') : tr('Add photo', 'Ajouter une photo')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => receiptImportInputRef.current?.click()}
+                  className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-bold uppercase tracking-[0.16em] text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                >
+                  {tr('Import', 'Importer')}
+                </button>
+                {receiptFile ? (
+                  <button
+                    type="button"
+                    onClick={() => setReceiptFile(null)}
+                    className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500 transition hover:text-rose-600"
+                  >
+                    {tr('Remove', 'Retirer')}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            {receiptPreviewUrl ? (
+              <div className="mt-3 flex items-center gap-3 rounded-[20px] border border-dashed border-slate-200 bg-slate-50 px-4 py-3">
+                <img src={receiptPreviewUrl} alt={tr('Receipt preview', 'Aperçu du reçu')} className="h-14 w-14 rounded-xl object-cover" />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-900">
+                    {receiptFile ? receiptFile.name : tr('Receipt image ready', 'Image du reçu prête')}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {isExpenseMode
+                      ? tr('One receipt photo will be saved with this expense.', 'Une photo du reçu sera enregistrée avec cette dépense.')
+                      : tr('One photo will be saved with this funds record.', 'Une photo sera enregistrée avec ce fonds reçu.')}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+            {showReceiptCapture ? (
+              <div ref={receiptCaptureRef} className="mt-4 rounded-[20px] border border-slate-200 bg-slate-50 p-4">
+                <PhotoCapture
+                  sessionToken="receipt-capture"
+                  requirements={{ minPhotos: 1, maxPhotos: 1 }}
+                  hideHeader
+                  hideInstructions
+                  squarePreview
+                  captureLabel={tr('Take Photo', 'Prendre une photo')}
+                  submitLabel={tr('Use this photo', 'Utiliser cette photo')}
+                  retakeLabel={tr('Retake photo', 'Reprendre la photo')}
+                  loadingLabel={tr('Initializing camera…', 'Initialisation de la caméra…')}
+                  importLabel={tr('Import', 'Importer')}
+                  onImportClick={() => receiptImportInputRef.current?.click()}
+                  onPhotosCapture={(files) => {
+                    const nextFile = files?.[files.length - 1] || null;
+                    setReceiptFile(nextFile);
+                    setShowReceiptCapture(false);
+                  }}
+                  onError={(message) => {
+                    toast.error(message || tr('Camera access failed.', "L'accès à la caméra a échoué."));
+                  }}
+                />
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-6 rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.05)]">
+            {isExpenseMode && !showExpenseNote && !form.note ? (
+              <button
+                type="button"
+                onClick={() => setShowExpenseNote(true)}
+                className="flex w-full items-center justify-between rounded-[20px] border border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50 px-4 py-4 text-left shadow-[0_16px_34px_rgba(124,58,237,0.10)] transition hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-[0_22px_42px_rgba(124,58,237,0.14)]"
+              >
+                <span>
+                  <span className="block text-xs font-semibold uppercase tracking-[0.22em] text-violet-700">
+                    {tr('Expense note', 'Note de dépense')}
+                  </span>
+                  <span className="mt-2 block text-base font-semibold text-slate-900">
+                    {tr('Add a note for this purchase', 'Ajouter une note pour cet achat')}
+                  </span>
+                  <span className="mt-1 block text-sm text-violet-700/75">
+                    {tr('Reason, context, or what was bought', 'Raison, contexte, ou ce qui a été acheté')}
+                  </span>
+                </span>
+                <span className="flex h-11 w-11 items-center justify-center rounded-full bg-violet-600 text-white shadow-[0_14px_28px_rgba(124,58,237,0.28)]">
+                  <Plus className="h-5 w-5" />
+                </span>
+              </button>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">
+                    {isExpenseMode ? tr('Expense note', 'Note de dépense') : tr('Optional note', 'Note facultative')}
+                  </label>
+                  {isExpenseMode ? (
+                    <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-violet-700">
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-violet-600 text-white">
+                        +
+                      </span>
+                      {tr('Add detail', 'Ajouter un détail')}
+                    </span>
+                  ) : null}
+                  {isExpenseMode && showExpenseNote ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!form.note) setShowExpenseNote(false);
+                      }}
+                      className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500 transition hover:text-violet-700"
+                    >
+                      {tr('Hide', 'Masquer')}
+                    </button>
+                  ) : null}
+                </div>
+                <textarea
+                  rows={isExpenseMode ? 3 : 4}
+                  value={form.note}
+                  onChange={(event) => {
+                    setForm((current) => ({ ...current, note: event.target.value }));
+                    setExpenseSaveFeedback(null);
+                  }}
+                  onFocus={() => setShowExpenseNote(true)}
+                  placeholder={
+                    isExpenseMode
+                      ? tr('Add a short note for this purchase', 'Ajoutez une courte note pour cet achat')
+                      : tr('Add a quick note if needed', 'Ajoutez une note rapide si nécessaire')
+                  }
+                  className={`mt-3 w-full resize-none rounded-[20px] px-4 py-3 text-sm text-slate-700 outline-none transition ${isExpenseMode ? 'border border-violet-200 bg-violet-50/40 focus:border-violet-400 focus:bg-white' : 'border border-slate-200 bg-slate-50 focus:border-violet-300 focus:bg-white'}`}
+                />
+              </>
+            )}
+          </div>
+
+          {isExpenseMode && expenseSaveFeedback ? (
+            <div className="mt-6 rounded-[20px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
+              {tr('Saved', 'Enregistré')} • {expenseSaveFeedback.label} • {Number(expenseSaveFeedback.amount || 0).toLocaleString(isFrenchLocale() ? 'fr-FR' : 'en-US')} MAD
+            </div>
+          ) : null}
+
+          <div className="sticky bottom-0 mt-6 flex flex-col gap-3 border-t border-violet-100 bg-white/92 px-1 pt-4 backdrop-blur-xl sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="inline-flex items-center justify-center gap-2 rounded-[22px] bg-gradient-to-r from-violet-600 to-indigo-700 px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(79,70,229,0.24)] transition duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:translate-y-0 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {isExpenseMode ? tr('Save expense', 'Enregistrer la dépense') : tr('Save received funds', 'Enregistrer les fonds reçus')}
+            </button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+};
+
 const OperationsOverview = ({ cards, loading }) => {
   if (loading) {
     return (
@@ -1409,7 +2205,7 @@ const OperationsOverview = ({ cards, loading }) => {
         <Link
           to={card.href}
           key={card.label}
-          className="group rounded-xl border border-violet-100 bg-white p-4 shadow-[0_18px_45px_rgba(76,29,149,0.08)] transition-all hover:-translate-y-0.5 hover:border-violet-200 hover:shadow-[0_20px_50px_rgba(76,29,149,0.12)]"
+          className="group min-h-[150px] rounded-xl border border-violet-100 bg-white p-4 shadow-[0_18px_45px_rgba(76,29,149,0.08)] transition-all hover:-translate-y-0.5 hover:border-violet-200 hover:shadow-[0_20px_50px_rgba(76,29,149,0.12)]"
         >
           <div className="flex items-start justify-between gap-3">
             <div className={`rounded-xl p-2.5 ${card.iconTone}`}>
@@ -1563,36 +2359,65 @@ const LiveOperationsGrid = ({ cards, loading }) => {
 const ModuleShortcutGrid = ({ cards, loading }) => {
   if (loading) {
     return (
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-4">
+      <AdminMobileStatsRow
+        contentClassName="flex gap-3 sm:grid sm:grid-cols-2 2xl:grid-cols-4"
+        itemClassName="min-w-[260px] flex-none sm:min-w-0 sm:flex-auto"
+      >
         {Array.from({ length: 8 }).map((_, index) => (
           <div key={index} className="h-40 animate-pulse rounded-xl border border-violet-100 bg-white shadow-sm" />
         ))}
-      </div>
+      </AdminMobileStatsRow>
     );
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-4">
-      {cards.map((card) => (
-        <Link
-          to={card.href}
-          key={card.title}
-          className="rounded-xl border border-violet-100 bg-white p-5 shadow-[0_18px_45px_rgba(76,29,149,0.08)] transition-all hover:-translate-y-0.5 hover:border-violet-200"
-        >
-          <div className="flex items-center justify-between">
-            <div className={`rounded-2xl p-3 ${card.iconTone}`}>{card.icon}</div>
-            {card.stat ? <span className="rounded-full bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700">{card.stat}</span> : null}
+    <AdminMobileStatsRow
+      contentClassName="flex gap-3 sm:grid sm:grid-cols-2 2xl:grid-cols-4"
+      itemClassName="min-w-[260px] flex-none sm:min-w-0 sm:flex-auto"
+    >
+      {cards.map((card) => {
+        const className = 'block h-full w-full overflow-hidden rounded-[1.6rem] border border-violet-100 bg-white p-5 text-left shadow-[0_18px_45px_rgba(76,29,149,0.08)] transition-all hover:-translate-y-0.5 hover:border-violet-200';
+        const content = (
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between gap-3">
+              <div className={`rounded-2xl p-3 ${card.iconTone}`}>{card.icon}</div>
+              {card.stat ? <span className="shrink-0 rounded-full bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700">{card.stat}</span> : null}
+            </div>
+            <h3 className="mt-4 text-[1.85rem] font-bold tracking-[-0.03em] text-slate-950 sm:text-[1.9rem] lg:text-[2rem]">{card.title}</h3>
+            <p className="mt-2 line-clamp-2 text-base leading-8 text-slate-600">{card.description}</p>
+            <p className="mt-5 text-base font-medium text-slate-500">{card.meta}</p>
           </div>
-          <h3 className="mt-4 text-xl font-bold text-slate-900">{card.title}</h3>
-          <p className="mt-2 text-sm text-slate-600">{card.description}</p>
-          <p className="mt-4 text-sm font-medium text-slate-500">{card.meta}</p>
-        </Link>
-      ))}
-    </div>
+        );
+
+        if (typeof card.onClick === 'function') {
+          return (
+            <button
+              type="button"
+              key={card.title}
+              onClick={card.onClick}
+              className={className}
+            >
+              {content}
+            </button>
+          );
+        }
+
+        return (
+          <Link
+            to={card.href}
+            key={card.title}
+            className={className}
+          >
+            {content}
+          </Link>
+        );
+      })}
+    </AdminMobileStatsRow>
   );
 };
 
 const AdminDashboard = () => {
+  const location = useLocation();
   const [currentTime, setCurrentTime] = useState(Date.now());
   const [stats, setStats] = useState({ vehicles: 0, rentals: 0, maintenance: 0, revenue: 0, tours: 0, toursToday: 0 });
   const [revenueData, setRevenueData] = useState([]);
@@ -1607,12 +2432,57 @@ const AdminDashboard = () => {
   const [tourSnapshot, setTourSnapshot] = useState({ active: 0, scheduled: 0, today: 0 });
   const [taskStats, setTaskStats] = useState({ active: 0, my: 0, open: 0, done: 0 });
   const [recentBookingsCollapsed, setRecentBookingsCollapsed] = useState(true);
+  const [showReceiveFundsDrawer, setShowReceiveFundsDrawer] = useState(false);
+  const [recordFundsRefreshing, setRecordFundsRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
-  const { user, session } = useAuth();
+  const { user, session, userProfile } = useAuth();
   const navigate = useNavigate();
   const hasUpcomingRentals = upcomingRentals.length > 0;
   const hasUpcomingTours = upcomingTours.length > 0;
+  const normalizedRole = String(userProfile?.role || '').toLowerCase();
+  const normalizedEmail = String(userProfile?.email || '').toLowerCase();
+  const normalizedAccountType = String(userProfile?.accountType || userProfile?.account_type || '').toLowerCase();
+  const normalizedOrganizationRole = String(userProfile?.organizationRole || userProfile?.organization_role || '').toLowerCase();
+  const canSeeRevenueTotals = (
+    normalizedRole === 'owner' ||
+    normalizedRole === 'admin' ||
+    normalizedRole === 'business_owner' ||
+    normalizedRole.includes('admin') ||
+    normalizedOrganizationRole === 'org_owner' ||
+    normalizedOrganizationRole === 'owner' ||
+    isBusinessOwnerAccountType(normalizedAccountType) ||
+    isPlatformOwnerEmail(normalizedEmail) ||
+    isPlatformAdminEmail(normalizedEmail)
+  );
+  const todayRevenue = revenueData.length > 0
+    ? Number(revenueData[revenueData.length - 1]?.revenue || 0)
+    : 0;
+  const canOpenRecordFunds = canRecordReceiveFunds(userProfile);
+  const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
+    pathname: location.pathname,
+    isTransitionFlow: loading && !hasLoadedOnce,
+  });
+
+  const handleOpenRecordFunds = useCallback(() => {
+    if (!canOpenRecordFunds) {
+      toast.error(tr('You do not have access to record funds.', "Vous n'avez pas accès à l'enregistrement des fonds."));
+      return;
+    }
+    setShowReceiveFundsDrawer(true);
+  }, [canOpenRecordFunds]);
+
+  const handleRecordFundsSaved = useCallback(async () => {
+    setRecordFundsRefreshing(true);
+    try {
+      await Promise.all([
+        fetchData(),
+        fetchRevenueData(),
+      ]);
+    } finally {
+      setRecordFundsRefreshing(false);
+    }
+  }, []);
 
   const applyDashboardCoreData = useCallback((coreData) => {
     if (!coreData) return;
@@ -2129,6 +2999,16 @@ const AdminDashboard = () => {
     navigate('/admin/rentals', { state: { openForm: true } });
   };
 
+  const handleCreateLightRental = () => {
+    navigate('/admin/rentals', {
+      state: {
+        openForm: true,
+        wizardUiVariant: 'light',
+        wizardReturnTo: '/admin/dashboard',
+      },
+    });
+  };
+
   const operationsCards = [
     {
       label: tr('Active Rentals', 'Locations actives'),
@@ -2177,9 +3057,11 @@ const AdminDashboard = () => {
       iconTone: 'bg-indigo-50',
     },
     {
-      label: tr('Revenue', 'Revenu'),
-      value: formatCurrency(stats.revenue),
-      caption: tr('Paid rental revenue in the current dataset', 'Revenu des locations payées dans les données actuelles'),
+      label: canSeeRevenueTotals ? tr('Revenue', 'Revenu') : tr("Today's Revenue", "Revenu du jour"),
+      value: formatCurrency(canSeeRevenueTotals ? stats.revenue : todayRevenue),
+      caption: canSeeRevenueTotals
+        ? tr('Paid rental revenue in the current dataset', 'Revenu des locations payées dans les données actuelles')
+        : tr("Only today's paid rental revenue", "Seulement le revenu payé d’aujourd’hui"),
       href: '/admin/finance',
       icon: <DollarSign className="h-5 w-5 text-emerald-700" />,
       iconTone: 'bg-emerald-50',
@@ -2286,97 +3168,112 @@ const AdminDashboard = () => {
   ];
 
   const moduleCards = [
-    { title: tr('Tours & Booking', 'Tours et réservations'), href: '/admin/tours', description: tr('Departures, live tours, and guest bookings.', 'Départs, tours en direct et réservations clients.'), meta: `${tourSnapshot.active} ${tr('live', 'en direct')} • ${tourSnapshot.scheduled} ${tr('queued', 'en attente')}`, stat: `${stats.toursToday} ${tr('today', "aujourd'hui")}`, icon: <Compass className="h-5 w-5 text-violet-700" />, iconTone: 'bg-violet-50' },
-    { title: tr('Team Tasks', 'Taches equipe'), href: '/admin/tasks', description: tr('Assign, claim, and complete shared operations tasks.', 'Attribuez, prenez et terminez les taches operations partagees.'), meta: `${taskStats.my} ${tr('mine', 'a moi')} • ${taskStats.open} ${tr('open', 'ouvertes')}`, stat: `${taskStats.active} ${tr('active', 'actives')}`, icon: <ClipboardList className="h-5 w-5 text-violet-700" />, iconTone: 'bg-violet-50' },
-    { title: tr('Pricing Management', 'Gestion tarifaire'), href: '/admin/pricing', description: tr('Rental, tour, fuel, and extension pricing controls.', 'Contrôle des tarifs location, tours, carburant et extensions.'), meta: tr('Rates, tiers, deposits, and packages', 'Tarifs, paliers, cautions et forfaits'), icon: <WalletCards className="h-5 w-5 text-indigo-700" />, iconTone: 'bg-indigo-50' },
-    { title: tr('Fleet Management', 'Gestion de flotte'), href: '/admin/fleet', description: tr('Fleet status, models, and out-of-service tracking.', 'Statut de flotte, modèles et suivi hors service.'), meta: `${fleetSnapshot.available} ${tr('available', 'disponibles')} • ${fleetSnapshot.outOfService} ${tr('blocked', 'bloqués')}`, stat: `${fleetSnapshot.total} ${tr('units', 'unités')}`, icon: <Car className="h-5 w-5 text-blue-700" />, iconTone: 'bg-blue-50' },
-    { title: tr('Quad Maintenance', 'Maintenance des quads'), href: '/admin/maintenance', description: tr('Workshop records, parts, and vehicle repair flow.', 'Fiches atelier, pièces et flux de réparation des véhicules.'), meta: `${maintenanceSnapshot.open} ${tr('open', 'ouvertes')} • ${maintenanceSnapshot.completed} ${tr('completed', 'terminées')}`, icon: <Wrench className="h-5 w-5 text-amber-700" />, iconTone: 'bg-amber-50' },
-    { title: tr('Fuel Management', 'Gestion carburant'), href: '/admin/fuel', description: tr('Tank activity, vehicle fuel flow, and refills.', 'Activité du réservoir, flux carburant véhicule et ravitaillements.'), meta: tr('Fuel board and transfer logs', 'Tableau carburant et journaux de transfert'), icon: <Fuel className="h-5 w-5 text-cyan-700" />, iconTone: 'bg-cyan-50' },
-    { title: tr('Finance', 'Finance'), href: '/admin/finance', description: tr('Revenue, vehicle financial performance, and reports.', 'Revenus, performance financière des véhicules et rapports.'), meta: formatCurrency(stats.revenue), icon: <DollarSign className="h-5 w-5 text-emerald-700" />, iconTone: 'bg-emerald-50' },
-    { title: tr('Alerts', 'Alertes'), href: '/admin/alerts', description: tr('Unified alert inbox for fleet, fuel, maintenance, and rentals.', 'Boîte unifiée des alertes flotte, carburant, maintenance et locations.'), meta: `${urgentActionItems.length} ${tr('high-priority action items', 'actions prioritaires')}`, icon: <Bell className="h-5 w-5 text-rose-700" />, iconTone: 'bg-rose-50' },
-    { title: tr('User Management', 'Gestion des utilisateurs'), href: '/admin/users', description: tr('Roles, permissions, and operational access control.', 'Rôles, permissions et contrôle d’accès opérationnel.'), meta: tr('Owner-managed access across all modules', 'Accès géré par le propriétaire sur tous les modules'), icon: <Users className="h-5 w-5 text-slate-700" />, iconTone: 'bg-slate-100' },
+    ...(canOpenRecordFunds ? [{
+      title: tr('Cashflow', 'Cashflow'),
+      href: '#',
+      description: tr('Log cash, deposits, or transfers fast.', "Enregistrez espèces, dépôts ou virements rapidement."),
+      meta: tr('Daily shortcut', 'Raccourci quotidien'),
+      icon: <DollarSign className="h-5 w-5 text-emerald-700" />,
+      iconTone: 'bg-emerald-50',
+      onClick: () => {
+        handleOpenRecordFunds();
+      },
+    }] : []),
+    { title: tr('Tours & Booking', 'Tours et réservations'), href: '/admin/tours', description: tr('Live tours and guest bookings.', 'Tours en direct et réservations clients.'), meta: `${tourSnapshot.active} ${tr('live', 'en direct')} • ${tourSnapshot.scheduled} ${tr('queued', 'en attente')}`, stat: `${stats.toursToday} ${tr('today', "aujourd'hui")}`, icon: <Compass className="h-5 w-5 text-violet-700" />, iconTone: 'bg-violet-50' },
+    { title: tr('Team Tasks', 'Taches equipe'), href: '/admin/tasks', description: tr('Shared operations tasks.', 'Tâches opérationnelles partagées.'), meta: `${taskStats.my} ${tr('mine', 'a moi')} • ${taskStats.open} ${tr('open', 'ouvertes')}`, stat: `${taskStats.active} ${tr('active', 'actives')}`, icon: <ClipboardList className="h-5 w-5 text-violet-700" />, iconTone: 'bg-violet-50' },
+    { title: tr('Pricing Management', 'Gestion tarifaire'), href: '/admin/pricing', description: tr('Rates, deposits, and packages.', 'Tarifs, cautions et forfaits.'), meta: tr('Rental, tour, fuel, and extensions', 'Location, tours, carburant et extensions'), icon: <WalletCards className="h-5 w-5 text-indigo-700" />, iconTone: 'bg-indigo-50' },
+    { title: tr('Fleet Management', 'Gestion de flotte'), href: '/admin/fleet', description: tr('Fleet status and availability.', 'Statut et disponibilité de la flotte.'), meta: `${fleetSnapshot.available} ${tr('available', 'disponibles')} • ${fleetSnapshot.outOfService} ${tr('blocked', 'bloqués')}`, stat: `${fleetSnapshot.total} ${tr('units', 'unités')}`, icon: <Car className="h-5 w-5 text-blue-700" />, iconTone: 'bg-blue-50' },
+    { title: tr('Quad Maintenance', 'Maintenance des quads'), href: '/admin/maintenance', description: tr('Workshop records and repairs.', 'Fiches atelier et réparations.'), meta: `${maintenanceSnapshot.open} ${tr('open', 'ouvertes')} • ${maintenanceSnapshot.completed} ${tr('completed', 'terminées')}`, icon: <Wrench className="h-5 w-5 text-amber-700" />, iconTone: 'bg-amber-50' },
+    { title: tr('Fuel Management', 'Gestion carburant'), href: '/admin/fuel', description: tr('Tank activity and refills.', 'Activité du réservoir et ravitaillements.'), meta: tr('Fuel board and transfer logs', 'Tableau carburant et journaux de transfert'), icon: <Fuel className="h-5 w-5 text-cyan-700" />, iconTone: 'bg-cyan-50' },
+    { title: tr('Finance', 'Finance'), href: '/admin/finance', description: tr('Revenue and reports.', 'Revenus et rapports.'), meta: canSeeRevenueTotals ? formatCurrency(stats.revenue) : formatCurrency(todayRevenue), icon: <DollarSign className="h-5 w-5 text-emerald-700" />, iconTone: 'bg-emerald-50' },
+    { title: tr('Alerts', 'Alertes'), href: '/admin/alerts', description: tr('Priority items that need action.', 'Actions prioritaires à traiter.'), meta: `${urgentActionItems.length} ${tr('high-priority items', 'éléments prioritaires')}`, icon: <Bell className="h-5 w-5 text-rose-700" />, iconTone: 'bg-rose-50' },
+    { title: tr('User Management', 'Gestion des utilisateurs'), href: '/admin/users', description: tr('Roles and access control.', 'Rôles et contrôle d’accès.'), meta: tr('Permissions across all modules', 'Permissions sur tous les modules'), icon: <Users className="h-5 w-5 text-slate-700" />, iconTone: 'bg-slate-100' },
   ];
 
-  if (loading && !hasLoadedOnce) {
-    return (
-      <div className="min-h-screen bg-gray-50">
-        <AdminModuleHero
-          icon={<Smartphone className="h-8 w-8 text-white" />}
-          eyebrow={tr('Dashboard', 'Tableau de bord')}
-          title={tr('Dashboard Operations', 'Opérations du tableau de bord')}
-          description={tr('Preparing the dashboard workspace...', 'Préparation de l’espace tableau de bord...')}
-        />
-        <div className="max-w-7xl mx-auto p-6">
-          <div className="rounded-2xl border border-violet-100 bg-white p-8 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
-            <div className="flex flex-col items-center justify-center text-center">
-              <div className="mb-4 text-4xl animate-spin">⏳</div>
-              <p className="text-base font-medium text-slate-700">{tr('Loading dashboard...', 'Chargement du tableau de bord...')}</p>
-              <p className="mt-2 text-sm text-slate-500">{tr('Preparing live operations, revenue, fleet, and rental summaries.', 'Préparation des opérations en direct, revenus, flotte et résumés de location.')}</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+  if (loading && !hasLoadedOnce && !suppressBlockingLoader) {
+    return <AdminWorkspaceLoadingShell eyebrow={tr('Dashboard', 'Tableau de bord')} title={tr('Dashboard', 'Tableau de bord')} description={tr('Preparing live operations, revenue, fleet, and rental summaries.', 'Préparation des opérations en direct, revenus, flotte et résumés de location.')} cardRows={2} />;
   }
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <AdminModuleHero
-        icon={<Smartphone className="h-8 w-8 text-white" />}
-      eyebrow={tr('Dashboard', 'Tableau de bord')}
-      title={tr('Dashboard Operations', 'Opérations du tableau de bord')}
-      description={tr(`Welcome back${user?.email ? `, ${user.email}` : ''}.`, `Bon retour${user?.email ? `, ${user.email}` : ''}.`)}
-        actions={
-          <>
-            <Link
-              to="/admin/tours"
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
-            >
-              <Compass className="h-4 w-4" />
-              {tr('Open Tours', 'Ouvrir les tours')}
-            </Link>
-            <Link
-              to="/admin/fleet"
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
-            >
-              <Car className="h-4 w-4" />
-              {tr('Open Fleet', 'Ouvrir la flotte')}
-            </Link>
-            <Link
-              to="/admin/alerts"
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
-            >
-              <Bell className="h-4 w-4" />
-              {tr('Alerts', 'Alertes')}
-            </Link>
-            <Link
-              to="/admin/live-map"
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
-            >
-              <MapIcon className="h-4 w-4" />
-              {tr('Open Live Map', 'Ouvrir la carte en direct')}
-            </Link>
-            <button
-              onClick={handleCreateRental}
-              className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/20"
-            >
-              <Plus className="h-4 w-4" />
-              {tr('Create Rental', 'Créer une location')}
-            </button>
-          </>
-        }
-      />
-
       {/* Mobile Floating Action Button */}
       <button
         onClick={handleCreateRental}
-        className="sm:hidden fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_18px_36px_rgba(79,70,229,0.35)] transition-all hover:scale-[1.02]"
+        className="app-floating-primary sm:hidden fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_18px_36px_rgba(79,70,229,0.35)] transition-all hover:scale-[1.02]"
         aria-label={tr('Create New Rental', 'Créer une location')}
       >
         <Plus className="w-6 h-6" />
       </button>
 
       <div className="space-y-6 px-4 py-6 sm:space-y-8 sm:px-6 lg:px-8">
+        <section className="space-y-4">
+          <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+                  <Smartphone className="h-6 w-6 text-violet-700" />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Dashboard', 'Tableau de bord')}</p>
+                  <h1 className="mt-2 text-[2rem] font-bold tracking-[-0.03em] text-slate-950 sm:text-[2.5rem]">
+                    {tr('Dashboard', 'Tableau de bord')}
+                  </h1>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                {canOpenRecordFunds ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenRecordFunds}
+                    className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(16,185,129,0.22)] transition-all hover:scale-[1.01]"
+                  >
+                    <DollarSign className="h-4 w-4" />
+                    {recordFundsRefreshing ? tr('Refreshing…', 'Actualisation…') : tr('Cashflow', 'Cashflow')}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={handleCreateRental}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(79,70,229,0.25)] transition-all hover:scale-[1.01]"
+                >
+                  <Plus className="h-4 w-4" />
+                  {tr('Create Rental', 'Créer une location')}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateLightRental}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-violet-200/80 bg-white/90 px-4 py-2.5 text-sm font-semibold text-violet-700 shadow-[0_10px_22px_rgba(76,29,149,0.08)] transition-all hover:border-violet-300 hover:bg-violet-50"
+                >
+                  <Plus className="h-4 w-4" />
+                  {tr('Light Version', 'Version légère')}
+                </button>
+                <Link
+                  to="/admin/tours"
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700"
+                >
+                  <Compass className="h-4 w-4" />
+                  {tr('Tours', 'Tours')}
+                </Link>
+                <Link
+                  to="/admin/live-map"
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700"
+                >
+                  <MapIcon className="h-4 w-4" />
+                  {tr('Live Map', 'Carte en direct')}
+                </Link>
+                <Link
+                  to="/admin/alerts"
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700"
+                >
+                  <Bell className="h-4 w-4" />
+                  {tr('Alerts', 'Alertes')}
+                </Link>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section className="space-y-3 sm:space-y-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr("Today's Operations", 'Opérations du jour')}</p>
@@ -2426,7 +3323,7 @@ const AdminDashboard = () => {
         <section className="space-y-3 sm:space-y-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Module Shortcuts', 'Raccourcis des modules')}</p>
-            <h2 className="mt-2 text-2xl font-bold text-slate-900">{tr('Jump straight into the right workspace', 'Accédez directement au bon espace de travail')}</h2>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">{tr('Open the module you need', 'Ouvrez directement le bon module')}</h2>
           </div>
           <ModuleShortcutGrid cards={moduleCards} loading={loading} />
         </section>
@@ -2458,6 +3355,13 @@ const AdminDashboard = () => {
           </div>
         </div>
       </div>
+
+      <DashboardReceiveFundsDrawer
+        open={showReceiveFundsDrawer}
+        onClose={() => setShowReceiveFundsDrawer(false)}
+        onRecorded={handleRecordFundsSaved}
+        userProfile={userProfile}
+      />
     </div>
   );
 };

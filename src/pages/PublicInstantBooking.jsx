@@ -8,6 +8,7 @@ import PhoneInputWithCountryCode from '../components/forms/PhoneInputWithCountry
 import i18n from '../i18n';
 import PublicCatalogService from '../services/PublicCatalogService';
 import PublicBookingService from '../services/PublicBookingService';
+import VerificationService from '../services/VerificationService';
 import { fetchSystemSettings } from '../services/systemSettingsApi';
 import { formatRentalPackageAllowanceLabel } from '../utils/rentalPackageLabels';
 
@@ -105,6 +106,7 @@ const PublicInstantBooking = () => {
   const [bookingSecurityOption, setBookingSecurityOption] = useState('');
   const [paymentStatus, setPaymentStatus] = useState('pending');
   const [showPaymentDetails, setShowPaymentDetails] = useState(false);
+  const [verificationSummary, setVerificationSummary] = useState(null);
   const [bookingSessionKey] = useState(() => getOrCreateBookingSessionKey(listingId));
   const [form, setForm] = useState({
     customerName: userProfile?.fullName || user?.user_metadata?.full_name || '',
@@ -220,6 +222,16 @@ const PublicInstantBooking = () => {
   );
 
   const showOptionalPayment = bookingSecurityOption === 'deposit' || bookingSecurityOption === 'full';
+  const verificationStatus = String(
+    verificationSummary?.status ||
+    userProfile?.verificationStatus ||
+    user?.user_metadata?.verification_status ||
+    user?.app_metadata?.verification_status ||
+    ''
+  )
+    .trim()
+    .toLowerCase();
+  const isVerifiedAccount = Boolean(isAuthenticated) && ['approved', 'verified'].includes(verificationStatus);
 
   const reservationStartDate = useMemo(
     () => composeLocalDateTime(form.reservationDate, form.reservationStartTime),
@@ -299,6 +311,34 @@ const PublicInstantBooking = () => {
       active = false;
     };
   }, [listingId]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadVerificationSummary = async () => {
+      if (!user?.id) {
+        setVerificationSummary(null);
+        return;
+      }
+
+      try {
+        const result = await VerificationService.getEntityVerificationSummary('user', user.id, { forceRefresh: true });
+        if (active) {
+          setVerificationSummary(result?.summary || null);
+        }
+      } catch {
+        if (active) {
+          setVerificationSummary(null);
+        }
+      }
+    };
+
+    void loadVerificationSummary();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     let active = true;
@@ -883,84 +923,111 @@ const PublicInstantBooking = () => {
               </div>
 
               <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">{tr('Secure your booking (optional)', 'Sécurisez votre réservation (optionnel)')}</p>
-                </div>
-                <div className="mt-4 space-y-2.5">
-                  {securityOptions.map((option) => {
-                    const active = bookingSecurityOption === option.id;
-                    const showOptionWarning = option.id === 'continue' && active;
-                    return (
-                      <div key={option.id}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setBookingSecurityOption(option.id);
-                            if (option.id === 'scan_hold') {
-                              setShowLicenseSection(true);
-                            }
-                            if (option.id === 'deposit' || option.id === 'full') {
-                              setShowPaymentDetails(true);
-                            } else {
-                              setShowPaymentDetails(false);
-                            }
-                          }}
-                          className={`flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition active:scale-[0.98] ${
-                            active
-                              ? 'border-violet-300 bg-violet-50 ring-1 ring-violet-100'
-                              : 'border-slate-200 bg-white'
-                          }`}
-                        >
-                          <span className={`flex h-5 w-5 items-center justify-center rounded-full border ${active ? 'border-violet-500 bg-violet-500' : 'border-slate-300 bg-white'}`}>
-                            <span className={`h-2.5 w-2.5 rounded-full bg-white ${active ? 'opacity-100' : 'opacity-0'}`} />
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="flex flex-wrap items-center gap-2">
-                              <span className="text-sm font-semibold text-slate-900">{option.title}</span>
-                              {option.badge ? (
-                                <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
-                                  {option.badge}
+                {isVerifiedAccount ? (
+                  <div className="rounded-[22px] border border-emerald-200 bg-white p-4 shadow-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-semibold text-slate-900">
+                        {tr('Your account is verified', 'Votre compte est vérifié')}
+                      </p>
+                      <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
+                        {tr('Verified', 'Vérifié')}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      {tr(
+                        'Your reservation is already secured with your verified profile.',
+                        'Votre réservation est déjà sécurisée grâce à votre profil vérifié.'
+                      )}
+                    </p>
+                    <p className="mt-2 text-xs font-medium text-slate-500">
+                      {tr(
+                        'No extra security step is needed before you confirm.',
+                        "Aucune étape de sécurité supplémentaire n'est nécessaire avant de confirmer."
+                      )}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{tr('Secure your booking (optional)', 'Sécurisez votre réservation (optionnel)')}</p>
+                    </div>
+                    <div className="mt-4 space-y-2.5">
+                      {securityOptions.map((option) => {
+                        const active = bookingSecurityOption === option.id;
+                        const showOptionWarning = option.id === 'continue' && active;
+                        return (
+                          <div key={option.id}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBookingSecurityOption(option.id);
+                                if (option.id === 'scan_hold') {
+                                  setShowLicenseSection(true);
+                                }
+                                if (option.id === 'deposit' || option.id === 'full') {
+                                  setShowPaymentDetails(true);
+                                } else {
+                                  setShowPaymentDetails(false);
+                                }
+                              }}
+                              className={`flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition active:scale-[0.98] ${
+                                active
+                                  ? 'border-violet-300 bg-violet-50 ring-1 ring-violet-100'
+                                  : 'border-slate-200 bg-white'
+                              }`}
+                            >
+                              <span className={`flex h-5 w-5 items-center justify-center rounded-full border ${active ? 'border-violet-500 bg-violet-500' : 'border-slate-300 bg-white'}`}>
+                                <span className={`h-2.5 w-2.5 rounded-full bg-white ${active ? 'opacity-100' : 'opacity-0'}`} />
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-semibold text-slate-900">{option.title}</span>
+                                  {option.badge ? (
+                                    <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
+                                      {option.badge}
+                                    </span>
+                                  ) : null}
                                 </span>
-                              ) : null}
-                            </span>
-                            {option.subtitle ? (
-                              <span className="mt-1 block text-xs text-slate-500">{option.subtitle}</span>
-                            ) : null}
-                          </span>
-                        </button>
+                                {option.subtitle ? (
+                                  <span className="mt-1 block text-xs text-slate-500">{option.subtitle}</span>
+                                ) : null}
+                              </span>
+                            </button>
 
-                        <div
-                          className={`overflow-hidden transition-all duration-200 ease-out ${
-                            showOptionWarning ? 'mt-2 max-h-40 opacity-100' : 'max-h-0 opacity-0'
-                          }`}
-                        >
-                          <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-left">
-                            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
-                            <div className="min-w-0">
-                              <p className="text-sm font-semibold text-amber-900">
-                                {tr('Reservation not guaranteed', 'Réservation non garantie')}
-                              </p>
-                              <p className="mt-1 text-xs leading-5 text-slate-600">
-                                {tr(
-                                  'This booking may be released at any time if not secured.',
-                                  'Cette réservation peut être libérée à tout moment si elle n’est pas sécurisée.'
-                                )}
-                              </p>
-                              <p className="mt-1 text-xs leading-5 text-slate-500">
-                                {tr(
-                                  'Scan your license or pay a deposit to secure your vehicle.',
-                                  'Scannez votre permis ou payez un acompte pour sécuriser votre véhicule.'
-                                )}
-                              </p>
+                            <div
+                              className={`overflow-hidden transition-all duration-200 ease-out ${
+                                showOptionWarning ? 'mt-2 max-h-40 opacity-100' : 'max-h-0 opacity-0'
+                              }`}
+                            >
+                              <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-left">
+                                <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-amber-900">
+                                    {tr('Reservation not guaranteed', 'Réservation non garantie')}
+                                  </p>
+                                  <p className="mt-1 text-xs leading-5 text-slate-600">
+                                    {tr(
+                                      'This booking may be released at any time if not secured.',
+                                      'Cette réservation peut être libérée à tout moment si elle n’est pas sécurisée.'
+                                    )}
+                                  </p>
+                                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                                    {tr(
+                                      'Scan your license or pay a deposit to secure your vehicle.',
+                                      'Scannez votre permis ou payez un acompte pour sécuriser votre véhicule.'
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
 
-                {showOptionalPayment ? (
+                {!isVerifiedAccount && showOptionalPayment ? (
                   <div className="mt-4 rounded-[22px] border border-violet-100 bg-white p-4">
                     <button
                       type="button"

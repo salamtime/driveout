@@ -1,5 +1,6 @@
 import { APP_USERS_TABLE } from './_lib/supabase.js';
 import { authenticateRequest } from './_lib/auth.js';
+import { buildThreadKey, SHARED_MESSAGES_TABLE } from './_lib/messages.js';
 
 const VEHICLE_PROFILES_TABLE = 'app_vehicle_public_profiles';
 const MARKETPLACE_LISTINGS_TABLE = 'app_marketplace_listings';
@@ -115,6 +116,47 @@ const insertOptionalRecord = async (adminClient, table, payload) => {
   }
 };
 
+const buildSharedMarketplaceOwnerMessagePayload = ({ listing, userId, ownerMessagePayload }) => {
+  if (!listing?.id || !listing?.owner_id || !userId || !ownerMessagePayload?.body) {
+    return null;
+  }
+
+  const threadKey = buildThreadKey({
+    family: 'marketplace',
+    threadType: 'marketplace_moderation',
+    entityType: 'listing',
+    entityId: listing.id,
+    recipientUserId: listing.owner_id,
+    senderUserId: userId,
+  });
+
+  return {
+    thread_key: threadKey,
+    family: 'marketplace',
+    thread_type: 'marketplace_moderation',
+    entity_type: 'listing',
+    entity_id: String(listing.id),
+    message_type: String(ownerMessagePayload.message_type || 'note').trim().toLowerCase(),
+    subject: String(listing.title || 'Marketplace listing review').trim() || 'Marketplace listing review',
+    body: String(ownerMessagePayload.body || '').trim(),
+    sender_user_id: userId,
+    sender_role: 'admin',
+    recipient_user_id: String(listing.owner_id),
+    recipient_role: 'owner',
+    metadata: {
+      listingId: listing.id,
+      vehiclePublicProfileId: listing.vehicle_public_profile_id || null,
+      href: listing.vehicle_public_profile_id
+        ? `/account/marketplace/vehicles/${encodeURIComponent(String(listing.vehicle_public_profile_id))}/profile?tab=listings`
+        : '/account/marketplace',
+      adminHref: `/admin/marketplace/${encodeURIComponent(String(listing.id))}`,
+      source: 'marketplace_moderation',
+      action: ownerMessagePayload?.metadata?.action || ownerMessagePayload?.message_type || 'message_owner',
+    },
+    status: 'sent',
+  };
+};
+
 const loadOptionalQuery = async (factory, fallbackValue) => {
   try {
     const result = await factory();
@@ -175,7 +217,7 @@ const requireMarketplaceAdmin = async (auth) => {
   return { role };
 };
 
-const normalizeListingRow = (listing = {}, profile = {}) => {
+const normalizeListingRow = (listing = {}, profile = {}, latestMessage = null) => {
   const title =
     listing.title ||
     [profile.brand_name, profile.model_name].filter(Boolean).join(' ') ||
@@ -202,6 +244,9 @@ const normalizeListingRow = (listing = {}, profile = {}) => {
     ownerDisplayName: profile.owner_display_name || '',
     shortDescription: profile.short_description || '',
     coverImageUrl: profile.cover_image_url || '',
+    latestOwnerMessage: latestMessage?.body || '',
+    latestOwnerMessageAt: latestMessage?.created_at || null,
+    latestOwnerMessageType: latestMessage?.message_type || 'message',
     price:
       safeNumber(listing.hourly_price_amount) ||
       safeNumber(listing.daily_price_amount) ||
@@ -419,7 +464,9 @@ const getSnapshot = async (adminClient) => {
   if (listingError) throw listingError;
 
   const profileIds = [...new Set((listings || []).map((row) => row.vehicle_public_profile_id).filter(Boolean))];
+  const listingIds = [...new Set((listings || []).map((row) => row.id).filter(Boolean))];
   let profilesById = new Map();
+  let latestMessagesByListingId = new Map();
 
   if (profileIds.length > 0) {
     const profiles = await loadOptionalQuery(
@@ -434,8 +481,31 @@ const getSnapshot = async (adminClient) => {
     profilesById = new Map((profiles || []).map((row) => [String(row.id), row]));
   }
 
+  if (listingIds.length > 0) {
+    const messages = await loadOptionalQuery(
+      () =>
+        adminClient
+          .from(MARKETPLACE_MESSAGES_TABLE)
+          .select('*')
+          .in('listing_id', listingIds)
+          .order('created_at', { ascending: false }),
+      []
+    );
+
+    for (const row of messages || []) {
+      const key = String(row?.listing_id || '');
+      if (key && !latestMessagesByListingId.has(key)) {
+        latestMessagesByListingId.set(key, row);
+      }
+    }
+  }
+
   const rows = (listings || []).map((listing) =>
-    normalizeListingRow(listing, profilesById.get(String(listing.vehicle_public_profile_id)) || {})
+    normalizeListingRow(
+      listing,
+      profilesById.get(String(listing.vehicle_public_profile_id)) || {},
+      latestMessagesByListingId.get(String(listing.id)) || null
+    )
   );
   const groupedByStatus = rows.reduce((acc, row) => {
     acc[row.listingStatus] = (acc[row.listingStatus] || 0) + 1;
@@ -714,6 +784,15 @@ const updateListingStatus = async ({
   await insertOptionalRecord(adminClient, MARKETPLACE_MODERATION_HISTORY_TABLE, historyPayload);
   if (ownerMessagePayload) {
     await insertOptionalRecord(adminClient, MARKETPLACE_MESSAGES_TABLE, ownerMessagePayload);
+    await insertOptionalRecord(
+      adminClient,
+      SHARED_MESSAGES_TABLE,
+      buildSharedMarketplaceOwnerMessagePayload({
+        listing,
+        userId,
+        ownerMessagePayload,
+      })
+    );
   }
 };
 

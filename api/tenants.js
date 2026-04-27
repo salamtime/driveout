@@ -1,4 +1,9 @@
 import businessOwnersHandler from './_lib/businessOwnersHandler.js';
+import {
+  handleInternalProvisioningComplete,
+  handleInternalProvisioningDriver,
+  handleInternalProvisioningStart,
+} from './_lib/tenantProvisioningInternal.js';
 import tenantProvisioningHandler from './_lib/tenantProvisioningHandler.js';
 import tenantSessionHandler from './_lib/tenantSessionHandler.js';
 import tenantWorkspaceConfigHandler from './_lib/tenantWorkspaceConfigHandler.js';
@@ -7,6 +12,7 @@ const json = (res, status, body) => res.status(status).json(body);
 
 export default async function handler(req, res) {
   const resource = String(req.query?.resource || '').trim().toLowerCase();
+  const action = String(req.query?.action || '').trim().toLowerCase();
 
   if (resource === 'business-owners') {
     return businessOwnersHandler(req, res);
@@ -21,6 +27,18 @@ export default async function handler(req, res) {
   }
 
   if (!resource || resource === 'provisioning') {
+    if (action === 'internal-start') {
+      return handleInternalProvisioningStart(req, res);
+    }
+
+    if (action === 'internal-driver') {
+      return handleInternalProvisioningDriver(req, res);
+    }
+
+    if (action === 'internal-complete') {
+      return handleInternalProvisioningComplete(req, res);
+    }
+
     return tenantProvisioningHandler(req, res);
   }
 

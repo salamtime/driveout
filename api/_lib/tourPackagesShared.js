@@ -37,6 +37,75 @@ const appendMarkedJson = (text, marker, payload) => {
   return cleanedText ? `${cleanedText}\n\n${serialized}` : serialized;
 };
 
+const STORAGE_URL_MARKER = '/storage/v1/object/public/';
+
+const parseStorageTargetFromUrl = (url) => {
+  if (!url || typeof url !== 'string') return null;
+  const markerIndex = url.indexOf(STORAGE_URL_MARKER);
+  if (markerIndex === -1) return null;
+  const storagePath = url.slice(markerIndex + STORAGE_URL_MARKER.length);
+  const firstSlash = storagePath.indexOf('/');
+  if (firstSlash === -1) return null;
+  const bucket = storagePath.slice(0, firstSlash);
+  const path = decodeURIComponent(storagePath.slice(firstSlash + 1));
+  if (!bucket || !path) return null;
+  return { bucket, path };
+};
+
+const addUrlToSet = (set, value) => {
+  const normalized = String(value || '').trim();
+  if (normalized) {
+    set.add(normalized);
+  }
+};
+
+const buildMediaUrlSet = (mediaGallery = [], coverUrl = '') => {
+  const urls = new Set();
+  (mediaGallery || []).forEach((item) => {
+    addUrlToSet(urls, item?.url);
+    addUrlToSet(urls, item?.thumbnail_url);
+    addUrlToSet(urls, item?.thumbnailUrl);
+    addUrlToSet(urls, item?.previewUrl);
+  });
+  addUrlToSet(urls, coverUrl);
+  return urls;
+};
+
+const resolveRemovedMediaTargets = (previousPackage = {}, nextPackage = {}) => {
+  const previousUrls = buildMediaUrlSet(previousPackage.mediaGallery, previousPackage.coverImageUrl);
+  const nextUrls = buildMediaUrlSet(nextPackage.mediaGallery, nextPackage.coverImageUrl);
+  const removedUrls = [...previousUrls].filter((url) => !nextUrls.has(url));
+  const targets = [];
+  const seen = new Set();
+  removedUrls.forEach((url) => {
+    const target = parseStorageTargetFromUrl(url);
+    if (!target) return;
+    const key = `${target.bucket}:${target.path}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(target);
+  });
+  return targets;
+};
+
+const removeStorageTargets = async (adminClient, targets = []) => {
+  if (!targets.length) return;
+  const grouped = targets.reduce((acc, target) => {
+    if (!acc[target.bucket]) acc[target.bucket] = [];
+    acc[target.bucket].push(target.path);
+    return acc;
+  }, {});
+
+  await Promise.all(
+    Object.entries(grouped).map(async ([bucket, paths]) => {
+      const { error } = await adminClient.storage.from(bucket).remove(paths);
+      if (error) {
+        console.warn('Failed to remove tour package media from storage:', error);
+      }
+    })
+  );
+};
+
 export const errorToMessage = (error) => {
   if (!error) return 'Unknown error';
   if (typeof error === 'string') return error;
@@ -93,6 +162,8 @@ const clampInstagramPreviewCount = 3;
 
 const makePresentationId = (prefix, index) => `${prefix}_${index + 1}`;
 
+const normalizeStopMedia = (value) => normalizeMediaGallery(value).slice(0, 3);
+
 const normalizeRouteStops = (value) => {
   const allowedKinds = new Set(['start', 'drive', 'stop', 'end', 'note']);
   return normalizeJsonArray(value)
@@ -102,19 +173,26 @@ const normalizeRouteStops = (value) => {
       const kind = clampText(item.kind || item.type || 'stop', 24).toLowerCase();
       const title = clampText(item.title, 90);
       const note = clampText(item.note, 180);
-      if (!title && !note) return null;
+      const media = normalizeStopMedia(item.media || item.mediaGallery || item.media_gallery_json || []);
+      const durationMinutes = Math.max(0, toSafeInteger(item.duration_minutes, 0));
+      if (!title && !note && media.length === 0 && durationMinutes === 0) return null;
 
       return {
         id: clampText(item.id, 64) || makePresentationId('stop', index),
         kind: allowedKinds.has(kind) ? kind : 'stop',
         title,
-        duration_minutes: Math.max(0, toSafeInteger(item.duration_minutes, 0)),
+        duration_minutes: durationMinutes,
         note,
+        media,
         sort_order: toSafeInteger(item.sort_order, index + 1),
       };
     })
     .filter(Boolean)
-    .sort((left, right) => left.sort_order - right.sort_order);
+    .sort((left, right) => left.sort_order - right.sort_order)
+    .map((item, index) => ({
+      ...item,
+      sort_order: index + 1,
+    }));
 };
 
 const normalizeMediaGallery = (value) => {
@@ -140,7 +218,11 @@ const normalizeMediaGallery = (value) => {
       };
     })
     .filter(Boolean)
-    .sort((left, right) => left.sort_order - right.sort_order);
+    .sort((left, right) => left.sort_order - right.sort_order)
+    .map((item, index) => ({
+      ...item,
+      sort_order: index + 1,
+    }));
 };
 
 const extractInstagramUsername = (value) => {
@@ -358,15 +440,27 @@ export const isMissingTableError = (error) => {
 export const normalizePackage = (pkg = {}) => {
   const rules = extractMarkedJson(pkg.description, TOUR_PACKAGE_RULES_MARKER) || {};
   const publicPresentation = rules.publicPresentation || {};
-  const routeStops = normalizeRouteStops(pkg.routeStops || pkg.route_stops_json || publicPresentation.routeStops);
-  const mediaGallery = normalizeMediaGallery(pkg.mediaGallery || pkg.media_gallery_json || publicPresentation.mediaGallery);
-  const publicHighlights = normalizeHighlights(pkg.publicHighlights || pkg.public_highlights_json || publicPresentation.publicHighlights);
-  const stopCount = toSafeInteger(pkg.stopCount ?? pkg.stop_count ?? publicPresentation.stopCount ?? routeStops.length, routeStops.length);
+  const resolvedRouteStops = Array.isArray(pkg.route_stops_json) && pkg.route_stops_json.length > 0
+    ? pkg.route_stops_json
+    : (Array.isArray(publicPresentation.routeStops) && publicPresentation.routeStops.length > 0
+      ? publicPresentation.routeStops
+      : (pkg.routeStops || []));
+  const resolvedMediaGallery = Array.isArray(publicPresentation.mediaGallery) && publicPresentation.mediaGallery.length > 0
+    ? publicPresentation.mediaGallery
+    : (pkg.mediaGallery || pkg.media_gallery_json || []);
+  const resolvedHighlights = Array.isArray(publicPresentation.publicHighlights) && publicPresentation.publicHighlights.length > 0
+    ? publicPresentation.publicHighlights
+    : (pkg.publicHighlights || pkg.public_highlights_json || []);
+  const routeStops = normalizeRouteStops(resolvedRouteStops);
+  const mediaGallery = normalizeMediaGallery(resolvedMediaGallery);
+  const publicHighlights = normalizeHighlights(resolvedHighlights);
+  const stopCountSource = pkg.stopCount ?? pkg.stop_count ?? publicPresentation.stopCount ?? routeStops.length;
+  const stopCount = routeStops.length > 0 ? routeStops.length : toSafeInteger(stopCountSource, routeStops.length);
 
   return {
     id: String(pkg.id || ''),
     name: clampText(pkg.name, 140),
-    description: cleanPresentationText(pkg.description || '', 500),
+    description: stripMarkedJson(pkg.description || '', TOUR_PACKAGE_RULES_MARKER),
     location: cleanPresentationText(pkg.location || 'Main Base', 140),
     duration: toSafeNumber(pkg.duration, 1),
     default_rate_1h: toSafeNumber(pkg.default_rate_1h, 0),
@@ -390,7 +484,7 @@ export const normalizePackage = (pkg = {}) => {
     coverImageUrl: clampText(pkg.coverImageUrl || pkg.cover_image_url || publicPresentation.coverImageUrl, 900),
     durationDisplay: clampText(pkg.durationDisplay || pkg.duration_display || publicPresentation.durationDisplay, 60),
     stopCount: Math.max(0, stopCount),
-    difficultyLabel: clampText(pkg.difficultyLabel || pkg.difficulty_label || publicPresentation.difficultyLabel, 60),
+    difficultyLabel: clampText(pkg.difficultyLabel || publicPresentation.difficultyLabel || pkg.difficulty_label, 60),
     created_at: pkg.created_at || new Date().toISOString(),
     updated_at: pkg.updated_at || new Date().toISOString(),
   };
@@ -431,6 +525,13 @@ export const toPackageTableRow = async (pkg = {}) => {
         difficultyLabel: normalized.difficultyLabel,
       },
     }),
+    media_gallery_json: resolvedMediaGallery,
+    cover_image_url: resolvedCoverImageUrl,
+    route_stops_json: normalized.routeStops,
+    public_highlights_json: normalized.publicHighlights,
+    stop_count: normalized.stopCount,
+    difficulty_label: normalized.difficultyLabel || null,
+    display_order: normalized.displayOrder,
     location: normalized.location,
     duration: normalized.duration,
     default_rate_1h: normalized.default_rate_1h,
@@ -460,6 +561,32 @@ export const readPackagesFromTable = async (adminClient) => {
 
   if (error) throw error;
   const normalizedPackages = Array.isArray(data) ? data.map(normalizePackage) : [];
+  const repairTargets = Array.isArray(data)
+    ? data
+        .map((row, index) => ({ raw: row, normalized: normalizedPackages[index] }))
+        .filter(({ normalized, raw }) =>
+          Array.isArray(normalized?.routeStops) &&
+          normalized.routeStops.length > 0 &&
+          (!Array.isArray(raw?.route_stops_json) || raw.route_stops_json.length === 0)
+        )
+    : [];
+  if (repairTargets.length > 0) {
+    await Promise.all(
+      repairTargets.map(async ({ normalized }) => {
+        const { error: repairError } = await adminClient
+          .from(TOUR_PACKAGES_TABLE)
+          .update({
+            route_stops_json: normalized.routeStops,
+            stop_count: normalized.routeStops.length,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', normalized.id);
+        if (repairError) {
+          console.warn('Failed to repair route roadmap on read:', repairError);
+        }
+      })
+    );
+  }
   normalizedPackages.sort((left, right) => {
     const leftOrder = toSafeInteger(left.displayOrder, 0);
     const rightOrder = toSafeInteger(right.displayOrder, 0);
@@ -641,18 +768,264 @@ export const handleTourPackages = async (req, res, json) => {
         throw existingTableError;
       }
 
-      const payload = normalizePackage({
+      const existingPackage = normalizePackage(existingTableRow || {});
+
+      if (String(body?.action || '').toLowerCase() === 'update-media') {
+        const nextMediaGallery = normalizeMediaGallery(body?.mediaGallery || existingPackage.mediaGallery || []);
+        const requestedCoverUrl = clampText(body?.coverImageUrl || existingPackage.coverImageUrl || '', 900);
+        const coverStillExists = nextMediaGallery.some((item) => {
+          const url = String(item?.url || '').trim();
+          const thumb = String(item?.thumbnailUrl || item?.thumbnail_url || '').trim();
+          return Boolean(requestedCoverUrl && (requestedCoverUrl === url || requestedCoverUrl === thumb));
+        });
+        const nextCoverUrl = coverStillExists
+          ? requestedCoverUrl
+          : clampText(
+            String(nextMediaGallery[0]?.thumbnailUrl || nextMediaGallery[0]?.thumbnail_url || nextMediaGallery[0]?.url || ''),
+            900
+          );
+        const mediaPayload = {
+          routeType: existingPackage.routeType,
+          requiresLicense: existingPackage.requiresLicense,
+          maxQuads: existingPackage.maxQuads,
+          bufferBeforeMinutes: existingPackage.bufferBeforeMinutes,
+          bufferAfterMinutes: existingPackage.bufferAfterMinutes,
+          websiteVisible: existingPackage.websiteVisible,
+          publicPresentation: {
+            publicTitle: existingPackage.publicTitle,
+            publicSummary: existingPackage.publicSummary,
+            routeLabel: existingPackage.routeLabel,
+            routeStops: existingPackage.routeStops,
+            mediaGallery: nextMediaGallery,
+            publicHighlights: existingPackage.publicHighlights,
+            displayOrder: existingPackage.displayOrder,
+            coverImageUrl: nextCoverUrl,
+            durationDisplay: existingPackage.durationDisplay,
+            stopCount: existingPackage.stopCount,
+            difficultyLabel: existingPackage.difficultyLabel,
+          },
+        };
+
+        const nextDescription = appendMarkedJson(
+          existingPackage.description || '',
+          TOUR_PACKAGE_RULES_MARKER,
+          mediaPayload
+        );
+        const removedTargets = resolveRemovedMediaTargets(existingPackage, {
+          ...existingPackage,
+          mediaGallery: nextMediaGallery,
+          coverImageUrl: nextCoverUrl,
+        });
+
+        const { data: updatedRow, error: updateError } = await adminClient
+          .from(TOUR_PACKAGES_TABLE)
+          .update({
+            description: nextDescription,
+            media_gallery_json: nextMediaGallery,
+            cover_image_url: nextCoverUrl || null,
+            route_stops_json: existingPackage.routeStops || [],
+            public_highlights_json: existingPackage.publicHighlights || [],
+            stop_count: existingPackage.routeStops?.length || existingPackage.stopCount || 0,
+            display_order: existingPackage.displayOrder || 0,
+            difficulty_label: existingPackage.difficultyLabel || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', packageId)
+          .select('*')
+          .single();
+
+        if (updateError) {
+          throw updateError;
+        }
+
+        await removeStorageTargets(adminClient, removedTargets);
+        return json(res, 200, { success: true, data: normalizePackage(updatedRow || {}) });
+      }
+
+      if (String(body?.action || '').toLowerCase() === 'update-roadmap') {
+        const rawStops = normalizeJsonArray(body?.routeStops || existingPackage.routeStops || []);
+        let nextRouteStops = normalizeRouteStops(rawStops);
+        if (nextRouteStops.length === 0 && rawStops.length > 0) {
+          nextRouteStops = rawStops
+            .map((stop, index) => {
+              const item = typeof stop === 'object' && stop !== null ? stop : { title: stop };
+              const title = clampText(item.title || item.name || item.label || item.stopTitle || '', 90);
+              const note = clampText(item.note || item.description || '', 180);
+              const media = normalizeStopMedia(item.media || item.mediaGallery || item.media_gallery_json || []);
+              if (!title && !note && media.length === 0) return null;
+              return {
+                id: clampText(item.id, 64) || makePresentationId('stop', index),
+                kind: clampText(item.kind || item.type || 'stop', 24).toLowerCase(),
+                title,
+                duration_minutes: Math.max(0, toSafeInteger(item.duration_minutes, 0)),
+                note,
+                media,
+                sort_order: toSafeInteger(item.sort_order, index + 1),
+              };
+            })
+            .filter(Boolean);
+        }
+
+        const stopsForStorage = nextRouteStops;
+        const stopsForPresentation = nextRouteStops;
+        const roadmapPayload = {
+          routeType: existingPackage.routeType,
+          requiresLicense: existingPackage.requiresLicense,
+          maxQuads: existingPackage.maxQuads,
+          bufferBeforeMinutes: existingPackage.bufferBeforeMinutes,
+          bufferAfterMinutes: existingPackage.bufferAfterMinutes,
+          websiteVisible: existingPackage.websiteVisible,
+          publicPresentation: {
+            publicTitle: existingPackage.publicTitle,
+            publicSummary: existingPackage.publicSummary,
+            routeLabel: existingPackage.routeLabel,
+            routeStops: stopsForPresentation,
+            mediaGallery: existingPackage.mediaGallery,
+            publicHighlights: existingPackage.publicHighlights,
+            displayOrder: existingPackage.displayOrder,
+            coverImageUrl: existingPackage.coverImageUrl,
+            durationDisplay: existingPackage.durationDisplay,
+            stopCount: (stopsForPresentation || []).length,
+            difficultyLabel: existingPackage.difficultyLabel,
+          },
+        };
+
+        const nextDescription = appendMarkedJson(
+          existingPackage.description || '',
+          TOUR_PACKAGE_RULES_MARKER,
+          roadmapPayload
+        );
+
+        const { data: updatedRow, error: updateError } = await adminClient
+          .from(TOUR_PACKAGES_TABLE)
+          .update({
+            description: nextDescription,
+            route_stops_json: stopsForStorage,
+            stop_count: (stopsForStorage || []).length,
+            media_gallery_json: existingPackage.mediaGallery || [],
+            cover_image_url: existingPackage.coverImageUrl || null,
+            public_highlights_json: existingPackage.publicHighlights || [],
+            display_order: existingPackage.displayOrder || 0,
+            difficulty_label: existingPackage.difficultyLabel || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', packageId)
+          .select('*')
+          .single();
+
+        if (updateError) {
+          throw updateError;
+        }
+        const normalizedUpdated = normalizePackage(updatedRow || {});
+        const shouldRepair =
+          Array.isArray(nextRouteStops) &&
+          nextRouteStops.length > 0 &&
+          (!Array.isArray(updatedRow?.route_stops_json) || updatedRow.route_stops_json.length === 0);
+
+        if (shouldRepair) {
+          const fallbackPayload = {
+            routeType: existingPackage.routeType,
+            requiresLicense: existingPackage.requiresLicense,
+            maxQuads: existingPackage.maxQuads,
+            bufferBeforeMinutes: existingPackage.bufferBeforeMinutes,
+            bufferAfterMinutes: existingPackage.bufferAfterMinutes,
+            websiteVisible: existingPackage.websiteVisible,
+            publicPresentation: {
+              publicTitle: existingPackage.publicTitle,
+              publicSummary: existingPackage.publicSummary,
+              routeLabel: existingPackage.routeLabel,
+              routeStops: nextRouteStops,
+              mediaGallery: existingPackage.mediaGallery,
+              publicHighlights: existingPackage.publicHighlights,
+              displayOrder: existingPackage.displayOrder,
+              coverImageUrl: existingPackage.coverImageUrl,
+              durationDisplay: existingPackage.durationDisplay,
+              stopCount: nextRouteStops.length,
+              difficultyLabel: existingPackage.difficultyLabel,
+            },
+          };
+          const fallbackDescription = appendMarkedJson(
+            existingPackage.description || '',
+            TOUR_PACKAGE_RULES_MARKER,
+            fallbackPayload
+          );
+
+          const { data: repairedRow, error: repairError } = await adminClient
+            .from(TOUR_PACKAGES_TABLE)
+            .update({
+              description: fallbackDescription,
+              route_stops_json: nextRouteStops,
+              stop_count: nextRouteStops.length,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', packageId)
+            .select('*')
+            .single();
+
+          if (!repairError && repairedRow) {
+            return json(res, 200, { success: true, data: normalizePackage(repairedRow) });
+          }
+          if (repairError) {
+            console.warn('Route roadmap repair failed:', repairError);
+          }
+        }
+
+        if (!Array.isArray(updatedRow?.route_stops_json) || updatedRow.route_stops_json.length === 0) {
+          const roadmapFromDescription =
+            extractMarkedJson(updatedRow?.description || '', TOUR_PACKAGE_RULES_MARKER)?.publicPresentation?.routeStops || [];
+          if (Array.isArray(roadmapFromDescription) && roadmapFromDescription.length > 0) {
+            const repairedStops = normalizeRouteStops(roadmapFromDescription);
+            if (repairedStops.length > 0) {
+              const { data: repairedRow, error: repairError } = await adminClient
+                .from(TOUR_PACKAGES_TABLE)
+                .update({
+                  route_stops_json: repairedStops,
+                  stop_count: repairedStops.length,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', packageId)
+                .select('*')
+                .single();
+              if (!repairError && repairedRow) {
+                return json(res, 200, { success: true, data: normalizePackage(repairedRow) });
+              }
+              if (repairError) {
+                console.warn('Route roadmap description repair failed:', repairError);
+              }
+            }
+          }
+        }
+
+        return json(res, 200, { success: true, data: normalizedUpdated });
+      }
+
+      const mergedPayload = {
         ...(existingTableRow || {}),
         ...body,
+        route_stops_json: body?.routeStops ?? body?.route_stops_json ?? existingTableRow?.route_stops_json ?? [],
+        media_gallery_json: body?.mediaGallery ?? body?.media_gallery_json ?? existingTableRow?.media_gallery_json ?? [],
+        public_highlights_json: body?.publicHighlights ?? body?.public_highlights_json ?? existingTableRow?.public_highlights_json ?? [],
+        cover_image_url: body?.coverImageUrl ?? body?.cover_image_url ?? existingTableRow?.cover_image_url ?? null,
+        duration_display: body?.durationDisplay ?? body?.duration_display ?? existingTableRow?.duration_display ?? '',
+        stop_count: body?.stopCount ?? body?.stop_count ?? existingTableRow?.stop_count ?? 0,
+        difficulty_label: body?.difficultyLabel ?? body?.difficulty_label ?? existingTableRow?.difficulty_label ?? null,
+        display_order: body?.displayOrder ?? body?.display_order ?? existingTableRow?.display_order ?? 0,
+        public_title: body?.publicTitle ?? body?.public_title ?? existingTableRow?.public_title ?? '',
+        public_summary: body?.publicSummary ?? body?.public_summary ?? existingTableRow?.public_summary ?? '',
+        route_label: body?.routeLabel ?? body?.route_label ?? existingTableRow?.route_label ?? '',
         id: packageId,
         created_at: existingTableRow?.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString(),
-      });
+      };
+
+      const payload = normalizePackage(mergedPayload);
 
       if (!payload.name) {
         return json(res, 400, { error: 'Package name is required' });
       }
+      const removedTargets = resolveRemovedMediaTargets(existingPackage, payload);
       const updated = await updatePackageInTable(adminClient, payload);
+      await removeStorageTargets(adminClient, removedTargets);
       return json(res, 200, { success: true, data: updated });
     }
 

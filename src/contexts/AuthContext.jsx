@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
+import { TABLE_NAMES } from '../config/tableNames';
 import { getUserPermissions } from '../services/UserService';
 import { shouldSyncCustomerAccount, syncCustomerAccountForAuthUser } from '../services/CustomerAccountSyncService';
 import { adminApiRequest } from '../services/adminApi';
@@ -8,11 +9,17 @@ import { clearPermissionCache } from '../utils/permissionHelpers';
 import {
   normalizePermissionMap as normalizeCatalogPermissionMap,
   buildBusinessOwnerPermissionMap,
+  resolvePermissionKey,
 } from '../utils/permissionCatalog';
 import { getBusinessOwnerFreezeRedirect, hasBusinessOwnerRequest, isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../utils/accountType';
 import { resolveUserEntry } from '../utils/tenantEntryResolver';
 
-const AuthContext = createContext(null);
+const GLOBAL_AUTH_CONTEXT_KEY = '__SAHARAX_AUTH_CONTEXT__';
+const AuthContext = globalThis[GLOBAL_AUTH_CONTEXT_KEY] || createContext(null);
+
+if (typeof globalThis !== 'undefined' && !globalThis[GLOBAL_AUTH_CONTEXT_KEY]) {
+  globalThis[GLOBAL_AUTH_CONTEXT_KEY] = AuthContext;
+}
 const PENDING_ACCOUNT_INTENT_KEY = 'saharax_pending_account_type';
 
 const getPendingAccountIntent = () => {
@@ -35,6 +42,15 @@ const clearPendingAccountIntent = () => {
     window.sessionStorage.removeItem(PENDING_ACCOUNT_INTENT_KEY);
   } catch (error) {
     console.warn('Failed to clear pending account intent:', error);
+  }
+};
+
+const setPendingAccountIntent = (intent = {}) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(PENDING_ACCOUNT_INTENT_KEY, JSON.stringify(intent));
+  } catch (error) {
+    console.warn('Failed to persist pending account intent:', error);
   }
 };
 
@@ -62,14 +78,9 @@ const buildPreferredOAuthUrl = (oauthUrl, redirectTo) => {
 
     const normalizedRedirectTo = redirectTo.trim();
     const currentRedirectTo = preferredUrl.searchParams.get('redirect_to');
-    const currentRedirectUri = preferredUrl.searchParams.get('redirect_uri');
 
     if (currentRedirectTo && currentRedirectTo !== normalizedRedirectTo) {
       preferredUrl.searchParams.set('redirect_to', normalizedRedirectTo);
-    }
-
-    if (currentRedirectUri && currentRedirectUri !== normalizedRedirectTo) {
-      preferredUrl.searchParams.set('redirect_uri', normalizedRedirectTo);
     }
 
     return preferredUrl.toString();
@@ -107,12 +118,22 @@ const inferRoleFromPermissions = (permissionsMap = {}) => {
 
 const buildApprovedBusinessOwnerProfile = (authUser, appUserRecord, fullName) => {
   const businessOwnerPermissions = buildBusinessOwnerPermissionMap();
+  const profilePictureUrl =
+    appUserRecord?.profile_picture_url ||
+    appUserRecord?.avatar_url ||
+    authUser.user_metadata?.profile_picture_url ||
+    authUser.user_metadata?.avatar_url ||
+    authUser.app_metadata?.profile_picture_url ||
+    authUser.app_metadata?.avatar_url ||
+    null;
 
   return {
     id: authUser.id,
     email: authUser.email,
     role: 'business_owner',
     fullName,
+    profile_picture_url: profilePictureUrl,
+    avatar_url: profilePictureUrl,
     accountType: authUser.user_metadata?.account_type || authUser.app_metadata?.account_type || 'operator',
     permissions: Object.entries(businessOwnerPermissions).map(([module_name, has_access]) => ({
       module_name,
@@ -319,6 +340,9 @@ export const AuthProvider = ({ children }) => {
         null;
       const localStorageRole =
         typeof window !== 'undefined' ? window.localStorage.getItem('saharax_user_role') : null;
+      const appRecordRole = String(appUserRecord?.role || '').trim().toLowerCase() || null;
+      const normalizedMetadataRole = String(metadataRole || '').trim().toLowerCase() || null;
+      const normalizedLocalStorageRole = String(localStorageRole || '').trim().toLowerCase() || null;
       const hasAppField = (field) => Boolean(appUserRecord) && Object.prototype.hasOwnProperty.call(appUserRecord, field);
       const fullName =
         (hasAppField('full_name') ? appUserRecord.full_name : null) ||
@@ -362,13 +386,21 @@ export const AuthProvider = ({ children }) => {
       const userRole =
         approvedBusinessOwner
           ? 'business_owner'
-          : appUserRecord?.role ||
-        (metadataRole && metadataRole !== 'customer' ? metadataRole : null) ||
-        (localStorageRole && localStorageRole !== 'customer' ? localStorageRole : null) ||
+          : appRecordRole ||
+        (normalizedMetadataRole && normalizedMetadataRole !== 'customer' ? normalizedMetadataRole : null) ||
         (inferredRole !== 'customer' ? inferredRole : null) ||
         (privilegedOwnerOverride ? 'owner' : null) ||
-        metadataRole ||
+        normalizedMetadataRole ||
+        (normalizedLocalStorageRole && normalizedLocalStorageRole !== 'customer' ? normalizedLocalStorageRole : null) ||
         'customer';
+
+      if (typeof window !== 'undefined') {
+        if (appRecordRole || normalizedMetadataRole) {
+          window.localStorage.removeItem('saharax_user_role');
+        } else if (userRole && userRole !== 'customer') {
+          window.localStorage.setItem('saharax_user_role', userRole);
+        }
+      }
       
       const profile = approvedBusinessOwner
         ? buildApprovedBusinessOwnerProfile(authUser, appUserRecord, fullName)
@@ -379,6 +411,22 @@ export const AuthProvider = ({ children }) => {
             username: hasAppField('username') ? (appUserRecord?.username || '') : (authUser.user_metadata?.username || ''),
             fullName,
             full_name: hasAppField('full_name') ? appUserRecord?.full_name : fullName,
+            profile_picture_url:
+              (hasAppField('profile_picture_url') ? appUserRecord?.profile_picture_url : null) ||
+              (hasAppField('avatar_url') ? appUserRecord?.avatar_url : null) ||
+              authUser.user_metadata?.profile_picture_url ||
+              authUser.user_metadata?.avatar_url ||
+              authUser.app_metadata?.profile_picture_url ||
+              authUser.app_metadata?.avatar_url ||
+              null,
+            avatar_url:
+              (hasAppField('avatar_url') ? appUserRecord?.avatar_url : null) ||
+              (hasAppField('profile_picture_url') ? appUserRecord?.profile_picture_url : null) ||
+              authUser.user_metadata?.avatar_url ||
+              authUser.user_metadata?.profile_picture_url ||
+              authUser.app_metadata?.avatar_url ||
+              authUser.app_metadata?.profile_picture_url ||
+              null,
             first_name: hasAppField('first_name') ? (appUserRecord?.first_name || '') : (authUser.user_metadata?.first_name || ''),
             last_name: hasAppField('last_name') ? (appUserRecord?.last_name || '') : (authUser.user_metadata?.last_name || ''),
             phone: hasAppField('phone_number') ? (appUserRecord?.phone_number || '') : (authUser.user_metadata?.phone || ''),
@@ -452,6 +500,18 @@ export const AuthProvider = ({ children }) => {
             username: authUser.user_metadata?.username || '',
             fullName: authUser.user_metadata?.full_name || authUser.app_metadata?.full_name || authUser.email,
             full_name: authUser.user_metadata?.full_name || authUser.app_metadata?.full_name || authUser.email,
+            profile_picture_url:
+              authUser.user_metadata?.profile_picture_url ||
+              authUser.user_metadata?.avatar_url ||
+              authUser.app_metadata?.profile_picture_url ||
+              authUser.app_metadata?.avatar_url ||
+              null,
+            avatar_url:
+              authUser.user_metadata?.avatar_url ||
+              authUser.user_metadata?.profile_picture_url ||
+              authUser.app_metadata?.avatar_url ||
+              authUser.app_metadata?.profile_picture_url ||
+              null,
             first_name: authUser.user_metadata?.first_name || '',
             last_name: authUser.user_metadata?.last_name || '',
             phone: authUser.user_metadata?.phone || '',
@@ -539,7 +599,7 @@ export const AuthProvider = ({ children }) => {
       };
 
       const { error } = await supabase
-        .from('saharax_0u4w4d_activity_log')
+        .from(TABLE_NAMES.ACTIVITY_LOG)
         .insert(payload);
 
       if (error) {
@@ -857,42 +917,19 @@ export const AuthProvider = ({ children }) => {
   const hasPermission = useCallback((moduleName) => {
     if (!userProfile) return false;
     const normalizedEmail = (userProfile.email || '').toLowerCase();
-    const emergencyRole = isPlatformOwnerEmail(normalizedEmail) ? 'owner' : null;
+    const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
 
-    if (userProfile.role === 'owner' || emergencyRole === 'owner' || emergencyRole === 'admin') {
-        return true;
-    }
-    
-    // Map short module names to full database names
-    const nameMap = {
-      'dashboard': 'Dashboard',
-      'calendar': 'Calendar',
-      'tours': 'Tours & Bookings',
-      'tasks': 'Team Tasks',
-      'rentals': 'Rental Management',
-      'customers': 'Customer Management',
-      'fleet': 'Fleet Management',
-      'pricing': 'Pricing Management',
-      'maintenance': 'Quad Maintenance',
-      'fuel': 'Fuel Logs',
-      'inventory': 'Inventory',
-      'finance': 'Finance Management',
-      'alerts': 'Alerts',
-      'users': 'User & Role Management',
-      'verification': 'Verification Center',
-      'workspaces': 'Workspaces',
-      'settings': 'System Settings',
-      'export': 'Project Export'
-    };
-
-    if (['verification', 'workspaces'].includes(moduleName.toLowerCase()) && userProfile.role === 'admin') {
+    if (String(userProfile.role || '').toLowerCase() === 'owner' || platformOwnerOverride) {
       return true;
     }
-    
-    // Get the full database name from the map, or use the original name if not found
-    const dbName = nameMap[moduleName.toLowerCase()] || moduleName;
-    const permission = userProfile.permissions.find(p => p.module_name.toLowerCase() === dbName.toLowerCase());
-    return permission ? permission.has_access : false;
+
+    const dbName = resolvePermissionKey(moduleName);
+    const permissionList = Array.isArray(userProfile.permissions) ? userProfile.permissions : [];
+    const permission = permissionList.find((entry) =>
+      String(entry?.module_name || '').toLowerCase() === dbName.toLowerCase()
+    );
+
+    return permission ? permission.has_access === true : false;
   }, [userProfile]);
 
   const refreshPermissions = useCallback(async () => {
@@ -984,10 +1021,93 @@ export const AuthProvider = ({ children }) => {
     });
   }, []);
 
+  const startPrivateOwnerSetup = useCallback(async () => {
+    const currentAccountType = String(
+      userProfile?.accountType ||
+      session?.user?.user_metadata?.account_type ||
+      session?.user?.app_metadata?.account_type ||
+      'customer'
+    ).trim().toLowerCase();
+
+    if (currentAccountType === 'business_owner' || currentAccountType === 'operator' || currentAccountType === 'business') {
+      return { success: false, skipped: true, reason: 'business_owner_account' };
+    }
+
+    return { success: true, persisted: false };
+  }, [session?.user?.app_metadata?.account_type, session?.user?.user_metadata?.account_type, userProfile?.accountType]);
+
+  const activatePrivateOwnerAccount = useCallback(async (intent = {}) => {
+    const currentAccountType = String(
+      userProfile?.accountType ||
+      session?.user?.user_metadata?.account_type ||
+      session?.user?.app_metadata?.account_type ||
+      'customer'
+    ).trim().toLowerCase();
+
+    if (currentAccountType === 'business_owner' || currentAccountType === 'operator' || currentAccountType === 'business') {
+      return { success: false, skipped: true, reason: 'business_owner_account' };
+    }
+
+    const pendingIntent = {
+      account_type: 'private_owner',
+      marketplace_enabled: true,
+      ...intent,
+    };
+    setPendingAccountIntent(pendingIntent);
+
+    const localProfilePatch = {
+      accountType: 'private_owner',
+      account_type: 'private_owner',
+      marketplaceEnabled: true,
+      verificationStatus:
+        currentAccountType === 'customer'
+          ? 'pending_verification'
+          : userProfile?.verificationStatus || 'pending_verification',
+    };
+
+    updateCurrentUserProfile(localProfilePatch);
+
+    if (!session?.user) {
+      return { success: true, persisted: false };
+    }
+
+    const nextMetadata = {
+      ...session.user.user_metadata,
+      account_type: 'private_owner',
+      marketplace_enabled: true,
+      verification_status:
+        session.user.user_metadata?.verification_status === 'approved'
+          ? 'approved'
+          : 'pending_verification',
+    };
+
+    try {
+      const { data, error } = await supabase.auth.updateUser({ data: nextMetadata });
+      if (error) throw error;
+
+      if (data?.user) {
+        setSession((prev) => (prev ? { ...prev, user: data.user } : prev));
+        updateCurrentUserProfile({
+          accountType: data.user.user_metadata?.account_type || 'private_owner',
+          account_type: data.user.user_metadata?.account_type || 'private_owner',
+          verificationStatus: data.user.user_metadata?.verification_status || localProfilePatch.verificationStatus,
+          marketplaceEnabled: Boolean(data.user.user_metadata?.marketplace_enabled),
+        });
+      }
+
+      return { success: true, persisted: true };
+    } catch (error) {
+      console.warn('Failed to persist private owner setup immediately:', error);
+      return { success: true, persisted: false, error };
+    }
+  }, [session?.user, updateCurrentUserProfile, userProfile?.accountType, userProfile?.verificationStatus]);
+
   const value = {
     user: userProfile,
     userProfile,
     updateCurrentUserProfile,
+    startPrivateOwnerSetup,
+    activatePrivateOwnerAccount,
     session,
     loading,
     initialized,

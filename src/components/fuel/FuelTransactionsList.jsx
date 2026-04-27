@@ -328,9 +328,15 @@ const FuelTransactionsList = ({
     return '';
   };
 
+  const getRentalReference = (transaction) => {
+    return transaction?.rental_reference || transaction?.linked_report?.rental_id || '';
+  };
+
   const formatAmount = (transaction) => {
     const numericAmount = roundFuelLitersForDisplay(transaction.amount || 0) || 0;
-    const showSignedAmount = transaction.transaction_type === 'rental_closing_level';
+    const showSignedAmount =
+      transaction.transaction_type === 'rental_closing_level' ||
+      transaction.transaction_type === 'manual_adjustment';
 
     if (showSignedAmount && Number.isFinite(numericAmount)) {
       if (numericAmount > 0) return `+${numericAmount.toFixed(1)}L`;
@@ -342,7 +348,7 @@ const FuelTransactionsList = ({
   };
 
   const getAmountClassName = (transaction) => {
-    if (transaction.transaction_type !== 'rental_closing_level') {
+    if (!['rental_closing_level', 'manual_adjustment'].includes(transaction.transaction_type)) {
       return 'text-gray-900';
     }
 
@@ -621,7 +627,12 @@ const FuelTransactionsList = ({
                             {transaction.performed_by_name || transaction.filled_by}
                           </div>
                         )}
-                        {!transaction.odometer_reading && !transaction.filled_by && (
+                        {getRentalReference(transaction) && (
+                          <div className="text-xs font-mono text-violet-600">
+                            {isFrench ? 'Contrat' : 'Contract'}: {getRentalReference(transaction)}
+                          </div>
+                        )}
+                        {!transaction.odometer_reading && !(transaction.performed_by_name || transaction.filled_by) && !getRentalReference(transaction) && (
                           <span className="text-gray-400">—</span>
                         )}
                       </div>

@@ -181,6 +181,27 @@ export const updateTourBookingRows = async (updatesById = []) => {
   if (reserveVehicleIds.size > 0) await updateVehicleStatuses([...reserveVehicleIds], 'tour');
 };
 
+export const deleteTourBookingRows = async (rowIds = []) => {
+  const normalizedRowIds = rowIds.filter(Boolean).map(String);
+  if (normalizedRowIds.length === 0) return;
+
+  const existingRows = await loadRowsByIds(normalizedRowIds);
+  const releaseVehicleIds = [
+    ...new Set(existingRows.map((row) => row.vehicle_id).filter(Boolean).map(String)),
+  ];
+
+  await adminApiRequest('/api/tour-bookings', {
+    method: 'DELETE',
+    body: JSON.stringify({
+      rowIds: normalizedRowIds,
+    }),
+  });
+
+  if (releaseVehicleIds.length > 0) {
+    await updateVehicleStatuses(releaseVehicleIds, 'available');
+  }
+};
+
 export const reconcileTourVehicleStatuses = async (tourRows = []) => {
   const assignedVehicleIds = [...new Set(
     tourRows

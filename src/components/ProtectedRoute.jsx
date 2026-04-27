@@ -3,6 +3,7 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import i18n from '../i18n';
 import { isBusinessOwnerAccountType } from '../utils/accountType';
+import AuthTransitionScreen from './auth/AuthTransitionScreen';
 
 const ExternalRedirect = ({ to }) => {
   React.useEffect(() => {
@@ -36,7 +37,7 @@ const ProtectedRoute = ({
   fallbackPath = '/login',
   unauthorizedPath = '/unauthorized'
 }) => {
-  const { user, userProfile, loading, initialized, hasPermission, getBusinessOwnerHomePath } = useAuth();
+  const { user, userProfile, session, loading, initialized, hasPermission, getBusinessOwnerHomePath } = useAuth();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const location = useLocation();
@@ -61,18 +62,13 @@ const ProtectedRoute = ({
 
   // Show loading while auth is initializing
   if (!initialized || loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin text-4xl mb-4">⏳</div>
-          <p className="text-gray-600">{tr('Loading...', 'Chargement...')}</p>
-        </div>
-      </div>
-    );
+    return <AuthTransitionScreen title={tr('Opening your workspace', 'Ouverture de votre espace')} description={tr('We are loading your SaharaX dashboard securely.', 'Nous chargeons votre tableau de bord SaharaX en toute sécurité.')} />;
   }
 
   // Check authentication requirement
-  if (requireAuth && !user) {
+  const isAuthenticated = Boolean(session?.user || user);
+
+  if (requireAuth && !isAuthenticated) {
     return <Navigate to={fallbackPath} state={{ from: location }} replace />;
   }
 

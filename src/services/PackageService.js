@@ -1,6 +1,13 @@
 // PackageService.js
 import { supabase } from '../lib/supabase';
 
+const isMissingFuelChargeColumnError = (error) =>
+  error?.code === 'PGRST204' &&
+  String(error?.message || '').includes('fuel_charge_enabled');
+
+const getMissingFuelChargeColumnMessage = () =>
+  'Database schema is missing rental_km_packages.fuel_charge_enabled. Apply src/migrations/add_fuel_charge_policy_to_rental_packages.sql, then try again.';
+
 const PackageService = {
   async createPackage(packageData) {
     try {
@@ -15,6 +22,8 @@ const PackageService = {
         included_kilometers: packageData.included_kilometers,
         extra_km_rate: packageData.extra_km_rate,
         fixed_amount: packageData.fixed_amount,
+        fuel_charge_enabled: packageData.fuel_charge_enabled === true,
+        duration_units: packageData.duration_units ?? packageData.durationUnits ?? 1,
         is_active: packageData.is_active !== undefined ? packageData.is_active : true,
         show_on_print: packageData.show_on_print === true || packageData.showOnPrint === true
       };
@@ -32,6 +41,11 @@ const PackageService = {
 
       if (error) {
         console.error('❌ Supabase error:', error);
+        if (isMissingFuelChargeColumnError(error)) {
+          const schemaError = new Error(getMissingFuelChargeColumnMessage());
+          schemaError.code = error.code;
+          throw schemaError;
+        }
         throw error;
       }
 
@@ -55,6 +69,8 @@ const PackageService = {
         included_kilometers: packageData.included_kilometers,
         extra_km_rate: packageData.extra_km_rate,
         fixed_amount: packageData.fixed_amount,
+        fuel_charge_enabled: packageData.fuel_charge_enabled === true,
+        duration_units: packageData.duration_units ?? packageData.durationUnits ?? 1,
         is_active: packageData.is_active,
         show_on_print: packageData.show_on_print === true || packageData.showOnPrint === true,
         updated_at: new Date().toISOString()
@@ -72,6 +88,11 @@ const PackageService = {
 
       if (error) {
         console.error('❌ Supabase error:', error);
+        if (isMissingFuelChargeColumnError(error)) {
+          const schemaError = new Error(getMissingFuelChargeColumnMessage());
+          schemaError.code = error.code;
+          throw schemaError;
+        }
         throw error;
       }
 

@@ -1,7 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Download, ExternalLink, Eye, File, RefreshCw, Trash2, AlertTriangle, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import VerificationService from '../services/VerificationService';
 import i18n from '../i18n';
+
+const DELETE_TIMEOUT_MS = 15000;
+const LOAD_TIMEOUT_MS = 12000;
 
 const VehicleDocuments = ({ 
   documents = [], 
@@ -10,7 +14,8 @@ const VehicleDocuments = ({
   canDelete = true, 
   className = '', 
   vehicleId, 
-  loadFromStorage = true 
+  loadFromStorage = true,
+  documentStatusMap = {},
 }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
@@ -61,12 +66,21 @@ const VehicleDocuments = ({
     
     try {
       // FIXED: List files in vehicle-specific folder using existing bucket
-      const { data: files, error } = await supabase.storage
-        .from(BUCKET_NAME)
-        .list(vehicleId.toString(), {
-          limit: 100,
-          offset: 0
-        });
+      const listResult = await Promise.race([
+        supabase.storage
+          .from(BUCKET_NAME)
+          .list(vehicleId.toString(), {
+            limit: 100,
+            offset: 0
+          }),
+        new Promise((_, reject) => {
+          window.setTimeout(() => {
+            reject(new Error('Loading vehicle media timed out.'));
+          }, LOAD_TIMEOUT_MS);
+        }),
+      ]);
+
+      const { data: files, error } = listResult || {};
 
       if (error) {
         console.error('❌ Storage list error:', error);
@@ -227,12 +241,28 @@ const VehicleDocuments = ({
   // CRITICAL: Safe array access - Combine documents based on loadFromStorage setting
   const safeDocuments = Array.isArray(documents) ? documents : [];
   const safeVehicleMedia = Array.isArray(vehicleMedia) ? vehicleMedia : [];
-  const allDocuments = loadFromStorage
-    ? [...safeDocuments, ...safeVehicleMedia].filter((doc, index, list) => {
-        const docKey = doc?.storagePath || doc?.url || doc?.id;
-        return list.findIndex((item) => (item?.storagePath || item?.url || item?.id) === docKey) === index;
-      })
-    : safeDocuments;
+  const allDocuments = useMemo(() => {
+    const mergedDocuments = loadFromStorage ? [...safeDocuments, ...safeVehicleMedia] : safeDocuments;
+    const seenKeys = new Set();
+
+    return mergedDocuments.filter((doc) => {
+      const source = String(doc?.source || '').trim().toLowerCase();
+      const verificationCategoryKey = String(doc?.categoryKey || '').trim().toLowerCase();
+      const verificationKey =
+        source === 'verification'
+          ? `verification:${verificationCategoryKey || 'unknown'}`
+          : null;
+      const fallbackKey = doc?.storagePath || doc?.url || doc?.id;
+      const docKey = verificationKey || fallbackKey;
+
+      if (!docKey || seenKeys.has(docKey)) {
+        return false;
+      }
+
+      seenKeys.add(docKey);
+      return true;
+    });
+  }, [loadFromStorage, safeDocuments, safeVehicleMedia]);
   
   const formatFileSize = (bytes) => {
     if (bytes === 0) return '0 Bytes';
@@ -258,6 +288,30 @@ const VehicleDocuments = ({
 
   const isPdf = (doc) => {
     return doc.type === 'application/pdf' || doc.name?.toLowerCase?.().endsWith('.pdf');
+  };
+
+  const renderDocumentPreview = (doc, tone = 'default') => {
+    const baseClassName =
+      tone === 'emerald'
+        ? 'border-emerald-100 bg-emerald-50 text-emerald-600'
+        : 'border-slate-200 bg-slate-50 text-slate-500';
+
+    if (isImage(doc)) {
+      return (
+        <span className={`flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[1rem] border ${baseClassName}`}>
+          <img src={doc.url} alt={doc.name} className="h-full w-full object-cover" loading="lazy" />
+        </span>
+      );
+    }
+
+    return (
+      <span className={`flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-[1rem] border ${baseClassName}`}>
+        <File className="h-4 w-4" />
+        <span className="mt-1 text-[10px] font-bold uppercase tracking-[0.16em]">
+          {isPdf(doc) ? 'PDF' : tr('File', 'Fichier')}
+        </span>
+      </span>
+    );
   };
 
   const handleView = (doc) => {
@@ -314,12 +368,40 @@ const VehicleDocuments = ({
     console.log('🚗 Vehicle ID:', doc.vehicleId || vehicleId);
     
     try {
-      // FIXED: Delete from storage using existing bucket
-      if (doc.storagePath) {
+      if (String(doc?.source || '').trim().toLowerCase() === 'verification' && doc?.id) {
+        const verificationIds = Array.isArray(doc?.verificationRequestIds) && doc.verificationRequestIds.length
+          ? doc.verificationRequestIds
+          : [doc.id];
+
+        console.log('🔄 Deleting verification-backed document set:', verificationIds);
+
+        for (const verificationId of verificationIds) {
+          await Promise.race([
+            VerificationService.deleteVerificationRequest({ id: verificationId }),
+            new Promise((_, reject) => {
+              window.setTimeout(() => {
+                reject(new Error('Delete timed out. Please refresh and try again.'));
+              }, DELETE_TIMEOUT_MS);
+            }),
+          ]);
+        }
+
+        console.log('✅ Successfully deleted verification request set');
+      } else if (doc.storagePath) {
+        // FIXED: Delete from storage using existing bucket
         console.log('🔄 Deleting from storage:', doc.storagePath);
-        const { error: storageError } = await supabase.storage
-          .from(BUCKET_NAME)
-          .remove([doc.storagePath]);
+        const deleteResult = await Promise.race([
+          supabase.storage
+            .from(BUCKET_NAME)
+            .remove([doc.storagePath]),
+          new Promise((_, reject) => {
+            window.setTimeout(() => {
+              reject(new Error('Delete timed out. Please refresh and try again.'));
+            }, DELETE_TIMEOUT_MS);
+          }),
+        ]);
+
+        const { error: storageError } = deleteResult || {};
 
         if (storageError) {
           console.error('❌ Storage deletion error:', storageError);
@@ -331,11 +413,28 @@ const VehicleDocuments = ({
       
       // FIXED: Update local state immediately
       setVehicleMedia(prev => Array.isArray(prev) ? prev.filter(d => d.id !== doc.id) : []);
+
+      if (onDocumentsChange) {
+        const remainingDocuments = allDocuments.filter((item) => {
+          const itemKey =
+            String(item?.source || '').trim().toLowerCase() === 'verification'
+              ? `verification:${String(item?.categoryKey || '').trim().toLowerCase()}`
+              : item?.storagePath || item?.url || item?.id;
+          const deletedKey =
+            String(doc?.source || '').trim().toLowerCase() === 'verification'
+              ? `verification:${String(doc?.categoryKey || '').trim().toLowerCase()}`
+              : doc?.storagePath || doc?.url || doc?.id;
+          return itemKey !== deletedKey;
+        });
+        onDocumentsChange(remainingDocuments);
+      }
       
       // Call parent component's delete handler if provided
       if (onDeleteDocument) {
         console.log('📢 Notifying parent component of deletion');
-        await onDeleteDocument(doc.id);
+        Promise.resolve(onDeleteDocument(doc.id)).catch((callbackError) => {
+          console.warn('⚠️ Parent document deletion callback failed:', callbackError);
+        });
       }
       
       // Show success message
@@ -396,7 +495,13 @@ const VehicleDocuments = ({
     </div>
   );
 
-  if (loading) {
+  const getDocumentStatusMeta = (doc) => {
+    const categoryKey = String(doc?.categoryKey || '').trim().toLowerCase();
+    if (!categoryKey) return null;
+    return documentStatusMap?.[categoryKey] || null;
+  };
+
+  if (loading && allDocuments.length === 0) {
     return (
       <div className={`space-y-4 ${className}`}>
         <div className="flex items-center justify-center p-8">
@@ -467,17 +572,40 @@ const VehicleDocuments = ({
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Images', 'Images')}</p>
             <div className="-mx-1 flex snap-x gap-3 overflow-x-auto px-1 pb-2">
               {imageDocuments.map((doc) => (
-                <button
+                <div
                   key={doc.id}
-                  type="button"
-                  onClick={() => handleView(doc)}
                   className="relative h-28 w-40 shrink-0 snap-start overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm"
                 >
-                  <img src={doc.url} alt={doc.name} className="h-full w-full object-cover" loading="lazy" />
-                  <span className="absolute bottom-2 left-2 max-w-[8rem] truncate rounded-full bg-white/90 px-2 py-1 text-[10px] font-semibold text-slate-700 shadow-sm">
-                    {doc.name}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => handleView(doc)}
+                    className="h-full w-full text-left"
+                  >
+                    <img src={doc.url} alt={doc.name} className="h-full w-full object-cover" loading="lazy" />
+                    <span className="absolute bottom-2 left-2 max-w-[8rem] truncate rounded-full bg-white/90 px-2 py-1 text-[10px] font-semibold text-slate-700 shadow-sm">
+                      {doc.name}
+                    </span>
+                  </button>
+                  {canDelete ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(doc)}
+                      disabled={deletingDocumentId === doc.id}
+                      className={`absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/80 bg-white/92 shadow-sm transition ${
+                        deletingDocumentId === doc.id
+                          ? 'cursor-not-allowed text-slate-400'
+                          : 'text-slate-600 hover:text-rose-600'
+                      }`}
+                      title={deletingDocumentId === doc.id ? tr('Deleting...', 'Suppression...') : tr('Delete Document', 'Supprimer le document')}
+                    >
+                      {deletingDocumentId === doc.id ? (
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                    </button>
+                  ) : null}
+                </div>
               ))}
             </div>
           </section>
@@ -490,12 +618,17 @@ const VehicleDocuments = ({
               {legalDocuments.map((doc) => (
                 <div key={doc.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <button type="button" onClick={() => handleView(doc)} className="flex min-w-0 items-center gap-3 text-left">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
-                      <File className="h-5 w-5" />
-                    </span>
+                    {renderDocumentPreview(doc)}
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-semibold text-slate-900">{doc.name}</span>
-                      <span className="block truncate text-xs text-slate-500">{doc.category} • {formatFileSize(doc.size)}</span>
+                      <span className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                        <span className="truncate">{doc.category} • {formatFileSize(doc.size)}</span>
+                        {getDocumentStatusMeta(doc) ? (
+                          <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] ${getDocumentStatusMeta(doc).tone}`}>
+                            {getDocumentStatusMeta(doc).label}
+                          </span>
+                        ) : null}
+                      </span>
                     </span>
                   </button>
                   {renderDocumentActions(doc)}
@@ -514,9 +647,7 @@ const VehicleDocuments = ({
               {taxReceiptDocuments.map((doc) => (
                 <div key={doc.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <button type="button" onClick={() => handleView(doc)} className="flex min-w-0 items-center gap-3 text-left">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
-                      <File className="h-5 w-5" />
-                    </span>
+                    {renderDocumentPreview(doc, 'emerald')}
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-semibold text-slate-900">{doc.name}</span>
                       <span className="block truncate text-xs text-slate-500">{formatFileSize(doc.size)} • {new Date(doc.uploadedAt).toLocaleDateString()}</span>

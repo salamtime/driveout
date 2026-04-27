@@ -5,6 +5,7 @@ import ItemsManagement from '../../components/inventory/ItemsManagement';
 import StockMovements from '../../components/inventory/StockMovements';
 import PurchasesManagement from '../../components/inventory/PurchasesManagement';
 import LowStockAlert from '../../components/inventory/LowStockAlert';
+import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
 import { 
   Boxes,
   HomeIcon, 
@@ -74,30 +75,56 @@ const InventoryPage = () => {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <AdminModuleHero
-        icon={<Boxes className="h-8 w-8 text-white" />}
-        eyebrow={isFrench ? 'Inventaire' : 'Inventory'}
-        title={isFrench ? "Gestion de l'inventaire" : 'Inventory Management'}
-        description={isFrench ? "Suivez le stock, les achats, les mouvements et les alertes depuis un espace inventaire partagé." : 'Track stock, purchases, movements, and alerts from one shared inventory workspace.'}
-        className="w-full"
-      />
+      <div className="hidden sm:block">
+        <AdminModuleHero
+          icon={<Boxes className="h-8 w-8 text-white" />}
+          eyebrow={isFrench ? 'Inventaire' : 'Inventory'}
+          title={isFrench ? "Gestion de l'inventaire" : 'Inventory Management'}
+          description={isFrench ? "Suivez le stock, les achats, les mouvements et les alertes depuis un espace inventaire partagé." : 'Track stock, purchases, movements, and alerts from one shared inventory workspace.'}
+          className="w-full"
+        />
+      </div>
+
+      <div className="sm:hidden px-4 pt-5">
+        <div className="rounded-[1.75rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+            {isFrench ? 'Inventaire' : 'Inventory'}
+          </p>
+          <h1 className="mt-2 text-2xl font-bold text-slate-900">
+            {isFrench ? "Gestion de l'inventaire" : 'Inventory Management'}
+          </h1>
+        </div>
+      </div>
 
       {/* Mobile-first Tab Navigation */}
       <div className="sticky top-0 z-40 bg-white/90 backdrop-blur-sm">
         <div className="px-4 py-4 sm:px-6 lg:px-8">
-          {/* Mobile Tab Selector */}
           <div className="sm:hidden">
-            <select
-              value={activeTab}
-              onChange={(e) => handleNavigation(e.target.value)}
-              className="block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-violet-200"
+            <AdminMobileStatsRow
+              className=""
+              contentClassName="flex gap-3"
+              itemClassName="min-w-max flex-none"
             >
-              {tabs.map((tab) => (
-                <option key={tab.id} value={tab.id}>
-                  {tab.name}
-                </option>
-              ))}
-            </select>
+              {tabs.map((tab) => {
+                const Icon = tab.icon;
+                const isActive = activeTab === tab.id;
+
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => handleNavigation(tab.id)}
+                    className={`group inline-flex items-center rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
+                      isActive
+                        ? 'bg-violet-600 text-white shadow-sm'
+                        : 'border border-slate-200 bg-white text-slate-600 hover:border-violet-200 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <Icon className={`-ml-0.5 mr-2 h-4 w-4 transition-colors ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-slate-600'}`} />
+                    {tab.name}
+                  </button>
+                );
+              })}
+            </AdminMobileStatsRow>
           </div>
 
           {/* Desktop Tab Navigation */}

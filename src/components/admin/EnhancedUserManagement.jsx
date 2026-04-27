@@ -9,10 +9,12 @@ import UserFormModal from './UserFormModal';
 import DeleteUserModal from './DeleteUserModal';
 import EditUserModal from './EditUserModal';
 import CredentialsDisplayModal from './CredentialsDisplayModal';
+import { useAuth } from '../../contexts/AuthContext';
 
 const EnhancedUserManagement = () => {
   const { t } = useTranslation();
   const { user: currentUser } = useSelector(state => state.auth);
+  const { hasPermission } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -241,7 +243,7 @@ const EnhancedUserManagement = () => {
     }
   };
 
-  const canManageUsers = currentUser?.role === 'owner' || currentUser?.role === 'admin';
+  const canManageUsers = hasPermission('User & Role Management');
 
   if (loading) {
     return (

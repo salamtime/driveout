@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "qa:rental-thread": "node scripts/run-rental-thread-qa.mjs",
+    "qa:rental-live": "playwright test tests/playwright/rental-thread-live.spec.js",
+    "deploy:production": "node scripts/deploy-production.mjs",
     "translations:build": "node scripts/build-translation-catalog.mjs",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
@@ -75,6 +78,7 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.19",
     "dotenv": "^16.4.5",

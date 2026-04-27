@@ -10,6 +10,7 @@ import CustomerService from '../../services/EnhancedUnifiedCustomerService';
 import { getCustomerRentalHistory } from '../../services/EnhancedUnifiedCustomerService';
 import { uploadCustomerDocument } from '../../utils/storageUpload';
 import i18n from '../../i18n';
+import { mergeCustomerScanHistory } from '../../utils/customerIdentity';
 
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
@@ -128,6 +129,28 @@ const ViewCustomerDetailsDrawer = ({
   const fileInputRef = useRef(null);
   const isSecondDriverOnlyView = viewMode === 'drivers';
 
+  const dedupeUrls = (values = [], primaryImage = null) => {
+    const normalizeDocumentUrl = (value) => {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      try {
+        const parsed = new URL(raw, window.location.origin);
+        return `${parsed.origin}${parsed.pathname}`;
+      } catch {
+        return raw.split('?')[0].split('#')[0].trim();
+      }
+    };
+
+    const normalizedPrimary = normalizeDocumentUrl(primaryImage);
+    return mergeCustomerScanHistory(values)
+      .map((value) => ({
+        raw: String(value || '').trim(),
+        normalized: normalizeDocumentUrl(value),
+      }))
+      .filter((entry) => entry.raw && entry.normalized && entry.normalized !== normalizedPrimary)
+      .map((entry) => entry.raw);
+  };
+
   useEffect(() => {
     if (isOpen && (rental || customerId || isSecondDriverOnlyView)) {
       loadCustomerData();
@@ -203,6 +226,11 @@ const ViewCustomerDetailsDrawer = ({
       // When a live customer profile exists, prefer its current fields and only
       // fall back to the rental snapshot for anything missing.
       if (rental) {
+        const mergedScanHistory = dedupeUrls([
+          ...(Array.isArray(customerProfile?.scan_metadata?.id_scan_history) ? customerProfile.scan_metadata.id_scan_history : []),
+          ...(Array.isArray(rental?.customer_id_scan_history) ? rental.customer_id_scan_history : []),
+        ], customerProfile?.id_scan_url || rental.customer_id_image);
+
         dataToShow = {
           id: rental.customer_id || targetCustomerId,
           isRentalBased: true,
@@ -211,7 +239,11 @@ const ViewCustomerDetailsDrawer = ({
           phone: customerProfile?.phone || rental.customer_phone || rental.phone || '',
           address: customerProfile?.address || rental.customer_address || rental.address || '',
           licence_number: customerProfile?.licence_number || rental.customer_licence_number || rental.licence_number || '',
+          id_number: customerProfile?.id_number || rental.customer_id_number || rental.id_number || '',
+          date_of_birth: customerProfile?.date_of_birth || rental.customer_dob || rental.date_of_birth || '',
+          place_of_birth: customerProfile?.place_of_birth || rental.customer_place_of_birth || rental.place_of_birth || '',
           nationality: customerProfile?.nationality || rental.customer_nationality || rental.nationality || '',
+          issue_date: customerProfile?.issue_date || rental.customer_issue_date || rental.issue_date || '',
           created_at: rental.created_at || new Date().toISOString(),
           customer_id_image: customerProfile?.customer_id_image || rental.customer_id_image,
           id_scan_url: customerProfile?.id_scan_url || rental.customer?.id_scan_url,
@@ -221,6 +253,10 @@ const ViewCustomerDetailsDrawer = ({
           ban_note: customerProfile?.scan_metadata?.ban_note || '',
           has_active_alert_note: Boolean(customerProfile?.scan_metadata?.show_admin_note_alert),
           active_alert_note: customerProfile?.scan_metadata?.admin_note || '',
+          scan_metadata: {
+            ...(customerProfile?.scan_metadata || {}),
+            id_scan_history: mergedScanHistory,
+          },
         };
         
         // Store customer profile data separately for reference
@@ -398,8 +434,23 @@ const ViewCustomerDetailsDrawer = ({
   const idScanUrl = customerData?.id_scan_url;
   const customerIdImage = customerData?.customer_id_image;
   const extraImages = customerData?.extra_images || [];
-  const customerIdScans = [...new Set([idScanUrl, customerIdImage].filter(Boolean).map((url) => String(url).trim()))]
-    .map((url) => ({ url, label: '' }));
+  const customerScanHistory = Array.isArray(customerData?.scan_metadata?.id_scan_history)
+    ? customerData.scan_metadata.id_scan_history
+    : [];
+  const customerIdScans = [
+    ...new Set(
+      [idScanUrl, customerIdImage, ...(Array.isArray(customerData?.customer_id_scan_history) ? customerData.customer_id_scan_history : []), ...customerScanHistory]
+        .filter(Boolean)
+        .map((url) => String(url).trim().split('?')[0].split('#')[0])
+    ),
+  ].map((url, index) => ({
+    url,
+    label: index === 0
+      ? tr('ID Scan', "Scan d'identité")
+      : index === 1
+        ? tr('Secondary ID', 'Pièce secondaire')
+        : tr(`Additional ID ${index}`, `Pièce supplémentaire ${index}`),
+  }));
   const sectionCardClass = 'rounded-[24px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]';
   const sectionTitleIconClass = 'h-4 w-4 mr-2 text-violet-600';
 
@@ -568,12 +619,44 @@ const ViewCustomerDetailsDrawer = ({
                   </div>
                   <div className="flex items-start">
                       <div className="w-28 flex-shrink-0 flex items-center">
+                          <FileText className="h-4 w-4 text-gray-400 mr-2" />
+                          <span className="text-sm text-gray-500">{tr('ID Number:', 'N° ID :')}</span>
+                      </div>
+                      <span className="text-sm text-gray-900 break-words">{customerData?.id_number ?? tr('N/A', 'N/D')}</span>
+                  </div>
+                  <div className="flex items-start">
+                      <div className="w-28 flex-shrink-0 flex items-center">
+                          <Calendar className="h-4 w-4 text-gray-400 mr-2" />
+                          <span className="text-sm text-gray-500">{tr('Birth Date:', 'Naissance :')}</span>
+                      </div>
+                      <span className="text-sm text-gray-900 break-words">{customerData?.date_of_birth ? formatDate(customerData.date_of_birth) : tr('N/A', 'N/D')}</span>
+                  </div>
+                  <div className="flex items-start">
+                      <div className="w-28 flex-shrink-0 flex items-center">
+                          <MapPin className="h-4 w-4 text-gray-400 mr-2" />
+                          <span className="text-sm text-gray-500">{tr('Birth Place:', 'Lieu de naissance :')}</span>
+                      </div>
+                      <span className="text-sm text-gray-900 break-words">{customerData?.place_of_birth ?? tr('N/A', 'N/D')}</span>
+                  </div>
+                  <div className="flex items-start">
+                      <div className="w-28 flex-shrink-0 flex items-center">
                           <MapPin className="h-4 w-4 text-gray-400 mr-2" />
                           <span className="text-sm text-gray-500">{tr('Nationality:', 'Nationalité :')}</span>
                       </div>
                       <span className="text-sm text-gray-900 break-words">{customerData?.nationality ?? tr('N/A', 'N/D')}</span>
                   </div>
                 </div>
+                {customerData?.id && (
+                  <div className="mt-4 border-t border-violet-100 pt-4">
+                    <Link
+                      to={`/admin/customers/${customerData.id}`}
+                      className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition-colors hover:bg-violet-100"
+                    >
+                      <Eye className="h-4 w-4" />
+                      {tr('Open Customer Management', 'Ouvrir la gestion client')}
+                    </Link>
+                  </div>
+                )}
               </div>
               )}
 

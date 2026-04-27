@@ -8,6 +8,8 @@ import {
   deleteTourPackage,
   fetchTourPackages,
   updateTourPackage,
+  updateTourPackageMedia,
+  updateTourPackageRoadmap,
 } from '../../../services/tourPackageService';
 import {
   fetchTourPackageModelPrices,
@@ -18,6 +20,7 @@ import {
 import TourPackagePricingManager from './TourPackagePricingManager';
 import VehicleModelPricingService from '../../../services/VehicleModelPricingService';
 import { uploadFile } from '../../../utils/storageUpload';
+import { supabase } from '../../../utils/supabaseClient';
 
 const TOUR_PACKAGE_RULES_MARKER = '[tour_package_rules]';
 
@@ -27,7 +30,7 @@ const defaultPackageRules = {
   maxQuads: 5,
   bufferBeforeMinutes: 15,
   bufferAfterMinutes: 30,
-  websiteVisible: false,
+  websiteVisible: true,
   publicPresentation: {
     publicTitle: '',
     publicSummary: '',
@@ -58,7 +61,7 @@ const initialPackageForm = {
   maxQuads: 5,
   bufferBeforeMinutes: 15,
   bufferAfterMinutes: 30,
-  websiteVisible: false,
+  websiteVisible: true,
   publicTitle: '',
   publicSummary: '',
   routeLabel: '',
@@ -74,12 +77,18 @@ const initialPackageForm = {
 
 const PACKAGE_DURATION_OPTIONS = [1, 1.5, 2];
 const PACKAGE_CAPACITY_OPTIONS = [1, 2, 3, 4, 5, 6];
-const DEFAULT_CUSTOM_PACKAGE_DURATION = '3';
 const DEFAULT_CUSTOM_PACKAGE_CAPACITY = '7';
 const MAX_PUBLIC_TOUR_MEDIA_ITEMS = 9;
+const ROADMAP_STOP_KIND_OPTIONS = [
+  { id: 'start', label: 'Start' },
+  { id: 'drive', label: 'Drive' },
+  { id: 'stop', label: 'Stop' },
+  { id: 'end', label: 'End' },
+  { id: 'note', label: 'Note' },
+];
 const EDITOR_TABS = [
   { id: 'details', label: 'Details', icon: Package2 },
-  { id: 'website', label: 'Website & media', icon: ImageIcon },
+  { id: 'website', label: 'Media & roadmap', icon: ImageIcon },
   { id: 'pricing', label: 'Pricing', icon: Route },
   { id: 'advanced', label: 'Advanced', icon: Settings2 },
 ];
@@ -121,25 +130,35 @@ const safeInteger = (value, fallback = 0) => {
 
 const presentationId = (prefix, index) => `${prefix}_${Date.now()}_${index}`;
 
+const normalizeStopMedia = (items = []) =>
+  normalizeMediaGallery(items).slice(0, 3);
+
 const normalizeRouteStops = (stops = []) => (Array.isArray(stops) ? stops : [])
   .map((stop, index) => {
     const item = typeof stop === 'object' && stop !== null ? stop : {};
     const title = clampText(item.title, 90);
     const note = clampText(item.note, 180);
-    if (!title && !note) return null;
+    const media = normalizeStopMedia(item.media || item.mediaGallery || item.media_gallery_json || []);
+    const durationMinutes = Math.max(0, safeInteger(item.duration_minutes, 0));
+    if (!title && !note && media.length === 0 && durationMinutes === 0) return null;
     return {
       id: clampText(item.id, 64) || `stop_${index + 1}`,
       kind: ['start', 'drive', 'stop', 'end', 'note'].includes(String(item.kind || item.type || '').toLowerCase())
         ? String(item.kind || item.type).toLowerCase()
         : 'stop',
       title,
-      duration_minutes: Math.max(0, safeInteger(item.duration_minutes, 0)),
+      duration_minutes: durationMinutes,
       note,
+      media,
       sort_order: safeInteger(item.sort_order, index + 1),
     };
   })
   .filter(Boolean)
-  .sort((left, right) => left.sort_order - right.sort_order);
+  .sort((left, right) => left.sort_order - right.sort_order)
+  .map((item, index) => ({
+    ...item,
+    sort_order: index + 1,
+  }));
 
 const normalizeMediaGallery = (items = []) => (Array.isArray(items) ? items : [])
   .map((media, index) => {
@@ -158,7 +177,11 @@ const normalizeMediaGallery = (items = []) => (Array.isArray(items) ? items : []
     };
   })
   .filter(Boolean)
-  .sort((left, right) => left.sort_order - right.sort_order);
+  .sort((left, right) => left.sort_order - right.sort_order)
+  .map((item, index) => ({
+    ...item,
+    sort_order: index + 1,
+  }));
 
 const normalizeHighlights = (items = []) => (Array.isArray(items) ? items : [])
   .map((highlight, index) => {
@@ -178,6 +201,7 @@ const createRouteStop = (index = 0) => ({
   title: '',
   duration_minutes: 0,
   note: '',
+  media: [],
   sort_order: index + 1,
 });
 
@@ -195,6 +219,9 @@ const createMediaItem = (index = 0, type = 'image') => ({
 const getPreviewMediaItems = (pkg = {}, limit = 3) => {
   const coverImageUrl = String(pkg.coverImageUrl || '').trim();
   const galleryItems = Array.isArray(pkg.mediaGallery) ? pkg.mediaGallery : [];
+  if (galleryItems.length === 0) {
+    return [];
+  }
   const coverGalleryItem = galleryItems.find((item) => {
     const itemUrl = String(item?.url || '').trim();
     const itemThumbnail = String(item?.thumbnailUrl || item?.thumbnail_url || '').trim();
@@ -226,6 +253,90 @@ const getPreviewMediaItems = (pkg = {}, limit = 3) => {
     .slice(0, limit);
 
   return media;
+};
+
+const resolveCoverAfterMediaChange = (gallery = [], currentCover = '') => {
+  const coverCandidate = String(currentCover || '').trim();
+  if (!coverCandidate) {
+    const first = gallery[0];
+    return String(first?.thumbnailUrl || first?.url || '').trim();
+  }
+
+  const coverStillExists = gallery.some((item) => {
+    const url = String(item?.url || '').trim();
+    const thumb = String(item?.thumbnailUrl || item?.thumbnail_url || '').trim();
+    return Boolean(coverCandidate && (coverCandidate === url || coverCandidate === thumb));
+  });
+
+  if (coverStillExists) return coverCandidate;
+
+  const first = gallery[0];
+  return String(first?.thumbnailUrl || first?.url || '').trim();
+};
+
+const buildMediaMatchSet = (media = {}) => {
+  const candidates = [
+    media?.id,
+    media?.url,
+    media?.thumbnailUrl,
+    media?.thumbnail_url,
+    media?.previewUrl,
+  ];
+  return new Set(candidates.map((value) => String(value || '').trim()).filter(Boolean));
+};
+
+const mediaMatchesTarget = (media = {}, target = {}) => {
+  const mediaId = String(media?.id || '').trim();
+  const targetId = String(target?.id || '').trim();
+  if (mediaId && targetId && mediaId === targetId) return true;
+  const mediaSet = buildMediaMatchSet(media);
+  const targetSet = buildMediaMatchSet(target);
+  for (const value of mediaSet) {
+    if (targetSet.has(value)) return true;
+  }
+  return false;
+};
+
+const STORAGE_URL_MARKER = '/storage/v1/object/public/';
+
+const parseStorageTargetFromUrl = (url) => {
+  if (!url || typeof url !== 'string') return null;
+  const markerIndex = url.indexOf(STORAGE_URL_MARKER);
+  if (markerIndex === -1) return null;
+  const storagePath = url.slice(markerIndex + STORAGE_URL_MARKER.length);
+  const firstSlash = storagePath.indexOf('/');
+  if (firstSlash === -1) return null;
+  const bucket = storagePath.slice(0, firstSlash);
+  const path = decodeURIComponent(storagePath.slice(firstSlash + 1));
+  if (!bucket || !path) return null;
+  return { bucket, path };
+};
+
+const extractMediaStorageTargets = (media = {}) => {
+  const targets = [];
+  const seen = new Set();
+  [media.url, media.thumbnailUrl, media.thumbnail_url, media.previewUrl].forEach((value) => {
+    const target = parseStorageTargetFromUrl(String(value || '').trim());
+    if (!target) return;
+    const key = `${target.bucket}:${target.path}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(target);
+  });
+  return targets;
+};
+
+const removeMediaFromStorage = async (media = {}) => {
+  const targets = extractMediaStorageTargets(media);
+  if (targets.length === 0) return;
+  await Promise.all(
+    targets.map(async (target) => {
+      const { error } = await supabase.storage.from(target.bucket).remove([target.path]);
+      if (error) {
+        console.warn('Failed to remove media from storage:', error);
+      }
+    })
+  );
 };
 
 const slugifyUploadSegment = (value = 'tour-package') => {
@@ -263,6 +374,9 @@ const moveItem = (items = [], index, direction) => {
   return next.map((item, itemIndex) => ({ ...item, sort_order: itemIndex + 1 }));
 };
 
+const moveStopMediaItem = (items = [], index, direction) =>
+  moveItem(normalizeStopMedia(items), index, direction).slice(0, 3);
+
 const formatDurationLabel = (value) => {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric) || numeric <= 0) return '0h';
@@ -297,6 +411,17 @@ const normalizePackage = (pkg) => {
     ...defaultPackageRules.publicPresentation,
     ...(rules.publicPresentation || {}),
   };
+  const resolvedRouteStops = Array.isArray(pkg.route_stops_json) && pkg.route_stops_json.length > 0
+    ? pkg.route_stops_json
+    : (Array.isArray(publicPresentation.routeStops) && publicPresentation.routeStops.length > 0
+      ? publicPresentation.routeStops
+      : (pkg.routeStops || []));
+  const resolvedMediaGallery = Array.isArray(publicPresentation.mediaGallery) && publicPresentation.mediaGallery.length > 0
+    ? publicPresentation.mediaGallery
+    : (pkg.mediaGallery || pkg.media_gallery_json || []);
+  const resolvedHighlights = Array.isArray(publicPresentation.publicHighlights) && publicPresentation.publicHighlights.length > 0
+    ? publicPresentation.publicHighlights
+    : (pkg.publicHighlights || pkg.public_highlights_json || []);
   const cleanDescription = stripMarkedJson(pkg.description, TOUR_PACKAGE_RULES_MARKER);
 
   return {
@@ -311,18 +436,21 @@ const normalizePackage = (pkg) => {
     publicTitle: String(pkg.publicTitle || pkg.public_title || publicPresentation.publicTitle || '').trim(),
     publicSummary: String(pkg.publicSummary || pkg.public_summary || publicPresentation.publicSummary || '').trim(),
     routeLabel: String(pkg.routeLabel || pkg.route_label || publicPresentation.routeLabel || '').trim(),
-    routeStops: normalizeRouteStops(Array.isArray(pkg.routeStops || pkg.route_stops_json) ? (pkg.routeStops || pkg.route_stops_json) : (publicPresentation.routeStops || [])),
-    mediaGallery: normalizeMediaGallery(Array.isArray(pkg.mediaGallery || pkg.media_gallery_json) ? (pkg.mediaGallery || pkg.media_gallery_json) : (publicPresentation.mediaGallery || [])),
-    publicHighlights: normalizeHighlights(Array.isArray(pkg.publicHighlights || pkg.public_highlights_json) ? (pkg.publicHighlights || pkg.public_highlights_json) : (publicPresentation.publicHighlights || [])),
+    routeStops: normalizeRouteStops(resolvedRouteStops),
+    mediaGallery: normalizeMediaGallery(resolvedMediaGallery),
+    publicHighlights: normalizeHighlights(resolvedHighlights),
     displayOrder: Number(pkg.displayOrder || pkg.display_order || publicPresentation.displayOrder || 0),
-    coverImageUrl: String(pkg.coverImageUrl || pkg.cover_image_url || publicPresentation.coverImageUrl || '').trim(),
+    coverImageUrl: String(publicPresentation.coverImageUrl || pkg.coverImageUrl || pkg.cover_image_url || '').trim(),
     durationDisplay: String(pkg.durationDisplay || pkg.duration_display || publicPresentation.durationDisplay || '').trim(),
     stopCount: Number(pkg.stopCount ?? pkg.stop_count ?? publicPresentation.stopCount ?? 0) || 0,
-    difficultyLabel: String(pkg.difficultyLabel || pkg.difficulty_label || publicPresentation.difficultyLabel || '').trim(),
+    difficultyLabel: normalizeDifficultyLabel(pkg.difficultyLabel || publicPresentation.difficultyLabel || pkg.difficulty_label || ''),
   };
 };
 
 const buildPackagePayload = (formData) => {
+  const normalizedStops = normalizeRouteStops(formData.routeStops);
+  const normalizedHighlights = normalizeHighlights(formData.publicHighlights).slice(0, 6);
+  const stopCount = normalizedStops.length;
   const rules = {
     routeType: formData.routeType,
     requiresLicense: formData.requiresLicense,
@@ -334,14 +462,14 @@ const buildPackagePayload = (formData) => {
       publicTitle: String(formData.publicTitle || '').trim(),
       publicSummary: String(formData.publicSummary || '').trim(),
       routeLabel: String(formData.routeLabel || '').trim(),
-      routeStops: normalizeRouteStops(formData.routeStops),
+      routeStops: normalizedStops,
       mediaGallery: normalizeMediaGallery(formData.mediaGallery).slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS),
-      publicHighlights: normalizeHighlights(formData.publicHighlights).slice(0, 6),
+      publicHighlights: normalizedHighlights,
       displayOrder: Number(formData.displayOrder) || 0,
       coverImageUrl: String(formData.coverImageUrl || '').trim(),
       durationDisplay: String(formData.durationDisplay || '').trim(),
-      stopCount: Number(formData.stopCount) || normalizeRouteStops(formData.routeStops).length,
-      difficultyLabel: String(formData.difficultyLabel || '').trim(),
+      stopCount,
+      difficultyLabel: normalizeDifficultyLabel(formData.difficultyLabel),
     },
   };
 
@@ -364,18 +492,28 @@ const buildPackagePayload = (formData) => {
     publicTitle: String(formData.publicTitle || '').trim(),
     publicSummary: String(formData.publicSummary || '').trim(),
     routeLabel: String(formData.routeLabel || '').trim(),
-    routeStops: normalizeRouteStops(formData.routeStops),
+    routeStops: normalizedStops,
     mediaGallery: normalizeMediaGallery(formData.mediaGallery).slice(0, MAX_PUBLIC_TOUR_MEDIA_ITEMS),
-    publicHighlights: normalizeHighlights(formData.publicHighlights).slice(0, 6),
+    publicHighlights: normalizedHighlights,
     displayOrder: Number(formData.displayOrder) || 0,
     coverImageUrl: String(formData.coverImageUrl || '').trim(),
     durationDisplay: String(formData.durationDisplay || '').trim(),
-    stopCount: Number(formData.stopCount) || normalizeRouteStops(formData.routeStops).length,
-    difficultyLabel: String(formData.difficultyLabel || '').trim(),
+    stopCount,
+    difficultyLabel: normalizeDifficultyLabel(formData.difficultyLabel),
   };
 };
 
 const getLegacyPackagePricingBadge = () => 'Set pricing';
+
+const normalizeDifficultyLabel = (value = '') => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const lowered = raw.toLowerCase();
+  if (lowered.startsWith('easy')) return 'Easy';
+  if (lowered.startsWith('medium') || lowered.startsWith('med')) return 'Medium';
+  if (lowered.startsWith('difficult') || lowered.startsWith('hard')) return 'Difficult';
+  return raw;
+};
 
 const hasTourPricingRows = (rows = [], packageId) =>
   rows.some((row) =>
@@ -383,22 +521,49 @@ const hasTourPricingRows = (rows = [], packageId) =>
     (String(row?.package_id) === String(packageId) || String(row?.package_id) === GLOBAL_TOUR_PRICING_KEY)
   );
 
-const packageToForm = (pkg) => ({
-  ...initialPackageForm,
-  ...pkg,
-  duration: normalizeFlexibleDuration(pkg.duration) || 1,
-  publicTitle: pkg.publicTitle || '',
-  publicSummary: pkg.publicSummary || '',
-  routeLabel: pkg.routeLabel || '',
-  routeStops: normalizeRouteStops(pkg.routeStops),
-  mediaGallery: normalizeMediaGallery(pkg.mediaGallery),
-  publicHighlights: normalizeHighlights(pkg.publicHighlights),
-  displayOrder: Number(pkg.displayOrder || 0),
-  coverImageUrl: pkg.coverImageUrl || '',
-  durationDisplay: pkg.durationDisplay || '',
-  stopCount: Number(pkg.stopCount || 0),
-  difficultyLabel: pkg.difficultyLabel || '',
-});
+const packageToForm = (pkg) => {
+  const normalizedGallery = normalizeMediaGallery(pkg.mediaGallery);
+  const rawCover = String(pkg.coverImageUrl || '').trim();
+  const coverStillExists = normalizedGallery.some((item) => {
+    const url = String(item?.url || '').trim();
+    const thumb = String(item?.thumbnailUrl || item?.thumbnail_url || '').trim();
+    return Boolean(rawCover && (rawCover === url || rawCover === thumb));
+  });
+  const resolvedCover = coverStillExists
+    ? rawCover
+    : String(
+      normalizedGallery[0]?.thumbnailUrl ||
+      normalizedGallery[0]?.thumbnail_url ||
+      normalizedGallery[0]?.url ||
+      ''
+    ).trim();
+
+  return {
+    ...initialPackageForm,
+    ...pkg,
+    duration: normalizeFlexibleDuration(pkg.duration) || 1,
+    publicTitle: pkg.publicTitle || '',
+    publicSummary: pkg.publicSummary || '',
+    routeLabel: pkg.routeLabel || '',
+    routeStops: normalizeRouteStops(pkg.routeStops),
+    mediaGallery: normalizedGallery,
+    publicHighlights: normalizeHighlights(pkg.publicHighlights),
+    displayOrder: Number(pkg.displayOrder || 0),
+    coverImageUrl: resolvedCover,
+    durationDisplay: pkg.durationDisplay || '',
+    stopCount: Number(pkg.stopCount || 0),
+    difficultyLabel: normalizeDifficultyLabel(pkg.difficultyLabel),
+  };
+};
+
+const createPackageSaveSignature = (formData = initialPackageForm) => {
+  try {
+    return JSON.stringify(buildPackagePayload(formData));
+  } catch (error) {
+    console.warn('Failed to build package save signature:', error);
+    return '';
+  }
+};
 
 const TourPackagesWorkspace = () => {
   const { userProfile } = useAuth();
@@ -411,15 +576,30 @@ const TourPackagesWorkspace = () => {
   const [packageEditorOpen, setPackageEditorOpen] = useState(false);
   const [editingPackageId, setEditingPackageId] = useState(null);
   const [packageForm, setPackageForm] = useState(initialPackageForm);
-  const [customPackageDuration, setCustomPackageDuration] = useState(DEFAULT_CUSTOM_PACKAGE_DURATION);
   const [customPackageCapacity, setCustomPackageCapacity] = useState(DEFAULT_CUSTOM_PACKAGE_CAPACITY);
-  const [packageExtraDurations, setPackageExtraDurations] = useState([]);
   const [editorTab, setEditorTab] = useState('details');
+  const [mediaRoadmapTab, setMediaRoadmapTab] = useState('media');
+  const [showDefaultPricing, setShowDefaultPricing] = useState(false);
+  const [roadmapCollapsed, setRoadmapCollapsed] = useState(false);
+  const [roadmapSaving, setRoadmapSaving] = useState(false);
   const mediaInputRef = useRef(null);
   const [mediaUploading, setMediaUploading] = useState(false);
   const [mediaDragActive, setMediaDragActive] = useState(false);
   const [activeMediaEditorIndex, setActiveMediaEditorIndex] = useState(null);
   const [mediaResolving, setMediaResolving] = useState(false);
+  const [packageDirty, setPackageDirty] = useState(false);
+  const [lastPackageSavedAt, setLastPackageSavedAt] = useState(null);
+  const [packageSaveBounce, setPackageSaveBounce] = useState(false);
+  const [savedPackageSignature, setSavedPackageSignature] = useState(() => createPackageSaveSignature(initialPackageForm));
+  const stopMediaInputRefs = useRef({});
+  const roadmapAutosaveRef = useRef(null);
+  const embeddedAllowedDurations = useMemo(() => [packageForm.duration], [packageForm.duration]);
+  const formatSavedTime = (value) => {
+    if (!value) return '';
+    const dateValue = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(dateValue.getTime())) return '';
+    return dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
 
   const loadPackages = async () => {
     setPackagesLoading(true);
@@ -469,10 +649,41 @@ const TourPackagesWorkspace = () => {
     loadVehicleModels();
   }, []);
 
-  const packageDurationChoices = useMemo(
-    () => Array.from(new Set([...PACKAGE_DURATION_OPTIONS, ...packageExtraDurations])).sort((a, b) => a - b),
-    [packageExtraDurations]
-  );
+  useEffect(() => {
+    const nextSignature = createPackageSaveSignature(packageForm);
+    setPackageDirty(nextSignature !== savedPackageSignature);
+  }, [packageForm, savedPackageSignature]);
+
+  const updateRouteStop = (index, changes) => {
+    setPackageForm((prev) => ({
+      ...prev,
+      routeStops: prev.routeStops.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...changes } : item
+      ),
+    }));
+    setPackageDirty(true);
+  };
+
+  const getRoadmapStopKindLabel = (kind) =>
+    ROADMAP_STOP_KIND_OPTIONS.find((option) => option.id === kind)?.label || 'Stop';
+
+  const globalDurationChoices = useMemo(() => {
+    const durations = Array.from(
+      new Set(
+        tourPricingRows
+          .filter((row) => String(row?.package_id) === GLOBAL_TOUR_PRICING_KEY)
+          .map((row) => Number(row?.duration_hours))
+          .filter((value) => Number.isFinite(value) && value > 0)
+      )
+    ).sort((a, b) => a - b);
+
+    return durations.length > 0 ? durations : [...PACKAGE_DURATION_OPTIONS];
+  }, [tourPricingRows]);
+
+  const packageDurationChoices = useMemo(() => {
+    const currentDuration = normalizeFlexibleDuration(packageForm.duration) || 1;
+    return Array.from(new Set([...globalDurationChoices, currentDuration])).sort((a, b) => a - b);
+  }, [globalDurationChoices, packageForm.duration]);
 
   const selectedPackagePreview = useMemo(() => {
     if (!packageEditorOpen) return null;
@@ -582,11 +793,12 @@ const TourPackagesWorkspace = () => {
     setPackageEditorOpen(false);
     setEditingPackageId(null);
     setPackageForm(initialPackageForm);
-    setCustomPackageDuration(DEFAULT_CUSTOM_PACKAGE_DURATION);
+    setSavedPackageSignature(createPackageSaveSignature(initialPackageForm));
     setCustomPackageCapacity(DEFAULT_CUSTOM_PACKAGE_CAPACITY);
-    setPackageExtraDurations([]);
     setEditorTab('details');
+    setMediaRoadmapTab('media');
     setActiveMediaEditorIndex(null);
+    setRoadmapCollapsed(false);
   };
 
   const handleOpenPackageEditor = (pkg = null) => {
@@ -597,27 +809,34 @@ const TourPackagesWorkspace = () => {
 
     if (pkg) {
       const normalizedDuration = normalizeFlexibleDuration(pkg.duration) || 1;
-      setPackageForm(packageToForm({ ...pkg, duration: normalizedDuration }));
-      setCustomPackageDuration(String(normalizedDuration || DEFAULT_CUSTOM_PACKAGE_DURATION));
+      const nextForm = packageToForm({ ...pkg, duration: normalizedDuration });
+      setPackageForm(nextForm);
+      setSavedPackageSignature(createPackageSaveSignature(nextForm));
       setCustomPackageCapacity(String(Number(pkg.maxQuads || 5)));
-      setPackageExtraDurations(PACKAGE_DURATION_OPTIONS.includes(normalizedDuration) ? [] : [normalizedDuration]);
       setEditingPackageId(pkg.id);
+      setLastPackageSavedAt(pkg.updatedAt ? new Date(pkg.updatedAt) : null);
     } else {
       setPackageForm(initialPackageForm);
-      setCustomPackageDuration(DEFAULT_CUSTOM_PACKAGE_DURATION);
+      setSavedPackageSignature(createPackageSaveSignature(initialPackageForm));
       setCustomPackageCapacity(DEFAULT_CUSTOM_PACKAGE_CAPACITY);
-      setPackageExtraDurations([]);
       setEditingPackageId(null);
+      setLastPackageSavedAt(null);
     }
 
     setEditorTab('details');
+    setMediaRoadmapTab('media');
     setActiveMediaEditorIndex(null);
+    setRoadmapCollapsed(false);
     setPackageEditorOpen(true);
   };
 
   const handleSavePackage = async () => {
     if (!canManagePackages) {
       toast.error('Only admin or owner can create or update tour packages');
+      return;
+    }
+    if (editingPackageId && !packageDirty) {
+      toast.success('All changes are already saved');
       return;
     }
     if (!packageForm.name.trim()) {
@@ -638,24 +857,30 @@ const TourPackagesWorkspace = () => {
 
     const savedPackage = result?.data ? normalizePackage(result.data) : null;
     if (savedPackage) {
+      const optimisticPackage = {
+        ...savedPackage,
+        mediaGallery: normalizeMediaGallery(packageForm.mediaGallery || []),
+        coverImageUrl: String(packageForm.coverImageUrl || '').trim(),
+      };
       setPackages((prev) => {
         const withoutCurrent = prev.filter((pkg) => String(pkg.id) !== String(savedPackage.id));
-        return [savedPackage, ...withoutCurrent].sort((a, b) =>
+        return [optimisticPackage, ...withoutCurrent].sort((a, b) =>
           String(a.name || '').localeCompare(String(b.name || ''))
         );
       });
       setEditingPackageId(savedPackage.id);
       setPackageForm({
-        ...packageToForm(savedPackage),
+        ...packageToForm(optimisticPackage),
         duration: normalizeFlexibleDuration(savedPackage.duration) || 1,
       });
-      setCustomPackageDuration(String(normalizeFlexibleDuration(savedPackage.duration) || DEFAULT_CUSTOM_PACKAGE_DURATION));
       setCustomPackageCapacity(String(Number(savedPackage.maxQuads || 5)));
-      setPackageExtraDurations(
-        PACKAGE_DURATION_OPTIONS.includes(normalizeFlexibleDuration(savedPackage.duration) || 1)
-          ? []
-          : [normalizeFlexibleDuration(savedPackage.duration) || 1]
-      );
+      setSavedPackageSignature(createPackageSaveSignature({
+        ...packageToForm(optimisticPackage),
+        duration: normalizeFlexibleDuration(savedPackage.duration) || 1,
+      }));
+      setLastPackageSavedAt(new Date());
+      setPackageSaveBounce(true);
+      window.setTimeout(() => setPackageSaveBounce(false), 460);
     }
 
     toast.success(editingPackageId ? 'Package updated' : 'Package created');
@@ -663,7 +888,7 @@ const TourPackagesWorkspace = () => {
     if (!editingPackageId) {
       setEditorTab('pricing');
     }
-    await loadPackages();
+    // Avoid overwriting fresh local media with stale cached data.
   };
 
   const persistPackageForm = async (nextForm, successMessage = 'Package updated') => {
@@ -677,18 +902,118 @@ const TourPackagesWorkspace = () => {
 
     const savedPackage = result?.data ? normalizePackage(result.data) : null;
     if (savedPackage) {
+      const optimisticPackage = {
+        ...savedPackage,
+        mediaGallery: normalizeMediaGallery(nextForm.mediaGallery || []),
+        coverImageUrl: String(nextForm.coverImageUrl || '').trim(),
+      };
       setPackages((prev) => {
         const withoutCurrent = prev.filter((pkg) => String(pkg.id) !== String(savedPackage.id));
-        return [savedPackage, ...withoutCurrent].sort((a, b) =>
+        return [optimisticPackage, ...withoutCurrent].sort((a, b) =>
+          String(a.name || '').localeCompare(String(b.name || ''))
+        );
+      });
+      setEditingPackageId(savedPackage.id);
+      setPackageForm(nextForm);
+      setSavedPackageSignature(createPackageSaveSignature(nextForm));
+      setLastPackageSavedAt(new Date());
+      toast.success(successMessage);
+    }
+
+    return savedPackage;
+  };
+
+  const persistPackageMedia = async (nextForm, successMessage = 'Media updated') => {
+    if (!editingPackageId) return null;
+
+    const payloadMedia = normalizeMediaGallery(nextForm.mediaGallery || []);
+    const payloadCover = String(nextForm.coverImageUrl || '').trim();
+    const result = await updateTourPackageMedia(editingPackageId, payloadMedia, payloadCover);
+    if (result.error) {
+      throw result.error;
+    }
+
+    const savedPackage = result?.data ? normalizePackage(result.data) : null;
+    if (savedPackage) {
+      const optimisticPackage = {
+        ...savedPackage,
+        mediaGallery: normalizeMediaGallery(nextForm.mediaGallery || []),
+        coverImageUrl: String(nextForm.coverImageUrl || '').trim(),
+      };
+      setPackages((prev) => {
+        const withoutCurrent = prev.filter((pkg) => String(pkg.id) !== String(savedPackage.id));
+        return [optimisticPackage, ...withoutCurrent].sort((a, b) =>
+          String(a.name || '').localeCompare(String(b.name || ''))
+        );
+      });
+      setEditingPackageId(savedPackage.id);
+      setPackageForm(nextForm);
+      setSavedPackageSignature(createPackageSaveSignature(nextForm));
+      toast.success(successMessage);
+    }
+
+    return savedPackage;
+  };
+
+  const persistPackageRoadmap = async (nextForm, successMessage = 'Roadmap updated') => {
+    if (!editingPackageId) return null;
+    if (roadmapSaving) return null;
+
+    const normalizedStops = normalizeRouteStops(Array.isArray(nextForm.routeStops) ? nextForm.routeStops : []);
+    let savedPackage = null;
+
+    setRoadmapSaving(true);
+    try {
+      try {
+        const roadmapResult = await updateTourPackageRoadmap(editingPackageId, normalizedStops);
+        savedPackage = roadmapResult?.data ? normalizePackage(roadmapResult.data) : null;
+      } catch (error) {
+        console.warn('Roadmap update failed, retrying with full payload:', error);
+      }
+
+      if (!savedPackage) {
+        const fallbackPayload = buildPackagePayload({
+          ...nextForm,
+          routeStops: normalizedStops,
+          stopCount: normalizedStops.length,
+        });
+        const fallbackResult = await updateTourPackage(editingPackageId, fallbackPayload);
+        savedPackage = fallbackResult?.data ? normalizePackage(fallbackResult.data) : null;
+      }
+
+      if (!savedPackage) {
+        throw new Error('Roadmap did not persist. Please retry.');
+      }
+
+      const optimisticPackage = {
+        ...savedPackage,
+        routeStops: normalizedStops.length > 0 ? normalizedStops : savedPackage.routeStops,
+        stopCount: normalizedStops.length > 0 ? normalizedStops.length : savedPackage.stopCount || 0,
+        mediaGallery: normalizeMediaGallery(nextForm.mediaGallery || []),
+        coverImageUrl: String(nextForm.coverImageUrl || '').trim(),
+      };
+      setPackages((prev) => {
+        const withoutCurrent = prev.filter((pkg) => String(pkg.id) !== String(savedPackage.id));
+        return [optimisticPackage, ...withoutCurrent].sort((a, b) =>
           String(a.name || '').localeCompare(String(b.name || ''))
         );
       });
       setEditingPackageId(savedPackage.id);
       setPackageForm({
-        ...packageToForm(savedPackage),
-        duration: normalizeFlexibleDuration(savedPackage.duration) || 1,
+        ...packageToForm(optimisticPackage),
+        routeStops: normalizedStops.length > 0 ? normalizedStops : packageToForm(optimisticPackage).routeStops,
+        stopCount: normalizedStops.length > 0 ? normalizedStops.length : optimisticPackage.stopCount || 0,
       });
-      toast.success(successMessage);
+      setSavedPackageSignature(createPackageSaveSignature({
+        ...packageToForm(optimisticPackage),
+        routeStops: normalizedStops.length > 0 ? normalizedStops : packageToForm(optimisticPackage).routeStops,
+        stopCount: normalizedStops.length > 0 ? normalizedStops.length : optimisticPackage.stopCount || 0,
+      }));
+      if (successMessage) {
+        toast.success(successMessage);
+      }
+    } finally {
+      setRoadmapSaving(false);
     }
 
     return savedPackage;
@@ -727,7 +1052,7 @@ const TourPackagesWorkspace = () => {
       setMediaResolving(true);
       try {
         const saveMessage = currentItem.type === 'instagram' ? 'Instagram preview parsed' : 'Media entry saved';
-        const savedPackage = await persistPackageForm(packageForm, saveMessage);
+        const savedPackage = await persistPackageMedia(packageForm, saveMessage);
         if (savedPackage) {
           const resolvedMedia = Array.isArray(savedPackage.mediaGallery) ? savedPackage.mediaGallery : [];
           const resolvedIndex = resolvedMedia.findIndex((item) => String(item.id) === String(currentItem.id));
@@ -785,8 +1110,9 @@ const TourPackagesWorkspace = () => {
 
       for (const file of filesToUpload) {
         const mediaType = getMediaTypeFromFile(file);
+        const uploadBucket = mediaType === 'video' ? 'rental-videos' : 'vehicle-images';
         const result = await uploadFile(file, {
-          bucket: 'vehicle-images',
+          bucket: uploadBucket,
           pathPrefix: `tour-packages/${packageSegment}`,
           optimizationProfile: mediaType === 'image' ? 'photo' : null,
         });
@@ -818,7 +1144,7 @@ const TourPackagesWorkspace = () => {
       setActiveMediaEditorIndex(null);
 
       if (editingPackageId) {
-        await persistPackageForm(
+        await persistPackageMedia(
           nextForm,
           `${uploadedItems.length} media item${uploadedItems.length === 1 ? '' : 's'} imported`
         );
@@ -834,6 +1160,97 @@ const TourPackagesWorkspace = () => {
       if (mediaInputRef.current) {
         mediaInputRef.current.value = '';
       }
+    }
+  };
+
+  const handleStopMediaFiles = async (stopIndex, fileList = []) => {
+    if (mediaUploading) return;
+    if (!editingPackageId) {
+      toast.error('Save the package first before adding stop media');
+      return;
+    }
+
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (files.length === 0) return;
+
+    const supportedFiles = files.filter((file) =>
+      file?.type?.startsWith('image/') || file?.type?.startsWith('video/')
+    );
+
+    if (supportedFiles.length === 0) {
+      toast.error('Import image or video files only');
+      return;
+    }
+
+    setMediaUploading(true);
+    try {
+      const packageSegment = editingPackageId ? editingPackageId : `draft_${Date.now()}`;
+      const currentStops = packageForm.routeStops || [];
+      const targetStop = currentStops[stopIndex];
+      if (!targetStop) return;
+
+      const existingMedia = normalizeStopMedia(targetStop.media || []);
+      const availableSlots = Math.max(0, 3 - existingMedia.length);
+      if (availableSlots === 0) {
+        toast.error('Each stop can show up to 3 media items');
+        return;
+      }
+
+      const filesToUpload = supportedFiles.slice(0, availableSlots);
+      if (supportedFiles.length > filesToUpload.length) {
+        toast('Only the first 3 media items are kept for this stop');
+      }
+
+      const uploads = await Promise.all(
+        filesToUpload.map((file) =>
+          uploadFile(file, {
+            bucket: file.type?.startsWith('video/') ? 'rental-videos' : 'vehicle-images',
+            pathPrefix: `tour-packages/${packageSegment}/stops/${targetStop.id}`,
+            optimizationProfile: file.type?.startsWith('image/') ? 'photo' : null,
+          })
+        )
+      );
+
+      const newMedia = uploads
+        .filter((upload) => upload?.success && upload.url)
+        .map((upload, index) => ({
+          id: presentationId('stop_media', index),
+          type: filesToUpload[index]?.type?.startsWith('video/') ? 'video' : 'image',
+          url: upload.url,
+          thumbnailUrl: upload.url,
+          caption: '',
+          sort_order: existingMedia.length + index + 1,
+        }));
+
+      const nextStops = currentStops.map((stop, index) => {
+        if (index !== stopIndex) return stop;
+        return {
+          ...stop,
+          media: normalizeStopMedia([...(stop.media || []), ...newMedia]),
+        };
+      });
+      const nextForm = {
+        ...packageForm,
+        routeStops: nextStops,
+        stopCount: normalizeRouteStops(nextStops).length,
+      };
+
+      setPackageForm(nextForm);
+
+      try {
+        await persistPackageRoadmap(nextForm, 'Stop media saved');
+      } catch (error) {
+        console.error('Failed to save stop media:', error);
+        toast.error(error.message || 'Could not save stop media');
+        return;
+      }
+
+      toast.success('Stop media added');
+    } catch (error) {
+      console.error('Failed to upload stop media:', error);
+      toast.error(error.message || 'Could not upload stop media');
+    } finally {
+      setMediaUploading(false);
     }
   };
 
@@ -880,8 +1297,46 @@ const TourPackagesWorkspace = () => {
 
   return (
     <div className="space-y-6 rounded-[2rem] bg-slate-200/70 p-5 shadow-inner shadow-slate-300/30 sm:p-7">
-      <div className={`grid gap-6 ${packageEditorOpen ? 'xl:grid-cols-1' : 'xl:grid-cols-[340px_minmax(0,1fr)]'}`}>
-        {!packageEditorOpen && (
+      {!packageEditorOpen && (
+        <section className="rounded-[1.8rem] border border-violet-100 bg-white p-5 shadow-[0_16px_40px_rgba(15,23,42,0.08)] sm:p-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-violet-500">Default Pricing</p>
+              <h2 className="mt-2 text-2xl font-semibold text-slate-900">Default durations & model prices</h2>
+              <p className="mt-2 max-w-2xl text-sm font-medium text-slate-500">
+                Set your default tour durations and prices here. Packages will auto‑fill from these defaults so staff only pick a
+                duration and a vehicle model when creating a package.
+              </p>
+            </div>
+            <div className="flex flex-col items-start gap-2">
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-700">
+                Auto‑fill source for packages
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDefaultPricing((prev) => !prev)}
+                className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-xs font-semibold text-violet-700 transition hover:bg-violet-100"
+              >
+                {showDefaultPricing ? 'Hide defaults' : 'Show defaults'}
+              </button>
+            </div>
+          </div>
+          {showDefaultPricing && (
+            <div className="mt-5">
+              <TourPackagePricingManager
+                embedded
+                showPackagePicker={false}
+                selectedPackageId={GLOBAL_TOUR_PRICING_KEY}
+                selectedPackage={null}
+                onPricingRowsChange={setTourPricingRows}
+              />
+            </div>
+          )}
+        </section>
+      )}
+
+      <div className={`grid gap-6 ${(packageEditorOpen || showDefaultPricing) ? 'xl:grid-cols-1' : 'xl:grid-cols-[340px_minmax(0,1fr)]'}`}>
+        {!packageEditorOpen && !showDefaultPricing && (
         <section className="rounded-[1.75rem] border border-white bg-white p-4 shadow-[0_16px_40px_rgba(15,23,42,0.08)] sm:p-5">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -1122,7 +1577,7 @@ const TourPackagesWorkspace = () => {
                       onClick={() => setEditorTab('website')}
                       className="min-w-0 overflow-hidden rounded-2xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300 hover:bg-violet-50"
                     >
-                      <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-violet-500">Website</p>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-violet-500">Media & roadmap</p>
                       <p className="mt-2 text-sm font-black text-slate-900">{packageForm.websiteVisible ? 'Public' : 'Internal'}</p>
                       <p className="mt-1 text-xs font-semibold text-slate-500">{packageForm.mediaGallery.length} media item{packageForm.mediaGallery.length === 1 ? '' : 's'}</p>
                       {getPreviewMediaItems(packageForm, 3).length > 0 ? (
@@ -1147,10 +1602,21 @@ const TourPackagesWorkspace = () => {
                       ) : null}
                     </button>
                     <div className="min-w-0 rounded-xl border border-violet-200 bg-white px-4 py-3">
-                      <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Price from</p>
-                      <p className="mt-2 text-lg font-semibold text-slate-900">
-                        {selectedPackagePreview ? getPackagePricingBadge(selectedPackagePreview) : 'Set pricing'}
-                      </p>
+                      <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Model prices</p>
+                      {selectedPackagePreview && getPackageModelPriceHighlights(selectedPackagePreview).length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {getPackageModelPriceHighlights(selectedPackagePreview).map((item) => (
+                            <span
+                              key={`header-price-${item.modelId}`}
+                              className="rounded-full bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700"
+                            >
+                              {item.label} · {item.price.toLocaleString('en-MA')} MAD
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-sm font-semibold text-slate-500">Select a model to set prices</p>
+                      )}
                     </div>
                     <div className="min-w-0 rounded-xl border border-violet-200 bg-white px-4 py-3">
                       <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">Route</p>
@@ -1223,26 +1689,30 @@ const TourPackagesWorkspace = () => {
                         placeholder="Write the route, highlights, and what the guest should know."
                       />
                     </div>
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-5">
+                      <label className="text-sm font-semibold text-slate-700">Short public summary</label>
+                      <textarea
+                        value={packageForm.publicSummary}
+                        onChange={(event) => setPackageForm((prev) => ({ ...prev, publicSummary: event.target.value }))}
+                        rows={3}
+                        maxLength={360}
+                        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
+                        placeholder="A clean one-line description for the public website."
+                      />
+                    </div>
                   </div>
 
                   <div className="rounded-3xl border border-violet-100 bg-[linear-gradient(180deg,rgba(245,243,255,0.94)_0%,rgba(255,255,255,0.98)_100%)] p-5 shadow-[0_18px_42px_rgba(79,70,229,0.08)]">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Route setup</p>
-                        <h3 className="mt-2 text-lg font-black text-slate-950">Timing, route type, and operating rules</h3>
-                        <p className="mt-2 text-sm font-medium text-slate-500">Keep the route structure and booking rules together so the package reads as one coherent setup.</p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <span className="rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-bold text-violet-700">
-                          {formatDurationLabel(packageForm.duration)}
-                        </span>
-                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold capitalize text-slate-700">
-                          {packageForm.routeType}
-                        </span>
-                        <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-700">
-                          {packageForm.maxQuads} quads
-                        </span>
-                      </div>
+                    <div className="flex flex-wrap gap-2">
+                      <span className="rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-bold text-violet-700">
+                        {formatDurationLabel(packageForm.duration)}
+                      </span>
+                      <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold capitalize text-slate-700">
+                        {packageForm.routeType}
+                      </span>
+                      <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-700">
+                        {packageForm.maxQuads} quads
+                      </span>
                     </div>
                     <div className="mt-5 grid gap-4 xl:grid-cols-2">
                       <div className="rounded-[1.4rem] border border-white bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
@@ -1262,38 +1732,6 @@ const TourPackagesWorkspace = () => {
                               {formatDurationLabel(hours)}
                             </button>
                           ))}
-                        </div>
-                        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">Custom Duration</p>
-                          <div className="mt-3 flex gap-3">
-                            <input
-                              type="number"
-                              min="0.5"
-                              step="0.5"
-                              value={customPackageDuration}
-                              onChange={(event) => setCustomPackageDuration(event.target.value)}
-                              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base font-semibold text-slate-900"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const nextDuration = normalizeFlexibleDuration(customPackageDuration);
-                                if (!nextDuration) {
-                                  toast.error('Enter a valid duration');
-                                  return;
-                                }
-                                setPackageExtraDurations((current) =>
-                                  PACKAGE_DURATION_OPTIONS.includes(nextDuration)
-                                    ? current
-                                    : Array.from(new Set([...current, nextDuration])).sort((a, b) => a - b)
-                                );
-                                setPackageForm((prev) => ({ ...prev, duration: nextDuration }));
-                              }}
-                              className="rounded-xl border border-violet-200 bg-violet-50 px-5 py-3 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
-                            >
-                              Add
-                            </button>
-                          </div>
                         </div>
                       </div>
 
@@ -1389,6 +1827,80 @@ const TourPackagesWorkspace = () => {
                             </div>
                           </div>
                         </div>
+
+                        <div className="rounded-[1.4rem] border border-white bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+                          <label className="text-sm font-semibold text-slate-700">Difficulty label</label>
+                          <div className="mt-4 grid grid-cols-2 gap-3">
+                            {['Easy', 'Medium', 'Difficult'].map((label) => (
+                              <button
+                                key={label}
+                                type="button"
+                                onClick={() => {
+                                  setPackageForm((prev) => ({ ...prev, difficultyLabel: label }));
+                                  setPackageDirty(true);
+                                }}
+                                className={`rounded-xl px-4 py-4 text-sm font-semibold transition ${
+                                  String(packageForm.difficultyLabel || '').toLowerCase() === label.toLowerCase()
+                                    ? 'border border-emerald-300 bg-emerald-500 text-white shadow-sm'
+                                    : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                          <p className="mt-3 text-xs font-semibold text-slate-500">Shows on the public tour cards for quick difficulty context.</p>
+                        </div>
+
+                        <div className="rounded-[1.4rem] border border-white bg-white p-5 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <label className="text-sm font-semibold text-slate-700">Public highlights</label>
+                              <p className="mt-1 text-xs font-semibold text-slate-500">Short labels only. These become compact chips on the public tour page.</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPackageForm((prev) => ({ ...prev, publicHighlights: [...prev.publicHighlights, createHighlight(prev.publicHighlights.length)] }));
+                                setPackageDirty(true);
+                              }}
+                              className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
+                            >
+                              Add highlight
+                            </button>
+                          </div>
+                          <div className="mt-4 grid gap-3">
+                            {packageForm.publicHighlights.length === 0 ? (
+                              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm font-medium text-slate-500">
+                                No public highlights yet.
+                              </div>
+                            ) : packageForm.publicHighlights.map((highlight, index) => (
+                              <div key={highlight.id || index} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                <input
+                                  type="text"
+                                  value={highlight.label || ''}
+                                  maxLength={60}
+                                  onChange={(event) => {
+                                    setPackageForm((prev) => ({ ...prev, publicHighlights: prev.publicHighlights.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) }));
+                                    setPackageDirty(true);
+                                  }}
+                                  className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-900"
+                                  placeholder="Guide included"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPackageForm((prev) => ({ ...prev, publicHighlights: prev.publicHighlights.filter((_, itemIndex) => itemIndex !== index) }));
+                                    setPackageDirty(true);
+                                  }}
+                                  className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1398,104 +1910,69 @@ const TourPackagesWorkspace = () => {
               {editorTab === 'website' && (
                 <div className="space-y-5">
                   <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                       <div>
-                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Website preview</p>
-                        <h3 className="mt-2 text-xl font-black text-slate-950">Public package content</h3>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Media & roadmap</p>
+                        <h3 className="mt-2 text-xl font-black text-slate-950">Public package assets</h3>
                       </div>
-                      <label className="flex items-center justify-between gap-4 rounded-2xl border border-violet-100 bg-violet-50/70 px-4 py-3">
-                        <span>
-                          <span className="block text-xs font-black uppercase tracking-[0.14em] text-violet-500">Visibility</span>
-                          <span className="mt-1 block text-sm font-bold text-slate-900">{packageForm.websiteVisible ? 'Visible on website' : 'Internal only'}</span>
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={packageForm.websiteVisible}
-                          onChange={(event) => setPackageForm((prev) => ({ ...prev, websiteVisible: event.target.checked }))}
-                          className="h-5 w-5 rounded border-slate-300 text-violet-700 focus:ring-violet-500"
-                        />
-                      </label>
-                    </div>
-                    <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-                        <label className="text-sm font-semibold text-slate-700">Public title</label>
-                        <input
-                          type="text"
-                          value={packageForm.publicTitle}
-                          onChange={(event) => setPackageForm((prev) => ({ ...prev, publicTitle: event.target.value }))}
-                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                          placeholder="Premium Tangier Route"
-                        />
+                      <div className="grid grid-cols-2 gap-2 rounded-2xl border border-violet-100 bg-slate-50 p-1">
+                        {[
+                          { id: 'media', label: 'Media' },
+                          { id: 'roadmap', label: 'Roadmap' },
+                        ].map((tab) => {
+                          const active = mediaRoadmapTab === tab.id;
+                          return (
+                            <button
+                              key={tab.id}
+                              type="button"
+                              onClick={() => setMediaRoadmapTab(tab.id)}
+                              className={`rounded-xl px-4 py-2.5 text-sm font-bold transition ${
+                                active
+                                  ? 'bg-violet-600 text-white shadow-sm'
+                                  : 'bg-white text-slate-600 hover:text-violet-700'
+                              }`}
+                            >
+                              {tab.label}
+                            </button>
+                          );
+                        })}
                       </div>
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-                        <label className="text-sm font-semibold text-slate-700">Route type</label>
-                        <input
-                          type="text"
-                          value={packageForm.routeLabel}
-                          onChange={(event) => setPackageForm((prev) => ({ ...prev, routeLabel: event.target.value }))}
-                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                          placeholder="Coastal circuit"
-                        />
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-4 md:grid-cols-3">
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-                        <label className="text-sm font-semibold text-slate-700">Duration display</label>
-                        <input
-                          type="text"
-                          value={packageForm.durationDisplay}
-                          onChange={(event) => setPackageForm((prev) => ({ ...prev, durationDisplay: event.target.value }))}
-                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
-                          placeholder="1 hour"
-                        />
-                      </div>
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-                        <label className="text-sm font-semibold text-slate-700">Display order</label>
-                        <input
-                          type="number"
-                          value={packageForm.displayOrder}
-                          onChange={(event) => setPackageForm((prev) => ({ ...prev, displayOrder: event.target.value }))}
-                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
-                        />
-                      </div>
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-                        <label className="text-sm font-semibold text-slate-700">Difficulty label</label>
-                        <input
-                          type="text"
-                          value={packageForm.difficultyLabel}
-                          onChange={(event) => setPackageForm((prev) => ({ ...prev, difficultyLabel: event.target.value }))}
-                          className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm font-semibold text-slate-900"
-                          placeholder="Easy"
-                        />
-                      </div>
-                    </div>
-                    <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-                      <label className="text-sm font-semibold text-slate-700">Short public summary</label>
-                      <textarea
-                        value={packageForm.publicSummary}
-                        onChange={(event) => setPackageForm((prev) => ({ ...prev, publicSummary: event.target.value }))}
-                        rows={3}
-                        maxLength={360}
-                        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
-                        placeholder="A clean one-line description for the public website."
-                      />
                     </div>
                   </div>
 
+                  {mediaRoadmapTab === 'media' && (
                   <div className="min-w-0 rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="min-w-0">
                         <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Cover and preview media</p>
                         <h3 className="mt-2 text-xl font-black text-slate-950">What guests see first</h3>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => mediaInputRef.current?.click()}
-                        disabled={mediaUploading}
-                        className="rounded-2xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-sm shadow-violet-100 transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-300"
-                      >
-                        {mediaUploading ? 'Importing...' : 'Import media'}
-                      </button>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => mediaInputRef.current?.click()}
+                          disabled={mediaUploading}
+                          className="rounded-2xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-sm shadow-violet-100 transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-300"
+                        >
+                          {mediaUploading ? 'Importing...' : 'Import media'}
+                        </button>
+                        {editingPackageId ? (
+                          <button
+                            type="button"
+                            onClick={handleSavePackage}
+                            disabled={!packageDirty}
+                            className={`package-save-button rounded-2xl px-4 py-3 text-sm font-bold shadow-sm transition ${
+                              packageSaveBounce ? 'package-save-bounce' : ''
+                            } ${
+                              packageDirty
+                                ? 'package-save-button-dirty border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                : 'package-save-button-saved border border-slate-200 bg-white text-slate-500'
+                            }`}
+                          >
+                            {packageDirty ? 'Save changes' : 'Saved'}
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                     <input
                       ref={mediaInputRef}
@@ -1567,7 +2044,7 @@ const TourPackagesWorkspace = () => {
                           <p className="text-sm font-semibold text-slate-700">Preview media</p>
                           <p className="mt-1 text-xs font-medium text-slate-500">Add up to 9 website media items. The card keeps a compact stacked preview.</p>
                         </div>
-                        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+                        <div className="hidden">
                           <button
                             type="button"
                             onClick={() =>
@@ -1631,6 +2108,45 @@ const TourPackagesWorkspace = () => {
                                       {item.caption || (item.type === 'video' ? 'Video preview' : item.type === 'instagram' ? 'Instagram preview' : `Media ${index + 1}`)}
                                     </p>
                                   </div>
+                                  <button
+                                    type="button"
+                                    onClick={async (event) => {
+                                      event.stopPropagation();
+                                      await removeMediaFromStorage(item);
+                                      const targetUrl = String(
+                                        item?.url || item?.thumbnailUrl || item?.thumbnail_url || item?.previewUrl || ''
+                                      ).trim();
+                                      const nextGallery = (packageForm.mediaGallery || []).filter((galleryItem) => {
+                                        const galleryUrl = String(galleryItem?.url || '').trim();
+                                        const galleryThumb = String(
+                                          galleryItem?.thumbnailUrl || galleryItem?.thumbnail_url || ''
+                                        ).trim();
+                                        if (targetUrl) {
+                                          return galleryUrl !== targetUrl && galleryThumb !== targetUrl;
+                                        }
+                                        return !mediaMatchesTarget(galleryItem, item);
+                                      });
+                                      const nextCover = resolveCoverAfterMediaChange(
+                                        nextGallery,
+                                        item?.isMainCover ? '' : packageForm.coverImageUrl
+                                      );
+                                      const nextForm = {
+                                        ...packageForm,
+                                        mediaGallery: nextGallery,
+                                        coverImageUrl: nextCover,
+                                      };
+                                      setPackageForm(nextForm);
+                                      setPackageDirty(true);
+                                      if (editingPackageId) {
+                                        await persistPackageMedia(nextForm, 'Media removed');
+                                      } else {
+                                        toast.success('Media removed');
+                                      }
+                                    }}
+                                    className="absolute right-1 top-1 rounded-full border border-rose-200 bg-white/90 px-2 py-1 text-[10px] font-bold text-rose-600 shadow-sm transition hover:bg-rose-50"
+                                  >
+                                    Delete
+                                  </button>
                                 </div>
                               </div>
                             ))}
@@ -1663,8 +2179,14 @@ const TourPackagesWorkspace = () => {
                       <div className="mt-4 space-y-3">
                         {packageForm.mediaGallery.length === 0 ? (
                           <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm font-medium text-slate-500">No media preview items yet.</div>
-                        ) : activeMediaEditorIndex !== null && packageForm.mediaGallery[activeMediaEditorIndex] ? (
+                        ) : false ? (
                           <div className="min-w-0 overflow-hidden rounded-2xl border border-violet-200 bg-white p-4 shadow-[0_12px_32px_rgba(79,70,229,0.08)]">
+                            {(() => {
+                              const activeMedia = packageForm.mediaGallery[activeMediaEditorIndex];
+                              const activeCoverUrl = String(packageForm.coverImageUrl || '').trim();
+                              const activeMediaCoverUrl = String(activeMedia?.thumbnailUrl || activeMedia?.url || '').trim();
+                              const isActiveCover = Boolean(activeCoverUrl && activeMediaCoverUrl && activeCoverUrl === activeMediaCoverUrl);
+                              return (
                             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                               <div className="min-w-0">
                                 <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">
@@ -1692,7 +2214,11 @@ const TourPackagesWorkspace = () => {
                                       'Main cover updated'
                                     );
                                   }}
-                                  className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100"
+                                  className={
+                                    isActiveCover
+                                      ? 'rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100'
+                                      : 'rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:border-violet-200 hover:text-violet-700'
+                                  }
                                 >
                                   Main cover
                                 </button>
@@ -1710,6 +2236,8 @@ const TourPackagesWorkspace = () => {
                                 </button>
                               </div>
                             </div>
+                              );
+                            })()}
 
                             <div className="mt-4 grid gap-3 xl:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)]">
                               <select
@@ -1806,10 +2334,14 @@ const TourPackagesWorkspace = () => {
                               <button
                                 type="button"
                                 onClick={async () => {
-                                  await applyPackageFormUpdate(
-                                    (prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, activeMediaEditorIndex, -1) }),
-                                    'Media order updated'
-                                  );
+                                  const nextGallery = moveItem(packageForm.mediaGallery, activeMediaEditorIndex, -1);
+                                  const nextForm = { ...packageForm, mediaGallery: nextGallery };
+                                  setPackageForm(nextForm);
+                                  if (editingPackageId) {
+                                    await persistPackageMedia(nextForm, 'Media order updated');
+                                  } else {
+                                    toast.success('Media order updated');
+                                  }
                                 }}
                                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600"
                               >
@@ -1818,10 +2350,14 @@ const TourPackagesWorkspace = () => {
                               <button
                                 type="button"
                                 onClick={async () => {
-                                  await applyPackageFormUpdate(
-                                    (prev) => ({ ...prev, mediaGallery: moveItem(prev.mediaGallery, activeMediaEditorIndex, 1) }),
-                                    'Media order updated'
-                                  );
+                                  const nextGallery = moveItem(packageForm.mediaGallery, activeMediaEditorIndex, 1);
+                                  const nextForm = { ...packageForm, mediaGallery: nextGallery };
+                                  setPackageForm(nextForm);
+                                  if (editingPackageId) {
+                                    await persistPackageMedia(nextForm, 'Media order updated');
+                                  } else {
+                                    toast.success('Media order updated');
+                                  }
                                 }}
                                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600"
                               >
@@ -1830,13 +2366,21 @@ const TourPackagesWorkspace = () => {
                               <button
                                 type="button"
                                 onClick={async () => {
-                                  await applyPackageFormUpdate(
-                                    (prev) => ({
-                                      ...prev,
-                                      mediaGallery: prev.mediaGallery.filter((_, itemIndex) => itemIndex !== activeMediaEditorIndex),
-                                    }),
-                                    'Media removed'
-                                  );
+                                  const mediaToRemove = packageForm.mediaGallery[activeMediaEditorIndex];
+                                  await removeMediaFromStorage(mediaToRemove);
+                                  const nextGallery = packageForm.mediaGallery.filter((_, itemIndex) => itemIndex !== activeMediaEditorIndex);
+                                  const nextCover = resolveCoverAfterMediaChange(nextGallery, packageForm.coverImageUrl);
+                                  const nextForm = {
+                                    ...packageForm,
+                                    mediaGallery: nextGallery,
+                                    coverImageUrl: nextCover,
+                                  };
+                                  setPackageForm(nextForm);
+                                  if (editingPackageId) {
+                                    await persistPackageMedia(nextForm, 'Media removed');
+                                  } else {
+                                    toast.success('Media removed');
+                                  }
                                   setActiveMediaEditorIndex(null);
                                 }}
                                 className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600"
@@ -1847,7 +2391,14 @@ const TourPackagesWorkspace = () => {
                           </div>
                         ) : (
                           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                            {packageForm.mediaGallery.map((media, index) => (
+                            {packageForm.mediaGallery
+                              .map((media, index) => ({ media, index }))
+                              .filter(({ media }) => String(media?.url || '').trim())
+                              .map(({ media, index }) => {
+                              const currentCoverUrl = String(packageForm.coverImageUrl || '').trim();
+                              const mediaCoverUrl = String(media.thumbnailUrl || media.url || '').trim();
+                              const isCover = Boolean(currentCoverUrl && mediaCoverUrl && currentCoverUrl === mediaCoverUrl);
+                              return (
                               <div
                                 key={media.id || index}
                                 onClick={() => setActiveMediaEditorIndex(index)}
@@ -1897,134 +2448,346 @@ const TourPackagesWorkspace = () => {
                                     type="button"
                                     onClick={async (event) => {
                                       event.stopPropagation();
-                                      await applyPackageFormUpdate(
-                                        (prev) => ({
-                                          ...prev,
-                                          coverImageUrl: media.thumbnailUrl || media.url || prev.coverImageUrl,
-                                        }),
-                                        'Main cover updated'
-                                      );
+                                      const nextForm = {
+                                        ...packageForm,
+                                        coverImageUrl: media.thumbnailUrl || media.url || packageForm.coverImageUrl,
+                                      };
+                                      setPackageForm(nextForm);
+                                      setPackageDirty(true);
+                                      if (editingPackageId) {
+                                        await persistPackageMedia(nextForm, 'Main cover updated');
+                                      } else {
+                                        toast.success('Main cover updated');
+                                      }
                                     }}
-                                    className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-bold text-violet-700"
+                                    className={
+                                      isCover
+                                        ? 'rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-bold text-violet-700'
+                                        : 'rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-700'
+                                    }
                                   >
                                     Main cover
                                   </button>
+                                  <button
+                                    type="button"
+                                    onClick={async (event) => {
+                                      event.stopPropagation();
+                                      const nextGallery = packageForm.mediaGallery.filter((_, itemIndex) => itemIndex !== index);
+                                      const nextCover = resolveCoverAfterMediaChange(nextGallery, packageForm.coverImageUrl);
+                                      const nextForm = {
+                                        ...packageForm,
+                                        mediaGallery: nextGallery,
+                                        coverImageUrl: nextCover,
+                                      };
+                                      setPackageForm(nextForm);
+                                      setPackageDirty(true);
+                                      if (editingPackageId) {
+                                        await persistPackageMedia(nextForm, 'Media removed');
+                                      } else {
+                                        toast.success('Media removed');
+                                      }
+                                    }}
+                                    className="rounded-full border border-rose-200 bg-white px-3 py-1 text-[11px] font-bold text-rose-600"
+                                  >
+                                    Delete
+                                  </button>
                                 </div>
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         )}
                       </div>
                     </div>
                   </div>
+                  )}
 
+                  {mediaRoadmapTab === 'roadmap' && (
                   <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Route roadmap</p>
                         <p className="mt-2 text-xs font-medium text-slate-500">Simple public timeline nodes. Keep it short and operational.</p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: [...prev.routeStops, createRouteStop(prev.routeStops.length)] }))}
-                        className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
-                      >
-                        Add stop
-                      </button>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const normalizedStops = normalizeRouteStops(packageForm.routeStops);
+                              const nextForm = {
+                                ...packageForm,
+                                routeStops: normalizedStops,
+                                stopCount: normalizedStops.length,
+                              };
+                              setPackageForm(nextForm);
+                              await persistPackageRoadmap(nextForm, 'Route roadmap saved');
+                              setRoadmapCollapsed(true);
+                            } catch (error) {
+                              console.error('Failed to save route roadmap:', error);
+                              toast.error(error.message || 'Could not save route roadmap');
+                            }
+                          }}
+                          disabled={!editingPackageId || roadmapSaving}
+                          className={`rounded-2xl px-4 py-2 text-sm font-bold transition ${
+                            editingPackageId && !roadmapSaving
+                              ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                              : 'border border-slate-200 bg-white text-slate-400'
+                          }`}
+                        >
+                          {roadmapSaving ? 'Saving…' : 'Save roadmap'}
+                        </button>
+                        {packageForm.routeStops.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setRoadmapCollapsed((current) => !current)}
+                            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-50"
+                          >
+                            {roadmapCollapsed ? 'Edit roadmap' : 'Collapse'}
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
+                    {roadmapCollapsed && packageForm.routeStops.length > 0 ? (
+                      <div className="mt-4 rounded-2xl border border-violet-100 bg-violet-50/70 px-4 py-3 text-sm font-semibold text-violet-700">
+                        {packageForm.routeStops.length} stop{packageForm.routeStops.length > 1 ? 's' : ''} saved
+                      </div>
+                    ) : (
                     <div className="mt-4 space-y-3">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: [...prev.routeStops, createRouteStop(prev.routeStops.length)] }))}
+                          className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
+                        >
+                          Add stop
+                        </button>
+                      </div>
                       {packageForm.routeStops.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm font-medium text-slate-500">No roadmap stops yet.</div>
+                        <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm font-medium text-slate-500">No roadmap stops yet.</div>
                       ) : packageForm.routeStops.map((stop, index) => (
-                        <div key={stop.id || index} className="rounded-xl border border-slate-200 bg-white p-4">
-                          <div className="grid gap-3 xl:grid-cols-[130px_1fr_120px_1.2fr_auto]">
-                            <select
-                              value={stop.kind || 'stop'}
-                              onChange={(event) => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.map((item, itemIndex) => itemIndex === index ? { ...item, kind: event.target.value } : item) }))}
-                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-semibold text-slate-900"
-                            >
-                              <option value="start">Start</option>
-                              <option value="drive">Drive</option>
-                              <option value="stop">Stop</option>
-                              <option value="end">End</option>
-                              <option value="note">Note</option>
-                            </select>
-                            <input
-                              type="text"
-                              value={stop.title || ''}
-                              onChange={(event) => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item) }))}
-                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-900"
-                              placeholder="Stop title"
-                            />
-                            <input
-                              type="number"
-                              min="0"
-                              value={stop.duration_minutes || 0}
-                              onChange={(event) => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.map((item, itemIndex) => itemIndex === index ? { ...item, duration_minutes: event.target.value } : item) }))}
-                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-900"
-                              placeholder="Minutes"
-                            />
-                            <input
-                              type="text"
-                              value={stop.note || ''}
-                              onChange={(event) => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.map((item, itemIndex) => itemIndex === index ? { ...item, note: event.target.value } : item) }))}
-                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-900"
-                              placeholder="Short note"
-                            />
-                            <div className="flex items-center gap-2">
-                              <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: moveItem(prev.routeStops, index, -1) }))} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">Up</button>
-                              <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: moveItem(prev.routeStops, index, 1) }))} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">Down</button>
-                              <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, routeStops: prev.routeStops.filter((_, itemIndex) => itemIndex !== index) }))} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600">Remove</button>
+                        <div
+                          key={stop.id || index}
+                          className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_10px_28px_rgba(15,23,42,0.05)] sm:p-5"
+                        >
+                          <div className="flex flex-col gap-4">
+                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                              <div className="min-w-0">
+                                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">
+                                  Stop {index + 1}
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {ROADMAP_STOP_KIND_OPTIONS.map((option) => {
+                                    const isActive = (stop.kind || 'stop') === option.id;
+                                    return (
+                                      <button
+                                        key={option.id}
+                                        type="button"
+                                        onClick={() => updateRouteStop(index, { kind: option.id })}
+                                        className={
+                                          isActive
+                                            ? 'rounded-full border border-violet-200 bg-violet-600 px-3.5 py-2 text-xs font-bold text-white shadow-[0_10px_24px_rgba(79,70,229,0.24)]'
+                                            : 'rounded-full border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-600 transition hover:border-violet-200 hover:text-violet-700'
+                                        }
+                                      >
+                                        {option.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPackageForm((prev) => ({
+                                      ...prev,
+                                      routeStops: moveItem(prev.routeStops, index, -1),
+                                    }));
+                                    setPackageDirty(true);
+                                  }}
+                                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600"
+                                >
+                                  Up
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPackageForm((prev) => ({
+                                      ...prev,
+                                      routeStops: moveItem(prev.routeStops, index, 1),
+                                    }));
+                                    setPackageDirty(true);
+                                  }}
+                                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600"
+                                >
+                                  Down
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPackageForm((prev) => ({
+                                      ...prev,
+                                      routeStops: prev.routeStops.filter((_, itemIndex) => itemIndex !== index),
+                                    }));
+                                    setPackageDirty(true);
+                                  }}
+                                  className="rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+                              <label className="space-y-2">
+                                <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">Stop title</span>
+                                <input
+                                  type="text"
+                                  value={stop.title || ''}
+                                  onChange={(event) => updateRouteStop(index, { title: event.target.value })}
+                                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 shadow-[0_8px_24px_rgba(15,23,42,0.04)]"
+                                  placeholder="Villa Harris"
+                                />
+                              </label>
+                              <label className="space-y-2">
+                                <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">Short note</span>
+                                <input
+                                  type="text"
+                                  value={stop.note || ''}
+                                  onChange={(event) => updateRouteStop(index, { note: event.target.value })}
+                                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-[0_8px_24px_rgba(15,23,42,0.04)]"
+                                  placeholder="Quick stop note"
+                                />
+                              </label>
+                            </div>
+
+                            <div>
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                  <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Stop media</p>
+                                  <p className="mt-2 text-xs font-medium text-slate-500">Drop media here for this stop, or click to import.</p>
+                                </div>
+                                <input
+                                  ref={(node) => {
+                                    if (node) stopMediaInputRefs.current[`stop-${index}`] = node;
+                                  }}
+                                  type="file"
+                                  accept="image/*,video/*"
+                                  multiple
+                                  className="hidden"
+                                  onChange={(event) => handleStopMediaFiles(index, event.target.files)}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => stopMediaInputRefs.current[`stop-${index}`]?.click()}
+                                  className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
+                                >
+                                  Add media
+                                </button>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => stopMediaInputRefs.current[`stop-${index}`]?.click()}
+                                className="mt-4 flex w-full flex-col items-center justify-center rounded-[20px] border border-dashed border-violet-200 bg-violet-50/30 px-4 py-5 text-center transition hover:border-violet-300 hover:bg-violet-50/60"
+                              >
+                                <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-700">
+                                  Drop media here
+                                </span>
+                                <span className="mt-3 text-sm font-semibold text-slate-700">
+                                  Images or MP4 clips for {stop.title || `stop ${index + 1}`}
+                                </span>
+                                <span className="mt-1 text-xs font-medium text-slate-500">
+                                  Up to 3 items per stop
+                                </span>
+                              </button>
+
+                              <div className="mt-4 flex flex-wrap items-center gap-3">
+                                {(stop.media || []).length === 0 ? (
+                                  <span className="text-xs font-semibold text-slate-500">No media yet</span>
+                                ) : (
+                                  (stop.media || []).map((mediaItem, mediaIndex) => (
+                                    <div
+                                      key={mediaItem.id || mediaIndex}
+                                      className="group relative h-16 w-16 overflow-hidden rounded-2xl border border-violet-200 bg-white shadow-[0_8px_20px_rgba(79,70,229,0.06)]"
+                                    >
+                                      {mediaItem.type === 'video' ? (
+                                        <video src={mediaItem.url} muted playsInline className="h-full w-full object-cover" />
+                                      ) : (
+                                        <img
+                                          src={mediaItem.thumbnailUrl || mediaItem.url}
+                                          alt={mediaItem.caption || stop.title || 'Stop media'}
+                                          className="h-full w-full object-cover"
+                                        />
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          updateRouteStop(index, {
+                                            media: (stop.media || []).filter((_, mIndex) => mIndex !== mediaIndex),
+                                          });
+                                        }}
+                                        className="absolute right-1 top-1 hidden h-5 w-5 items-center justify-center rounded-full bg-white/90 text-[10px] font-bold text-rose-600 shadow-sm group-hover:flex"
+                                        aria-label="Remove media"
+                                      >
+                                        ×
+                                      </button>
+                                      <div className="absolute bottom-1 left-1 hidden items-center gap-1 group-hover:flex">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            updateRouteStop(index, {
+                                              media: moveStopMediaItem(stop.media || [], mediaIndex, -1),
+                                            });
+                                          }}
+                                          disabled={mediaIndex === 0}
+                                          className="flex h-5 w-5 items-center justify-center rounded-full bg-white/92 text-[10px] font-bold text-slate-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
+                                          aria-label="Move media earlier"
+                                        >
+                                          ↑
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            updateRouteStop(index, {
+                                              media: moveStopMediaItem(stop.media || [], mediaIndex, 1),
+                                            });
+                                          }}
+                                          disabled={mediaIndex === (stop.media || []).length - 1}
+                                          className="flex h-5 w-5 items-center justify-center rounded-full bg-white/92 text-[10px] font-bold text-slate-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
+                                          aria-label="Move media later"
+                                        >
+                                          ↓
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
                             </div>
                           </div>
                         </div>
                       ))}
                     </div>
+                    )}
                   </div>
-
-                  <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-violet-600/80">Public highlights</p>
-                        <p className="mt-2 text-xs font-medium text-slate-500">Short labels only. These become compact chips on the public tour page.</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setPackageForm((prev) => ({ ...prev, publicHighlights: [...prev.publicHighlights, createHighlight(prev.publicHighlights.length)] }))}
-                        className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:bg-violet-100"
-                      >
-                        Add highlight
-                      </button>
-                    </div>
-                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                      {packageForm.publicHighlights.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm font-medium text-slate-500">No public highlights yet.</div>
-                      ) : packageForm.publicHighlights.map((highlight, index) => (
-                        <div key={highlight.id || index} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3">
-                          <input
-                            type="text"
-                            value={highlight.label || ''}
-                            maxLength={60}
-                            onChange={(event) => setPackageForm((prev) => ({ ...prev, publicHighlights: prev.publicHighlights.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) }))}
-                            className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-semibold text-slate-900"
-                            placeholder="Guide included"
-                          />
-                          <button type="button" onClick={() => setPackageForm((prev) => ({ ...prev, publicHighlights: prev.publicHighlights.filter((_, itemIndex) => itemIndex !== index) }))} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600">Remove</button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  )}
                 </div>
               )}
 
               {editorTab === 'pricing' && (
                 <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.07)] sm:p-5">
+                  <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
+                    Prices are auto‑filled from default pricing. You can override any model price if needed.
+                  </div>
                   <TourPackagePricingManager
                     embedded
                     showPackagePicker={false}
                     selectedPackageId={editingPackageId || GLOBAL_TOUR_PRICING_KEY}
                     selectedPackage={selectedPackagePreview}
-                    allowedDurations={[packageForm.duration]}
+                    allowedDurations={embeddedAllowedDurations}
+                    onPricingRowsChange={setTourPricingRows}
                   />
                 </div>
               )}
@@ -2160,10 +2923,16 @@ const TourPackagesWorkspace = () => {
                       {editingPackageId ? 'Save updates to this package' : 'Create the package to continue using it in bookings'}
                     </p>
                     <p className="mt-1 text-sm text-slate-500">
-                      {editorTab === 'pricing'
-                        ? 'Pricing rows save individually, but package details should still be saved here.'
+                      {editingPackageId
+                        ? 'Changes are saved automatically while you edit.'
                         : 'Details and advanced settings are saved together here.'}
                     </p>
+                    {editingPackageId ? (
+                      <p className={`mt-2 text-xs font-semibold ${packageDirty ? 'text-amber-600' : 'text-emerald-600'}`}>
+                        {packageDirty ? 'Unsaved changes' : 'All changes saved'}
+                        {lastPackageSavedAt && !packageDirty ? ` • ${formatSavedTime(lastPackageSavedAt)}` : ''}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap gap-3">
                     <button
@@ -2176,9 +2945,16 @@ const TourPackagesWorkspace = () => {
                     <button
                       type="button"
                       onClick={handleSavePackage}
-                      className="rounded-2xl bg-violet-600 px-5 py-3 text-sm font-bold text-white shadow-[0_16px_34px_rgba(124,58,237,0.22)] transition hover:bg-violet-700"
+                      disabled={Boolean(!editingPackageId && !packageForm.name.trim())}
+                      className={`package-save-button rounded-2xl px-5 py-3 text-sm font-bold shadow-[0_16px_34px_rgba(124,58,237,0.22)] transition ${
+                        packageSaveBounce ? 'package-save-bounce' : ''
+                      } ${
+                        editingPackageId && !packageDirty
+                          ? 'package-save-button-saved border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                          : 'bg-violet-600 text-white hover:bg-violet-700'
+                      }`}
                     >
-                      {editingPackageId ? 'Save Package' : 'Create Package'}
+                      {editingPackageId ? (packageDirty ? 'Save Package' : 'Saved') : 'Create Package'}
                     </button>
                   </div>
                 </div>

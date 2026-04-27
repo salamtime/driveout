@@ -4,6 +4,20 @@ import FuelTransactionService from './FuelTransactionService';
 import { adminApiRequest } from './adminApi';
 
 class UserProfileService {
+  withTimeout(promise, timeoutMs = 5000, label = 'operation') {
+    let timeoutId;
+    const timeoutPromise = new Promise((resolve) => {
+      timeoutId = setTimeout(() => {
+        console.warn(`⚠️ ${label} timed out; continuing without blocking the UI.`);
+        resolve({ data: null, error: new Error(`${label} timed out`) });
+      }, timeoutMs);
+    });
+
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId);
+    });
+  }
+
   isAbortLikeError(error) {
     const message = String(error?.message || error || '').toLowerCase();
     const name = String(error?.name || '').toLowerCase();
@@ -24,7 +38,8 @@ class UserProfileService {
       message.includes('permission denied') ||
       message.includes('forbidden') ||
       message.includes('403') ||
-      message.includes('saharax_0u4w4d_activity_log')
+      message.includes('saharax_0u4w4d_activity_log') ||
+      message.includes(TABLE_NAMES.ACTIVITY_LOG)
     );
   }
 
@@ -180,7 +195,7 @@ class UserProfileService {
       // Create unique filename
       const fileExt = file.name.split('.').pop();
       const fileName = `${userId}_${Date.now()}.${fileExt}`;
-      const filePath = `profile-pictures/${fileName}`;
+      const filePath = `${userId}/${fileName}`;
 
       // Upload file to Supabase storage
       const { data: uploadData, error: uploadError } = await supabase.storage
@@ -201,33 +216,39 @@ class UserProfileService {
 
       // Persist to auth metadata first because the users table may not have a
       // profile_picture_url column in older deployments.
-      const { error: metadataError } = await supabase.auth.updateUser({
-        data: {
-          profile_picture_url: publicUrl,
-          avatar_url: publicUrl,
-        },
-      });
+      const { error: metadataError } = await this.withTimeout(
+        supabase.auth.updateUser({
+          data: {
+            profile_picture_url: publicUrl,
+            avatar_url: publicUrl,
+          },
+        }),
+        4500,
+        'Profile auth metadata update'
+      );
 
       if (metadataError) {
         console.warn('⚠️ Profile picture uploaded but auth metadata update failed:', metadataError);
       }
 
       // Best effort: update the app users table only when that column exists.
-      const { data: updateData, error: updateError } = await supabase
-        .from(this.getUsersTable())
-        .update({ 
-          profile_picture_url: publicUrl,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userId)
-        .select()
-        .single();
+      const { data: updateData, error: updateError } = await this.withTimeout(
+        supabase
+          .from(this.getUsersTable())
+          .update({
+            profile_picture_url: publicUrl,
+            avatar_url: publicUrl,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', userId)
+          .select()
+          .single(),
+        3500,
+        'Profile users table update'
+      );
 
-      if (updateError && !this.isMissingProfilePictureColumnError(updateError) && !this.isUsersTableAccessError(updateError)) {
-        throw updateError;
-      }
       if (updateError) {
-        console.warn('⚠️ Users table profile picture update skipped; profile picture stored in auth metadata only.');
+        console.warn('⚠️ Users table profile picture update skipped; profile picture stored in auth metadata only.', updateError);
       }
 
       console.log('✅ Profile picture uploaded successfully');
@@ -243,47 +264,70 @@ class UserProfileService {
     try {
       console.log('🗑️ Deleting profile picture for:', userId);
       
-      // Extract file path from URL
-      const urlParts = pictureUrl.split('/');
-      const fileName = urlParts[urlParts.length - 1];
-      const filePath = `profile-pictures/${fileName}`;
+      let filePath = '';
+
+      try {
+        const normalizedUrl = new URL(pictureUrl);
+        const marker = '/storage/v1/object/public/profile-pictures/';
+        const markerIndex = normalizedUrl.pathname.indexOf(marker);
+        if (markerIndex >= 0) {
+          filePath = decodeURIComponent(normalizedUrl.pathname.slice(markerIndex + marker.length));
+        }
+      } catch {
+        filePath = '';
+      }
+
+      if (!filePath) {
+        const urlParts = String(pictureUrl || '').split('/');
+        const fileName = urlParts[urlParts.length - 1];
+        filePath = `${userId}/${fileName}`;
+      }
 
       // Delete from storage
-      const { error: deleteError } = await supabase.storage
-        .from('profile-pictures')
-        .remove([filePath]);
+      const { error: deleteError } = await this.withTimeout(
+        supabase.storage
+          .from('profile-pictures')
+          .remove([filePath]),
+        3500,
+        'Profile picture storage delete'
+      );
 
       if (deleteError) {
         console.warn('⚠️ Error deleting file from storage:', deleteError);
       }
 
-      const { error: metadataError } = await supabase.auth.updateUser({
-        data: {
-          profile_picture_url: null,
-          avatar_url: null,
-        },
-      });
+      const { error: metadataError } = await this.withTimeout(
+        supabase.auth.updateUser({
+          data: {
+            profile_picture_url: null,
+            avatar_url: null,
+          },
+        }),
+        4500,
+        'Profile auth metadata delete'
+      );
 
       if (metadataError) {
         console.warn('⚠️ Profile picture deleted but auth metadata update failed:', metadataError);
       }
 
       // Best effort: update the app users table only when that column exists.
-      const { data, error } = await supabase
-        .from(this.getUsersTable())
-        .update({ 
-          profile_picture_url: null,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userId)
-        .select()
-        .single();
-
-      if (error && !this.isMissingProfilePictureColumnError(error) && !this.isUsersTableAccessError(error)) {
-        throw error;
-      }
+      const { data, error } = await this.withTimeout(
+        supabase
+          .from(this.getUsersTable())
+          .update({
+            profile_picture_url: null,
+            avatar_url: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', userId)
+          .select()
+          .single(),
+        3500,
+        'Profile users table delete'
+      );
       if (error) {
-        console.warn('⚠️ Users table profile picture delete skipped; profile picture cleared from auth metadata only.');
+        console.warn('⚠️ Users table profile picture delete skipped; profile picture cleared from auth metadata only.', error);
       }
 
       console.log('✅ Profile picture deleted successfully');
@@ -344,15 +388,24 @@ class UserProfileService {
         const actionValue = log.action || log.event_name || log.title || 'Activity';
         const metadata = log.metadata || {};
         const isRentalContractPriceEdit = String(actionValue).toLowerCase() === 'rental_contract_price_edited';
+        const isRentalAmountDueEdit = String(actionValue).toLowerCase() === 'rental_amount_due_edited';
 
         return buildEvent({
           id: `direct-${log.id || `${log.user_id}-${log.created_at || Date.now()}`}`,
-          action: isRentalContractPriceEdit ? 'Edited rental contract price' : actionValue,
+          action: isRentalContractPriceEdit
+            ? 'Edited rental contract price'
+            : isRentalAmountDueEdit
+              ? 'Edited amount due'
+              : actionValue,
           description: isRentalContractPriceEdit
             ? `Edited rental contract price for ${metadata.rental_reference || metadata.rental_id || 'a rental'}`
+            : isRentalAmountDueEdit
+              ? `Edited amount due for ${metadata.rental_reference || metadata.rental_id || 'a rental'}`
             : (log.description || log.details || log.message || 'Platform activity recorded'),
           details: isRentalContractPriceEdit
             ? `${metadata.edited_by_name || log.user_name || 'Staff'} • ${Number(metadata.previous_price || 0)} MAD → ${Number(metadata.new_price || 0)} MAD${metadata.override_note ? ` • ${metadata.override_note}` : ''}`
+            : isRentalAmountDueEdit
+              ? `${metadata.edited_by_name || log.user_name || 'Staff'} • ${Number(metadata.previous_amount_due || 0)} MAD → ${Number(metadata.new_amount_due || 0)} MAD${metadata.override_note ? ` • ${metadata.override_note}` : ''}`
             : (log.details || log.message || log.event_name || log.description || 'No details'),
           createdAt: log.created_at || log.performed_at || log.updated_at,
           source: log.source || log.module || 'system',
@@ -400,7 +453,7 @@ class UserProfileService {
           .limit(fetchSize),
         normalizedUserEmail
           ? supabase
-              .from('app_687f658e98_activity_log')
+              .from(TABLE_NAMES.ACTIVITY_LOG)
               .select('id,action,user_email,details,created_at')
               .ilike('user_email', normalizedUserEmail)
               .order('created_at', { ascending: false })

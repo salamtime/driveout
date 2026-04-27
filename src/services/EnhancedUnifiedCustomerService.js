@@ -3,6 +3,10 @@ import { geminiVisionOCR } from './ocr/optimizedGeminiVisionOcr.js';
 import { buildApiUrl, GEMINI_PROXY_PATH } from './apiUrl.js';
 import { uploadFile } from '../utils/storageUpload.js';
 import { optimizeFileForUpload } from '../utils/storageUpload.js';
+import {
+  normalizeCustomerIdentityFields,
+  pickBestExistingCustomerMatch,
+} from '../utils/customerIdentity.js';
 
 /**
  * EnhancedUnifiedCustomerService - Complete customer management with ID scanning integration
@@ -100,6 +104,20 @@ class EnhancedUnifiedCustomerService {
 
       if (!geminiResponse.ok) {
         const errorText = await geminiResponse.text();
+        const normalizedErrorText = String(errorText || '').toLowerCase();
+        if (
+          (geminiResponse.status === 403 &&
+            (normalizedErrorText.includes('reported as leaked') ||
+              normalizedErrorText.includes('permission_denied') ||
+              normalizedErrorText.includes('api key'))) ||
+          (geminiResponse.status === 400 &&
+            (normalizedErrorText.includes('api key expired') ||
+              normalizedErrorText.includes('api_key_invalid') ||
+              normalizedErrorText.includes('please renew the api key')))
+        ) {
+          throw new Error('OCR is unavailable right now because the Gemini API key must be replaced or renewed by an admin.');
+        }
+
         throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorText}`);
       }
 
@@ -219,16 +237,17 @@ class EnhancedUnifiedCustomerService {
 
     const prompt = this.buildDirectOcrPrompt(ocrMode);
     const preparedFile = await this.prepareOcrFile(file);
-    const [uploadResult, ocrResult] = await Promise.all([
-      this.uploadPreparedOcrSourceImage(preparedFile, scanId, folder),
-      this.requestDirectGeminiOCR(preparedFile, prompt),
-    ]);
+    // Mobile browsers can abort one of the streams if the same captured File is
+    // uploaded and read for OCR at the exact same time. Run these sequentially
+    // so camera-captured scans stay reliable on phones.
+    const uploadResult = await this.uploadPreparedOcrSourceImage(preparedFile, scanId, folder);
 
     if (!uploadResult.success) {
       console.error('❌ [UPLOAD] Failed:', uploadResult.error);
       throw new Error(`Upload failed: ${uploadResult.error}`);
     }
 
+    const ocrResult = await this.requestDirectGeminiOCR(preparedFile, prompt);
     const publicUrl = uploadResult.url;
     const { ocrData, ocrUnavailable, ocrErrorMessage } = ocrResult;
 
@@ -341,6 +360,10 @@ class EnhancedUnifiedCustomerService {
       // Step 4: Sanitize customer data
       const sanitizedCustomerData = this.sanitizeCustomerData(customerData);
       console.log('🧹 SHIELDING: Sanitized customer data:', sanitizedCustomerData);
+      const normalizedIdentity = normalizeCustomerIdentityFields({
+        licenceNumber: sanitizedCustomerData.customer_licence_number || sanitizedCustomerData.licence_number || existingCustomer?.licence_number,
+        idNumber: sanitizedCustomerData.customer_id_number || sanitizedCustomerData.id_number || existingCustomer?.id_number,
+      });
 
       // Step 5: SHIELDING STRATEGY - Build final customer data with intelligent merge
       // Priority: Manual Input > Existing Data > OCR Data
@@ -352,8 +375,8 @@ class EnhancedUnifiedCustomerService {
         full_name: sanitizedCustomerData.customer_name || sanitizedCustomerData.full_name || existingCustomer?.full_name,
         date_of_birth: sanitizedCustomerData.customer_dob || sanitizedCustomerData.date_of_birth || existingCustomer?.date_of_birth || null,
         nationality: sanitizedCustomerData.customer_nationality || sanitizedCustomerData.nationality || existingCustomer?.nationality || null,
-        licence_number: sanitizedCustomerData.customer_licence_number || sanitizedCustomerData.licence_number || existingCustomer?.licence_number || null,
-        id_number: sanitizedCustomerData.customer_id_number || sanitizedCustomerData.id_number || existingCustomer?.id_number || null,
+        licence_number: normalizedIdentity.licenceNumber,
+        id_number: normalizedIdentity.idNumber,
         place_of_birth: sanitizedCustomerData.customer_place_of_birth || sanitizedCustomerData.place_of_birth || existingCustomer?.place_of_birth || null,
         issue_date: sanitizedCustomerData.customer_issue_date || sanitizedCustomerData.issue_date || existingCustomer?.issue_date || null,
         
@@ -389,19 +412,17 @@ class EnhancedUnifiedCustomerService {
       }
 
       // Step 7: DUPLICATE PREVENTION & CUSTOMER LOOKUP - FIXED to handle multiple results
-      if (finalCustomerData.full_name && finalCustomerData.licence_number) {
+      if (finalCustomerData.full_name) {
         console.log('🔍 DUPLICATE CHECK: Checking for customer with name and licence:', {
           name: finalCustomerData.full_name,
           licence: finalCustomerData.licence_number
         });
         
-        // CRITICAL FIX: Use .limit(1) instead of .single() to handle multiple duplicates gracefully
         const { data: duplicateCustomers, error: lookupError } = await supabase
           .from('app_4c3a7a6153_customers')
           .select('*')
-          .eq('full_name', finalCustomerData.full_name)
-          .eq('licence_number', finalCustomerData.licence_number)
-          .limit(1);
+          .ilike('full_name', finalCustomerData.full_name)
+          .limit(5);
 
         if (lookupError) {
           console.error('❌ DUPLICATE CHECK: Error looking up customer:', lookupError);
@@ -409,7 +430,10 @@ class EnhancedUnifiedCustomerService {
         }
 
         // Check if we found any duplicates
-        const duplicateCustomer = duplicateCustomers && duplicateCustomers.length > 0 ? duplicateCustomers[0] : null;
+        const duplicateCustomer = pickBestExistingCustomerMatch({
+          incomingCustomer: finalCustomerData,
+          candidates: duplicateCustomers || [],
+        });
 
         if (duplicateCustomer && duplicateCustomer.id !== customerData.id) {
           console.log('✅ DUPLICATE CHECK: Customer already exists. Updating existing profile:', duplicateCustomer.id);
@@ -471,7 +495,7 @@ class EnhancedUnifiedCustomerService {
 
           let conflictingRecord = null;
 
-          // Try to find by licence_number first, then id_number, then full_name
+          // Try to find by licence_number first, then id_number, then phone, then strong full_name match
           if (customerToUpsert.licence_number) {
             const { data } = await supabase
               .from('app_4c3a7a6153_customers')
@@ -490,13 +514,25 @@ class EnhancedUnifiedCustomerService {
             conflictingRecord = data?.[0] ?? null;
           }
 
+          if (!conflictingRecord && customerToUpsert.phone) {
+            const { data } = await supabase
+              .from('app_4c3a7a6153_customers')
+              .select('*')
+              .eq('phone', customerToUpsert.phone)
+              .limit(1);
+            conflictingRecord = data?.[0] ?? null;
+          }
+
           if (!conflictingRecord && customerToUpsert.full_name) {
             const { data } = await supabase
               .from('app_4c3a7a6153_customers')
               .select('*')
-              .eq('full_name', customerToUpsert.full_name)
-              .limit(1);
-            conflictingRecord = data?.[0] ?? null;
+              .ilike('full_name', customerToUpsert.full_name)
+              .limit(5);
+            conflictingRecord = pickBestExistingCustomerMatch({
+              incomingCustomer: customerToUpsert,
+              candidates: data || [],
+            }) ?? null;
           }
 
           if (conflictingRecord) {

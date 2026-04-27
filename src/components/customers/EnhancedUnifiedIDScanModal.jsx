@@ -8,6 +8,8 @@ import {
 import enhancedUnifiedCustomerService, { saveCustomer } from '../../services/EnhancedUnifiedCustomerService';
 import unifiedCustomerService from '../../services/UnifiedCustomerService';
 import i18n from '../../i18n';
+import useAdminModalFocus from '../../hooks/useAdminModalFocus';
+import { needsImageConversion, processImage as processMediaImage } from '../../utils/mediaProcessor';
 
 const EnhancedUnifiedIDScanModal = ({ 
   isOpen, 
@@ -15,6 +17,7 @@ const EnhancedUnifiedIDScanModal = ({
   onCustomerSaved, 
   onScanComplete,
   onImageSaved = null,
+  onImageSaveStateChange = null,
   customerId = null,
   title = null,
   setFormData = null,
@@ -23,7 +26,10 @@ const EnhancedUnifiedIDScanModal = ({
   scanningForSecondDriver = false,
   autoProcessOnSelect = true,
   allowSaveWithoutOcr = false,
-  saveWithoutOcrLabel = null
+  saveWithoutOcrOnly = false,
+  saveWithoutOcrLabel = null,
+  verifiedIdentity = null,
+  skipCustomerSave = false,
 }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
@@ -42,6 +48,8 @@ const EnhancedUnifiedIDScanModal = ({
   const abortControllerRef = useRef(null);
   const processingTimeoutRef = useRef(null);
   const hasPrewarmedRef = useRef(false);
+  const previewObjectUrlRef = useRef(null);
+  useAdminModalFocus(isOpen, 'enhanced-id-scan');
 
   const createAbortController = useCallback(() => {
     if (abortControllerRef.current) {
@@ -69,6 +77,10 @@ const EnhancedUnifiedIDScanModal = ({
 
   const handleClose = useCallback(() => {
     handleCancel();
+    if (previewObjectUrlRef.current) {
+      URL.revokeObjectURL(previewObjectUrlRef.current);
+      previewObjectUrlRef.current = null;
+    }
     setSelectedImage(null);
     setImagePreview(null);
     setExtractedData(null);
@@ -90,48 +102,175 @@ const EnhancedUnifiedIDScanModal = ({
 
   const handleImageSelect = (e) => {
     const file = e.target.files[0];
+    e.target.value = '';
     if (file) {
       handleFileUpload(file);
     }
   };
 
   const handleTakePhoto = () => {
+    setUploadMethod('camera');
+    if (cameraInputRef.current) {
+      cameraInputRef.current.value = '';
+    }
     cameraInputRef.current?.click();
   };
 
   const handleOpenGallery = () => {
+    setUploadMethod('gallery');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
     fileInputRef.current?.click();
   };
 
-  const handleFileUpload = async (file) => {
+  const inferMimeTypeFromFile = useCallback((file) => {
+    const normalizedType = String(file?.type || '').toLowerCase();
+    if (normalizedType.startsWith('image/')) {
+      return normalizedType;
+    }
+
+    const lowerName = String(file?.name || '').toLowerCase();
+    if (lowerName.endsWith('.png')) return 'image/png';
+    if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) return 'image/jpeg';
+    if (lowerName.endsWith('.webp')) return 'image/webp';
+    if (lowerName.endsWith('.gif')) return 'image/gif';
+    if (lowerName.endsWith('.bmp')) return 'image/bmp';
+    if (lowerName.endsWith('.svg')) return 'image/svg+xml';
+    if (lowerName.endsWith('.heic') || lowerName.endsWith('.heif')) return 'image/heic';
+    return 'image/png';
+  }, []);
+
+  const createPreviewObjectUrl = useCallback(async (file) => {
+    const inferredMimeType = inferMimeTypeFromFile(file);
+    const fileBuffer = await file.arrayBuffer();
+    const previewBlob = new Blob([fileBuffer], { type: inferredMimeType });
+    return URL.createObjectURL(previewBlob);
+  }, [inferMimeTypeFromFile]);
+
+  const handleFileUpload = useCallback(async (file) => {
     if (!file) return;
 
-    setSelectedImage(file);
-    setError(null);
-    setSuccess(null);
-    setExtractedData(null);
-    setProcessingStatus('');
-    
+    if (previewObjectUrlRef.current) {
+      URL.revokeObjectURL(previewObjectUrlRef.current);
+      previewObjectUrlRef.current = null;
+    }
+
     try {
-      const url = URL.createObjectURL(file);
-      setImagePreview(url);
+      let normalizedFile = file;
+      if (needsImageConversion(file)) {
+        const { blob } = await processMediaImage(file);
+        const normalizedName = String(file.name || 'document')
+          .replace(/\.(heic|heif)$/i, '')
+          .concat('.jpg');
+        normalizedFile = new File([blob], normalizedName, {
+          type: 'image/jpeg',
+          lastModified: Date.now(),
+        });
+      }
+
+      const objectUrl = await createPreviewObjectUrl(normalizedFile);
+      previewObjectUrlRef.current = objectUrl;
+
+      setSelectedImage(normalizedFile);
+      setImagePreview(objectUrl);
+      setError(null);
+      setSuccess(null);
+      setExtractedData(null);
+      setProcessingStatus('');
 
       if (autoProcessOnSelect) {
-        await processImage(file);
+        await processImage(normalizedFile);
       }
       
     } catch (error) {
       console.error('❌ File upload failed:', error);
       setError(tr('Upload failed', 'Échec du téléversement'));
     }
-  };
+  }, [autoProcessOnSelect, createPreviewObjectUrl, tr]);
+
+  const handlePreviewError = useCallback(() => {
+    if (!selectedImage || !imagePreview?.startsWith('blob:')) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setImagePreview(reader.result);
+    };
+    reader.onerror = (previewError) => {
+      console.error('❌ Failed to recover image preview:', previewError);
+      setError(tr('Preview unavailable for this file. Please try another image.', "Aperçu indisponible pour ce fichier. Veuillez essayer une autre image."));
+    };
+    reader.readAsDataURL(selectedImage);
+  }, [imagePreview, selectedImage, tr]);
 
   const handleDrop = (e) => {
     e.preventDefault();
-    const file = e.dataTransfer.files[0];
+    setUploadMethod('gallery');
+    const droppedItem = Array.from(e.dataTransfer.items || []).find(
+      (item) => item.kind === 'file'
+    );
+    const file = droppedItem?.getAsFile?.() || e.dataTransfer.files[0];
     if (file) {
       handleFileUpload(file);
     }
+  };
+
+  const isOcrServiceFailure = (message = '') => {
+    const normalized = String(message || '').toLowerCase();
+    return (
+      normalized.includes('ocr is unavailable') ||
+      normalized.includes('api key must be replaced') ||
+      normalized.includes('api key must be replaced or renewed') ||
+      normalized.includes('api key expired') ||
+      normalized.includes('api_key_invalid') ||
+      normalized.includes('permission_denied') ||
+      normalized.includes('service_blocked') ||
+      normalized.includes('gemini api error: 400') ||
+      normalized.includes('gemini api error: 403') ||
+      normalized.includes("l'ocr est indisponible")
+    );
+  };
+
+  const saveImageForManualEntry = async (imageFile) => {
+    if (onImageSaveStateChange) {
+      onImageSaveStateChange('saving');
+    }
+
+    const uploadResult = await enhancedUnifiedCustomerService.uploadDocumentOnly(imageFile, {
+      folder: scanningForSecondDriver ? 'second_drivers_ocr' : 'customers_ocr',
+      prefix: customerId || rentalId || 'tour',
+    });
+
+    if (!uploadResult.success) {
+      if (onImageSaveStateChange) {
+        onImageSaveStateChange('error');
+      }
+      throw new Error(uploadResult.error || "Impossible d'enregistrer l'image");
+    }
+
+    const savedPayload = {
+      imageUrl: uploadResult.publicUrl,
+      publicUrl: uploadResult.publicUrl,
+      id_scan_url: uploadResult.publicUrl,
+      fileName: imageFile?.name || selectedImage?.name || 'document.jpg',
+      uploadMethod: uploadMethod || 'gallery',
+      ocrSkipped: true,
+      ocrUnavailable: true,
+    };
+
+    if (onImageSaved) {
+      onImageSaved(savedPayload, imageFile);
+    } else if (onScanComplete) {
+      onScanComplete(savedPayload, imageFile);
+    }
+
+    if (onImageSaveStateChange) {
+      onImageSaveStateChange('saved');
+    }
+
+    return savedPayload;
   };
 
   const processImage = async (fileToProcess = null) => {
@@ -148,8 +287,8 @@ const EnhancedUnifiedIDScanModal = ({
 
     processingTimeoutRef.current = setTimeout(() => {
       handleCancel();
-      setError(tr('Processing timeout. Try a clearer image.', 'Délai de traitement dépassé. Essayez une image plus nette.'));
-    }, 30000);
+      setError(tr('Processing is taking longer than expected. Retry or continue manually.', 'Le traitement prend plus de temps que prévu. Réessayez ou continuez manuellement.'));
+    }, 60000);
 
     try {
       let targetCustomerId = customerId;
@@ -218,9 +357,40 @@ const EnhancedUnifiedIDScanModal = ({
           const documentNumber = ocrResult.idNumber || 
                                 ocrResult.document_number || 
                                 ocrResult.licence_number || '';
-          
+
+          const verifiedName =
+            verifiedIdentity?.fullName ||
+            verifiedIdentity?.customerName ||
+            '';
+          const verifiedEmail =
+            verifiedIdentity?.email ||
+            verifiedIdentity?.customerEmail ||
+            '';
+          const verifiedPhone =
+            verifiedIdentity?.phone ||
+            verifiedIdentity?.customerPhone ||
+            '';
+          const fallbackFormName =
+            formData?.customer_name ||
+            formData?.customerName ||
+            formData?.full_name ||
+            formData?.fullName ||
+            '';
+          const fallbackFormEmail =
+            formData?.customer_email ||
+            formData?.customerEmail ||
+            formData?.email ||
+            '';
+          const fallbackFormPhone =
+            formData?.customer_phone ||
+            formData?.customerPhone ||
+            formData?.phone ||
+            '';
+
           const customerName = ocrResult.fullName || 
-                              ocrResult.full_name || '';
+                              ocrResult.full_name || 
+                              verifiedName ||
+                              fallbackFormName || '';
           
           const dob = ocrResult.dateOfBirth || 
                      ocrResult.date_of_birth || '';
@@ -246,6 +416,8 @@ const EnhancedUnifiedIDScanModal = ({
           const formCustomerData = {
             customer_id: targetCustomerId,
             customer_name: customerName,
+            customer_email: verifiedEmail || fallbackFormEmail,
+            customer_phone: verifiedPhone || fallbackFormPhone,
             customer_dob: dob,
             customer_id_number: documentNumber,
             customer_licence_number: documentNumber,
@@ -256,30 +428,38 @@ const EnhancedUnifiedIDScanModal = ({
           
           // Save through the shared customer service so duplicate licence/ID conflicts
           // recover against existing customer profiles instead of surfacing raw 409 errors.
-          try {
-            const customerSaveResult = await saveCustomer(
+          const hasMinimumCustomerIdentity = Boolean(String(customerName || '').trim());
+
+          if (!skipCustomerSave && hasMinimumCustomerIdentity) {
+            try {
+              const customerSaveResult = await saveCustomer(
               {
                 id: targetCustomerId,
                 customer_name: customerName,
+                customer_email: verifiedEmail || fallbackFormEmail,
+                customer_phone: verifiedPhone || fallbackFormPhone,
                 customer_dob: dob,
                 customer_id_number: documentNumber,
                 customer_licence_number: documentNumber,
                 customer_nationality: nationality,
                 id_scan_url: result.publicUrl || result.imageUrl || '',
-              },
-              {
-                file_public_url: result.publicUrl || result.imageUrl || '',
-              },
-              false
-            );
+                },
+                {
+                  file_public_url: result.publicUrl || result.imageUrl || '',
+                },
+                false
+              );
 
-            if (!customerSaveResult?.success) {
-              console.warn('Database save warning:', customerSaveResult?.error || customerSaveResult);
-            } else if (!result.ocrUnavailable) {
-              setSuccess(tr(`Customer saved! ${customerName}`, `Client enregistré ! ${customerName}`));
+              if (!customerSaveResult?.success) {
+                console.warn('Database save warning:', customerSaveResult?.error || customerSaveResult);
+              } else if (!result.ocrUnavailable) {
+                setSuccess(tr(`Customer saved! ${customerName}`, `Client enregistré ! ${customerName}`));
+              }
+            } catch (dbError) {
+              console.warn('Database save warning:', dbError);
             }
-          } catch (dbError) {
-            console.warn('Database save warning:', dbError);
+          } else if (!skipCustomerSave) {
+            console.warn('Skipping customer save because OCR returned no usable identity fields.');
           }
           
           // Update parent form
@@ -292,7 +472,13 @@ const EnhancedUnifiedIDScanModal = ({
           
           if (result.ocrUnavailable) {
             setSuccess(null);
-            setError(tr('ID image was captured, but OCR is unavailable right now. Please enter the customer name and ID number manually.', "L'image du document a été capturée, mais l'OCR est indisponible pour le moment. Veuillez saisir manuellement le nom du client et le numéro d'identité."));
+            setError(
+              result.ocrError ||
+                tr(
+                  'ID image was captured, but OCR is unavailable right now. Please enter the customer name and ID number manually.',
+                  "L'image du document a été capturée, mais l'OCR est indisponible pour le moment. Veuillez saisir manuellement le nom du client et le numéro d'identité."
+                )
+            );
           }
 
           // Call onScanComplete with both normalized form fields and raw OCR-derived fields
@@ -309,6 +495,7 @@ const EnhancedUnifiedIDScanModal = ({
                 document_number: documentNumber,
                 imageUrl: result.publicUrl || result.imageUrl || '',
                 publicUrl: result.publicUrl || result.imageUrl || '',
+                uploadMethod: uploadMethod || 'camera',
                 ocrUnavailable: Boolean(result.ocrUnavailable),
                 ocrError: result.ocrError || null,
               },
@@ -325,13 +512,48 @@ const EnhancedUnifiedIDScanModal = ({
         }
         
       } else {
-        setError(result.error || tr('Scan failed', 'Le scan a échoué'));
-        setProcessingStatus(tr('Scan failed', 'Le scan a échoué'));
+        if (allowSaveWithoutOcr && isOcrServiceFailure(result.error)) {
+          await saveImageForManualEntry(fileToProcess || selectedImage);
+          setError(null);
+          setSuccess(
+            tr(
+              'ID image saved. Continue by entering the customer details manually.',
+              "L'image du document a été enregistrée. Continuez en saisissant manuellement les détails du client."
+            )
+          );
+          setProcessingStatus(tr('Image saved for manual entry', 'Image enregistrée pour saisie manuelle'));
+          setTimeout(() => {
+            handleClose();
+          }, 150);
+        } else {
+          setError(result.error || tr('Scan failed', 'Le scan a échoué'));
+          setProcessingStatus(tr('Scan failed', 'Le scan a échoué'));
+        }
       }
 
     } catch (err) {
       console.error('❌ Process error:', err);
-      setError(tr('Scan failed. Try again.', 'Le scan a échoué. Réessayez.'));
+      if (allowSaveWithoutOcr && isOcrServiceFailure(err?.message)) {
+        try {
+          await saveImageForManualEntry(fileToProcess || selectedImage);
+          setError(null);
+          setSuccess(
+            tr(
+              'ID image saved. Continue by entering the customer details manually.',
+              "L'image du document a été enregistrée. Continuez en saisissant manuellement les détails du client."
+            )
+          );
+          setProcessingStatus(tr('Image saved for manual entry', 'Image enregistrée pour saisie manuelle'));
+          setTimeout(() => {
+            handleClose();
+          }, 150);
+        } catch (uploadError) {
+          console.error('❌ Fallback save after OCR failure also failed:', uploadError);
+          setError(uploadError?.message || err?.message || tr('Scan failed. Try again.', 'Le scan a échoué. Réessayez.'));
+        }
+      } else {
+        setError(err?.message || tr('Scan failed. Try again.', 'Le scan a échoué. Réessayez.'));
+      }
     } finally {
       if (processingTimeoutRef.current) {
         clearTimeout(processingTimeoutRef.current);
@@ -358,30 +580,8 @@ const EnhancedUnifiedIDScanModal = ({
     setProcessingStatus(tr('Saving ID...', "Enregistrement du document..."));
 
     try {
-      const uploadResult = await enhancedUnifiedCustomerService.uploadDocumentOnly(selectedImage, {
-        folder: scanningForSecondDriver ? 'second_drivers_ocr' : 'customers_ocr',
-        prefix: customerId || rentalId || 'tour',
-      });
-
       if (abortController.signal.aborted) return;
-
-      if (!uploadResult.success) {
-        throw new Error(uploadResult.error || "Impossible d'enregistrer l'image");
-      }
-
-      const savedPayload = {
-        imageUrl: uploadResult.publicUrl,
-        publicUrl: uploadResult.publicUrl,
-        id_scan_url: uploadResult.publicUrl,
-        fileName: selectedImage.name,
-        ocrSkipped: true,
-      };
-
-      if (onImageSaved) {
-        onImageSaved(savedPayload, selectedImage);
-      } else if (onScanComplete) {
-        onScanComplete(savedPayload, selectedImage);
-      }
+      await saveImageForManualEntry(selectedImage);
 
       setSuccess(tr('Image saved. You can fill in the fields manually.', 'Image enregistrée. Vous pouvez remplir les champs manuellement.'));
       setTimeout(() => {
@@ -400,33 +600,32 @@ const EnhancedUnifiedIDScanModal = ({
 
   if (!isOpen) return null;
 
-  const isOcrUnavailableMessage = Boolean(error && error.toLowerCase().includes('ocr is unavailable'));
+  const isOcrUnavailableMessage = Boolean(
+    error &&
+      (
+        error.toLowerCase().includes('ocr is unavailable') ||
+        error.toLowerCase().includes('api key must be replaced') ||
+        error.toLowerCase().includes('ocr est indisponible')
+      )
+  );
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4 backdrop-blur-[2px]">
       {/* Mobile Bottom Sheet / Desktop Modal */}
-      <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl h-[85vh] sm:h-auto max-h-[85vh] flex flex-col">
+      <div className="flex h-[85vh] max-h-[85vh] w-full flex-col overflow-hidden rounded-[32px] border border-violet-100 bg-white shadow-[0_24px_80px_rgba(76,29,149,0.18)] sm:h-auto sm:max-w-md">
         {/* Header */}
-        <div className="sticky top-0 z-10 bg-white p-4 sm:p-6 border-b border-gray-200">
+        <div className="sticky top-0 z-10 border-b border-violet-100 bg-white/95 p-4 backdrop-blur sm:p-5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-xl">
-                <CameraIcon className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600" />
-              </div>
-              <div>
-                <h2 className="text-lg sm:text-xl font-bold text-gray-900">
-                  {title || (scanningForSecondDriver ? tr("Scan the second driver's ID", "Scanner l'identité du second conducteur") : tr("Scan ID document", "Scanner le document d'identité"))}
-                </h2>
-                <p className="text-gray-500 text-sm">
-                  {scanningForSecondDriver ? tr("Scan the driver's ID document", "Scanner la pièce d'identité du conducteur") : tr("Take a photo of the ID or save it without OCR", "Prendre une photo de la pièce d'identité ou l’enregistrer sans OCR")}
-                </p>
+              <div className="rounded-2xl bg-violet-50 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
+                <CameraIcon className="h-5 w-5 text-violet-600 sm:h-6 sm:w-6" />
               </div>
             </div>
             <button
               onClick={handleClose}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              className="rounded-2xl p-2 text-slate-500 transition-colors hover:bg-slate-100"
             >
-              <X className="w-5 h-5 text-gray-500" />
+              <X className="h-5 w-5" />
             </button>
           </div>
         </div>
@@ -466,10 +665,12 @@ const EnhancedUnifiedIDScanModal = ({
               </div>
               
               <div className="relative w-48 h-36 mx-auto mb-6 rounded-xl overflow-hidden border-4 border-white shadow-lg">
-                <img 
+                <img
+                  key={imagePreview}
                   src={imagePreview} 
                   alt={tr('ID Preview', "Aperçu de la pièce d'identité")}
-                  className="w-full h-full object-cover"
+                  onError={handlePreviewError}
+                  className="h-full w-full object-contain bg-white"
                 />
               </div>
               
@@ -483,15 +684,17 @@ const EnhancedUnifiedIDScanModal = ({
                 >
                   {tr('Retake', 'Reprendre')}
                 </button>
-                <button
-                  onClick={() => processImage()}
-                  className="flex-1 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-xl text-sm flex items-center justify-center gap-2 hover:opacity-95"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  {tr('Scan with OCR', 'Scanner avec OCR')}
-                </button>
+                {!saveWithoutOcrOnly && (
+                  <button
+                    onClick={() => processImage()}
+                    className="flex-1 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-xl text-sm flex items-center justify-center gap-2 hover:opacity-95"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    {tr('Scan with OCR', 'Scanner avec OCR')}
+                  </button>
+                )}
               </div>
-              {allowSaveWithoutOcr && (
+              {(allowSaveWithoutOcr || saveWithoutOcrOnly) && (
                 <button
                   onClick={handleSaveWithoutOcr}
                   className="w-full py-3 border border-slate-300 bg-white text-slate-700 font-semibold rounded-xl text-sm flex items-center justify-center gap-2 hover:bg-slate-50"
@@ -504,73 +707,75 @@ const EnhancedUnifiedIDScanModal = ({
           ) : (
             <>
               {/* Upload Options */}
-              <div className="text-center mb-8">
-                <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-100 to-blue-50 rounded-2xl mb-4">
-                  <Camera className="w-8 h-8 text-blue-600" />
+              <div className="mb-8 rounded-[28px] border border-violet-100 bg-gradient-to-b from-violet-50/80 to-white px-5 py-8 text-center shadow-[0_12px_34px_rgba(124,58,237,0.10)]">
+                <div className="mb-4 inline-flex h-20 w-20 items-center justify-center rounded-[28px] bg-gradient-to-br from-violet-50 via-violet-100 to-indigo-50 shadow-[0_18px_40px_rgba(124,58,237,0.14)]">
+                  <Camera className="h-9 w-9 text-violet-600" />
                 </div>
-                <h3 className="text-xl font-bold text-gray-900 mb-2">{tr('Scan ID Card', "Scanner la pièce d'identité")}</h3>
-                <p className="text-gray-500 text-sm">{tr('Take a clear photo for automatic data extraction', 'Prenez une photo nette pour l’extraction automatique des données')}</p>
+                <h3 className="mb-2 text-2xl font-bold tracking-tight text-slate-900">{tr('Scan ID Card', "Scanner la pièce d'identité")}</h3>
+                <p className="mx-auto max-w-xs text-sm text-slate-500">{tr('Take a clear photo for automatic data extraction', 'Prenez une photo nette pour l’extraction automatique des données')}</p>
               </div>
 
               <div className="space-y-4">
                 {/* Camera Option */}
                 <button
                   onClick={handleTakePhoto}
-                  className="w-full p-4 bg-gradient-to-r from-blue-50 to-blue-100 border-2 border-blue-200 rounded-xl text-left flex items-center gap-4 hover:border-blue-300 transition-all"
+                  className="flex w-full items-center gap-4 rounded-[26px] border border-violet-200 bg-gradient-to-r from-violet-50 via-violet-50 to-indigo-50 px-5 py-5 text-left shadow-[0_14px_34px_rgba(124,58,237,0.10)] transition-all hover:border-violet-300"
                 >
-                  <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center">
-                    <Camera className="w-6 h-6 text-blue-600" />
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white shadow-sm">
+                    <Camera className="h-7 w-7 text-violet-600" />
                   </div>
                   <div className="flex-1">
-                    <div className="font-semibold text-gray-900">{tr('Take Photo', 'Prendre une photo')}</div>
-                    <div className="text-sm text-gray-500">{tr('Use camera now', 'Utiliser la caméra maintenant')}</div>
+                    <div className="text-xl font-bold text-slate-900">{tr('Take Photo', 'Prendre une photo')}</div>
+                    <div className="mt-1 text-sm font-medium text-slate-500">{tr('Use camera now', 'Utiliser la caméra maintenant')}</div>
                   </div>
-                  <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
+                  <div className="h-3 w-3 rounded-full bg-violet-600 shadow-[0_0_0_6px_rgba(124,58,237,0.12)]"></div>
                 </button>
 
                 {/* Gallery Option */}
                 <button
                   onClick={handleOpenGallery}
-                  className="w-full p-4 bg-gradient-to-r from-gray-50 to-gray-100 border-2 border-gray-200 rounded-xl text-left flex items-center gap-4 hover:border-gray-300 transition-all"
+                  className="flex w-full items-center gap-4 rounded-[26px] border border-slate-200 bg-white px-5 py-5 text-left shadow-sm transition-all hover:border-slate-300 hover:bg-slate-50"
                 >
-                  <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center">
-                    <FileImage className="w-6 h-6 text-gray-600" />
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-50 shadow-sm">
+                    <FileImage className="h-7 w-7 text-slate-500" />
                   </div>
                   <div className="flex-1">
-                    <div className="font-semibold text-gray-900">{tr('Choose from Gallery', 'Choisir depuis la galerie')}</div>
-                    <div className="text-sm text-gray-500">{tr('Select existing photo', 'Sélectionner une photo existante')}</div>
+                    <div className="text-xl font-bold text-slate-900">{tr('Choose from Gallery', 'Choisir depuis la galerie')}</div>
+                    <div className="mt-1 text-sm font-medium text-slate-500">{tr('Select existing photo', 'Sélectionner une photo existante')}</div>
                   </div>
-                  <div className="w-2 h-2 bg-gray-600 rounded-full"></div>
+                  <div className="h-3 w-3 rounded-full bg-slate-400"></div>
                 </button>
 
                 {/* Drag & Drop Area */}
                 <div
-                  className="p-6 border-2 border-dashed border-gray-300 rounded-xl text-center hover:border-blue-400 transition-colors"
+                  className="rounded-[26px] border-2 border-dashed border-violet-200 bg-violet-50/35 p-7 text-center transition-colors hover:border-violet-300"
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDrop}
                 >
-                  <Upload className="w-8 h-8 text-gray-400 mx-auto mb-3" />
-                  <p className="text-sm text-gray-600">{tr('Or drag & drop photo here', 'Ou glissez-déposez la photo ici')}</p>
+                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-white shadow-sm">
+                    <Upload className="h-7 w-7 text-violet-400" />
+                  </div>
+                  <p className="text-base font-semibold text-slate-600">{tr('Or drag & drop photo here', 'Ou glissez-déposez la photo ici')}</p>
                 </div>
               </div>
 
               {/* Tips */}
-              <div className="mt-8 p-4 bg-gray-50 rounded-xl">
-                <div className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-2">
-                  <Sparkles className="w-4 h-4" />
+              <div className="mt-8 rounded-[24px] border border-slate-200 bg-slate-50/90 p-5">
+                <div className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.14em] text-slate-600">
+                  <Sparkles className="h-4 w-4 text-violet-500" />
                   {tr('Tips for best results', 'Conseils pour de meilleurs résultats')}
                 </div>
-                <ul className="space-y-1.5 text-xs text-gray-500">
+                <ul className="space-y-2 text-sm text-slate-500">
                   <li className="flex items-start gap-2">
-                    <div className="w-1 h-1 bg-gray-400 rounded-full mt-1.5"></div>
+                    <div className="mt-2 h-1.5 w-1.5 rounded-full bg-violet-300"></div>
                     <span>{tr('Ensure good lighting', 'Assurez un bon éclairage')}</span>
                   </li>
                   <li className="flex items-start gap-2">
-                    <div className="w-1 h-1 bg-gray-400 rounded-full mt-1.5"></div>
+                    <div className="mt-2 h-1.5 w-1.5 rounded-full bg-violet-300"></div>
                     <span>{tr('Place ID on flat surface', 'Placez la pièce sur une surface plane')}</span>
                   </li>
                   <li className="flex items-start gap-2">
-                    <div className="w-1 h-1 bg-gray-400 rounded-full mt-1.5"></div>
+                    <div className="mt-2 h-1.5 w-1.5 rounded-full bg-violet-300"></div>
                     <span>{tr('Avoid glare and shadows', 'Évitez les reflets et les ombres')}</span>
                   </li>
                 </ul>
@@ -633,19 +838,14 @@ const EnhancedUnifiedIDScanModal = ({
         </div>
 
         {/* Footer */}
-        <div className="sticky bottom-0 bg-white border-t border-gray-200 p-4">
-          <div className="flex items-center justify-between text-xs text-gray-500">
-            <div className="flex items-center gap-1.5">
-              <Database className="w-3 h-3" />
-              <span>
-                {scanningForSecondDriver ? "rental_second_drivers" : tr('customers', 'clients')}
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <Sparkles className="w-3 h-3" />
-              <span>{tr('AI-powered OCR', "OCR assisté par l'IA")}</span>
-            </div>
-          </div>
+        <div className="sticky bottom-0 border-t border-violet-100 bg-white/95 p-4 backdrop-blur">
+          <button
+            onClick={handleClose}
+            className="flex w-full items-center justify-center gap-2 rounded-[22px] border border-slate-200 bg-slate-50 px-4 py-4 text-base font-bold text-slate-700 transition-colors hover:bg-slate-100"
+          >
+            <X className="h-5 w-5" />
+            {tr('Cancel', 'Annuler')}
+          </button>
         </div>
       </div>
     </div>

@@ -10,29 +10,20 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
-import { ArrowLeft, Loader2, ShieldAlert, Pencil, Users, Mail, Smartphone, Shield, MessageSquare, Eye, EyeOff, ScrollText, ChevronDown, ChevronUp, Trash2, CalendarDays, Upload, FileText } from 'lucide-react';
+import { ArrowLeft, Loader2, ShieldAlert, Pencil, Users, Mail, Smartphone, Shield, MessageSquare, Eye, EyeOff, ScrollText, ChevronDown, ChevronUp, Trash2, CalendarDays, Upload, FileText, BadgeCheck, Image as ImageIcon, ExternalLink } from 'lucide-react';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
-import { ALL_PERMISSION_KEYS, DEFAULT_STAFF_PERMISSION_KEYS, PERMISSION_GROUPS } from '../../utils/permissionCatalog';
+import AdminWorkspaceLoadingShell from '../../components/admin/AdminWorkspaceLoadingShell';
+import { ALL_PERMISSION_KEYS, PERMISSION_GROUPS, buildDefaultPermissionsForRole } from '../../utils/permissionCatalog';
 import { normalizePermissionMap as normalizeCatalogPermissionMap } from '../../utils/permissionCatalog';
 import { isPlatformOwnerEmail } from '../../utils/accountType';
 import UserProfileService from '../../services/UserProfileService';
 import i18n from '../../i18n';
+import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 
 const buildPermissionState = (defaultValue = false) =>
   ALL_PERMISSION_KEYS.reduce((acc, permissionKey) => ({ ...acc, [permissionKey]: defaultValue }), {});
 
-const buildPermissionsForRole = (role) =>
-  ALL_PERMISSION_KEYS.reduce((acc, permissionKey) => {
-    const isOwner = role === 'owner';
-    const isAdmin = role === 'admin';
-    if (isOwner || isAdmin) {
-      acc[permissionKey] = true;
-      return acc;
-    }
-
-    acc[permissionKey] = DEFAULT_STAFF_PERMISSION_KEYS.includes(permissionKey);
-    return acc;
-  }, {});
+const buildPermissionsForRole = (role) => buildDefaultPermissionsForRole(role);
 
 const buildMergedPermissionsForUser = (user) => {
   const merged = buildPermissionsForRole(user?.role || 'employee');
@@ -158,6 +149,9 @@ const buildPermissionSummary = (permissions) => {
   if (permissions['Verification Center']) {
     summary.push('Review verification documents');
   }
+  if (permissions['Messages']) {
+    summary.push('Use shared message center');
+  }
   if (!permissions['Edit Rental Cost'] && !permissions['Pricing Management']) {
     summary.push('Cannot edit pricing');
   }
@@ -184,6 +178,7 @@ const PERMISSION_MODULE_DESCRIPTIONS = {
   Alerts: 'View and manage operational alerts.',
   'User & Role Management': 'Manage users and role permissions.',
   'Verification Center': 'Review owner and vehicle verification documents.',
+  Messages: 'Access the shared operational message center.',
   'Marketplace Review': 'Review, approve, and publish marketplace listings.',
   'System Settings': 'Manage platform-wide settings.',
   'Project Export': 'Export project data.',
@@ -352,19 +347,42 @@ const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 
 const normalizeStaffIdDocuments = (documents) => {
   if (!documents) return [];
-  if (Array.isArray(documents)) return documents.filter(Boolean);
+  const normalizeItem = (document, index = 0) => {
+    if (!document) return null;
+    if (typeof document === 'string') {
+      return {
+        id: `staff-id-${index}`,
+        url: document,
+        name: tr('Legal ID', 'Pièce légale'),
+      };
+    }
+    if (typeof document === 'object') {
+      const url = document.url || document.publicUrl || document.id_scan_url || document.path || document.storage_path || '';
+      if (!url) return null;
+      return {
+        ...document,
+        id: document.id || `staff-id-${index}`,
+        url,
+        name: document.name || document.fileName || document.filename || tr('Legal ID', 'Pièce légale'),
+      };
+    }
+    return null;
+  };
+
+  if (Array.isArray(documents)) return documents.map((document, index) => normalizeItem(document, index)).filter(Boolean);
   if (typeof documents === 'string') {
     try {
       const parsed = JSON.parse(documents);
-      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+      return Array.isArray(parsed) ? parsed.map((document, index) => normalizeItem(document, index)).filter(Boolean) : [];
     } catch {
-      return [];
+      return normalizeItem(documents, 0) ? [normalizeItem(documents, 0)] : [];
     }
   }
   return [];
 };
 
 const getStaffIdDocumentCount = (user) => normalizeStaffIdDocuments(user?.staff_id_documents).length;
+const isImageDocument = (document) => /\.(png|jpe?g|webp|gif|bmp|svg)(\?.*)?$/i.test(document?.url || '') || String(document?.mimeType || '').startsWith('image/');
 
 const normalizeActivityAction = (log) =>
   String(log?.action || log?.event_name || log?.title || '')
@@ -389,6 +407,10 @@ const UserManagement = () => {
   const location = useLocation();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
+    pathname: location.pathname,
+    isTransitionFlow: loading,
+  });
   const [enrichingUsers, setEnrichingUsers] = useState(false);
   const [fetchError, setFetchError] = useState('');
   const [isAddUserModalOpen, setAddUserModalOpen] = useState(false);
@@ -430,6 +452,8 @@ const UserManagement = () => {
   const [showProfilePermissions, setShowProfilePermissions] = useState(false);
   const [permissionSearch, setPermissionSearch] = useState('');
   const [expandedPermissionModules, setExpandedPermissionModules] = useState(() => new Set());
+  const [legalIdPreviewUser, setLegalIdPreviewUser] = useState(null);
+  const [legalIdPreviewIndex, setLegalIdPreviewIndex] = useState(0);
 
   const setGroupedPermissionValue = (setter, permissionKey, checked) => {
     setter((prev) => ({ ...prev, [permissionKey]: checked === true }));
@@ -450,6 +474,11 @@ const UserManagement = () => {
   const isOwnerRole = (role) => String(role || '').toLowerCase() === 'owner';
   const isMasterOwnerUser = (user) => isOwnerRole(user?.role) && isPlatformOwnerEmail(user?.email);
   const getLockedMasterOwnerPermissions = () => buildPermissionsForRole('owner');
+  const legalIdDocuments = useMemo(
+    () => normalizeStaffIdDocuments(legalIdPreviewUser?.staff_id_documents || legalIdPreviewUser?.user_metadata?.staff_id_documents),
+    [legalIdPreviewUser]
+  );
+  const activeLegalIdDocument = legalIdDocuments[legalIdPreviewIndex] || null;
 
   const userRouteMatch = useMemo(
     () => location.pathname.match(/\/admin\/users\/([^/]+)\/(profile|edit|permissions)$/),
@@ -926,6 +955,125 @@ const UserManagement = () => {
     await loadPermissionsForUser(user);
   };
 
+  const openLegalIdPreview = (user, index = 0) => {
+    const documents = normalizeStaffIdDocuments(user?.staff_id_documents || user?.user_metadata?.staff_id_documents);
+    if (documents.length === 0) {
+      toast.info(tr('No legal ID uploaded for this user yet.', "Aucune pièce légale n'a encore été importée pour cet utilisateur."));
+      return;
+    }
+    setLegalIdPreviewUser(user);
+    setLegalIdPreviewIndex(Math.min(index, documents.length - 1));
+  };
+
+  const closeLegalIdPreview = () => {
+    setLegalIdPreviewUser(null);
+    setLegalIdPreviewIndex(0);
+  };
+
+  const legalIdPreviewOverlay = legalIdPreviewUser ? (
+    <div className="fixed inset-0 z-[140] flex items-center justify-center overflow-x-hidden bg-slate-950/45 p-3 sm:p-4 backdrop-blur-sm">
+      <div className="max-h-[92vh] w-[min(100%,56rem)] overflow-hidden rounded-[28px] border border-violet-100 bg-white shadow-[0_40px_120px_rgba(15,23,42,0.28)]">
+        <div className="flex items-start justify-between gap-3 border-b border-violet-100 px-4 py-4 sm:px-6 sm:py-5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-50 text-violet-600">
+                <BadgeCheck className="h-6 w-6" />
+              </span>
+              <div>
+                <h2 className="text-lg font-bold text-slate-900 sm:text-xl">{tr('Legal ID', 'Pièce légale')}</h2>
+                <p className="text-sm text-slate-500">
+                  {`${legalIdPreviewUser.name} • ${legalIdDocuments.length} ${tr(legalIdDocuments.length === 1 ? 'file' : 'files', legalIdDocuments.length === 1 ? 'fichier' : 'fichiers')}`}
+                </p>
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={closeLegalIdPreview}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
+          >
+            <span className="text-2xl leading-none">×</span>
+          </button>
+        </div>
+
+        <div className="grid gap-0 md:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="border-b border-violet-100 bg-slate-50/70 p-4 md:border-b-0 md:border-r">
+            <div className="space-y-2">
+              {legalIdDocuments.map((document, index) => {
+                const selected = index === legalIdPreviewIndex;
+                return (
+                  <button
+                    key={document.id || document.url || index}
+                    type="button"
+                    onClick={() => setLegalIdPreviewIndex(index)}
+                    className={`flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition ${
+                      selected
+                        ? 'border-violet-200 bg-white shadow-[0_12px_30px_rgba(124,58,237,0.10)]'
+                        : 'border-transparent bg-white/70 hover:border-violet-100 hover:bg-white'
+                    }`}
+                  >
+                    <span className={`inline-flex h-10 w-10 items-center justify-center rounded-2xl ${selected ? 'bg-violet-50 text-violet-600' : 'bg-slate-100 text-slate-500'}`}>
+                      <ImageIcon className="h-5 w-5" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-slate-900">{document.name || `${tr('Legal ID', 'Pièce légale')} ${index + 1}`}</span>
+                      <span className="block text-xs text-slate-500">{tr('Tap to preview', 'Touchez pour prévisualiser')}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex min-h-[420px] min-w-0 flex-col bg-white">
+            {activeLegalIdDocument ? (
+              <>
+                <div className="flex flex-col gap-3 border-b border-violet-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                  <div className="min-w-0">
+                    <p className="truncate text-base font-semibold text-slate-900">{activeLegalIdDocument.name || tr('Legal ID', 'Pièce légale')}</p>
+                    <p className="text-xs text-slate-500">{tr('Inline preview', 'Aperçu intégré')}</p>
+                  </div>
+                  <a
+                    href={activeLegalIdDocument.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 sm:w-auto"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    {tr('Open original', "Ouvrir l'original")}
+                  </a>
+                </div>
+                <div className="flex-1 overflow-auto bg-slate-50 p-3 sm:p-4">
+                  {isImageDocument(activeLegalIdDocument) ? (
+                    <div className="overflow-hidden rounded-[24px] border border-violet-100 bg-white shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+                      <img
+                        src={activeLegalIdDocument.url}
+                        alt={activeLegalIdDocument.name || tr('Legal ID preview', 'Aperçu de la pièce légale')}
+                        className="h-auto w-full object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <div className="overflow-hidden rounded-[24px] border border-violet-100 bg-white shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+                      <iframe
+                        src={activeLegalIdDocument.url}
+                        title={activeLegalIdDocument.name || tr('Legal ID preview', 'Aperçu de la pièce légale')}
+                        className="h-[70vh] w-full"
+                      />
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="flex min-h-[420px] items-center justify-center p-8 text-center text-sm text-slate-500">
+                {tr('No legal ID available for preview.', "Aucune pièce légale disponible pour l'aperçu.")}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   const startInlinePermissionDraft = (user, updater) => {
     if (!user) return;
 
@@ -1376,27 +1524,7 @@ const UserManagement = () => {
   };
 
   if (authLoading || !initialized) {
-    return (
-      <div className="min-h-screen bg-slate-50">
-        <AdminModuleHero
-          icon={<Users className="h-8 w-8 text-white" />}
-          eyebrow={tr('Users & Roles', 'Utilisateurs et rôles')}
-          title={tr('User and Role Management', 'Gestion des utilisateurs et rôles')}
-          description=""
-          className="w-full"
-        />
-        <div className="p-4 sm:p-6">
-          <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
-            <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-              <div className="text-5xl leading-none animate-pulse">⏳</div>
-              <h2 className="text-xl font-semibold text-slate-900">
-                {tr('Verifying credentials...', 'Vérification des identifiants...')}
-              </h2>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+    return <AdminWorkspaceLoadingShell eyebrow={tr('Users & Roles', 'Utilisateurs et rôles')} title={tr('User and Role Management', 'Gestion des utilisateurs et rôles')} description={tr('Verifying credentials and workspace access...', 'Vérification des identifiants et de l’accès à l’espace...')} cardRows={1} />;
   }
 
   if (currentUser?.role !== 'owner') {
@@ -1409,28 +1537,8 @@ const UserManagement = () => {
     );
   }
   
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-50">
-        <AdminModuleHero
-          icon={<Users className="h-8 w-8 text-white" />}
-          eyebrow={tr('Users & Roles', 'Utilisateurs et rôles')}
-          title={tr('User and Role Management', 'Gestion des utilisateurs et rôles')}
-          description=""
-          className="w-full"
-        />
-        <div className="p-4 sm:p-6">
-          <div className="rounded-[2rem] border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
-            <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
-              <div className="text-5xl leading-none animate-pulse">⏳</div>
-              <h2 className="text-xl font-semibold text-slate-900">
-                {tr('Loading users...', 'Chargement des utilisateurs...')}
-              </h2>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+  if (loading && !suppressBlockingLoader) {
+    return <AdminWorkspaceLoadingShell eyebrow={tr('Users & Roles', 'Utilisateurs et rôles')} title={tr('User and Role Management', 'Gestion des utilisateurs et rôles')} description={tr('Preparing user access, roles, and permission controls...', 'Préparation des accès utilisateurs, rôles et contrôles de permissions...')} cardRows={1} />;
   }
 
   if (activeView && activeUser) {
@@ -1509,6 +1617,15 @@ const UserManagement = () => {
                   <Button type="button" onClick={() => openEditPage(activeUser)} className="rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 text-white">
                     <Pencil className="mr-2 h-4 w-4" />
                     {tr('Edit', 'Modifier')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => openLegalIdPreview(activeUser)}
+                    className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  >
+                    <BadgeCheck className="mr-2 h-4 w-4 text-violet-600" />
+                    {tr('Legal ID', 'Pièce légale')}
                   </Button>
                   <Button type="button" variant="outline" onClick={() => setShowProfilePermissions((prev) => !prev)} className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50">
                     {showProfilePermissions ? <ChevronUp className="mr-2 h-4 w-4" /> : <ChevronDown className="mr-2 h-4 w-4" />}
@@ -1846,6 +1963,7 @@ const UserManagement = () => {
           renderPermissionWorkspace(activeUser, { standalone: true })
         )}
         {deleteConfirmationDialog}
+        {legalIdPreviewOverlay}
       </div>
     );
   }
@@ -1975,28 +2093,49 @@ const UserManagement = () => {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="inline-flex items-center gap-2 text-xs text-violet-700">
                   <ScrollText className="h-3.5 w-3.5" />
-                  {tr('Tap to open profile and logs', 'Touchez pour ouvrir le profil et les journaux')}
+                  {tr('Tap card to open profile', 'Touchez la carte pour ouvrir le profil')}
                 </div>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="rounded-2xl"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openDeleteModal(user);
-                  }}
-                >
-                  {tr('Delete', 'Supprimer')}
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openLegalIdPreview(user);
+                    }}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                  >
+                    <BadgeCheck className="mr-2 h-3.5 w-3.5 text-violet-600" />
+                    {tr('Legal ID', 'Pièce légale')}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="rounded-2xl"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openDeleteModal(user);
+                    }}
+                  >
+                    {tr('Delete', 'Supprimer')}
+                  </Button>
+                </div>
               </div>
             </div>
           ))}
         </div>
       )}
       </div>
+
+      {legalIdPreviewOverlay}
 
       {/* Add User Modal */}
       <Dialog open={isAddUserModalOpen} onOpenChange={setAddUserModalOpen}>

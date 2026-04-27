@@ -134,6 +134,15 @@ class EnhancedTransactionalRentalService {
    */
   _sanitizeDataForDB(data) {
     console.log('🛡️ [Sanitizer V2] Starting data sanitization...');
+    const nonDatabaseFields = new Set([
+      'booking_range',
+      'vehicle',
+      'selected_vehicle_id_snapshot',
+      'selected_vehicle_plate_snapshot',
+      'selected_vehicle_model_snapshot',
+      'selected_vehicle_selected_by',
+      'selected_vehicle_selected_at',
+    ]);
     const numericFields = [
       'vehicle_id', 'total_amount', 'unit_price', 'transport_fee',
       'deposit_amount', 'damage_deposit', 'remaining_amount', 'quantity_days'
@@ -142,6 +151,10 @@ class EnhancedTransactionalRentalService {
     const sanitized = {};
 
     for (const key in data) {
+      if (nonDatabaseFields.has(key)) {
+        continue;
+      }
+
       let value = data[key];
       // console.log(`🛡️ [Sanitizer V2] Processing key: "${key}", value: "${value}"`);
 

@@ -1,6 +1,21 @@
 import { supabase } from '../lib/supabase';
 
 export class ExtensionPricingService {
+  static async getLatestVoidableExtension(rentalId) {
+    const { data, error } = await supabase
+      .from('rental_extensions')
+      .select('*')
+      .eq('rental_id', rentalId)
+      .in('status', ['approved', 'active', 'completed'])
+      .order('approved_at', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data || null;
+  }
+
   static async getApprovedExtensionSummary(rentalId) {
     const { data, error } = await supabase
       .from('rental_extensions')
@@ -950,6 +965,45 @@ export class ExtensionPricingService {
     if (error) throw error;
     
     return { success: true };
+  }
+
+  static async voidExtension(extensionId, voiderId, reason = null) {
+    const { data: extension, error: extensionError } = await supabase
+      .from('rental_extensions')
+      .select('*')
+      .eq('id', extensionId)
+      .maybeSingle();
+
+    if (extensionError) throw extensionError;
+    if (!extension) {
+      throw new Error('Extension not found');
+    }
+
+    if (!['approved', 'active', 'completed'].includes(String(extension.status || '').toLowerCase())) {
+      throw new Error('Only approved extensions can be voided');
+    }
+
+    const payload = {
+      status: 'voided',
+      voided_by: voiderId || null,
+      voided_at: new Date().toISOString(),
+      void_reason: reason || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('rental_extensions')
+      .update(payload)
+      .eq('id', extensionId)
+      .select('*')
+      .single();
+
+    if (error) throw error;
+
+    return {
+      success: true,
+      extension: data || { ...extension, ...payload },
+    };
   }
 
   /**

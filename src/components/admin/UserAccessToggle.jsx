@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { useSelector } from 'react-redux';
 import { supabase } from '../../utils/supabaseClient';
+import { useAuth } from '../../contexts/AuthContext';
 
 const UserAccessToggle = ({ user, onAccessChange, disabled = false }) => {
   const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState('');
   const { user: currentUser, userRole } = useSelector(state => state.auth);
-
-  const canManageAccess = userRole === 'owner' || userRole === 'admin';
+  const { hasPermission } = useAuth();
+  const canManageAccess = String(userRole || '').toLowerCase() === 'owner' || hasPermission('User & Role Management');
 
   const handleToggle = async () => {
     if (!canManageAccess || disabled || isUpdating) return;

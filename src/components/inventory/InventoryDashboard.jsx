@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import InventoryService from '../../services/InventoryService';
 import { getInventoryCategoryVisual } from '../../utils/inventoryVisuals';
+import AdminMobileStatsRow from '../admin/AdminMobileStatsRow';
 
 const InventoryDashboard = ({ onNavigate }) => {
   const { i18n } = useTranslation();
@@ -195,7 +196,10 @@ const InventoryDashboard = ({ onNavigate }) => {
       )}
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <AdminMobileStatsRow
+        contentClassName="flex gap-3 md:grid md:grid-cols-2 lg:grid-cols-4"
+        itemClassName="min-w-[220px] flex-none md:min-w-0 md:flex-auto"
+      >
         <StatCard
           icon={PackageIcon}
           title={tr('Total Items', 'Total des articles')}
@@ -228,7 +232,7 @@ const InventoryDashboard = ({ onNavigate }) => {
           color="purple"
           onClick={() => onNavigate('movements')}
         />
-      </div>
+      </AdminMobileStatsRow>
 
       {/* Quick Actions */}
       <div className="bg-white rounded-xl shadow-sm border p-6">

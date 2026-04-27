@@ -44,6 +44,7 @@ import {
   removeNonTypicalParts
 } from '../../config/maintenanceInventoryMapping';
 import i18n from '../../i18n';
+import useAdminModalFocus from '../../hooks/useAdminModalFocus';
 
 const MAINTENANCE_MANUAL_SUGGESTIONS = {
   'Oil Change': ['Engine Oil', 'Oil Filter', 'Drain Washer'],
@@ -76,6 +77,7 @@ const stripFinanceSnapshot = (value = '') => {
 const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initialContext = null }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
+  useAdminModalFocus(true, 'maintenance-form');
   const safeMaintenanceTypes = Array.isArray(MaintenanceTrackingService.MAINTENANCE_TYPES) ? MaintenanceTrackingService.MAINTENANCE_TYPES : ['Oil Change', 'Filter Replacement', 'Brake Service', 'Tire Service', 'Engine Service', 'Transmission Service', 'Electrical Service', 'Body Work', 'General Inspection', 'Other'];
   const parseMaintenanceTypes = (value) => {
     if (Array.isArray(value)) return value.filter(Boolean);

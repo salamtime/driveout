@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { supabase } from '../../utils/supabaseClient';
+import { requestPasswordResetEmail } from '../../services/emailApi';
 
 const ForgotPasswordForm = () => {
   const { t } = useTranslation();
@@ -16,15 +16,11 @@ const ForgotPasswordForm = () => {
     setError(null);
     
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/auth/reset-password`,
+      await requestPasswordResetEmail({
+        email,
+        redirectTo: `${window.location.origin}/reset-password`,
       });
-      
-      if (error) {
-        setError(error.message);
-      } else {
-        setSuccess(true);
-      }
+      setSuccess(true);
     } catch (err) {
       setError(err.message);
     } finally {

@@ -43,6 +43,29 @@ const createSupabaseClient = ({ url, anonKey, storageKey, applicationName = 'ren
     },
   });
 
+const shutdownSupabaseClient = (client) => {
+  if (!client) return;
+
+  try {
+    const channels = typeof client.getChannels === 'function' ? client.getChannels() : [];
+    channels.forEach((channel) => {
+      try {
+        client.removeChannel(channel);
+      } catch {
+        // Ignore channel cleanup failures during client swap.
+      }
+    });
+  } catch {
+    // Ignore channel enumeration failures during client swap.
+  }
+
+  try {
+    client.realtime?.disconnect?.();
+  } catch {
+    // Ignore realtime disconnect failures during client swap.
+  }
+};
+
 const masterConfig = {
   mode: 'master',
   url: supabaseUrl,
@@ -75,6 +98,8 @@ export const configureSupabaseClient = ({
     throw new Error('Tenant Supabase configuration is incomplete.');
   }
 
+  shutdownSupabaseClient(activeClient);
+
   activeConfig = {
     mode,
     url: normalizedUrl,
@@ -95,6 +120,7 @@ export const configureSupabaseClient = ({
 
 export const configureMasterSupabaseClient = () => {
   if (activeClient && activeConfig.mode === 'master') return activeClient;
+  shutdownSupabaseClient(activeClient);
   activeConfig = masterConfig;
   activeClient = createSupabaseClient({
     url: masterConfig.url,

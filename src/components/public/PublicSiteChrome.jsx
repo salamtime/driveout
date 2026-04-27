@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ChevronRight, Compass, Home, ImageIcon, Info, LayoutDashboard, LogIn, Menu, Share2, Tractor, Waves, X } from 'lucide-react';
+import { ChevronRight, LayoutDashboard, LogIn, Menu, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLanguageContext } from '../../contexts/LanguageContext';
@@ -11,16 +11,8 @@ const SAHARAX_LOGO_SRC = '/assets/logo.jpg';
 const ACCOUNT_MENU_PERSIST_KEY = 'saharax_account_menu_open';
 const ACCOUNT_RETURN_PATH_KEY = 'saharax_account_return_path';
 
-const DEFAULT_CATEGORY_PILLS = [
-  { label: 'ATV', href: '/rent?category=atv' },
-  { label: 'Buggy', href: '/rent?category=buggy' },
-  { label: 'Motorcycle', href: '/rent?category=motorcycle' },
-  { label: 'Electric', href: '/rent?category=electric' },
-  { label: 'Sea-Doo', href: '/rent?category=jetski' },
-  { label: 'Machinery', href: '/rent?category=machinery' },
-];
-
-const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_PILLS }) => {
+const PublicSiteChrome = ({ current = 'home' }) => {
+  const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -37,20 +29,6 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
   const isFrench = i18n.resolvedLanguage === 'fr';
   const activeLanguage = i18n.resolvedLanguage === 'fr' ? 'fr' : 'en';
   const tr = (en, fr) => (isFrench ? fr : en);
-  const navItemsConfig = useMemo(
-    () => [
-      { id: 'home', label: tr('Home', 'Accueil'), href: '/website', icon: Home, accent: 'from-violet-500 to-indigo-600' },
-      { id: 'rent', label: tr('Rentals', 'Locations'), href: '/website', icon: Compass, accent: 'from-indigo-500 to-violet-600' },
-      { id: 'marketplace', label: tr('Marketplace', 'Marketplace'), href: '/marketplace', icon: Tractor, accent: 'from-violet-500 to-fuchsia-600' },
-      { id: 'tours', label: tr('Tours', 'Excursions'), href: '/tours', icon: Compass, accent: 'from-fuchsia-500 to-violet-600' },
-      { id: 'categories', label: tr('Categories', 'Catégories'), href: '/website#categories', icon: Waves, accent: 'from-blue-500 to-indigo-600' },
-      { id: 'about', label: tr('About Us', 'À propos'), href: '/website#about', icon: Info, accent: 'from-cyan-500 to-sky-600' },
-      { id: 'media', label: tr('Media', 'Médias'), href: '/website#media', icon: ImageIcon, accent: 'from-emerald-500 to-teal-600' },
-      { id: 'social', label: tr('Social', 'Réseaux'), href: '/website#social', icon: Share2, accent: 'from-purple-500 to-fuchsia-600' },
-    ],
-    [isFrench]
-  );
-
   const normalizedRole = String(userProfile?.role || '').toLowerCase();
   const normalizedEmail = String(userProfile?.email || user?.email || '').toLowerCase();
   const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
@@ -80,20 +58,17 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
   } else if (isBusinessAccountType(normalizedAccountType)) {
     workspaceHref = '/account/overview';
   }
-  const workspaceLabel = hasPrivateProfileWorkspace
-    ? tr('My Profile', 'Mon profil')
-    : isBusinessAccountType(normalizedAccountType)
-      ? tr('Business Workspace', 'Espace business')
+  const hasWorkspaceAccess = Boolean(user);
+  const workspaceLabel =
+    hasPrivateProfileWorkspace
+      ? tr('My Profile', 'Mon profil')
       : tr('My Workspace', 'Mon espace');
   const handleSignOut = async () => {
     setMenuOpen(false);
     await signOut();
   };
-  const handlePublicNavigate = (href) => {
+  const handleWorkspaceNavigate = () => {
     setMenuOpen(false);
-    navigate(href);
-  };
-  const handleProfileWorkspaceNavigate = () => {
     try {
       window.sessionStorage.setItem(ACCOUNT_MENU_PERSIST_KEY, '1');
       window.sessionStorage.setItem(
@@ -103,29 +78,18 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
     } catch (error) {
       console.warn('Failed to persist account menu state:', error);
     }
-    navigate('/account/overview');
+    navigate(hasPrivateProfileWorkspace ? '/account/overview' : workspaceHref);
   };
-  const accountLabel = user
-    ? (userProfile?.fullName || userProfile?.email || user?.email || 'Signed in')
-    : 'SaharaX website';
-  const accountSubtitle = user
-    ? (userProfile?.role || 'Signed in')
-    : tr('Visitor', 'Visiteur');
+  const accountEmail = userProfile?.email || user?.email || '';
 
-  const navItems = useMemo(
-    () =>
-      navItemsConfig.map((item) => {
-        const basePath = item.href.split('#')[0] || item.href;
-        const hasExplicitCurrent = Boolean(current);
-        return {
-          ...item,
-          active: hasExplicitCurrent
-            ? current === item.id
-            : item.href !== '/' && location.pathname.startsWith(basePath),
-        };
-      }),
-    [current, location.pathname, navItemsConfig]
-  );
+  useEffect(() => {
+    const handleScroll = () => {
+      setScrolled(window.scrollY > 6);
+    };
+    handleScroll();
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -167,46 +131,50 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
     }
   }, [menuOpen]);
 
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname, location.search, location.hash]);
+
   return (
     <>
-      <header className="sticky top-0 z-40 border-b border-violet-100/80 bg-white/88 backdrop-blur-xl">
+      <header
+        className={`sticky top-0 z-40 transition-all ${
+          scrolled
+            ? 'border-b border-violet-100/80 bg-white/92 backdrop-blur-xl shadow-[0_12px_30px_rgba(15,23,42,0.06)]'
+            : 'border-b border-transparent bg-[linear-gradient(180deg,#f5f3ff_0%,#ece9ff_100%)]'
+        }`}
+      >
         <div className="mx-auto max-w-7xl px-4 sm:px-6">
           <div className="flex h-20 items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setMenuOpen(true)}
-                className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-violet-100 bg-white text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-50"
-                aria-label="Open public menu"
-              >
-                <Menu className="h-5 w-5" />
-              </button>
+            <Link to="/website" className="flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
+                <img
+                  src={SAHARAX_LOGO_SRC}
+                  alt="SaharaX"
+                  className="h-full w-full object-contain"
+                />
+              </div>
+              <div>
+                <p className="text-sm font-semibold tracking-[0.12em] text-violet-600">SaharaX</p>
+                <p className="text-sm text-slate-500">{tr('Rentals, tours, and more', 'Locations, excursions et plus')}</p>
+              </div>
+            </Link>
 
-              <Link to="/website" className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-[0_14px_30px_rgba(79,70,229,0.18)]">
-                  <img
-                    src={SAHARAX_LOGO_SRC}
-                    alt="SaharaX"
-                    className="h-full w-full object-contain"
-                  />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold tracking-[0.12em] text-violet-600">SaharaX</p>
-                  <p className="text-sm text-slate-500">{tr('Rentals, tours, and more', 'Locations, excursions et plus')}</p>
-                </div>
-              </Link>
-            </div>
-
-            <div className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50/80 px-4 py-2 text-sm font-semibold text-violet-700">
-              {navItems.find((item) => item.active)?.label || 'Explore'}
-            </div>
+            <button
+              type="button"
+              onClick={() => setMenuOpen(true)}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-violet-100 bg-white text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-50"
+              aria-label="Open public menu"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
           </div>
         </div>
       </header>
 
       {menuOpen && (
         <div
-          className="fixed inset-0 z-[9999] flex"
+          className="fixed inset-0 z-[9999] flex items-start justify-end px-4 pt-24 sm:pt-28"
           onClick={(event) => {
             if (event.target === event.currentTarget) {
               setMenuOpen(false);
@@ -218,8 +186,8 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
             onClick={() => setMenuOpen(false)}
           />
 
-          <div className="relative inset-y-0 left-0 z-50 w-[19rem] max-w-[88vw] transform transition-transform duration-300 ease-in-out">
-            <div className="m-3 flex h-[calc(100dvh-1.5rem)] flex-col overflow-hidden rounded-[30px] border border-violet-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(245,247,255,0.98)_100%)] shadow-[0_26px_70px_rgba(76,29,149,0.10)] backdrop-blur">
+          <div className="relative z-50 w-full max-w-[22rem]">
+            <div className="overflow-hidden rounded-[26px] border border-violet-100/80 bg-white shadow-[0_26px_70px_rgba(76,29,149,0.16)] backdrop-blur">
               <div className="flex-shrink-0 border-b border-violet-100/80 px-5 py-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3">
@@ -246,25 +214,9 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                 </div>
 
                 <div className="mt-3 space-y-3">
-                  <div className="flex items-center gap-3 rounded-2xl border border-violet-100 bg-white/85 px-3 py-2 shadow-sm">
-                    <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
-                      {user ? (
-                        <span className="text-sm font-semibold text-slate-700">
-                          {(accountLabel || 'S').charAt(0).toUpperCase()}
-                        </span>
-                      ) : (
-                        <img
-                          src={SAHARAX_LOGO_SRC}
-                          alt="SaharaX"
-                          className="h-full w-full object-contain"
-                        />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-semibold text-slate-900">{accountLabel}</div>
-                      <div className="text-xs capitalize text-slate-500">{accountSubtitle}</div>
-                    </div>
-                    <div className="inline-flex rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
+                  <div className="rounded-2xl border border-violet-100 bg-white/85 px-3 py-3 shadow-sm">
+                    <div className="mt-1 flex justify-center">
+                      <div className="inline-flex rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
                       {[
                         { code: 'fr', label: 'FR' },
                         { code: 'en', label: 'EN' },
@@ -286,13 +238,14 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                           </button>
                         );
                       })}
+                      </div>
                     </div>
                   </div>
 
-                  {hasPrivateProfileWorkspace ? (
+                  {hasWorkspaceAccess ? (
                     <button
                       type="button"
-                      onClick={handleProfileWorkspaceNavigate}
+                      onClick={handleWorkspaceNavigate}
                       className="flex w-full items-center justify-between gap-3 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-50 via-white to-indigo-50 px-3 py-3 text-left text-sm font-semibold text-violet-700 transition-all hover:border-violet-300 hover:text-violet-800"
                     >
                       <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -300,97 +253,60 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                           <LayoutDashboard className="h-5 w-5" />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="truncate">{tr('My profile', 'Mon profil')}</div>
-                          <div className="mt-0.5 text-xs font-medium text-violet-600">{tr('Signed in', 'Connecté')}</div>
+                          <div className="truncate">{workspaceLabel}</div>
+                          <div className="mt-0.5 truncate text-xs font-medium text-violet-600">
+                            {accountEmail || tr('Signed in', 'Connecté')}
+                          </div>
                         </div>
                       </div>
                       <ChevronRight className="h-4 w-4 flex-shrink-0 text-violet-600" />
                     </button>
                   ) : (
-                    <div className="rounded-2xl border border-violet-100 bg-white/85 px-3 py-3 shadow-sm">
-                      <div className="flex items-center justify-between text-xs text-slate-500">
-                        <span>{tr('Page access', 'Accès aux pages')}</span>
-                        <span>{navItems.length}/{navItems.length}</span>
-                      </div>
-                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100">
-                        <div className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-700" style={{ width: '100%' }} />
-                      </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Link
+                        to="/login"
+                        onClick={() => setMenuOpen(false)}
+                        className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                      >
+                        <LogIn className="h-4 w-4" />
+                        {tr('Sign in', 'Se connecter')}
+                      </Link>
+                      <Link
+                        to="/register"
+                        onClick={() => setMenuOpen(false)}
+                        className="flex items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition hover:bg-violet-100"
+                      >
+                        {tr('Sign up', "S'inscrire")}
+                      </Link>
                     </div>
                   )}
                 </div>
               </div>
 
-              <nav
-                className="flex-1 space-y-2 overflow-y-auto px-3 py-4"
-                style={{
-                  WebkitOverflowScrolling: 'touch',
-                  touchAction: 'pan-y',
-                  overscrollBehavior: 'contain',
-                }}
-              >
-                {navItems.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => handlePublicNavigate(item.href)}
-                      className={`
-                        group relative block w-full overflow-hidden rounded-2xl border px-3.5 py-3 text-left transition-all duration-200
-                        ${item.active
-                          ? 'border-violet-200 bg-gradient-to-r from-violet-50 via-white to-indigo-50 text-violet-900 shadow-[0_16px_38px_rgba(79,70,229,0.12)]'
-                          : 'border-transparent bg-white/70 text-slate-700 hover:border-slate-200 hover:bg-white hover:shadow-sm'
-                        }
-                      `}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${item.accent} text-white shadow-sm`}>
-                          <Icon className="h-5 w-5" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className={`truncate text-sm font-semibold ${item.active ? 'text-violet-900' : 'text-slate-800'}`}>{item.label}</div>
-                          <div className={`mt-0.5 text-xs ${item.active ? 'text-violet-600' : 'text-slate-500'}`}>
-                            {item.active ? tr('Current workspace', 'Espace actuel') : tr('Open page', 'Ouvrir la page')}
-                          </div>
-                        </div>
-                        <ChevronRight className={`h-4 w-4 flex-shrink-0 transition-transform ${item.active ? 'text-violet-600' : 'text-slate-400 group-hover:translate-x-0.5'}`} />
-                      </div>
-                    </button>
-                  );
-                })}
-
-              </nav>
-
-              <div className="border-t border-violet-100/80 bg-white/80 p-4 space-y-2">
-                {canOpenAdminPanel ? (
+              <div className="border-t border-violet-100/80 bg-white/90 p-4 space-y-3">
+                <div className="grid grid-cols-2 gap-2">
                   <Link
-                    to={adminHref}
+                    to="/website#media"
                     onClick={() => setMenuOpen(false)}
-                    className="flex w-full items-center gap-3 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_36px_rgba(79,70,229,0.20)] transition-all hover:from-violet-700 hover:to-indigo-800"
+                    className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-violet-200 hover:text-violet-700"
                   >
-                    <LayoutDashboard className="h-4 w-4" />
-                    <span>{adminLabel}</span>
+                    {tr('Media', 'Médias')}
                   </Link>
-                ) : null}
-
-                {user && !hasPrivateProfileWorkspace ? (
                   <Link
-                    to={workspaceHref}
-                    onClick={(event) => {
-                      if (hasPrivateProfileWorkspace) {
-                        event.preventDefault();
-                        handleProfileWorkspaceNavigate();
-                        return;
-                      }
-                      setMenuOpen(false);
-                    }}
-                    className="flex w-full items-center gap-3 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-50 via-white to-indigo-50 px-4 py-3 text-sm font-semibold text-violet-700 transition-all hover:border-violet-300 hover:text-violet-800"
+                    to="/website#social"
+                    onClick={() => setMenuOpen(false)}
+                    className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-violet-200 hover:text-violet-700"
                   >
-                    <LayoutDashboard className="h-4 w-4" />
-                    <span>{workspaceLabel}</span>
+                    {tr('Social', 'Réseaux')}
                   </Link>
-                ) : null}
-
+                  <Link
+                    to="/website#about"
+                    onClick={() => setMenuOpen(false)}
+                    className="col-span-2 inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:border-violet-200 hover:text-violet-700"
+                  >
+                    {tr('About Us', 'À propos')}
+                  </Link>
+                </div>
                 {user ? (
                   <button
                     type="button"
@@ -400,16 +316,7 @@ const PublicSiteChrome = ({ current = 'home', categoryPills = DEFAULT_CATEGORY_P
                     <LogIn className="h-4 w-4" />
                     <span>{tr('Sign out', 'Se déconnecter')}</span>
                   </button>
-                ) : (
-                  <Link
-                    to="/login"
-                    onClick={() => setMenuOpen(false)}
-                    className="flex w-full items-center gap-3 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-600 transition-colors hover:bg-rose-100"
-                  >
-                    <Home className="h-4 w-4" />
-                    <span>{tr('Sign In', 'Se connecter')}</span>
-                  </Link>
-                )}
+                ) : null}
               </div>
             </div>
           </div>

@@ -1,45 +1,155 @@
-import React, { useState, useRef } from 'react';
-import { Upload, File, X, AlertCircle, CheckCircle } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Upload, AlertCircle, CheckCircle } from 'lucide-react';
 import i18n from '../i18n';
+import { uploadFile } from '../utils/storageUpload';
+import VerificationService from '../services/VerificationService';
+import geminiVisionOCR from '../services/geminiVisionOcr';
 
-const DocumentUpload = ({ 
-  vehicleId, 
-  documents = [], 
-  onDocumentsChange, 
-  disabled = false, 
-  className = "" 
+const ALL_DOCUMENT_CATEGORIES = [
+  { value: 'legal', label: 'Legal file', labelFr: 'Document légal' },
+  { value: 'purchase-invoice', label: 'Purchase invoice', labelFr: "Facture d'achat" },
+  { value: 'registration', label: 'Registration', labelFr: 'Immatriculation' },
+  { value: 'annual-tax', label: 'Annual vehicle tax receipt', labelFr: 'Reçu de taxe annuelle véhicule' },
+  { value: 'insurance', label: 'Insurance', labelFr: 'Assurance' },
+  { value: 'maintenance', label: 'Maintenance', labelFr: 'Maintenance' },
+  { value: 'other', label: 'Other', labelFr: 'Autre' },
+];
+
+const runWithTimeout = (promise, timeoutMs, errorMessage) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+    }),
+  ]);
+
+const uploadWithRetry = async (bucketName, pathPrefix, fileName, file, retries = 2) => {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      const result = await runWithTimeout(
+        uploadFile(file, {
+          bucket: bucketName,
+          pathPrefix,
+          fileName,
+          optimizationProfile: 'document',
+        }),
+        45000,
+        'Upload stalled. Please try again.'
+      );
+
+      if (!result?.success) {
+        throw new Error(result?.error || 'Upload failed');
+      }
+
+      return result;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) {
+        await new Promise((resolve) => window.setTimeout(resolve, 800 * attempt));
+      }
+    }
+  }
+
+  throw lastError || new Error('Upload failed');
+};
+
+const buildTemporaryDocument = ({ fileId, file, category, categoryKey, vehicleId }) => {
+  const objectUrl = file.type?.startsWith('image/') ? URL.createObjectURL(file) : '';
+  return {
+    id: `temp-${fileId}`,
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    url: objectUrl,
+    storagePath: '',
+    uploadedAt: new Date().toISOString(),
+    uploadedBy: 'Current User',
+    category,
+    categoryKey,
+    vehicleId,
+    status: 'pending',
+    isTemporary: true,
+    objectUrl,
+  };
+};
+
+const DocumentUpload = ({
+  vehicleId,
+  verificationEntityId = null,
+  ownerUserId = null,
+  documents = [],
+  onDocumentsChange,
+  onUploadComplete,
+  onOcrExtracted,
+  allowedCategoryValues = null,
+  defaultCategory = null,
+  lockedCategory = null,
+  disabled = false,
+  className = '',
 }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
+  const DOCUMENT_CATEGORIES = useMemo(() => {
+    const allowedSet = Array.isArray(allowedCategoryValues) && allowedCategoryValues.length > 0
+      ? new Set(allowedCategoryValues.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean))
+      : null;
+
+    return ALL_DOCUMENT_CATEGORIES
+      .filter((category) => !allowedSet || allowedSet.has(category.value))
+      .map((category) => ({
+        value: category.value,
+        label: tr(category.label, category.labelFr),
+      }));
+  }, [allowedCategoryValues, isFrench]);
+
+  const resolvedDefaultCategory =
+    (lockedCategory && DOCUMENT_CATEGORIES.some((category) => category.value === lockedCategory) && lockedCategory) ||
+    (defaultCategory && DOCUMENT_CATEGORIES.some((category) => category.value === defaultCategory) && defaultCategory) ||
+    DOCUMENT_CATEGORIES[0]?.value ||
+    'legal';
+
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
+  const [temporaryDocuments, setTemporaryDocuments] = useState([]);
   const [error, setError] = useState(null);
-  const [documentCategory, setDocumentCategory] = useState('legal');
+  const [documentCategory, setDocumentCategory] = useState(resolvedDefaultCategory);
   const fileInputRef = useRef(null);
-
-  // FIXED: Use existing vehicle-documents bucket instead of vehicle-media
+  const temporaryDocumentsRef = useRef([]);
   const BUCKET_NAME = 'vehicle-documents';
-  const DOCUMENT_CATEGORIES = [
-    { value: 'legal', label: tr('Legal file', 'Document légal') },
-    { value: 'purchase-invoice', label: tr('Purchase invoice', "Facture d'achat") },
-    { value: 'registration', label: tr('Registration', 'Immatriculation') },
-    { value: 'annual-tax', label: tr('Annual vehicle tax receipt', 'Reçu de taxe annuelle véhicule') },
-    { value: 'insurance', label: tr('Insurance', 'Assurance') },
-    { value: 'maintenance', label: tr('Maintenance', 'Maintenance') },
-    { value: 'other', label: tr('Other', 'Autre') },
-  ];
 
-  console.log('🔍 DocumentUpload Debug:', {
-    vehicleId,
-    documentsLength: documents.length,
-    disabled
-  });
+  const VERIFICATION_TYPE_BY_CATEGORY = {
+    registration: 'vehicle_registration',
+    insurance: 'vehicle_insurance',
+  };
+
+  useEffect(() => {
+    if (lockedCategory && lockedCategory !== documentCategory) {
+      setDocumentCategory(lockedCategory);
+      return;
+    }
+    if (!DOCUMENT_CATEGORIES.some((category) => category.value === documentCategory)) {
+      setDocumentCategory(resolvedDefaultCategory);
+    }
+  }, [DOCUMENT_CATEGORIES, documentCategory, lockedCategory, resolvedDefaultCategory]);
+
+  useEffect(() => {
+    temporaryDocumentsRef.current = temporaryDocuments;
+  }, [temporaryDocuments]);
+
+  useEffect(() => () => {
+    temporaryDocumentsRef.current.forEach((document) => {
+      if (document?.objectUrl) {
+        URL.revokeObjectURL(document.objectUrl);
+      }
+    });
+  }, []);
 
   const handleFileSelect = (event) => {
-    const files = Array.from(event.target.files || []);
+    const files = Array.from(event.target.files || []).slice(0, 1);
     if (files.length > 0) {
-      uploadFiles(files);
+      void uploadFiles(files);
     }
   };
 
@@ -51,113 +161,327 @@ const DocumentUpload = ({
 
     setUploading(true);
     setError(null);
-    
+    setUploadProgress({});
+
     const newDocuments = [];
-    const totalFiles = files.length;
-
     try {
-      console.log(`📤 Starting upload of ${totalFiles} files for vehicle ${vehicleId}`);
+      for (const file of files) {
+        const fileId = `${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+        const selectedCategory = documentCategory;
+        const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const storedFileName = `${selectedCategory}__${fileId}_${safeFileName}`;
+        const pathPrefix = `${vehicleId}`;
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const fileId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        
+        let progressTimer = null;
+
         try {
-          // FIXED: Vehicle-scoped storage path using existing bucket
-          const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-          const storagePath = `${vehicleId}/${documentCategory}__${fileId}_${safeFileName}`;
-          
-          console.log(`📁 Uploading file ${i + 1}/${totalFiles}: ${file.name}`);
-          console.log(`📍 Storage path: ${storagePath}`);
-
-          // Update progress
-          setUploadProgress(prev => ({
+          setUploadProgress((prev) => ({
             ...prev,
-            [fileId]: { progress: 0, status: 'uploading' }
+            [fileId]: { progress: 0, status: 'uploading', updatedAt: Date.now() },
           }));
+ 
+          progressTimer = window.setInterval(() => {
+            setUploadProgress((prev) => {
+              const current = prev[fileId];
+              if (!current || current.status !== 'uploading') {
+                window.clearInterval(progressTimer);
+                return prev;
+              }
 
-          // FIXED: Upload to vehicle-scoped path in existing bucket
-          const { data: uploadData, error: uploadError } = await supabase.storage
-            .from(BUCKET_NAME)
-            .upload(storagePath, file, {
-              cacheControl: '3600',
-              upsert: false
+              return {
+                ...prev,
+                [fileId]: {
+                  ...current,
+                  progress: Math.min(90, (Number(current.progress) || 0) + 15),
+                  updatedAt: Date.now(),
+                },
+              };
+            });
+          }, 400);
+
+          const verificationType = VERIFICATION_TYPE_BY_CATEGORY[selectedCategory] || null;
+          const shouldQueueVerification =
+            verificationType &&
+            verificationEntityId &&
+            !String(vehicleId).startsWith('owner-draft-');
+          const shouldRunVehicleOcr = ['registration', 'insurance'].includes(selectedCategory);
+          const categoryLabel = DOCUMENT_CATEGORIES.find((category) => category.value === selectedCategory)?.label || file.type || 'Document';
+
+          let documentObj = null;
+
+          if (shouldQueueVerification) {
+            if (progressTimer) window.clearInterval(progressTimer);
+
+            const temporaryDocument = buildTemporaryDocument({
+              fileId,
+              file,
+              category: categoryLabel,
+              categoryKey: selectedCategory,
+              vehicleId,
             });
 
-          if (uploadError) {
-            console.error(`❌ Upload error for ${file.name}:`, uploadError);
-            throw uploadError;
+            setTemporaryDocuments((current) => [...current, temporaryDocument]);
+
+            setUploadProgress((prev) => {
+              return {
+                ...prev,
+                [fileId]: { progress: 100, status: shouldRunVehicleOcr ? 'scanning' : 'uploading', updatedAt: Date.now() },
+              };
+            });
+
+            let ocrResult = null;
+
+            if (shouldRunVehicleOcr) {
+              ocrResult = await runWithTimeout(
+                geminiVisionOCR.processVehicleLegalDocument(file, selectedCategory),
+                45000,
+                tr('Document scan timed out. Please enter the fields manually.', 'Le scan du document a expiré. Veuillez saisir les champs manuellement.')
+              );
+
+              if (typeof onOcrExtracted === 'function') {
+                await onOcrExtracted({
+                  category: selectedCategory,
+                  file,
+                  document: temporaryDocument,
+                  extractedData: ocrResult?.data || null,
+                  missingFields: ocrResult?.missingFields || [],
+                  success: Boolean(ocrResult?.success),
+                  error: ocrResult?.error || '',
+                  persisted: false,
+                  verificationRequestId: null,
+                });
+              }
+
+              setUploadProgress((prev) => {
+                return {
+                  ...prev,
+                  [fileId]: {
+                    progress: 100,
+                    status: 'saving',
+                    updatedAt: Date.now(),
+                  },
+                };
+              });
+            }
+
+            const verificationResult = await VerificationService.uploadVerificationDocument({
+              entityType: 'vehicle',
+              entityId: String(verificationEntityId),
+              ownerUserId,
+              verificationType,
+              file,
+            });
+
+            const request = verificationResult?.request || {};
+            documentObj = {
+              id: request.id || fileId,
+              name: request.file_name || file.name,
+              type: request.file_mime_type || file.type,
+              size: request.file_size || file.size,
+              url: request.file_url || '',
+              storagePath: request.file_path || '',
+              uploadedAt: request.created_at || new Date().toISOString(),
+              uploadedBy: 'Current User',
+              category: categoryLabel,
+              categoryKey: selectedCategory,
+              vehicleId,
+              status: request.status || 'pending',
+            };
+
+            setTemporaryDocuments((current) => {
+              current
+                .filter((item) => item?.id === temporaryDocument.id && item?.objectUrl)
+                .forEach((item) => URL.revokeObjectURL(item.objectUrl));
+              return current.filter((item) => item?.id !== temporaryDocument.id);
+            });
+
+            if (typeof onOcrExtracted === 'function') {
+              await onOcrExtracted({
+                category: selectedCategory,
+                file,
+                document: documentObj,
+                extractedData: ocrResult?.data || null,
+                missingFields: ocrResult?.missingFields || [],
+                success: Boolean(ocrResult?.success),
+                error: ocrResult?.error || '',
+                persisted: true,
+                verificationRequestId: request.id || null,
+              });
+            }
+          } else {
+            const uploadResult = await uploadWithRetry(
+              BUCKET_NAME,
+              pathPrefix,
+              storedFileName,
+              file
+            );
+
+            if (progressTimer) window.clearInterval(progressTimer);
+
+            documentObj = {
+              id: fileId,
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              url: uploadResult.url,
+              storagePath: uploadResult.path,
+              uploadedAt: new Date().toISOString(),
+              uploadedBy: 'Current User',
+              category: categoryLabel,
+              categoryKey: selectedCategory,
+              vehicleId,
+            };
           }
-
-          console.log(`✅ File uploaded successfully: ${storagePath}`);
-
-          // Get public URL
-          const { data: urlData } = supabase.storage
-            .from(BUCKET_NAME)
-            .getPublicUrl(storagePath);
-
-          // Create document object for local state (no database record needed for now)
-          const documentObj = {
-            id: fileId,
-            name: file.name,
-            type: file.type,
-            size: file.size,
-            url: urlData.publicUrl,
-            storagePath: storagePath,
-            uploadedAt: new Date().toISOString(),
-            uploadedBy: 'Current User',
-            category: DOCUMENT_CATEGORIES.find((category) => category.value === documentCategory)?.label || getCategoryFromType(file.type),
-            categoryKey: documentCategory,
-            vehicleId: vehicleId
-          };
 
           newDocuments.push(documentObj);
 
-          // Update progress
-          setUploadProgress(prev => ({
-            ...prev,
-            [fileId]: { progress: 100, status: 'completed' }
-          }));
+          setUploadProgress((prev) => {
+            return {
+              ...prev,
+              [fileId]: { progress: 100, status: 'completed', updatedAt: Date.now() },
+            };
+          });
+          if (!shouldQueueVerification && shouldRunVehicleOcr && typeof onOcrExtracted === 'function') {
+            void (async () => {
+              setUploadProgress((prev) => {
+                return {
+                  ...prev,
+                  [fileId]: {
+                    progress: 100,
+                    status: shouldRunVehicleOcr ? 'scanning' : 'completed',
+                    updatedAt: Date.now(),
+                  },
+                };
+              });
 
+              if (shouldRunVehicleOcr && typeof onOcrExtracted === 'function') {
+                const ocrResult = await runWithTimeout(
+                  geminiVisionOCR.processVehicleLegalDocument(file, selectedCategory),
+                  45000,
+                  tr('Document scan timed out. Please enter the fields manually.', 'Le scan du document a expiré. Veuillez saisir les champs manuellement.')
+                );
+
+                await onOcrExtracted({
+                  category: selectedCategory,
+                  file,
+                  document: documentObj,
+                  extractedData: ocrResult?.data || null,
+                  missingFields: ocrResult?.missingFields || [],
+                  success: Boolean(ocrResult?.success),
+                  error: ocrResult?.error || '',
+                });
+
+                setUploadProgress((prev) => {
+                  return {
+                    ...prev,
+                    [fileId]: {
+                      progress: 100,
+                      status: ocrResult?.success ? 'completed' : 'error',
+                      error: ocrResult?.success ? undefined : (ocrResult?.error || 'Scan failed'),
+                      updatedAt: Date.now(),
+                    },
+                  };
+                });
+                return;
+              }
+
+              setUploadProgress((prev) => {
+                return {
+                  ...prev,
+                  [fileId]: { progress: 100, status: 'completed', updatedAt: Date.now() },
+                };
+              });
+            })().catch(async (backgroundError) => {
+              if (shouldRunVehicleOcr && typeof onOcrExtracted === 'function') {
+                try {
+                  await onOcrExtracted({
+                    category: selectedCategory,
+                    file,
+                    document: documentObj,
+                    extractedData: null,
+                    missingFields: [],
+                    success: false,
+                    error: backgroundError?.message || 'Scan failed',
+                  });
+                } catch (callbackError) {
+                  console.error(`❌ OCR fallback callback error for ${file.name}:`, callbackError);
+                }
+              }
+ 
+              setUploadProgress((prev) => {
+                return {
+                  ...prev,
+                  [fileId]: {
+                    progress: 100,
+                    status: 'error',
+                    error: backgroundError?.message || 'Processing failed',
+                    updatedAt: Date.now(),
+                  },
+                };
+              });
+            });
+          }
         } catch (fileError) {
-          console.error(`❌ Error uploading ${file.name}:`, fileError);
-          setUploadProgress(prev => ({
-            ...prev,
-            [fileId]: { progress: 0, status: 'error', error: fileError.message }
-          }));
+          if (progressTimer) window.clearInterval(progressTimer);
+          if (shouldQueueVerification && typeof onOcrExtracted === 'function') {
+            try {
+              await onOcrExtracted({
+                category: selectedCategory,
+                file,
+                document: null,
+                extractedData: null,
+                missingFields: [],
+                success: false,
+                error: fileError?.message || 'Upload failed',
+                persisted: true,
+                verificationRequestId: null,
+              });
+            } catch (callbackError) {
+              console.error(`❌ OCR error-state callback failed for ${file.name}:`, callbackError);
+            }
+          }
+          setTemporaryDocuments((current) => {
+            current
+              .filter((item) => item?.id === `temp-${fileId}` && item?.objectUrl)
+              .forEach((item) => URL.revokeObjectURL(item.objectUrl));
+            return current.filter((item) => item?.id !== `temp-${fileId}`);
+          });
+          setUploadProgress((prev) => {
+            return {
+              ...prev,
+              [fileId]: {
+                progress: 0,
+                status: 'error',
+                error: fileError.message,
+                updatedAt: Date.now(),
+              },
+            };
+          });
         }
       }
 
-      // FIXED: Update parent component with new documents
       if (newDocuments.length > 0) {
         const updatedDocuments = [...documents, ...newDocuments];
         onDocumentsChange(updatedDocuments);
-        console.log(`✅ Successfully uploaded ${newDocuments.length}/${totalFiles} files`);
+        onUploadComplete?.(updatedDocuments);
       }
 
-      // Clear file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
-
-    } catch (error) {
-      console.error('❌ Upload process error:', error);
-      setError(`${tr('Upload failed:', 'Échec du téléversement :')} ${error.message}`);
+    } catch (uploadError) {
+      setError(`${tr('Upload failed:', 'Échec du téléversement :')} ${uploadError.message}`);
     } finally {
       setUploading(false);
-      // Clear progress after a delay
-      setTimeout(() => {
-        setUploadProgress({});
-      }, 3000);
+      window.setTimeout(() => {
+        setUploadProgress((current) => {
+          const nextEntries = Object.entries(current).filter(([, progress]) =>
+            ['error'].includes(String(progress?.status || '').trim().toLowerCase())
+          );
+          return Object.fromEntries(nextEntries);
+        });
+      }, 2500);
     }
-  };
-
-  const getCategoryFromType = (mimeType) => {
-    if (mimeType.startsWith('image/')) return 'Image';
-    if (mimeType === 'application/pdf') return 'PDF';
-    if (mimeType.includes('document') || mimeType.includes('word')) return 'Document';
-    if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) return 'Spreadsheet';
-    return 'Other';
   };
 
   const handleDragOver = (e) => {
@@ -168,44 +492,63 @@ const DocumentUpload = ({
   const handleDrop = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    
+
     if (disabled || uploading) return;
-    
-    const files = Array.from(e.dataTransfer.files);
+
+    const files = Array.from(e.dataTransfer.files).slice(0, 1);
     if (files.length > 0) {
-      uploadFiles(files);
+      void uploadFiles(files);
     }
   };
 
   const progressEntries = Object.entries(uploadProgress);
+  const activeProgress = [...progressEntries]
+    .sort(([, left], [, right]) => (Number(right?.updatedAt) || 0) - (Number(left?.updatedAt) || 0))[0]?.[1] || null;
+  const activeCategoryLabel =
+    DOCUMENT_CATEGORIES.find((category) => category.value === documentCategory)?.label || tr('Document', 'Document');
+  const uploadStateMeta = activeProgress
+    ? activeProgress.status === 'uploading'
+      ? {
+          title: tr('Uploading document...', 'Téléversement du document...'),
+          body: tr('Your document is being uploaded securely.', 'Votre document est téléversé de manière sécurisée.'),
+          tone: 'border-slate-200 bg-slate-50 text-slate-700',
+        }
+      : activeProgress.status === 'scanning'
+        ? {
+            title: tr('Scanning your document...', 'Scan de votre document...'),
+            body: tr('We are reading the document details now.', 'Nous lisons maintenant les détails du document.'),
+            tone: 'border-violet-200 bg-violet-50 text-violet-700',
+          }
+        : activeProgress.status === 'saving'
+          ? {
+              title: tr('Confirming your document...', 'Confirmation de votre document...'),
+              body: tr('We are saving the scanned result and preparing the review.', 'Nous enregistrons le résultat du scan et préparons la revue.'),
+              tone: 'border-violet-200 bg-violet-50 text-violet-700',
+            }
+          : activeProgress.status === 'completed'
+            ? {
+                title: tr('Document verified', 'Document vérifié'),
+                body: tr('We’ve automatically confirmed the details.', 'Nous avons confirmé automatiquement les détails.'),
+                tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+              }
+            : {
+                title: tr('Document not readable', 'Document illisible'),
+                body: activeProgress.error || tr('Upload again or enter details manually below.', 'Téléversez à nouveau ou saisissez les détails manuellement ci-dessous.'),
+                tone: 'border-amber-200 bg-amber-50 text-amber-800',
+              }
+    : null;
 
   return (
     <div className={`space-y-4 ${className}`}>
-      {!disabled && (
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <label className="text-sm font-medium text-gray-700">
-            {tr('Document type', 'Type de document')}
-          </label>
-          <select
-            value={documentCategory}
-            onChange={(event) => setDocumentCategory(event.target.value)}
-            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
-          >
-            {DOCUMENT_CATEGORIES.map((category) => (
-              <option key={category.value} value={category.value}>
-                {category.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
+      <div className="rounded-[1.4rem] border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+        {tr('Final verification may take up to 24 hours.', 'La vérification finale peut prendre jusqu’à 24 heures.')}
+      </div>
 
-      {/* Upload Area */}
       <div
-        className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+        className={`rounded-[1.6rem] border-2 border-dashed p-6 text-center transition-colors ${
           disabled || uploading
-            ? 'border-gray-200 bg-gray-50 cursor-not-allowed'
-            : 'border-gray-300 hover:border-blue-400 cursor-pointer'
+            ? 'cursor-not-allowed border-slate-200 bg-slate-50'
+            : 'cursor-pointer border-violet-200 bg-white hover:border-violet-400'
         }`}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
@@ -214,31 +557,29 @@ const DocumentUpload = ({
         <input
           ref={fileInputRef}
           type="file"
-          multiple
           accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.webp"
           onChange={handleFileSelect}
           className="hidden"
           disabled={disabled || uploading}
         />
-        
+
         <div className="flex flex-col items-center gap-2">
-          <Upload className={`w-8 h-8 ${disabled || uploading ? 'text-gray-400' : 'text-gray-500'}`} />
+          <Upload className={`w-8 h-8 ${disabled || uploading ? 'text-slate-400' : 'text-violet-500'}`} />
           <div>
-            <p className={`text-sm font-medium ${disabled || uploading ? 'text-gray-400' : 'text-gray-700'}`}>
-              {uploading ? 'Uploading documents...' : 'Click to upload documents'}
+            <p className={`text-base font-semibold ${disabled || uploading ? 'text-slate-400' : 'text-slate-900'}`}>
+              {tr('Upload your document', 'Téléversez votre document')}
             </p>
-            <p className={`text-xs ${disabled || uploading ? 'text-gray-300' : 'text-gray-500'}`}>
-              or drag and drop files here
+            <p className={`mt-1 text-sm ${disabled || uploading ? 'text-slate-300' : 'text-slate-500'}`}>
+              {tr('[ Upload photo ]', '[ Téléverser la photo ]')}
             </p>
           </div>
-          <p className={`text-xs ${disabled || uploading ? 'text-gray-300' : 'text-gray-400'}`}>
-            PDF, DOC, DOCX, TXT, JPG, PNG up to 10MB each
+          <p className={`text-xs ${disabled || uploading ? 'text-slate-300' : 'text-slate-400'}`}>
+            {activeCategoryLabel}
           </p>
         </div>
       </div>
 
-      {/* Error Display */}
-      {error && (
+      {error ? (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
           <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
           <div className="text-sm">
@@ -246,72 +587,28 @@ const DocumentUpload = ({
             <p className="text-red-700">{error}</p>
           </div>
         </div>
-      )}
+      ) : null}
 
-      {/* Upload Progress */}
-      {progressEntries.length > 0 && (
-        <div className="space-y-2">
-          <h4 className="text-sm font-medium text-gray-700">Upload Progress</h4>
-          {progressEntries.map(([fileId, progress]) => (
-            <div key={fileId} className="bg-gray-50 rounded-lg p-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-700">File {fileId.split('_')[1]}</span>
-                <div className="flex items-center gap-1">
-                  {progress.status === 'completed' && (
-                    <CheckCircle className="w-4 h-4 text-green-600" />
-                  )}
-                  {progress.status === 'error' && (
-                    <AlertCircle className="w-4 h-4 text-red-600" />
-                  )}
-                  <span className={`text-xs font-medium ${
-                    progress.status === 'completed' ? 'text-green-600' :
-                    progress.status === 'error' ? 'text-red-600' :
-                    'text-blue-600'
-                  }`}>
-                    {progress.status === 'completed' ? 'Completed' :
-                     progress.status === 'error' ? 'Failed' :
-                     `${progress.progress}%`}
-                  </span>
-                </div>
-              </div>
-              
-              {progress.status !== 'error' && (
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div
-                    className={`h-2 rounded-full transition-all duration-300 ${
-                      progress.status === 'completed' ? 'bg-green-500' : 'bg-blue-500'
-                    }`}
-                    style={{ width: `${progress.progress}%` }}
-                  ></div>
-                </div>
-              )}
-              
-              {progress.error && (
-                <p className="text-xs text-red-600 mt-1">{progress.error}</p>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Upload Instructions */}
-      {!disabled && documents.length === 0 && !uploading && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <div className="flex items-start gap-2">
-            <File className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
-            <div className="text-sm">
-              <p className="text-blue-800 font-medium">Document Upload Tips</p>
-              <ul className="text-blue-700 mt-1 space-y-1 text-xs">
-                <li>• Upload registration, insurance, and maintenance documents</li>
-                <li>• Supported formats: PDF, DOC, DOCX, TXT, JPG, PNG</li>
-                <li>• Maximum file size: 10MB per file</li>
-                <li>• Multiple files can be uploaded at once</li>
-                <li>• Files are stored in vehicle-specific folders for organization</li>
-              </ul>
+      {uploadStateMeta ? (
+        <div className={`rounded-[1.4rem] border px-4 py-4 shadow-sm ${uploadStateMeta.tone}`}>
+          <div className="flex items-start gap-3">
+            {activeProgress?.status === 'completed' ? (
+              <CheckCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+            )}
+            <div>
+              <p className="text-sm font-bold">{uploadStateMeta.title}</p>
+              <p className="mt-1 text-sm">{uploadStateMeta.body}</p>
+              {activeProgress?.status === 'error' ? (
+                <p className="mt-3 text-sm font-medium">
+                  {tr('Upload again or enter details manually below.', 'Téléversez à nouveau ou saisissez les détails manuellement ci-dessous.')}
+                </p>
+              ) : null}
             </div>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 };

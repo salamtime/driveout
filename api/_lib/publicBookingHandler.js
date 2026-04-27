@@ -1,6 +1,19 @@
-import { createSupabaseClients } from './supabase.js';
+import { APP_USERS_TABLE, createSupabaseClients } from './supabase.js';
 import { authenticateRequest } from './auth.js';
 import { randomUUID } from 'crypto';
+import {
+  EMAIL_SENDERS,
+  buildBookingConfirmationEmail,
+  sendResendEmail,
+} from './email.js';
+import { insertRentalEvent } from './rentalEvents.js';
+import {
+  buildThreadKey,
+  SHARED_MESSAGES_TABLE,
+  SHARED_MESSAGE_THREADS_TABLE,
+  isSharedMessagesSchemaUnavailable,
+  isSharedMessageThreadsSchemaUnavailable,
+} from './messages.js';
 
 const WEBSITE_BOOKING_SOURCE = 'website';
 const WEBSITE_BLOCKING_STATUSES = ['verified', 'awaiting_payment', 'payment_submitted', 'confirmed'];
@@ -10,6 +23,214 @@ const DEFAULT_BUFFER_MINUTES = 60;
 const DEFAULT_SCHEDULED_GRACE_MINUTES = 120;
 
 const json = (res, status, body) => res.status(status).json(body);
+
+const getRequestOrigin = (req) => {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const host = forwardedHost || String(req.headers.host || '').trim();
+  const proto = forwardedProto || (host.includes('localhost') ? 'http' : 'https');
+  return host ? `${proto}://${host}` : 'https://saharax.driveout.io';
+};
+
+const formatDateTimeForEmail = (value, locale = 'en-MA') => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat(locale, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+};
+
+const formatMoneyForEmail = (value, currency = 'MAD', locale = 'en-MA') =>
+  `${new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(Number(value || 0))} ${currency}`;
+
+const escapeHtml = (value = '') =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const buildAccountAccessUrls = ({ publicOrigin, accountPath, email = '', hasAccount = false }) => {
+  const safePath = String(accountPath || '').startsWith('/') ? String(accountPath) : '/account';
+  const normalizedEmail = normalizeEmail(email);
+  const loginUrl = `${publicOrigin}/login?redirect=${encodeURIComponent(safePath)}`;
+  const signUpUrl = `${publicOrigin}/register?redirect=${encodeURIComponent(safePath)}${normalizedEmail ? `&email=${encodeURIComponent(normalizedEmail)}` : ''}`;
+
+  return {
+    openBookingUrl: hasAccount ? loginUrl : signUpUrl,
+    signInUrl: loginUrl,
+    signUpUrl,
+  };
+};
+
+const buildOwnerMarketplaceRequestUrl = ({ requestId = '' }) => {
+  const safeRequestId = String(requestId || '').trim();
+  if (!safeRequestId) {
+    return 'https://driveout.io/account/vehicles';
+  }
+
+  return `https://driveout.io/account/vehicles?requestId=${encodeURIComponent(safeRequestId)}#requests`;
+};
+
+const lookupExistingAccountByEmail = async (adminClient, email) => {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return false;
+
+  const { data, error } = await adminClient
+    .from(APP_USERS_TABLE)
+    .select('id')
+    .ilike('email', normalizedEmail)
+    .limit(1);
+
+  if (error) {
+    console.warn('booking email account lookup failed:', error?.message || error);
+    return false;
+  }
+
+  return Boolean(data?.[0]?.id);
+};
+
+const sendCertifiedBookingConfirmationEmail = async ({
+  adminClient,
+  rental,
+  listing,
+  packageSelection,
+  assignedVehicle,
+  publicOrigin,
+}) => {
+  const customerEmail = normalizeEmail(rental?.customer_email);
+  if (!customerEmail) return;
+
+  const hasAccount = await lookupExistingAccountByEmail(adminClient, customerEmail);
+  const accountPath = `/account/rentals/${encodeURIComponent(String(rental?.id || ''))}`;
+  const accessUrls = buildAccountAccessUrls({
+    publicOrigin,
+    accountPath,
+    email: customerEmail,
+    hasAccount,
+  });
+
+  const reference =
+    String(rental?.rental_id || '').trim() ||
+    String(rental?.id || '').trim();
+  const vehicleLabel =
+    [listing?.brand, listing?.model].filter(Boolean).join(' ') ||
+    [assignedVehicle?.name, assignedVehicle?.model].filter(Boolean).join(' ') ||
+    'Certified fleet vehicle';
+  const contractUrl = `${publicOrigin}/view/rental/${encodeURIComponent(String(rental?.id || ''))}?type=contract`;
+  const receiptUrl = `${publicOrigin}/view/rental/${encodeURIComponent(String(rental?.id || ''))}?type=receipt`;
+
+  const emailPayload = buildBookingConfirmationEmail({
+    bookingType: 'rental',
+    customerName: rental?.customer_name,
+    bookingReference: reference,
+    hasAccount,
+    openBookingUrl: accessUrls.openBookingUrl,
+    signInUrl: accessUrls.signInUrl,
+    signUpUrl: accessUrls.signUpUrl,
+    contractUrl,
+    receiptUrl,
+    summaryRows: [
+      { label: 'Vehicle', value: vehicleLabel },
+      { label: 'Start', value: formatDateTimeForEmail(rental?.rental_start_date) },
+      { label: 'End', value: formatDateTimeForEmail(rental?.rental_end_date) },
+      { label: 'Package', value: String(packageSelection?.name || rental?.selected_package_name || 'Standard booking') },
+      { label: 'Total', value: formatMoneyForEmail(rental?.total_amount) },
+    ],
+  });
+
+  await sendResendEmail({
+    from: EMAIL_SENDERS.bookings,
+    to: customerEmail,
+    subject: emailPayload.subject,
+    html: emailPayload.html,
+    replyTo: 'bookings@send.saharax.driveout.io',
+  });
+};
+
+const sendMarketplaceOwnerRequestEmail = async ({
+  adminClient,
+  requestRow,
+  listing,
+}) => {
+  const ownerId = String(requestRow?.owner_id || listing?.owner_id || '').trim();
+  if (!ownerId) return;
+
+  const { data: ownerRow, error: ownerError } = await adminClient
+    .from(APP_USERS_TABLE)
+    .select('id, email, full_name, username')
+    .eq('id', ownerId)
+    .maybeSingle();
+
+  if (ownerError) {
+    throw ownerError;
+  }
+
+  const ownerEmail = normalizeEmail(ownerRow?.email);
+  if (!ownerEmail) return;
+
+  const listingTitle = String(
+    listing?.title ||
+    requestRow?.listing_title ||
+    'Marketplace vehicle'
+  ).trim();
+  const customerName = String(requestRow?.customer_name || 'Customer').trim();
+  const customerEmail = normalizeEmail(requestRow?.customer_email);
+  const customerPhone = normalizeText(requestRow?.customer_phone);
+  const startLabel = formatDateTimeForEmail(requestRow?.requested_start_at);
+  const endLabel = formatDateTimeForEmail(requestRow?.requested_end_at);
+  const duration = Math.max(1, Number(requestRow?.duration || 1));
+  const rentalType = String(requestRow?.rental_type || 'hourly').trim().toLowerCase();
+  const baseAmount = rentalType === 'daily'
+    ? Number(listing?.daily_price_amount || 0) * duration
+    : Number(listing?.hourly_price_amount || 0) * duration;
+  const requestUrl = buildOwnerMarketplaceRequestUrl({ requestId: requestRow?.id });
+
+  const messageBlock = normalizeText(requestRow?.customer_message)
+    ? `
+      <div style="margin:18px 0 0 0;border:1px solid #e2e8f0;border-radius:18px;padding:16px;background:#f8fafc;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#64748b;">Customer note</div>
+        <p style="margin:10px 0 0 0;font-size:14px;line-height:22px;color:#0f172a;">${escapeHtml(requestRow.customer_message)}</p>
+      </div>
+    `
+    : '';
+
+  await sendResendEmail({
+    from: EMAIL_SENDERS.bookings,
+    to: ownerEmail,
+    subject: `New marketplace request • ${listingTitle}`,
+    replyTo: customerEmail || undefined,
+    html: `
+      <div style="font-size:15px;line-height:24px;color:#475569;">
+        <p style="margin:0 0 12px 0;">Hello ${escapeHtml(ownerRow?.full_name || ownerRow?.username || 'Owner')},</p>
+        <p style="margin:0 0 12px 0;"><strong>${escapeHtml(customerName)}</strong> just sent a marketplace request for <strong>${escapeHtml(listingTitle)}</strong>.</p>
+        <div style="margin:0 0 18px 0;border:1px solid #ede9fe;border-radius:22px;padding:18px;background:linear-gradient(180deg,#ffffff 0%,#faf5ff 100%);">
+          <div style="font-size:11px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;color:#8b5cf6;">Request summary</div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:16px;">
+            <tr><td style="padding:0 0 12px 0;font-size:13px;color:#64748b;">Vehicle</td><td style="padding:0 0 12px 18px;font-size:14px;color:#0f172a;font-weight:700;text-align:right;">${escapeHtml(listingTitle)}</td></tr>
+            <tr><td style="padding:0 0 12px 0;font-size:13px;color:#64748b;">Customer</td><td style="padding:0 0 12px 18px;font-size:14px;color:#0f172a;font-weight:700;text-align:right;">${escapeHtml(customerName)}</td></tr>
+            <tr><td style="padding:0 0 12px 0;font-size:13px;color:#64748b;">Start</td><td style="padding:0 0 12px 18px;font-size:14px;color:#0f172a;font-weight:700;text-align:right;">${escapeHtml(startLabel || 'Pending')}</td></tr>
+            <tr><td style="padding:0 0 12px 0;font-size:13px;color:#64748b;">End</td><td style="padding:0 0 12px 18px;font-size:14px;color:#0f172a;font-weight:700;text-align:right;">${escapeHtml(endLabel || 'Pending')}</td></tr>
+            <tr><td style="padding:0 0 12px 0;font-size:13px;color:#64748b;">Duration</td><td style="padding:0 0 12px 18px;font-size:14px;color:#0f172a;font-weight:700;text-align:right;">${duration} ${rentalType === 'daily' ? 'day(s)' : 'hour(s)'}</td></tr>
+            <tr><td style="padding:0 0 12px 0;font-size:13px;color:#64748b;">Est. amount</td><td style="padding:0 0 12px 18px;font-size:14px;color:#0f172a;font-weight:700;text-align:right;">${escapeHtml(formatMoneyForEmail(baseAmount || 0))}</td></tr>
+            ${customerPhone ? `<tr><td style="padding:0;font-size:13px;color:#64748b;">Phone</td><td style="padding:0 0 0 18px;font-size:14px;color:#0f172a;font-weight:700;text-align:right;">${escapeHtml(customerPhone)}</td></tr>` : ''}
+          </table>
+          ${messageBlock}
+        </div>
+        <div style="margin:0 0 14px 0;">
+          <a href="${escapeHtml(requestUrl)}" style="display:inline-flex;align-items:center;justify-content:center;border-radius:999px;background:linear-gradient(135deg,#7c3aed,#4f46e5);padding:12px 20px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;">Review request</a>
+        </div>
+        <p style="margin:0;">Open your owner workspace to approve, decline, or send a counter-offer.</p>
+      </div>
+    `,
+  });
+};
 
 const createHttpError = (status, message) => {
   const error = new Error(message);
@@ -50,6 +271,51 @@ const getMissingColumnName = (error) => {
 
   const schemaMatch = message.match(/'([a-zA-Z0-9_]+)' column/i);
   if (schemaMatch?.[1]) return schemaMatch[1];
+
+  return null;
+};
+
+const isSharedMessageParticipantsSchemaUnavailable = (error) => {
+  const code = String(error?.code || '').trim().toUpperCase();
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    code === '42P01' ||
+    code === '42703' ||
+    code === '42501' ||
+    code === 'PGRST205' ||
+    message.includes('shared_message_participants') ||
+    message.includes('permission denied') ||
+    message.includes('schema cache')
+  );
+};
+
+const updateBookingRequestWithCompatiblePayload = async (adminClient, requestId, payload = {}) => {
+  const safeRequestId = String(requestId || '').trim();
+  if (!safeRequestId) return null;
+
+  let compatiblePayload = { ...payload };
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if (!Object.keys(compatiblePayload).length) return null;
+
+    const { data, error } = await adminClient
+      .from('app_booking_requests')
+      .update(compatiblePayload)
+      .eq('id', safeRequestId)
+      .select('*')
+      .maybeSingle();
+
+    if (!error) return data || null;
+
+    const missingColumn = getMissingColumnName(error);
+    if (missingColumn && Object.prototype.hasOwnProperty.call(compatiblePayload, missingColumn)) {
+      const { [missingColumn]: _removed, ...nextPayload } = compatiblePayload;
+      compatiblePayload = nextPayload;
+      continue;
+    }
+
+    throw error;
+  }
 
   return null;
 };
@@ -1055,8 +1321,9 @@ const createMarketplaceRequest = async (adminClient, payload) => {
     message,
   } = payload;
 
+  const normalizedRentalType = rentalType === 'half_day' ? 'hourly' : rentalType;
   const startIso = toIsoDateTime(startDate, startTime);
-  const endIso = addDuration(startIso, duration, rentalType);
+  const endIso = addDuration(startIso, duration, normalizedRentalType);
   if (!startIso || !endIso) {
     throw createHttpError(400, 'Please choose a valid requested start date, time, and duration.');
   }
@@ -1088,25 +1355,119 @@ const createMarketplaceRequest = async (adminClient, payload) => {
     throw createHttpError(400, 'Please enter your WhatsApp or phone number before sending the request.');
   }
 
+  const existingRequestsQuery = await adminClient
+    .from('app_booking_requests')
+    .select('*')
+    .eq('listing_id', sanitizeUuid(listingId))
+    .order('created_at', { ascending: false })
+    .limit(25);
+
+  if (existingRequestsQuery.error) {
+    throw existingRequestsQuery.error;
+  }
+
+  const normalizedCustomerEmail = customerEmailValue.trim().toLowerCase();
   const normalizedUserId = cleanValue(userId);
+  const initialEstimatedAmount = normalizedRentalType === 'daily'
+    ? Number(listing?.dailyPrice || listing?.daily_price_amount || 0) * Math.max(1, Number(duration || 1))
+    : Number(listing?.hourlyPrice || listing?.hourly_price_amount || 0) * Math.max(1, Number(duration || 1));
+  const initialCommissionAmount = Math.max(0, Math.round(Number(initialEstimatedAmount || 0) * 0.15));
+  const initialDepositAmount = Math.max(
+    0,
+    Number(
+      listing?.depositAmount ||
+      listing?.deposit_amount ||
+      listing?.raw?.deposit_amount ||
+      0
+    )
+  );
+
+  if (!normalizedUserId) {
+    throw createHttpError(400, 'Please sign in and open Wallet before sending a marketplace request.');
+  }
+
+  if (initialDepositAmount > 0) {
+    const { data: walletRow, error: walletError } = await adminClient
+      .from('app_wallet_accounts')
+      .select('*')
+      .eq('owner_id', normalizedUserId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (walletError) {
+      throw walletError;
+    }
+
+    const walletBalance = Math.max(
+      0,
+      Number(walletRow?.current_balance ?? walletRow?.balance ?? walletRow?.wallet_balance ?? 0)
+    );
+
+    if (!walletRow?.id) {
+      throw createHttpError(
+        400,
+        `Open Wallet first. ${initialDepositAmount} MAD is required to cover the damage deposit before sending this request.`
+      );
+    }
+
+    if (walletBalance < initialDepositAmount) {
+      throw createHttpError(
+        400,
+        `You need ${initialDepositAmount} MAD in your wallet to cover the damage deposit before sending this request.`
+      );
+    }
+  }
+
+  const openRequestStatuses = new Set(['pending', 'countered', 'pre_approved', 'approved']);
+  const existingOpenRequest = (Array.isArray(existingRequestsQuery.data) ? existingRequestsQuery.data : []).find((row) => {
+    const requestStatus = String(row?.request_status || '').trim().toLowerCase();
+    if (!openRequestStatuses.has(requestStatus)) return false;
+
+    const rowCustomerId = cleanValue(row?.customer_id);
+    const rowCustomerExtId = cleanValue(row?.customer_ext_id);
+    const rowCustomerEmail = String(row?.customer_email || '').trim().toLowerCase();
+
+    if (normalizedUserId && (rowCustomerId === normalizedUserId || rowCustomerExtId === normalizedUserId)) {
+      return true;
+    }
+
+    return Boolean(normalizedCustomerEmail) && rowCustomerEmail === normalizedCustomerEmail;
+  });
+
+  if (existingOpenRequest) {
+    return {
+      ...existingOpenRequest,
+      duplicate_request_blocked: true,
+    };
+  }
+
   const requestReference = createRequestReference();
+  const customerExtId = isUuid(normalizedUserId) ? normalizedUserId : null;
   const payloadRow = {
     id: createBookingId(),
-    request_reference: null,
+    request_reference: requestReference,
     listing_id: sanitizeUuid(listingId),
     vehicle_public_profile_id: sanitizeUuid(cleanValue(listing.vehiclePublicProfileId)),
     owner_id: sanitizeUuid(ownerId),
     customer_id: normalizedUserId,
+    customer_ext_id: customerExtId,
     customer_name: customerNameValue,
     customer_email: customerEmailValue,
     customer_phone: customerPhoneValue,
     request_status: 'pending',
     requested_start_at: startIso,
     requested_end_at: endIso,
-    rental_type: rentalType === 'daily' ? 'daily' : 'hourly',
+    rental_type: normalizedRentalType === 'daily' ? 'daily' : 'hourly',
     duration: Number(duration || 1),
     customer_message: cleanValue(message),
-    counter_offer: {},
+    counter_offer: {
+      funds_model: 'owner_fee_customer_deposit',
+      platform_fee_amount: initialCommissionAmount,
+      platform_fee_status: 'pending',
+      damage_deposit_amount: initialDepositAmount,
+      damage_deposit_status: initialDepositAmount > 0 ? 'pending' : 'not_required',
+    },
   };
 
   if (!isUuid(payloadRow.id)) delete payloadRow.id;
@@ -1114,24 +1475,306 @@ const createMarketplaceRequest = async (adminClient, payload) => {
     throw createHttpError(400, 'This marketplace listing is missing owner information. Please try another listing.');
   }
 
-  let { error } = await adminClient.from('app_booking_requests').insert([payloadRow]);
+  let createdRow = null;
+  let { data, error } = await adminClient
+    .from('app_booking_requests')
+    .insert([payloadRow])
+    .select('*')
+    .single();
   if (error) {
     const message = String(error?.message || '').toLowerCase();
     if (message.includes('invalid input syntax for type uuid')) {
       const fallback = {
         ...payloadRow,
-        request_reference: null,
+        request_reference: requestReference,
         counter_offer: {
           ...(payloadRow.counter_offer || {}),
           request_reference: requestReference,
         },
       };
       if (!isUuid(fallback.id)) delete fallback.id;
-      ({ error } = await adminClient.from('app_booking_requests').insert([fallback]));
+      ({ data, error } = await adminClient
+        .from('app_booking_requests')
+        .insert([fallback])
+        .select('*')
+        .single());
     }
   }
   if (error) throw error;
-  return { ...payloadRow, request_reference: requestReference };
+  createdRow = data || null;
+  const createdRequest = {
+    ...payloadRow,
+    ...(createdRow || {}),
+    request_reference: cleanValue(createdRow?.request_reference) || requestReference,
+  };
+  await insertRentalEvent(adminClient, {
+    rentalId: createdRequest.id,
+    eventType: 'request_sent',
+    actor: 'renter',
+    metadata: {
+      listingId: createdRequest.listing_id,
+      ownerId: createdRequest.owner_id,
+      customerId: createdRequest.customer_id || null,
+      requestedStartAt: createdRequest.requested_start_at,
+      requestedEndAt: createdRequest.requested_end_at,
+      duration: createdRequest.duration,
+      rentalType: createdRequest.rental_type,
+    },
+  });
+
+  const createMarketplaceRequestThread = async () => {
+    const ownerUserId = String(createdRequest.owner_id || '').trim();
+    const customerUserId = String(createdRequest.customer_id || '').trim();
+    const senderUserId = customerUserId || ownerUserId;
+    const recipientUserId = ownerUserId || customerUserId;
+    if (!senderUserId || !recipientUserId) return null;
+
+    const threadKey = buildThreadKey({
+      family: 'marketplace',
+      threadType: 'marketplace_customer_request',
+      entityType: 'marketplace_request',
+      entityId: createdRequest.id,
+      recipientUserId,
+      senderUserId,
+    });
+
+    const threadPayload = {
+      thread_key: threadKey,
+      family: 'marketplace',
+      thread_type: 'marketplace_customer_request',
+      entity_type: 'marketplace_request',
+      entity_id: String(createdRequest.id || '').trim(),
+      context_type: 'request',
+      context_id: String(createdRequest.id || '').trim(),
+      sender_user_id: senderUserId,
+      recipient_user_id: recipientUserId,
+      priority: 'normal',
+      waiting_on: 'owner',
+      workflow_status: 'active',
+      visibility_scope: 'public',
+      metadata: {
+        requestId: String(createdRequest.id || '').trim(),
+        requestReference,
+      },
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: threadRow, error: threadError } = await adminClient
+      .from(SHARED_MESSAGE_THREADS_TABLE)
+      .upsert(threadPayload, {
+        onConflict: 'thread_key',
+      })
+      .select('*')
+      .maybeSingle();
+
+    if (threadError) {
+      if (isSharedMessageThreadsSchemaUnavailable(threadError)) {
+        return { threadKey, threadRow: null };
+      }
+      throw threadError;
+    }
+
+    const threadLinkPayload = {
+      thread_key: threadKey,
+    };
+    const threadRowId = threadRow?.id ? String(threadRow.id).trim() : '';
+    if (threadRowId) {
+      threadLinkPayload.thread_id = threadRowId;
+    }
+
+    const updatedRequest = await updateBookingRequestWithCompatiblePayload(
+      adminClient,
+      createdRequest.id,
+      threadLinkPayload
+    );
+
+    if (updatedRequest) {
+      Object.assign(createdRequest, updatedRequest);
+    } else {
+      createdRequest.thread_key = threadKey;
+      if (threadRowId) createdRequest.thread_id = threadRowId;
+    }
+
+    return {
+      threadKey,
+      threadRow,
+    };
+  };
+
+  const threadState = await createMarketplaceRequestThread().catch((threadError) => {
+    console.warn('marketplace request thread creation failed:', threadError?.message || threadError);
+    return null;
+  });
+
+  const syncMarketplaceThreadParticipants = async () => {
+    const threadRowId = String(threadState?.threadRow?.id || createdRequest.thread_id || '').trim();
+    const ownerUserId = String(createdRequest.owner_id || '').trim();
+    const customerUserId = String(createdRequest.customer_id || '').trim();
+    if (!threadRowId || !ownerUserId) return null;
+
+    const participantRows = [
+      {
+        thread_id: threadRowId,
+        user_id: ownerUserId,
+        participant_role: 'owner',
+        visibility_scope: 'public',
+        is_primary: true,
+        metadata: {
+          contextType: 'marketplace_request',
+          contextId: String(createdRequest.id || '').trim(),
+          requestReference,
+          syncSource: 'public_booking_request_create',
+        },
+      },
+    ];
+
+    if (customerUserId) {
+      participantRows.push({
+        thread_id: threadRowId,
+        user_id: customerUserId,
+        participant_role: 'customer',
+        visibility_scope: 'public',
+        is_primary: true,
+        metadata: {
+          contextType: 'marketplace_request',
+          contextId: String(createdRequest.id || '').trim(),
+          requestReference,
+          syncSource: 'public_booking_request_create',
+        },
+      });
+    }
+
+    const { error: participantError } = await adminClient
+      .from('shared_message_participants')
+      .upsert(participantRows, {
+        onConflict: 'thread_id,user_id',
+      });
+
+    if (participantError) {
+      if (isSharedMessageParticipantsSchemaUnavailable(participantError)) {
+        return null;
+      }
+      throw participantError;
+    }
+
+    return participantRows.length;
+  };
+
+  await syncMarketplaceThreadParticipants().catch((participantError) => {
+    console.warn('marketplace thread participant sync failed:', participantError?.message || participantError);
+    return null;
+  });
+
+  const createMarketplaceSubmissionEvent = async () => {
+    const customerUserId = String(createdRequest.customer_id || '').trim();
+    const ownerUserId = String(createdRequest.owner_id || '').trim();
+    const senderUserId = customerUserId || ownerUserId;
+    const recipientUserId = ownerUserId || customerUserId;
+    if (!senderUserId || !recipientUserId) return;
+
+    const threadKey =
+      String(createdRequest.thread_key || '').trim() ||
+      String(threadState?.threadKey || '').trim() ||
+      buildThreadKey({
+        family: 'marketplace',
+        threadType: 'marketplace_customer_request',
+        entityType: 'marketplace_request',
+        entityId: createdRequest.id,
+        recipientUserId,
+        senderUserId,
+      });
+
+    const detailParts = [
+      listing?.title || 'Marketplace request',
+      startIso ? formatDateTimeForEmail(startIso) : '',
+      Number(duration || 0) > 0
+        ? `${Number(duration)} ${normalizedRentalType === 'daily' ? (Number(duration) === 1 ? 'day' : 'days') : (Number(duration) === 1 ? 'hour' : 'hours')}`
+        : '',
+    ].filter(Boolean);
+
+    const metadata = {
+      type: 'marketplace_request',
+      event: 'request_submitted',
+      requestId: String(createdRequest.id || '').trim(),
+      requestReference,
+      requestStatus: 'pending',
+      status: 'pending',
+      replyEnabled: false,
+      href: `/account/rentals/requests/${encodeURIComponent(String(createdRequest.id || ''))}`,
+      listingId: String(createdRequest.listing_id || '').trim(),
+      listingTitle: String(listing?.title || '').trim(),
+      vehicleName: String(listing?.title || '').trim(),
+      imageUrl: String(listing?.imageUrl || listing?.image_url || listing?.coverImageUrl || '').trim(),
+      requestedStartAt: createdRequest.requested_start_at,
+      requestedEndAt: createdRequest.requested_end_at,
+      rentalType: createdRequest.rental_type,
+      duration: createdRequest.duration,
+      customerName: createdRequest.customer_name,
+      customerNote: String(createdRequest.customer_message || '').trim(),
+      detailLine: detailParts.join(' • '),
+    };
+    const threadRowId = String(threadState?.threadRow?.id || createdRequest.thread_id || '').trim();
+
+    const { data: sharedMessageRow, error: messageError } = await adminClient
+      .from(SHARED_MESSAGES_TABLE)
+      .insert({
+        ...(threadRowId ? { thread_id: threadRowId } : {}),
+        thread_key: threadKey,
+        family: 'marketplace',
+        thread_type: 'marketplace_customer_request',
+        entity_type: 'marketplace_request',
+        entity_id: String(createdRequest.id || '').trim(),
+        message_type: 'submission_event',
+        subject: String(listing?.title || 'Marketplace request').trim() || 'Marketplace request',
+        body: 'Request submitted',
+        sender_user_id: senderUserId,
+        sender_role: customerUserId ? 'customer' : 'system',
+        recipient_user_id: recipientUserId,
+        recipient_role: 'owner',
+        metadata,
+        is_internal: false,
+        status: 'sent',
+      })
+      .select('id')
+      .maybeSingle();
+
+    if (!messageError) {
+      return {
+        channel: 'shared_messages',
+        id: sharedMessageRow?.id || null,
+      };
+    }
+
+    if (!isSharedMessagesSchemaUnavailable(messageError)) {
+      throw messageError;
+    }
+
+    const senderType = customerUserId ? 'customer' : 'system';
+    const { data: bookingMessageRow, error: bookingMessageError } = await adminClient
+      .from('app_booking_messages')
+      .insert({
+        booking_request_id: createdRequest.id,
+        sender_id: customerUserId || null,
+        sender_type: senderType,
+        message_body: String(createdRequest.customer_message || '').trim() || 'Request submitted',
+        message_kind: 'submission_event',
+        metadata,
+      })
+      .select('id')
+      .maybeSingle();
+
+    if (bookingMessageError) {
+      throw bookingMessageError;
+    }
+
+    return {
+      channel: 'app_booking_messages',
+      id: bookingMessageRow?.id || null,
+    };
+  };
+
+  await createMarketplaceSubmissionEvent();
+  return createdRequest;
 };
 
 const updateWebsiteBookingState = async (adminClient, rentalId, payload) => {
@@ -1203,6 +1846,16 @@ export default async function publicBookingHandler(req, res) {
       const body = parseBody(req.body);
       const authenticatedUser = await getAuthenticatedUser(req);
       const rental = await createCertifiedBooking(adminClient, body, { user: authenticatedUser });
+      void sendCertifiedBookingConfirmationEmail({
+        adminClient,
+        rental,
+        listing: body?.listing || {},
+        packageSelection: body?.packageSelection || {},
+        assignedVehicle: rental?.assigned_vehicle || null,
+        publicOrigin: getRequestOrigin(req),
+      }).catch((emailError) => {
+        console.warn('certified booking confirmation email failed:', emailError?.message || emailError);
+      });
       return json(res, 200, rental);
     }
 
@@ -1213,7 +1866,95 @@ export default async function publicBookingHandler(req, res) {
         ...body,
         userId: authenticatedUserId || body.userId || null,
       });
+      if (!requestRow?.duplicate_request_blocked) {
+        await sendMarketplaceOwnerRequestEmail({
+          adminClient,
+          requestRow,
+          listing: body?.listing || {},
+        }).catch((emailError) => {
+          console.warn('marketplace owner request email failed:', emailError?.message || emailError);
+        });
+      }
       return json(res, 200, requestRow);
+    }
+
+    if (req.method === 'GET' && action === 'existing-marketplace') {
+      const listingId = String(req.query?.listingId || '').trim();
+      const authenticatedUser = await getAuthenticatedUser(req);
+      const authenticatedUserId = authenticatedUser?.id || null;
+      const authenticatedUserEmail = String(authenticatedUser?.email || '').trim().toLowerCase();
+
+      if (!listingId || (!authenticatedUserId && !authenticatedUserEmail)) {
+        return json(res, 200, null);
+      }
+
+      const { data, error } = await adminClient
+        .from('app_booking_requests')
+        .select('*')
+        .eq('listing_id', sanitizeUuid(listingId))
+        .order('created_at', { ascending: false })
+        .limit(25);
+
+      if (error) throw error;
+
+      const openRequestStatuses = new Set(['pending', 'countered', 'pre_approved', 'approved']);
+      const existingRequest = (Array.isArray(data) ? data : []).find((row) => {
+        const requestStatus = String(row?.request_status || '').trim().toLowerCase();
+        if (!openRequestStatuses.has(requestStatus)) return false;
+
+        const rowCustomerId = cleanValue(row?.customer_id);
+        const rowCustomerExtId = cleanValue(row?.customer_ext_id);
+        const rowCustomerEmail = String(row?.customer_email || '').trim().toLowerCase();
+
+        if (authenticatedUserId && (rowCustomerId === authenticatedUserId || rowCustomerExtId === authenticatedUserId)) {
+          return true;
+        }
+
+        return Boolean(authenticatedUserEmail) && rowCustomerEmail === authenticatedUserEmail;
+      });
+
+      return json(res, 200, existingRequest || null);
+    }
+
+    if (req.method === 'GET' && action === 'existing-marketplace-list') {
+      const authenticatedUser = await getAuthenticatedUser(req);
+      const authenticatedUserId = authenticatedUser?.id || null;
+      const authenticatedUserEmail = String(authenticatedUser?.email || '').trim().toLowerCase();
+
+      if (!authenticatedUserId && !authenticatedUserEmail) {
+        return json(res, 200, []);
+      }
+
+      const { data, error } = await adminClient
+        .from('app_booking_requests')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+
+      if (error) throw error;
+
+      const openRequestStatuses = new Set(['pending', 'countered', 'pre_approved', 'approved']);
+      const requestsByListing = new Map();
+
+      (Array.isArray(data) ? data : []).forEach((row) => {
+        const requestStatus = String(row?.request_status || '').trim().toLowerCase();
+        if (!openRequestStatuses.has(requestStatus)) return;
+
+        const rowCustomerId = cleanValue(row?.customer_id);
+        const rowCustomerExtId = cleanValue(row?.customer_ext_id);
+        const rowCustomerEmail = String(row?.customer_email || '').trim().toLowerCase();
+        const matchesUser =
+          (authenticatedUserId && (rowCustomerId === authenticatedUserId || rowCustomerExtId === authenticatedUserId)) ||
+          (authenticatedUserEmail && rowCustomerEmail === authenticatedUserEmail);
+
+        if (!matchesUser) return;
+
+        const listingId = cleanValue(row?.listing_id);
+        if (!listingId || requestsByListing.has(listingId)) return;
+        requestsByListing.set(listingId, row);
+      });
+
+      return json(res, 200, Array.from(requestsByListing.values()));
     }
 
     if ((req.method === 'POST' || req.method === 'PATCH') && action === 'update-state') {

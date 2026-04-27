@@ -1,5 +1,12 @@
 import { APP_USERS_TABLE, createSupabaseClients } from './_lib/supabase.js';
-import { authenticateRequest } from './_lib/auth.js';
+import { authenticateRequest, requireOwnerOrAdmin } from './_lib/auth.js';
+import {
+  EMAIL_SENDERS,
+  buildAnnouncementEmail,
+  buildPasswordResetEmail,
+  buildRentalDocumentsEmail,
+  sendResendEmail,
+} from './_lib/email.js';
 
 const SETTINGS_TABLE = 'saharax_0u4w4d_settings';
 const SETTINGS_ROW_ID = 1;
@@ -17,6 +24,67 @@ const parseBody = (body) => {
     }
   }
   return typeof body === 'object' ? body : {};
+};
+
+const getAction = (req) => String(req.query?.action || parseBody(req.body)?.action || '').trim().toLowerCase();
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+
+const handleGeminiProxy = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    json(res, 405, { error: 'Method not allowed' });
+    return;
+  }
+
+  const geminiApiKey = String(process.env.GEMINI_API_KEY || '').trim();
+  if (!geminiApiKey) {
+    json(res, 500, { error: 'GEMINI_API_KEY is not configured' });
+    return;
+  }
+
+  try {
+    const body = parseBody(req.body);
+    const {
+      action = 'generateContent',
+      model = 'gemini-2.5-flash',
+      contents,
+      generationConfig,
+      safetySettings,
+    } = body;
+
+    const endpoint = action === 'listModels'
+      ? `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`
+      : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`;
+
+    const upstreamResponse = await fetch(endpoint, {
+      method: action === 'listModels' ? 'GET' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      ...(action === 'listModels'
+        ? {}
+        : {
+            body: JSON.stringify({
+              contents,
+              generationConfig,
+              safetySettings,
+            }),
+          }),
+    });
+
+    const responseText = await upstreamResponse.text();
+    res.status(upstreamResponse.status);
+    res.setHeader('Content-Type', 'application/json');
+    res.end(responseText);
+  } catch (error) {
+    json(res, 500, { error: error.message || 'Gemini proxy failed' });
+  }
 };
 
 const getDefaultSettings = () => ({
@@ -51,6 +119,9 @@ const getDefaultSettings = () => ({
   apply_to_tours: true,
   bookingReminderHours: 24,
   returnReminderHours: 2,
+  rentalGracePeriodMinutes: 60,
+  rentalSoftLockMinutes: 45,
+  extraHourThresholdMinutes: 25,
   whatsappEnabled: true,
   emailNotifications: true,
   smsNotifications: false,
@@ -68,7 +139,7 @@ const getDefaultSettings = () => ({
   mapProvider: 'mapbox',
   mapboxPublicToken: '',
   ocrProvider: 'gemini',
-  geminiProxyPath: '/api/gemini-proxy',
+  geminiProxyPath: '/api/system-settings?action=gemini-proxy',
   whatsappDefaultCountryCode: '+212',
   storageBucket: 'rental-documents',
   requireTwoFactorForAdmins: false,
@@ -77,10 +148,16 @@ const getDefaultSettings = () => ({
   allowEmployeeSettingsView: true,
   writeAuditLogs: true,
   allowLiveTrackingRetry: true,
+  autoSendContractEmailAfterCreation: false,
   tourDepartureBufferMinutes: 15,
   tourAutoReceiptRequired: true,
   tourDefaultLicensePolicy: 'route_based',
   tourGuideTrackingRequired: true,
+  messagingPhotoSharingEnabled: true,
+  messagingMaxPhotosPerMessage: 3,
+  messagingPhotoRetentionDays: 7,
+  messagingDraftRetentionHours: 24,
+  messagingAllowCameraCapture: true,
   updatedAt: new Date().toISOString(),
 });
 
@@ -114,8 +191,14 @@ const normalizeSettings = (value = {}) => {
     'tax_percentage',
     'bookingReminderHours',
     'returnReminderHours',
+    'rentalGracePeriodMinutes',
+    'rentalSoftLockMinutes',
+    'extraHourThresholdMinutes',
     'sessionTimeoutMinutes',
     'tourDepartureBufferMinutes',
+    'messagingMaxPhotosPerMessage',
+    'messagingPhotoRetentionDays',
+    'messagingDraftRetentionHours',
   ].forEach((key) => {
     merged[key] = Number(merged[key] ?? defaults[key]) || 0;
   });
@@ -140,11 +223,18 @@ const normalizeSettings = (value = {}) => {
     'allowEmployeeSettingsView',
     'writeAuditLogs',
     'allowLiveTrackingRetry',
+    'autoSendContractEmailAfterCreation',
     'tourAutoReceiptRequired',
     'tourGuideTrackingRequired',
+    'messagingPhotoSharingEnabled',
+    'messagingAllowCameraCapture',
   ].forEach((key) => {
     merged[key] = Boolean(merged[key]);
   });
+
+  merged.messagingMaxPhotosPerMessage = Math.max(1, Math.min(10, merged.messagingMaxPhotosPerMessage || defaults.messagingMaxPhotosPerMessage));
+  merged.messagingPhotoRetentionDays = Math.max(1, Math.min(30, merged.messagingPhotoRetentionDays || defaults.messagingPhotoRetentionDays));
+  merged.messagingDraftRetentionHours = Math.max(1, Math.min(168, merged.messagingDraftRetentionHours || defaults.messagingDraftRetentionHours));
 
   merged.updatedAt = new Date().toISOString();
   return merged;
@@ -197,6 +287,9 @@ const toTableRow = (settings = {}) => {
     apply_to_tours: normalized.apply_to_tours,
     booking_reminder_hours: normalized.bookingReminderHours,
     return_reminder_hours: normalized.returnReminderHours,
+    rental_grace_period_minutes: normalized.rentalGracePeriodMinutes,
+    rental_soft_lock_minutes: normalized.rentalSoftLockMinutes,
+    extra_hour_threshold_minutes: normalized.extraHourThresholdMinutes,
     whatsapp_enabled: normalized.whatsappEnabled,
     email_notifications: normalized.emailNotifications,
     sms_notifications: normalized.smsNotifications,
@@ -217,16 +310,22 @@ const toTableRow = (settings = {}) => {
     gemini_proxy_path: normalized.geminiProxyPath,
     whatsapp_default_country_code: normalized.whatsappDefaultCountryCode,
     storage_bucket: normalized.storageBucket,
-    require_two_factor_for_admins: normalized.requireTwoFactorForAdmins,
-    session_timeout_minutes: normalized.sessionTimeoutMinutes,
-    allow_employee_package_edits: normalized.allowEmployeePackageEdits,
-    allow_employee_settings_view: normalized.allowEmployeeSettingsView,
-    write_audit_logs: normalized.writeAuditLogs,
-    allow_live_tracking_retry: normalized.allowLiveTrackingRetry,
-    tour_departure_buffer_minutes: normalized.tourDepartureBufferMinutes,
+  require_two_factor_for_admins: normalized.requireTwoFactorForAdmins,
+  session_timeout_minutes: normalized.sessionTimeoutMinutes,
+  allow_employee_package_edits: normalized.allowEmployeePackageEdits,
+  allow_employee_settings_view: normalized.allowEmployeeSettingsView,
+  write_audit_logs: normalized.writeAuditLogs,
+  allow_live_tracking_retry: normalized.allowLiveTrackingRetry,
+  auto_send_contract_email_after_creation: normalized.autoSendContractEmailAfterCreation,
+  tour_departure_buffer_minutes: normalized.tourDepartureBufferMinutes,
     tour_auto_receipt_required: normalized.tourAutoReceiptRequired,
     tour_default_license_policy: normalized.tourDefaultLicensePolicy,
     tour_guide_tracking_required: normalized.tourGuideTrackingRequired,
+    messaging_photo_sharing_enabled: normalized.messagingPhotoSharingEnabled,
+    messaging_max_photos_per_message: normalized.messagingMaxPhotosPerMessage,
+    messaging_photo_retention_days: normalized.messagingPhotoRetentionDays,
+    messaging_draft_retention_hours: normalized.messagingDraftRetentionHours,
+    messaging_allow_camera_capture: normalized.messagingAllowCameraCapture,
     updated_at: normalized.updatedAt,
   };
 };
@@ -263,6 +362,9 @@ const fromTableRow = (row = {}) => normalizeSettings({
   apply_to_tours: row.apply_to_tours,
   bookingReminderHours: row.booking_reminder_hours,
   returnReminderHours: row.return_reminder_hours,
+  rentalGracePeriodMinutes: row.rental_grace_period_minutes,
+  rentalSoftLockMinutes: row.rental_soft_lock_minutes,
+  extraHourThresholdMinutes: row.extra_hour_threshold_minutes,
   whatsappEnabled: row.whatsapp_enabled,
   emailNotifications: row.email_notifications,
   smsNotifications: row.sms_notifications,
@@ -283,16 +385,22 @@ const fromTableRow = (row = {}) => normalizeSettings({
   geminiProxyPath: row.gemini_proxy_path,
   whatsappDefaultCountryCode: row.whatsapp_default_country_code,
   storageBucket: row.storage_bucket,
-  requireTwoFactorForAdmins: row.require_two_factor_for_admins,
-  sessionTimeoutMinutes: row.session_timeout_minutes,
-  allowEmployeePackageEdits: row.allow_employee_package_edits,
-  allowEmployeeSettingsView: row.allow_employee_settings_view,
-  writeAuditLogs: row.write_audit_logs,
-  allowLiveTrackingRetry: row.allow_live_tracking_retry,
-  tourDepartureBufferMinutes: row.tour_departure_buffer_minutes,
+        requireTwoFactorForAdmins: row.require_two_factor_for_admins,
+        sessionTimeoutMinutes: row.session_timeout_minutes,
+        allowEmployeePackageEdits: row.allow_employee_package_edits,
+        allowEmployeeSettingsView: row.allow_employee_settings_view,
+        writeAuditLogs: row.write_audit_logs,
+        allowLiveTrackingRetry: row.allow_live_tracking_retry,
+        autoSendContractEmailAfterCreation: row.auto_send_contract_email_after_creation,
+        tourDepartureBufferMinutes: row.tour_departure_buffer_minutes,
   tourAutoReceiptRequired: row.tour_auto_receipt_required,
   tourDefaultLicensePolicy: row.tour_default_license_policy,
   tourGuideTrackingRequired: row.tour_guide_tracking_required,
+  messagingPhotoSharingEnabled: row.messaging_photo_sharing_enabled,
+  messagingMaxPhotosPerMessage: row.messaging_max_photos_per_message,
+  messagingPhotoRetentionDays: row.messaging_photo_retention_days,
+  messagingDraftRetentionHours: row.messaging_draft_retention_hours,
+  messagingAllowCameraCapture: row.messaging_allow_camera_capture,
   updatedAt: row.updated_at,
 });
 
@@ -384,8 +492,229 @@ const requireAdminForWrite = async (req) => {
   return { user, adminClient, role };
 };
 
+const resolveBrandSettings = async () => {
+  try {
+    const { adminClient } = createSupabaseClients();
+    const settings = await readSettingsFromTable(adminClient);
+    return {
+      settings,
+      brand: {
+        companyName: settings.companyName || 'SaharaX',
+        logoUrl: settings.logoUrl || '',
+        primaryColor: settings.brandPrimaryColor || '#7c3aed',
+      },
+    };
+  } catch (error) {
+    console.warn('resolveBrandSettings fallback activated:', error?.message || error);
+    return {
+      settings: null,
+      brand: {
+        companyName: 'SaharaX',
+        logoUrl: '',
+        primaryColor: '#7c3aed',
+      },
+    };
+  }
+};
+
+const handlePasswordResetEmail = async (req, res) => {
+  if (req.method !== 'POST') {
+    return json(res, 405, { error: 'Method not allowed' });
+  }
+
+  try {
+    const body = parseBody(req.body);
+    const email = normalizeEmail(body.email);
+    const redirectTo = String(body.redirectTo || '').trim();
+
+    if (!email) {
+      return json(res, 400, { error: 'Email is required' });
+    }
+
+    if (!redirectTo) {
+      return json(res, 400, { error: 'Redirect URL is required' });
+    }
+
+    const { adminClient } = createSupabaseClients();
+    const { brand } = await resolveBrandSettings();
+    const { data, error } = await adminClient.auth.admin.generateLink({
+      type: 'recovery',
+      email,
+      options: {
+        redirectTo,
+      },
+    });
+
+    if (error || !data?.properties?.action_link) {
+      console.warn('password reset email link generation failed:', error?.message || 'Missing action link');
+      return json(res, 200, { success: true });
+    }
+
+    const directResetUrl = (() => {
+      try {
+        const url = new URL(redirectTo);
+        url.searchParams.set('token_hash', data.properties.hashed_token);
+        url.searchParams.set('type', data.properties.verification_type || 'recovery');
+        url.searchParams.set('email', email);
+        return url.toString();
+      } catch {
+        return data.properties.action_link;
+      }
+    })();
+
+    const emailPayload = buildPasswordResetEmail({
+      resetUrl: directResetUrl,
+      email,
+      brand,
+    });
+
+    const result = await sendResendEmail({
+      from: EMAIL_SENDERS.support,
+      to: email,
+      subject: emailPayload.subject,
+      html: emailPayload.html,
+      replyTo: 'support@send.saharax.driveout.io',
+    });
+
+    return json(res, 200, { success: true, messageId: result?.id || null });
+  } catch (error) {
+    console.error('password reset email failed:', error);
+    return json(res, 500, { error: error.message || 'Failed to send password reset email' });
+  }
+};
+
+const handleRentalDocumentsEmail = async (req, res) => {
+  if (req.method !== 'POST') {
+    return json(res, 405, { error: 'Method not allowed' });
+  }
+
+  const auth = await requireOwnerOrAdmin(req);
+  if (auth.error) {
+    return json(res, auth.error.status, auth.error.body);
+  }
+
+  try {
+    const body = parseBody(req.body);
+    const toEmail = normalizeEmail(body.toEmail);
+    const rentalId = String(body.rentalId || '').trim();
+    const customerName = String(body.customerName || '').trim();
+    const documentsHubUrl = String(body.documentsHubUrl || '').trim();
+    const items = Array.isArray(body.items)
+      ? body.items
+          .map((item) => ({
+            label: String(item?.label || '').trim(),
+            url: String(item?.url || '').trim(),
+            description: String(item?.description || '').trim(),
+            ctaLabel: String(item?.ctaLabel || '').trim() || 'Open document',
+          }))
+          .filter((item) => item.label && item.url)
+      : [];
+
+    if (!toEmail) {
+      return json(res, 400, { error: 'Recipient email is required' });
+    }
+
+    if (!items.length) {
+      return json(res, 400, { error: 'At least one shared rental item is required' });
+    }
+
+    const { brand } = await resolveBrandSettings();
+    const emailPayload = buildRentalDocumentsEmail({
+      customerName,
+      rentalId,
+      items,
+      documentsHubUrl,
+      brand,
+    });
+
+    const result = await sendResendEmail({
+      from: EMAIL_SENDERS.bookings,
+      to: toEmail,
+      subject: emailPayload.subject,
+      html: emailPayload.html,
+      replyTo: 'bookings@send.saharax.driveout.io',
+    });
+
+    return json(res, 200, { success: true, messageId: result?.id || null });
+  } catch (error) {
+    console.error('rental documents email failed:', error);
+    return json(res, 500, { error: error.message || 'Failed to send rental documents email' });
+  }
+};
+
+const handleAnnouncementEmail = async (req, res) => {
+  if (req.method !== 'POST') {
+    return json(res, 405, { error: 'Method not allowed' });
+  }
+
+  const auth = await requireOwnerOrAdmin(req);
+  if (auth.error) {
+    return json(res, auth.error.status, auth.error.body);
+  }
+
+  try {
+    const body = parseBody(req.body);
+    const recipients = Array.isArray(body.to)
+      ? body.to.map(normalizeEmail).filter(Boolean)
+      : [normalizeEmail(body.to)].filter(Boolean);
+    const subject = String(body.subject || '').trim();
+    const title = String(body.title || subject || '').trim();
+    const messageHtml = String(body.messageHtml || '').trim();
+    const ctaLabel = String(body.ctaLabel || '').trim();
+    const ctaUrl = String(body.ctaUrl || '').trim();
+
+    if (!recipients.length) {
+      return json(res, 400, { error: 'At least one recipient is required' });
+    }
+
+    if (!subject || !messageHtml) {
+      return json(res, 400, { error: 'Subject and messageHtml are required' });
+    }
+
+    const { brand } = await resolveBrandSettings();
+    const emailPayload = buildAnnouncementEmail({
+      subject,
+      title,
+      messageHtml,
+      ctaLabel,
+      ctaUrl,
+      brand,
+    });
+
+    const result = await sendResendEmail({
+      from: EMAIL_SENDERS.updates,
+      to: recipients,
+      subject: emailPayload.subject,
+      html: emailPayload.html,
+      replyTo: 'updates@send.saharax.driveout.io',
+    });
+
+    return json(res, 200, { success: true, messageId: result?.id || null });
+  } catch (error) {
+    console.error('announcement email failed:', error);
+    return json(res, 500, { error: error.message || 'Failed to send announcement email' });
+  }
+};
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
+  const action = getAction(req);
+
+  if (action === 'gemini-proxy') {
+    return handleGeminiProxy(req, res);
+  }
+
+  if (action === 'send-password-reset-email') {
+    return handlePasswordResetEmail(req, res);
+  }
+
+  if (action === 'send-rental-documents-email') {
+    return handleRentalDocumentsEmail(req, res);
+  }
+
+  if (action === 'send-announcement-email') {
+    return handleAnnouncementEmail(req, res);
+  }
 
   if (req.method === 'GET') {
     try {

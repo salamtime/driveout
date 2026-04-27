@@ -11,7 +11,7 @@ import PricingRulesService from '../../services/PricingRulesService';
 import appWarmupService from '../../services/AppWarmupService';
 import rentalSummaryService from '../../services/RentalSummaryService';
 import { DEFAULT_RENTAL_TIMING_SETTINGS, deriveEffectiveRentalStatus, getScheduledRentalTimingState, normalizeRentalLifecycle } from '../../utils/rentalLifecycle';
-import { getPaymentStatusStyle } from '../../config/statusColors';
+import { getPaymentStatusStyle, normalizePaymentStatus } from '../../config/statusColors';
 import { roundTo } from '../../utils/fuelMath';
 import { Plus, Clock, ClipboardList, List, Grid, LayoutGrid, CheckCircle, XCircle, Calendar, MessageCircle, RectangleHorizontal } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -19,6 +19,7 @@ import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import i18n from '../../i18n';
 import { canEditRentalContract } from '../../utils/permissionHelpers';
 import { fetchSystemSettings } from '../../services/systemSettingsApi';
+import { TABLE_NAMES } from '../../config/tableNames';
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
@@ -30,6 +31,10 @@ const scheduleBackgroundTask = (callback) => {
 
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+const openRentalWizard = (setShowStepperForm, setWizardUiVariant, variant = 'default') => () => {
+  setWizardUiVariant(variant);
+  setShowStepperForm(true);
+};
 
 const buildVehicleReminderLabel = (rental) => {
   const vehicleName = rental?.vehicle?.name || '';
@@ -70,13 +75,13 @@ const insertSharedRentalActivityLog = async (payload) => {
   };
 
   const modernAttempt = await supabase
-    .from('saharax_0u4w4d_activity_log')
+    .from(TABLE_NAMES.ACTIVITY_LOG)
     .insert(modernPayload);
 
   if (!modernAttempt.error) return modernAttempt;
 
   return supabase
-    .from('saharax_0u4w4d_activity_log')
+    .from(TABLE_NAMES.ACTIVITY_LOG)
     .insert(payload);
 };
 
@@ -390,6 +395,14 @@ const getDefaultDateFocusForWorkspace = (workspace) => {
 };
 
 const getPackageRentalDurationUnits = (rental = {}) => {
+  const storedDuration = rental?.rental_type === 'hourly'
+    ? Number(rental?.quantity_hours ?? rental?.quantity_days)
+    : Number(rental?.quantity_days);
+
+  if (Number.isFinite(storedDuration) && storedDuration > 0) {
+    return storedDuration;
+  }
+
   if (rental?.use_package_pricing) {
     const packageDuration = Number(
       rental?.package?.duration_units ??
@@ -402,38 +415,56 @@ const getPackageRentalDurationUnits = (rental = {}) => {
     }
   }
 
-  const storedDuration = rental?.rental_type === 'hourly'
-    ? Number(rental?.quantity_hours ?? rental?.quantity_days)
-    : Number(rental?.quantity_days);
-
-  return Number.isFinite(storedDuration) && storedDuration > 0 ? storedDuration : null;
+  return null;
 };
 
 const getRentalFinancialSnapshot = (rental) => {
-  const hasReturnFuel =
-    rental?.end_fuel_level !== null &&
-    rental?.end_fuel_level !== undefined;
   const quantity = getPackageRentalDurationUnits(rental) || 1;
   const baseTotal = rental?.use_package_pricing
-    ? (Number(rental?.unit_price) || Number(rental?.package_rate_per_unit) || 0)
+    ? ((Number(rental?.unit_price) || Number(rental?.package_rate_per_unit) || 0) * quantity)
     : (Number(rental?.unit_price) || 0) * quantity;
   const storedTotal = parseFloat(rental?.total_amount) || 0;
-  const fuelCharge = parseFloat(rental?.fuel_charge || 0) || 0;
-  const grandTotal = hasReturnFuel || String(rental?.rental_status || '').toLowerCase() === 'completed'
-    ? storedTotal
-    : Math.max(0, storedTotal - fuelCharge) || baseTotal;
-  const amountPaid = Math.max(0, parseFloat(rental?.deposit_amount) || 0);
-  const balanceDue = Math.max(0, grandTotal - amountPaid);
+  const pendingRequestedTotal = Math.max(0, parseFloat(rental?.pending_total_request || 0) || 0);
+  // Rental Details is the source of truth for saved contract totals.
+  // The rentals list should reflect the stored row values directly and
+  // must not re-run side calculations like fuel stripping or base-price fallbacks
+  // unless the contract total has never been saved.
+  const computedTotal = storedTotal > 0 ? storedTotal : baseTotal;
+  const grandTotal = pendingRequestedTotal > 0 ? pendingRequestedTotal : computedTotal;
+  const rawAmountPaid = Math.max(0, parseFloat(rental?.deposit_amount) || 0);
+  const storedRemainingAmount = rental?.remaining_amount;
+  const cappedPaidAmount = grandTotal > 0 ? Math.min(rawAmountPaid, grandTotal) : rawAmountPaid;
+  const balanceDue = Math.max(
+    0,
+    storedRemainingAmount === null || storedRemainingAmount === undefined
+      ? grandTotal - cappedPaidAmount
+      : Number(storedRemainingAmount) || 0
+  );
+  const normalizedPaymentStatus = normalizePaymentStatus(
+    rental?.payment_status,
+    storedRemainingAmount === null || storedRemainingAmount === undefined
+      ? balanceDue
+      : storedRemainingAmount
+  );
+  const amountPaid = normalizedPaymentStatus === 'paid'
+    ? grandTotal
+    : cappedPaidAmount;
 
   let status = 'UNPAID';
   let className = 'rounded-full bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-100';
 
-  if (balanceDue <= 0 && grandTotal > 0) {
+  if (normalizedPaymentStatus === 'paid') {
     status = 'PAID';
     className = 'rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 border border-emerald-100';
-  } else if (amountPaid > 0) {
+  } else if (normalizedPaymentStatus === 'partial') {
     status = 'PARTIAL';
     className = 'rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700 border border-amber-100';
+  } else if (normalizedPaymentStatus === 'overdue') {
+    status = 'OVERDUE';
+    className = 'rounded-full bg-orange-50 px-2 py-1 text-xs font-semibold text-orange-700 border border-orange-100';
+  } else if (normalizedPaymentStatus === 'refunded') {
+    status = 'REFUNDED';
+    className = 'rounded-full bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-700 border border-sky-100';
   }
 
   return {
@@ -450,10 +481,16 @@ const getApprovedExtensionHours = (rental) =>
     .filter((ext) => ext.status === 'approved')
     .reduce((sum, ext) => sum + (parseFloat(ext.extension_hours) || 0), 0);
 
+const shouldUseCompletedActualEndDate = (rental) =>
+  String(rental?.rental_status || '').toLowerCase() === 'completed' ||
+  Boolean(rental?.completed_at);
+
 const getEffectiveRentalWindow = (rental) => {
   const startDate = new Date(rental?.started_at || rental?.rental_start_date);
   const scheduledEndDate = rental?.rental_end_date ? new Date(rental.rental_end_date) : null;
-  const actualEndDate = rental?.actual_end_date ? new Date(rental.actual_end_date) : null;
+  const actualEndDate = shouldUseCompletedActualEndDate(rental) && rental?.actual_end_date
+    ? new Date(rental.actual_end_date)
+    : null;
 
   let endDate =
     actualEndDate && scheduledEndDate && actualEndDate > scheduledEndDate
@@ -533,7 +570,9 @@ const calculateSmartTimeRemaining = (rental, nowTimestamp = Date.now()) => {
 
   // Use the real stored effective end datetime just like Rental Details.
   const rentalEndDate = rental?.rental_end_date ? new Date(rental.rental_end_date) : null;
-  const actualEndDate = rental?.actual_end_date ? new Date(rental.actual_end_date) : null;
+  const actualEndDate = shouldUseCompletedActualEndDate(rental) && rental?.actual_end_date
+    ? new Date(rental.actual_end_date)
+    : null;
   const endDate =
     actualEndDate && rentalEndDate
       ? (actualEndDate > rentalEndDate ? actualEndDate : rentalEndDate)
@@ -791,10 +830,13 @@ const Rentals = () => {
   const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [showStepperForm, setShowStepperForm] = useState(false);
+  const [wizardUiVariant, setWizardUiVariant] = useState('default');
+  const [wizardReturnTo, setWizardReturnTo] = useState(null);
   const [editingRental, setEditingRental] = useState(null);
   const [wizardInitialStep, setWizardInitialStep] = useState(1);
   const [wizardCustomerScanNote, setWizardCustomerScanNote] = useState('');
   const [wizardRequiresCustomerVerification, setWizardRequiresCustomerVerification] = useState(false);
+  const [wizardCustomerVerificationCaptureOnly, setWizardCustomerVerificationCaptureOnly] = useState(false);
   
   const [statusFilter, setStatusFilter] = useState('all');
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('all');
@@ -1008,6 +1050,7 @@ const Rentals = () => {
             pending_total_request,
             total_amount,
             deposit_amount,
+            remaining_amount,
             fuel_charge,
             end_fuel_level,
             unit_price,
@@ -1053,10 +1096,6 @@ const Rentals = () => {
             )
           `, { count: 'planned' });
 
-        if (currentPaymentStatusFilter && currentPaymentStatusFilter !== 'all') {
-          query = query.eq('payment_status', currentPaymentStatusFilter);
-        }
-        
         query = query.order('created_at', { ascending: false });
 
         let { data, error, count } = await query;
@@ -1438,10 +1477,6 @@ const Rentals = () => {
           .gte('rental_start_date', fromDate.toISOString())
           .lt('rental_start_date', toDate.toISOString());
 
-        if (currentPaymentStatusFilter && currentPaymentStatusFilter !== 'all') {
-          query = query.eq('payment_status', currentPaymentStatusFilter);
-        }
-
         return query;
       };
 
@@ -1494,7 +1529,10 @@ const Rentals = () => {
     if (!rental) return false;
 
     const rentalStatus = getEffectiveRentalStatus(rental);
-    const rentalPaymentStatus = String(rental?.payment_status || '').toLowerCase();
+    const rentalPaymentStatus = normalizePaymentStatus(
+      rental?.payment_status,
+      rental?.remaining_amount
+    );
     const matchesWorkspace = !targetTab || targetTab === 'all'
       ? true
       : matchesWorkspaceTab(rental, targetTab);
@@ -1817,6 +1855,9 @@ const Rentals = () => {
       setWizardInitialStep(Number(location.state?.forceStep) || 1);
       setWizardCustomerScanNote(location.state?.customerScanNote || '');
       setWizardRequiresCustomerVerification(Boolean(location.state?.requireCustomerVerification));
+      setWizardCustomerVerificationCaptureOnly(Boolean(location.state?.customerVerificationCaptureOnly));
+      setWizardUiVariant(location.state?.wizardUiVariant === 'light' ? 'light' : 'default');
+      setWizardReturnTo(location.state?.wizardReturnTo || null);
       setShowStepperForm(true);
       // Clear the state to prevent reopening on refresh
       window.history.replaceState({}, document.title);
@@ -1824,16 +1865,28 @@ const Rentals = () => {
   }, [location.state]);
 
   const handleRentalSuccess = async (rentalData) => {
+    const redirectUrl = rentalData?.__redirectUrl
+      || (rentalData?.id
+        ? `/admin/rentals/${rentalData.id}${rentalData?.__uiVariant === 'light' ? '?view=light#ready-to-start' : ''}`
+        : null);
+
+    if (redirectUrl) {
+      navigate(redirectUrl);
+    }
+
     setShowForm(false);
     setShowStepperForm(false);
     setEditingRental(null);
     setWizardInitialStep(1);
     setWizardCustomerScanNote('');
     setWizardRequiresCustomerVerification(false);
+    setWizardCustomerVerificationCaptureOnly(false);
+    setWizardUiVariant('default');
+    setWizardReturnTo(null);
     appWarmupService.invalidateModule('rentals');
     appWarmupService.invalidateModule('finance');
-    fetchRentals(statusFilter, paymentStatusFilter);
-    refreshSecondaryRentalData();
+    void fetchRentals(statusFilter, paymentStatusFilter);
+    void refreshSecondaryRentalData();
 
     if (rentalData?.id) {
       try {
@@ -1914,9 +1967,11 @@ const Rentals = () => {
   };
 
   const handleCloseContract = async (rental) => {
-    const paymentStatus = String(rental?.payment_status || '').toLowerCase();
-    const remainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
-    const isFullyPaid = paymentStatus === 'paid' || remainingAmount <= 0;
+    const paymentStatus = normalizePaymentStatus(
+      rental?.payment_status,
+      rental?.remaining_amount
+    );
+    const isFullyPaid = paymentStatus === 'paid';
 
     if (!isFullyPaid) {
       alert('⚠️ Rental must be fully paid before completion.');
@@ -2029,8 +2084,8 @@ const Rentals = () => {
     );
   };
 
-  const getPaymentStatusBadge = (paymentStatus) => {
-    const { label, background, text } = getPaymentStatusStyle(paymentStatus);
+  const getPaymentStatusBadge = (paymentStatus, remainingAmount = null) => {
+    const { label, background, text } = getPaymentStatusStyle(paymentStatus, remainingAmount);
     const colorClass = `${background} ${text}`;
 
     return (
@@ -2158,7 +2213,10 @@ const Rentals = () => {
       }
 
       if (paymentStatusFilter && paymentStatusFilter !== 'all') {
-        const rentalPaymentStatus = String(rental?.payment_status || '').toLowerCase();
+        const rentalPaymentStatus = normalizePaymentStatus(
+          rental?.payment_status,
+          rental?.remaining_amount
+        );
         if (rentalPaymentStatus !== String(paymentStatusFilter).toLowerCase()) {
           return false;
         }
@@ -2551,18 +2609,27 @@ const Rentals = () => {
       <div className="min-h-screen bg-gray-50">
         <AdminModuleHero
           className="w-full"
-          icon={<ClipboardList className="h-8 w-8 text-white" />}
+          icon={<ClipboardList className="h-8 w-8 text-violet-600" />}
           eyebrow={isFrench ? 'Gestion des locations' : 'Rental Management'}
           title={isFrench ? 'Gestion des locations' : 'Rental Management'}
           description={isFrench ? 'Créez, suivez et gérez les locations actives, planifiées et terminées depuis un seul espace.' : 'Create, track, and manage active, scheduled, and completed rentals from one workspace.'}
           actions={
-            <button
-              onClick={() => setShowStepperForm(true)}
-              className="hidden sm:flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
-            >
-              <Plus className="w-5 h-5" />
-              <span>{isFrench ? 'Créer une location' : 'Create New Rental'}</span>
-            </button>
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+              <button
+                onClick={openRentalWizard(setShowStepperForm, setWizardUiVariant, 'default')}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.18)] transition-all duration-200 hover:bg-violet-700 hover:shadow-[0_14px_28px_rgba(79,70,229,0.24)] sm:w-auto"
+              >
+                <Plus className="w-5 h-5" />
+                <span>{isFrench ? 'Créer une location' : 'Create New Rental'}</span>
+              </button>
+              <button
+                onClick={openRentalWizard(setShowStepperForm, setWizardUiVariant, 'light')}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-violet-200/80 bg-white/85 px-4 py-2.5 text-sm font-semibold text-violet-700 shadow-[0_10px_22px_rgba(76,29,149,0.08)] transition-all duration-200 hover:bg-violet-50 hover:border-violet-300 sm:w-auto"
+              >
+                <Plus className="w-5 h-5" />
+                <span>{isFrench ? 'Version légère' : 'Light Version'}</span>
+              </button>
+            </div>
           }
         />
         <div className="max-w-7xl mx-auto p-6">
@@ -2612,12 +2679,16 @@ const Rentals = () => {
             setWizardInitialStep(1);
             setWizardCustomerScanNote('');
             setWizardRequiresCustomerVerification(false);
+            setWizardCustomerVerificationCaptureOnly(false);
+            setWizardReturnTo(null);
           }}
           initialData={editingRental}
           mode={editingRental ? 'edit' : 'create'}
           initialStep={wizardInitialStep}
           initialCustomerScanNote={wizardCustomerScanNote}
           requiresCustomerVerification={wizardRequiresCustomerVerification}
+          customerVerificationCaptureOnly={wizardCustomerVerificationCaptureOnly}
+          uiVariant={wizardUiVariant}
         />
       </div>
     );
@@ -2630,17 +2701,26 @@ const Rentals = () => {
           mode={editingRental ? "edit" : "create"}
           onSuccess={handleRentalSuccess}
           onCancel={() => {
+            if (wizardReturnTo) {
+              navigate(wizardReturnTo, { replace: true });
+              return;
+            }
             setShowStepperForm(false);
             setEditingRental(null);
             setWizardInitialStep(1);
             setWizardCustomerScanNote('');
             setWizardRequiresCustomerVerification(false);
+            setWizardCustomerVerificationCaptureOnly(false);
+            setWizardUiVariant('default');
+            setWizardReturnTo(null);
           }}
           initialData={editingRental}
           isLoading={loading}
           initialStep={wizardInitialStep}
           initialCustomerScanNote={wizardCustomerScanNote}
           requiresCustomerVerification={wizardRequiresCustomerVerification}
+          customerVerificationCaptureOnly={wizardCustomerVerificationCaptureOnly}
+          uiVariant={wizardUiVariant}
         />
       </div>
     );
@@ -2664,18 +2744,27 @@ const Rentals = () => {
     <div className="min-h-screen bg-gray-50">
       <AdminModuleHero
         className="w-full"
-        icon={<ClipboardList className="h-8 w-8 text-white" />}
+        icon={<ClipboardList className="h-8 w-8 text-violet-600" />}
         eyebrow={isFrench ? 'Gestion des locations' : 'Rental Management'}
         title={isFrench ? 'Gestion des locations' : 'Rental Management'}
         description={isFrench ? 'Créez, suivez et gérez les locations actives, planifiées et terminées depuis un seul espace.' : 'Create, track, and manage active, scheduled, and completed rentals from one workspace.'}
         actions={
-          <button
-            onClick={() => setShowStepperForm(true)}
-            className="hidden sm:flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
-          >
-            <Plus className="w-5 h-5" />
-            <span>{isFrench ? 'Créer une location' : 'Create New Rental'}</span>
-          </button>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+            <button
+              onClick={openRentalWizard(setShowStepperForm, setWizardUiVariant, 'default')}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(79,70,229,0.18)] transition-all duration-200 hover:bg-violet-700 hover:shadow-[0_14px_28px_rgba(79,70,229,0.24)] sm:w-auto"
+            >
+              <Plus className="w-5 h-5" />
+              <span>{isFrench ? 'Créer une location' : 'Create New Rental'}</span>
+            </button>
+            <button
+              onClick={openRentalWizard(setShowStepperForm, setWizardUiVariant, 'light')}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-violet-200/80 bg-white/85 px-4 py-2.5 text-sm font-semibold text-violet-700 shadow-[0_10px_22px_rgba(76,29,149,0.08)] transition-all duration-200 hover:bg-violet-50 hover:border-violet-300 sm:w-auto"
+            >
+              <Plus className="w-5 h-5" />
+              <span>{isFrench ? 'Version légère' : 'Light Version'}</span>
+            </button>
+          </div>
         }
       />
 
@@ -3330,7 +3419,7 @@ const Rentals = () => {
     }}
     className="text-gray-400 cursor-not-allowed opacity-50"
     title={`Complete requirements: ${[
-      rental.payment_status !== 'paid' ? 'Payment' : '',
+      getRentalFinancialSnapshot(rental).status !== 'PAID' ? 'Payment' : '',
       (!rental.signature_url && !rental.contract_signed) ? 'Contract signature' : '',
       !rental.opening_video_url ? 'Opening video' : '',
       !rental.start_odometer ? 'Odometer reading' : '',
@@ -3440,6 +3529,8 @@ const Rentals = () => {
                     PAID: tr('PAID', 'PAYÉE'),
                     PARTIAL: tr('PARTIAL', 'PARTIEL'),
                     UNPAID: tr('UNPAID', 'IMPAYÉE'),
+                    OVERDUE: tr('OVERDUE', 'EN RETARD'),
+                    REFUNDED: tr('REFUNDED', 'REMBOURSÉE'),
                   }[paymentSnapshot.status] || paymentSnapshot.status;
                   
                   return (

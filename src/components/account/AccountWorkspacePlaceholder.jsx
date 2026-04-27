@@ -1,13 +1,11 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
+import AccountWorkspaceHero from './AccountWorkspaceHero';
+import AccountWorkspaceSectionHeader from './AccountWorkspaceSectionHeader';
 
 const AccountWorkspacePlaceholder = ({ eyebrow, title, description, actions = [], notes = [] }) => (
   <div className="space-y-6">
-    <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">{eyebrow}</p>
-      <h2 className="mt-3 text-2xl font-bold tracking-tight text-slate-950">{title}</h2>
-      <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">{description}</p>
-
+    <AccountWorkspaceHero eyebrow={eyebrow} title={title} description={description}>
       {actions.length ? (
         <div className="mt-6 flex flex-wrap gap-3">
           {actions.map((action) => (
@@ -25,13 +23,13 @@ const AccountWorkspacePlaceholder = ({ eyebrow, title, description, actions = []
           ))}
         </div>
       ) : null}
-    </section>
+    </AccountWorkspaceHero>
 
     {notes.length ? (
       <section className="grid gap-4 lg:grid-cols-2">
         {notes.map((note) => (
           <div key={note.title} className="rounded-[1.75rem] border border-violet-100 bg-[linear-gradient(180deg,#ffffff_0%,#f5f3ff_100%)] p-5 shadow-[0_18px_44px_rgba(79,70,229,0.06)]">
-            <p className="text-sm font-bold text-slate-900">{note.title}</p>
+            <AccountWorkspaceSectionHeader title={note.title} />
             <p className="mt-2 text-sm leading-6 text-slate-600">{note.body}</p>
           </div>
         ))}

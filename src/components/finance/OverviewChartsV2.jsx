@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, Area, AreaChart } from 'recharts';
 import { TrendingUp, BarChart3, PieChart as PieChartIcon, Activity, ArrowDownRight, ArrowUpRight, CalendarDays, WalletCards, ChevronLeft, Receipt, Wrench, Fuel, Package, Car, AlertCircle } from 'lucide-react';
 import { financeApiV2 } from '../../services/financeApiV2';
@@ -37,6 +38,7 @@ const buildPulseCacheKey = (filters, endDateKey) =>
     vehicleIds: [...(filters?.vehicleIds || [])].map(String).sort(),
     customerIds: [...(filters?.customerIds || [])].map(String).sort(),
     orgId: filters?.orgId || 'current',
+    startDate: filters?.startDate || '',
     endDate: endDateKey
   });
 
@@ -45,6 +47,50 @@ const getPulseAnchorDate = (filters) => {
   const anchor = filterEnd || new Date();
   anchor.setHours(12, 0, 0, 0);
   return anchor;
+};
+
+const getActiveQuickRangeKey = (filters, anchorDate) => {
+  const todayBase = new Date();
+  todayBase.setHours(12, 0, 0, 0);
+  const yesterdayBase = addDays(todayBase, -1);
+  const weekStart = addDays(anchorDate, -6);
+
+  if (filters?.startDate === formatDateKey(todayBase) && filters?.endDate === formatDateKey(todayBase)) {
+    return 'today';
+  }
+
+  if (filters?.startDate === formatDateKey(yesterdayBase) && filters?.endDate === formatDateKey(yesterdayBase)) {
+    return 'yesterday';
+  }
+
+  if (filters?.startDate === formatDateKey(weekStart) && filters?.endDate === formatDateKey(anchorDate)) {
+    return 'last7';
+  }
+
+  if (filters?.startDate === formatDateKey(new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1)) && filters?.endDate === formatDateKey(anchorDate)) {
+    return 'month';
+  }
+
+  if (filters?.startDate === formatDateKey(anchorDate) && filters?.endDate === formatDateKey(anchorDate)) {
+    return 'day';
+  }
+
+  return 'custom';
+};
+
+const getDatesBetween = (start, end) => {
+  const dates = [];
+  const cursor = new Date(start);
+  cursor.setHours(12, 0, 0, 0);
+  const rangeEnd = new Date(end);
+  rangeEnd.setHours(12, 0, 0, 0);
+
+  while (cursor <= rangeEnd) {
+    dates.push(formatDateKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return dates;
 };
 
 const sourceIcons = {
@@ -63,6 +109,13 @@ const sourceIcons = {
   fuel: Fuel
 };
 
+const pulseBreakdownShortcuts = [
+  { key: 'maintenance', label: tr('Maintenance', 'Maintenance') },
+  { key: 'fuel', label: tr('Fuel', 'Carburant') },
+  { key: 'damage_recovery', label: tr('Damage recovery', 'Récupération dommage') },
+  { key: 'other_costs', label: tr('Other costs', 'Autres coûts') }
+];
+
 /**
  * Enhanced Overview Charts v2 with Modern Animated Charts
  * 
@@ -74,13 +127,14 @@ const sourceIcons = {
  * - Interactive tooltips and legends
  * - Responsive design with gradient colors
  */
-const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null, prefetchedKpiData = null, prefetchedPulseRows = null, parentLoading = false }) => {
+const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null, prefetchedKpiData = null, prefetchedPulseRows = null, parentLoading = false, onPulseDetailChange = null, onOpenBreakdown = null }) => {
+  const navigate = useNavigate();
   const pulseAnchorToday = useMemo(() => {
     return getPulseAnchorDate(filters);
   }, [filters?.endDate]);
   const pulseCacheKey = useMemo(
     () => buildPulseCacheKey(filters, formatDateKey(pulseAnchorToday)),
-    [filters?.vehicleIds, filters?.customerIds, filters?.orgId, pulseAnchorToday]
+    [filters?.vehicleIds, filters?.customerIds, filters?.orgId, filters?.startDate, pulseAnchorToday]
   );
   const [trendData, setTrendData] = useState(prefetchedTrendData || []);
   const [pulseLedgerRows, setPulseLedgerRows] = useState(() => (
@@ -103,7 +157,13 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
   const [detailPageLoading, setDetailPageLoading] = useState(false);
   const [detailPageError, setDetailPageError] = useState('');
   const [detailPageCurrentPage, setDetailPageCurrentPage] = useState(1);
-  const detailRowsPerPage = 8;
+  const [detailRowsPerPage, setDetailRowsPerPage] = useState(8);
+
+  useEffect(() => {
+    if (typeof onPulseDetailChange === 'function') {
+      onPulseDetailChange(Boolean(detailPage));
+    }
+  }, [detailPage, onPulseDetailChange]);
 
   useEffect(() => {
     if (prefetchedTrendData || prefetchedKpiData) {
@@ -130,7 +190,7 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
       return;
     }
     loadPulseTrendData();
-  }, [filters?.vehicleIds, filters?.customerIds, filters?.orgId, refreshTrigger, prefetchedPulseRows, pulseCacheKey]);
+  }, [filters?.vehicleIds, filters?.customerIds, filters?.orgId, filters?.startDate, refreshTrigger, prefetchedPulseRows, pulseCacheKey]);
 
   const loadChartData = async (reusePrefetched = false) => {
     try {
@@ -169,10 +229,15 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
       setPulseLoading(true);
       const currentDate = getPulseAnchorDate(filters);
       const monthStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1, 12, 0, 0, 0);
+      const selectedStart = getLocalDate(filters?.startDate);
+      const effectiveStart =
+        selectedStart && selectedStart < monthStart
+          ? selectedStart
+          : monthStart;
 
       const pulseFilters = {
         ...filters,
-        startDate: formatDateKey(monthStart),
+        startDate: formatDateKey(effectiveStart),
         endDate: formatDateKey(currentDate),
       };
 
@@ -229,6 +294,36 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
     });
   };
 
+  const formatRangeLabel = (start, end) => {
+    if (!start || !end) return tr('Custom range', 'Période personnalisée');
+    return `${start.toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US', { day: 'numeric', month: 'short' })} - ${end.toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US', { day: 'numeric', month: 'short' })}`;
+  };
+
+  const formatPulseCardTitle = (date, mode, activeRangeKey) => {
+    if (mode === 'today') {
+      if (activeRangeKey === 'today') return tr('Today', "Aujourd'hui");
+      if (activeRangeKey === 'yesterday') return tr('Yesterday', 'Hier');
+      return date.toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US', {
+        month: 'short',
+        day: 'numeric'
+      });
+    }
+
+    if (mode === 'week') {
+      if (activeRangeKey === 'last7') return tr('Last 7 Days', '7 derniers jours');
+      return `${tr('Week of', 'Semaine du')} ${date.toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US', {
+        month: 'short',
+        day: 'numeric'
+      })}`;
+    }
+
+    if (activeRangeKey === 'month') return tr('This Month', 'Ce mois-ci');
+    return date.toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US', {
+      month: 'long',
+      year: 'numeric'
+    });
+  };
+
   const buildPeriodSummary = (rows, title, label) => {
     const incoming = rows.reduce((sum, row) => sum + (row.revenue || 0), 0);
     const outgoing = rows.reduce((sum, row) => sum + (row.expenses || 0), 0);
@@ -255,6 +350,9 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
   const pulseAnchorDate = useMemo(() => {
     return getPulseAnchorDate(filters);
   }, [filters?.endDate, refreshTrigger]);
+  const activeRangeKey = useMemo(() => {
+    return getActiveQuickRangeKey(filters, pulseAnchorDate);
+  }, [filters, pulseAnchorDate]);
 
   const buildLedgerSummary = useMemo(() => (rows, title, label) => {
     const incoming = rows
@@ -296,8 +394,14 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
     const weekStart = addDays(pulseAnchorDate, -6);
     const month = pulseAnchorDate.getMonth();
     const year = pulseAnchorDate.getFullYear();
+    const selectedStartDate = getLocalDate(filters?.startDate);
+    const selectedEndDate = getLocalDate(filters?.endDate);
+    const hasCustomSelectedRange = activeRangeKey === 'custom' && selectedStartDate && selectedEndDate;
+    const selectedRangeDates = hasCustomSelectedRange ? new Set(getDatesBetween(selectedStartDate, selectedEndDate)) : null;
 
-    const todayRows = pulseLedgerRows.filter((row) => row.date === todayKey);
+    const todayRows = hasCustomSelectedRange
+      ? pulseLedgerRows.filter((row) => selectedRangeDates.has(row.date))
+      : pulseLedgerRows.filter((row) => row.date === todayKey);
     const weekRows = pulseLedgerRows.filter((row) => {
       const date = getLocalDate(row.date);
       return date && date >= weekStart && date <= pulseAnchorDate;
@@ -308,11 +412,15 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
     });
 
     return [
-      buildLedgerSummary(todayRows, tr('Today', "Aujourd'hui"), formatPeriodLabel(pulseAnchorDate, 'today')),
-      buildLedgerSummary(weekRows, tr('This Week', 'Cette semaine'), formatPeriodLabel(pulseAnchorDate, 'week')),
-      buildLedgerSummary(monthRows, tr('This Month', 'Ce mois-ci'), formatPeriodLabel(pulseAnchorDate, 'month'))
+      buildLedgerSummary(
+        todayRows,
+        hasCustomSelectedRange ? tr('Selected Range', 'Plage sélectionnée') : formatPulseCardTitle(pulseAnchorDate, 'today', activeRangeKey),
+        hasCustomSelectedRange ? formatRangeLabel(selectedStartDate, selectedEndDate) : formatPeriodLabel(pulseAnchorDate, 'today')
+      ),
+      buildLedgerSummary(weekRows, formatPulseCardTitle(pulseAnchorDate, 'week', activeRangeKey), formatPeriodLabel(pulseAnchorDate, 'week')),
+      buildLedgerSummary(monthRows, formatPulseCardTitle(pulseAnchorDate, 'month', activeRangeKey), formatPeriodLabel(pulseAnchorDate, 'month'))
     ];
-  }, [pulseLedgerRows, pulseAnchorDate, buildLedgerSummary]);
+  }, [pulseLedgerRows, pulseAnchorDate, buildLedgerSummary, activeRangeKey, filters?.startDate, filters?.endDate]);
 
   const strongestPeriod = useMemo(() => {
     if (periodSummaries.length === 0) return null;
@@ -322,11 +430,14 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
   const buildDetailMeta = (periodType) => {
     const anchorKey = formatDateKey(pulseAnchorDate);
     if (periodType === 'today') {
+      const selectedStartDate = getLocalDate(filters?.startDate);
+      const selectedEndDate = getLocalDate(filters?.endDate);
+      const hasCustomSelectedRange = activeRangeKey === 'custom' && selectedStartDate && selectedEndDate;
       return {
         periodType,
-        title: tr('Today Finance Detail', "Détail finance d'aujourd'hui"),
-        rangeLabel: formatPeriodLabel(pulseAnchorDate, 'today'),
-        dates: [anchorKey]
+        title: `${hasCustomSelectedRange ? tr('Selected Range', 'Plage sélectionnée') : formatPulseCardTitle(pulseAnchorDate, 'today', activeRangeKey)} ${tr('Finance Detail', 'Détail finance')}`,
+        rangeLabel: hasCustomSelectedRange ? formatRangeLabel(selectedStartDate, selectedEndDate) : formatPeriodLabel(pulseAnchorDate, 'today'),
+        dates: hasCustomSelectedRange ? getDatesBetween(selectedStartDate, selectedEndDate) : [anchorKey]
       };
     }
 
@@ -334,7 +445,7 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
       const dates = Array.from({ length: 7 }, (_, index) => formatDateKey(addDays(pulseAnchorDate, -6 + index)));
       return {
         periodType,
-        title: tr('Weekly Finance Detail', 'Détail finance hebdomadaire'),
+        title: `${formatPulseCardTitle(pulseAnchorDate, 'week', activeRangeKey)} ${tr('Finance Detail', 'Détail finance')}`,
         rangeLabel: formatPeriodLabel(pulseAnchorDate, 'week'),
         dates
       };
@@ -347,7 +458,7 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
     }
     return {
       periodType,
-      title: tr('Monthly Finance Detail', 'Détail finance mensuel'),
+      title: `${formatPulseCardTitle(pulseAnchorDate, 'month', activeRangeKey)} ${tr('Finance Detail', 'Détail finance')}`,
       rangeLabel: formatPeriodLabel(pulseAnchorDate, 'month'),
       dates: monthDates
     };
@@ -400,6 +511,22 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
       setDetailPageLoading(false);
     }
   };
+
+  const handleOpenSourceRow = (row) => {
+    if (!row?.href) return;
+
+    navigate(row.href, {
+      state: {
+        financeOverviewReturn: true,
+        financeOverviewLabel: detailPage?.rangeLabel || '',
+      },
+    });
+  };
+
+  useEffect(() => {
+    if (!detailPage?.periodType) return;
+    handleOpenDetailPage(detailPage.periodType);
+  }, [filters.startDate, filters.endDate, refreshTrigger]);
 
   // Custom tooltip component
   const CustomTooltip = ({ active, payload, label }) => {
@@ -476,8 +603,9 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
     ].filter((entry) => (detailPage.sourceTotals?.[entry.key] || 0) > 0);
 
     return (
-      <div className="space-y-6">
-        <div className="rounded-[2rem] border border-violet-100/80 bg-white p-5 shadow-[0_20px_55px_rgba(76,29,149,0.08)]">
+      <div className="space-y-6 pb-28 sm:pb-8">
+        <div className="rounded-[2rem] border border-violet-100/80 bg-gradient-to-br from-[#f5f3ff] via-[#fbfaff] to-[#eef2ff] p-4 shadow-[0_20px_55px_rgba(76,29,149,0.08)]">
+          <div className="rounded-[1.7rem] border border-white/80 bg-white p-5 shadow-[0_16px_34px_rgba(15,23,42,0.06)]">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{detailPage.title}</p>
@@ -493,11 +621,12 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
                 setDetailPage(null);
                 setDetailPageCurrentPage(1);
               }}
-              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+              className="hidden sm:inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(91,33,182,0.28)] transition hover:translate-y-[-1px] hover:shadow-[0_18px_32px_rgba(91,33,182,0.32)]"
             >
               <ChevronLeft className="h-4 w-4" />
               {tr('Back to Overview', "Retour à l'aperçu")}
             </button>
+          </div>
           </div>
         </div>
 
@@ -513,7 +642,7 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
             {detailPageError}
           </div>
         ) : (
-          <div className="mt-5 space-y-5 rounded-[1.75rem] border border-slate-200 bg-slate-50/70 p-4 sm:p-5">
+          <div className="mt-5 space-y-5 rounded-[1.75rem] border border-violet-100/80 bg-gradient-to-br from-[#f5f3ff] via-[#fbfaff] to-[#eef2ff] p-4 shadow-[0_18px_42px_rgba(76,29,149,0.08)] sm:p-5">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/80 p-4">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">{tr('Incoming', 'Entrées')}</p>
@@ -535,7 +664,7 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
               </div>
             </div>
 
-            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-[1.5rem] border border-white/90 bg-white p-5 shadow-[0_16px_34px_rgba(15,23,42,0.06)]">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Source Breakdown', 'Répartition des sources')}</p>
@@ -556,16 +685,41 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
               </div>
             </div>
 
-            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-[1.5rem] border border-white/90 bg-white p-5 shadow-[0_16px_34px_rgba(15,23,42,0.06)]">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Transaction Detail', 'Détail des transactions')}</p>
                   <h4 className="mt-2 text-lg font-semibold text-slate-900">{tr('All rows in this period', 'Toutes les lignes de cette période')}</h4>
                 </div>
                 {detailPageRows.length > 0 && (
-                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                    {tr('Page', 'Page')} {detailPageCurrentPage} / {detailPageTotalPages}
-                  </span>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                      {tr('Show', 'Afficher')}
+                    </span>
+                    {[8, 25, 50].map((limit) => {
+                      const isActiveLimit = detailRowsPerPage === limit;
+                      return (
+                        <button
+                          key={limit}
+                          type="button"
+                          onClick={() => {
+                            setDetailRowsPerPage(limit);
+                            setDetailPageCurrentPage(1);
+                          }}
+                          className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                            isActiveLimit
+                              ? 'border-violet-300 bg-violet-600 text-white shadow-[0_10px_22px_rgba(79,70,229,0.20)]'
+                              : 'border-slate-200 bg-white text-slate-600 hover:border-violet-200 hover:text-violet-700'
+                          }`}
+                        >
+                          {limit}
+                        </button>
+                      );
+                    })}
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                      {tr('Page', 'Page')} {detailPageCurrentPage} / {detailPageTotalPages}
+                    </span>
+                  </div>
                 )}
               </div>
 
@@ -577,8 +731,22 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
                 ) : (
                   paginatedDetailRows.map((row) => {
                     const Icon = sourceIcons[row.sourceType] || Receipt;
+                    const isClickable = Boolean(row.href);
                     return (
-                      <div key={row.id} className="rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+                      <button
+                        key={row.id}
+                        type="button"
+                        onClick={() => {
+                          if (isClickable) {
+                            handleOpenSourceRow(row);
+                          }
+                        }}
+                        className={`w-full rounded-[1.5rem] border px-4 py-4 text-left transition duration-200 ease-out ${
+                          isClickable
+                            ? 'border-violet-200/90 bg-white shadow-[0_12px_28px_rgba(79,70,229,0.08),0_24px_52px_rgba(15,23,42,0.05)] hover:-translate-y-0.5 hover:scale-[1.01] hover:border-violet-300 hover:shadow-[0_18px_38px_rgba(79,70,229,0.12),0_28px_60px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.985]'
+                            : 'border-slate-200 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.05)]'
+                        }`}
+                      >
                         <div className="flex items-start justify-between gap-4">
                           <div className="flex min-w-0 items-start gap-3">
                             <div className={`mt-0.5 rounded-2xl p-2 ${row.direction === 'incoming' ? 'bg-emerald-100 text-emerald-700' : row.direction === 'tax' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>
@@ -600,18 +768,14 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
                               {row.direction === 'incoming' ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
                               <span>{row.direction === 'incoming' ? '+' : '-'}{formatCompact(row.amount)} MAD</span>
                             </div>
-                            {row.href && (
-                              <button
-                                type="button"
-                                onClick={() => (window.location.href = row.href)}
-                                className="mt-2 inline-flex items-center gap-1 text-sm font-semibold text-violet-600 hover:text-violet-700"
-                              >
+                            {row.href ? (
+                              <span className="mt-2 inline-flex items-center gap-1 text-sm font-semibold text-violet-600">
                                 {tr('Open', 'Ouvrir')}
-                              </button>
-                            )}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
-                      </div>
+                      </button>
                     );
                   })
                 )}
@@ -645,13 +809,37 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
             </div>
           </div>
         )}
+
+        <div className="pointer-events-none fixed inset-x-0 bottom-4 z-40 px-4 sm:hidden">
+          <div className="mx-auto max-w-md">
+            <div className="pointer-events-auto rounded-[26px] border border-violet-200 bg-white/88 px-4 py-3 shadow-[0_-12px_30px_rgba(15,23,42,0.12)] backdrop-blur-xl">
+              <button
+                type="button"
+                onClick={() => {
+                  setDetailPage(null);
+                  setDetailPageCurrentPage(1);
+                }}
+                className="flex w-full items-center justify-between gap-3 rounded-[20px] bg-gradient-to-r from-violet-600 to-indigo-700 px-5 py-3 text-base font-semibold text-white shadow-[0_16px_32px_rgba(79,70,229,0.26)] transition active:scale-[0.99]"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <ChevronLeft className="h-5 w-5" />
+                  {tr('Back to Overview', "Retour à l'aperçu")}
+                </span>
+                <span className="rounded-full border border-white/20 bg-white/10 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.16em] shadow-[0_10px_24px_rgba(15,23,42,0.14)] backdrop-blur-md">
+                  {tr('Overview', 'Aperçu')}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <div className="rounded-[28px] border border-violet-200/90 bg-gradient-to-br from-[#ede9fe] via-[#f8f7ff] to-[#e8efff] p-4 shadow-[0_22px_52px_rgba(76,29,149,0.10)] sm:p-5">
+        <div className="rounded-[24px] border border-white/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(255,255,255,0.9))] p-5 shadow-[0_18px_38px_rgba(15,23,42,0.08)] sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <div className="flex items-center gap-3">
@@ -662,9 +850,6 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
                 <h3 className="text-lg font-semibold text-slate-900 sm:text-xl">
                   {tr('Finance pulse', 'Pouls financier')}
                 </h3>
-                <p className="text-sm text-slate-600">
-                  {tr('See what came in, what went out, and what remained across the key periods you care about first.', 'Voyez d’abord ce qui est entré, ce qui est sorti et ce qui reste sur les périodes qui comptent le plus.')}
-                </p>
               </div>
             </div>
           </div>
@@ -689,7 +874,7 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
               key={summary.title}
               type="button"
               onClick={() => handleOpenDetailPage(periodType)}
-              className="rounded-[24px] border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-slate-300 hover:shadow-[0_16px_36px_rgba(15,23,42,0.06)]"
+              className="rounded-[24px] border border-slate-200/90 bg-white p-5 text-left shadow-[0_18px_38px_rgba(15,23,42,0.08)] transition hover:border-slate-300 hover:shadow-[0_22px_44px_rgba(15,23,42,0.10)]"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -697,7 +882,9 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
                     <CalendarDays className="h-4 w-4 text-slate-500" />
                     <p className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">{summary.title}</p>
                   </div>
-                  <p className="mt-2 text-sm text-slate-500">{summary.label}</p>
+                  <div className="mt-3 inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 shadow-sm">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-violet-700">{summary.label}</p>
+                  </div>
                 </div>
                 <div className={`rounded-2xl px-3 py-1.5 text-sm font-semibold ${summary.net >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
                   {summary.net >= 0 ? '+' : ''}{formatCompact(summary.net)} MAD
@@ -705,32 +892,38 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
               </div>
 
               <div className="mt-5 grid grid-cols-3 gap-3">
-                <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 p-3">
-                  <div className="flex items-center gap-2 text-emerald-700">
-                    <ArrowUpRight className="h-4 w-4" />
-                    <span className="text-xs font-semibold uppercase tracking-[0.14em]">{tr('Incoming', 'Entrées')}</span>
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 p-3 text-left">
+                  <div className="flex min-h-[24px] items-start justify-between gap-3 text-emerald-700">
+                    <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">{tr('Incoming', 'Entrées')}</span>
+                    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70">
+                      <ArrowUpRight className="h-3.5 w-3.5" />
+                    </span>
                   </div>
-                  <p className="mt-2 text-lg font-bold text-emerald-700">
+                  <p className="mt-2 text-left text-lg font-bold text-emerald-700">
                     {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${formatCompact(summary.incoming)} MAD`}
                   </p>
                 </div>
 
-                <div className="rounded-2xl border border-rose-100 bg-rose-50/80 p-3">
-                  <div className="flex items-center gap-2 text-rose-700">
-                    <ArrowDownRight className="h-4 w-4" />
-                    <span className="text-xs font-semibold uppercase tracking-[0.14em]">{tr('Outgoing', 'Sorties')}</span>
+                <div className="rounded-2xl border border-rose-100 bg-rose-50/80 p-3 text-left">
+                  <div className="flex min-h-[24px] items-start justify-between gap-3 text-rose-700">
+                    <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">{tr('Outgoing', 'Sorties')}</span>
+                    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70">
+                      <ArrowDownRight className="h-3.5 w-3.5" />
+                    </span>
                   </div>
-                  <p className="mt-2 text-lg font-bold text-rose-700">
+                  <p className="mt-2 text-left text-lg font-bold text-rose-700">
                     {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${formatCompact(summary.outgoing)} MAD`}
                   </p>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                  <div className={`flex items-center gap-2 ${summary.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                    <Activity className="h-4 w-4" />
-                    <span className="text-xs font-semibold uppercase tracking-[0.14em]">{tr('Net', 'Net')}</span>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left">
+                  <div className={`flex min-h-[24px] items-start justify-between gap-3 ${summary.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">{tr('Net', 'Net')}</span>
+                    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70">
+                      <Activity className="h-3.5 w-3.5" />
+                    </span>
                   </div>
-                  <p className={`mt-2 text-lg font-bold ${summary.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  <p className={`mt-2 text-left text-lg font-bold ${summary.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                     {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${summary.net >= 0 ? '+' : ''}${formatCompact(summary.net)} MAD`}
                   </p>
                 </div>
@@ -746,6 +939,25 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
               </div>
             </button>
           )})}
+        </div>
+
+        <div className="mt-4 rounded-[1.35rem] border border-slate-200 bg-slate-50/85 px-4 py-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Quick drilldowns', 'Détails rapides')}</p>
+            <div className="flex flex-wrap gap-2">
+              {pulseBreakdownShortcuts.map((shortcut) => (
+                <button
+                  key={shortcut.key}
+                  type="button"
+                  onClick={() => onOpenBreakdown?.(shortcut.key)}
+                  className="rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-slate-200"
+                >
+                  {shortcut.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
         </div>
       </div>
 

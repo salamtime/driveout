@@ -10,6 +10,14 @@ export const getUsers = async () => {
 };
 
 /**
+ * Fetches the lightweight staff directory that message-enabled staff can access.
+ */
+export const getStaffDirectory = async () => {
+  const data = await adminApiRequest('/api/admin-users?scope=staff-directory');
+  return data.users || [];
+};
+
+/**
  * Adds a new user.
  */
 export const addUser = async (email, password, name, role, appProfile = {}) => {
@@ -319,15 +327,9 @@ export const getUserPermissions = async (userId) => {
   }
 
   try {
-    console.log('=== UserService.getUserPermissions START ===');
-    console.log('User ID:', userId);
-
     const { data, error } = await supabase.rpc('get_user_effective_permissions', {
       v_user_id: userId,
     });
-
-    console.log('RPC response - data:', data);
-    console.log('RPC response - error:', error);
 
     if (error) {
       console.error('Error fetching user permissions via RPC:', error);
@@ -338,9 +340,6 @@ export const getUserPermissions = async (userId) => {
     data?.forEach((item) => {
       permissionsMap[item.module_name] = item.is_allowed;
     });
-
-    console.log('Permissions map:', permissionsMap);
-    console.log('=== UserService.getUserPermissions END ===');
 
     return permissionsMap;
   } catch (error) {

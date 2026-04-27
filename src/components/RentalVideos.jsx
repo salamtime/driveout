@@ -21,13 +21,23 @@ import {
   Camera,
   Filter,
   Grid3X3,
-  LayoutList
+  LayoutList,
+  Trash2
 } from 'lucide-react';
 import i18n from '../i18n';
+import DeleteMediaDialog from './media/DeleteMediaDialog';
 
-const RentalVideos = ({ rental, onUpdate }) => {
+const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
+  const completedAtMs = rental?.completed_at
+    ? new Date(rental.completed_at).getTime()
+    : rental?.actual_end_date
+      ? new Date(rental.actual_end_date).getTime()
+      : null;
+  const isCompletedRental =
+    String(rental?.rental_status || '').toLowerCase() === 'completed' ||
+    Number.isFinite(completedAtMs);
   const [media, setMedia] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -39,6 +49,29 @@ const RentalVideos = ({ rental, onUpdate }) => {
   const [videoRetryCount, setVideoRetryCount] = useState(0);
   const [filterType, setFilterType] = useState('all');
   const [viewMode, setViewMode] = useState('list'); // 'grid' or 'list'
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const parseStoragePathFromPublicUrl = (url) => {
+    if (!url || typeof url !== 'string') return null;
+    try {
+      const marker = '/storage/v1/object/public/rental-videos/';
+      const markerIndex = url.indexOf(marker);
+      if (markerIndex === -1) return null;
+      return decodeURIComponent(url.slice(markerIndex + marker.length));
+    } catch (err) {
+      console.warn('Failed to parse storage path from public URL:', err);
+      return null;
+    }
+  };
+
+  const isPostCompletionMedia = (item) => {
+    if (item.phase === 'out') return false;
+    if (!Number.isFinite(completedAtMs)) return false;
+    const uploadedAtMs = item.timestamp ? new Date(item.timestamp).getTime() : NaN;
+    if (!Number.isFinite(uploadedAtMs)) return false;
+    return uploadedAtMs >= completedAtMs;
+  };
 
   // Load all media (images and videos) for the rental
   useEffect(() => {
@@ -327,8 +360,66 @@ const RentalVideos = ({ rental, onUpdate }) => {
     return new Date(timestamp).toLocaleString();
   };
 
-  const getPhaseLabel = (phase) => phase === 'out' ? tr('Opening', 'Départ') : tr('Closing', 'Retour');
-  const getPhaseColor = (phase) => phase === 'out' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800';
+  const getPhaseLabel = (itemOrPhase) => {
+    const phase = typeof itemOrPhase === 'string' ? itemOrPhase : itemOrPhase?.phase;
+    if (phase === 'out') return tr('Opening', 'Départ');
+    return isPostCompletionMedia(itemOrPhase) ? tr('Media', 'Médias') : tr('Closing', 'Retour');
+  };
+  const getPhaseColor = (itemOrPhase) => {
+    const phase = typeof itemOrPhase === 'string' ? itemOrPhase : itemOrPhase?.phase;
+    if (phase === 'out') return 'bg-green-100 text-green-800';
+    return isPostCompletionMedia(itemOrPhase) ? 'bg-violet-100 text-violet-800' : 'bg-blue-100 text-blue-800';
+  };
+
+  const handleDeleteMedia = async () => {
+    if (!canDeleteMedia || !deleteTarget?.id) return;
+
+    try {
+      setIsDeleting(true);
+      const storagePaths = Array.from(
+        new Set(
+          [
+            deleteTarget.storage_path,
+            parseStoragePathFromPublicUrl(deleteTarget.thumbnail_url || deleteTarget.thumbnailUrl),
+            parseStoragePathFromPublicUrl(deleteTarget.poster_url),
+          ].filter(Boolean)
+        )
+      );
+
+      if (storagePaths.length > 0) {
+        const { error: storageError } = await supabase.storage
+          .from('rental-videos')
+          .remove(storagePaths);
+
+        if (storageError) {
+          console.warn('Vehicle media storage cleanup warning:', storageError);
+        }
+      }
+
+      const { error: mediaDeleteError } = await supabase
+        .from('app_2f7bf469b0_rental_media')
+        .delete()
+        .eq('id', deleteTarget.id);
+
+      if (mediaDeleteError) throw mediaDeleteError;
+
+      if (playingVideo?.id === deleteTarget.id) {
+        setPlayingVideo(null);
+      }
+      if (viewingImage?.id === deleteTarget.id) {
+        setViewingImage(null);
+      }
+
+      setMedia((prev) => prev.filter((item) => item.id !== deleteTarget.id));
+      setDeleteTarget(null);
+      onUpdate?.();
+    } catch (err) {
+      console.error('Failed to delete vehicle media:', err);
+      setError(err.message || 'Failed to delete media');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Compact thumbnail component for grid view
   const CompactThumbnail = ({ item }) => {
@@ -343,12 +434,12 @@ const RentalVideos = ({ rental, onUpdate }) => {
         onKeyDown={(event) => handleMediaKeyDown(event, item)}
         role="button"
         tabIndex={0}
-        aria-label={`${item.isImage ? tr('View', 'Voir') : tr('Play', 'Lire')} ${getPhaseLabel(item.phase)} ${item.isImage ? tr('image', 'image') : tr('video', 'vidéo')}: ${item.original_filename}`}
+        aria-label={`${item.isImage ? tr('View', 'Voir') : tr('Play', 'Lire')} ${getPhaseLabel(item)} ${item.isImage ? tr('image', 'image') : tr('video', 'vidéo')}: ${item.original_filename}`}
       >
         {item.isImage ? (
           <img
             src={item.url}
-            alt={`${getPhaseLabel(item.phase)} ${tr('condition', 'état')}`}
+            alt={`${getPhaseLabel(item)} ${tr('condition', 'état')}`}
             className="w-full h-full object-cover transition-transform group-hover:scale-105"
             onError={(e) => {
               e.target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100"%3E%3Crect fill="%23f3f4f6" width="100" height="100"/%3E%3Ctext x="50%" y="50%" text-anchor="middle" dy=".3em" fill="%239ca3af"%3ENo Image%3C/text%3E%3C/svg%3E';
@@ -357,7 +448,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
         ) : thumbnailSrc && !isGenerating && !hasError ? (
           <img
             src={thumbnailSrc}
-            alt={`${getPhaseLabel(item.phase)} ${tr('video thumbnail', 'aperçu vidéo')}`}
+            alt={`${getPhaseLabel(item)} ${tr('video thumbnail', 'aperçu vidéo')}`}
             className="w-full h-full object-cover transition-transform group-hover:scale-105"
             onError={(e) => {
               e.target.style.display = 'none';
@@ -398,10 +489,10 @@ const RentalVideos = ({ rental, onUpdate }) => {
 
         {/* Phase badge */}
         <div className="absolute top-1 right-1">
-          <Badge className={`text-[10px] px-1 py-0 ${getPhaseColor(item.phase)}`}>
-            {item.phase === 'out' ? 'O' : 'C'}
-          </Badge>
-        </div>
+              <Badge className={`text-[10px] px-1 py-0 ${getPhaseColor(item)}`}>
+                {item.phase === 'out' ? 'O' : isPostCompletionMedia(item) ? 'M' : 'C'}
+              </Badge>
+            </div>
 
         {/* Duration for videos */}
         {!item.isImage && item.duration > 0 && (
@@ -423,6 +514,19 @@ const RentalVideos = ({ rental, onUpdate }) => {
             <Download className="w-3 h-3 text-gray-700" />
           )}
         </button>
+        {canDeleteMedia && (
+          <button
+            type="button"
+            className="absolute bottom-1 left-8 bg-white bg-opacity-90 rounded p-1 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-opacity-100"
+            onClick={(e) => {
+              e.stopPropagation();
+              setDeleteTarget(item);
+            }}
+            disabled={isDeleting}
+          >
+            <Trash2 className="w-3 h-3 text-red-600" />
+          </button>
+        )}
       </div>
     );
   };
@@ -439,7 +543,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
           onKeyDown={(event) => handleMediaKeyDown(event, item)}
           role="button"
           tabIndex={0}
-          aria-label={`${item.isImage ? 'View' : 'Play'} ${getPhaseLabel(item.phase)} ${item.isImage ? 'image' : 'video'}: ${item.original_filename}`}
+          aria-label={`${item.isImage ? 'View' : 'Play'} ${getPhaseLabel(item)} ${item.isImage ? 'image' : 'video'}: ${item.original_filename}`}
         >
           {thumbnailSrc ? (
             <img src={thumbnailSrc} alt="" className="w-full h-full object-cover" />
@@ -459,8 +563,8 @@ const RentalVideos = ({ rental, onUpdate }) => {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <Badge className={`text-[10px] ${getPhaseColor(item.phase)}`}>
-              {getPhaseLabel(item.phase)}
+            <Badge className={`text-[10px] ${getPhaseColor(item)}`}>
+              {getPhaseLabel(item)}
             </Badge>
             <span className="text-xs text-gray-500">
               {item.isImage ? tr('Photo', 'Photo') : tr('Video', 'Vidéo')}
@@ -495,6 +599,20 @@ const RentalVideos = ({ rental, onUpdate }) => {
               <Download className="w-4 h-4" />
             )}
           </Button>
+          {canDeleteMedia && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0 text-red-600 hover:text-red-700"
+              onClick={(e) => {
+                e.stopPropagation();
+                setDeleteTarget(item);
+              }}
+              disabled={isDeleting}
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          )}
         </div>
       </div>
     );
@@ -517,7 +635,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
         <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60">
           <CardTitle className="flex items-center gap-2 text-slate-900">
             <Camera className="w-5 h-5 text-violet-700" />
-            {tr('Vehicle Condition Media', "Médias d'état du véhicule")}
+            {tr('Vehicle Media', 'Médias véhicule')}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -536,7 +654,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
         <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60">
           <CardTitle className="flex items-center gap-2 text-slate-900">
             <Camera className="w-5 h-5 text-violet-700" />
-            {tr('Vehicle Condition Media', "Médias d'état du véhicule")}
+            {tr('Vehicle Media', 'Médias véhicule')}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -563,7 +681,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <CardTitle className="flex items-center gap-2 text-base text-slate-900">
               <Camera className="w-5 h-5 text-violet-700" />
-              {tr('Vehicle Condition Media', "Médias d'état du véhicule")}
+              {tr('Vehicle Media', 'Médias véhicule')}
               {media.length > 0 && (
                 <Badge variant="secondary" className="ml-1 border border-violet-100 bg-violet-50 text-violet-700">
                   {media.length}
@@ -635,7 +753,11 @@ const RentalVideos = ({ rental, onUpdate }) => {
             <div className="rounded-2xl border border-violet-100 bg-slate-50/70 py-8 text-center text-gray-500">
               <Camera className="mx-auto mb-3 h-10 w-10 text-violet-300" />
               <p className="font-medium">{tr('No media recorded yet', 'Aucun média enregistré pour le moment')}</p>
-              <p className="text-sm">{tr('Photos and videos will appear here', 'Les photos et vidéos apparaîtront ici')}</p>
+              <p className="text-sm">
+                {isCompletedRental
+                  ? tr('Vehicle photos and videos added after completion will appear here', 'Les photos et vidéos ajoutées après la clôture apparaîtront ici')
+                  : tr('Photos and videos will appear here', 'Les photos et vidéos apparaîtront ici')}
+              </p>
             </div>
           ) : filteredMedia.length === 0 ? (
             <div className="rounded-2xl border border-violet-100 bg-slate-50/70 py-8 text-center text-gray-500">
@@ -673,7 +795,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
                 </Button>
               </div>
               <DialogDescription>
-                {getPhaseLabel(playingVideo.phase)} {tr('vehicle condition recording', "enregistrement de l'état du véhicule")}
+                {getPhaseLabel(playingVideo)} {tr('vehicle condition recording', "enregistrement de l'état du véhicule")}
               </DialogDescription>
             </DialogHeader>
 
@@ -701,25 +823,39 @@ const RentalVideos = ({ rental, onUpdate }) => {
 
               <div className="flex items-center justify-between text-sm text-gray-600">
                 <div className="flex items-center gap-4">
-                  <Badge className={getPhaseColor(playingVideo.phase)}>
-                    {getPhaseLabel(playingVideo.phase)}
+                  <Badge className={getPhaseColor(playingVideo)}>
+                    {getPhaseLabel(playingVideo)}
                   </Badge>
                   <span>{formatDuration(playingVideo.duration)}</span>
                   <span>{formatFileSize(playingVideo.file_size)}</span>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={(e) => handleDownload(playingVideo, e)}
-                  disabled={downloadingStates[playingVideo.id]}
-                >
-                  {downloadingStates[playingVideo.id] ? (
-                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                  ) : (
-                    <Download className="w-4 h-4 mr-2" />
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={(e) => handleDownload(playingVideo, e)}
+                    disabled={downloadingStates[playingVideo.id]}
+                  >
+                    {downloadingStates[playingVideo.id] ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    ) : (
+                      <Download className="w-4 h-4 mr-2" />
+                    )}
+                    {tr('Download', 'Télécharger')}
+                  </Button>
+                  {canDeleteMedia && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-red-600 hover:text-red-700"
+                      onClick={() => setDeleteTarget(playingVideo)}
+                      disabled={isDeleting}
+                    >
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      {tr('Delete', 'Supprimer')}
+                    </Button>
                   )}
-                  {tr('Download', 'Télécharger')}
-                </Button>
+                </div>
               </div>
             </div>
           </DialogContent>
@@ -741,7 +877,7 @@ const RentalVideos = ({ rental, onUpdate }) => {
                 </Button>
               </div>
               <DialogDescription className="sr-only">
-                {getPhaseLabel(viewingImage.phase)} {tr('vehicle condition image', "image de l'état du véhicule")}
+                {getPhaseLabel(viewingImage)} {tr('vehicle condition image', "image de l'état du véhicule")}
               </DialogDescription>
             </DialogHeader>
 
@@ -776,30 +912,60 @@ const RentalVideos = ({ rental, onUpdate }) => {
             <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/70 to-transparent">
               <div className="flex items-center justify-between text-white text-sm">
                 <div className="flex items-center gap-3">
-                  <Badge className={getPhaseColor(viewingImage.phase)}>
-                    {getPhaseLabel(viewingImage.phase)}
+                  <Badge className={getPhaseColor(viewingImage)}>
+                    {getPhaseLabel(viewingImage)}
                   </Badge>
                   <span>{formatFileSize(viewingImage.file_size)}</span>
                   <span className="text-white/70">{formatTimestamp(viewingImage.timestamp)}</span>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={(e) => handleDownload(viewingImage, e)}
-                  disabled={downloadingStates[viewingImage.id]}
-                  className="bg-white/10 border-white/30 text-white hover:bg-white/20"
-                >
-                  {downloadingStates[viewingImage.id] ? (
-                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                  ) : (
-                    <Download className="w-4 h-4 mr-2" />
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={(e) => handleDownload(viewingImage, e)}
+                    disabled={downloadingStates[viewingImage.id]}
+                    className="bg-white/10 border-white/30 text-white hover:bg-white/20"
+                  >
+                    {downloadingStates[viewingImage.id] ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    ) : (
+                      <Download className="w-4 h-4 mr-2" />
+                    )}
+                    {tr('Download', 'Télécharger')}
+                  </Button>
+                  {canDeleteMedia && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setDeleteTarget(viewingImage)}
+                      disabled={isDeleting}
+                      className="border-red-300 bg-white/10 text-red-100 hover:bg-red-500/20 hover:text-white"
+                    >
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      {tr('Delete', 'Supprimer')}
+                    </Button>
                   )}
-                  {tr('Download', 'Télécharger')}
-                </Button>
+                </div>
               </div>
             </div>
           </DialogContent>
         </Dialog>
+      )}
+
+      {canDeleteMedia && (
+        <DeleteMediaDialog
+          isOpen={Boolean(deleteTarget)}
+          onClose={() => !isDeleting && setDeleteTarget(null)}
+          onConfirm={handleDeleteMedia}
+          mediaData={deleteTarget ? {
+            ...deleteTarget,
+            file_type: deleteTarget.file_type || (deleteTarget.isImage ? 'image/jpeg' : 'video/mp4'),
+            uploaded_at: deleteTarget.timestamp,
+            phase: deleteTarget.phase,
+            phaseLabel: getPhaseLabel(deleteTarget),
+          } : null}
+          isDeleting={isDeleting}
+        />
       )}
     </>
   );

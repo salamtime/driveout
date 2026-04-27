@@ -2,8 +2,11 @@ import { createClient } from '@supabase/supabase-js';
 import { APP_USERS_TABLE, createSupabaseClients } from './supabase.js';
 
 const PLATFORM_OWNER_EMAILS = new Set(['salamtime2016@gmail.com']);
+const PLATFORM_ADMIN_EMAILS = new Set(['oualidazzouni10@gmail.com']);
 const isPlatformOwnerEmail = (email = '') =>
   PLATFORM_OWNER_EMAILS.has(String(email || '').trim().toLowerCase());
+const isPlatformAdminEmail = (email = '') =>
+  PLATFORM_ADMIN_EMAILS.has(String(email || '').trim().toLowerCase());
 
 const getAuthHeader = (req) => req.headers.authorization || req.headers.Authorization;
 
@@ -157,7 +160,7 @@ export const requireOwner = async (req) => {
   try {
     const { data: profile } = await adminClient
       .from(APP_USERS_TABLE)
-      .select('role')
+      .select('role, permissions')
       .eq('id', user.id)
       .maybeSingle();
 
@@ -186,15 +189,40 @@ export const requireOwnerOrAdmin = async (req) => {
 
   const { user, adminClient } = auth;
 
+  const resolvePermissionsMap = (value) => {
+    if (!value) return {};
+    if (Array.isArray(value)) {
+      return value.reduce((acc, permission) => {
+        if (!permission?.module_name) return acc;
+        acc[permission.module_name] = permission.has_access === true;
+        return acc;
+      }, {});
+    }
+    if (typeof value === 'object') {
+      return value;
+    }
+    return {};
+  };
+
   try {
     const { data: profile } = await adminClient
       .from(APP_USERS_TABLE)
-      .select('role')
+      .select('role, permissions')
       .eq('id', user.id)
       .maybeSingle();
 
     const effectiveRole = String(profile?.role || user.user_metadata?.role || user.app_metadata?.role || '').trim().toLowerCase();
-    if (!['owner', 'admin'].includes(effectiveRole) && !isPlatformOwnerEmail(user?.email)) {
+    const permissionsMap = resolvePermissionsMap(profile?.permissions || user.user_metadata?.permissions || null);
+    const adminSignals = [
+      'User & Role Management',
+      'System Settings',
+      'Finance Management',
+      'Pricing Management',
+      'Project Export',
+    ];
+    const hasAdminPermission = adminSignals.some((permissionKey) => permissionsMap[permissionKey] === true);
+
+    if (!['owner', 'admin'].includes(effectiveRole) && !hasAdminPermission && !isPlatformOwnerEmail(user?.email) && !isPlatformAdminEmail(user?.email)) {
       return {
         error: { status: 403, body: { error: 'Owner or admin access required' } },
       };

@@ -1,9 +1,51 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { Eye, EyeOff, Lock, Mail, AlertCircle, CheckCircle, ShieldCheck, ArrowRight } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, AlertCircle, CheckCircle, ShieldCheck, ArrowRight, ChevronLeft } from 'lucide-react';
 import i18n from '../../i18n';
 import { hasBusinessOwnerRequest, isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../../utils/accountType';
+import { supabase } from '../../lib/supabase';
+import { requestPasswordResetEmail } from '../../services/emailApi';
+import { buildHostUrl, getHostContext } from '../../utils/hostContext';
+import AuthTransitionScreen from '../../components/auth/AuthTransitionScreen';
+
+const getSafeRedirectPath = (value = '') => {
+  const normalized = String(value || '').trim();
+  if (!normalized.startsWith('/')) return '';
+  if (normalized.startsWith('//')) return '';
+  return normalized;
+};
+
+const resolveHostAwareRedirect = (pathname = '/') => {
+  const normalizedPath = getSafeRedirectPath(pathname) || '/';
+  const host = getHostContext();
+
+  if (
+    host.kind === 'tenant' &&
+    host.tenantSlug === 'saharax' &&
+    (normalizedPath.startsWith('/admin') || normalizedPath.startsWith('/guide'))
+  ) {
+    return buildHostUrl({
+      kind: 'admin',
+      pathname: normalizedPath,
+    });
+  }
+
+  return normalizedPath;
+};
+
+const buildMarketplaceLoginRedirect = ({ email = '', redirect = '/customer/dashboard' } = {}) => {
+  const params = new URLSearchParams();
+  if (email) params.set('email', email);
+  if (redirect) params.set('redirect', redirect);
+  params.set('tenantAccess', 'marketplace-customer');
+
+  return buildHostUrl({
+    kind: 'public',
+    pathname: '/login',
+    search: `?${params.toString()}`,
+  });
+};
 
 const GoogleMark = () => (
   <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24">
@@ -19,7 +61,12 @@ const Login = () => {
   const tr = (en, fr) => (isFrench ? fr : en);
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, signIn, signInWithGoogle, loading: authLoading, initialized, getBusinessOwnerHomePath } = useAuth();
+  const host = getHostContext();
+  const queryParams = new URLSearchParams(location.search);
+  const redirectQuery = getSafeRedirectPath(queryParams.get('redirect'));
+  const prefilledEmail = String(queryParams.get('email') || '').trim();
+  const tenantAccessNotice = queryParams.get('tenantAccess');
+  const { user, session, signIn, signInWithGoogle, loading: authLoading, initialized, getBusinessOwnerHomePath } = useAuth();
   const getRedirectPathForRole = (role, accountType = '') => {
     const platformOwnerOverride = isPlatformOwnerEmail(user?.email);
     const approvedBusinessOwner = !platformOwnerOverride && isApprovedBusinessOwnerAccount({
@@ -56,29 +103,59 @@ const Login = () => {
   };
 
   const [formData, setFormData] = useState({
-    email: '',
+    email: prefilledEmail,
     password: ''
   });
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(location.state?.message || '');
+  const [showReset, setShowReset] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetSending, setResetSending] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState('');
+  const isTransitioning = !initialized || (authLoading && !!(user || session?.user));
+  const marketplaceTenantNotice = tenantAccessNotice === 'marketplace-customer'
+    ? tr(
+        'This email signs in on Driveout marketplace, not inside the SaharaX private workspace. Continue below and we will take you to the right place.',
+        "Cet e-mail se connecte sur la marketplace Driveout, pas dans l'espace privé SaharaX. Continuez ci-dessous et nous vous emmènerons au bon endroit."
+      )
+    : '';
 
   // Redirect if user is already logged in and auth is fully loaded
   useEffect(() => {
     if (initialized && user && !authLoading) {
-      const from = location.state?.from?.pathname;
-      const redirectTo =
-        from && from !== '/' && from !== '/login' && from !== '/register'
-          ? from
-          : getRedirectPathForRole(user.role, user.accountType || user.account_type);
-      console.log(`✅ Auth ready, redirecting to: ${redirectTo}`);
-      if (/^https?:\/\//i.test(redirectTo)) {
-        window.location.href = redirectTo;
+      const normalizedRole = String(user?.role || '').trim().toLowerCase();
+      const accountType = String(user?.accountType || user?.account_type || '').trim().toLowerCase();
+      const approvedBusinessOwner = isApprovedBusinessOwnerAccount({
+        account_type: accountType,
+        verification_status: user?.verificationStatus || session?.user?.user_metadata?.verification_status || session?.user?.app_metadata?.verification_status,
+        certification_request_status: session?.user?.user_metadata?.certification_request_status || session?.user?.app_metadata?.certification_request_status,
+      });
+
+      if (host.kind === 'tenant' && normalizedRole === 'customer' && !approvedBusinessOwner) {
+        const marketplaceRedirect = buildMarketplaceLoginRedirect({
+          email: user?.email || formData.email,
+          redirect: redirectQuery || '/customer/dashboard',
+        });
+        window.location.href = marketplaceRedirect;
         return;
       }
-      navigate(redirectTo, { replace: true });
+
+      const from = location.state?.from?.pathname;
+      const redirectTo =
+        redirectQuery ||
+        (from && from !== '/' && from !== '/login' && from !== '/register'
+          ? from
+          : getRedirectPathForRole(user.role, accountType));
+      const finalRedirectTo = resolveHostAwareRedirect(redirectTo);
+      console.log(`✅ Auth ready, redirecting to: ${finalRedirectTo}`);
+      if (/^https?:\/\//i.test(finalRedirectTo)) {
+        window.location.href = finalRedirectTo;
+        return;
+      }
+      navigate(finalRedirectTo, { replace: true });
     }
-  }, [user, initialized, authLoading, navigate, location.state]);
+  }, [authLoading, formData.email, host.kind, initialized, location.state, navigate, redirectQuery, session?.user?.app_metadata?.certification_request_status, session?.user?.app_metadata?.verification_status, session?.user?.user_metadata?.certification_request_status, session?.user?.user_metadata?.verification_status, user]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -104,9 +181,50 @@ const Login = () => {
     }
   };
 
-  const handleForgotPassword = async () => {
-    // This function can be implemented later if needed
-    setError(tr('Password reset functionality is not yet implemented.', "La réinitialisation du mot de passe n'est pas encore implémentée."));
+  const handleForgotPassword = () => {
+    setError('');
+    setSuccess('');
+    setResetSuccess('');
+    setResetEmail(formData.email.trim());
+    setShowReset(true);
+  };
+
+  const handleSendReset = async () => {
+    const email = resetEmail.trim();
+    if (!email) {
+      setError(tr('Please enter your email to reset the password.', 'Veuillez saisir votre e-mail pour réinitialiser le mot de passe.'));
+      return;
+    }
+    setError('');
+    setResetSuccess('');
+    setResetSending(true);
+    const redirectTo = `${window.location.origin}/reset-password`;
+    try {
+      await requestPasswordResetEmail({ email, redirectTo });
+      setResetSuccess(tr('Password reset link sent. Check your email.', 'Lien de réinitialisation envoyé. Vérifiez votre e-mail.'));
+    } catch (resetError) {
+      setResetSending(false);
+      const message = resetError.message || '';
+      const looksLikeRedirect =
+        message.toLowerCase().includes('redirect') ||
+        message.toLowerCase().includes('url') ||
+        resetError.status === 400;
+      if (looksLikeRedirect) {
+        setError(
+          tr(
+            `Reset email failed. Please add ${redirectTo} to Supabase Auth redirect URLs.`,
+            `Échec de l’e-mail. Ajoutez ${redirectTo} aux redirections autorisées Supabase.`
+          )
+        );
+      } else {
+        setError(
+          resetError.message ||
+            tr('Unable to send reset email.', "Impossible d'envoyer l’e-mail de réinitialisation.")
+        );
+      }
+      return;
+    }
+    setResetSending(false);
   };
 
   const handleGoogleContinue = async () => {
@@ -119,14 +237,20 @@ const Login = () => {
     }
   };
 
-  if (!initialized) {
+  if (isTransitioning) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin text-4xl mb-4">⏳</div>
-          <p className="text-gray-600">{tr('Initializing...', 'Initialisation...')}</p>
-        </div>
-      </div>
+      <AuthTransitionScreen
+        title={
+          !initialized
+            ? tr('Preparing secure access', 'Préparation de l’accès sécurisé')
+            : tr('Signing you in', 'Connexion en cours')
+        }
+        description={
+          !initialized
+            ? tr('We are preparing the SaharaX login experience.', "Nous préparons l'expérience de connexion SaharaX.")
+            : tr('Your account is ready. Taking you to the right workspace now.', 'Votre compte est prêt. Nous vous dirigeons vers le bon espace.')
+        }
+      />
     );
   }
 
@@ -134,7 +258,7 @@ const Login = () => {
     <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(139,92,246,0.18),_transparent_32%),radial-gradient(circle_at_bottom_right,_rgba(59,130,246,0.16),_transparent_30%),linear-gradient(180deg,_#f8f7ff_0%,_#eef2ff_100%)]">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl items-center px-4 py-8 sm:px-6 lg:px-8">
         <div className="grid w-full overflow-hidden rounded-[2rem] border border-violet-100/80 bg-white/85 shadow-[0_30px_90px_rgba(76,29,149,0.14)] backdrop-blur sm:rounded-[2.25rem] lg:grid-cols-[1.08fr_0.92fr]">
-          <section className="relative overflow-hidden bg-gradient-to-br from-violet-700 via-violet-800 to-indigo-950 px-6 py-10 text-white sm:px-10 sm:py-12 lg:px-12 lg:py-14">
+          <section className="relative overflow-hidden bg-gradient-to-br from-violet-600 via-violet-700 to-indigo-800 px-6 py-10 text-white sm:px-10 sm:py-12 lg:px-12 lg:py-14">
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(255,255,255,0.18),_transparent_28%),radial-gradient(circle_at_bottom_left,_rgba(255,255,255,0.12),_transparent_32%)]" />
             <div className="relative">
               <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-100 backdrop-blur-sm">
@@ -148,46 +272,23 @@ const Login = () => {
                 </h1>
                 <p className="mt-4 max-w-lg text-base leading-7 text-violet-100 sm:text-lg">
                   {tr(
-                    'Sign in to continue managing rentals, fleet activity, finance, and operations from one shared workspace.',
-                    'Connectez-vous pour gérer les locations, la flotte, la finance et les opérations depuis un espace partagé.'
+                    'Sign in to continue in your SaharaX workspace.',
+                    'Connectez-vous pour continuer dans votre espace SaharaX.'
                   )}
                 </p>
-              </div>
-
-              <div className="mt-10 grid gap-4 sm:grid-cols-3">
-                <div className="rounded-[1.4rem] border border-white/12 bg-white/10 p-4 backdrop-blur-sm">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-200">
-                    {tr('Rental Flow', 'Flux location')}
-                  </p>
-                  <p className="mt-3 text-2xl font-semibold">{tr('Live', 'Live')}</p>
-                  <p className="mt-2 text-sm text-violet-100/90">
-                    {tr('Scheduled, active, and completed workspaces stay connected.', 'Les espaces planifiés, actifs et terminés restent connectés.')}
-                  </p>
-                </div>
-                <div className="rounded-[1.4rem] border border-white/12 bg-white/10 p-4 backdrop-blur-sm">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-200">
-                    {tr('Operations', 'Opérations')}
-                  </p>
-                  <p className="mt-3 text-2xl font-semibold">{tr('Unified', 'Unifié')}</p>
-                  <p className="mt-2 text-sm text-violet-100/90">
-                    {tr('Fuel, maintenance, customer, and contract activity in one place.', 'Carburant, maintenance, client et contrat réunis au même endroit.')}
-                  </p>
-                </div>
-                <div className="rounded-[1.4rem] border border-white/12 bg-white/10 p-4 backdrop-blur-sm">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-200">
-                    {tr('Access', 'Accès')}
-                  </p>
-                  <p className="mt-3 text-2xl font-semibold">{tr('Secure', 'Sécurisé')}</p>
-                  <p className="mt-2 text-sm text-violet-100/90">
-                    {tr('Role-based access keeps each workspace focused and protected.', 'Les rôles gardent chaque espace ciblé et protégé.')}
-                  </p>
-                </div>
               </div>
             </div>
           </section>
 
           <section className="bg-white/90 px-6 py-8 sm:px-8 sm:py-10 lg:px-10 lg:py-12">
             <div className="mx-auto max-w-md">
+              <Link
+                to="/website"
+                className="mb-6 inline-flex items-center gap-2 text-sm font-semibold text-violet-600 transition hover:text-violet-700"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                {tr('Back to website', 'Retour au site')}
+              </Link>
               <div className="mb-8">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                   {tr('Account Access', 'Accès compte')}
@@ -197,8 +298,8 @@ const Login = () => {
                 </h2>
                 <p className="mt-3 text-sm leading-6 text-slate-500">
                   {tr(
-                    'One login for customers, staff, guides, and admins. Admin accounts open the admin workspace automatically.',
-                    'Une seule connexion pour clients, équipe, guides et admins. Les comptes admin ouvrent automatiquement l’espace admin.'
+                    'Use your SaharaX account to continue.',
+                    'Utilisez votre compte SaharaX pour continuer.'
                   )}
                 </p>
               </div>
@@ -253,12 +354,13 @@ const Login = () => {
                     <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4">
                       <Lock className="h-5 w-5 text-slate-400" />
                     </div>
-                    <input
-                      id="password"
-                      name="password"
-                      type={showPassword ? 'text' : 'password'}
-                      required
-                      value={formData.password}
+                  <input
+                    id="password"
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    required
+                    value={formData.password}
                       onChange={handleChange}
                       className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 py-3.5 pl-12 pr-14 text-slate-900 outline-none transition-all placeholder:text-slate-400 focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
                       placeholder={tr('Enter your password', 'Entrez votre mot de passe')}
@@ -273,6 +375,39 @@ const Login = () => {
                   </div>
                 </div>
 
+                {showReset && (
+                  <div className="rounded-2xl border border-violet-200 bg-violet-50/70 px-4 py-4">
+                    <p className="text-sm font-semibold text-slate-900">
+                      {tr('Reset your password', 'Réinitialiser votre mot de passe')}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {tr(
+                        'We will send a secure reset link to your email.',
+                        'Nous enverrons un lien sécurisé à votre adresse e-mail.'
+                      )}
+                    </p>
+                    <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <input
+                        value={resetEmail}
+                        onChange={(e) => setResetEmail(e.target.value)}
+                        className="w-full flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                        placeholder={tr('Email for reset link', 'E-mail pour le lien')}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSendReset}
+                        disabled={resetSending}
+                        className="inline-flex items-center justify-center rounded-xl bg-violet-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        {resetSending ? tr('Sending...', 'Envoi...') : tr('Send link', 'Envoyer')}
+                      </button>
+                    </div>
+                    {resetSuccess && (
+                      <p className="mt-3 text-xs font-semibold text-emerald-600">{resetSuccess}</p>
+                    )}
+                  </div>
+                )}
+
                 {error && (
                   <div className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-700">
                     <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-rose-500" />
@@ -284,6 +419,13 @@ const Login = () => {
                   <div className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-700">
                     <CheckCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-emerald-500" />
                     <p className="text-sm leading-6">{success}</p>
+                  </div>
+                )}
+
+                {marketplaceTenantNotice && (
+                  <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800">
+                    <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-500" />
+                    <p className="text-sm leading-6">{marketplaceTenantNotice}</p>
                   </div>
                 )}
 
@@ -315,7 +457,7 @@ const Login = () => {
                     {tr('Forgot your password?', 'Mot de passe oublié ?')}
                   </button>
                   <Link
-                    to="/register"
+                    to={redirectQuery ? `/register?redirect=${encodeURIComponent(redirectQuery)}&email=${encodeURIComponent(resetEmail || formData.email || '')}` : '/register'}
                     className="text-sm font-medium text-slate-500 transition-colors hover:text-slate-700"
                   >
                     {tr('Create account', 'Créer un compte')}

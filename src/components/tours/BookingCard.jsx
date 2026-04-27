@@ -4,6 +4,8 @@ import { MapPin, Clock, Users, DollarSign, Plus, Minus, ChevronDown, ChevronUp, 
 import { usePricing } from '../../contexts/PricingContext';
 import TourPricingCalculator from './TourPricingCalculator';
 import { getEmergencyPrices } from '../common/EmergencyPriceProvider';
+import { useAuth } from '../../contexts/AuthContext';
+import { canManageTourPackages } from '../../utils/permissionHelpers';
 
 const BookingCard = ({ 
   tour, 
@@ -16,6 +18,7 @@ const BookingCard = ({
 }) => {
   const fullAuthState = useSelector(state => state.auth);
   const { user, userRoles } = fullAuthState;
+  const { userProfile } = useAuth();
   const { pricingEnabled } = usePricing();
   
   // COMPREHENSIVE Debug logging for role detection
@@ -29,7 +32,7 @@ const BookingCard = ({
   console.log('🚨 DEBUG - UserRoles length:', userRoles?.length);
   
   // Multiple approaches to check edit access
-  const hasEditAccess1 = user && (user.role === 'owner' || user.role === 'admin');
+  const hasEditAccess1 = canManageTourPackages(userProfile);
   const hasEditAccess2 = userRoles && (userRoles.includes('owner') || userRoles.includes('admin'));
   const hasEditAccess3 = userRoles && userRoles.some(role => 
     role && (role.toLowerCase().includes('owner') || role.toLowerCase().includes('admin'))

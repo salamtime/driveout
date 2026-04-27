@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { X, Calendar, Car, Fuel, DollarSign, FileText, Image as ImageIcon, Truck, Database, Download, User, History } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { formatVehicleLabel } from '../../utils/vehicleLabels';
 import { getFuelTransactionVisual } from '../../utils/fuelVisuals';
 import i18n from '../../i18n';
 
 const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 'vehicle' }) => {
+  const navigate = useNavigate();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const [imageError, setImageError] = useState(false);
@@ -70,9 +72,37 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
     return 'N/A';
   };
 
+  const getRentalReference = () => {
+    return transaction.rental_reference || transaction.linked_report?.rental_id || '';
+  };
+
+  const getRentalLinkTarget = () => {
+    return getRentalReference() || transaction.rental_id || '';
+  };
+
   // Get quantity
   const getQuantity = () => {
+    if (transaction.transaction_type === 'manual_adjustment') {
+      const litersBefore = Number(transaction.liters_before);
+      const litersAfter = Number(transaction.liters_after);
+      if (Number.isFinite(litersBefore) && Number.isFinite(litersAfter)) {
+        return (litersAfter - litersBefore).toFixed(2);
+      }
+    }
     return transaction.amount || transaction.liters || transaction.liters_added || 0;
+  };
+
+  const getQuantityUnit = () => {
+    if (transaction.transaction_type === 'manual_adjustment') {
+      const linesBefore = Number(transaction.fuel_lines_before);
+      const linesAfter = Number(transaction.fuel_lines_after);
+      if (Number.isFinite(linesBefore) && Number.isFinite(linesAfter)) {
+        const lineDelta = linesAfter - linesBefore;
+        const signedLineDelta = lineDelta > 0 ? `+${lineDelta}` : `${lineDelta}`;
+        return `L (${signedLineDelta}/8 lines)`;
+      }
+    }
+    return 'L';
   };
 
   // Get total cost
@@ -226,16 +256,35 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             </div>
           )}
 
-          {/* Quantity */}
+          {getRentalReference() ? (
+            <div className="flex items-start gap-3">
+              <Truck className="h-5 w-5 text-gray-400 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-gray-700">{tr('Rental Contract', 'Contrat de location')}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = getRentalLinkTarget();
+                    if (!target) return;
+                    onClose?.();
+                    navigate(`/admin/rentals/${target}`);
+                  }}
+                  className="text-sm font-mono text-violet-700 hover:text-violet-800 hover:underline"
+                >
+                  {getRentalReference()}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           <div className="flex items-start gap-3">
             <Fuel className="h-5 w-5 text-gray-400 mt-0.5" />
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-700">{tr('Quantity', 'Quantité')}</p>
-              <p className="text-sm text-gray-900">{getQuantity()} L</p>
+              <p className="text-sm text-gray-900">{getQuantity()} {getQuantityUnit()}</p>
             </div>
           </div>
 
-          {/* Price per Liter */}
           <div className="flex items-start gap-3">
             <DollarSign className="h-5 w-5 text-gray-400 mt-0.5" />
             <div className="flex-1">
@@ -274,6 +323,16 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             </div>
           ) : null}
 
+          {String(transaction.notes || '').trim() ? (
+            <div className="flex items-start gap-3">
+              <FileText className="h-5 w-5 text-gray-400 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-gray-700">{tr('Note', 'Note')}</p>
+                <p className="text-sm whitespace-pre-wrap text-gray-900">{transaction.notes}</p>
+              </div>
+            </div>
+          ) : null}
+
           {/* Media */}
           {(transaction.transaction_type !== 'withdrawal' || invoiceUrl) && (
           <div className="flex items-start gap-3">
@@ -303,7 +362,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             </p>
             {transaction.id && (
               <p className="text-xs text-gray-500 mt-1">
-                {tr('Transaction ID', 'ID transaction')} : {transaction.transaction_id || `refill-${transaction.id}`}
+                {tr('Transaction ID', 'ID transaction')} : {transaction.transaction_id || transaction.id}
               </p>
             )}
           </div>

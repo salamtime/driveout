@@ -1,8 +1,8 @@
 
 import { shortenUrl as shortenUrlService } from '../../services/UrlShortenerService';
 import toast from 'react-hot-toast';
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { Fragment, useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { apiManager } from '../../services/apiManager';
 import FuelPricingService from '../../services/FuelPricingService';
@@ -16,7 +16,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import RentalVideos from '../../components/RentalVideos';
 import ViewCustomerDetailsDrawer from '../../components/admin/ViewCustomerDetailsDrawer';
-import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import RentalContract from '../../components/admin/RentalContract';
 import SignaturePadModal from '../../components/SignaturePadModal';
 import ExtensionRequestModal from '../../components/admin/ExtensionRequestModal';
@@ -24,31 +23,32 @@ import ExtensionHistory from '../../components/admin/ExtensionHistory';
 import FuelLevelModal from '../../components/admin/FuelLevelModal';
 import ExtensionPricingService from '../../services/ExtensionPricingService';
 import OverageCalculationService from '../../services/OverageCalculationService';
-import { getPaymentStatusStyle } from '../../config/statusColors';
+import { getPaymentStatusStyle, normalizePaymentStatus } from '../../config/statusColors';
 import { useAuth } from '../../contexts/AuthContext';
-import { isAdminOrOwner, canApprovePriceOverrides, canApproveRentalExtensions, canEditRentalPrice, canEditRentalPriceWithoutApproval, canEditExtensionHistory, canEditRentalContract } from '../../utils/permissionHelpers';
+import { isAdminOrOwner, canApprovePriceOverrides, canApproveRentalExtensions, canEditRentalPrice, canEditRentalPriceWithoutApproval, canEditExtensionHistory, canEditRentalContract, hasPermission } from '../../utils/permissionHelpers';
 import PricingRulesService from '../../services/PricingRulesService';
-import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench, MapPin, MoreHorizontal } from 'lucide-react';
+import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench, MapPin, MoreHorizontal, Mail, ChevronDown, ChevronUp, Calculator } from 'lucide-react';
 import { FaWhatsapp, FaCheck, FaFilePdf, FaFileInvoice, FaVideo } from 'react-icons/fa';
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
 import InvoiceTemplate from '../../components/InvoiceTemplate';
 import ContractTemplate from '../../components/ContractTemplate';
 import ReceiptTemplate from '../../components/ReceiptTemplate';
 import { encodePublicSharePayload } from '../../utils/publicSharePayload';
-import { processMedia, getMediaType, createThumbnail } from '../../utils/mediaProcessor';
-import TierPricingDisplay from '../../components/TierPricingDisplay';
 import MaintenanceService from '../../services/MaintenanceService';
 import { getUsers } from '../../services/UserService';
 import VehicleReportService from '../../services/VehicleReportService';
 import { DynamicPricingService } from '../../services/DynamicPricingService';
 import FleetLocationService from '../../services/FleetLocationService';
+import VerificationService from '../../services/VerificationService';
 import { formatMaintenanceReference } from '../../utils/maintenanceReference';
 import { getCompressedVideoRecorderOptions } from '../../utils/videoRecording';
 import { uploadFile } from '../../utils/storageUpload';
 import i18n from '../../i18n';
 import { fetchSystemSettings } from '../../services/systemSettingsApi';
+import { adminApiRequest } from '../../services/adminApi';
 import { deriveEffectiveRentalStatus } from '../../utils/rentalLifecycle';
+import { TABLE_NAMES } from '../../config/tableNames';
+import { calculateSimpleRentalPricing } from '../../utils/simpleRentalPricing';
+import { sendRentalDocumentsEmail } from '../../services/emailApi';
 
 
 // Set to true to enable verbose logging in RentalDetails
@@ -63,7 +63,10 @@ const MOBILE_FOOTER_SECONDARY_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border
 const MOBILE_FOOTER_PRIMARY_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-violet-600 bg-violet-600 text-white hover:bg-violet-700 hover:border-violet-700`;
 const MOBILE_FOOTER_SUCCESS_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 hover:border-emerald-700`;
 const MOBILE_FOOTER_DISABLED_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-slate-200 bg-slate-100 text-slate-400 shadow-none`;
+const LIGHT_RENTAL_ACTION_DOCK_CLASS = 'fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur lg:left-[calc(50vw+9.5rem)] lg:right-auto lg:w-[min(72rem,calc(100vw-21rem))] lg:-translate-x-1/2';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const normalizeRentalDetailsViewMode = (value) =>
+  String(value || '').trim().toLowerCase() === 'light' ? 'light' : 'standard';
 
 const waitForPublicFile = async (publicUrl, maxAttempts = 16, delayMs = 500) => {
   if (!publicUrl || typeof fetch === 'undefined') return publicUrl;
@@ -96,8 +99,234 @@ const waitForPublicFile = async (publicUrl, maxAttempts = 16, delayMs = 500) => 
 
   return null;
 };
+const PDF_PAGE_WIDTH_MM = 210;
+const PDF_PAGE_HEIGHT_MM = 297;
+const PDF_MARGIN_MM = 10;
+const PDF_CAPTURE_SCALE = 3;
+
+const loadPdfTools = async () => {
+  const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+    import('jspdf'),
+    import('html2canvas'),
+  ]);
+
+  return { jsPDF, html2canvas };
+};
+
+const loadMediaProcessor = async () => {
+  const mediaProcessor = await import('../../utils/mediaProcessor');
+  return {
+    processMedia: mediaProcessor.processMedia,
+  };
+};
+
+const renderElementToCanvas = async (element) => {
+  const { html2canvas } = await loadPdfTools();
+  return await html2canvas(element, {
+    scale: PDF_CAPTURE_SCALE,
+    useCORS: true,
+    backgroundColor: '#ffffff',
+    logging: false,
+  });
+};
+
+const appendCanvasToPdf = (pdf, canvas, { addPageBefore = false } = {}) => {
+  const printableWidthMm = PDF_PAGE_WIDTH_MM - PDF_MARGIN_MM * 2;
+  const printableHeightMm = PDF_PAGE_HEIGHT_MM - PDF_MARGIN_MM * 2;
+  const mmPerCanvasPixel = printableWidthMm / canvas.width;
+  const pageSliceHeightPx = Math.max(1, Math.floor(printableHeightMm / mmPerCanvasPixel));
+  let renderedSlices = 0;
+
+  for (let offsetY = 0; offsetY < canvas.height; offsetY += pageSliceHeightPx) {
+    const sliceHeightPx = Math.min(pageSliceHeightPx, canvas.height - offsetY);
+    const sliceCanvas = document.createElement('canvas');
+    sliceCanvas.width = canvas.width;
+    sliceCanvas.height = sliceHeightPx;
+    const sliceContext = sliceCanvas.getContext('2d');
+    if (!sliceContext) continue;
+
+    sliceContext.fillStyle = '#ffffff';
+    sliceContext.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+    sliceContext.drawImage(
+      canvas,
+      0,
+      offsetY,
+      canvas.width,
+      sliceHeightPx,
+      0,
+      0,
+      sliceCanvas.width,
+      sliceCanvas.height
+    );
+
+    if (addPageBefore || renderedSlices > 0) {
+      pdf.addPage();
+    }
+
+    const sliceHeightMm = sliceHeightPx * mmPerCanvasPixel;
+    pdf.addImage(
+      sliceCanvas.toDataURL('image/jpeg', 1.0),
+      'JPEG',
+      PDF_MARGIN_MM,
+      PDF_MARGIN_MM,
+      printableWidthMm,
+      sliceHeightMm
+    );
+
+    renderedSlices += 1;
+  }
+
+  return renderedSlices;
+};
+
+const generatePdfBlobFromContainers = async (rootElement) => {
+  if (!rootElement) {
+    throw new Error('PDF root not found');
+  }
+
+  const { jsPDF } = await loadPdfTools();
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
+  const pageContainers = Array.from(rootElement.querySelectorAll('.page-container'));
+  const targets = pageContainers.length > 0 ? pageContainers : [rootElement];
+
+  let renderedPages = 0;
+
+  for (const target of targets) {
+    const canvas = await renderElementToCanvas(target);
+    renderedPages += appendCanvasToPdf(pdf, canvas, { addPageBefore: renderedPages > 0 });
+  }
+
+  return pdf.output('blob');
+};
+
+const openOrDownloadPdfBlob = (blob, filename) => {
+  const pdfUrl = URL.createObjectURL(blob);
+
+  if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
+    window.open(pdfUrl, '_blank', 'noopener,noreferrer');
+    setTimeout(() => {
+      URL.revokeObjectURL(pdfUrl);
+    }, 60_000);
+    return;
+  }
+
+  const link = document.createElement('a');
+  link.href = pdfUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  setTimeout(() => {
+    URL.revokeObjectURL(pdfUrl);
+  }, 1_000);
+};
+
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+
+const copyTextToClipboard = async (value) => {
+  const text = String(value || '').trim();
+  if (!text) {
+    throw new Error('Nothing to copy');
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  if (typeof document === 'undefined') {
+    throw new Error('Clipboard unavailable');
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', '');
+  textArea.style.position = 'absolute';
+  textArea.style.left = '-9999px';
+  document.body.appendChild(textArea);
+  textArea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textArea);
+};
+
+const normalizeComparableEmail = (value) => String(value || '').trim().toLowerCase();
+
+const resolveRentalCustomerVerificationState = async (rentalLike = {}) => {
+  let linkedCustomerProfile = null;
+  let customerVerificationSummary = null;
+  const verificationEntityCandidates = new Set();
+
+  const bookedByUserId = String(rentalLike?.booked_by_user_id || '').trim();
+  if (bookedByUserId) {
+    verificationEntityCandidates.add(bookedByUserId);
+  }
+
+  if (rentalLike?.customer_id) {
+    const { data: customerProfile, error: customerProfileError } = await supabase
+      .from('app_4c3a7a6153_customers')
+      .select('id, full_name, email, phone, address, nationality, licence_number, auth_user_id, scan_metadata')
+      .eq('id', rentalLike.customer_id)
+      .maybeSingle();
+
+    if (customerProfileError) {
+      console.warn('Failed to fetch live customer profile for rental details:', customerProfileError);
+    } else if (customerProfile) {
+      linkedCustomerProfile = customerProfile;
+      const customerAuthUserId = String(
+        customerProfile?.auth_user_id ||
+        customerProfile?.scan_metadata?.auth_user_id ||
+        ''
+      ).trim();
+      if (customerAuthUserId) {
+        verificationEntityCandidates.add(customerAuthUserId);
+      }
+    }
+  }
+
+  const customerVerificationEmail = normalizeComparableEmail(
+    linkedCustomerProfile?.email ||
+    rentalLike?.customer_email ||
+    ''
+  );
+
+  let resolvedVerificationEntityId = Array.from(verificationEntityCandidates).find(Boolean) || null;
+
+  if (!resolvedVerificationEntityId && customerVerificationEmail) {
+    try {
+      const { data: matchedUser, error: matchedUserError } = await supabase
+        .from(TABLE_NAMES.USERS)
+        .select('id, email, profile_verification_status, verification_summary')
+        .ilike('email', customerVerificationEmail)
+        .maybeSingle();
+
+      if (matchedUserError) {
+        console.warn('Failed to resolve verification user from email for rental details:', matchedUserError);
+      } else if (matchedUser?.id) {
+        resolvedVerificationEntityId = String(matchedUser.id);
+        customerVerificationSummary = matchedUser.verification_summary || null;
+      }
+    } catch (matchedUserLookupError) {
+      console.warn('Unable to resolve verification user from email for rental details:', matchedUserLookupError);
+    }
+  }
+
+  if (resolvedVerificationEntityId) {
+    try {
+      const verificationResponse = await VerificationService.getEntityVerificationSummary('user', resolvedVerificationEntityId);
+      customerVerificationSummary = verificationResponse?.summary || null;
+    } catch (verificationError) {
+      console.warn('Failed to fetch customer verification summary for rental details:', verificationError);
+    }
+  }
+
+  return {
+    linkedCustomerProfile,
+    customerVerificationSummary,
+    customerVerificationEntityId: resolvedVerificationEntityId,
+  };
+};
 
 const translateRentalStatusLabel = (status) => {
   const value = String(status || '').toLowerCase();
@@ -165,7 +394,11 @@ const getRentalKilometerPackage = (rental, packageDetails) => {
   const pkg = rental?.package || packageDetails;
   if (!pkg) return null;
 
-  const hasLinkedPackage = Boolean(rental?.package_id || pkg?.id);
+  const hasLinkedPackage = Boolean(
+    rental?.package_id ||
+    rental?.selected_package_id ||
+    rental?.package?.id
+  );
   const hasKmConfig =
     pkg.included_kilometers !== null && pkg.included_kilometers !== undefined ||
     pkg.extra_km_rate !== null && pkg.extra_km_rate !== undefined;
@@ -186,12 +419,361 @@ const getPackageRentalDurationUnits = (rental = {}) => {
 };
 
 const getRentalDurationUnits = (rental = {}) => {
+  const actualDuration = rental?.rental_type === 'hourly'
+    ? Number(rental?.quantity_hours ?? rental?.quantity_days)
+    : Number(rental?.quantity_days);
+
+  if (Number.isFinite(actualDuration) && actualDuration > 0) {
+    return actualDuration;
+  }
+
   const packageDuration = getPackageRentalDurationUnits(rental);
   if (packageDuration) return packageDuration;
 
-  return rental?.rental_type === 'hourly'
-    ? (rental?.quantity_hours ?? rental?.quantity_days ?? 1)
-    : (rental?.quantity_days ?? 1);
+  return 1;
+};
+
+const getRentalActualDurationUnits = (rental = {}) => {
+  const actualDuration = String(rental?.rental_type || '').toLowerCase() === 'hourly'
+    ? Number(rental?.quantity_hours ?? rental?.quantity_days)
+    : Number(rental?.quantity_days);
+
+  return Number.isFinite(actualDuration) && actualDuration > 0 ? actualDuration : null;
+};
+
+const getPackageDurationMultiplier = (rental = {}, pkg = null) => {
+  const actualDuration = getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1;
+  const packageDuration = Number(
+    pkg?.duration_units ??
+    pkg?.duration ??
+    rental?.package?.duration_units ??
+    rental?.package_duration_units ??
+    rental?.packageDurationUnits ??
+    1
+  );
+
+  if (!Number.isFinite(actualDuration) || actualDuration <= 0) return 1;
+  if (!Number.isFinite(packageDuration) || packageDuration <= 0) return actualDuration;
+
+  return Math.max(1, actualDuration / packageDuration);
+};
+
+const getPackageRatePerUnit = (rental = {}, pkg = null) => {
+  const resolvedPackage = pkg || getRentalKilometerPackage(rental);
+  return Number.parseFloat(resolvedPackage?.fixed_amount || rental?.unit_price || 0) || 0;
+};
+
+const getPackageDisplayTotal = (rental = {}, pkg = null) => {
+  const resolvedPackage = pkg || getRentalKilometerPackage(rental);
+  if (!resolvedPackage) return 0;
+
+  const packageRate = getPackageRatePerUnit(rental, resolvedPackage);
+  if (!packageRate) return 0;
+
+  return packageRate * getPackageDurationMultiplier(rental, resolvedPackage);
+};
+
+const getRentalHourlyRate = (rental = {}) => {
+  const directVehicleHourlyRate = Number(
+    rental?.vehicle?.hourly_rate ??
+    rental?.vehicle?.vehicle_model?.hourly_price ??
+    0
+  );
+  if (directVehicleHourlyRate > 0) return directVehicleHourlyRate;
+
+  const storedUnitPrice = Number(rental?.unit_price || 0);
+  if (String(rental?.rental_type || '').toLowerCase() === 'hourly' && storedUnitPrice > 0) {
+    return storedUnitPrice;
+  }
+
+  const quantityHours = Number(rental?.quantity_hours || 0);
+  const storedTotalAmount = Number(rental?.total_amount || 0);
+  if (storedTotalAmount > 0 && quantityHours > 0) {
+    return storedTotalAmount / quantityHours;
+  }
+
+  return 0;
+};
+
+const getRentalEffectiveEndTime = (rental = {}) =>
+  rental?.actual_return_time ||
+  rental?.actual_end_time ||
+  (
+    (
+      String(rental?.rental_status || '').toLowerCase() === 'completed' ||
+      Boolean(rental?.completed_at)
+    )
+      ? rental?.actual_end_date
+      : null
+  ) ||
+  rental?.rental_end_date ||
+  null;
+
+const getRentalDisplayEndTime = (rental = {}) => {
+  const actualReturnValue = rental?.actual_return_time || rental?.actual_end_time || null;
+  if (actualReturnValue) return actualReturnValue;
+
+  const actualEndValue =
+    String(rental?.rental_status || '').toLowerCase() === 'completed' || rental?.completed_at
+      ? (rental?.actual_end_date || null)
+      : null;
+  const scheduledEndValue = rental?.rental_end_date || null;
+  const completedAtValue = rental?.completed_at || null;
+
+  const actualEnd = actualEndValue ? new Date(actualEndValue) : null;
+  const scheduledEnd = scheduledEndValue ? new Date(scheduledEndValue) : null;
+  const completedAt = completedAtValue ? new Date(completedAtValue) : null;
+
+  const actualEndMs = actualEnd?.getTime?.() ?? Number.NaN;
+  const scheduledEndMs = scheduledEnd?.getTime?.() ?? Number.NaN;
+  const completedAtMs = completedAt?.getTime?.() ?? Number.NaN;
+  const isHourlyRental = String(rental?.rental_type || '').toLowerCase() === 'hourly';
+
+  const completionOverwroteEndTime =
+    isHourlyRental &&
+    Number.isFinite(actualEndMs) &&
+    Number.isFinite(scheduledEndMs) &&
+    Number.isFinite(completedAtMs) &&
+    actualEndMs === completedAtMs &&
+    actualEndMs > scheduledEndMs;
+
+  if (completionOverwroteEndTime) {
+    return scheduledEndValue;
+  }
+
+  return actualEndValue || scheduledEndValue || null;
+};
+
+const getPackageTotalIncludedKilometers = (rental = {}, pkg = null) => {
+  const resolvedPackage = pkg || getRentalKilometerPackage(rental);
+  if (!resolvedPackage) return 0;
+
+  const fixedPackageIncludedKm = Number.parseFloat(resolvedPackage?.included_kilometers || 0) || 0;
+  const expectedIncludedKm = fixedPackageIncludedKm > 0
+    ? fixedPackageIncludedKm * getPackageDurationMultiplier(rental, resolvedPackage)
+    : 0;
+
+  const storedIncludedKmCandidates = [
+    rental?.included_kilometers,
+    rental?.included_kilometers_applied,
+    rental?.package_total_included_km,
+    rental?.selected_package_total_included_km,
+  ]
+    .map((value) => Number.parseFloat(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+
+  if (storedIncludedKmCandidates.length > 0 || expectedIncludedKm > 0) {
+    return Math.max(expectedIncludedKm, ...storedIncludedKmCandidates);
+  }
+
+  return 0;
+};
+
+const getConfiguredPackageTotalIncludedKilometers = (rental = {}, pkg = null) => {
+  const resolvedPackage = pkg || getRentalKilometerPackage(rental);
+  if (!resolvedPackage) return 0;
+  if (isUnlimitedKilometerPackage(resolvedPackage)) return Number.POSITIVE_INFINITY;
+
+  const includedPerUnit = Number.parseFloat(
+    resolvedPackage?.included_kilometers ??
+    resolvedPackage?.includedKilometers ??
+    resolvedPackage?.included_km ??
+    resolvedPackage?.includedKm ??
+    0
+  ) || 0;
+
+  return includedPerUnit > 0
+    ? includedPerUnit * getPackageDurationMultiplier(rental, resolvedPackage)
+    : 0;
+};
+
+const getKilometerPackageName = (pkg = null, fallback = '') =>
+  pkg?.name ||
+  pkg?.package_name ||
+  pkg?.display_name ||
+  pkg?.displayName ||
+  fallback;
+
+const isUnlimitedKilometerPackage = (pkg = null) => {
+  if (!pkg) return false;
+
+  const rawLimit = Number.parseFloat(
+    pkg?.included_kilometers ??
+    pkg?.includedKilometers ??
+    pkg?.included_km ??
+    pkg?.includedKm ??
+    0
+  );
+  const name = String(getKilometerPackageName(pkg) || '').toLowerCase();
+  const kind = String(pkg?.kind || pkg?.package_type || pkg?.type || '').toLowerCase();
+
+  return (
+    name.includes('unlimited') ||
+    name.includes('illimité') ||
+    kind.includes('unlimited') ||
+    (Number.isFinite(rawLimit) && rawLimit === 0 && (name.includes('km') || name.includes('kilometer')))
+  );
+};
+
+const dedupeKilometerPackages = (packages = []) => {
+  const seen = new Set();
+
+  return (Array.isArray(packages) ? packages : [])
+    .filter(Boolean)
+    .filter((pkg) => {
+      const key = String(pkg?.id || `${getKilometerPackageName(pkg)}-${pkg?.fixed_amount}-${pkg?.included_kilometers}`);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+
+const getKilometerPackageDurationUnits = (pkg = null) => {
+  const name = String(getKilometerPackageName(pkg) || '').toLowerCase();
+  if (name.includes('30 min') || name.includes('30-minute')) return 0.5;
+  const hourMatch = name.match(/(\d+(?:\.\d+)?)\s*(?:h|hour|hours)\b/);
+  if (hourMatch) return Number(hourMatch[1]);
+
+  const directDuration = Number(
+    pkg?.duration_units ??
+    pkg?.duration ??
+    pkg?.package_duration_units ??
+    pkg?.durationUnits
+  );
+  if (Number.isFinite(directDuration) && directDuration > 0) return directDuration;
+
+  return null;
+};
+
+const isKilometerPackageCompatibleWithRentalDuration = (rental = {}, pkg = null, originalPackage = null) => {
+  if (!pkg) return false;
+  if (originalPackage?.id && pkg?.id && String(originalPackage.id) === String(pkg.id)) return true;
+
+  const rentalType = String(rental?.rental_type || '').toLowerCase();
+  const packageName = String(getKilometerPackageName(pkg) || '').toLowerCase();
+  const rateTypeId = Number(pkg?.rate_type_id ?? pkg?.rateTypeId ?? 0) || 0;
+  const rateTypeName = String(pkg?.rate_types?.name ?? pkg?.rate_type?.name ?? pkg?.rate_type_name ?? '').toLowerCase();
+  if (rentalType === 'hourly' && (packageName.includes('per day') || packageName.includes('daily') || packageName.includes('day'))) {
+    return false;
+  }
+  if (rentalType === 'daily' && (packageName.includes('per hour') || packageName.includes('hourly'))) {
+    return false;
+  }
+
+  if (rentalType === 'hourly' && rateTypeId && rateTypeId !== 1) return false;
+  if (rentalType === 'daily' && rateTypeId && rateTypeId !== 2) return false;
+  if (rentalType === 'hourly' && rateTypeName.includes('day')) return false;
+  if (rentalType === 'daily' && rateTypeName.includes('hour')) return false;
+
+  const rentalDuration = getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1;
+  const packageDuration = getKilometerPackageDurationUnits(pkg);
+  const tolerance = 0.01;
+  if (!Number.isFinite(packageDuration) || packageDuration <= 0) return false;
+
+  if (rentalType === 'hourly') {
+    if (Math.abs(packageDuration - 1) <= tolerance) return true;
+    return Math.abs(packageDuration - rentalDuration) <= tolerance;
+  }
+
+  if (rentalType === 'daily') {
+    if (Math.abs(packageDuration - 1) <= tolerance) return true;
+    return Math.abs(packageDuration - rentalDuration) <= tolerance;
+  }
+
+  return true;
+};
+
+const getPackageBaseIncludedKilometers = (pkg = null) => {
+  if (isUnlimitedKilometerPackage(pkg)) return Number.POSITIVE_INFINITY;
+  return Number(
+    pkg?.included_kilometers ??
+    pkg?.includedKilometers ??
+    pkg?.included_km ??
+    pkg?.includedKm ??
+    0
+  ) || 0;
+};
+
+const selectAppliedKilometerPackage = ({
+  rental = {},
+  bookedPackage = null,
+  packageDetails = null,
+  availablePackages = [],
+  gracePeriodMinutes = DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
+  totalDistance = 0,
+} = {}) => {
+  const originalPackage = bookedPackage || getRentalKilometerPackage(rental, packageDetails);
+  const candidatePackages = dedupeKilometerPackages([
+    ...availablePackages,
+    originalPackage,
+    rental?.package,
+    packageDetails,
+  ]);
+
+  const safeDistance = Math.max(0, Number(totalDistance || 0) || 0);
+  const rentalDurationUnits = getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1;
+  const simplePricingSummary = calculateSimpleRentalPricing({
+    startTime: rental?.started_at || rental?.rental_start_date,
+    endTime: getRentalEffectiveEndTime(rental),
+    gracePeriodMinutes,
+    hourlyRate: getRentalHourlyRate(rental),
+    totalKmUsed: safeDistance,
+    packages: candidatePackages,
+    rentalType: rental?.rental_type,
+    originalPackage,
+    durationUnits: rentalDurationUnits,
+  });
+  const selectedBySharedPricing = simplePricingSummary?.selectedPackage || null;
+  const selectedPackageId = selectedBySharedPricing?.id ? String(selectedBySharedPricing.id) : null;
+  const options = candidatePackages
+    .filter((pkg) => isKilometerPackageCompatibleWithRentalDuration(rental, pkg, originalPackage))
+    .map((pkg) => {
+      const unlimited = isUnlimitedKilometerPackage(pkg);
+      const includedKm = unlimited ? Number.POSITIVE_INFINITY : Number(getConfiguredPackageTotalIncludedKilometers(rental, pkg) || 0);
+
+      return {
+        pkg,
+        includedKm,
+        totalPrice: Number(getPackageDisplayTotal(rental, pkg) || 0) || 0,
+        unlimited,
+      };
+    })
+    .filter((option) => option.unlimited || option.includedKm > 0);
+
+  const originalLimit = originalPackage
+    ? Number(getConfiguredPackageTotalIncludedKilometers(rental, originalPackage) || 0)
+    : 0;
+  const originalPrice = originalPackage ? Number(getPackageDisplayTotal(rental, originalPackage) || 0) : 0;
+  const appliedOption = (
+    selectedPackageId
+      ? options.find((option) => String(option.pkg?.id || '') === selectedPackageId)
+      : null
+  ) || options.find((option) => option.pkg?.id && originalPackage?.id && String(option.pkg.id) === String(originalPackage.id)) || options[0] || null;
+  const appliedPackage = appliedOption?.pkg || originalPackage || null;
+  const appliedLimit = Number(simplePricingSummary?.packageLimitKm || appliedOption?.includedKm || originalLimit || 0);
+  const appliedPrice = Number(appliedOption?.totalPrice || originalPrice || 0);
+  const appliedExtraRate = Number.parseFloat(appliedPackage?.extra_km_rate || rental?.extra_km_rate_applied || 0) || 0;
+  const upgraded = Boolean(
+    originalPackage?.id &&
+    appliedPackage?.id &&
+    String(originalPackage.id) !== String(appliedPackage.id)
+  );
+  const overageKm = Number(simplePricingSummary?.packageOverflowKm ?? (Number.isFinite(appliedLimit) ? Math.max(0, safeDistance - appliedLimit) : 0));
+  const overageCharge = overageKm * appliedExtraRate;
+
+  return {
+    originalPackage,
+    appliedPackage,
+    originalLimit,
+    appliedLimit,
+    originalPrice,
+    appliedPrice,
+    appliedExtraRate,
+    upgraded,
+    overageKm,
+    overageCharge,
+    totalDistance: safeDistance,
+  };
 };
 
 const getDisplayRentalDurationUnits = (rental = {}) => {
@@ -199,11 +781,11 @@ const getDisplayRentalDurationUnits = (rental = {}) => {
     return Number(getRentalDurationUnits(rental));
   }
 
-  const packageDuration = getPackageRentalDurationUnits(rental);
-  if (packageDuration) return packageDuration;
+  const actualDuration = getRentalActualDurationUnits(rental);
+  if (actualDuration) return actualDuration;
 
   const startValue = rental?.started_at || rental?.rental_start_date;
-  const endValue = rental?.actual_end_date || rental?.rental_end_date;
+  const endValue = getRentalDisplayEndTime(rental);
 
   if (startValue && endValue) {
     const start = new Date(startValue);
@@ -268,7 +850,7 @@ const getCorrectedDisplayedPaidAmount = ({ rental, endFuelLevel, fuelCharge, fue
   const rawFuelCharge = parseFloat(rental?.fuel_charge || 0) || 0;
   const staleFuelCharge = Math.max(0, rawFuelCharge - effectiveFuelCharge);
   const rawTotalAmount = parseFloat(rental?.total_amount || 0) || 0;
-  const paymentStatus = String(rental?.payment_status || '').toLowerCase();
+  const paymentStatus = normalizePaymentStatus(rental?.payment_status, rental?.remaining_amount);
   const mirrorsStoredTotal = rawPaidAmount > 0 && rawTotalAmount > 0 && Math.abs(rawPaidAmount - rawTotalAmount) < 0.01;
   const shouldNormalizePaidAmount = staleFuelCharge > 0 && mirrorsStoredTotal && paymentStatus === 'paid';
 
@@ -371,6 +953,55 @@ const getVehicleDisplayName = (vehicle) => {
   return parts.join(' ').trim() || `Vehicle #${vehicle.id || ''}`.trim();
 };
 
+const getVehiclePlateDisplay = (vehicle) => {
+  const plate = String(vehicle?.plate_number || vehicle?.plate || '').trim();
+  return plate || getVehicleDisplayName(vehicle);
+};
+
+const SHARED_ACTIVITY_LOG_TABLE = TABLE_NAMES.ACTIVITY_LOG;
+
+const getMissingSchemaColumn = (error) => {
+  const message = String(error?.message || '');
+  const match = message.match(/Could not find the '([^']+)' column/);
+  return match?.[1] || null;
+};
+
+const isIgnorableSharedActivityLogError = (error) => {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    code === 'PGRST204' ||
+    code === '42501' ||
+    message.includes('row-level security') ||
+    message.includes('permission denied') ||
+    message.includes('forbidden')
+  );
+};
+
+const insertSharedActivityLogAttempt = async (candidate) => {
+  let nextPayload = { ...candidate };
+  let lastAttempt = null;
+
+  for (let attemptIndex = 0; attemptIndex < 6; attemptIndex += 1) {
+    lastAttempt = await supabase
+      .from(SHARED_ACTIVITY_LOG_TABLE)
+      .insert(nextPayload);
+
+    if (!lastAttempt.error) {
+      return lastAttempt;
+    }
+
+    const missingColumn = getMissingSchemaColumn(lastAttempt.error);
+    if (!missingColumn || !(missingColumn in nextPayload)) {
+      return lastAttempt;
+    }
+
+    delete nextPayload[missingColumn];
+  }
+
+  return lastAttempt;
+};
+
 const insertSharedActivityLog = async (payload) => {
   const modernPayload = {
     actor_id: payload.user_id || payload.actor_id || null,
@@ -385,20 +1016,36 @@ const insertSharedActivityLog = async (payload) => {
     metadata: payload.details || payload.metadata || null,
   };
 
-  const modernAttempt = await supabase
-    .from('saharax_0u4w4d_activity_log')
-    .insert(modernPayload);
+  const modernAttempt = await insertSharedActivityLogAttempt(modernPayload);
 
   if (!modernAttempt.error) {
     return modernAttempt;
   }
 
-  const primaryAttempt = await supabase
-    .from('saharax_0u4w4d_activity_log')
-    .insert(payload);
+  if (isIgnorableSharedActivityLogError(modernAttempt.error)) {
+    return { data: null, error: null };
+  }
+
+  const legacyPayload = {
+    action: payload.action || payload.event_type || payload.title || 'activity',
+    title: payload.title || payload.action || payload.event_type || 'activity',
+    entity_id: payload.entity_id || null,
+    entity_type: payload.entity_type || null,
+    description: payload.description || null,
+    reason: payload.reason || null,
+    details: payload.details || payload.metadata || null,
+    payload: payload.payload || null,
+    user_name: payload.user_name || payload.created_by || null,
+  };
+
+  const primaryAttempt = await insertSharedActivityLogAttempt(legacyPayload);
 
   if (!primaryAttempt.error) {
     return primaryAttempt;
+  }
+
+  if (isIgnorableSharedActivityLogError(primaryAttempt.error)) {
+    return { data: null, error: null };
   }
 
   const message = String(primaryAttempt.error?.message || '');
@@ -407,14 +1054,18 @@ const insertSharedActivityLog = async (payload) => {
   }
 
   const fallbackPayload = {
-    ...payload,
-    title: payload.action,
+    ...legacyPayload,
+    title: legacyPayload.action,
   };
   delete fallbackPayload.action;
 
-  return supabase
-    .from('saharax_0u4w4d_activity_log')
-    .insert(fallbackPayload);
+  const fallbackAttempt = await insertSharedActivityLogAttempt(fallbackPayload);
+
+  if (fallbackAttempt?.error && isIgnorableSharedActivityLogError(fallbackAttempt.error)) {
+    return { data: null, error: null };
+  }
+
+  return fallbackAttempt;
 };
 
 const getActivityLogAction = (log) =>
@@ -433,6 +1084,7 @@ const getActivityLogMetadata = (log) => {
 };
 
 let sharedActivityLogReadDisabled = false;
+let sharedActivityLogReadPromise = null;
 
 const isActivityLogPermissionError = (error) => {
   const code = String(error?.code || '');
@@ -443,7 +1095,7 @@ const isActivityLogPermissionError = (error) => {
     code === '42501' ||
     status === 403 ||
     message.includes('forbidden') ||
-    message.includes('permission denied for table saharax_0u4w4d_activity_log') ||
+    message.includes(`permission denied for table ${String(TABLE_NAMES.ACTIVITY_LOG).toLowerCase()}`) ||
     message.includes('row-level security')
   );
 };
@@ -453,27 +1105,46 @@ const loadSharedActivityLogs = async ({ entityType = null, limit = 50 } = {}) =>
     return [];
   }
 
-  let query = supabase
-    .from('saharax_0u4w4d_activity_log')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (entityType) {
-    query = query.eq('entity_type', entityType);
-  }
-
-  const { data, error } = await query;
-
-  if (error) {
-    if (isActivityLogPermissionError(error)) {
-      sharedActivityLogReadDisabled = true;
-      return [];
+  if (sharedActivityLogReadPromise) {
+    const cachedData = await sharedActivityLogReadPromise;
+    if (!entityType) {
+      return cachedData.slice(0, limit);
     }
-    throw error;
+    return cachedData
+      .filter((entry) => String(entry?.entity_type || '') === String(entityType))
+      .slice(0, limit);
   }
 
-  return data || [];
+  sharedActivityLogReadPromise = (async () => {
+    const { data, error } = await supabase
+      .from(SHARED_ACTIVITY_LOG_TABLE)
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(Math.max(limit, 150));
+
+    if (error) {
+      if (isActivityLogPermissionError(error)) {
+        sharedActivityLogReadDisabled = true;
+        return [];
+      }
+      throw error;
+    }
+
+    return data || [];
+  })();
+
+  try {
+    const data = await sharedActivityLogReadPromise;
+    if (!entityType) {
+      return data.slice(0, limit);
+    }
+
+    return data
+      .filter((entry) => String(entry?.entity_type || '') === String(entityType))
+      .slice(0, limit);
+  } finally {
+    sharedActivityLogReadPromise = null;
+  }
 };
 
 const recordRentalContractPriceEditActivity = async ({
@@ -518,6 +1189,127 @@ const recordRentalContractPriceEditActivity = async ({
   } catch (activityError) {
     console.warn('⚠️ Failed to record rental contract price edit activity:', activityError);
   }
+};
+
+const buildAmountDueEditMeta = ({
+  note = '',
+  currentUser,
+  previousAmount = 0,
+  newAmount = 0,
+  paymentReceivedNow = 0,
+  companyDiscount = 0,
+}) => ({
+  note: String(note || '').trim(),
+  editedById: currentUser?.id || null,
+  editedByName:
+    currentUser?.full_name ||
+    currentUser?.name ||
+    currentUser?.email ||
+    'Staff',
+  previousAmount: Number(previousAmount || 0) || 0,
+  newAmount: Number(newAmount || 0) || 0,
+  paymentReceivedNow: Math.max(0, Number(paymentReceivedNow || 0) || 0),
+  companyDiscount: Math.max(0, Number(companyDiscount || 0) || 0),
+  editedAt: new Date().toISOString(),
+});
+
+const getInlineAmountDueOverrideMeta = (rentalLike = {}) => {
+  const rawReason =
+    typeof rentalLike?.amount_due_override_reason === 'string'
+      ? rentalLike.amount_due_override_reason.trim()
+      : '';
+  let parsedReasonMeta = null;
+  if (rawReason.startsWith('{')) {
+    try {
+      parsedReasonMeta = JSON.parse(rawReason);
+    } catch {
+      parsedReasonMeta = null;
+    }
+  }
+  const note = parsedReasonMeta?.note || rawReason;
+  const editedById = rentalLike?.amount_due_override_edited_by || null;
+  const editedByName = rentalLike?.amount_due_override_edited_by_name || null;
+  const previousAmount = Number(rentalLike?.amount_due_override_previous_amount || 0) || 0;
+  const newAmount = Math.max(0, Number(rentalLike?.remaining_amount || 0) || 0);
+  const editedAt = rentalLike?.amount_due_override_edited_at || null;
+  const paymentReceivedNow = Math.max(0, Number(parsedReasonMeta?.paymentReceivedNow || 0) || 0);
+  const companyDiscount = Math.max(0, Number(parsedReasonMeta?.companyDiscount || 0) || 0);
+
+  if (!note && !editedById && !editedByName && !editedAt && previousAmount <= 0 && newAmount <= 0 && paymentReceivedNow <= 0 && companyDiscount <= 0) {
+    return null;
+  }
+
+  return {
+    note,
+    editedById,
+    editedByName,
+    previousAmount,
+    newAmount,
+    paymentReceivedNow,
+    companyDiscount,
+    editedAt,
+  };
+};
+
+const recordRentalAmountDueEditActivity = async ({
+  rental,
+  currentUser,
+  overrideMeta,
+}) => {
+  if (!rental?.id || !currentUser?.id) return;
+
+  try {
+    const actorName =
+      currentUser.full_name ||
+      currentUser.name ||
+      currentUser.email ||
+      'Staff';
+    const sharedMetadata = {
+      rental_id: rental.id,
+      rental_reference: rental.rental_id || null,
+      customer_name: rental.customer_name || null,
+      previous_amount_due: overrideMeta?.previousAmount || 0,
+      new_amount_due: overrideMeta?.newAmount || 0,
+      override_note: overrideMeta?.note || null,
+      payment_received_now: overrideMeta?.paymentReceivedNow || 0,
+      company_discount: overrideMeta?.companyDiscount || 0,
+      edited_by_id: currentUser.id,
+      edited_by_name: actorName,
+      edited_at: overrideMeta?.editedAt || new Date().toISOString(),
+    };
+
+    const { error: sharedError } = await insertSharedActivityLog({
+      user_id: currentUser.id,
+      created_by: actorName,
+      action: 'rental_amount_due_edited',
+      description: `Edited amount due for ${rental.rental_id || rental.id}`,
+      entity_type: 'rental',
+      entity_id: rental.id,
+      reason: overrideMeta?.note || null,
+      details: sharedMetadata,
+    });
+
+    if (sharedError) {
+      console.warn('⚠️ Failed to record shared rental amount due edit activity:', sharedError);
+    }
+  } catch (activityError) {
+    console.warn('⚠️ Failed to record rental amount due edit activity:', activityError);
+  }
+};
+
+const isMissingRentalAmountDueAuditColumnError = (error) => {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '');
+  return (
+    code === 'PGRST204' &&
+    (
+      message.includes("'amount_due_override_reason'") ||
+      message.includes("'amount_due_override_edited_by'") ||
+      message.includes("'amount_due_override_edited_by_name'") ||
+      message.includes("'amount_due_override_previous_amount'") ||
+      message.includes("'amount_due_override_edited_at'")
+    )
+  );
 };
 
 const recordSecurityHoldActivity = async ({
@@ -619,6 +1411,7 @@ const getWeekendMinimumEstimatedDays = (impoundedAt) => {
 const DEFAULT_RENTAL_TIMING_SETTINGS = {
   graceMinutes: 60,
   softLockMinutes: 45,
+  extraHourThresholdMinutes: 25,
 };
 
 const CANONICAL_PUBLIC_APP_URL =
@@ -883,7 +1676,7 @@ const DEFAULT_VEHICLE_REPORT_DRAFT = {
 
 const getReceiptPreviewMeta = (rentalLike = {}) => {
   const isFinalPaymentReceipt =
-    String(rentalLike?.payment_status || '').toLowerCase() === 'paid' &&
+    normalizePaymentStatus(rentalLike?.payment_status, rentalLike?.remaining_amount) === 'paid' &&
     String(rentalLike?.rental_status || '').toLowerCase() === 'completed' &&
     !rentalLike?.impound_is_estimate;
 
@@ -1001,6 +1794,15 @@ function StartWorkflowEffects({
 export default function RentalDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const rentalDetailsViewQueryParam = useMemo(() => {
+    const params = new URLSearchParams(location.search || '');
+    const rawView = params.get('view');
+    if (rawView !== 'light' && rawView !== 'standard') return null;
+    return normalizeRentalDetailsViewMode(rawView);
+  }, [location.search]);
+  const financeOverviewReturn = Boolean(location.state?.financeOverviewReturn);
+  const financeOverviewLabel = String(location.state?.financeOverviewLabel || '');
   const { userProfile } = useAuth();
   const isFrench = isFrenchLocale();
   const startWorkflowStorageKey = id ? `rental_start_workflow_${id}` : null;
@@ -1009,6 +1811,8 @@ export default function RentalDetails() {
   // 🔍 DEBUG: WhatsApp button click handler
   const [rental, setRental] = useState(null);
   const [linkedCustomerProfile, setLinkedCustomerProfile] = useState(null);
+  const [customerVerificationSummary, setCustomerVerificationSummary] = useState(null);
+  const [customerVerificationEntityId, setCustomerVerificationEntityId] = useState(null);
   const [tierPricingBreakdown, setTierPricingBreakdown] = useState(null);
   const [priceOverrideAuditMeta, setPriceOverrideAuditMeta] = useState(null);
   const [vehicleReplacementHistory, setVehicleReplacementHistory] = useState([]);
@@ -1023,8 +1827,78 @@ export default function RentalDetails() {
   const [isReplacingVehicle, setIsReplacingVehicle] = useState(false);
   const [replacementPauseStartedAt, setReplacementPauseStartedAt] = useState(null);
   const [isMoreActionsOpen, setIsMoreActionsOpen] = useState(false);
+  const [showCopyConfirmation, setShowCopyConfirmation] = useState(false);
   const moreActionsRef = useRef(null);
+  const copyConfirmationTimeoutRef = useRef(null);
   const effectiveReplacementPauseStartedAt = rental?.replacement_pause_started_at || replacementPauseStartedAt || null;
+
+  const triggerCopyConfirmation = useCallback(() => {
+    setShowCopyConfirmation(true);
+    if (copyConfirmationTimeoutRef.current) {
+      window.clearTimeout(copyConfirmationTimeoutRef.current);
+    }
+    copyConfirmationTimeoutRef.current = window.setTimeout(() => {
+      setShowCopyConfirmation(false);
+    }, 1350);
+  }, []);
+
+  const handleCopyRentalReference = useCallback(async () => {
+    try {
+      await copyTextToClipboard(rental?.rental_id || rental?.id || '');
+      toast.success(tr('Rental reference copied', 'Référence de location copiée'));
+      triggerCopyConfirmation();
+    } catch {
+      toast.error(tr('Could not copy rental reference', 'Impossible de copier la référence de location'));
+    }
+  }, [rental?.id, rental?.rental_id, triggerCopyConfirmation]);
+
+  const handleShareRentalLink = useCallback(async () => {
+    const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
+    if (!shareUrl) {
+      toast.error(tr('Could not generate rental link', 'Impossible de générer le lien de location'));
+      return;
+    }
+
+    const shareTitle = rental?.rental_id
+      ? tr(`Rental ${rental.rental_id}`, `Location ${rental.rental_id}`)
+      : tr('Rental details', 'Détails de la location');
+    const shareText = rental?.customer_name
+      ? tr(`Open rental details for ${rental.customer_name}.`, `Ouvrez les détails de la location pour ${rental.customer_name}.`)
+      : tr('Open this rental details page.', 'Ouvrez cette page de détails de location.');
+
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        await navigator.share({
+          title: shareTitle,
+          text: shareText,
+          url: shareUrl,
+        });
+        return;
+      }
+
+      await copyTextToClipboard(shareUrl);
+      toast.success(tr('Rental link copied', 'Lien de location copié'));
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      toast.error(tr('Could not share rental link', 'Impossible de partager le lien de location'));
+    }
+  }, [rental?.customer_name, rental?.rental_id]);
+
+  useEffect(() => () => {
+    if (copyConfirmationTimeoutRef.current) {
+      window.clearTimeout(copyConfirmationTimeoutRef.current);
+    }
+  }, []);
+
+  const refreshCustomerVerificationState = useCallback(async (rentalLike) => {
+    if (!rentalLike) return null;
+
+    const verificationState = await resolveRentalCustomerVerificationState(rentalLike);
+    setLinkedCustomerProfile(verificationState.linkedCustomerProfile);
+    setCustomerVerificationSummary(verificationState.customerVerificationSummary);
+    setCustomerVerificationEntityId(verificationState.customerVerificationEntityId);
+    return verificationState;
+  }, []);
 
   const loadVehicleReplacementHistory = useCallback(async (rentalId) => {
     if (!rentalId) {
@@ -1113,6 +1987,7 @@ export default function RentalDetails() {
   const [currentUser, setCurrentUser] = useState(null);
   const [actionLoading, setActionLoading] = useState({});
   const [rentalTimingSettings, setRentalTimingSettings] = useState(DEFAULT_RENTAL_TIMING_SETTINGS);
+  const [autoSendContractEmailAfterCreation, setAutoSendContractEmailAfterCreation] = useState(false);
   
   const [openingModalOpen, setOpeningModalOpen] = useState(false);
   const [closingModalOpen, setClosingModalOpen] = useState(false);
@@ -1141,12 +2016,19 @@ export default function RentalDetails() {
     if (typeof window === 'undefined') return true;
     return window.navigator.onLine;
   });
-  const replacementResumeWorkflowRef = useRef(null);
-  const startStepRefs = useRef({});
-  const previousActiveStartStepKeyRef = useRef(null);
-  const openReplacementResumeWorkflow = useCallback(() => {
-    replacementResumeWorkflowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, []);
+const replacementResumeWorkflowRef = useRef(null);
+const lightReadyToStartSectionRef = useRef(null);
+const startStepRefs = useRef({});
+const previousActiveStartStepKeyRef = useRef(null);
+const scrollToElementWithHeaderOffset = useCallback((element, offset = 112) => {
+  if (typeof window === 'undefined' || !element) return;
+  const rect = element.getBoundingClientRect();
+  const targetTop = window.scrollY + rect.top - offset;
+  window.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+}, []);
+const openReplacementResumeWorkflow = useCallback(() => {
+  scrollToElementWithHeaderOffset(replacementResumeWorkflowRef.current);
+}, [scrollToElementWithHeaderOffset]);
   const selectedReturnLocationName = useMemo(() => {
     if (!selectedReturnLocationId) return '';
     return fleetLocations.find((location) => String(location.id) === String(selectedReturnLocationId))?.name || '';
@@ -1620,6 +2502,8 @@ export default function RentalDetails() {
       'Staff';
     const currentVehicleName = getVehicleDisplayName(rental.vehicle);
     const replacementVehicleName = getVehicleDisplayName(replacementVehicle);
+    const currentVehiclePlateDisplay = getVehiclePlateDisplay(rental.vehicle);
+    const replacementVehiclePlateDisplay = getVehiclePlateDisplay(replacementVehicle);
     const replacementReasonLabel = {
       breakdown: tr('Breakdown during rental', 'Panne pendant la location'),
       issue: tr('Issue noticed by staff', 'Problème constaté par le personnel'),
@@ -1744,7 +2628,7 @@ export default function RentalDetails() {
         const maintenanceResult = await MaintenanceService.createMaintenanceRecord({
           vehicle_id: currentVehicleId,
           maintenance_type: 'Breakdown',
-          description: `${replacementReasonLabel}. Rental ${rental.rental_id || rental.id} switched from ${currentVehicleName} to ${replacementVehicleName}.${replacementNote.trim() ? ` Note: ${replacementNote.trim()}` : ''}`,
+          description: `${replacementReasonLabel}. Rental ${rental.rental_id || rental.id} switched from ${currentVehiclePlateDisplay} to ${replacementVehiclePlateDisplay}.${replacementNote.trim() ? ` Note: ${replacementNote.trim()}` : ''}`,
           status: 'scheduled',
           scheduled_date: new Date().toISOString().split('T')[0],
           service_date: new Date().toISOString().split('T')[0],
@@ -1898,6 +2782,7 @@ export default function RentalDetails() {
   const [isSigningReturnContract, setIsSigningReturnContract] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [isSendingWhatsApp, setIsSendingWhatsApp] = useState(false);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [isGeneratingContract, setIsGeneratingContract] = useState(false);
   const [documentLanguage, setDocumentLanguage] = useState('fr');
   const isMobileDevice = () => {
@@ -1986,6 +2871,13 @@ export default function RentalDetails() {
   const [manualPrice, setManualPrice] = useState('');
   const [priceOverrideReason, setPriceOverrideReason] = useState('');
   const [isSavingPrice, setIsSavingPrice] = useState(false);
+  const [isEditingAmountDue, setIsEditingAmountDue] = useState(false);
+  const [manualAmountDue, setManualAmountDue] = useState('');
+  const [amountDuePaymentReceivedNow, setAmountDuePaymentReceivedNow] = useState('');
+  const [amountDueCompanyDiscount, setAmountDueCompanyDiscount] = useState('');
+  const [amountDueOverrideReason, setAmountDueOverrideReason] = useState('');
+  const [isSavingAmountDue, setIsSavingAmountDue] = useState(false);
+  const [amountDueAuditMeta, setAmountDueAuditMeta] = useState(null);
 
   // Video refresh trigger
   const [videoRefreshKey, setVideoRefreshKey] = useState(0);
@@ -1996,6 +2888,7 @@ export default function RentalDetails() {
   const [editingExtension, setEditingExtension] = useState(null);
   const [extensions, setExtensions] = useState([]);
   const [loadingExtensions, setLoadingExtensions] = useState(false);
+  const openExtensionHandledRef = useRef(false);
 
   // Late fee state
   const [lateFee, setLateFee] = useState(null);
@@ -2015,6 +2908,7 @@ export default function RentalDetails() {
   // Odometer state
   const [startOdometer, setStartOdometer] = useState('');
   const [isEditingOdometer, setIsEditingOdometer] = useState(false);
+  const [showLightStartOdometerModal, setShowLightStartOdometerModal] = useState(false);
   const [isSavingOdometer, setIsSavingOdometer] = useState(false);
   const [endOdometer, setEndOdometer] = useState('');
   const [showEndOdometerPrompt, setShowEndOdometerPrompt] = useState(false);
@@ -2033,13 +2927,26 @@ export default function RentalDetails() {
   const [lateStartConfirmation, setLateStartConfirmation] = useState(null);
   const [fuelPricePerLine, setFuelPricePerLine] = useState(0);
   const [fuelCharge, setFuelCharge] = useState(0);
-  const [finishRentalSteps, setFinishRentalSteps] = useState({
-    showWorkflow: false,
+  const readPersistedFinishWorkflowFlag = () => {
+    if (typeof window === 'undefined' || !id) return false;
+    try {
+      const rawState = window.localStorage.getItem(`rental_finish_workflow_${id}`);
+      if (!rawState) return false;
+      const parsedState = JSON.parse(rawState);
+      return Boolean(parsedState?.showWorkflow);
+    } catch (error) {
+      console.error('Failed to read persisted finish workflow state:', error);
+      return false;
+    }
+  };
+
+  const [finishRentalSteps, setFinishRentalSteps] = useState(() => ({
+    showWorkflow: readPersistedFinishWorkflowFlag(),
     closingVideoComplete: false,
     closingDocumentComplete: true,
     endOdometerComplete: false,
     endFuelComplete: false
-  });
+  }));
   const [requiresClosingInspectionReview, setRequiresClosingInspectionReview] = useState(false);
   const [vehicleReportDraft, setVehicleReportDraft] = useState(DEFAULT_VEHICLE_REPORT_DRAFT);
   const [vehicleReport, setVehicleReport] = useState(null);
@@ -2053,7 +2960,6 @@ export default function RentalDetails() {
     source: 'none',
   });
   const [savingMaintenanceCharge, setSavingMaintenanceCharge] = useState(false);
-  const restoredFinishWorkflowRef = useRef(null);
   const notifiedAutoExpiredRentalsRef = useRef(new Set());
 
   const hasClosingInspectionMedia = closingMedia.length > 0;
@@ -2125,8 +3031,8 @@ export default function RentalDetails() {
     : hasClosingInspectionMedia && !requiresClosingInspectionReview;
   const closingInspectionStepComplete =
     reportWorkflowLocked ||
-    (!reportRequired && !requiresClosingInspectionReview) ||
-    (reportRequired && inspectionComplete);
+    (reportRequired && inspectionComplete) ||
+    (!reportRequired && hasClosingInspectionMedia && !requiresClosingInspectionReview);
 
   const scrollToVehicleReport = () => {
     vehicleReportSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2193,7 +3099,39 @@ const [pdfCache, setPdfCache] = useState({
 const [includedKilometers, setIncludedKilometers] = useState(0);
 const [extraKmRate, setExtraKmRate] = useState(0);
 const [packageDetails, setPackageDetails] = useState(null);
-const [mediaViewMode, setMediaViewMode] = useState('grid');
+  const [availableKmPackages, setAvailableKmPackages] = useState([]);
+  const [mediaViewMode, setMediaViewMode] = useState('grid');
+  const [workspaceRentalDetailsDefaultView, setWorkspaceRentalDetailsDefaultView] = useState('standard');
+  const [lightStartSummaryOpen, setLightStartSummaryOpen] = useState(false);
+  const [lightActiveSummaryOpen, setLightActiveSummaryOpen] = useState(false);
+  const [lightFinishSummaryOpen, setLightFinishSummaryOpen] = useState(false);
+
+  const resolvedViewerUser =
+    currentUser ||
+    (userProfile
+      ? {
+          ...userProfile,
+          full_name: userProfile.full_name || userProfile.fullName || userProfile.email,
+        }
+      : null);
+  const rentalDetailsDefaultViewMode = canApproveRentalExtensions(resolvedViewerUser)
+    ? workspaceRentalDetailsDefaultView
+    : 'light';
+  const resolvedRentalDetailsViewMode = rentalDetailsViewQueryParam || rentalDetailsDefaultViewMode;
+  const isLightRentalDetailsMode = resolvedRentalDetailsViewMode === 'light';
+
+  const handleSwitchRentalDetailsView = useCallback((nextMode) => {
+    const normalizedNextMode = normalizeRentalDetailsViewMode(nextMode);
+    const params = new URLSearchParams(location.search || '');
+    params.set('view', normalizedNextMode);
+    navigate(
+      {
+        pathname: location.pathname,
+        search: `?${params.toString()}`,
+      },
+      { replace: true, state: location.state }
+    );
+  }, [location.pathname, location.search, location.state, navigate]);
 
 // Update fuel charge enabled state when rental data loads
 useEffect(() => {
@@ -2201,6 +3139,13 @@ useEffect(() => {
     setFuelChargeEnabled(rental.fuel_charge_enabled ?? true);
   }
 }, [rental?.id, rental?.fuel_charge_enabled]);
+
+useEffect(() => {
+  if (!rental?.use_package_pricing || !packageDetails) return;
+  if (typeof packageDetails.fuel_charge_enabled !== 'boolean') return;
+
+  setFuelChargeEnabled(Boolean(packageDetails.fuel_charge_enabled));
+}, [rental?.use_package_pricing, packageDetails?.id, packageDetails?.fuel_charge_enabled]);
 
 useEffect(() => {
   let cancelled = false;
@@ -2213,10 +3158,26 @@ useEffect(() => {
       setRentalTimingSettings({
         graceMinutes: Number(data.rentalGracePeriodMinutes ?? data.rental_grace_period_minutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes),
         softLockMinutes: Number(data.rentalSoftLockMinutes ?? data.rental_soft_lock_minutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.softLockMinutes),
+        extraHourThresholdMinutes: Number(
+          data.extraHourThresholdMinutes
+            ?? data.extra_hour_threshold_minutes
+            ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes
+        ),
       });
+      setAutoSendContractEmailAfterCreation(Boolean(
+        data.autoSendContractEmailAfterCreation
+          ?? data.auto_send_contract_email_after_creation
+      ));
+      setWorkspaceRentalDetailsDefaultView(
+        normalizeRentalDetailsViewMode(
+          data.rentalDetailsDefaultView ?? data.rental_details_default_view
+        )
+      );
     } catch (_error) {
       if (!cancelled) {
         setRentalTimingSettings(DEFAULT_RENTAL_TIMING_SETTINGS);
+        setAutoSendContractEmailAfterCreation(false);
+        setWorkspaceRentalDetailsDefaultView('standard');
       }
     }
   };
@@ -2238,6 +3199,7 @@ const contractShareRef = useRef();   // dedicated off-screen ref for WhatsApp sh
 const receiptShareRef = useRef();    // dedicated off-screen ref for WhatsApp sharing
 const vehicleReportSectionRef = useRef(null);
 const rentalMediaSectionRef = useRef(null);
+const lightFinishSectionRef = useRef(null);
 const contractUrlRef = useRef(null);
 const receiptUrlRef = useRef(null);
 const shortContractUrlRef = useRef(null);
@@ -2264,38 +3226,7 @@ const handlePrintContract = async ({ shareOnly = false } = {}) => {
       toast.error('Contract template not found');
       return null;
     }
-
-    const page1 = contractRoot?.querySelector('.page-container') || contractRoot;
-    const contractElement = page1;
-    const A4_WIDTH = 210;
-    const A4_HEIGHT = 297;
-    const MARGIN = 10;
-
-    const canvas = await html2canvas(contractElement, {
-      scale: 3,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      logging: false,
-      width: (A4_WIDTH - MARGIN * 2) * 3.78,
-      windowWidth: (A4_WIDTH - MARGIN * 2) * 3.78
-    });
-
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
-    const imgWidth = A4_WIDTH - (MARGIN * 2);
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-    let yPos = MARGIN;
-    if (imgHeight > A4_HEIGHT - (MARGIN * 2)) {
-      const scaleFactor = (A4_HEIGHT - (MARGIN * 2)) / imgHeight;
-      const scaledWidth = imgWidth * scaleFactor;
-      const scaledHeight = imgHeight * scaleFactor;
-      const xPos = (A4_WIDTH - scaledWidth) / 2;
-      pdf.addImage(canvas.toDataURL('image/jpeg', 1.0), 'JPEG', xPos, yPos, scaledWidth, scaledHeight);
-    } else {
-      pdf.addImage(canvas.toDataURL('image/jpeg', 1.0), 'JPEG', MARGIN, yPos, imgWidth, imgHeight);
-    }
-
-    const pdfBlob = pdf.output('blob');
+    const pdfBlob = await generatePdfBlobFromContainers(contractRoot);
 
     // Upload to Supabase — required for WhatsApp sharing
     const filePath = `contracts/contract_${rental.rental_id}_${Date.now()}.pdf`;
@@ -2313,12 +3244,7 @@ const handlePrintContract = async ({ shareOnly = false } = {}) => {
 
     if (!shareOnly) {
       const filename = `Contract_${rental?.rental_id || rental?.id}_${new Date().toISOString().split('T')[0]}.pdf`;
-      if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
-        const pdfUrl = URL.createObjectURL(pdfBlob);
-        window.open(pdfUrl, '_blank');
-      } else {
-        pdf.save(filename);
-      }
+      openOrDownloadPdfBlob(pdfBlob, filename);
     }
 
     return uploadedUrl;
@@ -2337,60 +3263,7 @@ const handlePrintReceipt = async ({ shareOnly = false } = {}) => {
       toast.error('Receipt template not found');
       return null;
     }
-
-    const page1 = receiptRoot?.querySelector('.page-container') || receiptRoot?.querySelector('.receipt-container') || receiptRoot;
-    const receiptElement = page1;
-
-    const A4_WIDTH = 210;
-    const A4_HEIGHT = 297;
-    const MARGIN = 10;
-
-    const canvas = await html2canvas(receiptElement, {
-      scale: 3,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      logging: false,
-      width: (A4_WIDTH - MARGIN * 2) * 3.78,
-      windowWidth: (A4_WIDTH - MARGIN * 2) * 3.78
-    });
-
-    const pdf = new jsPDF({
-      orientation: 'portrait',
-      unit: 'mm',
-      format: 'a4',
-      compress: true
-    });
-
-    const imgWidth = A4_WIDTH - (MARGIN * 2);
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-    let yPos = MARGIN;
-    if (imgHeight > A4_HEIGHT - (MARGIN * 2)) {
-      const scaleFactor = (A4_HEIGHT - (MARGIN * 2)) / imgHeight;
-      const scaledWidth = imgWidth * scaleFactor;
-      const scaledHeight = imgHeight * scaleFactor;
-      const xPos = (A4_WIDTH - scaledWidth) / 2;
-
-      pdf.addImage(
-        canvas.toDataURL('image/jpeg', 1.0),
-        'JPEG',
-        xPos,
-        yPos,
-        scaledWidth,
-        scaledHeight
-      );
-    } else {
-      pdf.addImage(
-        canvas.toDataURL('image/jpeg', 1.0),
-        'JPEG',
-        MARGIN,
-        yPos,
-        imgWidth,
-        imgHeight
-      );
-    }
-    
-    const pdfBlobReceipt = pdf.output('blob');
+    const pdfBlobReceipt = await generatePdfBlobFromContainers(receiptRoot);
 
     // Upload to Supabase — required for WhatsApp sharing
     const receiptFilePath = `receipts/receipt_${rental.rental_id}_${Date.now()}.pdf`;
@@ -2408,12 +3281,7 @@ const handlePrintReceipt = async ({ shareOnly = false } = {}) => {
 
     if (!shareOnly) {
       const filename = `Receipt_${rental.rental_id || rental.id}_${new Date().toISOString().split('T')[0]}.pdf`;
-      if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
-        const pdfUrl = URL.createObjectURL(pdfBlobReceipt);
-        window.open(pdfUrl, '_blank');
-      } else {
-        pdf.save(filename);
-      }
+      openOrDownloadPdfBlob(pdfBlobReceipt, filename);
     }
 
     if (RENTAL_DEBUG) console.log('✅ Receipt PDF generated successfully');
@@ -2461,47 +3329,6 @@ const generateAndCacheReceiptPDF = async () => {
   } finally {
     setPdfCache((prev) => ({ ...prev, receiptGenerating: false }));
   }
-};
-
-// ── Shared: generate PDF blob using exact same logic as print buttons ─────────
-const generatePDFBlob = async (element) => {
-  const A4_WIDTH = 210;
-  const A4_HEIGHT = 297;
-  const MARGIN = 10;
-
-  const canvas = await html2canvas(element, {
-    scale: 3,
-    useCORS: true,
-    backgroundColor: '#ffffff',
-    logging: false,
-    width: (A4_WIDTH - MARGIN * 2) * 3.78,
-    windowWidth: (A4_WIDTH - MARGIN * 2) * 3.78
-  });
-
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
-  const imgWidth = A4_WIDTH - MARGIN * 2;
-  const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-  if (imgHeight > A4_HEIGHT - MARGIN * 2) {
-    const scale = (A4_HEIGHT - MARGIN * 2) / imgHeight;
-    const sw = imgWidth * scale;
-    const sh = imgHeight * scale;
-    pdf.addImage(canvas.toDataURL('image/jpeg', 1.0), 'JPEG', (A4_WIDTH - sw) / 2, MARGIN, sw, sh);
-  } else {
-    pdf.addImage(canvas.toDataURL('image/jpeg', 1.0), 'JPEG', MARGIN, MARGIN, imgWidth, imgHeight);
-  }
-
-  return pdf.output('blob');
-};
-
-// Upload a PDF blob to Supabase and return public URL
-const uploadPDFBlob = async (blob, prefix) => {
-  const filePath = `${prefix}s/${prefix}_${rental.rental_id}_${Date.now()}.pdf`;
-  const { data, error } = await supabase.storage
-    .from('rental-documents')
-    .upload(filePath, blob, { contentType: 'application/pdf', upsert: true });
-  if (error) throw error;
-  return await getVerifiedStorageShareUrl('rental-documents', filePath);
 };
 
 const toDataURL = (url) =>
@@ -2826,7 +3653,8 @@ const calculateDailyTierPricingBreakdown = async () => {
   useEffect(() => {
     // Check if URL has openExtension parameter
     const params = new URLSearchParams(window.location.search);
-    if (params.get('openExtension') === 'true') {
+    if (params.get('openExtension') === 'true' && !openExtensionHandledRef.current) {
+      openExtensionHandledRef.current = true;
       if (RENTAL_DEBUG) console.log('🔍 Found openExtension parameter, opening extension modal...');
       
       // Small delay to ensure component is fully loaded
@@ -3042,6 +3870,7 @@ const calculateDailyTierPricingBreakdown = async () => {
   const API_WINDOW_MS = 10000; // 10 second window
   const extensionsLoadedRef = useRef(null);
   const lateFeeCalculatedRef = useRef(null);
+  const lateFeeUnavailableRef = useRef(false);
   const pdfCheckDoneRef = useRef(null);
 
   const loadRentalData = async (force = false) => {
@@ -3176,21 +4005,7 @@ const calculateDailyTierPricingBreakdown = async () => {
         rental_type: rentalData.rental_type
       });
 
-      let liveCustomerProfile = null;
-      if (rentalData.customer_id) {
-        const { data: customerProfile, error: customerProfileError } = await supabase
-          .from('app_4c3a7a6153_customers')
-          .select('id, full_name, email, phone, address, nationality, licence_number')
-          .eq('id', rentalData.customer_id)
-          .maybeSingle();
-
-        if (customerProfileError) {
-          console.warn('Failed to fetch live customer profile for rental details:', customerProfileError);
-        } else {
-          liveCustomerProfile = customerProfile || null;
-        }
-      }
-      setLinkedCustomerProfile(liveCustomerProfile);
+      await refreshCustomerVerificationState(rentalData);
 
 
       // Only customer website bookings auto-expire automatically.
@@ -3750,10 +4565,62 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
 
 
 
+  const inferredShortReturnVoidedExtension = useMemo(() => {
+    const thresholdMinutes = Number(
+      rentalTimingSettings?.extraHourThresholdMinutes
+        ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes
+    );
+    const safeExtensions = (Array.isArray(extensions) ? extensions : [])
+      .filter((ext) => String(ext?.status || '').toLowerCase() === 'approved')
+      .sort((a, b) => {
+        const aTime = new Date(a?.approved_at || a?.created_at || 0).getTime();
+        const bTime = new Date(b?.approved_at || b?.created_at || 0).getTime();
+        return bTime - aTime;
+      });
+
+    if (
+      !rental ||
+      String(rental?.rental_status || '').toLowerCase() !== 'completed' ||
+      safeExtensions.length === 0 ||
+      !Number.isFinite(thresholdMinutes) ||
+      thresholdMinutes <= 0
+    ) {
+      return null;
+    }
+
+    const latestExtension = safeExtensions[0];
+    const extensionHours = parseFloat(latestExtension?.extension_hours) || 0;
+    const currentEndTime = new Date(rental?.rental_end_date || '').getTime();
+    const completedTime = new Date(rental?.actual_end_date || rental?.completed_at || '').getTime();
+
+    if (!Number.isFinite(currentEndTime) || !Number.isFinite(completedTime) || extensionHours <= 0) {
+      return null;
+    }
+
+    const extensionStartTime = currentEndTime - (extensionHours * 60 * 60 * 1000);
+    if (completedTime < extensionStartTime || completedTime > currentEndTime) {
+      return null;
+    }
+
+    const elapsedMinutesInExtension = (completedTime - extensionStartTime) / 60000;
+    if (elapsedMinutesInExtension > thresholdMinutes) {
+      return null;
+    }
+
+    return {
+      ...latestExtension,
+      elapsedMinutesInExtension,
+      rolledBackEndDate: new Date(extensionStartTime).toISOString(),
+    };
+  }, [extensions, rental, rentalTimingSettings]);
+
   // ✅ MEMOIZED: Calculate extension totals to prevent unnecessary recalculations
   const approvedExtensions = useMemo(
-    () => (Array.isArray(extensions) ? extensions : []).filter((ext) => ext.status === 'approved'),
-    [extensions]
+    () => (Array.isArray(extensions) ? extensions : []).filter((ext) => (
+      String(ext?.status || '').toLowerCase() === 'approved' &&
+      String(ext?.id || '') !== String(inferredShortReturnVoidedExtension?.id || '')
+    )),
+    [extensions, inferredShortReturnVoidedExtension]
   );
 
   const totalExtensionFees = useMemo(() => {
@@ -3781,8 +4648,10 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
 
   const getStoredRentalChargeAmount = useCallback(() => {
     if (!rental) return 0;
-    return parseFloat(rental.total_amount || 0) || 0;
-  }, [rental]);
+    const storedTotal = parseFloat(rental.total_amount || 0) || 0;
+    const inferredVoidedPrice = parseFloat(inferredShortReturnVoidedExtension?.extension_price || 0) || 0;
+    return Math.max(0, storedTotal - inferredVoidedPrice);
+  }, [rental, inferredShortReturnVoidedExtension]);
 
   const getBaseRentalAmountExcludingExtensions = useCallback(() => {
     if (!rental) return 0;
@@ -3790,12 +4659,20 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
     const storedRentalCharge = getStoredRentalChargeAmount();
     const extensionFees = parseFloat(totalExtensionFees || 0);
 
-    // The rental row's total_amount should already include approved extensions.
-    // Use extension rows only for the breakdown, not as extra charges on top of total_amount.
+    // The saved rental row is the source of truth after manual contract edits.
+    // For package rentals, do not recalculate from the original package config
+    // when we already have a stored contract amount on the rental itself.
     if (storedRentalCharge > 0) {
       return Math.max(0, storedRentalCharge - extensionFees);
     }
 
+    const pkg = getRentalKilometerPackage(rental, packageDetails);
+    if (pkg && rental.use_package_pricing) {
+      return getPackageDisplayTotal(rental, pkg);
+    }
+
+    // The rental row's total_amount should already include approved extensions.
+    // Use extension rows only for the breakdown, not as extra charges on top of total_amount.
     if (rental.rental_type === 'hourly') {
       const duration = getRentalDurationUnits(rental);
       if (rental.use_package_pricing || isFlatHourlyTierRental(rental, packageDetails)) {
@@ -3807,12 +4684,111 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
     const duration = rental.quantity_days ?? 1;
     return rental.use_package_pricing ? (Number(rental.unit_price || 0) || 0) : (rental.unit_price || 0) * duration;
   }, [getStoredRentalChargeAmount, rental, totalExtensionFees, packageDetails]);
+
+  const bookedKilometerPackage = useMemo(
+    () => getRentalKilometerPackage(rental, packageDetails),
+    [packageDetails, rental]
+  );
+  const hasBookedKilometerPackage = useMemo(
+    () => Boolean(
+      bookedKilometerPackage &&
+      (
+        rental?.use_package_pricing ||
+        rental?.package_id ||
+        rental?.selected_package_id
+      )
+    ),
+    [bookedKilometerPackage, rental?.package_id, rental?.selected_package_id, rental?.use_package_pricing]
+  );
+  const simplePricingSummary = useMemo(() => {
+    if (!rental || !hasBookedKilometerPackage || !bookedKilometerPackage) return null;
+
+    const packagePool = availableKmPackages.length > 0
+      ? availableKmPackages
+      : [rental?.package, packageDetails].filter(Boolean);
+
+    return calculateSimpleRentalPricing({
+      startTime: rental?.started_at || rental?.rental_start_date,
+      endTime: getRentalEffectiveEndTime(rental),
+      gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
+      hourlyRate: getRentalHourlyRate(rental),
+      totalKmUsed: Number(rental?.total_kilometers_driven || rental?.total_distance || 0),
+      packages: packagePool,
+      rentalType: rental?.rental_type,
+      originalPackage: bookedKilometerPackage,
+      durationUnits: getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1,
+    });
+  }, [availableKmPackages, bookedKilometerPackage, hasBookedKilometerPackage, packageDetails, rental, rentalTimingSettings?.graceMinutes]);
+
+  const bookedPackageDisplayName = useMemo(() => {
+    if (!bookedKilometerPackage) return null;
+    return (
+      bookedKilometerPackage?.name ||
+      bookedKilometerPackage?.display_name ||
+      bookedKilometerPackage?.displayName ||
+      tr('Booked package', 'Forfait réservé')
+    );
+  }, [bookedKilometerPackage, tr]);
+
+  const bookedPackageLimitKm = useMemo(() => {
+    if (!hasBookedKilometerPackage || !bookedKilometerPackage) return 0;
+    return Number(getConfiguredPackageTotalIncludedKilometers(rental, bookedKilometerPackage) || 0);
+  }, [bookedKilometerPackage, hasBookedKilometerPackage, rental]);
+
+  const autoMatchedPackage = hasBookedKilometerPackage ? (simplePricingSummary?.selectedPackage || null) : null;
+  const autoMatchedPackageDiffers =
+    Boolean(bookedKilometerPackage?.id && autoMatchedPackage?.id) &&
+    String(bookedKilometerPackage.id) !== String(autoMatchedPackage.id);
+  const kilometerPackageApplication = useMemo(
+    () => {
+      if (!hasBookedKilometerPackage) {
+        return {
+          originalPackage: null,
+          appliedPackage: null,
+          originalLimit: 0,
+          appliedLimit: 0,
+          originalPrice: 0,
+          appliedPrice: 0,
+          appliedExtraRate: 0,
+          upgraded: false,
+          overageKm: 0,
+          overageCharge: 0,
+        };
+      }
+
+      return selectAppliedKilometerPackage({
+        rental,
+        bookedPackage: bookedKilometerPackage,
+        packageDetails,
+        availablePackages: availableKmPackages,
+        gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
+        totalDistance: Number(rental?.total_kilometers_driven || rental?.total_distance || 0) || 0,
+      });
+    },
+    [availableKmPackages, bookedKilometerPackage, hasBookedKilometerPackage, packageDetails, rental, rentalTimingSettings?.graceMinutes]
+  );
+  const appliedKilometerPackage = kilometerPackageApplication.appliedPackage || bookedKilometerPackage || null;
+  const appliedKilometerPackageName = getKilometerPackageName(
+    appliedKilometerPackage,
+    tr('Applied package', 'Forfait appliqué')
+  );
+  const originalKilometerPackageName = getKilometerPackageName(
+    bookedKilometerPackage,
+    tr('Original package', 'Forfait initial')
+  );
+  const originalKilometerPackagePrice = bookedKilometerPackage
+    ? getPackageDisplayTotal(rental, bookedKilometerPackage)
+    : 0;
+  const appliedKilometerPackagePrice = appliedKilometerPackage
+    ? getPackageDisplayTotal(rental, appliedKilometerPackage)
+    : 0;
   // Calculate late fee for completed rentals (guarded to prevent duplicate calls)
   useEffect(() => {
     const calculateLateFee = async () => {
       if (rental?.rental_status === 'completed') {
         // Guard: only calculate once per rental ID
         if (lateFeeCalculatedRef.current === rental?.id) return;
+        if (lateFeeUnavailableRef.current) return;
         lateFeeCalculatedRef.current = rental?.id;
         try {
           const isLocalDev =
@@ -3845,6 +4821,18 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
             });
           }
         } catch (error) {
+          const errorMessage = String(error?.message || '').toLowerCase();
+          const isMissingRoute =
+            errorMessage.includes('not_found') ||
+            errorMessage.includes('the page could not be found') ||
+            errorMessage.includes('404');
+
+          if (isMissingRoute) {
+            lateFeeUnavailableRef.current = true;
+            console.info('Late fee route is unavailable on this host. Skipping late fee calculation.');
+            return;
+          }
+
           console.error('Error calculating late fee:', error);
         }
       }
@@ -3867,6 +4855,7 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
         throw new Error("Invoice template could not be found.");
       }
 
+      const { jsPDF, html2canvas } = await loadPdfTools();
       const canvas = await html2canvas(invoiceElement, { scale: 2, useCORS: true });
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF({
@@ -4057,52 +5046,6 @@ Click the link above to review and approve the extension.`;
     }
   };
 
-  // ─── Shared PDF builder ─────────────────────────────────────────────────────
-  // Renders any template element → compressed single-page A4 → uploads → returns public URL
-  const buildAndUploadPDF = async (element, storageBucket, filePrefix) => {
-    const A4_WIDTH  = 210;
-    const A4_HEIGHT = 297;
-    const MARGIN    = 10;
-
-    // Use EXACT same settings as handlePrintContract/handlePrintReceipt
-    const canvas = await html2canvas(element, {
-      scale: 3,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      logging: false,
-      width: (A4_WIDTH - MARGIN * 2) * 3.78,
-      windowWidth: (A4_WIDTH - MARGIN * 2) * 3.78
-    });
-
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
-
-    const imgWidth  = A4_WIDTH - MARGIN * 2;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-    // Always scale to fit 1 page
-    if (imgHeight > A4_HEIGHT - MARGIN * 2) {
-      const scale = (A4_HEIGHT - MARGIN * 2) / imgHeight;
-      const sw = imgWidth * scale;
-      const sh = imgHeight * scale;
-      const xPos = (A4_WIDTH - sw) / 2;
-      pdf.addImage(canvas.toDataURL('image/jpeg', 1.0), 'JPEG', xPos, MARGIN, sw, sh);
-    } else {
-      pdf.addImage(canvas.toDataURL('image/jpeg', 1.0), 'JPEG', MARGIN, MARGIN, imgWidth, imgHeight);
-    }
-
-    const pdfBlob = pdf.output('blob');
-    const fileName = `${filePrefix}_${rental.rental_id}_${Date.now()}.pdf`;
-    const filePath = `${filePrefix}s/${fileName}`;
-
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from(storageBucket)
-      .upload(filePath, pdfBlob, { contentType: 'application/pdf', upsert: true });
-
-    if (uploadError) throw uploadError;
-
-    return await getVerifiedStorageShareUrl(storageBucket, filePath);
-  };
-
   const getShortenedGeneratedDocumentUrl = async (documentType) => {
     const isContract = documentType === 'contract';
     const currentShortUrl = isContract ? shortContractUrlRef.current : shortReceiptUrlRef.current;
@@ -4189,6 +5132,12 @@ Click the link above to review and approve the extension.`;
     }
 
     return body.url;
+  };
+
+  const createShortDocumentShareRecord = async ({ shareType, payload, documentType = 'other' }) => {
+    const publicUrl = await createDocumentShareRecord({ shareType, payload, documentType });
+    if (!publicUrl) return null;
+    return await shortenUrlService(publicUrl, rental?.id || null, documentType);
   };
 
 
@@ -4563,8 +5512,15 @@ Click the link above to review and approve the extension.`;
   const getContractWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('contract');
     if (!pdfUrl) return null;
+    const contractSnapshot = contractRentalData
+      ? {
+          ...contractRentalData,
+          vehicleReport: contractRentalData?.vehicleReport || contractRentalData?.vehicle_report || null,
+          vehicle_report: contractRentalData?.vehicle_report || contractRentalData?.vehicleReport || null,
+        }
+      : null;
 
-    return await createDocumentShareRecord({
+    return await createShortDocumentShareRecord({
       shareType: 'contract',
       documentType: 'contract',
       payload: {
@@ -4572,6 +5528,7 @@ Click the link above to review and approve the extension.`;
         rentalLookupId: rental?.id || null,
         rentalId: rental?.rental_id || rental?.id || '',
         customerName: contractRentalData?.customer_name || rental?.customer_name || '',
+        rental: contractSnapshot,
         settings: {
           logoUrl,
           stampUrl,
@@ -4594,8 +5551,15 @@ Click the link above to review and approve the extension.`;
   const getReceiptWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('receipt');
     if (!pdfUrl) return null;
+    const receiptSnapshot = receiptRentalData
+      ? {
+          ...receiptRentalData,
+          vehicleReport: receiptRentalData?.vehicleReport || receiptRentalData?.vehicle_report || null,
+          vehicle_report: receiptRentalData?.vehicle_report || receiptRentalData?.vehicleReport || null,
+        }
+      : null;
 
-    return await createDocumentShareRecord({
+    return await createShortDocumentShareRecord({
       shareType: 'receipt',
       documentType: 'receipt',
       payload: {
@@ -4603,6 +5567,7 @@ Click the link above to review and approve the extension.`;
         rentalLookupId: rental?.id || null,
         rentalId: rental?.rental_id || rental?.id || '',
         customerName: receiptRentalData?.customer_name || rental?.customer_name || '',
+        rental: receiptSnapshot,
         settings: {
           logoUrl,
           stampUrl,
@@ -4644,11 +5609,19 @@ Click the link above to review and approve the extension.`;
   };
 
   const getOpeningMediaShareUrl = async () => {
-    return `${getPublicAppOrigin()}/view/rental/${rental.id}?type=opening-media`;
+    return await shortenUrlService(
+      `${getPublicAppOrigin()}/view/rental/${rental.id}?type=opening-media`,
+      rental?.id || null,
+      'opening_video'
+    );
   };
 
   const getClosingMediaShareUrl = async () => {
-    return `${getPublicAppOrigin()}/view/rental/${rental.id}?type=closing-media`;
+    return await shortenUrlService(
+      `${getPublicAppOrigin()}/view/rental/${rental.id}?type=closing-media`,
+      rental?.id || null,
+      'closing_video'
+    );
   };
 
   const getDocumentsHubShareUrl = async (options = {}) => {
@@ -4657,7 +5630,7 @@ Click the link above to review and approve the extension.`;
       return null;
     }
 
-    return await createDocumentShareRecord({
+    return await createShortDocumentShareRecord({
       shareType: 'hub',
       documentType: 'documents',
       payload: {
@@ -4674,7 +5647,11 @@ Click the link above to review and approve the extension.`;
   };
 
   const getBankingInfoShareUrl = async () => {
-    return `${getPublicAppOrigin()}/images/bank-transfer-info.png`;
+    return await shortenUrlService(
+      `${getPublicAppOrigin()}/images/bank-transfer-info.png`,
+      rental?.id || null,
+      'banking-info'
+    );
   };
 
   const getContractUrl = async (preferWeb = true) => {
@@ -4684,6 +5661,116 @@ Click the link above to review and approve the extension.`;
   const getReceiptUrl = async (preferWeb = true) => {
     return await getShortenedGeneratedDocumentUrl('receipt');
   };
+
+  const buildSelectedRentalShareItems = async (options = {}) => {
+    const selectedItems = [];
+
+    if (options.contract && canShareContractDocument) {
+      const contractDocumentUrl = await getContractWebUrl();
+      if (contractDocumentUrl) {
+        selectedItems.push({
+          key: 'contract',
+          label: tr('Rental Contract', 'Contrat de location'),
+          description: tr('Open your signed rental contract securely.', 'Ouvrez votre contrat signé en toute sécurité.'),
+          ctaLabel: tr('Open contract', 'Ouvrir le contrat'),
+          url: contractDocumentUrl,
+        });
+      }
+    }
+
+    if (options.receipt && canShareReceiptDocument) {
+      const receiptDocumentUrl = await getReceiptWebUrl();
+      if (receiptDocumentUrl) {
+        selectedItems.push({
+          key: 'receipt',
+          label: receiptPreviewMeta.listLabel,
+          description: tr('Review your final rental receipt and totals.', 'Consultez votre reçu final et les montants.'),
+          ctaLabel: tr('Open receipt', 'Ouvrir le reçu'),
+          url: receiptDocumentUrl,
+        });
+      }
+    }
+
+    if (options.openingVideo && openingMedia.length > 0) {
+      const openingMediaDocumentUrl = await getOpeningMediaShareUrl();
+      if (openingMediaDocumentUrl) {
+        selectedItems.push({
+          key: 'opening-media',
+          label: tr('Opening Media', 'Médias de départ'),
+          description: tr('See the vehicle condition at pickup.', 'Voir l’état du véhicule au départ.'),
+          ctaLabel: tr('Open opening media', 'Ouvrir les médias de départ'),
+          url: openingMediaDocumentUrl,
+        });
+      }
+    }
+
+    if (options.closingVideo && closingMedia.length > 0) {
+      const closingMediaDocumentUrl = await getClosingMediaShareUrl();
+      if (closingMediaDocumentUrl) {
+        selectedItems.push({
+          key: 'closing-media',
+          label: tr('Closing Media', 'Médias de retour'),
+          description: tr('See the vehicle condition at return.', 'Voir l’état du véhicule au retour.'),
+          ctaLabel: tr('Open closing media', 'Ouvrir les médias de retour'),
+          url: closingMediaDocumentUrl,
+        });
+      }
+    }
+
+    if (options.bankingInfo) {
+      const bankingInfoDocumentUrl = await getBankingInfoShareUrl();
+      if (bankingInfoDocumentUrl) {
+        selectedItems.push({
+          key: 'banking-info',
+          label: tr('Banking Info', 'Informations bancaires'),
+          description: tr('Access the transfer details and QR image.', 'Accédez aux coordonnées bancaires et au QR code.'),
+          ctaLabel: tr('Open banking info', 'Ouvrir les infos bancaires'),
+          url: bankingInfoDocumentUrl,
+        });
+      }
+    }
+
+    return selectedItems;
+  };
+
+  async function sendContractEmailDirectly({
+    rentalSnapshot = rental,
+    contractSnapshot = contractRentalData,
+    reason = 'manual',
+  } = {}) {
+    const recipientEmail = String(
+      contractSnapshot?.customer_email ||
+      rentalSnapshot?.customer_email ||
+      ''
+    ).trim();
+
+    if (!recipientEmail) {
+      throw new Error(tr('No customer email is available for this rental.', "Aucun e-mail client n'est disponible pour cette location."));
+    }
+
+    const contractDocumentUrl = await getContractWebUrl();
+    if (!contractDocumentUrl) {
+      throw new Error(tr('Contract document is not ready yet.', "Le document du contrat n'est pas encore prêt."));
+    }
+
+    await sendRentalDocumentsEmail({
+      toEmail: recipientEmail,
+      customerName: contractSnapshot?.customer_name || rentalSnapshot?.customer_name || '',
+      rentalId: rentalSnapshot?.rental_id || rentalSnapshot?.id || '',
+      items: [
+        {
+          key: 'contract',
+          label: tr('Rental Contract', 'Contrat de location'),
+          description: tr('Open your signed rental contract securely.', 'Ouvrez votre contrat signé en toute sécurité.'),
+          ctaLabel: tr('Open contract', 'Ouvrir le contrat'),
+          url: contractDocumentUrl,
+        },
+      ],
+      documentsHubUrl: null,
+    });
+
+    return { recipientEmail, reason };
+  }
 
   // Handle WhatsApp selection and sending - INSTANT WEB VIEW VERSION
   const handleSendWhatsAppSelection = async (options) => {
@@ -4707,61 +5794,7 @@ Click the link above to review and approve the extension.`;
         setIsSharing(false);
         return;
       }
-      const selectedItems = [];
-      let contractDocumentUrl = null;
-      let receiptDocumentUrl = null;
-      let openingMediaDocumentUrl = null;
-      let closingMediaDocumentUrl = null;
-      let bankingInfoDocumentUrl = null;
-
-      if (options.contract && canShareContractDocument) {
-        contractDocumentUrl = await getContractWebUrl();
-        if (contractDocumentUrl) {
-          selectedItems.push({
-            key: 'contract',
-            label: tr('Rental Contract', 'Contrat de location'),
-            url: contractDocumentUrl,
-          });
-        }
-      }
-
-      if (options.receipt && canShareReceiptDocument) {
-        receiptDocumentUrl = await getReceiptWebUrl();
-        if (receiptDocumentUrl) {
-          selectedItems.push({
-            key: 'receipt',
-            label: receiptPreviewMeta.listLabel,
-            url: receiptDocumentUrl,
-          });
-        }
-      }
-
-      if (options.openingVideo && openingMedia.length > 0) {
-        openingMediaDocumentUrl = await getOpeningMediaShareUrl();
-        selectedItems.push({
-          key: 'opening-media',
-          label: tr('Opening Media', 'Médias de départ'),
-          url: openingMediaDocumentUrl,
-        });
-      }
-
-      if (options.closingVideo && closingMedia.length > 0) {
-        closingMediaDocumentUrl = await getClosingMediaShareUrl();
-        selectedItems.push({
-          key: 'closing-media',
-          label: tr('Closing Media', 'Médias de retour'),
-          url: closingMediaDocumentUrl,
-        });
-      }
-
-      if (options.bankingInfo) {
-        bankingInfoDocumentUrl = await getBankingInfoShareUrl();
-        selectedItems.push({
-          key: 'banking-info',
-          label: tr('Banking Info', 'Informations bancaires'),
-          url: bankingInfoDocumentUrl,
-        });
-      }
+      const selectedItems = await buildSelectedRentalShareItems(options);
 
       const intro = tr(
         `Here are your rental items for ${rental.rental_id}:`,
@@ -4806,6 +5839,94 @@ Click the link above to review and approve the extension.`;
 
   const handleShareViaWhatsApp = async () => {
     await handleGenerateInvoice();
+  };
+
+  const getDefaultEmailShareOptions = () => ({
+    contract: Boolean(canShareContractDocument),
+    receipt: Boolean(canShareReceiptDocument),
+    openingVideo: false,
+    closingVideo: false,
+    bankingInfo: false,
+  });
+
+  const handleSmartSendEmail = async () => {
+    const recipientEmail = String(
+      receiptRentalData?.customer_email ||
+      contractRentalData?.customer_email ||
+      rental?.customer_email ||
+      ''
+    ).trim();
+
+    if (!recipientEmail) {
+      toast.error(tr('No customer email is available for this rental.', "Aucun e-mail client n'est disponible pour cette location."));
+      return;
+    }
+
+    const defaultOptions = getDefaultEmailShareOptions();
+    if (!defaultOptions.contract && !defaultOptions.receipt) {
+      toast.error(tr('No contract or receipt is ready to email yet.', "Aucun contrat ni reçu n'est encore prêt à envoyer par e-mail."));
+      return;
+    }
+
+    await handleSendEmailSelection(defaultOptions);
+  };
+
+  const handleSendEmailSelection = async (options) => {
+    setIsSendingEmail(true);
+    setWhatsappModalOpen(false);
+    toast.loading(tr('Preparing email…', "Préparation de l'e-mail..."), { id: 'email-prepare' });
+
+    try {
+      if (options.contract && !options.receipt && !options.openingVideo && !options.closingVideo && !options.bankingInfo) {
+        await sendContractEmailDirectly({ reason: 'manual' });
+        toast.dismiss('email-prepare');
+        toast.success(tr('Rental email sent successfully.', 'E-mail de location envoyé avec succès.'));
+        return;
+      }
+
+      const recipientEmail = String(
+        receiptRentalData?.customer_email ||
+        contractRentalData?.customer_email ||
+        rental?.customer_email ||
+        ''
+      ).trim();
+
+      if (!recipientEmail) {
+        toast.dismiss('email-prepare');
+        toast.error(tr('No customer email is available for this rental.', "Aucun e-mail client n'est disponible pour cette location."));
+        return;
+      }
+
+      const selectedItems = await buildSelectedRentalShareItems(options);
+
+      if (!selectedItems.length) {
+        toast.dismiss('email-prepare');
+        toast.error(tr('No shareable items are selected yet.', "Aucun élément partageable n'est sélectionné."));
+        return;
+      }
+
+      const documentsHubUrl =
+        selectedItems.length > 1
+          ? await getDocumentsHubShareUrl({ items: selectedItems })
+          : null;
+
+      await sendRentalDocumentsEmail({
+        toEmail: recipientEmail,
+        customerName: rental?.customer_name || '',
+        rentalId: rental?.rental_id || rental?.id || '',
+        items: selectedItems,
+        documentsHubUrl,
+      });
+
+      toast.dismiss('email-prepare');
+      toast.success(tr('Rental email sent successfully.', 'E-mail de location envoyé avec succès.'));
+    } catch (error) {
+      toast.dismiss('email-prepare');
+      console.error('❌ Error sending rental email:', error);
+      toast.error(error.message || tr('Failed to send rental email.', "Impossible d'envoyer l'e-mail de location."));
+    } finally {
+      setIsSendingEmail(false);
+    }
   };
 
   const calculateMaintenanceStayDays = useCallback((report, maintenance) => {
@@ -5277,6 +6398,7 @@ Click the link above to review and approve the extension.`;
         maintenanceChargeAmount: 0,
         grandTotal: 0,
         depositPaid: 0,
+        customerPaidAmount: 0,
         rawBalanceDue: 0,
         damageDepositHeld: 0,
         autoDepositSeizedAmount: 0,
@@ -5288,8 +6410,42 @@ Click the link above to review and approve the extension.`;
 
     const baseAmount = getBaseRentalAmountExcludingExtensions();
     const rentalChargeAmount = getStoredRentalChargeAmount() || (baseAmount + (parseFloat(totalExtensionFees || 0) || 0));
-    const pkg = getRentalKilometerPackage(rental, packageDetails);
-    const overageCharge = pkg ? parseFloat(rental.overage_charge || 0) : 0;
+    const totalDrivenKm = Math.max(0, Number(rental?.total_kilometers_driven || rental?.total_distance || 0) || 0);
+    const bookedPackageForBilling = getRentalKilometerPackage(rental, packageDetails);
+    const hasBookedPackageForBilling = Boolean(
+      bookedPackageForBilling &&
+      (
+        rental?.use_package_pricing ||
+        rental?.package_id ||
+        rental?.selected_package_id
+      )
+    );
+    const packageApplication = hasBookedPackageForBilling
+      ? selectAppliedKilometerPackage({
+          rental,
+          bookedPackage: bookedPackageForBilling,
+          packageDetails,
+          availablePackages: availableKmPackages,
+          gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
+          totalDistance: totalDrivenKm,
+        })
+      : {
+          originalPackage: null,
+          appliedPackage: null,
+          originalLimit: 0,
+          appliedLimit: 0,
+          originalPrice: 0,
+          appliedPrice: 0,
+          appliedExtraRate: 0,
+          upgraded: false,
+          overageKm: 0,
+          overageCharge: 0,
+        };
+    const pkg = hasBookedPackageForBilling
+      ? (packageApplication.appliedPackage || bookedPackageForBilling)
+      : null;
+    const packageAppliedPrice = pkg ? packageApplication.appliedPrice : 0;
+    const overageCharge = pkg ? packageApplication.overageCharge : 0;
     const fuelChargeAmount = getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
     const extensionFees = parseFloat(totalExtensionFees || 0);
     const hasActiveImpoundRecord = Boolean(rental?.is_impounded || rental?.impounded_at);
@@ -5335,7 +6491,13 @@ Click the link above to review and approve the extension.`;
     const maintenanceDiscountAmount = maintenanceChargeForm.enabled
       ? (parseFloat(maintenanceChargeForm.discount || 0) || 0)
       : 0;
-    const grandTotal = rentalChargeAmount + overageCharge + fuelChargeAmount + impoundChargeAmount + maintenanceChargeAmount;
+    const effectiveRentalChargeAmount = pkg && rental.use_package_pricing
+      ? (packageAppliedPrice || baseAmount) + extensionFees
+      : rentalChargeAmount;
+    const effectiveBaseAmount = pkg && rental.use_package_pricing
+      ? (packageAppliedPrice || baseAmount)
+      : baseAmount;
+    const grandTotal = effectiveRentalChargeAmount + overageCharge + fuelChargeAmount + impoundChargeAmount + maintenanceChargeAmount;
     const rawDisplayedPaidAmount = getCorrectedDisplayedPaidAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
     const depositPaid = grandTotal > 0
       ? Math.min(rawDisplayedPaidAmount, grandTotal)
@@ -5345,10 +6507,20 @@ Click the link above to review and approve the extension.`;
     const autoDepositSeizedAmount = 0;
     const autoDepositReturnAmount = damageDepositHeld;
     const hasAutoDepositSeizure = false;
-    const balanceDue = rawBalanceDue;
+    const storedRemainingAmount = Math.max(0, parseFloat(rental?.remaining_amount || 0) || 0);
+    const hasManualAmountDueOverride =
+      Boolean(amountDueAuditMeta) ||
+      Math.abs(storedRemainingAmount - rawBalanceDue) > 0.009;
+    const balanceDue = hasManualAmountDueOverride ? storedRemainingAmount : rawBalanceDue;
+    const companyDiscountAmount = Math.max(0, Number(amountDueAuditMeta?.companyDiscount || 0) || 0);
+    const customerPaidAmount = Math.max(0, grandTotal - balanceDue - companyDiscountAmount - autoDepositSeizedAmount);
 
     return {
-      baseAmount,
+      baseAmount: effectiveBaseAmount,
+      originalBaseAmount: baseAmount,
+      appliedPackagePrice: packageAppliedPrice,
+      appliedPackageName: getKilometerPackageName(pkg, ''),
+      packageWasUpgraded: Boolean(packageApplication.upgraded),
       overageCharge,
       extensionFees,
       fuelChargeAmount,
@@ -5362,6 +6534,7 @@ Click the link above to review and approve the extension.`;
       maintenanceChargeAmount,
       grandTotal,
       depositPaid,
+      customerPaidAmount,
       rawBalanceDue,
       damageDepositHeld,
       autoDepositSeizedAmount,
@@ -5369,7 +6542,7 @@ Click the link above to review and approve the extension.`;
       hasAutoDepositSeizure,
       balanceDue,
     };
-  }, [calculateImpoundChargeTotal, endFuelLevel, fuelCharge, fuelChargeEnabled, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.rateMode, impoundChargeForm.total, maintenanceChargeForm.discount, maintenanceChargeForm.enabled, maintenanceChargeForm.total, packageDetails, rental, totalExtensionFees, vehicleReport, waiveImpoundExtraDailyCharge]);
+  }, [amountDueAuditMeta, availableKmPackages, calculateImpoundChargeTotal, endFuelLevel, fuelCharge, fuelChargeEnabled, getBaseRentalAmountExcludingExtensions, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.rateMode, impoundChargeForm.total, maintenanceChargeForm.discount, maintenanceChargeForm.enabled, maintenanceChargeForm.total, packageDetails, rental, totalExtensionFees, vehicleReport, waiveImpoundExtraDailyCharge]);
 
   const dynamicPaymentState = useMemo(() => {
     if (!rental) {
@@ -5395,6 +6568,22 @@ Click the link above to review and approve the extension.`;
     }
 
     const coveredAmount = rentalBillingSummary.depositPaid + rentalBillingSummary.autoDepositSeizedAmount;
+    const normalizedPaymentStatus = normalizePaymentStatus(
+      rental?.payment_status,
+      rentalBillingSummary.balanceDue
+    );
+
+    if (normalizedPaymentStatus === 'paid') {
+      return {
+        status: 'paid',
+        label: tr('PAID', 'PAYÉE'),
+        chipClass: 'bg-green-100 text-green-800',
+        coveredAmount,
+        isPaid: true,
+        isPartial: false,
+      };
+    }
+
     if (rentalBillingSummary.grandTotal > 0 && coveredAmount >= rentalBillingSummary.grandTotal) {
       return {
         status: 'paid',
@@ -5425,7 +6614,7 @@ Click the link above to review and approve the extension.`;
       isPaid: false,
       isPartial: false,
     };
-  }, [rental, rentalBillingSummary.autoDepositSeizedAmount, rentalBillingSummary.depositPaid, rentalBillingSummary.grandTotal]);
+  }, [rental, rentalBillingSummary.autoDepositSeizedAmount, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.grandTotal, tr]);
 
   const paymentStepRemainingBalance = useMemo(() => {
     if (!rental) return 0;
@@ -5439,7 +6628,10 @@ Click the link above to review and approve the extension.`;
 
     return rentalBillingSummary.balanceDue;
   }, [rental, rentalBillingSummary.balanceDue]);
-  const hasPreviouslyMarkedPaid = String(rental?.payment_status || '').toLowerCase() === 'paid';
+  const hasPreviouslyMarkedPaid = normalizePaymentStatus(
+    rental?.payment_status,
+    rentalBillingSummary.balanceDue
+  ) === 'paid';
 
   const receiptRentalData = useMemo(() => {
     if (!rental) return null;
@@ -5475,13 +6667,71 @@ Click the link above to review and approve the extension.`;
         'Aucun supplément journalier approuvé. Le supplément de location lié à la fourrière est annulé pour cette estimation.'
       )
       : (activeImpoundEstimate?.note || null);
+    const isMarkedPaid = normalizePaymentStatus(
+      rental?.payment_status,
+      rentalBillingSummary.balanceDue
+    ) === 'paid';
+    const effectiveDocumentTotal = Math.max(0, Number(rentalBillingSummary.grandTotal || 0) || 0);
+    const effectiveDocumentPaid = isMarkedPaid
+      ? effectiveDocumentTotal
+      : Math.max(0, Number(rentalBillingSummary.depositPaid || 0) || 0);
+    const effectiveDocumentRemaining = isMarkedPaid
+      ? 0
+      : Math.max(0, Number(rentalBillingSummary.balanceDue || 0) || 0);
+    const receiptPackageApplication = kilometerPackageApplication || {};
+    const receiptAppliedPackage = receiptPackageApplication.appliedPackage || rental?.package || null;
+    const receiptOriginalPackage = receiptPackageApplication.originalPackage || rental?.package || null;
+    const receiptAppliedPackagePrice = Number(receiptPackageApplication.appliedPrice || 0) || 0;
+    const receiptOriginalPackagePrice = receiptOriginalPackage
+      ? getPackageDisplayTotal(rental, receiptOriginalPackage)
+      : 0;
+    const receiptAppliedPackageRate = receiptAppliedPackage
+      ? getPackageRatePerUnit(rental, receiptAppliedPackage)
+      : Number(rental?.unit_price || 0) || 0;
+    const receiptPackageUpgradeSummary = receiptPackageApplication.upgraded
+      ? {
+          upgraded: true,
+          reason: 'distance_limit_exceeded',
+          originalPackageName: getKilometerPackageName(receiptOriginalPackage, tr('Original package', 'Forfait initial')),
+          originalPackageLimitKm: Number(receiptPackageApplication.originalLimit || 0) || 0,
+          originalPackagePrice: receiptOriginalPackagePrice,
+          appliedPackageName: getKilometerPackageName(receiptAppliedPackage, tr('Applied package', 'Forfait appliqué')),
+          appliedPackageLimitKm: Number.isFinite(receiptPackageApplication.appliedLimit)
+            ? Number(receiptPackageApplication.appliedLimit || 0)
+            : null,
+          appliedPackagePrice: receiptAppliedPackagePrice,
+          totalDistanceKm: Number(rental?.total_kilometers_driven || rental?.total_distance || 0) || 0,
+        }
+      : null;
+    const inferredVoidedHours = parseFloat(inferredShortReturnVoidedExtension?.extension_hours || 0) || 0;
+    const effectiveQuantityHours = String(rental?.rental_type || '').toLowerCase() === 'hourly'
+      ? Math.max(0, (parseFloat(rental?.quantity_hours || 0) || 0) - inferredVoidedHours)
+      : parseFloat(rental?.quantity_hours || 0) || 0;
+    const effectiveQuantityDays = String(rental?.rental_type || '').toLowerCase() === 'hourly'
+      ? effectiveQuantityHours
+      : Math.max(0, (parseFloat(rental?.quantity_days || 0) || 0) - (inferredVoidedHours / 24));
 
     return {
       ...rental,
       vehicleReport: linkedVehicleReport,
       vehicle_report: linkedVehicleReport,
-      payment_status: dynamicPaymentState.status === 'estimate' ? rental.payment_status : dynamicPaymentState.status,
-      deposit_amount: rentalBillingSummary.depositPaid,
+      total_amount: effectiveDocumentTotal,
+      unit_price: receiptAppliedPackageRate || rental?.unit_price,
+      package: receiptAppliedPackage || rental?.package,
+      receipt_original_package: receiptOriginalPackage,
+      package_upgrade_summary: receiptPackageUpgradeSummary,
+      included_kilometers_applied: Number.isFinite(receiptPackageApplication.appliedLimit)
+        ? Number(receiptPackageApplication.appliedLimit || 0)
+        : rental?.included_kilometers_applied,
+      extra_km_rate_applied: receiptPackageApplication.appliedExtraRate || rental?.extra_km_rate_applied,
+      payment_status: dynamicPaymentState.status === 'estimate'
+        ? rental.payment_status
+        : (isMarkedPaid ? 'paid' : dynamicPaymentState.status),
+      deposit_amount: effectiveDocumentPaid,
+      remaining_amount: effectiveDocumentRemaining,
+      quantity_hours: effectiveQuantityHours,
+      quantity_days: effectiveQuantityDays,
+      rental_end_date: inferredShortReturnVoidedExtension?.rolledBackEndDate || rental?.rental_end_date,
       fuel_charge: getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled }),
       start_fuel_level: rental?.start_fuel_level,
       end_fuel_level: rental?.end_fuel_level,
@@ -5517,7 +6767,7 @@ Click the link above to review and approve the extension.`;
         }
       }
     };
-  }, [dynamicPaymentState.status, fuelPricePerLine, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, rental, rentalBillingSummary.depositPaid, vehicleReport, waiveImpoundExtraDailyCharge, tr]);
+  }, [dynamicPaymentState.status, fuelCharge, fuelChargeEnabled, fuelPricePerLine, endFuelLevel, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, inferredShortReturnVoidedExtension, kilometerPackageApplication, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.grandTotal, vehicleReport, waiveImpoundExtraDailyCharge, tr]);
 
   const receiptPreviewMeta = useMemo(
     () => getReceiptPreviewMeta(receiptRentalData || rental || {}),
@@ -5526,6 +6776,24 @@ Click the link above to review and approve the extension.`;
 
   const contractRentalData = useMemo(() => {
     if (!rental) return null;
+    const isMarkedPaid = normalizePaymentStatus(
+      rental?.payment_status,
+      rentalBillingSummary.balanceDue
+    ) === 'paid';
+    const effectiveDocumentTotal = Math.max(0, Number(rentalBillingSummary.grandTotal || 0) || 0);
+    const effectiveDocumentPaid = isMarkedPaid
+      ? effectiveDocumentTotal
+      : Math.max(0, Number(rentalBillingSummary.depositPaid || 0) || 0);
+    const effectiveDocumentRemaining = isMarkedPaid
+      ? 0
+      : Math.max(0, Number(rentalBillingSummary.balanceDue || 0) || 0);
+    const inferredVoidedHours = parseFloat(inferredShortReturnVoidedExtension?.extension_hours || 0) || 0;
+    const effectiveQuantityHours = String(rental?.rental_type || '').toLowerCase() === 'hourly'
+      ? Math.max(0, (parseFloat(rental?.quantity_hours || 0) || 0) - inferredVoidedHours)
+      : parseFloat(rental?.quantity_hours || 0) || 0;
+    const effectiveQuantityDays = String(rental?.rental_type || '').toLowerCase() === 'hourly'
+      ? effectiveQuantityHours
+      : Math.max(0, (parseFloat(rental?.quantity_days || 0) || 0) - (inferredVoidedHours / 24));
 
     return {
       ...rental,
@@ -5536,7 +6804,14 @@ Click the link above to review and approve the extension.`;
       customer_nationality: syncedCustomerDetails.nationality || rental.customer_nationality,
       customer_licence_number: syncedCustomerDetails.licenceNumber || rental.customer_licence_number,
       linkedCustomerProfile: linkedCustomerProfile || rental.linkedCustomerProfile,
-      deposit_amount: rentalBillingSummary.depositPaid,
+      total_amount: effectiveDocumentTotal,
+      deposit_amount: effectiveDocumentPaid,
+      remaining_amount: effectiveDocumentRemaining,
+      payment_status: isMarkedPaid ? 'paid' : dynamicPaymentState.status,
+      quantity_hours: effectiveQuantityHours,
+      quantity_days: effectiveQuantityDays,
+      rental_end_date: inferredShortReturnVoidedExtension?.rolledBackEndDate || rental?.rental_end_date,
+      actual_end_date: inferredShortReturnVoidedExtension?.rolledBackEndDate || rental?.actual_end_date,
       fuel_charge: getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled }),
       vehicle: {
         ...rental?.vehicle,
@@ -5546,12 +6821,12 @@ Click the link above to review and approve the extension.`;
         }
       }
     };
-  }, [fuelPricePerLine, linkedCustomerProfile, rental, rentalBillingSummary.depositPaid, syncedCustomerDetails]);
+  }, [dynamicPaymentState.status, endFuelLevel, fuelCharge, fuelChargeEnabled, fuelPricePerLine, inferredShortReturnVoidedExtension, linkedCustomerProfile, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.grandTotal, syncedCustomerDetails]);
 
   const isPaymentSufficient = () => {
-  if (!rental) return false;
-  return rentalBillingSummary.depositPaid >= rentalBillingSummary.grandTotal;
-};
+    if (!rental) return false;
+    return dynamicPaymentState.isPaid || rentalBillingSummary.depositPaid >= rentalBillingSummary.grandTotal;
+  };
 
     // ✅ UPDATED: Calculate deposit return amount with toggle support
   const calculateDepositReturn = () => {
@@ -6032,13 +7307,48 @@ const FuelChargeToggle = ({
       await broadcastRentalWorkflowUpdate('start', 'contract_signature', {
         contract_signed: true,
       });
-    
-    // ✅ AUTO-GENERATE CONTRACT PDF IN BACKGROUND
-    setTimeout(() => {
-      generateAndCacheContractPDF(data);
-    }, 500);
-    
-    toast.success('Contract signed and signature saved! PDF will be generated in background.');
+
+      await sleep(300);
+      const generatedContractUrl = await generateAndCacheContractPDF();
+      let autoSendSucceeded = false;
+
+      if (autoSendContractEmailAfterCreation && generatedContractUrl) {
+        try {
+          await sendContractEmailDirectly({
+            rentalSnapshot: data,
+            contractSnapshot: data,
+            reason: 'auto-after-contract-signature',
+          });
+          autoSendSucceeded = true;
+        } catch (emailError) {
+          console.error('❌ Auto-send contract email failed:', emailError);
+          toast.error(
+            emailError?.message ||
+              tr('Contract signed, but the auto-send email failed.', "Contrat signé, mais l'envoi automatique de l'e-mail a échoué.")
+          );
+        }
+      }
+
+      if (autoSendSucceeded) {
+        toast.success(
+          tr(
+            'Contract signed and emailed automatically.',
+            'Contrat signé et envoyé automatiquement par e-mail.'
+          )
+        );
+      } else {
+        toast.success(
+          autoSendContractEmailAfterCreation
+            ? tr(
+                'Contract signed and saved. Manual email send is still available.',
+                "Contrat signé et enregistré. L'envoi manuel par e-mail reste disponible."
+              )
+            : tr(
+                'Contract signed and saved. Manual email send is available.',
+                "Contrat signé et enregistré. L'envoi manuel par e-mail est disponible."
+              )
+        );
+      }
     } catch (err) {
       console.error('❌ Error:', err);
       toast.error(`Failed to save signature: ${err.message}`);
@@ -6264,12 +7574,6 @@ const FuelChargeToggle = ({
   // Fuel level handlers
   const handleSaveStartFuel = async (fuelLevel) => {
     try {
-      let previousVehicleFuelLevel = null;
-      if (rental?.vehicle_id) {
-        const currentState = await FuelTransactionService.getVehicleFuelState(rental.vehicle_id);
-        previousVehicleFuelLevel = currentState?.current_fuel_lines ?? null;
-      }
-
       const { error } = await supabase
         .from('app_4c3a7a6153_rentals')
         .update({ start_fuel_level: fuelLevel })
@@ -6280,19 +7584,29 @@ const FuelChargeToggle = ({
       setStartFuelLevel(fuelLevel);
       setCurrentVehicleFuelLevel(fuelLevel);
       setRental(prev => ({ ...prev, start_fuel_level: fuelLevel }));
+
       if (rental?.vehicle_id) {
-        await FuelTransactionService.recordRentalFuelSnapshot({
-          rentalId: id,
-          vehicleId: rental.vehicle_id,
-          fuelLevel,
-          stage: 'rental_opening_level',
-          actor: currentUser,
-          notes: previousVehicleFuelLevel !== null && previousVehicleFuelLevel !== fuelLevel
-            ? `Rental opening fuel updated from ${previousVehicleFuelLevel}/8 to ${fuelLevel}/8 for ${rental.customer_name || 'customer'}`
-            : `Rental opening fuel recorded at ${fuelLevel}/8 for ${rental.customer_name || 'customer'}`,
-        });
+        void (async () => {
+          try {
+            const currentState = await FuelTransactionService.getVehicleFuelState(rental.vehicle_id);
+            const previousVehicleFuelLevel = currentState?.current_fuel_lines ?? null;
+            await FuelTransactionService.recordRentalFuelSnapshot({
+              rentalId: id,
+              vehicleId: rental.vehicle_id,
+              fuelLevel,
+              stage: 'rental_opening_level',
+              actor: currentUser,
+              notes: previousVehicleFuelLevel !== null && previousVehicleFuelLevel !== fuelLevel
+                ? `Rental opening fuel updated from ${previousVehicleFuelLevel}/8 to ${fuelLevel}/8 for ${rental.customer_name || 'customer'}`
+                : `Rental opening fuel recorded at ${fuelLevel}/8 for ${rental.customer_name || 'customer'}`,
+            });
+          } catch (snapshotError) {
+            console.warn('⚠️ Start fuel snapshot sync failed after save:', snapshotError);
+          }
+        })();
       }
-      await broadcastRentalWorkflowUpdate('start', 'start_fuel', {
+
+      void broadcastRentalWorkflowUpdate('start', 'start_fuel', {
         start_fuel_level: fuelLevel,
       });
       if (RENTAL_DEBUG) console.log('✅ Start fuel level saved:', fuelLevel);
@@ -6558,6 +7872,18 @@ const handleFuelChargeToggle = async (enabled) => {
     window.localStorage.removeItem(finishWorkflowStorageKey);
   };
 
+  const persistFinishWorkflowState = (nextDraft = vehicleReportDraft) => {
+    if (!finishWorkflowStorageKey || typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      finishWorkflowStorageKey,
+      JSON.stringify({
+        showWorkflow: true,
+        vehicleReportDraft: nextDraft,
+        updatedAt: new Date().toISOString(),
+      })
+    );
+  };
+
   const buildFinishWorkflowState = () => ({
     showWorkflow: true,
     closingVideoComplete: closingInspectionStepComplete,
@@ -6569,6 +7895,7 @@ const handleFuelChargeToggle = async (enabled) => {
   const openFinishWorkflow = async () => {
     const nextState = buildFinishWorkflowState();
     setFinishRentalSteps(nextState);
+    persistFinishWorkflowState();
     await broadcastRentalWorkflowUpdate('finish', 'workflow_opened', {
       showWorkflow: true,
       steps: nextState,
@@ -6644,11 +7971,15 @@ const handleFuelChargeToggle = async (enabled) => {
     vehicleStatus,
     extraRentalFields = {},
   }) => {
+    const preservedEndTime =
+      getRentalDisplayEndTime(rental) ||
+      getRentalEffectiveEndTime(rental) ||
+      completedAt;
     const completionPayload = {
       rental_status: 'completed',
       status: 'completed',
       completed_at: completedAt,
-      actual_end_date: completedAt,
+      actual_end_date: preservedEndTime,
       updated_at: new Date().toISOString(),
       ...extraRentalFields,
     };
@@ -6706,6 +8037,111 @@ const handleFuelChargeToggle = async (enabled) => {
     }
   };
 
+  const maybeAutoVoidLatestExtensionOnReturn = async ({
+    completedAt,
+    currentRental = rental,
+  }) => {
+    const thresholdMinutes = Number(
+      rentalTimingSettings?.extraHourThresholdMinutes
+        ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes
+    );
+
+    if (!currentRental?.id || !Number.isFinite(thresholdMinutes) || thresholdMinutes <= 0) {
+      return { rental: currentRental, autoVoided: false };
+    }
+
+    const latestExtension = await ExtensionPricingService.getLatestVoidableExtension(currentRental.id);
+    if (!latestExtension) {
+      return { rental: currentRental, autoVoided: false };
+    }
+
+    const extensionHours = parseFloat(latestExtension.extension_hours) || 0;
+    const extensionPrice = parseFloat(latestExtension.extension_price) || 0;
+    const currentEndTime = new Date(
+      currentRental?.rental_end_date || currentRental?.actual_end_date || ''
+    ).getTime();
+    const completedTime = new Date(completedAt || '').getTime();
+
+    if (!Number.isFinite(currentEndTime) || !Number.isFinite(completedTime) || extensionHours <= 0) {
+      return { rental: currentRental, autoVoided: false };
+    }
+
+    const extensionStartTime = currentEndTime - (extensionHours * 60 * 60 * 1000);
+    if (completedTime < extensionStartTime || completedTime > currentEndTime) {
+      return { rental: currentRental, autoVoided: false };
+    }
+
+    const elapsedMinutesInExtension = (completedTime - extensionStartTime) / 60000;
+    if (elapsedMinutesInExtension > thresholdMinutes) {
+      return { rental: currentRental, autoVoided: false };
+    }
+
+    await ExtensionPricingService.voidExtension(
+      latestExtension.id,
+      currentUser?.id,
+      `Auto-voided on return after ${Math.max(0, Math.round(elapsedMinutesInExtension))} minutes of extension time`
+    );
+
+    const approvedSummary = await ExtensionPricingService.getApprovedExtensionSummary(currentRental.id);
+    const nextEndDate = new Date(extensionStartTime).toISOString();
+    const isHourlyRental = currentRental?.rental_type === 'hourly';
+    const currentQuantityHours = parseFloat(currentRental?.quantity_hours) || 0;
+    const currentQuantityDays = parseFloat(currentRental?.quantity_days) || 0;
+    const nextQuantityHours = isHourlyRental
+      ? Math.max(0, currentQuantityHours - extensionHours)
+      : Math.max(0, (currentQuantityDays - (extensionHours / 24)) * 24);
+    const nextQuantityDays = isHourlyRental
+      ? nextQuantityHours
+      : Math.max(0, currentQuantityDays - (extensionHours / 24));
+    const currentTotalAmount = parseFloat(currentRental?.total_amount) || 0;
+    const currentRemainingAmount = parseFloat(currentRental?.remaining_amount) || 0;
+    const nextTotalAmount = Math.max(0, currentTotalAmount - extensionPrice);
+    const nextRemainingAmount = Math.max(0, currentRemainingAmount - extensionPrice);
+
+    const autoVoidPayload = {
+      rental_end_date: nextEndDate,
+      extension_count: approvedSummary.extensionCount,
+      total_extended_hours: approvedSummary.totalExtendedHours,
+      total_extension_price: approvedSummary.totalExtensionPrice,
+      current_extension_id: approvedSummary.currentExtensionId,
+      total_amount: nextTotalAmount,
+      remaining_amount: nextRemainingAmount,
+      quantity_hours: nextQuantityHours,
+      quantity_days: nextQuantityDays,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: updatedRental, error: autoVoidError } = await updateRentalWithSchemaFallback(autoVoidPayload);
+    if (autoVoidError) {
+      throw autoVoidError;
+    }
+
+    setExtensions((prev) => Array.isArray(prev)
+      ? prev.map((item) => (
+          item.id === latestExtension.id
+            ? { ...item, status: 'voided', voided_at: new Date().toISOString(), voided_by: currentUser?.id || null }
+            : item
+        ))
+      : prev);
+
+    toast.success(
+      tr(
+        `Last extension voided automatically after ${Math.max(0, Math.round(elapsedMinutesInExtension))} minutes.`,
+        `Dernière prolongation annulée automatiquement après ${Math.max(0, Math.round(elapsedMinutesInExtension))} minutes.`
+      )
+    );
+
+    return {
+      rental: updatedRental || {
+        ...currentRental,
+        ...autoVoidPayload,
+      },
+      autoVoided: true,
+      voidedExtension: latestExtension,
+      elapsedMinutesInExtension,
+    };
+  };
+
   const finalizeRentalCompletion = async () => {
     try {
       let latestReport = vehicleReport;
@@ -6727,8 +8163,21 @@ const handleFuelChargeToggle = async (enabled) => {
         return;
       }
 
-      const currentPaymentStatus = String(rental?.payment_status || '').toLowerCase();
-      const currentRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
+      const { rental: completionRental } = await maybeAutoVoidLatestExtensionOnReturn({
+        completedAt,
+        currentRental: rental,
+      });
+
+      const effectiveCompletionRental = completionRental || rental;
+      const preservedEndTime =
+        getRentalDisplayEndTime(effectiveCompletionRental) ||
+        getRentalEffectiveEndTime(effectiveCompletionRental) ||
+        completedAt;
+      const currentPaymentStatus = normalizePaymentStatus(
+        effectiveCompletionRental?.payment_status,
+        effectiveCompletionRental?.remaining_amount
+      );
+      const currentRemainingAmount = Math.max(0, Number(effectiveCompletionRental?.remaining_amount || 0) || 0);
       if (currentPaymentStatus !== 'paid' && currentRemainingAmount > 0) {
         toast.error('Rental must be fully paid before completion.');
         return;
@@ -6738,7 +8187,7 @@ const handleFuelChargeToggle = async (enabled) => {
         rental_status: 'completed', 
         status: 'completed',
         completed_at: completedAt,
-        actual_end_date: completedAt,
+        actual_end_date: preservedEndTime,
         ending_odometer: effectiveEndingOdometer,
         end_fuel_level: effectiveEndFuelLevel,
         return_location_id: selectedReturnLocationId ? Number(selectedReturnLocationId) : null,
@@ -6784,10 +8233,11 @@ const handleFuelChargeToggle = async (enabled) => {
       } else {
         setRental((prev) => prev ? ({
           ...prev,
+          ...(completionRental || {}),
           rental_status: 'completed',
           status: 'completed',
           completed_at: completedAt,
-          actual_end_date: completedAt,
+          actual_end_date: preservedEndTime,
           ending_odometer: effectiveEndingOdometer,
           end_fuel_level: effectiveEndFuelLevel,
           vehicle: prev?.vehicle
@@ -6859,6 +8309,9 @@ const handleFuelChargeToggle = async (enabled) => {
       clearFinishWorkflowState();
       
       setReturnSignatureUrl(null);
+      window.setTimeout(() => {
+        scrollToDepositReturnSection();
+      }, 180);
       
       toast.success('Rental completed successfully!');
       
@@ -6910,7 +8363,7 @@ const loadPackageDetails = async (packageId = null) => {
       });
       
       setPackageDetails(data);
-      setIncludedKilometers(parseFloat(data.included_kilometers) || 0);
+      setIncludedKilometers(getPackageTotalIncludedKilometers(rental, data));
       setExtraKmRate(parseFloat(data.extra_km_rate) || 0);
     }
   } catch (err) {
@@ -6920,6 +8373,55 @@ const loadPackageDetails = async (packageId = null) => {
     setExtraKmRate(null);
   }
 };
+
+useEffect(() => {
+  let isActive = true;
+
+  const loadAvailableKmPackages = async () => {
+    const vehicleModelId = rental?.vehicle?.vehicle_model?.id || rental?.vehicle?.vehicle_model_id;
+    if (!vehicleModelId) {
+      setAvailableKmPackages([]);
+      return;
+    }
+
+    try {
+      const { data, error } = await fetchWithRetry(() => {
+        let query = supabase
+          .from('app_4c3a7a6153_rental_km_packages')
+          .select('*, rate_types(name)')
+          .eq('vehicle_model_id', vehicleModelId)
+          .eq('is_active', true);
+
+        if (rental?.rental_type === 'hourly') {
+          query = query.or('rate_type_id.eq.1,rate_type_id.is.null');
+        } else if (rental?.rental_type === 'daily') {
+          query = query.or('rate_type_id.eq.2,rate_type_id.is.null');
+        }
+
+        return query.order('included_kilometers', { ascending: true });
+      });
+
+      if (!isActive) return;
+      if (error) {
+        console.warn('⚠️ Failed to load available kilometer packages:', error);
+        setAvailableKmPackages([]);
+        return;
+      }
+
+      setAvailableKmPackages(Array.isArray(data) ? data : []);
+    } catch (loadError) {
+      if (!isActive) return;
+      console.warn('⚠️ Failed to load available kilometer packages:', loadError);
+      setAvailableKmPackages([]);
+    }
+  };
+
+  loadAvailableKmPackages();
+
+  return () => {
+    isActive = false;
+  };
+}, [rental?.rental_type, rental?.vehicle?.vehicle_model?.id, rental?.vehicle?.vehicle_model_id]);
 
 // Load fuel charge settings — reads from fuel_pricing table by vehicle model
 const loadFuelChargeSettings = async () => {
@@ -6980,6 +8482,18 @@ const loadFuelChargeSettings = async () => {
     return { normalizedValue, parsedValue };
   };
 
+  const resolveKilometerPackageApplicationForDistance = useCallback(
+    (totalDistance) => selectAppliedKilometerPackage({
+      rental,
+      bookedPackage: getRentalKilometerPackage(rental, packageDetails),
+      packageDetails,
+      availablePackages: availableKmPackages,
+      gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
+      totalDistance,
+    }),
+    [availableKmPackages, packageDetails, rental, rentalTimingSettings?.graceMinutes]
+  );
+
   const handleEndOdometerSubmit = async (rawValue = null) => {
     const { normalizedValue, parsedValue: endOdometerValue } = resolveEndOdometerValue(rawValue);
 
@@ -6999,14 +8513,25 @@ const loadFuelChargeSettings = async () => {
       // Calculate total distance
       const totalDistance = endOdometerValue - startOdometerValue;
       
-      // Get package details
-      const pkg = getRentalKilometerPackage(rental, packageDetails);
-      const includedKm = pkg ? parseFloat(pkg.included_kilometers || 0) : 0;
-      const extraRate = pkg ? parseFloat(pkg.extra_km_rate || 0) : 0;
-      
-      // Calculate extra kilometers and overage charge only for real kilometer packages
-      const extraKms = pkg ? Math.max(0, totalDistance - includedKm) : 0;
-      const overageCharge = pkg ? extraKms * extraRate : 0;
+      const pricingSummary = calculateSimpleRentalPricing({
+        startTime: rental?.started_at || rental?.rental_start_date,
+        endTime: getRentalEffectiveEndTime(rental),
+        gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
+        hourlyRate: getRentalHourlyRate(rental),
+        totalKmUsed: totalDistance,
+        packages: availableKmPackages.length > 0 ? availableKmPackages : [rental?.package, packageDetails].filter(Boolean),
+        rentalType: rental?.rental_type,
+        originalPackage: getRentalKilometerPackage(rental, packageDetails),
+        durationUnits: getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1,
+      });
+      const packageApplication = resolveKilometerPackageApplicationForDistance(totalDistance);
+      const pkg = packageApplication.appliedPackage || null;
+      const includedKm = Number.isFinite(packageApplication.appliedLimit)
+        ? Number(packageApplication.appliedLimit || 0)
+        : null;
+      const extraRate = packageApplication.appliedExtraRate;
+      const extraKms = packageApplication.overageKm;
+      const overageCharge = packageApplication.overageCharge;
       
       if (RENTAL_DEBUG) console.log('📊 Odometer calculation:', {
         startOdometer: startOdometerValue,
@@ -7018,12 +8543,7 @@ const loadFuelChargeSettings = async () => {
         overageCharge
       });
       
-      // Preserve original price
-      const originalPrice = rental.use_package_pricing
-        ? (rental.unit_price || rental.total_amount || 0)
-        : rental.rental_type === 'hourly'
-        ? getRentalDurationUnits(rental) * (rental.unit_price || 0)
-        : rental.unit_price ? rental.unit_price * (rental.quantity_days ?? 1) : (rental.total_amount || 0);
+      const originalPrice = Number(packageApplication.appliedPrice || pricingSummary?.totalPrice || 0);
       const extensionFees = totalExtensionFees || 0;
       const fuelChargeAmount = getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
       const maintenanceChargeAmount = getLinkedMaintenanceChargeAmount();
@@ -7039,7 +8559,8 @@ const loadFuelChargeSettings = async () => {
           total_kilometers_driven: totalDistance,
           included_kilometers_applied: pkg ? includedKm : null,
           extra_km_rate_applied: pkg ? extraRate : null,
-          total_amount: originalPrice,
+          unit_price: pkg ? Number(getPackageRatePerUnit(rental, pkg) || rental.unit_price || 0) : rental.unit_price,
+          total_amount: finalTotal,
           remaining_amount: Math.max(0, finalTotal - (parseFloat(rental.deposit_amount) || 0)),
           updated_at: new Date().toISOString()
         })
@@ -7071,6 +8592,8 @@ const loadFuelChargeSettings = async () => {
         total_kilometers_driven: totalDistance,
         included_kilometers_applied: pkg ? includedKm : null,
         extra_km_rate_applied: pkg ? extraRate : null,
+        unit_price: pkg ? Number(getPackageRatePerUnit(prev, pkg) || prev.unit_price || 0) : prev.unit_price,
+        total_amount: finalTotal,
         remaining_amount: Math.max(0, finalTotal - (parseFloat(prev.deposit_amount) || 0))
       }));
 
@@ -7092,15 +8615,17 @@ const loadFuelChargeSettings = async () => {
       
       const overageMessage = !pkg
         ? `\nNo kilometer package applied`
+        : packageApplication.upgraded
+        ? `\n✅ Auto-upgraded to ${getKilometerPackageName(packageApplication.appliedPackage, 'upgraded package')} (${Number.isFinite(packageApplication.appliedLimit) ? `${packageApplication.appliedLimit} km` : 'unlimited'} limit)`
         : overageCharge > 0 
         ? `
-⚠️ Overage: ${extraKms} km × ${extraRate} MAD = ${overageCharge.toFixed(2)} MAD`
+ℹ️ Highest package reached: ${extraKms} km above ${includedKm} km`
         : `
-✅ No overage (${totalDistance} km within ${includedKm} km limit)`;
+✅ Best package selected (${includedKm} km limit)`;
       
       toast.success(`Ending odometer saved: ${endOdometerValue} km
 
-Distance: ${totalDistance.toFixed(2)} km${overageMessage}`);
+Distance: ${totalDistance.toFixed(2)} km • ${pricingSummary?.billedHours || 0} billed hour(s)${overageMessage}`);
       
     } catch (err) {
       console.error('❌ Error saving ending odometer:', err);
@@ -7131,13 +8656,16 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
     try {
       // Recalculate with dynamic package values only when a real kilometer package exists
       const totalDistance = newEndOdometer - startOdometerValue;
-      const pkg = getRentalKilometerPackage(rental, packageDetails);
-      const packageIncludedKilometers = pkg ? parseFloat(pkg.included_kilometers || 0) : 0;
-      const packageExtraKmRate = pkg ? parseFloat(pkg.extra_km_rate || 0) : 0;
-      const extraKms = pkg ? Math.max(0, totalDistance - packageIncludedKilometers) : 0;
-      const overageCharge = pkg ? extraKms * packageExtraKmRate : 0;
+      const packageApplication = resolveKilometerPackageApplicationForDistance(totalDistance);
+      const pkg = packageApplication.appliedPackage || null;
+      const packageIncludedKilometers = Number.isFinite(packageApplication.appliedLimit)
+        ? Number(packageApplication.appliedLimit || 0)
+        : null;
+      const packageExtraKmRate = packageApplication.appliedExtraRate;
+      const extraKms = packageApplication.overageKm;
+      const overageCharge = packageApplication.overageCharge;
       
-      const originalPrice = rental.total_amount || rental.unit_price || 0;
+      const originalPrice = packageApplication.appliedPrice || rental.total_amount || rental.unit_price || 0;
       const extensionFees = totalExtensionFees || 0;
       const maintenanceChargeAmount = getLinkedMaintenanceChargeAmount();
       const finalTotal = originalPrice + overageCharge + extensionFees + maintenanceChargeAmount;
@@ -7151,6 +8679,8 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
           overage_charge: overageCharge,
           included_kilometers_applied: pkg ? packageIncludedKilometers : null,
           extra_km_rate_applied: pkg ? packageExtraKmRate : null,
+          unit_price: pkg ? Number(getPackageRatePerUnit(rental, pkg) || rental.unit_price || 0) : rental.unit_price,
+          total_amount: finalTotal,
           remaining_amount: Math.max(0, finalTotal - (parseFloat(rental.deposit_amount) || 0)),
           updated_at: new Date().toISOString()
         })
@@ -7177,6 +8707,8 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
         overage_charge: overageCharge,
         included_kilometers_applied: pkg ? packageIncludedKilometers : null,
         extra_km_rate_applied: pkg ? packageExtraKmRate : null,
+        unit_price: pkg ? Number(getPackageRatePerUnit(prev, pkg) || prev.unit_price || 0) : prev.unit_price,
+        total_amount: finalTotal,
         remaining_amount: Math.max(0, finalTotal - (parseFloat(prev.deposit_amount) || 0))
       }));
       
@@ -7191,6 +8723,8 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       
       const overageMessage = !pkg
         ? `\nNo kilometer package applied`
+        : packageApplication.upgraded
+        ? `\n✅ Auto-upgraded to ${getKilometerPackageName(packageApplication.appliedPackage, 'upgraded package')} (${Number.isFinite(packageApplication.appliedLimit) ? `${packageApplication.appliedLimit} km` : 'unlimited'} limit)`
         : overageCharge > 0 
         ? `\n⚠️ Overage: ${extraKms} km × ${packageExtraKmRate} MAD = ${overageCharge.toFixed(2)} MAD`
         : `\n✅ No overage (${totalDistance} km within ${packageIncludedKilometers} km limit)`;
@@ -7224,25 +8758,29 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
     // Calculate new total distance
     const totalDistance = newEndOdometer - startOdometerValue;
     
-    // Recalculate overage charge only for real kilometer packages
-    let overageCharge = 0;
-    let includedKilometers = 0;
-    let extraKms = 0;
-    let extraKmRate = 0;
-    const pkg = getRentalKilometerPackage(rental, packageDetails);
-
-    if (pkg) {
-      includedKilometers = parseFloat(pkg.included_kilometers || 0);
-      extraKmRate = parseFloat(pkg.extra_km_rate || 0);
-      extraKms = Math.max(0, totalDistance - includedKilometers);
-      overageCharge = extraKms * extraKmRate;
-    }
-    
-    // Preserve original price
-    const originalPrice = rental.total_amount || rental.unit_price || 0;
-    const extensionFees = totalExtensionFees || 0;
-    const maintenanceChargeAmount = getLinkedMaintenanceChargeAmount();
-    const finalTotal = originalPrice + overageCharge + extensionFees + maintenanceChargeAmount;
+    const pricingSummary = calculateSimpleRentalPricing({
+      startTime: rental?.started_at || rental?.rental_start_date,
+      endTime: getRentalEffectiveEndTime(rental),
+      gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
+      hourlyRate: getRentalHourlyRate(rental),
+      totalKmUsed: totalDistance,
+      packages: availableKmPackages.length > 0 ? availableKmPackages : [rental?.package, packageDetails].filter(Boolean),
+      rentalType: rental?.rental_type,
+      originalPackage: getRentalKilometerPackage(rental, packageDetails),
+      durationUnits: getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1,
+    });
+      const packageApplication = resolveKilometerPackageApplicationForDistance(totalDistance);
+      const pkg = packageApplication.appliedPackage || null;
+      const includedKilometers = Number.isFinite(packageApplication.appliedLimit)
+        ? Number(packageApplication.appliedLimit || 0)
+        : null;
+      const extraKms = packageApplication.overageKm;
+      const extraKmRate = packageApplication.appliedExtraRate;
+      const overageCharge = packageApplication.overageCharge;
+      const originalPrice = Number(packageApplication.appliedPrice || rental.total_amount || rental.unit_price || 0);
+      const extensionFees = totalExtensionFees || 0;
+      const maintenanceChargeAmount = getLinkedMaintenanceChargeAmount();
+      const finalTotal = originalPrice + overageCharge + extensionFees + maintenanceChargeAmount;
 
     if (RENTAL_DEBUG) console.log('🔍 DEBUG - Odometer Edit Recalculation:', {
       startOdometer: startOdometerValue,
@@ -7264,6 +8802,8 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
         overage_charge: overageCharge,
         included_kilometers_applied: pkg ? includedKilometers : null,
         extra_km_rate_applied: pkg ? extraKmRate : null,
+        unit_price: pkg ? Number(getPackageRatePerUnit(rental, pkg) || rental.unit_price || 0) : rental.unit_price,
+        total_amount: finalTotal,
         remaining_amount: Math.max(0, finalTotal - (parseFloat(rental.deposit_amount) || 0)),
         updated_at: new Date().toISOString()
       })
@@ -7291,11 +8831,13 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       overage_charge: overageCharge,
       included_kilometers_applied: pkg ? includedKilometers : null,
       extra_km_rate_applied: pkg ? extraKmRate : null,
+      unit_price: pkg ? Number(getPackageRatePerUnit(prev, pkg) || prev.unit_price || 0) : prev.unit_price,
+      total_amount: finalTotal,
       remaining_amount: Math.max(0, finalTotal - (parseFloat(prev.deposit_amount) || 0))
     }));
     
     setIsEditingEndOdometer(false);
-    toast.success(`Ending odometer updated successfully! | Distance: ${totalDistance.toFixed(2)} km | Overage: ${overageCharge.toFixed(2)} MAD`);
+    toast.success(`Ending odometer updated successfully! | Distance: ${totalDistance.toFixed(2)} km | ${pricingSummary?.billedHours || 0} billed hour(s)`);
     
   } catch (err) {
     console.error('❌ Error updating ending odometer:', err);
@@ -7383,15 +8925,44 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
   }, [id]);
 
   useEffect(() => {
+    if (!id) return undefined;
+
+    const refreshRentalOnReturn = () => {
+      if (document.visibilityState === 'hidden') return;
+      void loadRentalData(true);
+    };
+
+    window.addEventListener('focus', refreshRentalOnReturn);
+    document.addEventListener('visibilitychange', refreshRentalOnReturn);
+
+    return () => {
+      window.removeEventListener('focus', refreshRentalOnReturn);
+      document.removeEventListener('visibilitychange', refreshRentalOnReturn);
+    };
+  }, [id, location.pathname]);
+
+  useEffect(() => {
+    if (!rental?.id) return undefined;
+
+    const refreshVerificationOnReturn = () => {
+      if (document.visibilityState === 'hidden') return;
+      void refreshCustomerVerificationState(rental);
+    };
+
+    window.addEventListener('focus', refreshVerificationOnReturn);
+    document.addEventListener('visibilitychange', refreshVerificationOnReturn);
+
+    return () => {
+      window.removeEventListener('focus', refreshVerificationOnReturn);
+      document.removeEventListener('visibilitychange', refreshVerificationOnReturn);
+    };
+  }, [rental?.id, rental?.booked_by_user_id, rental?.customer_id, rental?.customer_email, refreshCustomerVerificationState]);
+
+  useEffect(() => {
     if (!finishWorkflowStorageKey || typeof window === 'undefined') return;
     const workflowRental = normalizeRentalLifecycleStatus(rental, rentalTimingSettings);
     if (!workflowRental || workflowRental.rental_status !== 'active') {
       clearFinishWorkflowState();
-      restoredFinishWorkflowRef.current = null;
-      return;
-    }
-
-    if (restoredFinishWorkflowRef.current === finishWorkflowStorageKey) {
       return;
     }
 
@@ -7435,14 +9006,11 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
           })
         ) ? prev : nextDraft);
       }
-
-      restoredFinishWorkflowRef.current = finishWorkflowStorageKey;
     } catch (error) {
       console.error('Failed to restore finish rental workflow state:', error);
       clearFinishWorkflowState();
-      restoredFinishWorkflowRef.current = null;
     }
-  }, [finishWorkflowStorageKey, rental, rental?.id, rental?.rental_status, rental?.completed_at, rental?.started_at, rental?.ending_odometer, rental?.end_fuel_level, endFuelLevel, inspectionComplete, vehicleReport?.id]);
+  }, [finishWorkflowStorageKey, rental, rental?.id, rental?.rental_status, rental?.completed_at, rental?.started_at, rental?.ending_odometer, rental?.end_fuel_level, endFuelLevel, inspectionComplete, vehicleReport?.id, finishRentalSteps.showWorkflow]);
 
   useEffect(() => {
     if (!finishWorkflowStorageKey || typeof window === 'undefined') return;
@@ -7453,12 +9021,13 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
     const payload = {
       showWorkflow: true,
+      steps: finishRentalSteps,
       vehicleReportDraft,
       updatedAt: new Date().toISOString()
     };
 
     window.localStorage.setItem(finishWorkflowStorageKey, JSON.stringify(payload));
-  }, [finishWorkflowStorageKey, rental?.id, rental?.rental_status, finishRentalSteps.showWorkflow, vehicleReportDraft]);
+  }, [finishWorkflowStorageKey, rental?.id, rental?.rental_status, finishRentalSteps, vehicleReportDraft]);
   // ✅ OPTIMIZED: Single ref-based timer to avoid full re-renders every second.
   // Instead of a `currentTime` state (which triggered 3 state updates/sec),
   // we use one setInterval that directly computes & sets display strings.
@@ -8170,17 +9739,21 @@ useEffect(() => {
    * Automatically converts iOS videos to mp4 before upload
    * Shows conversion progress to user
    */
-  const uploadFromGallery = async () => {
+  const uploadFromGallery = async (targetPhase = null, targetMode = null) => {
+    const resolvedPhase = targetPhase || activeModal || 'opening';
+    const resolvedMode = targetMode || (resolvedPhase === 'closing' ? closingMediaMode : openingMediaMode) || 'video';
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'video/*,.mov,.MOV,.mp4,.MP4,.m4v,.M4V'; // Accept all video formats
+    input.accept = resolvedMode === 'photo'
+      ? 'image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.JPG,.JPEG,.PNG,.WEBP,.HEIC,.HEIF'
+      : 'video/*,.mov,.MOV,.mp4,.MP4,.m4v,.M4V'; // Accept all video formats
     input.multiple = true; // Allow multiple file selection
     
     input.onchange = async (e) => {
       const files = Array.from(e.target.files);
       if (files.length === 0) return;
 
-      if (RENTAL_DEBUG) console.log(`📹 Gallery files selected: ${files.length} file(s)`);
+      if (RENTAL_DEBUG) console.log(`📹 Gallery files selected for ${resolvedPhase}/${resolvedMode}: ${files.length} file(s)`);
       
       setIsUploading(true);
       
@@ -8196,10 +9769,36 @@ useEffect(() => {
           continue;
         }
 
-        setIsConverting(true);
-        setConversionProgress(0);
-
         try {
+          if (resolvedMode === 'photo') {
+            if (!String(file.type || '').startsWith('image/')) {
+              toast.error(`"${file.name}" is not an image. Skipping this file.`);
+              continue;
+            }
+
+            const timestamp = Date.now();
+            const blobUrl = URL.createObjectURL(file);
+            const fileObj = {
+              id: timestamp + Math.random(),
+              type: 'image',
+              mediaType: 'image',
+              mimeType: file.type || 'image/jpeg',
+              blob: file,
+              url: blobUrl,
+              name: file.name || `photo_${timestamp}.jpg`,
+              timestamp: new Date().toISOString(),
+              size: file.size,
+              source: 'gallery',
+              converted: false,
+            };
+
+            setCapturedMedia(prev => [...prev, fileObj]);
+            continue;
+          }
+
+          setIsConverting(true);
+          setConversionProgress(0);
+
           // Process video: convert iOS .MOV/HEVC to mp4 if needed
           if (RENTAL_DEBUG) console.log('🔍 Checking if video needs conversion...');
           
@@ -8234,6 +9833,8 @@ useEffect(() => {
           const fileObj = {
             id: timestamp + Math.random(),
             type: 'video',
+            mediaType: 'video',
+            mimeType: blob.type || file.type || 'video/mp4',
             blob: blob,
             url: blobUrl,
             name: filename,
@@ -8247,13 +9848,16 @@ useEffect(() => {
           setCapturedMedia(prev => [...prev, fileObj]);
 
         } catch (error) {
-          console.error(`❌ Video processing failed for ${file.name}:`, error);
+          console.error(`❌ Gallery processing failed for ${file.name}:`, error);
           toast.error(`Failed to process "${file.name}": ${error.message} | Skipping this file.`);
+        } finally {
+          if (resolvedMode === 'video') {
+            setIsConverting(false);
+            setConversionProgress(0);
+          }
         }
       }
       
-      setIsConverting(false);
-      setConversionProgress(0);
       setIsUploading(false);
     };
     
@@ -8395,6 +9999,39 @@ useEffect(() => {
     setClosingModalOpen(true);
   };
 
+  const handleOpenVehicleMediaModal = () => {
+    setActiveModal('closing');
+    setCapturedMedia([]);
+    setClosingMediaMode('photo');
+    setIsCapturingPhoto(false);
+    setIsRecording(false);
+    setRequiresClosingInspectionReview(false);
+    setClosingModalOpen(true);
+  };
+
+  const handleCancelClosingInspectionModal = () => {
+    if (closingVideoRef.current?.srcObject) {
+      closingVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+      closingVideoRef.current.srcObject = null;
+    }
+    if (recordingStream) {
+      recordingStream.getTracks().forEach((t) => t.stop());
+      setRecordingStream(null);
+    }
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    setIsCapturingPhoto(false);
+    setIsRecording(false);
+    setMediaRecorder(null);
+    setRecordedChunks([]);
+    setClosingModalOpen(false);
+  };
+
   const saveMedia = async (type) => {
     if (isProcessingVideo) {
       if (RENTAL_DEBUG) console.log(`⏳ Ignoring duplicate ${type} media save while upload is already running`);
@@ -8418,76 +10055,21 @@ useEffect(() => {
         const file = capturedMedia[i];
         
         // Normalize file object - handle both File objects and our custom structure
-        const originalBlob = file.blob || file;
-        const declaredMediaKind = file.type === 'video' || file.mediaType === 'video'
-          ? 'video'
-          : file.type === 'image' || file.mediaType === 'image'
-            ? 'image'
-            : '';
-        const generatedName = declaredMediaKind === 'video'
-          ? `media_${Date.now()}.mp4`
-          : declaredMediaKind === 'image'
-            ? `media_${Date.now()}.jpg`
-            : `media_${Date.now()}`;
-        const originalName = file.name || (file instanceof File ? file.name : generatedName);
-        const explicitMimeType = [originalBlob.type, file.mimeType, file.type]
-          .map((value) => String(value || '').trim())
-          .find((value) => value.includes('/'));
-        const normalizedOriginalNameForType = String(originalName || '').toLowerCase();
-        const inferredMimeType = /\.(mp4|mov|m4v|webm|avi)$/.test(normalizedOriginalNameForType)
-          ? 'video/mp4'
-          : /\.(jpe?g|png|gif|heic|heif|webp)$/.test(normalizedOriginalNameForType)
-            ? 'image/jpeg'
-            : '';
-        const declaredMimeType = declaredMediaKind === 'video'
-          ? 'video/mp4'
-          : declaredMediaKind === 'image'
-            ? 'image/jpeg'
-            : '';
-        const originalType = explicitMimeType || inferredMimeType || declaredMimeType;
-        if (!originalType) {
-          throw new Error(`Unsupported media type for ${originalName}`);
-        }
-        const mediaFile = originalBlob instanceof File && originalBlob.name && originalBlob.type
-          ? originalBlob
-          : new File([originalBlob], originalName, { type: originalType });
+        const fileBlob = file.blob || file;
+        const fileName_orig = file.name || (file instanceof File ? file.name : `media_${Date.now()}`);
+        const fileType = file.type || file.mediaType || (fileBlob.type || 'application/octet-stream');
+        const isImage = fileType.startsWith('image/');
         const baseProgress = (i / totalFiles) * 100;
         const progressRange = 100 / totalFiles;
 
         if (RENTAL_DEBUG) console.log(
-          `📤 Starting media processing for ${type} (${i + 1}/${totalFiles}):`,
-          originalName,
-          mediaFile.type,
-          `${(originalBlob.size / 1024 / 1024).toFixed(2)}MB`
+          `📤 Starting upload for ${type} ${isImage ? 'image' : 'video'} (${i + 1}/${totalFiles}):`,
+          fileName_orig
         );
-
-        const processed = await processMedia(mediaFile, (progress) => {
-          const overallProgress = Math.round(baseProgress + ((progress * 0.35) * progressRange / 100));
-          setUploadProgress(overallProgress);
-        });
-
-        const fileBlob = processed.blob;
-        const fileType = fileBlob.type || mediaFile.type;
-        const isImage = processed.mediaType === 'image' || fileType.startsWith('image/');
-        const extension = isImage ? '.jpg' : (fileType.includes('mp4') ? '.mp4' : '.webm');
-        const normalizedOriginalName = originalName.includes('.')
-          ? originalName.replace(/\.[^.]+$/, extension)
-          : `${originalName}${extension}`;
-
-        if (RENTAL_DEBUG) console.log('🗜️ Media processed:', {
-          type,
-          originalName,
-          normalizedOriginalName,
-          originalSize: originalBlob.size,
-          processedSize: fileBlob.size,
-          converted: processed.converted,
-          mediaType: processed.mediaType,
-          fileType,
-        });
 
         // Generate unique filename with timestamp
         const timestamp = Date.now();
-        const sanitizedName = normalizedOriginalName.replace(/[^a-zA-Z0-9.-]/g, '_');
+        const sanitizedName = fileName_orig.replace(/[^a-zA-Z0-9.-]/g, '_');
         const fileName = `${type}_${rental.rental_id}_${timestamp}_${sanitizedName}`;
         const mediaFolder = isImage ? 'images' : 'videos';
         const filePath = `rentals/${rental.rental_id}/${type}/${mediaFolder}/${fileName}`;
@@ -8496,7 +10078,7 @@ useEffect(() => {
 
         // Upload with progress tracking
         const uploadResult = await uploadWithProgress(fileBlob, filePath, (progress) => {
-          const overallProgress = Math.round(baseProgress + ((35 + (progress * 0.65)) * progressRange / 100));
+          const overallProgress = Math.round(baseProgress + (progress * progressRange / 100));
           setUploadProgress(overallProgress);
           if (RENTAL_DEBUG) console.log(`📤 Upload progress: ${overallProgress}%`);
         });
@@ -8534,7 +10116,7 @@ useEffect(() => {
           phase: phase,
           file_type: fileType,
           file_name: fileName,
-          original_filename: normalizedOriginalName,
+          original_filename: fileName_orig,
           file_size: parseInt(fileBlob.size) || 0,
           storage_path: filePath,
           public_url: uploadResult.url,
@@ -8605,7 +10187,12 @@ useEffect(() => {
       if (imageCount > 0) mediaTypes.push(`${imageCount} image${imageCount > 1 ? 's' : ''}`);
       if (videoCount > 0) mediaTypes.push(`${videoCount} video${videoCount > 1 ? 's' : ''}`);
       
-      toast.success(`${type === 'opening' ? 'Opening' : 'Closing'} condition: ${mediaTypes.join(' and ')} uploaded successfully!`);
+      const mediaSuccessLabel = type === 'opening'
+        ? tr('Opening condition', 'État de départ')
+        : String(rental?.rental_status || '').toLowerCase() === 'completed'
+          ? tr('Vehicle media', 'Médias véhicule')
+          : tr('Closing condition', 'État de retour');
+      toast.success(`${mediaSuccessLabel}: ${mediaTypes.join(' and ')} uploaded successfully!`);
       
       // Reload media to show the newly uploaded content
       await loadRentalMedia(rental.id);
@@ -8941,13 +10528,6 @@ useEffect(() => {
       return;
     }
 
-    const currentPaymentStatus = String(rental?.payment_status || '').toLowerCase();
-    const currentRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
-    if (currentPaymentStatus !== 'paid' && currentRemainingAmount > 0) {
-      toast.error('Rental must be fully paid before completion.');
-      return;
-    }
-
     // Step 1: Check if closing video exists
     if (closingMedia.length === 0) {
       handleOpenClosingModal();
@@ -8971,13 +10551,31 @@ useEffect(() => {
     // Step 3: If both closing video and ending odometer exist, complete the rental
     try {
       const completedAt = new Date().toISOString();
+      const { rental: completionRental } = await maybeAutoVoidLatestExtensionOnReturn({
+        completedAt,
+        currentRental: rental,
+      });
+      const preservedEndTime =
+        getRentalDisplayEndTime(completionRental || rental) ||
+        getRentalEffectiveEndTime(completionRental || rental) ||
+        completedAt;
+      const effectiveCompletionRental = completionRental || rental;
+      const currentPaymentStatus = normalizePaymentStatus(
+        effectiveCompletionRental?.payment_status,
+        effectiveCompletionRental?.remaining_amount
+      );
+      const currentRemainingAmount = Math.max(0, Number(effectiveCompletionRental?.remaining_amount || 0) || 0);
+      if (currentPaymentStatus !== 'paid' && currentRemainingAmount > 0) {
+        toast.error('Rental must be fully paid before completion.');
+        return;
+      }
       const { error } = await supabase
         .from('app_4c3a7a6153_rentals')
         .update({ 
           rental_status: 'completed', 
           status: 'completed',
           completed_at: completedAt,
-          actual_end_date: completedAt,
+          actual_end_date: preservedEndTime,
         })
         .eq('id', rental.id);
 
@@ -9020,10 +10618,11 @@ useEffect(() => {
 
       setRental((prev) => prev ? ({
         ...prev,
+        ...(completionRental || {}),
         rental_status: 'completed',
         status: 'completed',
         completed_at: completedAt,
-        actual_end_date: completedAt,
+        actual_end_date: preservedEndTime,
         vehicle: prev?.vehicle
           ? {
               ...prev.vehicle,
@@ -9112,6 +10711,11 @@ useEffect(() => {
   };
 
   const cancelRentalAsNoShow = async () => {
+    if (!canHandleLateArrival) {
+      toast.error(tr('Only staff can mark this rental as a no-show.', "Seul le personnel peut marquer cette location comme absence."));
+      return;
+    }
+
     if (!confirm(tr('Cancel this rental as a no-show and free the vehicle?', 'Annuler cette location comme absence et libérer le véhicule ?'))) {
       return;
     }
@@ -9161,6 +10765,11 @@ useEffect(() => {
   };
 
   const handleCustomerArrived = async () => {
+    if (!canHandleLateArrival) {
+      toast.error(tr('Only staff can update late arrival status.', "Seul le personnel peut mettre à jour le statut d'arrivée tardive."));
+      return;
+    }
+
     try {
       const arrivedAt = new Date().toISOString();
       const actingUser = resolvedCurrentUser || currentUser || userProfile;
@@ -9634,9 +11243,9 @@ useEffect(() => {
   const handleViewCustomerDetails = (customerId) => {
     setCustomerDetailsDrawer({
       isOpen: true,
-      customerId: customerId,
+      customerId: customerId || rental?.customer_id || null,
       rental: rental,
-      secondDrivers: [],
+      secondDrivers: secondDriversList,
       viewMode: 'customer'
     });
   };
@@ -9657,10 +11266,39 @@ useEffect(() => {
     setIsEditingPrice(true);
   };
 
+  const currentAmountDueForEdit = Math.max(
+    0,
+    Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
+  );
+  const amountDuePaymentReceivedValue = Math.max(0, Number(amountDuePaymentReceivedNow) || 0);
+  const amountDueCompanyDiscountValue = Math.max(0, Number(amountDueCompanyDiscount) || 0);
+  const amountDueResolvedTotal = amountDuePaymentReceivedValue + amountDueCompanyDiscountValue;
+  const amountDueAutoCalculatedValue = Math.max(0, currentAmountDueForEdit - amountDueResolvedTotal);
+
   const handleCancelEditPrice = () => {
     setIsEditingPrice(false);
     setManualPrice('');
     setPriceOverrideReason('');
+  };
+
+  const handleEditAmountDue = () => {
+    const currentAmountDue = Math.max(
+      0,
+      Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
+    );
+    setManualAmountDue(currentAmountDue.toString());
+    setAmountDuePaymentReceivedNow('');
+    setAmountDueCompanyDiscount('');
+    setAmountDueOverrideReason('');
+    setIsEditingAmountDue(true);
+  };
+
+  const handleCancelEditAmountDue = () => {
+    setIsEditingAmountDue(false);
+    setManualAmountDue('');
+    setAmountDuePaymentReceivedNow('');
+    setAmountDueCompanyDiscount('');
+    setAmountDueOverrideReason('');
   };
 
   const handleSaveManualPrice = async () => {
@@ -9683,7 +11321,10 @@ useEffect(() => {
       canApprovePriceOverrides(actingUser) ||
       canEditRentalPriceWithoutApproval(actingUser);
     const currentPaidAmount = Math.max(0, parseFloat(rental.deposit_amount || 0) || 0);
-    const currentPaymentStatus = String(rental.payment_status || '').toLowerCase();
+    const currentPaymentStatus = normalizePaymentStatus(
+      rental?.payment_status,
+      rental?.remaining_amount
+    );
     const isAlreadyPaid = currentPaymentStatus === 'paid';
     const activeDuration = rental.use_package_pricing
       ? 1
@@ -9775,6 +11416,134 @@ useEffect(() => {
     setIsSavingPrice(false);
   }
 };
+
+  const handleSaveAmountDue = async () => {
+    if (!manualAmountDue || Number(manualAmountDue) < 0) {
+      toast.error(tr('Please enter a valid amount due.', 'Veuillez saisir un montant restant dû valide.'));
+      return;
+    }
+
+    const actingUser = resolvedCurrentUser || currentUser || userProfile;
+    if (!canEditRentalPrice(actingUser)) {
+      toast.error(
+        tr(
+          'You do not have permission to edit the amount due.',
+          "Vous n'avez pas l'autorisation de modifier le montant restant dû."
+        )
+      );
+      return;
+    }
+
+    setIsSavingAmountDue(true);
+    try {
+      const nextAmountDue = Math.max(0, Number(manualAmountDue) || 0);
+      const previousAmountDue = Math.max(
+        0,
+        Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
+      );
+      const paymentReceivedNow = Math.max(0, Number(amountDuePaymentReceivedNow) || 0);
+      const companyDiscount = Math.max(0, Number(amountDueCompanyDiscount) || 0);
+      const depositPaid = Math.max(0, parseFloat(rental?.deposit_amount || 0) || 0);
+      const updatedDepositPaid = depositPaid + paymentReceivedNow;
+      const nextPaymentStatus = nextAmountDue <= 0 ? 'paid' : (depositPaid > 0 ? 'partial' : 'unpaid');
+      const overrideMeta = buildAmountDueEditMeta({
+        note: amountDueOverrideReason || '',
+        currentUser: actingUser,
+        previousAmount: previousAmountDue,
+        newAmount: nextAmountDue,
+        paymentReceivedNow,
+        companyDiscount,
+      });
+
+      const rentalAmountDueUpdate = {
+        deposit_amount: updatedDepositPaid,
+        remaining_amount: nextAmountDue,
+        payment_status: nextAmountDue <= 0 ? 'paid' : (updatedDepositPaid > 0 ? 'partial' : nextPaymentStatus),
+        amount_due_override_reason: JSON.stringify({
+          note: overrideMeta.note || '',
+          paymentReceivedNow: overrideMeta.paymentReceivedNow || 0,
+          companyDiscount: overrideMeta.companyDiscount || 0,
+        }),
+        amount_due_override_edited_by: overrideMeta.editedById || null,
+        amount_due_override_edited_by_name: overrideMeta.editedByName || null,
+        amount_due_override_previous_amount: overrideMeta.previousAmount || 0,
+        amount_due_override_edited_at: overrideMeta.editedAt || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      let { error: updateError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update(rentalAmountDueUpdate)
+        .eq('id', rental.id);
+
+      if (updateError && isMissingRentalAmountDueAuditColumnError(updateError)) {
+        const fallbackUpdate = {
+          deposit_amount: updatedDepositPaid,
+          remaining_amount: nextAmountDue,
+          payment_status: nextAmountDue <= 0 ? 'paid' : (updatedDepositPaid > 0 ? 'partial' : nextPaymentStatus),
+          updated_at: rentalAmountDueUpdate.updated_at,
+        };
+
+        const fallbackResult = await supabase
+          .from('app_4c3a7a6153_rentals')
+          .update(fallbackUpdate)
+          .eq('id', rental.id);
+
+        updateError = fallbackResult.error;
+      }
+
+      if (updateError) throw updateError;
+
+      const { data: updatedRental, error: fetchError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .select(`
+          *,
+          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
+            *,
+            vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
+          ),
+          package:app_4c3a7a6153_rental_km_packages!package_id(*)
+        `)
+        .eq('id', rental.id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      await recordRentalAmountDueEditActivity({
+        rental,
+        currentUser: actingUser,
+        overrideMeta,
+      });
+
+      setRental(updatedRental);
+      setAmountDueAuditMeta({
+        note: overrideMeta.note,
+        editedById: overrideMeta.editedById,
+        editedByName: overrideMeta.editedByName,
+        previousAmount: overrideMeta.previousAmount,
+        newAmount: overrideMeta.newAmount,
+        paymentReceivedNow: overrideMeta.paymentReceivedNow,
+        companyDiscount: overrideMeta.companyDiscount,
+        editedAt: overrideMeta.editedAt,
+      });
+      setIsEditingAmountDue(false);
+      setManualAmountDue('');
+      setAmountDuePaymentReceivedNow('');
+      setAmountDueCompanyDiscount('');
+      setAmountDueOverrideReason('');
+      toast.success(tr('Amount due updated successfully.', 'Montant restant dû mis à jour avec succès.'));
+    } catch (error) {
+      console.error('❌ Error saving amount due:', error);
+      toast.error(
+        tr(
+          `Failed to save amount due. Error: ${error.message}`,
+          `Impossible d'enregistrer le montant restant dû. Erreur : ${error.message}`
+        )
+      );
+    } finally {
+      setIsSavingAmountDue(false);
+    }
+  };
 
   const handleApprovePrice = async () => {
     if (!rental.pending_total_request) {
@@ -10044,35 +11813,69 @@ useEffect(() => {
     };
   }, [rental?.id, rental?.damage_deposit_received_amount, rental?.damage_deposit_received_at]);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50">
-        <AdminModuleHero
-          className="w-full"
-          eyebrow={tr('Rental Details', 'Détails de location')}
-          title={tr('Rental Management', 'Gestion des locations')}
-          description={tr(
-            'Review rental status, customer details, vehicle condition, payment, and operational steps from one place.',
-            'Consultez le statut de la location, les détails client, l’état du véhicule, le paiement et les étapes opérationnelles depuis un seul endroit.'
-          )}
-        />
+  useEffect(() => {
+    let active = true;
 
-        <div className="max-w-7xl mx-auto p-6">
-          <div className="rounded-2xl border border-violet-100 bg-white p-8 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
-            <div className="flex flex-col items-center justify-center text-center">
-              <div className="mb-4 text-4xl animate-spin">⏳</div>
-              <p className="text-base font-medium text-slate-700">
-                {tr('Loading rental details...', 'Chargement des détails de la location...')}
-              </p>
-              <p className="mt-2 text-sm text-slate-500">
-                {tr('Preparing customer, vehicle, and payment data.', 'Préparation des données client, véhicule et paiement.')}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+    const loadAmountDueAuditMeta = async () => {
+      if (!rental?.id) {
+        if (active) setAmountDueAuditMeta(null);
+        return;
+      }
+
+      const inlineAmountDueOverrideMeta = getInlineAmountDueOverrideMeta(rental);
+      if (inlineAmountDueOverrideMeta) {
+        if (active) setAmountDueAuditMeta(inlineAmountDueOverrideMeta);
+        return;
+      }
+
+      try {
+        const data = await loadSharedActivityLogs({ limit: 50 });
+
+        const latestLog = Array.isArray(data)
+          ? data.find((log) => {
+              const logAction = getActivityLogAction(log);
+              return logAction === 'rental_amount_due_edited' && activityLogMatchesRental(log, rental.id);
+            }) || null
+          : null;
+        const meta = getActivityLogMetadata(latestLog);
+
+        if (active && meta) {
+          setAmountDueAuditMeta({
+            note: meta.override_note || '',
+            editedById: meta.edited_by_id || null,
+            editedByName: meta.edited_by_name || latestLog?.user_name || null,
+            previousAmount: Number(meta.previous_amount_due || 0) || 0,
+            newAmount: Number(meta.new_amount_due || rental?.remaining_amount || 0) || 0,
+            paymentReceivedNow: Math.max(0, Number(meta.payment_received_now || 0) || 0),
+            companyDiscount: Math.max(0, Number(meta.company_discount || 0) || 0),
+            editedAt: meta.edited_at || latestLog?.created_at || null,
+          });
+        } else if (active) {
+          setAmountDueAuditMeta((prev) => prev || null);
+        }
+      } catch (auditError) {
+        if (!isActivityLogPermissionError(auditError)) {
+          console.warn('⚠️ Failed to load rental amount due audit log:', auditError);
+        }
+        if (active) {
+          setAmountDueAuditMeta((prev) => prev || null);
+        }
+      }
+    };
+
+    loadAmountDueAuditMeta();
+    return () => {
+      active = false;
+    };
+  }, [
+    rental?.id,
+    rental?.remaining_amount,
+    rental?.amount_due_override_reason,
+    rental?.amount_due_override_edited_by,
+    rental?.amount_due_override_edited_by_name,
+    rental?.amount_due_override_previous_amount,
+    rental?.amount_due_override_edited_at,
+  ]);
 
   // ✅ FIXED: Calculate rental base amount correctly for hourly rentals
   const calculateRentalBaseAmount = () => {
@@ -10101,32 +11904,6 @@ useEffect(() => {
 
 
 
-
-
-
-
-
-
-  // Calculate tier breakdown
-  if (error) return (
-    <div className="flex flex-col items-center justify-center min-h-screen gap-4">
-      <div className="text-center">
-        <p className="text-red-500 text-lg font-semibold mb-2">⚠️ {error}</p>
-        <p className="text-gray-500 text-sm mb-4">{tr('This may be due to too many requests. Please wait a moment and try again.', 'Cela peut être dû à un trop grand nombre de requêtes. Veuillez patienter un instant puis réessayer.')}</p>
-        <Button
-          onClick={() => {
-            setError(null);
-            setLoading(true);
-            loadRentalData(true).finally(() => setLoading(false));
-          }}
-          className="bg-blue-600 hover:bg-blue-700 text-white"
-        >
-          🔄 {tr('Retry', 'Réessayer')}
-        </Button>
-      </div>
-    </div>
-  );
-
   // Button state logic
 
 
@@ -10150,6 +11927,15 @@ useEffect(() => {
     }
   };
 
+  const hasHeldSecurityDocument = Boolean(
+    rental?.damage_deposit_document_url ||
+    rental?.damage_deposit_document_name ||
+    String(rental?.damage_deposit_source || '').toLowerCase() === 'document'
+  );
+  const hasMonetaryDamageDeposit = Math.max(0, Number(rental?.damage_deposit || 0)) > 0;
+  const requiredSecurityAmount = Math.max(0, Number(rental?.damage_deposit || 0));
+  const receivedSecurityAmount = Math.max(0, Number(rental?.damage_deposit_received_amount || 0));
+
   const normalizedLifecycleRental = normalizeRentalLifecycleStatus(rental, rentalTimingSettings);
   const rawDerivedRentalStatus = String(normalizedLifecycleRental?.rental_status || '').toLowerCase();
   const hasHistoricalImpoundStatus = Boolean(
@@ -10159,7 +11945,6 @@ useEffect(() => {
   );
   const operationalRentalStatus = rawDerivedRentalStatus || 'scheduled';
   const displayRentalStatus = hasHistoricalImpoundStatus ? 'impounded' : operationalRentalStatus;
-
   const isActive = operationalRentalStatus === 'active';
   const isScheduled = operationalRentalStatus === 'scheduled';
   const isCompleted = operationalRentalStatus === 'completed';
@@ -10175,14 +11960,6 @@ useEffect(() => {
       Number(rental?.impound_charge_days || 0) > 0
     )
   );
-  const hasHeldSecurityDocument = Boolean(
-    rental?.damage_deposit_document_url ||
-    rental?.damage_deposit_document_name ||
-    String(rental?.damage_deposit_source || '').toLowerCase() === 'document'
-  );
-  const hasMonetaryDamageDeposit = Math.max(0, Number(rental?.damage_deposit || 0)) > 0;
-  const requiredSecurityAmount = Math.max(0, Number(rental?.damage_deposit || 0));
-  const receivedSecurityAmount = Math.max(0, Number(rental?.damage_deposit_received_amount || 0));
   const showSecurityHoldSection = hasHeldSecurityDocument || hasMonetaryDamageDeposit || receivedSecurityAmount > 0;
   const isDocumentDeposit = hasHeldSecurityDocument && !hasMonetaryDamageDeposit;
   const persistedSecurityHoldMethod = ['cash', 'bank_transfer'].includes(String(rental?.damage_deposit_source || '').toLowerCase())
@@ -10311,8 +12088,9 @@ useEffect(() => {
     || (rental?.started_by && !isLikelyUuid(rental.started_by) ? rental.started_by : null)
     || null;
   const rentalElapsedTone = isActive ? getRentalElapsedTone(rental, currentTimeRef.current) : null;
-  const hasOpeningVideo = openingMedia.length > 0 || capturedMedia.length > 0 || showMediaReview;
-  const hasOdometerReading = !!rental.start_odometer;
+  const hasOpeningVideo = openingMedia.length > 0;
+  const hasOpeningDraftMedia = capturedMedia.length > 0 || showMediaReview;
+  const hasOdometerReading = Boolean(rental?.start_odometer);
   const hasStartFuelRecorded = startFuelLevel !== null || rental?.start_fuel_level !== null;
   const hasSecondDriver = (rental?.second_drivers && rental?.second_drivers.length > 0) || 
     rental?.second_driver_name || rental?.second_driver_license || rental?.second_driver_id_image;
@@ -10364,13 +12142,17 @@ useEffect(() => {
           full_name: userProfile.full_name || userProfile.fullName || userProfile.email,
         }
       : null);
-  const isPendingApproval = rental.approval_status === 'pending';
+  const isPendingApproval = rental?.approval_status === 'pending';
   const hasAppliedManualPriceOverride = ['approved', 'auto'].includes(String(rental?.approval_status || '').toLowerCase());
   const isAdmin = canApproveRentalExtensions(resolvedCurrentUser);
   const canEditExtensionEntries = canEditExtensionHistory(resolvedCurrentUser);
   const canCancelImpound = ['owner', 'admin'].includes(resolvedCurrentUser?.role);
   const canEditImpoundDiscount = ['owner', 'admin', 'employee'].includes(resolvedCurrentUser?.role);
   const currentUserRole = String(resolvedCurrentUser?.role || '').toLowerCase();
+  const hasRentalManagementAccess = hasPermission('Rental Management', resolvedCurrentUser);
+  const canHandleLateArrival =
+    ['owner', 'admin', 'employee', 'guide', 'business_owner', 'staff', 'support'].includes(currentUserRole) ||
+    hasRentalManagementAccess;
   const maintenanceChargeLocked = isCompleted && currentUserRole !== 'owner';
   const impoundChargeLocked = isCompleted;
   const canEditRentalPriceOverride = canEditRentalPrice(resolvedCurrentUser);
@@ -10396,6 +12178,15 @@ useEffect(() => {
     (rawPriceOverrideReason && !rawPriceOverrideReason.startsWith('{') && !rawPriceOverrideReason.startsWith('[')
       ? rawPriceOverrideReason
       : '');
+  const hasMeaningfulManualPriceOverride =
+    hasAppliedManualPriceOverride && (
+      Boolean(priceOverrideNoteText) ||
+      (
+        Number(effectivePriceOverrideMeta?.previousPrice || 0) > 0 &&
+        Number(effectivePriceOverrideMeta?.newPrice || 0) > 0 &&
+        Math.abs(Number(effectivePriceOverrideMeta?.previousPrice || 0) - Number(effectivePriceOverrideMeta?.newPrice || 0)) > 0.009
+      )
+    );
 
   const hasCustomerVerificationIdentity = Boolean(
     String(rental?.customer_licence_number || '').trim() ||
@@ -10406,17 +12197,48 @@ useEffect(() => {
     rental?.id_scan_url ||
     (Array.isArray(rental?.customer_uploaded_images) && rental.customer_uploaded_images.length > 0)
   );
-  const hasCustomerVerification = hasCustomerVerificationIdentity && hasCustomerVerificationMedia;
-  const customerVerificationMethod = hasCustomerVerification
-    ? rental?.id_scan_url
-      ? 'id_scan'
-      : 'manual_verification'
-    : null;
-  const customerVerificationMethodLabel = customerVerificationMethod === 'id_scan'
-    ? tr('Verified from ID scan', "Vérifié par scan d'identité")
-    : customerVerificationMethod === 'manual_verification'
-      ? tr('Verified manually', 'Vérifié manuellement')
+  const hasLegacyCustomerVerification = hasCustomerVerificationMedia && hasCustomerVerificationIdentity;
+  const verificationCenterStatus = String(customerVerificationSummary?.status || '').toLowerCase();
+  const hasVerifiedCustomerFromCenter = verificationCenterStatus === 'approved' && Boolean(customerVerificationSummary?.complete);
+  const hasLinkedVerificationCenterRecord = Boolean(customerVerificationEntityId);
+  const canBypassVerificationCenter = hasLinkedVerificationCenterRecord
+    && !verificationCenterStatus
+    && canEditRentalContract(resolvedCurrentUser);
+  const customerVerificationStepComplete = hasLinkedVerificationCenterRecord
+    ? (hasVerifiedCustomerFromCenter || canBypassVerificationCenter)
+    : (hasVerifiedCustomerFromCenter || hasLegacyCustomerVerification);
+  const hasCustomerVerification = customerVerificationStepComplete;
+  const customerVerificationMethod = hasVerifiedCustomerFromCenter
+    ? 'verification_center'
+    : hasLegacyCustomerVerification
+      ? rental?.id_scan_url
+        ? 'id_scan'
+        : 'manual_verification'
       : null;
+  const customerVerificationStepStatusLabel = hasVerifiedCustomerFromCenter
+      ? tr('Customer verified', 'Client vérifié')
+      : hasLinkedVerificationCenterRecord
+        ? canBypassVerificationCenter
+          ? tr('Verification status unavailable', 'Statut de vérification indisponible')
+          : verificationCenterStatus === 'pending'
+            ? tr('Waiting for verification review', 'En attente de vérification')
+            : verificationCenterStatus === 'rejected'
+              ? tr('Verification needs changes', 'La vérification doit être corrigée')
+              : verificationCenterStatus === 'suspended'
+                ? tr('Verification suspended', 'Vérification suspendue')
+                : verificationCenterStatus === 'expired'
+                  ? tr('Verification expired', 'Vérification expirée')
+                  : tr('Verification not completed', 'Vérification non terminée')
+        : hasLegacyCustomerVerification
+          ? tr('Customer Verification completed', 'Vérification client terminée')
+          : tr('Verification not completed', 'Vérification non terminée');
+  const customerVerificationMethodLabel = customerVerificationMethod === 'verification_center'
+    ? tr('Verified in verification center', 'Vérifié dans le centre de vérification')
+    : customerVerificationMethod === 'id_scan'
+      ? tr('Verified from ID scan', "Vérifié par scan d'identité")
+      : customerVerificationMethod === 'manual_verification'
+        ? tr('Verified manually', 'Vérifié manuellement')
+        : null;
   const rawContractSignaturePresent = Boolean(rental?.contract_signed || rental?.signature_url);
   const replacementPauseStartedAtMs = effectiveReplacementPauseStartedAt
     ? new Date(effectiveReplacementPauseStartedAt).getTime()
@@ -10432,8 +12254,11 @@ useEffect(() => {
   const hasEffectiveContractSignature = effectiveReplacementPauseStartedAt
     ? hasReplacementResumeSignature
     : rawContractSignaturePresent;
-  const hasOpeningInspectionCompleted = hasOpeningVideo;
-  const startWorkflowSteps = [
+  const openingMediaRequired = true;
+  const hasOpeningInspectionCompleted = hasOpeningVideo || !openingMediaRequired;
+  const openingMediaSkipped = !hasOpeningVideo && !openingMediaRequired;
+  const paymentSatisfied = isPaymentSufficient();
+  const rawStartWorkflowSteps = [
     {
       key: 'customer_verification',
       label: tr('Customer Verification', 'Vérification client'),
@@ -10453,7 +12278,7 @@ useEffect(() => {
     {
       key: 'payment',
       label: tr('Payment', 'Paiement'),
-      complete: isPaymentSufficient(),
+      complete: paymentSatisfied,
     },
     {
       key: 'start_fuel',
@@ -10466,18 +12291,59 @@ useEffect(() => {
       complete: hasEffectiveContractSignature,
     },
   ];
+  const startWorkflowSteps = rawStartWorkflowSteps.map((step, index) => ({
+    ...step,
+    complete:
+      step.key === 'payment'
+        ? step.complete
+        : index === 0
+        ? step.complete
+        : step.complete && rawStartWorkflowSteps.slice(0, index).every((previousStep) => previousStep.complete),
+  }));
   const startWorkflowStepMap = Object.fromEntries(
     startWorkflowSteps.map((step) => [step.key, step])
   );
-  const nextStartWorkflowStep = startWorkflowSteps.find((step) => !step.complete) || null;
-  const startWorkflowCompletedCount = startWorkflowSteps.filter((step) => step.complete).length;
-  const startWorkflowProgressPercent = Math.round((startWorkflowCompletedCount / startWorkflowSteps.length) * 100);
+  const pinnedStartWorkflowFirstKey = 'customer_verification';
+  const pinnedStartWorkflowSecondKey = 'payment';
+  const pinnedStartWorkflowLastKey = 'contract_signature';
+  const movableStartWorkflowKeys = ['opening_media', 'start_odometer', 'start_fuel'];
+  const orderedMovableCompletedStartWorkflowKeys = movableStartWorkflowKeys.filter(
+    (key) => startWorkflowStepMap[key]?.complete
+  );
+  const orderedMovableIncompleteStartWorkflowKeys = movableStartWorkflowKeys.filter(
+    (key) => !startWorkflowStepMap[key]?.complete
+  );
+  const orderedStartWorkflowStepKeys = [
+    pinnedStartWorkflowFirstKey,
+    pinnedStartWorkflowSecondKey,
+    ...orderedMovableCompletedStartWorkflowKeys,
+    ...orderedMovableIncompleteStartWorkflowKeys,
+    pinnedStartWorkflowLastKey,
+  ];
+  const orderedStartWorkflowSteps = orderedStartWorkflowStepKeys
+    .map((key) => startWorkflowStepMap[key])
+    .filter(Boolean);
+  const startWorkflowDisplayOrderMap = Object.fromEntries(
+    orderedStartWorkflowStepKeys.map((key, index) => [key, index])
+  );
+  const getStartWorkflowDisplayNumber = (stepKey) => {
+    if (stepKey === pinnedStartWorkflowLastKey) return 6;
+    return (startWorkflowDisplayOrderMap[stepKey] ?? 0) + 1;
+  };
+  const openingInspectionStepComplete = Boolean(startWorkflowStepMap.opening_media?.complete);
+  const startingOdometerStepComplete = Boolean(startWorkflowStepMap.start_odometer?.complete);
+  const paymentStepComplete = Boolean(startWorkflowStepMap.payment?.complete);
+  const startFuelStepComplete = Boolean(startWorkflowStepMap.start_fuel?.complete);
+  const contractSignatureStepComplete = Boolean(startWorkflowStepMap.contract_signature?.complete);
+  const nextStartWorkflowStep = orderedStartWorkflowSteps.find((step) => !step.complete) || null;
+  const startWorkflowCompletedCount = orderedStartWorkflowSteps.filter((step) => step.complete).length;
+  const startWorkflowProgressPercent = Math.round((startWorkflowCompletedCount / orderedStartWorkflowSteps.length) * 100);
   const activeStartWorkflowStepKey = nextStartWorkflowStep?.key || 'contract_signature';
   const isStartStepActive = (stepKey) => activeStartWorkflowStepKey === stepKey;
   const isStartStepLocked = (stepKey) => {
-    const stepIndex = startWorkflowSteps.findIndex((step) => step.key === stepKey);
+    const stepIndex = orderedStartWorkflowSteps.findIndex((step) => step.key === stepKey);
     if (stepIndex <= 0) return false;
-    return startWorkflowSteps.slice(0, stepIndex).some((step) => !step.complete);
+    return orderedStartWorkflowSteps.slice(0, stepIndex).some((step) => !step.complete);
   };
   const getStartStepContainerClass = (stepKey, complete) => {
     if (complete && !isStartStepActive(stepKey)) {
@@ -10494,9 +12360,11 @@ useEffect(() => {
   const getStartStepSummary = (stepKey) => {
     switch (stepKey) {
       case 'customer_verification':
-        return tr('Customer Verification completed', 'Vérification client terminée');
+        return customerVerificationStepStatusLabel;
       case 'opening_media':
-        return tr('Vehicle & Documents inspection completed', 'Inspection véhicule et documents terminée');
+        return openingMediaSkipped
+          ? tr('Vehicle media skipped (optional)', 'Médias du véhicule ignorés (optionnel)')
+          : tr('Vehicle & Documents inspection completed', 'Inspection véhicule et documents terminée');
       case 'start_odometer':
         return tr('Starting Odometer completed', 'Kilométrage de départ terminé');
       case 'payment':
@@ -10534,16 +12402,11 @@ useEffect(() => {
     (actor) => actor?.userId !== resolvedCurrentUser?.id && actor?.presenceKey !== currentWorkflowPresenceKey
   );
   const primaryStartWorkflowActor = activeStartWorkflowActors[0] || null;
-  const isStartWorkflowSoftLocked =
-    isScheduled &&
-    !isActive &&
-    !isCompleted &&
-    Boolean(primaryStartWorkflowActor) &&
-    !startWorkflowTakeover;
+  const isStartWorkflowSoftLocked = false;
   const startWorkflowHandlerName = primaryStartWorkflowActor?.name || tr('Another staff member', 'Un autre membre du personnel');
   const startWorkflowLockTitle = tr(
-    `${startWorkflowHandlerName} is currently handling the start workflow.`,
-    `${startWorkflowHandlerName} gère actuellement le démarrage.`
+    `${startWorkflowHandlerName} also has this workflow open.`,
+    `${startWorkflowHandlerName} a également ce workflow ouvert.`
   );
   const finishWorkflowStepsModel = [
     {
@@ -10582,18 +12445,14 @@ useEffect(() => {
     (actor) => actor?.userId !== resolvedCurrentUser?.id && actor?.presenceKey !== currentWorkflowPresenceKey
   );
   const primaryFinishWorkflowActor = activeFinishWorkflowActors[0] || null;
-  const isFinishWorkflowSoftLocked =
-    isActive &&
-    finishRentalSteps.showWorkflow &&
-    Boolean(primaryFinishWorkflowActor) &&
-    !finishWorkflowTakeover;
+  const isFinishWorkflowSoftLocked = false;
   const finishWorkflowHandlerName = primaryFinishWorkflowActor?.name || tr('Another staff member', 'Un autre membre du personnel');
   const finishWorkflowLockTitle = tr(
-    `${finishWorkflowHandlerName} is currently handling the finish workflow.`,
-    `${finishWorkflowHandlerName} gère actuellement la clôture.`
+    `${finishWorkflowHandlerName} also has the finish workflow open.`,
+    `${finishWorkflowHandlerName} a également le workflow de clôture ouvert.`
   );
 
-  const canStartRental = startWorkflowSteps.every((step) => step.complete);
+  const canStartRental = hasEffectiveContractSignature || startWorkflowSteps.every((step) => step.complete);
   const isReplacementResumeFlow = Boolean(effectiveReplacementPauseStartedAt);
   const scheduledTimingState = getScheduledRentalTimingState(rental?.rental_start_date, rentalTimingSettings, new Date());
   const shouldShowLateArrivalBanner =
@@ -10601,6 +12460,12 @@ useEffect(() => {
     String(rental?.status_change_reason || '').toLowerCase() !== 'customer_arrived' &&
     ['scheduled', 'no_show_review'].includes(operationalRentalStatus) &&
     Boolean(scheduledTimingState?.isSoftLocked);
+  const hasVisibleMoreActions = Boolean(
+    canManageScheduledRental ||
+    canDeleteScheduledRental ||
+    isActive ||
+    (shouldShowLateArrivalBanner && canHandleLateArrival)
+  );
   const canSignContract =
     startWorkflowStepMap.customer_verification?.complete &&
     startWorkflowStepMap.opening_media?.complete &&
@@ -10608,13 +12473,21 @@ useEffect(() => {
     startWorkflowStepMap.payment?.complete &&
     startWorkflowStepMap.start_fuel?.complete &&
     !startWorkflowStepMap.contract_signature?.complete;
+  const canEditStartOdometerBeforeSignature =
+    hasOdometerReading &&
+    !hasEffectiveContractSignature &&
+    !isStartWorkflowSoftLocked;
   const canSendWhatsApp = hasEffectiveContractSignature;
   const canGenerateInvoice = hasEffectiveContractSignature;
   const canShareContractDocument = hasEffectiveContractSignature;
   const canShareReceiptDocument = Boolean(rental);
+  const hasCustomerEmailForDocuments = Boolean(
+    String(receiptRentalData?.customer_email || contractRentalData?.customer_email || rental?.customer_email || '').trim()
+  );
+  const canSendEmailDocuments = hasCustomerEmailForDocuments && (canShareContractDocument || canShareReceiptDocument);
   const rentalSourceChip = getRentalSourceChip(rental);
   const showStartChecklistWorkflow =
-    (isScheduled && !hasEffectiveContractSignature) || isReplacementResumeFlow;
+    isReplacementResumeFlow || (isScheduled && !isActive && !isCompleted);
   const hasVehicleReplacementHistory = vehicleReplacementHistory.length > 0;
   const previousVehicleHistoryEntry = vehicleReplacementHistory.length > 1
     ? vehicleReplacementHistory[vehicleReplacementHistory.length - 2]
@@ -10629,6 +12502,111 @@ useEffect(() => {
     : isWorkflowDisabled()
       ? tr('Rental start is locked until price override is approved by admin', 'Le démarrage de la location est bloqué jusqu’à l’approbation du prix par un administrateur')
       : startWorkflowNextStepHint;
+  const showLightReadyToStartMobile = isLightRentalDetailsMode && showStartChecklistWorkflow;
+  const showLightActiveRentalMobile = isLightRentalDetailsMode && isActive && !finishRentalSteps.showWorkflow;
+  const showLightFinishRentalMobile = isLightRentalDetailsMode && isActive && finishRentalSteps.showWorkflow;
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!showLightReadyToStartMobile) return;
+    if (window.location.hash !== '#ready-to-start') return;
+
+    const timeoutId = window.setTimeout(() => {
+      scrollToElementWithHeaderOffset(lightReadyToStartSectionRef.current);
+    }, 120);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [showLightReadyToStartMobile, scrollToElementWithHeaderOffset]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!showLightFinishRentalMobile) return;
+
+    const timeoutId = window.setTimeout(() => {
+      scrollToElementWithHeaderOffset(lightFinishSectionRef.current);
+    }, 120);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [showLightFinishRentalMobile, scrollToElementWithHeaderOffset]);
+
+  useEffect(() => {
+    if (!isEditingOdometer) {
+      setShowLightStartOdometerModal(false);
+    }
+  }, [isEditingOdometer]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
+          <section className="space-y-4">
+            <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+                    <FileText className="h-6 w-6 text-violet-700" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                      {tr('Rental Details', 'Détails de location')}
+                    </p>
+                    <h1 className="mt-2 text-[2rem] font-bold tracking-[-0.03em] text-slate-950 sm:text-[2.5rem]">
+                      {tr('Rental Details', 'Détails de location')}
+                    </h1>
+                    <p className="mt-2 text-sm text-slate-500 sm:text-base">
+                      {tr(
+                        'Preparing customer, vehicle, payment, and operational context.',
+                        'Préparation du contexte client, véhicule, paiement et opérations.'
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <div className="hidden sm:flex items-center gap-3">
+                  <div className="h-11 w-32 animate-pulse rounded-2xl bg-slate-100" />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_45px_rgba(15,23,42,0.06)] sm:p-8">
+              <div className="space-y-5">
+                <div className="h-3 w-36 animate-pulse rounded-full bg-violet-100" />
+                <div className="h-10 w-72 max-w-full animate-pulse rounded-2xl bg-slate-100" />
+                <div className="h-4 w-full max-w-xl animate-pulse rounded-full bg-slate-100" />
+                <div className="grid gap-4 lg:grid-cols-3">
+                  <div className="h-40 animate-pulse rounded-[1.75rem] border border-slate-200 bg-white shadow-[0_14px_34px_rgba(15,23,42,0.05)]" />
+                  <div className="h-40 animate-pulse rounded-[1.75rem] border border-slate-200 bg-white shadow-[0_14px_34px_rgba(15,23,42,0.05)]" />
+                  <div className="h-40 animate-pulse rounded-[1.75rem] border border-slate-200 bg-white shadow-[0_14px_34px_rgba(15,23,42,0.05)]" />
+                </div>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="h-64 animate-pulse rounded-[1.75rem] border border-slate-200 bg-white shadow-[0_14px_34px_rgba(15,23,42,0.05)]" />
+                  <div className="h-64 animate-pulse rounded-[1.75rem] border border-slate-200 bg-white shadow-[0_14px_34px_rgba(15,23,42,0.05)]" />
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) return (
+    <div className="flex flex-col items-center justify-center min-h-screen gap-4">
+      <div className="text-center">
+        <p className="text-red-500 text-lg font-semibold mb-2">⚠️ {error}</p>
+        <p className="text-gray-500 text-sm mb-4">{tr('This may be due to too many requests. Please wait a moment and try again.', 'Cela peut être dû à un trop grand nombre de requêtes. Veuillez patienter un instant puis réessayer.')}</p>
+        <Button
+          onClick={() => {
+            setError(null);
+            setLoading(true);
+            loadRentalData(true).finally(() => setLoading(false));
+          }}
+          className="bg-blue-600 hover:bg-blue-700 text-white"
+        >
+          🔄 {tr('Retry', 'Réessayer')}
+        </Button>
+      </div>
+    </div>
+  );
 
   if (!rental) return <div className="flex items-center justify-center min-h-screen"><p>{tr('Rental not found', 'Location introuvable')}</p></div>;
 
@@ -10650,18 +12628,902 @@ useEffect(() => {
   };
 
   const openCustomerVerificationForm = () => {
+    if (customerVerificationStepComplete) {
+      return;
+    }
+
+    const verificationWizardVariant = String(rental?.rental_source || '').toLowerCase().includes('light')
+      ? 'light'
+      : 'default';
+
     navigate('/admin/rentals', {
       state: {
         openForm: true,
         editingRental: rental,
         forceStep: 1,
         requireCustomerVerification: true,
+        customerVerificationCaptureOnly: true,
+        wizardUiVariant: verificationWizardVariant,
         customerScanNote: tr(
           'Complete customer license or ID verification before starting this rental.',
-          'Complétez la vérification du permis ou de la pièce d’identité du client avant de démarrer cette location.'
+          "Complétez la vérification du permis ou de la pièce d'identité du client avant de démarrer cette location."
         ),
       },
     });
+  };
+
+  const openLightStartOdometerModal = () => {
+    setStartOdometer(displayedStartingOdometer > 0 ? String(displayedStartingOdometer) : '');
+    setIsEditingOdometer(true);
+    setShowLightStartOdometerModal(true);
+  };
+
+  const lightReadyToStartStartDisabled =
+    !canStartRental ||
+    isStartWorkflowSoftLocked ||
+    isWorkflowDisabled() ||
+    isStartingRental ||
+    ['expired', 'no_show_review'].includes(String(rental?.rental_status || '').toLowerCase());
+
+  const lightStartSummaryRows = [
+    { label: tr('Customer', 'Client'), value: rental?.customer_name || tr('Not set', 'Non défini') },
+    { label: tr('Schedule', 'Horaire'), value: rental?.rental_start_date ? formatRentalScheduleDateTime(rental.rental_start_date) : tr('Not set', 'Non défini') },
+    { label: tr('Payment', 'Paiement'), value: dynamicPaymentState?.label || tr('Pending', 'En attente') },
+    {
+      label: tr('Security', 'Caution'),
+      value: rental?.damage_deposit
+        ? `${formatCurrency(rental.damage_deposit)} MAD`
+        : tr('None recorded', 'Aucune enregistrée'),
+    },
+  ];
+  const lightActiveSummaryRows = [
+    { label: tr('Customer', 'Client'), value: rental?.customer_name || tr('Not set', 'Non défini') },
+    {
+      label: tr('Vehicle', 'Véhicule'),
+      value: [rental?.vehicle?.plate_number, rental?.vehicle?.model || rental?.vehicle?.name]
+        .filter(Boolean)
+        .join(' • ') || tr('Not set', 'Non défini'),
+    },
+    {
+      label: tr('Schedule', 'Horaire'),
+      value:
+        rental?.rental_start_date && rental?.rental_end_date
+          ? `${formatRentalScheduleDateTime(rental.rental_start_date)} → ${formatRentalScheduleDateTime(rental.rental_end_date)}`
+          : tr('Not set', 'Non défini'),
+    },
+    { label: tr('Payment', 'Paiement'), value: dynamicPaymentState?.label || tr('Pending', 'En attente') },
+    {
+      label: tr('Security', 'Caution'),
+      value: rental?.damage_deposit
+        ? `${formatCurrency(rental.damage_deposit)} MAD`
+        : tr('None recorded', 'Aucune enregistrée'),
+    },
+  ];
+  const lightFinishCanComplete =
+    closingInspectionStepComplete &&
+    finishRentalSteps.endOdometerComplete &&
+    finishRentalSteps.endFuelComplete &&
+    !isFinishWorkflowSoftLocked;
+  const lightReadyToStartCardsByKey = {
+    customer_verification: {
+      key: 'customer_verification',
+      title: tr('Customer verification', 'Vérification client'),
+      complete: customerVerificationStepComplete,
+      active: isStartStepActive('customer_verification'),
+      detail: customerVerificationStepStatusLabel,
+      actionLabel: customerVerificationStepComplete
+        ? tr('Verified', 'Vérifié')
+        : hasLinkedVerificationCenterRecord && verificationCenterStatus && verificationCenterStatus !== 'approved'
+          ? tr('Verify customer', 'Vérifier le client')
+          : tr('Verify customer', 'Vérifier le client'),
+      onAction: openCustomerVerificationForm,
+      disabled: isStartWorkflowSoftLocked || customerVerificationStepComplete,
+      icon: FileImage,
+    },
+    payment: {
+      key: 'payment',
+      title: tr('Payment', 'Paiement'),
+      complete: paymentStepComplete,
+      active: isStartStepActive('payment'),
+      detail: paymentStepComplete
+        ? tr('Payment completed', 'Paiement terminé')
+        : isPendingApproval && !isAdmin
+          ? tr('Price override pending approval.', 'Modification de prix en attente d’approbation.')
+          : `${tr('Remaining', 'Restant')}: ${formatCurrency(paymentStepRemainingBalance)} MAD`,
+      actionLabel: paymentStepComplete
+        ? tr('Completed', 'Terminé')
+        : tr('Mark paid', 'Marquer payé'),
+      onAction: markAsPaid,
+      disabled: isStartWorkflowSoftLocked || !isStartStepActive('payment') || paymentStepComplete || (isPendingApproval && !isAdmin),
+      icon: CreditCard,
+    },
+    opening_media: {
+      key: 'opening_media',
+      title: tr('Vehicle inspection', 'Inspection véhicule'),
+      complete: openingInspectionStepComplete,
+      active: isStartStepActive('opening_media'),
+      detail: openingInspectionStepComplete
+        ? getStartStepSummary('opening_media')
+        : tr('Capture at least one opening photo.', 'Capturez au moins une photo de départ.'),
+      actionLabel: openingInspectionStepComplete
+        ? tr('Completed', 'Terminé')
+        : tr('Open inspection', "Ouvrir l'inspection"),
+      onAction: () => setOpeningModalOpen(true),
+      disabled: isStartWorkflowSoftLocked || !isStartStepActive('opening_media'),
+      icon: Camera,
+    },
+    start_odometer: {
+      key: 'start_odometer',
+      title: tr('Starting odometer', 'Kilométrage de départ'),
+      complete: startingOdometerStepComplete,
+      active: isStartStepActive('start_odometer'),
+      detail: startingOdometerStepComplete
+        ? `${displayedStartingOdometer} km`
+        : tr('Add the vehicle reading.', 'Ajoutez le relevé du véhicule.'),
+      actionLabel: startingOdometerStepComplete
+        ? tr('Edit reading', 'Modifier le relevé')
+        : tr('Add reading', 'Ajouter le relevé'),
+      onAction: isLightRentalDetailsMode ? openLightStartOdometerModal : () => setIsEditingOdometer(true),
+      disabled: isStartWorkflowSoftLocked || (!isStartStepActive('start_odometer') && !canEditStartOdometerBeforeSignature),
+      icon: Gauge,
+    },
+    start_fuel: {
+      key: 'start_fuel',
+      title: tr('Fuel level', 'Niveau de carburant'),
+      complete: startFuelStepComplete,
+      active: isStartStepActive('start_fuel'),
+      detail: startFuelStepComplete
+        ? getStartStepSummary('start_fuel')
+        : tr('Record the departure fuel level.', 'Enregistrez le niveau de carburant de départ.'),
+      actionLabel: startFuelStepComplete
+        ? tr('Completed', 'Terminé')
+        : tr('Record fuel', 'Enregistrer le carburant'),
+      onAction: openStartFuelModal,
+      disabled: isStartWorkflowSoftLocked || !isStartStepActive('start_fuel'),
+      icon: Fuel,
+    },
+    contract_signature: {
+      key: 'contract_signature',
+      title: tr('Sign contract', 'Signer le contrat'),
+      complete: contractSignatureStepComplete,
+      active: isStartStepActive('contract_signature'),
+      detail: contractSignatureStepComplete
+        ? tr('Contract signed', 'Contrat signé')
+        : tr('Customer signature is still required.', 'La signature du client est encore requise.'),
+      actionLabel: contractSignatureStepComplete
+        ? tr('Completed', 'Terminé')
+        : tr('Sign contract', 'Signer le contrat'),
+      onAction: openSignatureFlow,
+      disabled: isStartWorkflowSoftLocked || !isStartStepActive('contract_signature') || !canSignContract,
+      icon: FileSignature,
+    },
+  };
+  const lightReadyToStartCards = orderedStartWorkflowStepKeys
+    .map((key) => {
+      const baseCard = lightReadyToStartCardsByKey[key];
+      if (!baseCard) return null;
+      return {
+        ...baseCard,
+        number: getStartWorkflowDisplayNumber(key),
+      };
+    })
+    .filter(Boolean);
+
+  const renderLightReadyToStartMobile = () => (
+    <div ref={lightReadyToStartSectionRef} id="ready-to-start" className="mb-6">
+      <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">
+              {isReplacementResumeFlow
+                ? tr('Ready to Resume', 'Prêt à reprendre')
+                : tr('Ready to Start', 'Prêt à démarrer')}
+            </p>
+            <h3 className="mt-2 text-xl font-bold text-slate-900">
+              {isReplacementResumeFlow
+                ? tr('Replacement vehicle checklist', 'Checklist véhicule de remplacement')
+                : tr('Start rental flow', 'Flux de démarrage')}
+            </h3>
+            <p className="mt-2 text-sm text-slate-600">
+              {startWorkflowNextStepHint}
+            </p>
+          </div>
+          <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-violet-700 shadow-sm">
+            {startWorkflowCompletedCount}/{startWorkflowSteps.length}
+          </div>
+        </div>
+
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 transition-all duration-300"
+            style={{ width: `${startWorkflowProgressPercent}%` }}
+          />
+        </div>
+
+        <div className="mt-4 space-y-3">
+          {lightReadyToStartCards.map((step) => {
+            const StepIcon = step.icon;
+            return (
+              <div
+                key={step.key}
+                className={`rounded-[22px] border p-4 transition-all ${
+                  step.complete
+                    ? 'border-emerald-200 bg-emerald-50/90'
+                    : step.active
+                      ? 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
+                      : 'border-slate-200 bg-white/90'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
+                    step.complete ? 'bg-emerald-500 text-white' : step.active ? 'bg-violet-600 text-white' : 'bg-slate-200 text-slate-600'
+                  }`}>
+                    {step.complete ? <CheckCircle className="h-5 w-5" /> : <span className="text-sm font-bold">{step.number}</span>}
+                  </div>
+                  <div className="min-w-0 flex-1">
+	                    <div className="flex items-start justify-between gap-3">
+	                      <div className="min-w-0">
+	                        <div className="flex items-center gap-2">
+	                          <p className="text-sm font-bold text-slate-900">{step.title}</p>
+	                          {step.key === 'start_odometer' && canEditStartOdometerBeforeSignature && (
+	                            <button
+	                              type="button"
+	                              onClick={step.onAction}
+	                              className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border border-emerald-200 bg-white text-emerald-700 shadow-sm transition hover:bg-emerald-50"
+	                              aria-label={tr('Edit starting odometer', 'Modifier le kilométrage de départ')}
+	                              title={tr('Edit starting odometer', 'Modifier le kilométrage de départ')}
+	                            >
+	                              <Edit className="h-4 w-4" />
+	                            </button>
+	                          )}
+	                        </div>
+	                        <p className={`mt-1 text-xs ${step.complete ? 'text-emerald-700' : 'text-slate-500'}`}>{step.detail}</p>
+	                      </div>
+                      <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${step.complete ? 'text-emerald-600' : step.active ? 'text-violet-600' : 'text-slate-400'}`} />
+                    </div>
+                    {(!step.complete || (step.key === 'start_odometer' && canEditStartOdometerBeforeSignature)) && (
+                      <button
+                        type="button"
+                        onClick={step.onAction}
+                        disabled={step.disabled}
+                        className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 ${
+                          step.complete
+                            ? 'border border-emerald-200 bg-white text-emerald-700 shadow-sm'
+                            : 'bg-violet-600 text-white'
+                        }`}
+                      >
+                        {step.actionLabel}
+                      </button>
+                    )}
+                    {step.key === 'start_odometer' && isEditingOdometer && step.active && !isLightRentalDetailsMode && (
+                      <div className="mt-3 space-y-2">
+                        <input
+                          type="number"
+                          value={startOdometer}
+                          onChange={(e) => setStartOdometer(e.target.value)}
+                          placeholder={tr('Enter odometer reading (km)', "Saisissez le kilométrage (km)")}
+                          className="w-full rounded-xl border border-slate-200 px-3 py-3 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                          min="0"
+                          step="1"
+                          disabled={isStartWorkflowSoftLocked}
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={handleSaveOdometer}
+                            size="sm"
+                            disabled={isStartWorkflowSoftLocked || isSavingOdometer}
+                            className="flex-1 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700"
+                            title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : undefined}
+                          >
+                            <Save className="mr-1.5 h-3.5 w-3.5" />
+                            {isSavingOdometer ? tr('Saving...', 'Enregistrement...') : tr('Save', 'Enregistrer')}
+                          </Button>
+                          <Button
+                            onClick={() => {
+                              setIsEditingOdometer(false);
+                              setStartOdometer(displayedStartingOdometer > 0 ? String(displayedStartingOdometer) : '');
+                            }}
+                            variant="outline"
+                            size="sm"
+                            className="flex-1 rounded-xl"
+                          >
+                            <X className="mr-1.5 h-3.5 w-3.5" />
+                            {tr('Cancel', 'Annuler')}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mt-4 overflow-hidden rounded-[22px] border border-slate-200 bg-white">
+          <button
+            type="button"
+            onClick={() => setLightStartSummaryOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+          >
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('Rental summary', 'Résumé location')}
+              </p>
+              <p className="mt-1 text-sm font-bold text-slate-900">
+                {tr('Customer, schedule, payment, and security', 'Client, horaire, paiement et caution')}
+              </p>
+            </div>
+            <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+              {lightStartSummaryOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </div>
+          </button>
+          {lightStartSummaryOpen && (
+            <div className="space-y-2 border-t border-slate-100 px-4 pb-4 pt-3 text-sm">
+              {lightStartSummaryRows.map((row) => (
+                <div key={row.label} className="flex items-start justify-between gap-4">
+                  <span className="text-slate-500">{row.label}</span>
+                  <span className="text-right font-semibold text-slate-900">{row.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 rounded-2xl border border-violet-100 bg-white/90 px-4 py-3 text-xs text-slate-500 shadow-sm">
+          {startWorkflowActionHint}
+        </div>
+      </div>
+
+      <div className={LIGHT_RENTAL_ACTION_DOCK_CLASS}>
+        <button
+          type="button"
+          onClick={startRental}
+          disabled={lightReadyToStartStartDisabled}
+          title={startWorkflowActionHint}
+          className={`flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-4 text-base font-bold transition ${
+            lightReadyToStartStartDisabled
+              ? 'cursor-not-allowed bg-slate-200 text-slate-500'
+              : 'bg-violet-700 text-white shadow-[0_14px_32px_rgba(76,29,149,0.24)] hover:bg-violet-800'
+          }`}
+        >
+          <PlayCircle className="h-5 w-5" />
+          {isStartingRental
+            ? (isReplacementResumeFlow ? tr('Resuming...', 'Reprise...') : tr('Starting...', 'Démarrage...'))
+            : (isReplacementResumeFlow ? tr('Resume rental', 'Reprendre la location') : tr('Start now', 'Démarrer maintenant'))}
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderLightActiveRentalMobile = () => (
+    <div className="mb-6 lg:hidden">
+      <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">
+              {tr('Rental live', 'Location en cours')}
+            </p>
+            <h3 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-slate-900">
+              {effectiveReplacementPauseStartedAt
+                ? tr('Rental paused for replacement', 'Location en pause pour remplacement')
+                : tr('Rental timer', 'Minuteur de location')}
+            </h3>
+            <p className="mt-2 text-sm text-slate-600">
+              {effectiveReplacementPauseStartedAt
+                ? tr('Resume the rental when the replacement vehicle is ready.', 'Reprenez la location lorsque le véhicule de remplacement est prêt.')
+                : tr('The timer is now the main operational focus.', 'Le minuteur devient maintenant la priorité opérationnelle.')}
+            </p>
+          </div>
+          <div className={`rounded-full px-3 py-1 text-xs font-semibold shadow-sm ${
+            effectiveReplacementPauseStartedAt
+              ? 'bg-amber-100 text-amber-700'
+              : 'bg-emerald-100 text-emerald-700'
+          }`}>
+            {effectiveReplacementPauseStartedAt
+              ? tr('Paused', 'En pause')
+              : tr('Active', 'Active')}
+          </div>
+        </div>
+
+        {isImpounded && (
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
+            <p className="font-semibold">{tr('Vehicle is impounded.', 'Le véhicule est en fourrière.')}</p>
+            <p className="mt-1 text-xs text-amber-800">
+              {tr('The rental timer continues while the vehicle is impounded.', 'Le minuteur de location continue pendant la mise en fourrière du véhicule.')}
+            </p>
+          </div>
+        )}
+
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="min-h-[140px] rounded-[22px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+            <div className="mb-3 flex items-center gap-2">
+              <PlayCircle className={`h-4 w-4 flex-shrink-0 ${rentalElapsedTone?.iconClass || 'text-emerald-600'}`} />
+              <p className="text-sm font-medium text-slate-600">
+                {tr('Time elapsed', 'Temps écoulé')}
+              </p>
+            </div>
+            <p
+              className={`mobile-timer-value mt-1 block whitespace-nowrap text-3xl font-extrabold leading-[0.92] tracking-[-0.05em] tabular-nums ${rentalElapsedTone?.valueClass || 'text-emerald-600'}`}
+            >
+              {elapsedTime || '00:00:00'}
+            </p>
+            {rentalElapsedTone?.expired ? (
+              <p className={`mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${rentalElapsedTone.labelClass}`}>
+                {tr('Expired', 'Expirée')}
+              </p>
+            ) : null}
+          </div>
+          <div className="min-h-[140px] rounded-[22px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+            <div className="mb-3 flex items-center gap-2">
+              <Clock className="h-4 w-4 flex-shrink-0 text-blue-600" />
+              <p className="text-sm font-medium text-slate-600">
+                {tr('Time remaining', 'Temps restant')}
+              </p>
+            </div>
+            <p
+              className={`mobile-timer-value mt-1 block whitespace-nowrap text-3xl font-extrabold leading-[0.92] tracking-[-0.05em] tabular-nums ${
+                timeRemaining === 'Expired' ? 'text-rose-600' : 'text-blue-600'
+              }`}
+            >
+              {timeRemaining || 'N/A'}
+            </p>
+            {extensions.length > 0 ? (
+              <p className="mt-2 text-xs text-slate-500">
+                {tr('Extended by', 'Prolongée de')} {extensions.filter((e) => e.status === 'approved').reduce((sum, e) => sum + (parseFloat(e.extension_hours) || 0), 0)}h
+              </p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-hidden rounded-[22px] border border-slate-200 bg-white">
+          <button
+            type="button"
+            onClick={() => setLightActiveSummaryOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+          >
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('Rental summary', 'Résumé location')}
+              </p>
+              <p className="mt-1 text-sm font-bold text-slate-900">
+                {tr('Customer, vehicle, schedule, payment, and security', 'Client, véhicule, horaire, paiement et caution')}
+              </p>
+            </div>
+            <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+              {lightActiveSummaryOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </div>
+          </button>
+          {lightActiveSummaryOpen && (
+            <div className="space-y-2 border-t border-slate-100 px-4 pb-4 pt-3 text-sm">
+              {lightActiveSummaryRows.map((row) => (
+                <div key={row.label} className="flex items-start justify-between gap-4">
+                  <span className="text-slate-500">{row.label}</span>
+                  <span className="text-right font-semibold text-slate-900">{row.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {!effectiveReplacementPauseStartedAt && closingMedia.length === 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingExtension(null);
+                setExtensionModalOpen(true);
+              }}
+              className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 shadow-sm"
+            >
+              <Clock className="h-3.5 w-3.5" />
+              {tr('Extend time', 'Prolonger')}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={openReplaceVehicleDialog}
+            disabled={isReplacingVehicle || showReplaceVehicleDialog}
+            className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Wrench className="h-3.5 w-3.5" />
+            {tr('Replace vehicle', 'Remplacer le véhicule')}
+          </button>
+        </div>
+      </div>
+
+      <div className={LIGHT_RENTAL_ACTION_DOCK_CLASS}>
+        <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-50 p-2">
+          <div className="rounded-2xl bg-white px-3 py-3 shadow-sm">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+              {tr('Elapsed', 'Écoulé')}
+            </p>
+            <p
+              className={`light-rental-footer-timer-value mt-2 font-extrabold tabular-nums ${rentalElapsedTone?.valueClass || 'text-emerald-600'}`}
+              style={{ fontSize: '1.5rem', lineHeight: '0.98', letterSpacing: '-0.04em' }}
+            >
+              {elapsedTime || '00:00:00'}
+            </p>
+          </div>
+          <div className="rounded-2xl bg-white px-3 py-3 shadow-sm">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+              {tr('Remaining', 'Restant')}
+            </p>
+            <p
+              className={`light-rental-footer-timer-value mt-2 font-extrabold tabular-nums ${timeRemaining === 'Expired' ? 'text-rose-600' : 'text-blue-600'}`}
+              style={{ fontSize: '1.5rem', lineHeight: '0.98', letterSpacing: '-0.04em' }}
+            >
+              {timeRemaining || 'N/A'}
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            if (effectiveReplacementPauseStartedAt) {
+              if (canStartRental && !isStartWorkflowSoftLocked && !isWorkflowDisabled() && !isStartingRental) {
+                startRental();
+                return;
+              }
+              openReplacementResumeWorkflow();
+              return;
+            }
+            void openFinishWorkflow();
+          }}
+          disabled={effectiveReplacementPauseStartedAt ? (!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental) : false}
+          title={effectiveReplacementPauseStartedAt ? startWorkflowActionHint : undefined}
+          className={`mt-3 flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-4 text-base font-bold transition ${
+            effectiveReplacementPauseStartedAt
+              ? (!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental
+                ? 'cursor-not-allowed bg-slate-200 text-slate-500'
+                : 'bg-violet-700 text-white shadow-[0_14px_32px_rgba(76,29,149,0.24)] hover:bg-violet-800')
+              : 'bg-violet-700 text-white shadow-[0_14px_32px_rgba(76,29,149,0.24)] hover:bg-violet-800'
+          }`}
+        >
+          {effectiveReplacementPauseStartedAt ? <PlayCircle className="h-5 w-5" /> : <StopCircle className="h-5 w-5" />}
+          {effectiveReplacementPauseStartedAt
+            ? (isStartingRental ? tr('Resuming...', 'Reprise...') : tr('Resume rental', 'Reprendre la location'))
+            : tr('End now', 'Terminer maintenant')}
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderLightFinishRentalMobile = () => {
+    const finishSummaryRows = [
+      { label: tr('Customer', 'Client'), value: rental?.customer_name || tr('Not set', 'Non défini') },
+      {
+        label: tr('Vehicle', 'Véhicule'),
+        value: [rental?.vehicle?.plate_number, rental?.vehicle?.model || rental?.vehicle?.name]
+          .filter(Boolean)
+          .join(' • ') || tr('Not set', 'Non défini'),
+      },
+      {
+        label: tr('Return location', 'Lieu de retour'),
+        value: selectedReturnLocationName || tr('Select location below', 'Sélectionnez un lieu ci-dessous'),
+      },
+      { label: tr('Payment', 'Paiement'), value: dynamicPaymentState?.label || tr('Pending', 'En attente') },
+      {
+        label: tr('Security', 'Caution'),
+        value: rental?.damage_deposit
+          ? `${formatCurrency(rental.damage_deposit)} MAD`
+          : tr('None recorded', 'Aucune enregistrée'),
+      },
+    ];
+
+    const inspectionNeedsAdvancedView = reportRequired || reportSaved || reportHasUnsavedChanges || reportWorkflowLocked;
+
+    return (
+      <div ref={lightFinishSectionRef} className="mb-6 lg:hidden">
+        <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)]">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">
+                {tr('Ready to finish', 'Prêt à terminer')}
+              </p>
+              <h3 className="mt-2 text-xl font-bold text-slate-900">
+                {tr('Close rental flow', 'Flux de clôture')}
+              </h3>
+              <p className="mt-2 text-sm text-slate-600">
+                {nextFinishWorkflowStep ? finishWorkflowNextStepHint : tr('All finish steps are complete.', 'Toutes les étapes de clôture sont terminées.')}
+              </p>
+            </div>
+            <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-violet-700 shadow-sm">
+              {finishWorkflowStepsModel.filter((step) => step.complete).length}/{finishWorkflowStepsModel.length}
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-[22px] border border-violet-100 bg-white/90 px-4 py-4 shadow-[0_10px_28px_rgba(76,29,149,0.05)]">
+            <div className="flex items-center gap-2">
+              {finishWorkflowStepsModel.map((step, index) => {
+                const isActive = nextFinishWorkflowStep?.key === step.key;
+                const isComplete = step.complete;
+                return (
+                  <Fragment key={step.key}>
+                    <div
+                      className={`flex h-10 w-10 items-center justify-center rounded-full border text-sm font-extrabold shadow-sm transition-all ${
+                        isComplete
+                          ? 'border-emerald-500 bg-emerald-500 text-white'
+                          : isActive
+                            ? 'border-violet-600 bg-violet-600 text-white shadow-[0_10px_24px_rgba(76,29,149,0.22)]'
+                            : 'border-violet-200 bg-white text-violet-400'
+                      }`}
+                    >
+                      {isComplete ? <CheckCircle className="h-5 w-5" /> : index + 1}
+                    </div>
+                    {index < finishWorkflowStepsModel.length - 1 && (
+                      <div className="h-[3px] flex-1 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            finishWorkflowStepsModel[index].complete ? 'bg-emerald-400' : isActive ? 'bg-violet-200' : 'bg-transparent'
+                          }`}
+                        />
+                      </div>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            <div className={`rounded-[22px] border p-4 transition-all ${
+              closingInspectionStepComplete
+                ? 'border-emerald-200 bg-emerald-50/90'
+                : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
+            }`}>
+              <div className="flex items-start gap-3">
+                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
+                  closingInspectionStepComplete ? 'bg-emerald-500 text-white' : 'border border-violet-200 bg-violet-50 text-violet-700'
+                }`}>
+                  {closingInspectionStepComplete ? <CheckCircle className="h-5 w-5" /> : <span className="text-sm font-bold">1</span>}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900">{tr('Vehicle inspection', 'Inspection véhicule')}</p>
+                      <p className={`mt-1 text-xs ${closingInspectionStepComplete ? 'text-emerald-700' : 'text-slate-500'}`}>
+                        {closingInspectionStepComplete
+                          ? tr('Return inspection completed.', "L'inspection de retour est terminée.")
+                          : inspectionNeedsAdvancedView
+                            ? tr('Damage or report workflow detected. Use advanced view.', 'Un rapport de dommage ou incident est détecté. Utilisez la vue avancée.')
+                            : tr('Add or review return media to continue.', 'Ajoutez ou vérifiez les médias de retour pour continuer.')}
+                      </p>
+                    </div>
+                    <Camera className={`mt-0.5 h-4 w-4 flex-shrink-0 ${closingInspectionStepComplete ? 'text-emerald-600' : 'text-violet-600'}`} />
+                  </div>
+                  {!closingInspectionStepComplete && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (inspectionNeedsAdvancedView) {
+                          handleSwitchRentalDetailsView('standard');
+                          return;
+                        }
+                        handleOpenClosingModal();
+                      }}
+                      disabled={isFinishWorkflowSoftLocked}
+                      className="mt-3 inline-flex items-center gap-2 rounded-full bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+                    >
+                      {inspectionNeedsAdvancedView
+                        ? tr('Open advanced view', 'Ouvrir la vue avancée')
+                        : tr('Open inspection', "Ouvrir l'inspection")}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className={`rounded-[22px] border p-4 transition-all ${
+              finishRentalSteps.endOdometerComplete
+                ? 'border-emerald-200 bg-emerald-50/90'
+                : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
+            }`}>
+              <div className="flex items-start gap-3">
+                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
+                  finishRentalSteps.endOdometerComplete ? 'bg-emerald-500 text-white' : 'border border-violet-200 bg-violet-50 text-violet-700'
+                }`}>
+                  {finishRentalSteps.endOdometerComplete ? <CheckCircle className="h-5 w-5" /> : <span className="text-sm font-bold">2</span>}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900">{tr('Ending odometer', 'Kilométrage de retour')}</p>
+                      <p className={`mt-1 text-xs ${finishRentalSteps.endOdometerComplete ? 'text-emerald-700' : 'text-slate-500'}`}>
+                        {finishRentalSteps.endOdometerComplete
+                          ? `${rental?.ending_odometer || 0} km`
+                          : tr('Enter the return kilometer reading.', 'Saisissez le kilométrage au retour.')}
+                      </p>
+                    </div>
+                    <Gauge className={`mt-0.5 h-4 w-4 flex-shrink-0 ${finishRentalSteps.endOdometerComplete ? 'text-emerald-600' : 'text-violet-600'}`} />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (finishRentalSteps.endOdometerComplete) {
+                        setIsEditingEndOdometer(true);
+                        setEndOdometerEditValue(rental?.ending_odometer?.toString() || '');
+                        return;
+                      }
+                      setShowEndOdometerPrompt(true);
+                    }}
+                    disabled={isFinishWorkflowSoftLocked}
+                    className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
+                      isFinishWorkflowSoftLocked
+                        ? 'cursor-not-allowed bg-slate-200 text-slate-500'
+                        : 'bg-violet-600 text-white'
+                    }`}
+                  >
+                    {finishRentalSteps.endOdometerComplete
+                      ? tr('Edit reading', 'Modifier le relevé')
+                      : tr('Add reading', 'Ajouter le relevé')}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className={`rounded-[22px] border p-4 transition-all ${
+              finishRentalSteps.endFuelComplete
+                ? 'border-emerald-200 bg-emerald-50/90'
+                : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
+            }`}>
+              <div className="flex items-start gap-3">
+                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
+                  finishRentalSteps.endFuelComplete ? 'bg-emerald-500 text-white' : 'border border-violet-200 bg-violet-50 text-violet-700'
+                }`}>
+                  {finishRentalSteps.endFuelComplete ? <CheckCircle className="h-5 w-5" /> : <span className="text-sm font-bold">3</span>}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900">{tr('Fuel level', 'Niveau de carburant')}</p>
+                      <p className={`mt-1 text-xs ${finishRentalSteps.endFuelComplete ? 'text-emerald-700' : 'text-slate-500'}`}>
+                        {finishRentalSteps.endFuelComplete
+                          ? `${endFuelLevel || rental?.end_fuel_level || 0}/8`
+                          : tr('Record the return fuel level.', 'Enregistrez le niveau de carburant au retour.')}
+                      </p>
+                    </div>
+                    <Fuel className={`mt-0.5 h-4 w-4 flex-shrink-0 ${finishRentalSteps.endFuelComplete ? 'text-emerald-600' : 'text-violet-600'}`} />
+                  </div>
+                  {finishRentalSteps.endFuelComplete && (fuelCharge || rental?.fuel_charge) > 0 ? (
+                    <p className="mt-2 text-xs font-semibold text-amber-700">
+                      {tr('Fuel charge applied', 'Frais carburant appliqués')}: {formatCurrency(fuelCharge || rental?.fuel_charge || 0)} MAD
+                    </p>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setShowEndFuelModal(true)}
+                    disabled={isFinishWorkflowSoftLocked}
+                    className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
+                      isFinishWorkflowSoftLocked
+                        ? 'cursor-not-allowed bg-slate-200 text-slate-500'
+                        : 'bg-violet-600 text-white'
+                    }`}
+                  >
+                    {finishRentalSteps.endFuelComplete
+                      ? tr('Edit fuel', 'Modifier le carburant')
+                      : tr('Record fuel', 'Enregistrer le carburant')}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex justify-center">
+            <button
+              type="button"
+              onClick={handleCancelFinishWorkflow}
+              disabled={isFinishWorkflowSoftLocked}
+              className="inline-flex min-w-[210px] items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {tr('Cancel workflow', 'Annuler le workflow')}
+            </button>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-2xl bg-violet-100 text-violet-600">
+                <MapPin className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                  {tr('Return location', 'Lieu de retour')}
+                </p>
+                <p className="mt-1 truncate text-sm font-semibold text-slate-900">
+                  {selectedReturnLocationName || tr('Select location', 'Sélectionner un emplacement')}
+                </p>
+              </div>
+            </div>
+            <select
+              value={selectedReturnLocationId}
+              onChange={(e) => setSelectedReturnLocationId(e.target.value)}
+              disabled={fleetLocations.length === 0 || isFinishWorkflowSoftLocked}
+              className="mt-3 w-full rounded-2xl border border-violet-200 bg-violet-50 px-3 py-3 text-sm font-medium text-violet-700 outline-none transition-colors focus:border-violet-400 focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {fleetLocations.length === 0 ? (
+                <option value="">{tr('No locations', 'Aucun emplacement')}</option>
+              ) : (
+                fleetLocations.map((location) => (
+                  <option key={location.id} value={location.id}>
+                    {location.name}
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
+
+          <div className="mt-4 overflow-hidden rounded-[22px] border border-slate-200 bg-white">
+            <button
+              type="button"
+              onClick={() => setLightFinishSummaryOpen((prev) => !prev)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+            >
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  {tr('Rental summary', 'Résumé location')}
+                </p>
+                <p className="mt-1 text-sm font-bold text-slate-900">
+                  {tr('Customer, vehicle, return location, payment, and security', 'Client, véhicule, lieu de retour, paiement et caution')}
+                </p>
+              </div>
+              <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+                {lightFinishSummaryOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </div>
+            </button>
+            {lightFinishSummaryOpen && (
+              <div className="space-y-2 border-t border-slate-100 px-4 pb-4 pt-3 text-sm">
+                {finishSummaryRows.map((row) => (
+                  <div key={row.label} className="flex items-start justify-between gap-4">
+                    <span className="text-slate-500">{row.label}</span>
+                    <span className="text-right font-semibold text-slate-900">{row.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 flex items-center justify-center gap-3">
+            {inspectionNeedsAdvancedView && !closingInspectionStepComplete && (
+              <button
+                type="button"
+                onClick={() => handleSwitchRentalDetailsView('standard')}
+                className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700 shadow-sm"
+              >
+                {tr('Open advanced view', 'Ouvrir la vue avancée')}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className={LIGHT_RENTAL_ACTION_DOCK_CLASS}>
+          {!lightFinishCanComplete && (
+            <p className="mb-3 text-center text-xs font-medium text-slate-500">
+              {nextFinishWorkflowStep ? finishWorkflowNextStepHint : tr('Finish workflow is still locked.', 'Le workflow de clôture est encore verrouillé.')}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await finalizeRentalCompletion();
+              } catch (err) {
+                toast.error(`Failed: ${err.message}`);
+              }
+            }}
+            disabled={!lightFinishCanComplete}
+            className={`flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-4 text-base font-bold transition ${
+              lightFinishCanComplete
+                ? 'bg-emerald-600 text-white shadow-[0_14px_32px_rgba(5,150,105,0.22)] hover:bg-emerald-700'
+                : 'cursor-not-allowed bg-slate-200 text-slate-500'
+            }`}
+          >
+            <CheckCircle className="h-5 w-5" />
+            {tr('Finish rental', 'Terminer la location')}
+          </button>
+        </div>
+      </div>
+    );
   };
 
 // ✅ Calculate extension totals before rendering
@@ -10699,6 +13561,21 @@ useEffect(() => {
                   <ArrowLeft className="h-5 w-5" />
                 </button>
                 <div className="min-w-0 flex-1">
+                  {financeOverviewReturn && (
+                    <button
+                      type="button"
+                      onClick={() => navigate(-1)}
+                      className="mb-3 inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 shadow-[0_10px_24px_rgba(79,70,229,0.10)] transition hover:-translate-y-0.5 hover:border-violet-300 hover:bg-violet-100"
+                    >
+                      <ArrowLeft className="h-4 w-4" />
+                      <span>{tr('Back to overview', "Retour à l'aperçu")}</span>
+                      {financeOverviewLabel ? (
+                        <span className="rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-violet-600">
+                          {financeOverviewLabel}
+                        </span>
+                      ) : null}
+                    </button>
+                  )}
                   <h1 className="text-2xl font-bold tracking-tight text-slate-900 lg:text-3xl">
                     {rental.vehicle?.name} {rental.vehicle?.model ? ` ${rental.vehicle.model}` : ''}
                   </h1>
@@ -10721,15 +13598,21 @@ useEffect(() => {
                     )}
                   </div>
                   <div className="mt-3 text-sm text-slate-500">
-                    <span className="font-medium text-slate-600">{rental.rental_id}</span>
+                    <button
+                      type="button"
+                      onClick={handleCopyRentalReference}
+                      className="inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-100 active:scale-[0.99]"
+                      title={tr('Tap to copy rental reference', 'Touchez pour copier la référence')}
+                    >
+                      {rental.rental_id}
+                    </button>
                     <span className="mx-2 text-slate-300">·</span>
                     <span>{rental.customer_name}</span>
                   </div>
                 </div>
               </div>
             </div>
-
-            {shouldShowLateArrivalBanner && (
+            {shouldShowLateArrivalBanner && canHandleLateArrival && (
               <Button
                 type="button"
                 onClick={handleCustomerArrived}
@@ -10741,7 +13624,9 @@ useEffect(() => {
             )}
 
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              <div className={`grid grid-cols-3 gap-2 sm:flex sm:flex-wrap ${
+                showLightActiveRentalMobile || showLightFinishRentalMobile ? 'hidden lg:flex' : ''
+              }`}>
                 {syncedCustomerPhone && (
                   <>
                     <Button
@@ -10785,11 +13670,48 @@ useEffect(() => {
                       )}
                       WhatsApp
                     </Button>
+                    <Button
+                      onClick={handleSmartSendEmail}
+                      disabled={isSendingEmail || !canSendEmailDocuments}
+                      variant="outline"
+                      className="rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                      title={
+                        canSendEmailDocuments
+                          ? tr('Send contract and receipt by email', 'Envoyer le contrat et le reçu par e-mail')
+                          : tr('Add a customer email to send documents', "Ajoutez un e-mail client pour envoyer les documents")
+                      }
+                    >
+                      {isSendingEmail ? (
+                        <Loader className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Mail className="mr-2 h-4 w-4" />
+                      )}
+                      {tr('Email', 'E-mail')}
+                    </Button>
                   </>
                 )}
               </div>
 
               <div className="flex items-center justify-between gap-2 sm:justify-end">
+                <button
+                  type="button"
+                  onClick={() => handleSwitchRentalDetailsView(isLightRentalDetailsMode ? 'standard' : 'light')}
+                  className={`flex items-center rounded-full px-4 py-2 text-sm font-medium transition ${
+                    isLightRentalDetailsMode
+                      ? 'border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100'
+                      : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                  title={
+                    isLightRentalDetailsMode
+                      ? tr('Open the full advanced rental details page', 'Ouvrir la page complète des détails de location')
+                      : tr('Switch to the light operational rental view', 'Basculer vers la vue légère opérationnelle')
+                  }
+                >
+                  {isLightRentalDetailsMode
+                    ? tr('Open advanced view', 'Ouvrir la vue avancée')
+                    : tr('Switch to light view', 'Passer à la vue light')}
+                </button>
+
                 <div className="flex items-center gap-1 rounded-2xl border border-violet-100 bg-gradient-to-r from-violet-50 to-white p-1 shadow-sm">
                   <button
                     type="button"
@@ -10807,17 +13729,18 @@ useEffect(() => {
                   </button>
                 </div>
 
-                <div className="relative" ref={moreActionsRef}>
-                  <button
-                    type="button"
-                    onClick={() => setIsMoreActionsOpen((prev) => !prev)}
-                    className="flex items-center rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-                  >
-                    <MoreHorizontal className="mr-2 h-4 w-4" />
-                    {tr('More actions', 'Plus d’actions')}
-                  </button>
-                  {isMoreActionsOpen && (
-                  <div className="absolute right-0 z-20 mt-2 w-56 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
+                {hasVisibleMoreActions && (
+                  <div className="relative" ref={moreActionsRef}>
+                    <button
+                      type="button"
+                      onClick={() => setIsMoreActionsOpen((prev) => !prev)}
+                      className="flex items-center rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                    >
+                      <MoreHorizontal className="mr-2 h-4 w-4" />
+                      {tr('More actions', 'Plus d’actions')}
+                    </button>
+                    {isMoreActionsOpen && (
+                    <div className="absolute right-0 z-20 mt-2 w-56 rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
                     {canManageScheduledRental && (
                       <button
                         type="button"
@@ -10831,6 +13754,17 @@ useEffect(() => {
                         {tr('Edit', 'Modifier')}
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMoreActionsOpen(false);
+                        void handleShareRentalLink();
+                      }}
+                      className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      <Share2 className="mr-2 h-4 w-4" />
+                      {tr('Share', 'Partager')}
+                    </button>
                     {canDeleteScheduledRental && (
                       <button
                         type="button"
@@ -10885,7 +13819,7 @@ useEffect(() => {
                         {tr('Release Impound', 'Libérer la fourrière')}
                       </button>
                     )}
-                    {shouldShowLateArrivalBanner && (
+                    {shouldShowLateArrivalBanner && canHandleLateArrival && (
                       <button
                         type="button"
                         onClick={() => {
@@ -10898,13 +13832,14 @@ useEffect(() => {
                         {tr('Cancel as no-show', 'Annuler comme absence')}
                       </button>
                     )}
+                    </div>
+                    )}
                   </div>
-                  )}
-                </div>
+                )}
               </div>
             </div>
 
-            {shouldShowLateArrivalBanner && (
+            {shouldShowLateArrivalBanner && canHandleLateArrival && (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-sm">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -10924,11 +13859,20 @@ useEffect(() => {
               </div>
             )}
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className={`grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4 ${
+              showLightActiveRentalMobile || showLightFinishRentalMobile ? 'hidden lg:grid' : ''
+            }`}>
               <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{tr('Customer', 'Client')}</p>
                 <p className="mobile-summary-value mt-2 text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">{rental.customer_name || tr('Unknown customer', 'Client inconnu')}</p>
-                <p className="mobile-summary-support mt-1 text-sm font-medium text-slate-500">{rental.rental_id}</p>
+                <button
+                  type="button"
+                  onClick={handleCopyRentalReference}
+                  className="mobile-summary-support mt-1 inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-100 active:scale-[0.99]"
+                  title={tr('Tap to copy rental reference', 'Touchez pour copier la référence')}
+                >
+                  {rental.rental_id}
+                </button>
               </div>
               <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{tr('Schedule', 'Planning')}</p>
@@ -10942,7 +13886,7 @@ useEffect(() => {
               <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{tr('Payment', 'Paiement')}</p>
                 <p className="mobile-summary-value mt-2 text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">{dynamicPaymentState.label}</p>
-                <p className="mobile-summary-support mt-1 text-sm font-medium text-slate-500">{formatCurrency(rentalBillingSummary.depositPaid)} MAD {tr('received', 'reçus')}</p>
+                <p className="mobile-summary-support mt-1 text-sm font-medium text-slate-500">{formatCurrency(rentalBillingSummary.customerPaidAmount)} MAD {tr('received', 'reçus')}</p>
               </div>
               <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{tr('Security', 'Garantie')}</p>
@@ -10978,11 +13922,28 @@ useEffect(() => {
           </div>
         </div>
 
-        <Card className="overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+        {showLightReadyToStartMobile && renderLightReadyToStartMobile()}
+        {showLightActiveRentalMobile && renderLightActiveRentalMobile()}
+        {showLightFinishRentalMobile && renderLightFinishRentalMobile()}
+
+        <Card
+          className={`overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)] ${
+            showLightReadyToStartMobile
+              ? 'hidden'
+              : showLightActiveRentalMobile || showLightFinishRentalMobile
+                ? 'hidden lg:block'
+                : ''
+          }`}
+        >
         <CardContent className="p-4 sm:p-6">
           {/* SCHEDULED Rental - Show Workflow Steps */}
           {showStartChecklistWorkflow && (
-            <div ref={replacementResumeWorkflowRef} className="mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-3 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6">
+            <div
+              ref={replacementResumeWorkflowRef}
+              className={`mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-3 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6 ${
+                isLightRentalDetailsMode ? 'hidden lg:block' : ''
+              }`}
+            >
               <div className="mb-3 sm:mb-4">
                 <h3 className="mb-1 text-sm font-semibold text-slate-900 sm:text-base">
                   {isReplacementResumeFlow
@@ -10996,48 +13957,7 @@ useEffect(() => {
                 </p>
               </div>
 
-              {primaryStartWorkflowActor && (
-                <div className={`mb-3 sm:mb-4 flex flex-col gap-2 rounded-2xl border p-3 sm:flex-row sm:items-center sm:justify-between ${
-                  isStartWorkflowSoftLocked
-                    ? 'border-amber-200 bg-amber-50'
-                    : 'border-emerald-200 bg-emerald-50'
-                }`}>
-                  <div className="min-w-0">
-                    <p className={`text-sm font-semibold ${isStartWorkflowSoftLocked ? 'text-amber-800' : 'text-emerald-800'}`}>
-                      {isStartWorkflowSoftLocked
-                        ? tr('Currently handled by', 'Actuellement géré par')
-                        : tr('You took over this workflow', 'Vous avez repris ce workflow')}
-                      {' '}
-                      {startWorkflowHandlerName}
-                    </p>
-                    <p className={`text-xs ${isStartWorkflowSoftLocked ? 'text-amber-700' : 'text-emerald-700'}`}>
-                      {isStartWorkflowSoftLocked
-                        ? tr('You can stay read-only or take over if you need to continue from this device.', 'Vous pouvez rester en lecture seule ou reprendre la main si nécessaire depuis cet appareil.')
-                        : tr('This remains a soft lock, so the other device will still see your progress mirrored live.', "Ceci reste un verrou souple, donc l'autre appareil verra toujours votre progression en direct.")}
-                    </p>
-                  </div>
-                  {isStartWorkflowSoftLocked ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={() => setStartWorkflowTakeover(true)}
-                      className="w-full rounded-xl bg-amber-600 text-white hover:bg-amber-700 sm:w-auto"
-                    >
-                      {tr('Take Over', 'Reprendre la main')}
-                    </Button>
-                  ) : (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setStartWorkflowTakeover(false)}
-                      className="w-full rounded-xl border-emerald-200 text-emerald-700 hover:bg-emerald-50 sm:w-auto"
-                    >
-                      {tr('Release Takeover', 'Relâcher la reprise')}
-                    </Button>
-                  )}
-                </div>
-              )}
+              
               
               {/* Warning banner when approval is pending */}
               {isPendingApproval && !isAdmin && (
@@ -11087,37 +14007,38 @@ useEffect(() => {
                 </div>
               </div>
 
-              <div className="space-y-2.5 sm:space-y-4">
+              <div className="flex flex-col gap-2.5 sm:gap-4">
                 <div
                   ref={(node) => { startStepRefs.current.customer_verification = node; }}
+                  style={{ order: startWorkflowDisplayOrderMap.customer_verification ?? 0 }}
                   onClick={() => {
                     if (isStartStepLocked('customer_verification')) notifyLockedStartStep();
                   }}
                   className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
-                    getStartStepContainerClass('customer_verification', hasCustomerVerification)
-                  } ${hasCustomerVerification && !isStartStepActive('customer_verification') ? 'min-h-[46px] items-center' : ''}`}
+                    getStartStepContainerClass('customer_verification', customerVerificationStepComplete)
+                  } ${customerVerificationStepComplete && !isStartStepActive('customer_verification') ? 'min-h-[46px] items-center' : ''}`}
                 >
                   <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
-                    hasCustomerVerification ? 'bg-green-500' : isStartStepActive('customer_verification') ? 'bg-violet-600' : 'bg-gray-300'
+                    customerVerificationStepComplete ? 'bg-green-500' : isStartStepActive('customer_verification') ? 'bg-violet-600' : 'bg-gray-300'
                   }`}>
-                    {hasCustomerVerification ? (
+                    {customerVerificationStepComplete ? (
                       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                     ) : (
-                      <span className="text-white font-bold text-xs">1</span>
+                      <span className="text-white font-bold text-xs">{getStartWorkflowDisplayNumber('customer_verification')}</span>
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Customer Verification', 'Vérification client')}</h4>
-                        {hasCustomerVerification && !isStartStepActive('customer_verification') ? (
+                        {customerVerificationStepComplete && !isStartStepActive('customer_verification') ? (
                           <p className="mt-0.5 text-xs font-medium text-emerald-700">
                             ✓ {getStartStepSummary('customer_verification')}
                           </p>
-                        ) : hasCustomerVerification ? (
+                        ) : customerVerificationStepComplete ? (
                           <div className="mt-0.5 break-words">
                             <p className="text-xs text-gray-600">
-                              {`✓ ${tr('License / ID verification completed', 'Vérification du permis / de la pièce terminée')}`}
+                              {`✓ ${customerVerificationStepStatusLabel}`}
                             </p>
                             {customerVerificationMethodLabel && (
                               <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-emerald-700/80">
@@ -11125,18 +14046,40 @@ useEffect(() => {
                               </p>
                             )}
                           </div>
+                        ) : hasLinkedVerificationCenterRecord ? (
+                          <div className="mt-0.5 break-words">
+                            <p className="text-xs text-gray-600">
+                              {customerVerificationStepStatusLabel}
+                            </p>
+                            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-500">
+                              {tr('Verification center source of truth', 'Centre de vérification source de vérité')}
+                            </p>
+                          </div>
                         ) : null}
                       </div>
-                      {!hasCustomerVerification && isStartStepActive('customer_verification') && (
+                      {(isStartStepActive('customer_verification') || customerVerificationStepComplete || hasLinkedVerificationCenterRecord) && (
                         <Button
                           onClick={openCustomerVerificationForm}
                           size="sm"
-                          disabled={isStartWorkflowSoftLocked}
-                          className="mt-2 sm:mt-0 w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white text-xs h-7 px-2.5 sm:px-3"
+                          disabled={
+                            isStartWorkflowSoftLocked ||
+                            customerVerificationStepComplete
+                          }
+                          className={`mt-2 sm:mt-0 w-full sm:w-auto text-xs h-7 px-2.5 sm:px-3 ${
+                            hasVerifiedCustomerFromCenter
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                              : 'bg-blue-600 hover:bg-blue-700 text-white'
+                          }`}
                           title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : undefined}
                         >
                           <FileImage className="w-3 h-3 mr-1.5" />
-                          <span className="whitespace-nowrap">{tr('Verify Customer', 'Vérifier le client')}</span>
+                          <span className="whitespace-nowrap">
+                            {hasVerifiedCustomerFromCenter
+                              ? tr('Customer verified', 'Client vérifié')
+                              : hasLinkedVerificationCenterRecord && verificationCenterStatus && verificationCenterStatus !== 'approved'
+                                ? tr('Open verification', 'Ouvrir la vérification')
+                              : tr('Verify Customer', 'Vérifier le client')}
+                          </span>
                         </Button>
                       )}
                     </div>
@@ -11146,31 +14089,32 @@ useEffect(() => {
                 {/* Step 2: Vehicle Inspection */}
                 <div
                   ref={(node) => { startStepRefs.current.opening_media = node; }}
+                  style={{ order: startWorkflowDisplayOrderMap.opening_media ?? 0 }}
                   onClick={() => {
                     if (isStartStepLocked('opening_media')) notifyLockedStartStep();
                   }}
                   className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
-                    getStartStepContainerClass('opening_media', hasOpeningInspectionCompleted)
-                  } ${hasOpeningInspectionCompleted && !isStartStepActive('opening_media') ? 'min-h-[46px] items-center' : ''}`}
+                    getStartStepContainerClass('opening_media', openingInspectionStepComplete)
+                  } ${openingInspectionStepComplete && !isStartStepActive('opening_media') ? 'min-h-[46px] items-center' : ''}`}
                 >
                   <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
-                    hasOpeningInspectionCompleted
+                    openingInspectionStepComplete
                       ? 'bg-green-500'
                       : isStartStepActive('opening_media')
                         ? 'bg-violet-600'
                         : 'bg-gray-300'
                   }`}>
-                    {hasOpeningInspectionCompleted ? (
+                    {openingInspectionStepComplete ? (
                       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                     ) : (
-                      <span className="text-white font-bold text-xs">2</span>
+                      <span className="text-white font-bold text-xs">{getStartWorkflowDisplayNumber('opening_media')}</span>
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Vehicle & Documents inspection', 'Inspection véhicule et documents')}</h4>
-                        {hasOpeningInspectionCompleted && !isStartStepActive('opening_media') ? (
+                        {openingInspectionStepComplete && !isStartStepActive('opening_media') ? (
                           <p className="mt-0.5 text-xs font-medium text-emerald-700">
                             ✓ {getStartStepSummary('opening_media')}
                           </p>
@@ -11295,23 +14239,24 @@ useEffect(() => {
                 {/* Step 3: Starting Odometer */}
                 <div
                   ref={(node) => { startStepRefs.current.start_odometer = node; }}
+                  style={{ order: startWorkflowDisplayOrderMap.start_odometer ?? 0 }}
                   onClick={() => {
                     if (isStartStepLocked('start_odometer')) notifyLockedStartStep();
                   }}
-                  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${getStartStepContainerClass('start_odometer', hasOdometerReading)} ${hasOdometerReading && !isStartStepActive('start_odometer') ? 'min-h-[46px] items-center' : ''}`}
+                  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${getStartStepContainerClass('start_odometer', startingOdometerStepComplete)} ${startingOdometerStepComplete && !isStartStepActive('start_odometer') ? 'min-h-[46px] items-center' : ''}`}
                 >
-                  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${hasOdometerReading ? 'bg-green-500' : isStartStepActive('start_odometer') ? 'bg-violet-600' : 'bg-gray-300'}`}>
-                    {hasOdometerReading ? (
+                  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${startingOdometerStepComplete ? 'bg-green-500' : isStartStepActive('start_odometer') ? 'bg-violet-600' : 'bg-gray-300'}`}>
+                    {startingOdometerStepComplete ? (
                       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                     ) : (
-                      <span className="text-white font-bold text-xs">3</span>
+                      <span className="text-white font-bold text-xs">{getStartWorkflowDisplayNumber('start_odometer')}</span>
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Starting Odometer', 'Kilométrage de départ')}</h4>
-                        {hasOdometerReading && !isStartStepActive('start_odometer') ? (
+                        {startingOdometerStepComplete && !isStartStepActive('start_odometer') ? (
                           <p className="mt-0.5 text-xs font-medium text-emerald-700">
                             ✓ {getStartStepSummary('start_odometer')}
                           </p>
@@ -11324,7 +14269,11 @@ useEffect(() => {
                       <div className="mt-2 sm:mt-0 flex w-full sm:w-auto items-center gap-2">
                         {!hasOdometerReading && !isEditingOdometer && isStartStepActive('start_odometer') && (
                           <Button 
-                            onClick={() => setIsEditingOdometer(true)}
+                            type="button"
+                            onClick={() => {
+                              setStartOdometer('');
+                              setIsEditingOdometer(true);
+                            }}
                             title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : isWorkflowDisabled() ? tr('Workflow locked - price approval pending', 'Workflow bloqué - approbation du prix en attente') : tr('Add Reading', 'Ajouter le relevé')}
                             size="sm"
                             disabled={isStartWorkflowSoftLocked}
@@ -11349,7 +14298,7 @@ useEffect(() => {
                         )}
                       </div>
                     </div>
-                    {isEditingOdometer && isStartStepActive('start_odometer') && (
+                    {isEditingOdometer && (isStartStepActive('start_odometer') || canEditStartOdometerBeforeSignature) && (
                       <div className="mt-2 space-y-2">
                         <input
                           type="number"
@@ -11363,6 +14312,7 @@ useEffect(() => {
                         />
                         <div className="flex gap-1.5">
                           <Button 
+                            type="button"
                             onClick={handleSaveOdometer}
                             size="sm"
                             disabled={isStartWorkflowSoftLocked || isSavingOdometer}
@@ -11373,6 +14323,7 @@ useEffect(() => {
                             {isSavingOdometer ? tr('Saving...', 'Enregistrement...') : tr('Save', 'Enregistrer')}
                           </Button>
                           <Button 
+                            type="button"
                             onClick={() => {
                               setIsEditingOdometer(false);
                               setStartOdometer(displayedStartingOdometer > 0 ? String(displayedStartingOdometer) : '');
@@ -11389,12 +14340,16 @@ useEffect(() => {
                     )}
                     {hasOdometerReading && !isEditingOdometer && (
                       <Button 
-                        onClick={() => setIsEditingOdometer(true)}
+                        type="button"
+                        onClick={() => {
+                          setStartOdometer(displayedStartingOdometer > 0 ? String(displayedStartingOdometer) : '');
+                          setIsEditingOdometer(true);
+                        }}
                         size="sm"
                         variant="ghost"
-                        disabled={isStartWorkflowSoftLocked}
+                        disabled={!canEditStartOdometerBeforeSignature}
                         className="mt-2 text-xs h-7 px-2"
-                        title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : undefined}
+                        title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : hasEffectiveContractSignature ? tr('Contract already signed', 'Contrat déjà signé') : undefined}
                       >
                         <Edit className="w-3 h-3 mr-1.5" />
                         {tr('Edit Reading', 'Modifier le relevé')}
@@ -11406,34 +14361,35 @@ useEffect(() => {
                 {/* Step 4: Payment */}
                 <div
                   ref={(node) => { startStepRefs.current.payment = node; }}
+                  style={{ order: startWorkflowDisplayOrderMap.payment ?? 0 }}
                   onClick={() => {
                     if (isStartStepLocked('payment')) notifyLockedStartStep();
                   }}
                   className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
-                  isPaymentSufficient() ? 'border border-emerald-200 bg-emerald-50/80' : 
+                  paymentStepComplete ? 'border border-emerald-200 bg-emerald-50/80' : 
                   isPendingApproval && !isAdmin ? 'border border-amber-200 bg-amber-50/80' : getStartStepContainerClass('payment', false)
-                } ${isPaymentSufficient() && !isStartStepActive('payment') ? 'min-h-[46px] items-center' : ''}`}>
+                } ${paymentStepComplete && !isStartStepActive('payment') ? 'min-h-[46px] items-center' : ''}`}>
                   <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
-                    isPaymentSufficient() ? 'bg-green-500' : 
+                    paymentStepComplete ? 'bg-green-500' : 
                     isPendingApproval && !isAdmin ? 'bg-yellow-500' : isStartStepActive('payment') ? 'bg-violet-600' : 'bg-gray-300'
                   }`}>
-                    {isPaymentSufficient() ? (
+                    {paymentStepComplete ? (
                       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                     ) : isPendingApproval && !isAdmin ? (
                       <Clock className="w-3 h-3 text-white" />
                     ) : (
-                      <span className="text-white font-bold text-xs">4</span>
+                      <span className="text-white font-bold text-xs">{getStartWorkflowDisplayNumber('payment')}</span>
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                       <div className="flex-1 min-w-0">
                         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Payment', 'Paiement')}</h4>
-                        {isPaymentSufficient() && !isStartStepActive('payment') ? (
+                        {paymentStepComplete && !isStartStepActive('payment') ? (
                           <p className="mt-0.5 text-xs font-medium text-emerald-700">
                             ✓ {getStartStepSummary('payment')}
                           </p>
-                        ) : (isPendingApproval && !isAdmin) || isPaymentSufficient() ? (
+                        ) : (isPendingApproval && !isAdmin) || (isPaymentSufficient() && isStartStepActive('payment')) ? (
                           <p className="text-xs text-gray-600 mt-0.5 break-words">
                             {isPendingApproval && !isAdmin ? (
                               <span className="text-yellow-600">⏳ {tr('Price override pending approval', 'Modification de prix en attente d’approbation')}</span>
@@ -11474,7 +14430,7 @@ useEffect(() => {
                             <span className="whitespace-nowrap">{tr('Mark Paid', 'Marquer comme payé')}</span>
                           </Button>
                         )}
-                        {isPaymentSufficient() && isStartStepActive('payment') && (
+                        {paymentStepComplete && isStartStepActive('payment') && (
                           <Button
                             type="button"
                             size="sm"
@@ -11498,37 +14454,41 @@ useEffect(() => {
                 {/* Step 5: Fuel Level - Now shown for all rental types */}
                 <div
                     ref={(node) => { startStepRefs.current.start_fuel = node; }}
+                    style={{ order: startWorkflowDisplayOrderMap.start_fuel ?? 0 }}
                     onClick={() => {
                       if (isStartStepLocked('start_fuel')) notifyLockedStartStep();
                     }}
                     className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${
-                    startFuelLevel !== null ? 'border border-emerald-200 bg-emerald-50/80' : getStartStepContainerClass('start_fuel', false)
-                  } ${startFuelLevel !== null && !isStartStepActive('start_fuel') ? 'min-h-[46px] items-center' : ''}`}>
+                    startFuelStepComplete ? 'border border-emerald-200 bg-emerald-50/80' : getStartStepContainerClass('start_fuel', false)
+                  } ${startFuelStepComplete && !isStartStepActive('start_fuel') ? 'min-h-[46px] items-center' : ''}`}>
                     <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
-                      startFuelLevel !== null ? 'bg-green-500' : isStartStepActive('start_fuel') ? 'bg-violet-600' : 'bg-gray-300'
+                      startFuelStepComplete ? 'bg-green-500' : isStartStepActive('start_fuel') ? 'bg-violet-600' : 'bg-gray-300'
                     }`}>
-                      {startFuelLevel !== null ? (
+                      {startFuelStepComplete ? (
                         <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                       ) : (
-                        <span className="text-white font-bold text-xs">5</span>
+                        <span className="text-white font-bold text-xs">{getStartWorkflowDisplayNumber('start_fuel')}</span>
                       )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
                         <div className="flex-1 min-w-0">
                           <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Fuel Level', 'Niveau de carburant')}</h4>
-                          {startFuelLevel !== null && !isStartStepActive('start_fuel') ? (
+                          {startFuelStepComplete && !isStartStepActive('start_fuel') ? (
                             <p className="mt-0.5 text-xs font-medium text-emerald-700">
                               ✓ {getStartStepSummary('start_fuel')}
                             </p>
-                          ) : startFuelLevel !== null && (
+                          ) : hasStartFuelRecorded && (
                             <p className="text-xs text-gray-600 mt-0.5 break-words">
-                              {`✓ ${tr('Starting fuel:', 'Carburant de départ :')} ${startFuelLevel}/8 (${startFuelLevel === 8 ? tr('Full', 'Plein') : startFuelLevel === 0 ? tr('Empty', 'Vide') : `${startFuelLevel}/8`})`}
+                              {(() => {
+                                const effectiveStartFuelLevel = startFuelLevel ?? rental?.start_fuel_level;
+                                return `✓ ${tr('Starting fuel:', 'Carburant de départ :')} ${effectiveStartFuelLevel}/8 (${effectiveStartFuelLevel === 8 ? tr('Full', 'Plein') : effectiveStartFuelLevel === 0 ? tr('Empty', 'Vide') : `${effectiveStartFuelLevel}/8`})`;
+                              })()}
                             </p>
                           )}
                         </div>
                         <div className="mt-2 sm:mt-0 flex w-full sm:w-auto items-center gap-2">
-                          {startFuelLevel === null && isStartStepActive('start_fuel') && (
+                          {!hasStartFuelRecorded && isStartStepActive('start_fuel') && (
                             <Button 
                               onClick={openStartFuelModal}
                               title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : isWorkflowDisabled() ? tr('Workflow locked - price approval pending', 'Workflow bloqué - approbation du prix en attente') : tr('Record Fuel', 'Enregistrer le carburant')}
@@ -11540,7 +14500,7 @@ useEffect(() => {
                               <span className="whitespace-nowrap">{tr('Record Fuel', 'Enregistrer le carburant')}</span>
                             </Button>
                           )}
-                          {startFuelLevel !== null && isStartStepActive('start_fuel') && (
+                          {hasStartFuelRecorded && isStartStepActive('start_fuel') && (
                             <Button
                               type="button"
                               size="sm"
@@ -11574,15 +14534,16 @@ useEffect(() => {
                 {/* Step 6: Sign Contract */}
 <div
   ref={(node) => { startStepRefs.current.contract_signature = node; }}
+  style={{ order: startWorkflowDisplayOrderMap.contract_signature ?? 999 }}
   onClick={() => {
     if (isStartStepLocked('contract_signature')) notifyLockedStartStep();
   }}
-  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${hasEffectiveContractSignature ? 'border border-emerald-200 bg-emerald-50/80' : getStartStepContainerClass('contract_signature', false)} ${hasEffectiveContractSignature && !isStartStepActive('contract_signature') ? 'min-h-[46px] items-center' : ''}`}>
-  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${hasEffectiveContractSignature ? 'bg-green-500' : isStartStepActive('contract_signature') ? 'bg-violet-600' : 'bg-gray-300'}`}>
-    {hasEffectiveContractSignature ? (
+  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${contractSignatureStepComplete ? 'border border-emerald-200 bg-emerald-50/80' : getStartStepContainerClass('contract_signature', false)} ${contractSignatureStepComplete && !isStartStepActive('contract_signature') ? 'min-h-[46px] items-center' : ''}`}>
+  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${contractSignatureStepComplete ? 'bg-green-500' : isStartStepActive('contract_signature') ? 'bg-violet-600' : 'bg-gray-300'}`}>
+    {contractSignatureStepComplete ? (
       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
     ) : (
-      <span className="text-white font-bold text-xs">6</span>
+      <span className="text-white font-bold text-xs">{getStartWorkflowDisplayNumber('contract_signature')}</span>
     )}
   </div>
   <div className="flex-1 min-w-0">
@@ -11590,14 +14551,14 @@ useEffect(() => {
       <div className="flex-1 min-w-0">
         <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Sign Contract', 'Signer le contrat')}</h4>
         <p className="text-xs text-gray-600 mt-0.5 break-words">
-          {hasEffectiveContractSignature
+          {contractSignatureStepComplete
             ? `✓ ${tr('Contract signed', 'Contrat signé')}`
             : isStartStepActive('contract_signature')
               ? tr('Customer signs rental agreement', 'Le client signe le contrat de location')
               : tr('Waiting for previous steps', 'En attente des étapes précédentes')}
         </p>
       </div>
-      {!hasEffectiveContractSignature && rental.rental_status !== 'completed' && isStartStepActive('contract_signature') && (
+      {!contractSignatureStepComplete && rental.rental_status !== 'completed' && isStartStepActive('contract_signature') && (
         <Button 
           onClick={openSignatureFlow}
           size="sm"
@@ -11640,7 +14601,9 @@ useEffect(() => {
 
           {/* Contract Signed but Not Started - Show Start Button */}
           {hasEffectiveContractSignature && !isCompleted && (!isActive || effectiveReplacementPauseStartedAt) && !isReplacementResumeFlow && (
-            <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6">
+            <div className={`rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6 ${
+              isLightRentalDetailsMode ? 'hidden lg:block' : ''
+            }`}>
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
                 <h3 className="text-base sm:text-lg font-semibold text-gray-800 flex items-center gap-2">
                   <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-blue-600 flex-shrink-0" />
@@ -11732,19 +14695,7 @@ useEffect(() => {
                     </p>
                   </div>
                 )}
-                {primaryStartWorkflowActor && (
-                  <div className={`mb-4 rounded-2xl border px-3 py-2 text-left ${
-                    isStartWorkflowSoftLocked ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'
-                  }`}>
-                    <p className={`text-sm font-semibold ${isStartWorkflowSoftLocked ? 'text-amber-800' : 'text-emerald-800'}`}>
-                      {isStartWorkflowSoftLocked
-                        ? tr('Currently handled by', 'Actuellement géré par')
-                        : tr('Workflow takeover active', 'Reprise du workflow active')}
-                      {' '}
-                      {startWorkflowHandlerName}
-                    </p>
-                  </div>
-                )}
+                
                 {rental.rental_status === 'expired' ? (
                   <p className="text-sm text-red-600 font-medium">❌ {tr('Expired — vehicle has been freed.', 'Expirée — le véhicule a été libéré.')}</p>
                 ) : rental.rental_status === 'no_show_review' ? (
@@ -11753,9 +14704,9 @@ useEffect(() => {
                   <>
                     <Button
                       onClick={startRental}
-                      disabled={!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental}
+                      disabled={false}
                       title={startWorkflowActionHint}
-                      className={`${!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental ? 'bg-gray-300 cursor-not-allowed' : 'bg-violet-700 hover:bg-violet-800'} text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg`}
+                      className="bg-violet-700 hover:bg-violet-800 text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg"
                     >
                       <PlayCircle className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
                       {isStartingRental
@@ -11783,7 +14734,9 @@ useEffect(() => {
             <>
               {!finishRentalSteps.showWorkflow ? (
                 /* Show Timer + End Now Button when NOT in finish workflow */
-                <div className="mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6">
+                <div className={`mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6 ${
+                  isLightRentalDetailsMode ? 'hidden lg:block' : ''
+                }`}>
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
                     <h3 className="text-base sm:text-lg font-semibold text-gray-800 flex items-center gap-2">
                       <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-blue-600 flex-shrink-0" />
@@ -11940,7 +14893,9 @@ useEffect(() => {
                 </div>
               ) : (
                 /* MATCHING "Ready to Start Rental" Harmonic Design */
-                <div className="mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-3 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6">
+                <div className={`mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-3 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6 ${
+                  isLightRentalDetailsMode ? 'hidden lg:block' : ''
+                }`}>
                   <div className="mb-3 sm:mb-4">
                     <h3 className="mb-1 text-sm font-semibold text-slate-900 sm:text-base">
                       {tr('Ready to Finish Rental', 'Prêt à terminer la location')}
@@ -11948,48 +14903,7 @@ useEffect(() => {
                     <p className="text-xs text-slate-500">{tr('Complete these steps to end the rental:', 'Complétez ces étapes pour terminer la location :')}</p>
                   </div>
 
-                  {primaryFinishWorkflowActor && (
-                    <div className={`mb-3 sm:mb-4 flex flex-col gap-2 rounded-2xl border p-3 sm:flex-row sm:items-center sm:justify-between ${
-                      isFinishWorkflowSoftLocked
-                        ? 'border-amber-200 bg-amber-50'
-                        : 'border-emerald-200 bg-emerald-50'
-                    }`}>
-                      <div className="min-w-0">
-                        <p className={`text-sm font-semibold ${isFinishWorkflowSoftLocked ? 'text-amber-800' : 'text-emerald-800'}`}>
-                          {isFinishWorkflowSoftLocked
-                            ? tr('Currently handled by', 'Actuellement géré par')
-                            : tr('You took over this workflow', 'Vous avez repris ce workflow')}
-                          {' '}
-                          {finishWorkflowHandlerName}
-                        </p>
-                        <p className={`text-xs ${isFinishWorkflowSoftLocked ? 'text-amber-700' : 'text-emerald-700'}`}>
-                          {isFinishWorkflowSoftLocked
-                            ? tr('You can stay read-only or take over if you need to continue from this device.', 'Vous pouvez rester en lecture seule ou reprendre la main si nécessaire depuis cet appareil.')
-                            : tr('This remains a soft lock, so the other device will still see your closing progress mirrored live.', "Ceci reste un verrou souple, donc l'autre appareil verra toujours votre progression de clôture en direct.")}
-                        </p>
-                      </div>
-                      {isFinishWorkflowSoftLocked ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => setFinishWorkflowTakeover(true)}
-                          className="w-full rounded-xl bg-amber-600 text-white hover:bg-amber-700 sm:w-auto"
-                        >
-                          {tr('Take Over', 'Reprendre la main')}
-                        </Button>
-                      ) : (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setFinishWorkflowTakeover(false)}
-                          className="w-full rounded-xl border-emerald-200 text-emerald-700 hover:bg-emerald-50 sm:w-auto"
-                        >
-                          {tr('Release Takeover', 'Relâcher la reprise')}
-                        </Button>
-                      )}
-                    </div>
-                  )}
+                  
                   
                   <div className="space-y-2.5 sm:space-y-4">
                     {/* Step 1: Vehicle Inspection */}
@@ -12074,9 +14988,8 @@ useEffect(() => {
                                 type="button"
                                 onClick={scrollToVehicleReport}
                                 size="sm"
-                                variant="outline"
                                 disabled={isFinishWorkflowSoftLocked}
-                                className="w-full sm:w-auto text-xs h-7 px-2.5 sm:px-3"
+                                className="w-full sm:w-auto border-amber-300 bg-amber-500 text-xs text-white shadow-sm hover:bg-orange-500 hover:border-orange-400 h-7 px-2.5 sm:px-3 disabled:border-amber-200 disabled:bg-amber-200 disabled:text-white"
                                 title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
                               >
                                 <FileText className="w-3 h-3 mr-1.5" />
@@ -12372,9 +15285,8 @@ useEffect(() => {
                                     type="button"
                                     onClick={scrollToVehicleReport}
                                     size="sm"
-                                    variant="outline"
                                     disabled={isFinishWorkflowSoftLocked}
-                                    className="text-xs"
+                                    className="border-amber-300 bg-amber-500 text-xs text-white shadow-sm hover:bg-orange-500 hover:border-orange-400 disabled:border-amber-200 disabled:bg-amber-200 disabled:text-white"
                                     title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
                                   >
                                     <FileText className="w-3 h-3 mr-1.5" />
@@ -13018,11 +15930,30 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       
       {(isScheduled || isActive || isCompleted) && (
         <div className="mb-6" ref={rentalMediaSectionRef}>
+          {isCompleted && (
+            <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)] sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-slate-900">{tr('Vehicle Media', 'Médias véhicule')}</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  {tr('Add extra photos or videos after the rental is completed. They will appear in the vehicle media area below.', 'Ajoutez des photos ou vidéos supplémentaires après la fin de la location. Elles apparaîtront dans la zone médias véhicule ci-dessous.')}
+                </p>
+              </div>
+              <Button
+                type="button"
+                onClick={handleOpenVehicleMediaModal}
+                className="rounded-xl bg-violet-700 text-white hover:bg-violet-800"
+              >
+                <Camera className="mr-2 h-4 w-4" />
+                {tr('Add Vehicle Media', 'Ajouter des médias véhicule')}
+              </Button>
+            </div>
+          )}
           <RentalVideos 
             key={videoRefreshKey} 
             rental={rental} 
             onUpdate={handleVideoUpdate} 
             isProcessing={isProcessingVideo} 
+            canDeleteMedia={currentUserRole === 'owner'}
           />
         </div>
       )}
@@ -13190,19 +16121,28 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <p><strong>{tr('Plate:', 'Plaque :')}</strong> {rental.vehicle?.plate_number}</p>
               <p><strong>{tr('Type:', 'Type :')}</strong> {rental.vehicle?.vehicle_type}</p>
               {rental.start_odometer && (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
                   {isEditingStartOdometer ? (
-                    <div className="flex items-center gap-1">
-                      <strong>{tr('Start Odometer:', 'Kilométrage départ :')}</strong>
-                      <input type="number" value={startOdometerEditValue}
-                        onChange={e => setStartOdometerEditValue(e.target.value)}
-                        className="w-24 border border-gray-300 rounded px-2 py-0.5 text-sm" min={0} autoFocus />
-                      <span className="text-sm text-gray-500">km</span>
-                      <Button type="button" size="sm" onClick={handleEditStartOdometer} className="h-6 px-2 bg-blue-600 text-white text-xs">{tr('Save', 'Enregistrer')}</Button>
-                      <Button type="button" size="sm" variant="ghost" onClick={() => setIsEditingStartOdometer(false)} className="h-6 px-2 text-xs">✕</Button>
+                    <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                      <strong className="shrink-0">{tr('Start Odometer:', 'Kilométrage départ :')}</strong>
+                      <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+                        <input
+                          type="number"
+                          value={startOdometerEditValue}
+                          onChange={e => setStartOdometerEditValue(e.target.value)}
+                          className="min-w-0 flex-1 border border-gray-300 rounded px-2 py-1 text-sm sm:w-28 sm:flex-none"
+                          min={0}
+                          autoFocus
+                        />
+                        <span className="text-sm text-gray-500">km</span>
+                        <div className="flex items-center gap-2">
+                          <Button type="button" size="sm" onClick={handleEditStartOdometer} className="h-8 px-3 bg-blue-600 text-white text-xs">{tr('Save', 'Enregistrer')}</Button>
+                          <Button type="button" size="sm" variant="ghost" onClick={() => setIsEditingStartOdometer(false)} className="h-8 px-2 text-xs">✕</Button>
+                        </div>
+                      </div>
                     </div>
                   ) : (
-                    <>
+                    <div className="flex w-full items-start justify-between gap-2">
                       <p><strong>{tr('Start Odometer:', 'Kilométrage départ :')}</strong> {rental.start_odometer} km</p>
                       {isCompleted && ['admin', 'owner', 'employee'].includes(currentUser?.role) && (
                         <Button type="button" onClick={() => { setIsEditingStartOdometer(true); setStartOdometerEditValue(rental.start_odometer?.toString() || ''); }}
@@ -13210,28 +16150,38 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                           <Edit className="w-3 h-3" />
                         </Button>
                       )}
-                    </>
+                    </div>
                   )}
                 </div>
               )}
               {rental.ending_odometer && (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
                   {isEditingEndOdometer ? (
-                    <div className="flex items-center gap-1">
-                      <strong>{tr('End Odometer:', 'Kilométrage retour :')}</strong>
-                      <input ref={endOdometerEditInputRef} type="number" value={endOdometerEditValue}
-                        onChange={e => setEndOdometerEditValue(e.target.value)}
-                        className="w-24 border border-gray-300 rounded px-2 py-0.5 text-sm" min={0} autoFocus />
-                      <span className="text-sm text-gray-500">km</span>
-                      <Button type="button" size="sm" onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleSaveEndOdometer(endOdometerEditValue);
-                      }} className="h-6 px-2 bg-blue-600 text-white text-xs">{tr('Save', 'Enregistrer')}</Button>
-                      <Button type="button" size="sm" variant="ghost" onClick={() => setIsEditingEndOdometer(false)} className="h-6 px-2 text-xs">✕</Button>
+                    <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                      <strong className="shrink-0">{tr('End Odometer:', 'Kilométrage retour :')}</strong>
+                      <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+                        <input
+                          ref={endOdometerEditInputRef}
+                          type="number"
+                          value={endOdometerEditValue}
+                          onChange={e => setEndOdometerEditValue(e.target.value)}
+                          className="min-w-0 flex-1 border border-gray-300 rounded px-2 py-1 text-sm sm:w-28 sm:flex-none"
+                          min={0}
+                          autoFocus
+                        />
+                        <span className="text-sm text-gray-500">km</span>
+                        <div className="flex items-center gap-2">
+                          <Button type="button" size="sm" onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleSaveEndOdometer(endOdometerEditValue);
+                          }} className="h-8 px-3 bg-blue-600 text-white text-xs">{tr('Save', 'Enregistrer')}</Button>
+                          <Button type="button" size="sm" variant="ghost" onClick={() => setIsEditingEndOdometer(false)} className="h-8 px-2 text-xs">✕</Button>
+                        </div>
+                      </div>
                     </div>
                   ) : (
-                    <>
+                    <div className="flex w-full items-start justify-between gap-2">
                       <p><strong>{tr('End Odometer:', 'Kilométrage retour :')}</strong> {rental.ending_odometer} km</p>
                       {isCompleted && ['admin', 'owner', 'employee'].includes(currentUser?.role) && (
                         <Button type="button" onClick={() => { setIsEditingEndOdometer(true); setEndOdometerEditValue(rental.ending_odometer?.toString() || ''); }}
@@ -13239,7 +16189,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                           <Edit className="w-3 h-3" />
                         </Button>
                       )}
-                    </>
+                    </div>
                   )}
                 </div>
               )}
@@ -13416,127 +16366,123 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             )}
           </div>
 
-            {/* ========== PACKAGE SUMMARY - OVERRIDES TIER PRICING ========== */}
-            {(rental.package || packageDetails) && (
-              <div className="mt-4 p-4 bg-purple-50 rounded-xl border-2 border-purple-200">
-                <div className="flex items-center gap-2 mb-3">
-                  <Package className="w-5 h-5 text-purple-600" />
-                  <h4 className="font-semibold text-purple-900">{tr('Selected Package', 'Forfait sélectionné')}</h4>
-                  <span className="text-xs bg-purple-200 text-purple-700 px-2 py-0.5 rounded-full ml-auto">
-                    {tr('Package Applied', 'Forfait appliqué')}
-                  </span>
-                </div>
-                
-                {(() => {
-                  const pkg = packageDetails || rental?.package;
-                  if (!pkg) return null;
-                  const packageRate = parseFloat(pkg.fixed_amount) || rental.unit_price || 0;
-                  const duration = getRentalDurationUnits(rental);
-                  const packageTotal = packageRate;
-                  
-                  return (
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-600">{tr('Package:', 'Forfait :')}</span>
-                        <span className="text-sm font-bold text-purple-700">{pkg.name || tr('Kilometer Package', 'Forfait kilométrique')}</span>
-                      </div>
-                      
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-600">{tr('Package price:', 'Prix du forfait :')}</span>
-                        <span className="text-sm font-bold text-gray-900">{packageRate.toFixed(2)} MAD</span>
-                      </div>
-                      
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-600">{tr('Duration:', 'Durée :')}</span>
-                        <span className="text-sm font-bold text-gray-900">
-                          {duration} {duration > 1 ? (rental.rental_type === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')) : (rental.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour'))}
-                        </span>
-                      </div>
-                      
-                      <div className="flex justify-between items-center pt-2 border-t border-purple-200">
-                        <span className="text-base font-semibold text-purple-900">{tr('Package Total:', 'Total forfait :')}</span>
-                        <span className="text-xl font-bold text-purple-700">
-                          {packageTotal.toFixed(2)} MAD
-                        </span>
-                      </div>
-
-                      {/* Package Features */}
-                      <div className="grid grid-cols-2 gap-2 mt-2">
-                        {pkg.included_kilometers && (
-                          <div className="bg-green-50 px-3 py-2 rounded-lg border border-green-100">
-                            <div className="text-xs text-green-600 font-medium">✓ {tr('Included KM', 'KM inclus')}</div>
-                            <div className="text-sm font-bold text-green-700">{pkg.included_kilometers} km</div>
-                          </div>
-                        )}
-                        {pkg.extra_km_rate > 0 && (
-                          <div className="bg-orange-50 px-3 py-2 rounded-lg border border-orange-100">
-                            <div className="text-xs text-orange-600 font-medium">{tr('Extra KM rate', 'Tarif km supplémentaire')}</div>
-                            <div className="text-sm font-bold text-orange-600">{pkg.extra_km_rate} MAD/km</div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Overage Calculation if applicable */}
-                      {rental.total_kilometers_driven > 0 && pkg.included_kilometers && (
-                        <div className="mt-2 text-xs bg-white p-2 rounded border border-purple-100">
-                          <div className="flex items-start gap-2">
-                            <Info className="w-4 h-4 text-purple-500 mt-0.5 flex-shrink-0" />
-                            <div>
-                              <span className="font-medium text-gray-700">{tr('Distance summary:', 'Résumé distance :')} </span>
-                              <span>{rental.total_kilometers_driven} km driven</span>
-                              {rental.total_kilometers_driven > pkg.included_kilometers ? (
-                                <span className="text-orange-600 block mt-1">
-                                  ⚠️ {tr('Extra:', 'Supplément :')} {rental.total_kilometers_driven - pkg.included_kilometers} km × {pkg.extra_km_rate} MAD = {' '}
-                                  {((rental.total_kilometers_driven - pkg.included_kilometers) * pkg.extra_km_rate).toFixed(2)} MAD
-                                </span>
-                              ) : (
-                                <span className="text-green-600 block mt-1">
-                                  ✓ {tr('Within package limit', 'Dans la limite du forfait')} ({pkg.included_kilometers} km)
-                                </span>
-                              )}
-                            </div>
-                          </div>
+            {simplePricingSummary && hasBookedKilometerPackage && (
+              <div className="mt-4 grid gap-4">
+                <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Package className="h-5 w-5 text-violet-600" />
+                    <h4 className="font-semibold text-violet-900">{tr('Selected package', 'Forfait sélectionné')}</h4>
+                  </div>
+                  <div className="space-y-3 text-sm">
+                    <div className="rounded-2xl border border-violet-100 bg-white p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                        {tr('Package path', 'Parcours forfait')}
+                      </p>
+                      <div className="mt-3 grid gap-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-600">{tr('Original rental', 'Location initiale')}</span>
+                          <span className="text-right font-bold text-slate-900">
+                            {originalKilometerPackageName || tr('No package linked', 'Aucun forfait lié')}
+                            {bookedPackageLimitKm > 0 ? ` · ${bookedPackageLimitKm} km` : ''}
+                            {originalKilometerPackagePrice > 0 ? ` · ${formatCurrency(originalKilometerPackagePrice)} MAD` : ''}
+                          </span>
                         </div>
-                      )}
+                        {kilometerPackageApplication.upgraded ? (
+                          <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                            <span className="text-emerald-700">{tr('Auto upgrade applied', 'Surclassement auto appliqué')}</span>
+                            <span className="text-right font-extrabold text-emerald-800">
+                              {appliedKilometerPackageName}
+                              {Number.isFinite(kilometerPackageApplication.appliedLimit)
+                                ? ` · ${kilometerPackageApplication.appliedLimit} km`
+                                : ` · ${tr('Unlimited', 'Illimité')}`}
+                              {appliedKilometerPackagePrice > 0 ? ` · ${formatCurrency(appliedKilometerPackagePrice)} MAD` : ''}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
-                  );
-                })()}
-              </div>
-            )}
-
-            {/* Only show Tier Pricing if NO package is selected and it is a real discounted tier */}
-            {!rental.package && !packageDetails && tierPricingBreakdown?.isDiscounted && (rental?.rental_type === 'hourly' || rental?.rental_type === 'daily') && (
-              <div className="col-span-1 sm:col-span-2 mt-4">
-                <TierPricingDisplay 
-                  breakdown={tierPricingBreakdown} 
-                  isMobile={window.innerWidth < 640} 
-                />
-              </div>
-            )}
-
-            {/* If no package and no discounted tier pricing, show standard/base rate info */}
-            {!rental.package && !packageDetails && (!tierPricingBreakdown || !tierPricingBreakdown.isDiscounted) && (
-              <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-200">
-                <div className="flex items-start gap-3">
-                  <Info className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
-                  <div>
-                    <h4 className="font-medium text-blue-900">
-                        {isFlatHourlyTierRental(rental, packageDetails)
-                          ? tr('Fixed 1.5-hour tier applied', 'Palier fixe 1,5 heure appliqué')
-                          : rental.rental_type === 'daily'
-                            ? tr('Base Daily Rate Applied', 'Tarif journalier de base appliqué')
-                            : tr('Standard Rate Applied', 'Tarif standard appliqué')}
-                    </h4>
-                    <p className="text-sm text-blue-700 mt-1">
-                      {isFlatHourlyTierRental(rental, packageDetails)
-                        ? `${formatRentalDurationLabel(rental, isFrench)} ${tr('rental with a flat tier total of', 'de location avec un total fixe de')} ${Number(rental.unit_price || 0).toFixed(0)} MAD`
-                        : `${formatRentalDurationLabel(rental, isFrench)} ${tr('rental at', 'de location à')} ${Number(rental.unit_price || 0).toFixed(0)} MAD${rental.rental_type === 'hourly' ? '/heure' : '/jour'}`}
-                    </p>
-                    {tierPricingBreakdown?.isSamePrice && rental.rental_type === 'daily' && (
-                      <p className="text-xs text-blue-600 mt-2">
-                        {tr('This rental is using the normal base daily price, so no tier discount breakdown applies.', 'Cette location utilise le tarif journalier de base normal ; aucun détail de remise par palier ne s’applique.')}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-slate-600">{tr('KM used', 'KM utilisés')}</span>
+                      <span className="font-semibold text-slate-900">{Number(simplePricingSummary.kmUsed || 0).toFixed(2)} km</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-slate-600">{tr('Applied limit', 'Limite appliquée')}</span>
+                      <span className="font-semibold text-slate-900">
+                        {Number.isFinite(kilometerPackageApplication.appliedLimit) && kilometerPackageApplication.appliedLimit > 0
+                          ? `${kilometerPackageApplication.appliedLimit} km`
+                          : kilometerPackageApplication.appliedPackage
+                            ? tr('Unlimited', 'Illimité')
+                            : '—'}
+                      </span>
+                    </div>
+                    {kilometerPackageApplication.upgraded ? (
+                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-xs font-medium text-emerald-800">
+                        {tr(
+                          `Upgraded because ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km passed the original ${bookedPackageLimitKm} km limit. Billing now follows ${appliedKilometerPackageName} at ${formatCurrency(appliedKilometerPackagePrice)} MAD.`,
+                          `Surclassé car ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km dépasse la limite initiale de ${bookedPackageLimitKm} km. La facturation suit maintenant ${appliedKilometerPackageName} à ${formatCurrency(appliedKilometerPackagePrice)} MAD.`
+                        )}
+                      </div>
+                    ) : autoMatchedPackageDiffers ? (
+                      <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
+                        {tr('Package upgrade is available from distance used.', 'Un surclassement forfait est disponible selon la distance utilisée.')}
+                      </p>
+                    ) : simplePricingSummary.packageOverflowKm > 0 ? (
+                      <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                        {tr(
+                          `Highest package reached. ${simplePricingSummary.packageOverflowKm} km sits above the current package limit and can be handled later as an overage rule.`,
+                          `Le plus grand forfait a été atteint. ${simplePricingSummary.packageOverflowKm} km dépassent la limite actuelle et pourront être traités plus tard comme règle de dépassement.`
+                        )}
+                      </p>
+                    ) : (
+                      <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
+                        {tr('Best package selected automatically from the distance used.', 'Le meilleur forfait a été sélectionné automatiquement selon la distance utilisée.')}
                       </p>
                     )}
+                    {String(rental?.rental_type || '').toLowerCase() === 'hourly' && (
+                      <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
+                        {tr(
+                          `Late return rule: if a 1-hour rental goes more than ${simplePricingSummary.gracePeriodMinutes} minutes late, a second hour is charged automatically.`,
+                          `Règle de retard : si une location de 1 heure dépasse la période de grâce de ${simplePricingSummary.gracePeriodMinutes} minutes, une deuxième heure est facturée automatiquement.`
+                        )}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {!hasBookedKilometerPackage && tierPricingBreakdown?.standardHourlyRate > 0 && (
+              <div className="mt-4 grid gap-4">
+                <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Calculator className="h-5 w-5 text-sky-600" />
+                    <h4 className="font-semibold text-sky-900">{tr('Base price selected', 'Tarif de base sélectionné')}</h4>
+                  </div>
+                  <div className="rounded-2xl border border-sky-100 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-500">
+                      {tr('Standard rental', 'Location standard')}
+                    </p>
+                    <div className="mt-3 flex items-center justify-between gap-3">
+                      <span className="text-slate-600">
+                        {tierPricingBreakdown.isDaily
+                          ? tr('Base daily price', 'Tarif journalier de base')
+                          : tr('Base hourly price', 'Tarif horaire de base')}
+                      </span>
+                      <span className="text-right font-extrabold text-slate-900">
+                        {tierPricingBreakdown.isDaily
+                          ? `${tierPricingBreakdown.duration} ${tierPricingBreakdown.duration > 1 ? tr('days', 'jours') : tr('day', 'jour')}`
+                          : tierPricingBreakdown.duration === 0.5
+                            ? tr('30 min', '30 min')
+                            : tierPricingBreakdown.duration === 1.5
+                              ? tr('1.5 hours', '1,5 heures')
+                              : `${tierPricingBreakdown.duration} ${tierPricingBreakdown.duration > 1 ? tr('hours', 'heures') : tr('hour', 'heure')}`} · {formatCurrency(tierPricingBreakdown.standardHourlyRate)} MAD
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs font-medium text-sky-700">
+                      {tr(
+                        'This rental follows the standard model price with no kilometer package attached.',
+                        "Cette location suit le tarif standard du modèle sans forfait kilométrique lié."
+                      )}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -13549,18 +16495,20 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
    {rental.started_at && <span className="text-green-600 text-xs ml-2">({tr('Actual', 'Réel')})</span>}</p>
               <p><strong>{tr('End:', 'Fin :')}</strong> {
                 (() => {
-                  // Use the latest of rental_end_date and actual_end_date (both updated by extensions)
-                  const endDate = new Date(rental.rental_end_date);
-                  const actualDate = rental.actual_end_date ? new Date(rental.actual_end_date) : null;
-                  // Pick whichever is later to ensure we show the most current end date
-                  const displayDate = actualDate && actualDate > endDate ? actualDate : endDate;
+                  const displayEndValue = getRentalDisplayEndTime(rental);
+                  const displayDate = new Date(displayEndValue || '');
+                  if (Number.isNaN(displayDate.getTime())) {
+                    return tr('Not scheduled', 'Non planifié');
+                  }
                   return displayDate.toLocaleString(isFrench ? 'fr-FR' : 'en-US');
                 })()
               }
    {(() => {
      const hasExt = rental.extensions?.some(e => e.status === 'approved');
      if (hasExt) return <span className="text-green-600 text-xs ml-2">({tr('Extended', 'Prolongée')})</span>;
-     if (rental.actual_end_date) return <span className="text-blue-600 text-xs ml-2">({tr('Adjusted', 'Ajustée')})</span>;
+     if ((String(rental?.rental_status || '').toLowerCase() === 'completed' || rental?.completed_at) && rental.actual_end_date) {
+       return <span className="text-blue-600 text-xs ml-2">({tr('Adjusted', 'Ajustée')})</span>;
+     }
      return <span className="text-gray-500 text-xs ml-2">({tr('Scheduled', 'Planifiée')})</span>;
    })()}</p>
               <p><strong>{tr('Type:', 'Type :')}</strong> 
@@ -13603,7 +16551,17 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           <div>
             <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Financial Information', 'Informations financières')}</h3>
             {!isEditingPrice && canEditLifecycleRentalPrice && (
-              <div className="mb-4 flex justify-end">
+              <div className="mb-4 flex flex-wrap justify-end gap-2">
+                <Button
+                  type="button"
+                  onClick={handleEditAmountDue}
+                  size="sm"
+                  variant="outline"
+                  className="border-violet-200 text-violet-700 hover:bg-violet-50"
+                >
+                  <DollarSign className="mr-2 h-4 w-4" />
+                  {tr('Edit Amount Due', 'Modifier le montant restant dû')}
+                </Button>
                 <Button
                   type="button"
                   onClick={handleEditPrice}
@@ -13718,7 +16676,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     </div>
   )}
 
-  {hasAppliedManualPriceOverride && (
+  {hasMeaningfulManualPriceOverride && (
     <div className="mb-4 rounded-2xl border border-violet-200 bg-violet-50/80 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.08)]">
       <div className="flex items-start gap-2">
         <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-violet-600" />
@@ -13743,17 +16701,6 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <strong>{formatCurrency(effectivePriceOverrideMeta?.newPrice || rental.total_amount || 0)} MAD</strong>
             </p>
           )}
-          {(effectivePriceOverrideMeta?.previousPrice > 0 || effectivePriceOverrideMeta?.newPrice > 0) && (
-            <p className="mt-1">
-              {tr('Price change:', 'Changement de prix :')}{' '}
-              <strong>{formatCurrency(effectivePriceOverrideMeta?.previousPrice || 0)} MAD</strong>
-              {' → '}
-              <strong>{formatCurrency(effectivePriceOverrideMeta?.newPrice || rental.total_amount || 0)} MAD</strong>
-            </p>
-          )}
-          <p className="mt-1">
-            {tr('Current contract price:', 'Prix actuel du contrat :')} <strong>{formatCurrency(rental.total_amount || 0)} MAD</strong>
-          </p>
           {priceOverrideNoteText && (
             <p className="mt-1">
               {tr('Override note:', 'Note de modification :')} {priceOverrideNoteText}
@@ -13764,113 +16711,66 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     </div>
   )}
 
-  {!isEditingPrice ? (
+  {amountDueAuditMeta && (
+    <div className="mb-4 rounded-[24px] border border-emerald-200 bg-emerald-50/80 p-4 shadow-[0_12px_30px_rgba(16,185,129,0.08)]">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-700">
+            {tr('Balance resolved', 'Solde résolu')}
+          </p>
+          <p className="mt-1 text-sm font-semibold text-emerald-950">
+            {tr('Payment and discount recorded', 'Paiement et remise enregistrés')}
+          </p>
+          {amountDueAuditMeta.editedByName && (
+            <p className="mt-1 text-xs text-emerald-700">
+              {tr('By', 'Par')} <strong>{amountDueAuditMeta.editedByName}</strong>
+            </p>
+          )}
+        </div>
+        <div className="rounded-2xl border border-emerald-200 bg-white px-4 py-3 text-right">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+            {tr('Final due', 'Solde final')}
+          </p>
+          <p className="mt-1 text-2xl font-extrabold text-emerald-700">
+            {formatCurrency(amountDueAuditMeta.newAmount || rental?.remaining_amount || 0)} MAD
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-4">
+        <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
+          <p className="text-xs font-medium text-slate-500">{tr('Original due', 'Solde initial')}</p>
+          <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(amountDueAuditMeta.previousAmount || 0)} MAD</p>
+        </div>
+        <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
+          <p className="text-xs font-medium text-slate-500">{tr('Customer paid', 'Payé client')}</p>
+          <p className="mt-1 text-lg font-bold text-emerald-700">
+            {formatCurrency(amountDueAuditMeta.paymentReceivedNow || 0)} MAD
+          </p>
+        </div>
+        <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
+          <p className="text-xs font-medium text-slate-500">{tr('Discount', 'Remise')}</p>
+          <p className="mt-1 text-lg font-bold text-violet-700">
+            -{formatCurrency(amountDueAuditMeta.companyDiscount || 0)} MAD
+          </p>
+        </div>
+        <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
+          <p className="text-xs font-medium text-slate-500">{tr('Still due', 'Encore dû')}</p>
+          <p className="mt-1 text-lg font-bold text-slate-900">
+            {formatCurrency(amountDueAuditMeta.newAmount || rental?.remaining_amount || 0)} MAD
+          </p>
+        </div>
+      </div>
+      {amountDueAuditMeta.note && (
+        <p className="mt-3 text-xs text-emerald-800">
+          {tr('Note:', 'Note :')} {amountDueAuditMeta.note}
+        </p>
+      )}
+    </div>
+  )}
+
+  {!isEditingPrice && !isEditingAmountDue ? (
     <div className="space-y-3 text-sm sm:text-base">
-      {/* Package Information Display - OVERRIDES tier pricing */}
-      {getRentalKilometerPackage(rental, packageDetails) ? (
-        (() => {
-          const pkg = getRentalKilometerPackage(rental, packageDetails);
-          if (!pkg) return null;
-          
-          const packageRate = parseFloat(pkg.fixed_amount) || rental.unit_price || 0;
-          const duration = getRentalDurationUnits(rental);
-          const packageTotal = packageRate;
-          
-          // Package limits are fixed per selected offer.
-          const totalIncludedKm = pkg.included_kilometers || null;
-          
-          return (
-            <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-4 mb-3">
-              <h4 className="font-semibold text-purple-900 mb-3 flex items-center gap-2">
-                <Package className="w-5 h-5" />
-                {tr('Package Applied:', 'Forfait appliqué :')} {pkg.name || tr('Kilometer Package', 'Forfait kilométrique')}
-              </h4>
-              
-              <div className="space-y-3">
-                {/* Rate and Duration */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="bg-white p-3 rounded-lg border border-purple-100">
-                    <div className="text-xs text-purple-600 mb-1">{tr('Package price', 'Prix du forfait')}</div>
-                    <div className="text-lg font-bold text-gray-900">{packageRate.toFixed(2)} MAD</div>
-                  </div>
-                  
-                  <div className="bg-white p-3 rounded-lg border border-purple-100">
-                    <div className="text-xs text-purple-600 mb-1">{tr('Duration', 'Durée')}</div>
-                    <div className="text-lg font-bold text-gray-900">
-                      {duration} {duration > 1 ? (rental.rental_type === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')) : (rental.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour'))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Package Features */}
-                <div className="grid grid-cols-2 gap-3">
-                  {pkg.included_kilometers && (
-                    <div className="bg-green-50 p-3 rounded-lg border border-green-200">
-                      <div className="flex flex-col">
-                        <span className="text-xs text-green-600 font-medium">{tr('Included', 'Inclus')}</span>
-                        <span className="text-sm font-bold text-green-700">{pkg.included_kilometers} km</span>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {totalIncludedKm && (
-                    <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
-                      <div className="flex flex-col">
-                        <span className="text-xs text-blue-600 font-medium">{tr('Included limit', 'Limite incluse')}</span>
-                        <span className="text-lg font-bold text-blue-700">{totalIncludedKm} km</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Extra KM Rate */}
-                {pkg.extra_km_rate > 0 && (
-                  <div className="bg-orange-50 p-3 rounded-lg border border-orange-200">
-                    <div className="flex items-center justify-between">
-                    <span className="text-sm text-orange-700">{tr('Extra KM rate:', 'Tarif km supplémentaire :')}</span>
-                      <span className="text-lg font-bold text-orange-600">{parseFloat(pkg.extra_km_rate).toFixed(2)} MAD/km</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Package Total */}
-                <div className="bg-purple-100 p-4 rounded-lg border-2 border-purple-300">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-sm font-medium text-purple-800">{tr('Package Total', 'Total du forfait')}</span>
-                      <div className="text-xs text-purple-600 mt-1">
-                        {tr('Fixed package price', 'Prix du forfait fixe')}
-                      </div>
-                    </div>
-                    <span className="text-2xl font-bold text-purple-800">
-                      {packageTotal.toFixed(2)} MAD
-                    </span>
-                  </div>
-                </div>
-
-                {/* Info Note */}
-                <div className="text-xs text-gray-500 bg-white p-2 rounded border border-purple-100">
-                  <div className="flex items-start gap-2">
-                    <Info className="w-4 h-4 text-purple-500 mt-0.5 flex-shrink-0" />
-                    <div>
-                      <span className="font-medium text-gray-700">{tr('Package summary:', 'Résumé du forfait :')} </span>
-                      {pkg.included_kilometers ? (
-                        <>
-                          {tr('Total included kilometers:', 'Kilomètres inclus au total :')} {totalIncludedKm} km ({pkg.included_kilometers} km &times; {duration} {duration > 1 ? (rental.rental_type === 'hourly' ? tr('hours', 'heures') : tr('days', 'jours')) : (rental.rental_type === 'hourly' ? tr('hour', 'heure') : tr('day', 'jour'))})
-                          {pkg.extra_km_rate > 0 && ` • ${tr('Extra:', 'Supplément :')} ${pkg.extra_km_rate} MAD/km`}
-                        </>
-                      ) : (
-                        `${tr('No kilometer limit', 'Aucune limite kilométrique')} • ${tr('Extra rate:', 'Tarif supplémentaire :')} ${pkg.extra_km_rate} MAD/km`
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })()
-      ) : null}
-
       {/* Single Distance & Overage Calculation */}
       {rental.total_kilometers_driven > 0 && (
           <div className="mb-3 rounded-2xl border border-violet-100 bg-slate-50/70 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
@@ -13897,7 +16797,20 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
   const pkg = getRentalKilometerPackage(rental, packageDetails);
   if (!pkg) return null;
 
-  if (!includedKilometers || !extraKmRate) {
+  const packageApplication = selectAppliedKilometerPackage({
+    rental,
+    bookedPackage: pkg,
+    packageDetails,
+    availablePackages: availableKmPackages,
+    gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
+    totalDistance: rental.total_kilometers_driven || 0,
+  });
+  const displayIncludedKilometers = Number.isFinite(packageApplication.appliedLimit)
+    ? Number(packageApplication.appliedLimit || includedKilometers || 0)
+    : Number.POSITIVE_INFINITY;
+  const displayExtraKmRate = Number.parseFloat(packageApplication.appliedExtraRate || extraKmRate || 0) || 0;
+
+  if (!displayIncludedKilometers || (!displayExtraKmRate && Number.isFinite(displayIncludedKilometers))) {
     return (
       <div className="bg-yellow-50 rounded-lg p-3">
         <p className="text-sm text-yellow-700">⚠️ Package rates not configured.</p>
@@ -13906,16 +16819,32 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
   }
   
   const totalKm = rental.total_kilometers_driven || 0;
-  const extraKm = Math.max(0, totalKm - includedKilometers);
-  const overageCharge = extraKm * extraKmRate;
+  const extraKm = Math.max(0, totalKm - displayIncludedKilometers);
+  const overageCharge = extraKm * displayExtraKmRate;
   
   return (
     <div className={`${extraKm > 0 ? 'bg-amber-50 border border-amber-200' : 'bg-emerald-50 border border-emerald-200'} rounded-2xl p-3`}>
       <div className="space-y-2">
         <div className="flex justify-between text-sm">
           <span>{tr('Package limit:', 'Limite forfait :')}</span>
-          <span className="font-medium">{includedKilometers} km</span>
+          <span className="font-medium">
+            {Number.isFinite(displayIncludedKilometers) ? `${displayIncludedKilometers} km` : tr('Unlimited', 'Illimité')}
+          </span>
         </div>
+        {packageApplication.upgraded && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+            <div>
+              {tr(
+                `Auto-upgraded from ${getKilometerPackageName(packageApplication.originalPackage, 'original package')} to ${getKilometerPackageName(packageApplication.appliedPackage, 'upgraded package')}.`,
+                `Surclassé automatiquement de ${getKilometerPackageName(packageApplication.originalPackage, 'forfait initial')} vers ${getKilometerPackageName(packageApplication.appliedPackage, 'forfait supérieur')}.`
+              )}
+            </div>
+            <div className="mt-1 text-xs text-emerald-800">
+              {tr('Applied package price:', 'Prix du forfait appliqué :')}{' '}
+              <span className="font-extrabold">{formatCurrency(packageApplication.appliedPrice)} MAD</span>
+            </div>
+          </div>
+        )}
         {extraKm > 0 ? (
           <>
             <div className="flex justify-between text-sm text-orange-600">
@@ -13923,13 +16852,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <span className="font-medium">+{extraKm} km</span>
             </div>
             <div className="flex justify-between text-base font-bold border-t border-orange-200 pt-2">
-              <span>{tr('Overage', 'Surcoût')} ({extraKmRate} MAD/km):</span>
+              <span>{tr('Overage', 'Surcoût')} ({displayExtraKmRate} MAD/km):</span>
               <span className="text-red-600">+{overageCharge.toFixed(2)} MAD</span>
             </div>
           </>
         ) : (
           <div className="text-sm text-green-600 font-medium">
-            ✅ {tr('Within package limit', 'Dans la limite du forfait')} ({totalKm} km ≤ {includedKilometers} km)
+            ✅ {tr('Within package limit', 'Dans la limite du forfait')} ({totalKm} km ≤ {displayIncludedKilometers} km)
           </div>
         )}
       </div>
@@ -14112,9 +17041,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
       {/* Financial Breakdown - Single Source */}
       <div className="space-y-2">
-        {/* Base Rental Rate - Use package rate when available */}
+        {/* Base rental/package price */}
         <div className="flex justify-between">
-          <span className="text-gray-600">{tr('Base Rental Rate:', 'Tarif de base location :')}</span>
+          <span className="text-gray-600">
+            {getRentalKilometerPackage(rental, packageDetails)
+              ? tr('Package price:', 'Prix du forfait :')
+              : tr('Base Rental Rate:', 'Tarif de base location :')}
+          </span>
           <span className="font-medium">
             {formatCurrency(rentalBillingSummary.baseAmount)} MAD
           </span>
@@ -14246,7 +17179,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
               <div className="rounded-lg border border-amber-200 bg-white p-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">{tr('Rental Already Paid', 'Location déjà payée')}</p>
-                <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(rentalBillingSummary.depositPaid)} MAD</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(rentalBillingSummary.customerPaidAmount)} MAD</p>
               </div>
               <div className="rounded-lg border border-amber-200 bg-white p-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">{tr('Security Deposit Held', 'Dépôt de garantie retenu')}</p>
@@ -14311,7 +17244,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
             <div className="flex justify-between text-sm">
               <span className="text-gray-600">{tr('Amount Paid:', 'Montant payé :')}</span>
-              <span className="font-medium">{formatCurrency(rentalBillingSummary.depositPaid)} MAD</span>
+              <span className="font-medium">{formatCurrency(rentalBillingSummary.customerPaidAmount)} MAD</span>
             </div>
 
             {rentalBillingSummary.autoDepositSeizedAmount > 0 && (
@@ -14639,57 +17572,247 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       </div>
     </div>
   ) : canEditRentalPriceOverride ? (
-    <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
-      <h4 className="font-semibold text-gray-900">{tr('Edit Price', 'Modifier le prix')}</h4>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          {tr('New Price (MAD)', 'Nouveau prix (MAD)')}
-        </label>
-        <input
-          type="number"
-          value={manualPrice}
-          onChange={(e) => setManualPrice(e.target.value)}
-          placeholder={tr('Enter new price', 'Saisir le nouveau prix')}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          min="0"
-          step="0.01"
-        />
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          {tr('Reason for Override', 'Raison de la modification')}
-        </label>
-        <textarea
-          value={priceOverrideReason}
-          onChange={(e) => setPriceOverrideReason(e.target.value)}
-          placeholder={tr('Enter reason for price change', 'Saisir la raison du changement de prix')}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          rows={2}
-        />
-      </div>
-      <div className="flex gap-2">
-        <Button
-          onClick={handleSaveManualPrice}
-          className="rounded-lg bg-violet-700 hover:bg-violet-800 text-white"
-          size="sm"
-          disabled={isSavingPrice}
-        >
-          {isSavingPrice ? (
-            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
-          ) : (
-            <Save className="w-4 h-4 mr-2" />
-          )}
-          {isSavingPrice ? tr('Saving...', 'Enregistrement...') : tr('Save Price', 'Enregistrer le prix')}
-        </Button>
-        <Button
-          onClick={handleCancelEditPrice}
-          variant="outline"
-          size="sm"
-        >
-          <X className="w-4 h-4 mr-2" />
-          {tr('Cancel', 'Annuler')}
-        </Button>
-      </div>
+    <div className="space-y-3">
+      {isEditingAmountDue && (
+        <div className="space-y-4 rounded-[28px] border border-violet-200 bg-[linear-gradient(180deg,rgba(250,245,255,0.96),rgba(255,255,255,0.98))] p-5 shadow-[0_20px_60px_rgba(109,40,217,0.10)]">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
+                {tr('Balance Resolution', 'Résolution du solde')}
+              </p>
+              <h4 className="mt-1 text-lg font-semibold text-slate-900">
+                {tr('Edit Amount Due', 'Modifier le montant restant dû')}
+              </h4>
+              <p className="mt-1 text-sm text-slate-500">
+                {tr(
+                  'Record what the customer paid, what we discounted, and confirm the final balance.',
+                  'Enregistrez ce que le client a payé, ce que nous avons remisé, puis confirmez le solde final.'
+                )}
+              </p>
+            </div>
+            <div className="rounded-full border border-violet-200 bg-white px-4 py-2 text-right shadow-sm">
+              <span className="block text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+                {tr('Current due', 'Solde actuel')}
+              </span>
+              <span className="mt-1 block text-xl font-extrabold text-slate-900">
+                {formatCurrency(currentAmountDueForEdit)} MAD
+              </span>
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[1fr_auto_1fr_auto_1fr] lg:items-stretch">
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                {tr('Before', 'Avant')}
+              </span>
+              <p className="mt-3 text-sm font-medium text-slate-500">
+                {tr('Amount still due', 'Montant restant dû')}
+              </p>
+              <p className="mt-1 text-2xl font-extrabold text-slate-900">
+                {formatCurrency(currentAmountDueForEdit)} MAD
+              </p>
+            </div>
+
+            <div className="hidden items-center justify-center lg:flex">
+              <div className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 shadow-sm">
+                {tr('Resolve', 'Résoudre')}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 px-4 py-4 shadow-[0_16px_36px_rgba(16,185,129,0.10)]">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-600">
+                {tr('Customer paid', 'Client payé')}
+              </span>
+              <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-3 py-3">
+                <label className="mb-2 block text-xs font-medium text-slate-500">
+                  {tr('Payment received now', 'Paiement reçu maintenant')}
+                </label>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-emerald-600">MAD</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={amountDuePaymentReceivedNow}
+                    onChange={(e) => {
+                      const normalizedValue = normalizeMoneyInputValue(e.target.value);
+                      const value = Math.max(0, Number(normalizedValue) || 0);
+                      setAmountDuePaymentReceivedNow(normalizedValue);
+                      setManualAmountDue(Math.max(0, currentAmountDueForEdit - value - amountDueCompanyDiscountValue).toString());
+                    }}
+                    placeholder="0"
+                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="hidden items-center justify-center lg:flex">
+              <div className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 shadow-sm">
+                {tr('And', 'Et')}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-violet-200 bg-violet-50/90 px-4 py-4 shadow-[0_16px_36px_rgba(139,92,246,0.10)]">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">
+                {tr('We discounted', 'Nous avons remisé')}
+              </span>
+              <div className="mt-3 rounded-2xl border border-violet-200 bg-white px-3 py-3">
+                <label className="mb-2 block text-xs font-medium text-slate-500">
+                  {tr('Company discount', 'Remise entreprise')}
+                </label>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-violet-600">MAD</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={amountDueCompanyDiscount}
+                    onChange={(e) => {
+                      const normalizedValue = normalizeMoneyInputValue(e.target.value);
+                      const value = Math.max(0, Number(normalizedValue) || 0);
+                      setAmountDueCompanyDiscount(normalizedValue);
+                      setManualAmountDue(Math.max(0, currentAmountDueForEdit - amountDuePaymentReceivedValue - value).toString());
+                    }}
+                    placeholder="0"
+                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-2xl border border-blue-200 bg-blue-50/80 px-4 py-4 shadow-[0_16px_36px_rgba(59,130,246,0.08)]">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-600">
+                    {tr('Final balance', 'Solde final')}
+                  </span>
+                  <p className="mt-2 text-sm text-slate-500">
+                    {tr('You can keep the auto-calculated balance or fine-tune it if needed.', 'Vous pouvez garder le solde calculé automatiquement ou l’ajuster si nécessaire.')}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    {tr('Auto-calculated', 'Calcul automatique')}
+                  </p>
+                  <p className="mt-1 text-2xl font-extrabold text-blue-700">
+                    {formatCurrency(amountDueAutoCalculatedValue)} MAD
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 rounded-2xl border border-blue-200 bg-white px-3 py-3">
+                <label className="mb-2 block text-xs font-medium text-slate-500">
+                  {tr('New amount due', 'Nouveau montant restant dû')}
+                </label>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-blue-600">MAD</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={manualAmountDue}
+                    onChange={(e) => setManualAmountDue(normalizeMoneyInputValue(e.target.value))}
+                    placeholder="0"
+                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                {tr('Internal reason', 'Raison interne')}
+              </label>
+              <textarea
+                value={amountDueOverrideReason}
+                onChange={(e) => setAmountDueOverrideReason(e.target.value)}
+                placeholder={tr('Why are we changing this balance?', 'Pourquoi modifions-nous ce solde ?')}
+                className="min-h-[132px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-300"
+                rows={5}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              onClick={handleSaveAmountDue}
+              className="rounded-2xl bg-violet-700 px-5 py-2.5 text-white shadow-[0_16px_40px_rgba(109,40,217,0.24)] hover:bg-violet-800"
+              size="default"
+              disabled={isSavingAmountDue}
+            >
+              {isSavingAmountDue ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+              ) : (
+                <Save className="w-4 h-4 mr-2" />
+              )}
+              {isSavingAmountDue ? tr('Saving...', 'Enregistrement...') : tr('Resolve Balance', 'Valider le solde')}
+            </Button>
+            <Button
+              onClick={handleCancelEditAmountDue}
+              variant="outline"
+              size="default"
+              className="rounded-2xl border-slate-200 px-5 py-2.5"
+            >
+              <X className="w-4 h-4 mr-2" />
+              {tr('Cancel', 'Annuler')}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {isEditingPrice && (
+        <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
+          <h4 className="font-semibold text-gray-900">{tr('Edit Price', 'Modifier le prix')}</h4>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              {tr('New Price (MAD)', 'Nouveau prix (MAD)')}
+            </label>
+            <input
+              type="number"
+              value={manualPrice}
+              onChange={(e) => setManualPrice(e.target.value)}
+              placeholder={tr('Enter new price', 'Saisir le nouveau prix')}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              min="0"
+              step="0.01"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              {tr('Reason for Override', 'Raison de la modification')}
+            </label>
+            <textarea
+              value={priceOverrideReason}
+              onChange={(e) => setPriceOverrideReason(e.target.value)}
+              placeholder={tr('Enter reason for price change', 'Saisir la raison du changement de prix')}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              rows={2}
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button
+              onClick={handleSaveManualPrice}
+              className="rounded-lg bg-violet-700 hover:bg-violet-800 text-white"
+              size="sm"
+              disabled={isSavingPrice}
+            >
+              {isSavingPrice ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+              ) : (
+                <Save className="w-4 h-4 mr-2" />
+              )}
+              {isSavingPrice ? tr('Saving...', 'Enregistrement...') : tr('Save Price', 'Enregistrer le prix')}
+            </Button>
+            <Button
+              onClick={handleCancelEditPrice}
+              variant="outline"
+              size="sm"
+            >
+              <X className="w-4 h-4 mr-2" />
+              {tr('Cancel', 'Annuler')}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   ) : (
     <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg space-y-2">
@@ -14773,7 +17896,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     const pkg = getRentalKilometerPackage(rental, packageDetails);
     if (pkg && pkg.included_kilometers && pkg.extra_km_rate && rental.total_kilometers_driven > 0) {
       const totalKm = rental.total_kilometers_driven || 0;
-      includedKm = pkg.included_kilometers;
+      includedKm = getPackageTotalIncludedKilometers(rental, pkg);
       rate = pkg.extra_km_rate;
       extraKm = Math.max(0, totalKm - includedKm);
       overageCharge = extraKm * rate;
@@ -15220,6 +18343,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       recordingStream.getTracks().forEach(t => t.stop());
       setRecordingStream(null);
     }
+    capturedMedia.forEach(file => file.url && URL.revokeObjectURL(file.url));
+    setCapturedMedia([]);
+    setShowMediaReview(false);
   }
 }}>
   <DialogContent className="w-[100vw] h-[100vh] sm:w-[90vw] sm:max-w-md sm:h-auto p-0 m-0 rounded-none sm:rounded-lg">
@@ -15423,21 +18549,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   </button>
 
                   <button
-                    onClick={uploadFromGallery}
+                    onClick={() => uploadFromGallery('opening', 'photo')}
                     className="w-full py-4 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-medium text-lg flex items-center justify-center gap-2 mt-3"
                   >
                     <Upload className="w-5 h-5" />
                     {tr('Choose from Gallery', 'Choisir depuis la galerie')}
                   </button>
-                </div>
-
-                <div className="rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-3 text-left">
-                  <div className="flex items-start gap-2">
-                    <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
-                    <p className="text-sm text-amber-800">
-                      Reminder: include 1 photo of the vehicle documents. 📄
-                    </p>
-                  </div>
                 </div>
 
                 {/* Save Button - Only appears after at least one capture */}
@@ -15462,6 +18579,34 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     </button>
                   </div>
                 )}
+
+                <div className="sticky bottom-0 bg-white border-t p-4 mt-4 shadow-lg rounded-lg">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      if (openingVideoRef.current?.srcObject) {
+                        openingVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+                        openingVideoRef.current.srcObject = null;
+                      }
+                      if (recordingStream) {
+                        recordingStream.getTracks().forEach((t) => t.stop());
+                        setRecordingStream(null);
+                      }
+                      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                        mediaRecorder.stop();
+                      }
+                      setIsCapturingPhoto(false);
+                      setIsRecording(false);
+                      setMediaRecorder(null);
+                      setRecordedChunks([]);
+                      setOpeningModalOpen(false);
+                    }}
+                    className="w-full py-4 text-base font-semibold"
+                  >
+                    {tr('Cancel', 'Annuler')}
+                  </Button>
+                </div>
               </>
             ) : (
               /* Camera Preview Mode */
@@ -15654,7 +18799,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   </Button>
                   
                   <Button
-                    onClick={uploadFromGallery}
+                    onClick={() => uploadFromGallery('opening', 'video')}
                     className="w-full py-4 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-medium text-lg flex items-center justify-center gap-2"
                     disabled={isRecording || isConverting}
                   >
@@ -15685,6 +18830,34 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     </Button>
                   </div>
                 )}
+
+                <div className="sticky bottom-0 bg-white border-t p-4 mt-4 shadow-lg rounded-lg">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      if (openingVideoRef.current?.srcObject) {
+                        openingVideoRef.current.srcObject.getTracks().forEach((t) => t.stop());
+                        openingVideoRef.current.srcObject = null;
+                      }
+                      if (recordingStream) {
+                        recordingStream.getTracks().forEach((t) => t.stop());
+                        setRecordingStream(null);
+                      }
+                      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                        mediaRecorder.stop();
+                      }
+                      setIsCapturingPhoto(false);
+                      setIsRecording(false);
+                      setMediaRecorder(null);
+                      setRecordedChunks([]);
+                      setOpeningModalOpen(false);
+                    }}
+                    className="w-full py-4 text-base font-semibold"
+                  >
+                    {tr('Cancel', 'Annuler')}
+                  </Button>
+                </div>
               </>
             ) : (
               /* Recording UI with canvas preview */
@@ -15760,7 +18933,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       <div className="flex items-center justify-between">
         <DialogTitle className="flex items-center gap-2 text-base">
           <Video className="w-4 h-4 text-blue-600" />
-          {tr('Closing Condition', 'État de retour')}
+          {String(rental?.rental_status || '').toLowerCase() === 'completed'
+            ? tr('Vehicle Media', 'Médias véhicule')
+            : tr('Closing Condition', 'État de retour')}
         </DialogTitle>
         <Button
           variant="ghost"
@@ -15956,7 +19131,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   </button>
 
                   <button
-                    onClick={uploadFromGallery}
+                    onClick={() => uploadFromGallery('closing', 'photo')}
                     className="w-full py-4 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-medium text-lg flex items-center justify-center gap-2 mt-3"
                   >
                     <Upload className="w-5 h-5" />
@@ -15986,6 +19161,17 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     </button>
                   </div>
                 )}
+
+                <div className="sticky bottom-0 bg-white border-t p-4 mt-4 shadow-lg rounded-lg">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleCancelClosingInspectionModal}
+                    className="w-full py-4 text-base font-semibold"
+                  >
+                    {tr('Cancel', 'Annuler')}
+                  </Button>
+                </div>
               </>
             ) : (
               /* Camera Preview Mode */
@@ -16001,6 +19187,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   
                   {/* Camera Controls Overlay */}
                   <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-4">
+                    <button
+                      onClick={handleCancelClosingInspectionModal}
+                      className="px-4 py-2 bg-black/70 text-white rounded-full text-sm font-medium"
+                    >
+                      {tr('Cancel', 'Annuler')}
+                    </button>
                     <button
                       onClick={() => capturePhoto('closing')}
                       className={`w-20 h-20 rounded-full bg-white flex items-center justify-center shadow-lg active:scale-95 transition-transform ${captureFlash ? 'capture-flash' : ''}`}
@@ -16183,7 +19375,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   </Button>
                   
                   <Button
-                    onClick={uploadFromGallery}
+                    onClick={() => uploadFromGallery('closing', 'video')}
                     className="w-full py-4 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-medium text-lg flex items-center justify-center gap-2"
                     disabled={isRecording || isConverting}
                   >
@@ -16214,6 +19406,17 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     </Button>
                   </div>
                 )}
+
+                <div className="sticky bottom-0 bg-white border-t p-4 mt-4 shadow-lg rounded-lg">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleCancelClosingInspectionModal}
+                    className="w-full py-4 text-base font-semibold"
+                  >
+                    {tr('Cancel', 'Annuler')}
+                  </Button>
+                </div>
               </>
             ) : (
               /* Recording UI with canvas preview */
@@ -16257,6 +19460,17 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 <p className="text-xs text-center text-gray-500">
                   You can record multiple clips before saving
                 </p>
+
+                <div className="sticky bottom-0 bg-white border-t p-4 mt-4 shadow-lg rounded-lg">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleCancelClosingInspectionModal}
+                    className="w-full py-4 text-base font-semibold"
+                  >
+                    {tr('Cancel', 'Annuler')}
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -16267,6 +19481,88 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 </Dialog>
 
       {/* Starting Fuel Level Dialog - Step 4 of starting workflow (All rental types) */}
+      <Dialog
+        open={showLightStartOdometerModal}
+        onOpenChange={(open) => {
+          setShowLightStartOdometerModal(open);
+          if (!open) {
+            setIsEditingOdometer(false);
+            setStartOdometer(displayedStartingOdometer > 0 ? String(displayedStartingOdometer) : '');
+          }
+        }}
+      >
+        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]">
+          <DialogHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/40 to-slate-50 px-5 pb-4 pt-5 text-left">
+            <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-start gap-3">
+                <div className="rounded-[18px] border border-violet-100 bg-violet-50 p-3 text-violet-700 shadow-sm">
+                  <Gauge className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <DialogTitle className="text-[1.7rem] font-bold tracking-[-0.04em] text-slate-950">
+                    {tr('Starting Odometer', 'Kilométrage de départ')}
+                  </DialogTitle>
+                </div>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-4 px-5 pb-5 pt-4">
+            <div className="rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">
+                {tr('Current selection', 'Sélection actuelle')}
+              </p>
+              <p className="mt-3 text-[2.25rem] font-extrabold leading-none tracking-[-0.06em] text-slate-950 tabular-nums">
+                {startOdometer && Number(startOdometer) > 0 ? `${Number(startOdometer)} km` : '—'}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('Vehicle reading', 'Relevé du véhicule')}
+              </label>
+              <input
+                type="number"
+                value={startOdometer}
+                onChange={(e) => setStartOdometer(e.target.value)}
+                placeholder={tr('Enter odometer reading', 'Saisissez le kilométrage')}
+                className="w-full rounded-[22px] border border-slate-200 px-4 py-4 text-xl font-bold tracking-[-0.03em] text-slate-950 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                min="0"
+                step="1"
+                inputMode="numeric"
+                disabled={isStartWorkflowSoftLocked}
+                autoFocus
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowLightStartOdometerModal(false);
+                  setIsEditingOdometer(false);
+                  setStartOdometer(displayedStartingOdometer > 0 ? String(displayedStartingOdometer) : '');
+                }}
+                className="h-14 rounded-[20px] border-slate-200 text-base font-semibold"
+              >
+                {tr('Cancel', 'Annuler')}
+              </Button>
+              <Button
+                type="button"
+                onClick={handleSaveOdometer}
+                disabled={isStartWorkflowSoftLocked || isSavingOdometer}
+                className="h-14 rounded-[20px] bg-violet-700 text-base font-bold text-white shadow-[0_14px_34px_rgba(76,29,149,0.24)] hover:bg-violet-800"
+                title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : undefined}
+              >
+                <Save className="mr-2 h-4 w-4" />
+                {isSavingOdometer ? tr('Saving...', 'Enregistrement...') : tr('Save reading', 'Enregistrer')}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <FuelLevelModal
           isOpen={showStartFuelModal}
           onClose={() => setShowStartFuelModal(false)}
@@ -16274,6 +19570,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           currentLevel={startFuelLevel ?? rental?.start_fuel_level ?? currentVehicleFuelLevel}
           title="Starting Fuel Level"
           description="Select the fuel level before rental starts"
+          variant={isLightRentalDetailsMode ? 'light' : 'standard'}
       />
 
       {/* End Odometer Prompt Modal */}
@@ -16366,6 +19663,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           currentLevel={endFuelLevel}
           title="Ending Fuel Level"
           description="Select the fuel level at return"
+          variant={isLightRentalDetailsMode ? 'light' : 'standard'}
       />
 
       <Dialog open={showImpoundModal} onOpenChange={setShowImpoundModal}>
@@ -16876,7 +20174,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <FaWhatsapp className="text-violet-600" />
               {tr('Send via WhatsApp', 'Envoyer via WhatsApp')}
             </DialogTitle>
-            <DialogDescription className="px-6 pt-3 text-sm text-slate-600">
+            <DialogDescription className="chat-copy-body px-6 pt-3 text-slate-600">
               {tr('Select items to send to', 'Sélectionnez les éléments à envoyer à')} {rental.customer_name}
             </DialogDescription>
           </DialogHeader>
@@ -16896,8 +20194,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     {whatsappOptions.contract && <FaCheck className="text-white text-xs" />}
                   </div>
                   <div>
-                    <p className="font-medium">{tr('Rental Contract', 'Contrat de location')}</p>
-                    <p className="text-sm text-gray-500">
+                    <p className="chat-copy-title text-slate-900">{tr('Rental Contract', 'Contrat de location')}</p>
+                    <p className="chat-copy-body text-gray-500">
                       {canShareContractDocument
                         ? tr('PDF document with terms and conditions', 'Document PDF avec les termes et conditions')
                         : tr('Available after signature', 'Disponible après la signature')}
@@ -16922,8 +20220,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     {whatsappOptions.receipt && <FaCheck className="text-white text-xs" />}
                   </div>
                   <div>
-                    <p className="font-medium">{receiptPreviewMeta.listLabel}</p>
-                    <p className="text-sm text-gray-500">{receiptPreviewMeta.listDescription}</p>
+                    <p className="chat-copy-title text-slate-900">{receiptPreviewMeta.listLabel}</p>
+                    <p className="chat-copy-body text-gray-500">{receiptPreviewMeta.listDescription}</p>
                   </div>
                 </div>
                 <FaFileInvoice className="text-violet-500" />
@@ -16942,8 +20240,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {whatsappOptions.openingVideo && <FaCheck className="text-white text-xs" />}
               </div>
               <div>
-                <p className="font-medium">{tr('Opening Media', 'Médias de départ')}</p>
-                <p className="text-sm text-gray-500">{tr('Vehicle condition at rental start', "État du véhicule au départ")}</p>
+                <p className="chat-copy-title text-slate-900">{tr('Opening Media', 'Médias de départ')}</p>
+                <p className="chat-copy-body text-gray-500">{tr('Vehicle condition at rental start', "État du véhicule au départ")}</p>
               </div>
             </div>
             <FaVideo className="text-purple-500" />
@@ -16963,8 +20261,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {whatsappOptions.closingVideo && <FaCheck className="text-white text-xs" />}
               </div>
               <div>
-                <p className="font-medium">{tr('Closing Media', 'Médias de retour')}</p>
-                <p className="text-sm text-gray-500">{tr('Vehicle condition at return', "État du véhicule au retour")}</p>
+                <p className="chat-copy-title text-slate-900">{tr('Closing Media', 'Médias de retour')}</p>
+                <p className="chat-copy-body text-gray-500">{tr('Vehicle condition at return', "État du véhicule au retour")}</p>
               </div>
             </div>
             <FaVideo className="text-amber-500" />
@@ -16982,8 +20280,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               {whatsappOptions.bankingInfo && <FaCheck className="text-white text-xs" />}
             </div>
             <div>
-              <p className="font-medium">{tr('Banking Info', 'Informations bancaires')}</p>
-              <p className="text-sm text-gray-500">{tr('QR code and bank details image', 'Image avec QR code et coordonnées bancaires')}</p>
+              <p className="chat-copy-title text-slate-900">{tr('Banking Info', 'Informations bancaires')}</p>
+              <p className="chat-copy-body text-gray-500">{tr('QR code and bank details image', 'Image avec QR code et coordonnées bancaires')}</p>
             </div>
           </div>
           <CreditCard className="h-5 w-5 text-emerald-600" />
@@ -16991,13 +20289,30 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       </div>
           
           </div>
-      <div className="flex gap-3 border-t border-slate-100 pt-5 pb-1 mt-2">
+      <div className="border-t border-slate-100 px-6 pb-5 pt-4">
+        <p className="chat-copy-meta mb-3 text-slate-500">
+          {String(receiptRentalData?.customer_email || contractRentalData?.customer_email || rental?.customer_email || '').trim()
+            ? `${tr('Email will be sent to', 'L’e-mail sera envoyé à')} ${String(receiptRentalData?.customer_email || contractRentalData?.customer_email || rental?.customer_email || '').trim()}`
+            : tr('Add a customer email to send documents by email.', "Ajoutez un e-mail client pour envoyer les documents par e-mail.")}
+        </p>
+      <div className="flex flex-wrap gap-3">
         <Button
           variant="outline"
           onClick={() => setWhatsappModalOpen(false)}
           className={SECONDARY_ACTION_BUTTON_CLASS}
         >
           {tr('Cancel', 'Annuler')}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={async () => {
+            await handleSendEmailSelection(whatsappOptions);
+          }}
+          disabled={isSendingEmail || !String(receiptRentalData?.customer_email || contractRentalData?.customer_email || rental?.customer_email || '').trim()}
+          className={`${SECONDARY_ACTION_BUTTON_CLASS} flex items-center gap-2`}
+        >
+          <Mail className="h-4 w-4" />
+          {isSendingEmail ? tr('Sending email...', "Envoi de l'e-mail...") : tr('Send via Email', 'Envoyer par e-mail')}
         </Button>
         <Button
           className={`${PRIMARY_ACTION_BUTTON_CLASS} flex items-center gap-2`}
@@ -17010,16 +20325,17 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           {tr('Send via WhatsApp', 'Envoyer via WhatsApp')}
         </Button>
       </div>
+      </div>
     </DialogContent>
   </Dialog>
 
       <Dialog open={showSecurityHoldReminderModal} onOpenChange={setShowSecurityHoldReminderModal}>
-        <DialogContent className="sm:max-w-md rounded-[28px] border border-violet-100 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.14)]">
-          <DialogHeader>
-            <DialogTitle className="text-slate-900">
+        <DialogContent className={isLightRentalDetailsMode ? "mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]" : "sm:max-w-md rounded-[28px] border border-violet-100 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.14)]"}>
+          <DialogHeader className={isLightRentalDetailsMode ? "border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/40 to-slate-50 px-5 pb-4 pt-5 text-left" : ""}>
+            <DialogTitle className={isLightRentalDetailsMode ? "text-[1.55rem] font-bold tracking-[-0.04em] text-slate-950" : "text-slate-900"}>
               {tr('Security Hold Reminder', 'Rappel garantie')}
             </DialogTitle>
-            <DialogDescription className="text-slate-600">
+            <DialogDescription className={isLightRentalDetailsMode ? "mt-2 text-sm leading-6 text-slate-500" : "text-slate-600"}>
               {tr(
                 'Before signing, confirm whether the customer already gave the security deposit.',
                 'Avant la signature, confirmez si le client a déjà remis la garantie.'
@@ -17027,9 +20343,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-sky-200 bg-sky-50/70 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
+          <div className={isLightRentalDetailsMode ? "space-y-5 px-5 pb-5 pt-4" : "space-y-4"}>
+            <div className={isLightRentalDetailsMode ? "rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]" : "rounded-2xl border border-sky-200 bg-sky-50/70 p-4"}>
+              <p className={isLightRentalDetailsMode ? "text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500" : "text-xs font-semibold uppercase tracking-wide text-sky-700"}>
                 {tr('Suggested amount', 'Montant suggéré')}
               </p>
               <input
@@ -17038,9 +20354,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 value={securityHoldAmountInput}
                 onChange={(e) => setSecurityHoldAmountInput(normalizeMoneyInputValue(e.target.value))}
                 placeholder={String(requiredSecurityAmount || 0)}
-                className="mt-2 w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                className={isLightRentalDetailsMode ? "mt-3 w-full rounded-[20px] border border-slate-200 bg-white px-4 py-4 text-[2rem] font-extrabold leading-none tracking-[-0.05em] text-slate-950 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100" : "mt-2 w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"}
               />
-              <p className="mt-2 text-xs text-slate-500">
+              <p className={isLightRentalDetailsMode ? "mt-3 text-sm font-medium text-slate-600" : "mt-2 text-xs text-slate-500"}>
                 {tr(
                   `Required security: ${formatCurrency(requiredSecurityAmount)} MAD`,
                   `Garantie requise : ${formatCurrency(requiredSecurityAmount)} MAD`
@@ -17052,7 +20368,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <Button
                 type="button"
                 onClick={() => handleSecurityHoldReminderAction('cash')}
-                className={SUCCESS_ACTION_BUTTON_CLASS}
+                className={isLightRentalDetailsMode ? "h-14 rounded-[20px] bg-violet-700 text-base font-bold text-white shadow-[0_14px_34px_rgba(76,29,149,0.24)] hover:bg-violet-800" : SUCCESS_ACTION_BUTTON_CLASS}
                 disabled={isSavingSecurityHold}
               >
                 {tr('Yes, Cash', 'Oui, espèces')}
@@ -17060,7 +20376,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <Button
                 type="button"
                 onClick={() => handleSecurityHoldReminderAction('bank_transfer')}
-                className={PRIMARY_ACTION_BUTTON_CLASS}
+                className={isLightRentalDetailsMode ? "h-14 rounded-[20px] border border-violet-200 bg-white text-base font-bold text-violet-700 hover:bg-violet-50" : PRIMARY_ACTION_BUTTON_CLASS}
                 disabled={isSavingSecurityHold}
               >
                 {tr('Yes, Bank Transfer', 'Oui, virement')}
@@ -17071,7 +20387,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               type="button"
               variant="outline"
               onClick={() => handleSecurityHoldReminderAction(null)}
-              className="w-full"
+              className={isLightRentalDetailsMode ? "h-14 w-full rounded-[20px] border-slate-200 text-base font-semibold text-slate-700 hover:bg-slate-50" : "w-full"}
               disabled={isSavingSecurityHold}
             >
               {tr('No, Continue to Sign', 'Non, continuer à signer')}
@@ -17451,7 +20767,7 @@ Breakdown:
 
       <div className="fixed bottom-0 left-0 right-0 z-10 border-t border-violet-100/80 bg-white/96 px-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-3 shadow-[0_-18px_36px_rgba(76,29,149,0.08)] backdrop-blur sm:hidden">
     <div className="rounded-[24px] border border-violet-100/80 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-2 shadow-[0_14px_30px_rgba(76,29,149,0.08)]">
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-4 gap-2">
         <Button
             onClick={() => setContractPreviewModal(true)}
             className={`h-auto ${MOBILE_FOOTER_SECONDARY_CLASS}`}
@@ -17480,9 +20796,38 @@ Breakdown:
             )}
             {isSharing ? '...' : 'WhatsApp'}
         </Button>
+        <Button
+            onClick={handleSmartSendEmail}
+            disabled={isSendingEmail || !canSendEmailDocuments}
+            className={`h-auto ${isSendingEmail || !canSendEmailDocuments ? MOBILE_FOOTER_DISABLED_CLASS : MOBILE_FOOTER_SECONDARY_CLASS}`}
+            size="sm"
+        >
+            {isSendingEmail ? (
+              <Loader className="w-4 h-4 animate-spin" />
+            ) : (
+              <Mail className="mr-1 h-3.5 w-3.5" />
+            )}
+            {isSendingEmail ? '...' : tr('Email', 'E-mail')}
+        </Button>
       </div>
     </div>
 </div>
+
+      {showCopyConfirmation ? (
+        <div className="pointer-events-none fixed inset-0 z-[120] flex items-center justify-center px-6">
+          <div className="rounded-[28px] border border-violet-200/80 bg-white/92 px-8 py-6 text-center shadow-[0_30px_80px_rgba(76,29,149,0.18)] backdrop-blur-md animate-[copy-confirm-pop_280ms_ease-out]">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-violet-100 text-violet-700 shadow-inner">
+              <CheckCircle className="h-7 w-7" />
+            </div>
+            <p className="mt-4 text-[11px] font-black uppercase tracking-[0.24em] text-violet-500">
+              {tr('Copied', 'Copié')}
+            </p>
+            <p className="mt-2 text-lg font-bold tracking-[-0.03em] text-slate-950">
+              {tr('Rental reference copied', 'Référence de location copiée')}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
             {/* Capture Flash Animation */}
       <style>{`
@@ -17490,6 +20835,10 @@ Breakdown:
           0% { opacity: 1; }
           50% { opacity: 0.3; }
           100% { opacity: 1; }
+        }
+        @keyframes copy-confirm-pop {
+          0% { opacity: 0; transform: translateY(10px) scale(0.94); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
         }
         .capture-flash {
           animation: capture-flash 0.2s ease-out;
@@ -17499,6 +20848,16 @@ Breakdown:
             font-size: 2.65rem !important;
             line-height: 0.96 !important;
             letter-spacing: -0.03em !important;
+          }
+          .light-rental-timer-value {
+            font-size: 3.1rem !important;
+            line-height: 0.86 !important;
+            letter-spacing: -0.06em !important;
+          }
+          .light-rental-footer-timer-value {
+            font-size: 1.7rem !important;
+            line-height: 0.96 !important;
+            letter-spacing: -0.05em !important;
           }
           .mobile-summary-value {
             font-size: 1.26rem !important;

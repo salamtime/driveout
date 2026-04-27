@@ -87,6 +87,22 @@ const resolveCategory = (vehicleRow, modelRow, lang = 'en') => {
   return rawCategory;
 };
 
+const resolveShareVehicleImage = (vehicleRow, modelRow) => {
+  const preferredSources = [
+    modelRow?.image_url,
+    modelRow?.imageUrl,
+    vehicleRow?.image_url,
+    vehicleRow?.imageUrl,
+  ];
+
+  for (const source of preferredSources) {
+    const normalized = normalizeVehicleImageUrl(source);
+    if (normalized) return normalized;
+  }
+
+  return PLACEHOLDER_IMAGE_URL;
+};
+
 export const buildAppOrigin = (req) => {
   const host = req.headers['x-forwarded-host'] || req.headers.host || 'www.saharax.co';
   const protocol = req.headers['x-forwarded-proto'] || 'https';
@@ -154,7 +170,7 @@ export const fetchPublicVehicleShareData = async (listingId, lang = 'en') => {
   const power = resolvePower(vehicleRow, modelRow);
   const category = resolveCategory(vehicleRow, modelRow, lang);
   const city = safeText(vehicleRow?.city || vehicleRow?.location || 'Tangier');
-  const imageUrl = normalizeVehicleImageUrl(vehicleRow?.image_url) || PLACEHOLDER_IMAGE_URL;
+  const imageUrl = resolveShareVehicleImage(vehicleRow, modelRow);
 
   return {
     listingId: safeText(listingId, `fleet-${sourceId}`),

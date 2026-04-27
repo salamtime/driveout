@@ -188,10 +188,9 @@ const EnhancedProtectedRoute = ({
     const hasAccess = hasModuleAccess(requiredModule);
     console.log('🔍 Module-based access check:', { requiredModule, userRole, hasAccess });
     
-    // Owner and admin always have access to all modules
-    const isOwnerOrAdmin = userRole === 'owner' || userRole === 'admin';
+    const isOwner = userRole === 'owner';
     
-    if (!hasAccess && !isOwnerOrAdmin) {
+    if (!hasAccess && !isOwner) {
       console.log('❌ Module access denied');
       
       return (

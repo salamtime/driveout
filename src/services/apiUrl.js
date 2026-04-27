@@ -16,4 +16,4 @@ export const buildApiUrl = (path = '') => {
   return baseUrl ? `${baseUrl}${normalizedPath}` : normalizedPath;
 };
 
-export const GEMINI_PROXY_PATH = '/api/gemini-proxy';
+export const GEMINI_PROXY_PATH = '/api/system-settings?action=gemini-proxy';

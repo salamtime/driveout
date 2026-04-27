@@ -8,7 +8,7 @@ import {
   PLATFORM_TENANT_PROVISIONING_JOBS_TABLE,
   PLATFORM_TENANT_AUDIT_LOG_TABLE,
 } from './_lib/supabase.js';
-import { requireOwner } from './_lib/auth.js';
+import { authenticateRequest, requireOwnerOrAdmin } from './_lib/auth.js';
 import {
   buildTenantSlug,
   normalizeBillingStatus,
@@ -17,6 +17,7 @@ import {
   normalizeRegistryStatus,
   normalizeSubscriptionStatus,
 } from './_lib/tenantRegistry.js';
+import { buildDefaultPermissionsForRole } from '../src/utils/permissionCatalog.js';
 import crypto from 'crypto';
 
 const BUSINESS_OWNER_ACCOUNT_TYPES = new Set(['business_owner', 'operator', 'business', 'rental_business']);
@@ -48,6 +49,74 @@ const isSchemaCompatibilityError = (error) => {
     message.includes('column') ||
     details.includes('schema cache')
   );
+};
+
+const resolvePermissionsMap = (value) => {
+  if (!value) return {};
+  if (Array.isArray(value)) {
+    return value.reduce((acc, permission) => {
+      if (!permission?.module_name) return acc;
+      acc[permission.module_name] = permission.has_access === true;
+      return acc;
+    }, {});
+  }
+  if (typeof value === 'object') {
+    return value;
+  }
+  return {};
+};
+
+const resolveStaffPermissions = (role, explicitPermissions = null) => {
+  const normalizedRole = String(role || 'employee').trim().toLowerCase() || 'employee';
+  if (explicitPermissions && typeof explicitPermissions === 'object' && !Array.isArray(explicitPermissions)) {
+    const keys = Object.keys(explicitPermissions);
+    if (keys.length > 0) {
+      return explicitPermissions;
+    }
+  }
+
+  return buildDefaultPermissionsForRole(normalizedRole);
+};
+
+const canAccessStaffDirectory = async (req) => {
+  const auth = await authenticateRequest(req);
+
+  if (auth.error) {
+    return auth;
+  }
+
+  const { user, adminClient } = auth;
+
+  try {
+    const { data: profile, error } = await adminClient
+      .from(APP_USERS_TABLE)
+      .select('role, permissions, access_enabled')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (error) {
+      return { error: { status: 500, body: { error: error.message } } };
+    }
+
+    const effectiveRole = String(profile?.role || user.user_metadata?.role || user.app_metadata?.role || '').trim().toLowerCase();
+    const permissionsMap = resolvePermissionsMap(profile?.permissions || user.user_metadata?.permissions || null);
+    const hasMessagesAccess = permissionsMap.Messages === true || permissionsMap.messages === true;
+    const accessEnabled = profile?.access_enabled !== false;
+
+    if (
+      accessEnabled &&
+      (
+        ['owner', 'admin', 'employee', 'guide', 'business_owner'].includes(effectiveRole) ||
+        hasMessagesAccess
+      )
+    ) {
+      return { user, adminClient };
+    }
+
+    return { error: { status: 403, body: { error: 'Messages access required' } } };
+  } catch (error) {
+    return { error: { status: 500, body: { error: error.message } } };
+  }
 };
 
 const normalizeBusinessOwnerVerificationStatus = (value) => {
@@ -614,7 +683,67 @@ export default async function handler(req, res) {
     return;
   }
 
-  const auth = await requireOwner(req);
+  const scope = String(req.query?.scope || '').trim().toLowerCase();
+
+  if (req.method === 'GET' && !req.query?.userId && scope === 'staff-directory') {
+    const scopedAuth = await canAccessStaffDirectory(req);
+
+    if (scopedAuth.error) {
+      res.status(scopedAuth.error.status).json(scopedAuth.error.body);
+      return;
+    }
+
+    const { adminClient, user } = scopedAuth;
+
+    try {
+      const { data, error } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
+
+      if (error) {
+        throw error;
+      }
+
+      const authUsers = data?.users || [];
+      let appUsers = [];
+      const { data: appUsersData, error: appUsersError } = await loadAppUsersWithCompatibility(adminClient);
+
+      if (!appUsersError) {
+        appUsers = appUsersData || [];
+      }
+
+      const appUserMap = new Map(appUsers.map((candidate) => [String(candidate.id), candidate]));
+      const mergedUsers = authUsers
+        .map((authUser) => mergeAuthUserWithAppUser(authUser, appUserMap.get(String(authUser.id)) || {}))
+        .filter((candidate) => {
+          const role = String(candidate?.role || '').trim().toLowerCase();
+          return ['owner', 'admin', 'employee', 'guide', 'business_owner'].includes(role) && String(candidate?.id || '') !== String(user?.id || '');
+        })
+        .map((candidate) => ({
+          id: candidate.id,
+          email: candidate.email,
+          full_name: candidate.full_name || null,
+          first_name: candidate.first_name || null,
+          last_name: candidate.last_name || null,
+          username: candidate.username || null,
+          role: candidate.role || 'employee',
+          access_enabled: candidate.access_enabled !== false,
+          created_at: candidate.created_at || null,
+          updated_at: candidate.updated_at || null,
+        }));
+
+      res.status(200).json({ users: mergedUsers });
+      return;
+    } catch (error) {
+      console.error('admin-users staff-directory failed:', {
+        message: error?.message,
+        code: error?.code,
+        details: error?.details,
+      });
+      res.status(500).json({ error: error.message || 'Failed to load staff directory' });
+      return;
+    }
+  }
+
+  const auth = await requireOwnerOrAdmin(req);
 
   if (auth.error) {
     res.status(auth.error.status).json(auth.error.body);
@@ -695,6 +824,12 @@ export default async function handler(req, res) {
           ...user_metadata,
           full_name: user_metadata.full_name || app_profile.full_name || email,
           role: user_metadata.role || app_profile.role || 'employee',
+          permissions: resolveStaffPermissions(
+            user_metadata.role || app_profile.role || 'employee',
+            user_metadata.permissions && typeof user_metadata.permissions === 'object' && !Array.isArray(user_metadata.permissions)
+              ? user_metadata.permissions
+              : app_profile.permissions
+          ),
           account_type: 'staff',
           staff_access_prepared: true,
           staff_access_prepared_at: new Date().toISOString(),
@@ -759,7 +894,12 @@ export default async function handler(req, res) {
           phone_number: app_profile.phone_number || null,
           whatsapp_notifications: Boolean(app_profile.whatsapp_notifications),
           access_enabled: app_profile.access_enabled ?? true,
-          permissions: app_profile.permissions && typeof app_profile.permissions === 'object' ? app_profile.permissions : {},
+          permissions: resolveStaffPermissions(
+            app_profile.role || user_metadata.role || createdUser.user_metadata?.role || 'employee',
+            app_profile.permissions && typeof app_profile.permissions === 'object' && !Array.isArray(app_profile.permissions)
+              ? app_profile.permissions
+              : user_metadata.permissions
+          ),
           updated_at: new Date().toISOString(),
         };
 

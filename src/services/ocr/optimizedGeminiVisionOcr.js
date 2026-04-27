@@ -14,6 +14,26 @@ import { buildApiUrl, GEMINI_PROXY_PATH } from '../apiUrl.js';
 import unifiedCustomerService from '../UnifiedCustomerService';
 
 const GEMINI_PROXY_URL = buildApiUrl(GEMINI_PROXY_PATH);
+const GEMINI_KEY_REPLACEMENT_MESSAGE = 'OCR is unavailable right now because the Gemini API key must be replaced or renewed by an admin.';
+
+const classifyGeminiProxyError = (status, rawResponseText = '') => {
+  const normalized = String(rawResponseText || '').toLowerCase();
+
+  if (
+    (Number(status) === 403 &&
+      (normalized.includes('reported as leaked') ||
+        normalized.includes('permission_denied') ||
+        normalized.includes('api key'))) ||
+    (Number(status) === 400 &&
+      (normalized.includes('api key expired') ||
+        normalized.includes('api_key_invalid') ||
+        normalized.includes('please renew the api key')))
+  ) {
+    return GEMINI_KEY_REPLACEMENT_MESSAGE;
+  }
+
+  return null;
+};
 
 class GeminiVisionOCR {
   constructor() {
@@ -50,6 +70,10 @@ class GeminiVisionOCR {
       if (!response.ok) {
         const errorText = await response.text();
         console.error('ListModels API Error:', errorText);
+        const classifiedProxyError = classifyGeminiProxyError(response.status, errorText);
+        if (classifiedProxyError) {
+          throw new Error(classifiedProxyError);
+        }
         throw new Error(`ListModels API error: ${response.status} - ${errorText}`);
       }
 
@@ -178,6 +202,36 @@ class GeminiVisionOCR {
   }
 
   /**
+   * Process a vehicle legal document and extract registration/insurance fields.
+   */
+  async processVehicleLegalDocument(documentFile, documentCategory = 'registration') {
+    try {
+      console.log('🚗 Starting vehicle legal OCR processing...', {
+        fileName: documentFile?.name,
+        fileSize: documentFile?.size,
+        documentCategory,
+      });
+
+      const { base64Image, mimeType } = await this.convertToBase64(documentFile);
+      const extractedData = await this.callGeminiVehicleLegalAPI(base64Image, mimeType, documentCategory);
+
+      return {
+        success: true,
+        data: extractedData,
+        missingFields: Array.isArray(extractedData?.missing_fields) ? extractedData.missing_fields : [],
+      };
+    } catch (error) {
+      console.error('❌ Vehicle legal OCR error:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to process vehicle legal document',
+        data: null,
+        missingFields: [],
+      };
+    }
+  }
+
+  /**
    * Convert image file to base64 with proper MIME type detection
    */
   async convertToBase64(file) {
@@ -293,6 +347,8 @@ Rules: Dates as YYYY-MM-DD. Confidence 0.0-1.0. Prefer Latin text in full_name, 
 
       if (!rawResponseText || rawResponseText.trim() === '') throw new Error('Empty response from Gemini API');
       if (rawResponseText.trim().startsWith('<')) throw new Error('Received HTML error page instead of JSON response');
+      const classifiedProxyError = classifyGeminiProxyError(response.status, rawResponseText);
+      if (classifiedProxyError) throw new Error(classifiedProxyError);
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText} - ${rawResponseText}`);
 
       let responseData;
@@ -375,6 +431,92 @@ Rules: Dates as YYYY-MM-DD. Confidence 0.0-1.0. Prefer Latin text in full_name, 
     }
   }
 
+  async callGeminiVehicleLegalAPI(base64Image, mimeType, documentCategory) {
+    const normalizedCategory = String(documentCategory || 'registration').trim().toLowerCase();
+    const isInsurance = normalizedCategory === 'insurance';
+
+    const schemaText = isInsurance
+      ? '{"document_type":"insurance","insurance_policy_number":null,"insurance_provider":null,"insurance_expiry_date":null,"registration_number":null,"registration_date":null,"registration_expiry_date":null,"missing_fields":[],"confidence_estimate":null}'
+      : '{"document_type":"registration","registration_number":null,"registration_date":null,"registration_expiry_date":null,"insurance_policy_number":null,"insurance_provider":null,"insurance_expiry_date":null,"missing_fields":[],"confidence_estimate":null}';
+
+    const insuranceHints = `For Moroccan insurance attestations, look especially for:
+- "N° de la police" or "Numéro de la police" => insurance_policy_number
+- "Entreprise d'assurances" => insurance_provider
+- "Période de Garantie" / "Au" / end-of-coverage date => insurance_expiry_date
+- The document may be bilingual French/Arabic and slightly folded; still extract readable values.`;
+
+    const registrationHints = `For registration documents, look especially for:
+- registration number / plate number
+- registration issue/start date
+- registration expiry date or validity end date
+- The document may be bilingual French/Arabic and slightly folded; still extract readable values.`;
+
+    const prompt = `Extract vehicle legal document data from this ${normalizedCategory} document. Output ONLY valid JSON matching this schema exactly: ${schemaText}
+
+Rules:
+- Dates must be normalized to YYYY-MM-DD when readable.
+- Keep unknown fields as null.
+- missing_fields must contain the schema keys that are visibly missing or unreadable.
+- confidence_estimate must be a number between 0.0 and 1.0.
+- If this is a registration document, prioritize registration_number, registration_date, registration_expiry_date.
+- If this is an insurance document, prioritize insurance_policy_number, insurance_provider, insurance_expiry_date.
+- ${isInsurance ? insuranceHints : registrationHints}
+- Do not include any explanation, markdown, or extra text.`;
+
+    const requestBody = {
+      action: 'generateContent',
+      model: 'gemini-2.5-flash',
+      contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType, data: base64Image } }] }],
+      generationConfig: {
+        temperature: 0.1,
+        topK: 1,
+        topP: 1,
+        maxOutputTokens: 4096,
+      },
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      ],
+    };
+
+    const response = await fetch(GEMINI_PROXY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      const classifiedProxyError = classifyGeminiProxyError(response.status, errorText);
+      if (classifiedProxyError) {
+        throw new Error(classifiedProxyError);
+      }
+      throw new Error(`Vehicle OCR API error: ${response.status} - ${errorText}`);
+    }
+
+    const result = await response.json();
+    const content = result?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+
+    if (!jsonMatch) {
+      throw new Error('No JSON found in vehicle OCR response.');
+    }
+
+    let extractedData;
+    try {
+      extractedData = JSON.parse(jsonMatch[0]);
+    } catch (parseError) {
+      throw new Error(`Invalid JSON in vehicle OCR response: ${parseError.message}`);
+    }
+
+    return this.cleanVehicleLegalExtractedData(extractedData, normalizedCategory);
+  }
+
   /**
    * Clean and validate extracted data
    */
@@ -398,6 +540,111 @@ Rules: Dates as YYYY-MM-DD. Confidence 0.0-1.0. Prefer Latin text in full_name, 
       }
     });
     
+    return cleaned;
+  }
+
+  cleanVehicleLegalExtractedData(rawData, documentCategory) {
+    const normalizeLooseDate = (value) => {
+      const raw = String(value || '').trim();
+      if (!raw) return null;
+      if (this.isValidDate(raw)) return raw;
+
+      const monthMap = {
+        january: '01',
+        janvier: '01',
+        february: '02',
+        fevrier: '02',
+        février: '02',
+        march: '03',
+        mars: '03',
+        april: '04',
+        avril: '04',
+        may: '05',
+        mai: '05',
+        june: '06',
+        juin: '06',
+        july: '07',
+        juillet: '07',
+        august: '08',
+        aout: '08',
+        août: '08',
+        september: '09',
+        septembre: '09',
+        october: '10',
+        octobre: '10',
+        november: '11',
+        novembre: '11',
+        december: '12',
+        decembre: '12',
+        décembre: '12',
+      };
+
+      const slashOrDash = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+      if (slashOrDash) {
+        const [, day, month, year] = slashOrDash;
+        const normalized = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        return this.isValidDate(normalized) ? normalized : null;
+      }
+
+      const yearFirst = raw.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+      if (yearFirst) {
+        const [, year, month, day] = yearFirst;
+        const normalized = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        return this.isValidDate(normalized) ? normalized : null;
+      }
+
+      const normalizedWords = raw
+        .toLowerCase()
+        .replace(/[.,]/g, ' ')
+        .replace(/\b(lun|mar|mer|jeu|ven|sam|dim|mon|tue|wed|thu|fri|sat|sun)\b/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const wordDateMatch = normalizedWords.match(/(\d{1,2})\s+([a-zéûôîàèùç]+)\s+(\d{4})/i);
+      if (wordDateMatch) {
+        const [, day, monthWord, year] = wordDateMatch;
+        const month = monthMap[monthWord];
+        if (month) {
+          const normalized = `${year}-${month}-${String(day).padStart(2, '0')}`;
+          return this.isValidDate(normalized) ? normalized : null;
+        }
+      }
+
+      return null;
+    };
+
+    const cleaned = {
+      document_type: documentCategory,
+      registration_number: rawData?.registration_number ? String(rawData.registration_number).trim() : null,
+      registration_date: normalizeLooseDate(rawData?.registration_date),
+      registration_expiry_date: normalizeLooseDate(rawData?.registration_expiry_date),
+      insurance_policy_number:
+        rawData?.insurance_policy_number || rawData?.policy_number
+          ? String(rawData.insurance_policy_number || rawData.policy_number).trim()
+          : null,
+      insurance_provider:
+        rawData?.insurance_provider || rawData?.provider || rawData?.insurer
+          ? String(rawData.insurance_provider || rawData.provider || rawData.insurer).trim()
+          : null,
+      insurance_expiry_date: normalizeLooseDate(rawData?.insurance_expiry_date || rawData?.expiry_date),
+      missing_fields: Array.isArray(rawData?.missing_fields)
+        ? rawData.missing_fields.map((field) => String(field || '').trim()).filter(Boolean)
+        : [],
+      confidence_estimate:
+        rawData?.confidence_estimate === null || rawData?.confidence_estimate === undefined
+          ? null
+          : Number(rawData.confidence_estimate),
+    };
+
+    const requiredByCategory = documentCategory === 'insurance'
+      ? ['insurance_policy_number', 'insurance_provider', 'insurance_expiry_date']
+      : ['registration_number', 'registration_date', 'registration_expiry_date'];
+
+    requiredByCategory.forEach((field) => {
+      if (!cleaned[field] && !cleaned.missing_fields.includes(field)) {
+        cleaned.missing_fields.push(field);
+      }
+    });
+
     return cleaned;
   }
 

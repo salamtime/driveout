@@ -1,18 +1,24 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ExternalLink, Rocket, ShieldCheck } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { getTenantSession, getTenantWorkspaceLaunchUrl } from '../../services/TenantRegistryService';
 import i18n from '../../i18n';
+import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 
 const TenantWorkspaceReady = () => {
   const { signOut } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const [tenantSession, setTenantSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
+    pathname: location.pathname,
+    isTransitionFlow: loading,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -72,7 +78,7 @@ const TenantWorkspaceReady = () => {
     };
   }, [launchUrl]);
 
-  if (loading) {
+  if (loading && !suppressBlockingLoader) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,#ede9fe_0,#f8fafc_34%,#f8fafc_100%)] px-4">
         <div className="text-center">

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Calendar, Filter, Download, RefreshCw, TrendingUp, DollarSign, BarChart3, Users, FileText, RotateCcw, Receipt, ShieldAlert, Fuel, Wrench } from 'lucide-react';
+import { Calendar, Filter, Download, RefreshCw, TrendingUp, DollarSign, BarChart3, Users, FileText, RotateCcw, Receipt, ShieldAlert, Fuel, Wrench, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import FilterBarV2 from './FilterBarV2';
 import KPICardsV2 from './KPICardsV2';
 import OverviewChartsV2 from './OverviewChartsV2';
@@ -15,10 +15,11 @@ import FinanceBreakdownDrawer from './FinanceBreakdownDrawer';
 import FinanceCalendarTab from './FinanceCalendarTab';
 import FinanceLedgerTabV2 from './FinanceLedgerTabV2';
 import FinanceAlertsTabV2 from './FinanceAlertsTabV2';
+import ReceiveFundsTabV2 from './ReceiveFundsTabV2';
+import FinanceExpensesTabV2 from './FinanceExpensesTabV2';
 import { financeApiV2 } from '../../services/financeApiV2';
 import appWarmupService from '../../services/AppWarmupService';
 import i18n from '../../i18n';
-import AdminModuleHero from '../admin/AdminModuleHero';
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -62,6 +63,42 @@ const endOfWeek = (date) => {
 const startOfMonth = (date) => {
   const copy = new Date(date.getFullYear(), date.getMonth(), 1, 12, 0, 0, 0);
   return copy;
+};
+
+const normalizeDateRange = (start, end) => {
+  if (!start) return null;
+
+  const normalizedStart = new Date(start);
+  normalizedStart.setHours(12, 0, 0, 0);
+
+  if (!end) {
+    return { start: normalizedStart, end: null };
+  }
+
+  const normalizedEnd = new Date(end);
+  normalizedEnd.setHours(12, 0, 0, 0);
+
+  return normalizedStart <= normalizedEnd
+    ? { start: normalizedStart, end: normalizedEnd }
+    : { start: normalizedEnd, end: normalizedStart };
+};
+
+const isSameCalendarDay = (left, right) => {
+  if (!(left instanceof Date) || !(right instanceof Date)) return false;
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+};
+
+const isDateWithinInclusiveRange = (date, start, end) => {
+  if (!(date instanceof Date) || !(start instanceof Date) || !(end instanceof Date)) return false;
+  const current = new Date(date);
+  current.setHours(12, 0, 0, 0);
+  const rangeStart = new Date(start);
+  rangeStart.setHours(12, 0, 0, 0);
+  const rangeEnd = new Date(end);
+  rangeEnd.setHours(12, 0, 0, 0);
+  return current >= rangeStart && current <= rangeEnd;
 };
 
 /**
@@ -108,6 +145,16 @@ const FinanceDashboardV2 = () => {
   );
   const [error, setError] = useState(null);
   const [breakdownType, setBreakdownType] = useState(null);
+  const [receiveFundsComposerRequest, setReceiveFundsComposerRequest] = useState(0);
+  const [expenseComposerRequest, setExpenseComposerRequest] = useState(0);
+  const [showDateFocusPanel, setShowDateFocusPanel] = useState(false);
+  const [overviewPulseDetailOpen, setOverviewPulseDetailOpen] = useState(false);
+  const [bouncingWeekDayKey, setBouncingWeekDayKey] = useState(null);
+  const [bouncingDateFocusLauncher, setBouncingDateFocusLauncher] = useState(false);
+  const [customDateRange, setCustomDateRange] = useState(null);
+  const quickDayBounceTimeoutRef = useRef(null);
+  const dateFocusLauncherBounceTimeoutRef = useRef(null);
+  const lastQuickDateTapRef = useRef({ key: null, timestamp: 0 });
 
   const endDateObject = fromDateInputValue(filters.endDate);
   const weekStart = startOfWeek(endDateObject);
@@ -117,6 +164,37 @@ const FinanceDashboardV2 = () => {
     day.setDate(weekStart.getDate() + index);
     return day;
   });
+
+  useEffect(() => {
+    return () => {
+      if (quickDayBounceTimeoutRef.current) {
+        window.clearTimeout(quickDayBounceTimeoutRef.current);
+      }
+      if (dateFocusLauncherBounceTimeoutRef.current) {
+        window.clearTimeout(dateFocusLauncherBounceTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const triggerQuickDayBounce = (key) => {
+    setBouncingWeekDayKey(key);
+    if (quickDayBounceTimeoutRef.current) {
+      window.clearTimeout(quickDayBounceTimeoutRef.current);
+    }
+    quickDayBounceTimeoutRef.current = window.setTimeout(() => {
+      setBouncingWeekDayKey((current) => (current === key ? null : current));
+    }, 340);
+  };
+
+  const triggerDateFocusLauncherBounce = () => {
+    setBouncingDateFocusLauncher(true);
+    if (dateFocusLauncherBounceTimeoutRef.current) {
+      window.clearTimeout(dateFocusLauncherBounceTimeoutRef.current);
+    }
+    dateFocusLauncherBounceTimeoutRef.current = window.setTimeout(() => {
+      setBouncingDateFocusLauncher(false);
+    }, 340);
+  };
 
   // Tab configuration with enhanced styling and data scope descriptions
   const tabs = [
@@ -183,6 +261,22 @@ const FinanceDashboardV2 = () => {
       color: 'from-violet-500 to-purple-600',
       description: tr('Activity calendar — daily, weekly, monthly & yearly view', "Calendrier d'activité — vue journalière, hebdomadaire, mensuelle et annuelle"),
       dataScope: tr('Shows revenue and expenses per day. Click any day to see a breakdown.', 'Affiche les revenus et dépenses par jour. Cliquez sur un jour pour voir le détail.')
+    },
+    {
+      id: 'receive-funds',
+      label: tr('Receive Funds', 'Fonds reçus'),
+      icon: DollarSign,
+      color: 'from-violet-500 to-fuchsia-600',
+      description: tr('Log actual cash and wire transfer collections with audit history', "Enregistrer les encaissements réels en espèces et virement avec l'historique d'audit"),
+      dataScope: tr('Shows what the system expected versus what the team actually recorded as received.', "Affiche ce que le système attendait versus ce que l’équipe a réellement enregistré comme reçu.")
+    },
+    {
+      id: 'expenses',
+      label: tr('Expenses', 'Dépenses'),
+      icon: Receipt,
+      color: 'from-rose-500 to-orange-500',
+      description: tr('Review purchase expenses and receipt proofs', "Revoir les dépenses d'achat et les preuves de reçu"),
+      dataScope: tr('Shows purchase expenses recorded by the team for the selected period.', "Affiche les dépenses d'achat enregistrées par l'équipe sur la période sélectionnée.")
     },
     {
       id: 'ledger',
@@ -282,10 +376,11 @@ const FinanceDashboardV2 = () => {
   };
 
   const handleFiltersChange = (newFilters) => {
+    setCustomDateRange(null);
     setFilters(newFilters);
   };
 
-  const applyQuickRange = (mode, payloadDate = endDateObject) => {
+  const applyQuickRange = (mode, payloadDate = new Date()) => {
     const todayBase = new Date();
     todayBase.setHours(12, 0, 0, 0);
     const base = mode === 'today' ? new Date(todayBase) : new Date(payloadDate);
@@ -316,6 +411,7 @@ const FinanceDashboardV2 = () => {
       end = new Date(base);
     }
 
+    setCustomDateRange(null);
     setFilters((prev) => ({
       ...prev,
       startDate: toDateInputValue(start),
@@ -326,21 +422,157 @@ const FinanceDashboardV2 = () => {
   const shiftWeek = (direction) => {
     const nextEnd = new Date(endDateObject);
     nextEnd.setDate(nextEnd.getDate() + direction * 7);
+    if (customDateRange?.start && !customDateRange?.end) {
+      setFilters((prev) => ({
+        ...prev,
+        endDate: toDateInputValue(nextEnd)
+      }));
+      return;
+    }
     applyQuickRange('week', nextEnd);
   };
 
+  const clearCustomDateRange = () => {
+    lastQuickDateTapRef.current = { key: null, timestamp: 0 };
+    setCustomDateRange(null);
+    applyQuickRange('day', endDateObject);
+  };
+
+  const handleQuickDayPress = (day) => {
+    const targetDate = day instanceof Date ? new Date(day) : new Date(day);
+    if (Number.isNaN(targetDate.getTime())) return;
+
+    const nextKey = toDateInputValue(targetDate);
+    triggerQuickDayBounce(nextKey);
+    const now = Date.now();
+    const lastTap = lastQuickDateTapRef.current;
+    const isDoubleTap = lastTap.key === nextKey && now - lastTap.timestamp <= 350;
+
+    if (customDateRange?.start) {
+      if (!customDateRange.end) {
+        const normalizedRange = normalizeDateRange(customDateRange.start, targetDate);
+        setCustomDateRange(normalizedRange);
+        setFilters((prev) => ({
+          ...prev,
+          startDate: toDateInputValue(normalizedRange.start),
+          endDate: toDateInputValue(normalizedRange.end)
+        }));
+        lastQuickDateTapRef.current = { key: nextKey, timestamp: now };
+        return;
+      }
+
+      setCustomDateRange(null);
+      applyQuickRange('day', targetDate);
+      lastQuickDateTapRef.current = { key: nextKey, timestamp: now };
+      return;
+    }
+
+    if (isDoubleTap) {
+      const normalizedStart = new Date(targetDate);
+      normalizedStart.setHours(12, 0, 0, 0);
+      setCustomDateRange({ start: normalizedStart, end: null });
+      lastQuickDateTapRef.current = { key: nextKey, timestamp: now };
+      return;
+    }
+
+    applyQuickRange('day', targetDate);
+    lastQuickDateTapRef.current = { key: nextKey, timestamp: now };
+  };
+
   const activeQuickRangeLabel = (() => {
+    const todayBase = new Date();
+    todayBase.setHours(12, 0, 0, 0);
+    const yesterdayBase = new Date(todayBase);
+    yesterdayBase.setDate(yesterdayBase.getDate() - 1);
+    if (customDateRange?.start && customDateRange?.end) {
+      return `${tr('Custom Range', 'Plage personnalisée')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - ${customDateRange.end.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    if (customDateRange?.start) {
+      return `${tr('Custom Range Start', 'Début plage personnalisée')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    if (filters.startDate === toDateInputValue(todayBase) && filters.endDate === toDateInputValue(todayBase)) {
+      return `${tr('Today', "Aujourd'hui")} • ${todayBase.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    if (filters.startDate === toDateInputValue(yesterdayBase) && filters.endDate === toDateInputValue(yesterdayBase)) {
+      return `${tr('Yesterday', 'Hier')} • ${yesterdayBase.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
     if (filters.startDate === filters.endDate) {
-      return tr('Day focus', 'Focus jour');
+      return `${tr('Selected Date', 'Date sélectionnée')} • ${endDateObject.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
     }
     if (filters.startDate === toDateInputValue(weekStart) && filters.endDate === toDateInputValue(weekEnd)) {
-      return tr('Week focus', 'Focus semaine');
+      return `${tr('Week focus', 'Focus semaine')} • ${weekStart.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - ${weekEnd.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
     }
     if (filters.startDate === toDateInputValue(startOfMonth(endDateObject))) {
-      return tr('Month focus', 'Focus mois');
+      return `${tr('Month focus', 'Focus mois')} • ${endDateObject.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'long', year: 'numeric' })}`;
+    }
+    const last7Start = new Date(endDateObject);
+    last7Start.setDate(last7Start.getDate() - 6);
+    if (filters.startDate === toDateInputValue(last7Start)) {
+      return `${tr('Last 7 Days', '7 derniers jours')} • ${last7Start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - ${endDateObject.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
     }
     return tr('Custom range', 'Période personnalisée');
   })();
+
+  const activeQuickRangeKey = useMemo(() => {
+    const todayBase = new Date();
+    todayBase.setHours(12, 0, 0, 0);
+    const yesterdayBase = new Date(todayBase);
+    yesterdayBase.setDate(yesterdayBase.getDate() - 1);
+    const last7Start = new Date(endDateObject);
+    last7Start.setDate(last7Start.getDate() - 6);
+
+    if (filters.startDate === toDateInputValue(todayBase) && filters.endDate === toDateInputValue(todayBase)) {
+      return 'today';
+    }
+    if (filters.startDate === toDateInputValue(yesterdayBase) && filters.endDate === toDateInputValue(yesterdayBase)) {
+      return 'yesterday';
+    }
+    if (filters.startDate === toDateInputValue(weekStart) && filters.endDate === toDateInputValue(weekEnd)) {
+      return 'week';
+    }
+    if (filters.startDate === toDateInputValue(last7Start) && filters.endDate === toDateInputValue(endDateObject)) {
+      return 'last7';
+    }
+    if (filters.startDate === toDateInputValue(startOfMonth(endDateObject)) && filters.endDate === toDateInputValue(endDateObject)) {
+      return 'month';
+    }
+    if (customDateRange?.start) {
+      return 'custom';
+    }
+    return null;
+  }, [customDateRange, endDateObject, filters.endDate, filters.startDate, weekEnd, weekStart]);
+
+  const selectedKpiPeriodLabel = useMemo(() => {
+    const start = fromDateInputValue(filters.startDate);
+    const end = fromDateInputValue(filters.endDate);
+    const locale = isFrench ? 'fr-FR' : 'en-US';
+
+    if (filters.startDate === filters.endDate) {
+      return end.toLocaleDateString(locale, {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric'
+      });
+    }
+
+    if (
+      filters.startDate === toDateInputValue(startOfMonth(endDateObject)) &&
+      filters.endDate === toDateInputValue(endDateObject)
+    ) {
+      return endDateObject.toLocaleDateString(locale, {
+        month: 'long',
+        year: 'numeric'
+      });
+    }
+
+    return `${start.toLocaleDateString(locale, {
+      month: 'short',
+      day: 'numeric'
+    })} - ${end.toLocaleDateString(locale, {
+      month: 'short',
+      day: 'numeric'
+    })}`;
+  }, [endDateObject, filters.endDate, filters.startDate, isFrench]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -444,7 +676,26 @@ const FinanceDashboardV2 = () => {
   };
 
   const activeTabConfig = tabs.find(tab => tab.id === activeTab);
-  const showActiveTabMeta = activeTab !== 'vehicle-finance';
+  const showActiveTabMeta = false;
+  const formatPreviewDate = (value) => {
+    if (!value) return '';
+    return fromDateInputValue(value).toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', {
+      month: 'short',
+      day: 'numeric'
+    });
+  };
+  const collapsedDateFocusLabel = customDateRange?.start
+    ? customDateRange.end
+      ? `${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} → ${customDateRange.end.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`
+      : `${tr('Start', 'Début')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`
+    : activeQuickRangeLabel;
+  const collapsedDateFocusMeta = customDateRange?.start
+    ? customDateRange.end
+      ? tr('Custom range active', 'Plage personnalisée active')
+      : tr('Choose the end date', 'Choisissez la date de fin')
+    : filters.startDate === filters.endDate
+      ? formatPreviewDate(filters.startDate)
+      : `${formatPreviewDate(filters.startDate)} → ${formatPreviewDate(filters.endDate)}`;
 
   const renderTabContent = () => {
     const tabProps = { 
@@ -457,18 +708,23 @@ const FinanceDashboardV2 = () => {
       case 'overview':
         return (
           <div className="space-y-6 animate-slideInUp">
-            <KPICardsV2
-              {...tabProps}
-              prefetchedKpiData={kpiData}
-              parentLoading={loading && !hasLoadedOnce}
-              onOpenBreakdown={handleOpenBreakdown}
-            />
+            {!overviewPulseDetailOpen && (
+              <KPICardsV2
+                {...tabProps}
+                prefetchedKpiData={kpiData}
+                parentLoading={loading && !hasLoadedOnce}
+                onOpenBreakdown={handleOpenBreakdown}
+                periodLabel={selectedKpiPeriodLabel}
+              />
+            )}
             <OverviewChartsV2
               {...tabProps}
               prefetchedTrendData={trendData}
               prefetchedKpiData={kpiData}
               prefetchedPulseRows={pulseRows}
               parentLoading={(loading && !hasLoadedOnce) || trendLoading}
+              onPulseDetailChange={setOverviewPulseDetailOpen}
+              onOpenBreakdown={handleOpenBreakdown}
             />
           </div>
         );
@@ -520,6 +776,30 @@ const FinanceDashboardV2 = () => {
             <FinanceCalendarTab filters={filters} refreshTrigger={lastRefresh.getTime()} />
           </div>
         );
+      case 'receive-funds':
+        return (
+          <div className="animate-slideInUp">
+            <ReceiveFundsTabV2
+              filters={filters}
+              refreshTrigger={lastRefresh.getTime()}
+              openComposerRequest={receiveFundsComposerRequest}
+              openExpenseComposerRequest={expenseComposerRequest}
+            />
+          </div>
+        );
+      case 'expenses':
+        return (
+          <div className="animate-slideInUp">
+            <FinanceExpensesTabV2
+              filters={filters}
+              refreshTrigger={lastRefresh.getTime()}
+              onAddExpense={() => {
+                setActiveTab('receive-funds');
+                setExpenseComposerRequest(Date.now());
+              }}
+            />
+          </div>
+        );
       case 'ledger':
         return (
           <div className="animate-slideInUp">
@@ -543,32 +823,204 @@ const FinanceDashboardV2 = () => {
     }
   };
 
+  const renderDateFocusControls = () => (
+    <div className={`mt-3 rounded-[20px] border p-3 shadow-sm transition-all ${
+      showDateFocusPanel
+        ? 'border-violet-200 bg-gradient-to-br from-violet-100 via-[#f5f0ff] to-indigo-100 shadow-[0_18px_42px_rgba(79,70,229,0.14)]'
+        : 'border-violet-100 bg-slate-50/70'
+    }`}>
+      <button
+        type="button"
+        onClick={() => {
+          triggerDateFocusLauncherBounce();
+          setShowDateFocusPanel((value) => !value);
+        }}
+        className={`group w-full rounded-[1.25rem] border px-4 py-3 text-left transition-all ${bouncingDateFocusLauncher ? 'quick-date-tap-bounce' : ''} ${
+          showDateFocusPanel
+            ? 'border-violet-300 bg-white shadow-[0_16px_36px_rgba(79,70,229,0.14)]'
+            : 'border-violet-200 bg-white shadow-[0_12px_28px_rgba(15,23,42,0.06)] hover:border-violet-300 hover:shadow-[0_16px_34px_rgba(79,70,229,0.10)]'
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-100 text-violet-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]">
+            <Calendar className="h-5 w-5" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-semibold tracking-[0.02em] text-slate-950">{tr('Fast Date Focus', 'Focus date rapide')}</p>
+              <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-700">
+                {collapsedDateFocusLabel}
+              </span>
+            </div>
+            <p className="mt-1 truncate text-xs font-medium text-slate-500">{collapsedDateFocusMeta}</p>
+          </div>
+
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.14)] transition-all duration-150 ease-out ${showDateFocusPanel ? 'rotate-180' : 'group-hover:scale-[1.03] group-hover:bg-violet-600 group-hover:text-white group-hover:shadow-[0_14px_32px_rgba(124,58,237,0.22)]'}`}>
+            <ChevronDown className="h-4 w-4" />
+          </div>
+        </div>
+      </button>
+
+      <div className={`${showDateFocusPanel ? 'mt-3 block' : 'hidden'}`}>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: 'today', label: tr('Today', "Aujourd'hui") },
+            { key: 'yesterday', label: tr('Yesterday', 'Hier') },
+            { key: 'last7', label: tr('Last 7 Days', '7 derniers jours') },
+            { key: 'month', label: tr('This Month', 'Ce mois') }
+          ].map((chip) => {
+            const isActive = activeQuickRangeKey === chip.key;
+            return (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={() => applyQuickRange(chip.key, new Date())}
+                className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                  isActive
+                    ? 'border-violet-300 bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_10px_22px_rgba(79,70,229,0.20)]'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:bg-white hover:text-violet-700'
+                }`}
+              >
+                {chip.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {customDateRange?.start ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700">
+              <span>
+                {customDateRange.end
+                  ? `${tr('Custom range', 'Plage personnalisée')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - ${customDateRange.end.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`
+                  : `${tr('Custom range start', 'Début plage personnalisée')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`}
+              </span>
+              <span className="text-violet-300">•</span>
+              <button
+                type="button"
+                onClick={clearCustomDateRange}
+                className="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.14em] text-violet-700 transition hover:bg-violet-100"
+              >
+                {tr('Clear', 'Effacer')}
+              </button>
+            </div>
+            {!customDateRange.end ? (
+              <p className="text-[11px] font-medium text-slate-500">
+                {tr('Tap another date to complete the range.', 'Touchez une autre date pour terminer la plage.')}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="mt-3 rounded-[18px] border border-slate-200 bg-white p-2.5">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => shiftWeek(-1)}
+              className="inline-flex items-center gap-1 rounded-xl border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.12)] transition duration-150 ease-out hover:-translate-x-0.5 hover:bg-violet-600 hover:text-white hover:shadow-[0_14px_32px_rgba(124,58,237,0.22)]"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              {tr('Prev Week', 'Semaine préc.')}
+            </button>
+            <p className="text-xs font-semibold text-slate-900 sm:text-sm">
+              {weekStart.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - {weekEnd.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}
+            </p>
+            <button
+              type="button"
+              onClick={() => shiftWeek(1)}
+              className="inline-flex items-center gap-1 rounded-xl border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.12)] transition duration-150 ease-out hover:translate-x-0.5 hover:bg-violet-600 hover:text-white hover:shadow-[0_14px_32px_rgba(124,58,237,0.22)]"
+            >
+              {tr('Next Week', 'Semaine suiv.')}
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <div className="-mx-1 overflow-x-auto pb-1">
+            <div className="flex min-w-max gap-2 px-1 xl:grid xl:min-w-0 xl:grid-cols-7">
+              {weekDays.map((day) => {
+                const dayValue = toDateInputValue(day);
+                const isActiveDay = filters.startDate === dayValue && filters.endDate === dayValue;
+                const isCustomStart = Boolean(customDateRange?.start) && isSameCalendarDay(customDateRange.start, day);
+                const isCustomEnd = Boolean(customDateRange?.end) && isSameCalendarDay(customDateRange.end, day);
+                const isCustomBoundary = isCustomStart || isCustomEnd;
+                const isInsideCustomRange = Boolean(customDateRange?.start && customDateRange?.end) && isDateWithinInclusiveRange(day, customDateRange.start, customDateRange.end);
+                const isRangePreview = Boolean(customDateRange?.start && !customDateRange?.end) && isCustomStart;
+                return (
+                  <button
+                    key={dayValue}
+                    type="button"
+                    onClick={() => handleQuickDayPress(day)}
+                    className={`min-w-[76px] rounded-[1rem] border px-2.5 py-2 text-left transition active:scale-[0.985] xl:min-w-0 ${bouncingWeekDayKey === dayValue ? 'quick-date-tap-bounce' : ''} ${
+                      isCustomBoundary
+                        ? 'border-violet-400 bg-gradient-to-br from-violet-600 to-indigo-700 text-white shadow-[0_14px_30px_rgba(79,70,229,0.28)]'
+                        : isInsideCustomRange
+                          ? 'border-violet-200 bg-violet-50/90 shadow-[0_10px_24px_rgba(76,29,149,0.08)]'
+                          : isActiveDay || isRangePreview
+                            ? 'border-violet-300 bg-gradient-to-br from-violet-50 via-white to-indigo-50 shadow-[0_12px_28px_rgba(76,29,149,0.10)]'
+                        : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/40'
+                    }`}
+                  >
+                    <p className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${
+                      isCustomBoundary
+                        ? 'text-white/85'
+                        : isInsideCustomRange || isActiveDay || isRangePreview
+                          ? 'text-violet-600'
+                          : 'text-slate-500'
+                    }`}>
+                      {day.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { weekday: 'short' })}
+                    </p>
+                    <p className={`mt-0.5 text-base font-bold ${isCustomBoundary ? 'text-white' : 'text-slate-900'}`}>{day.getDate()}</p>
+                    <p className={`text-xs ${isCustomBoundary ? 'text-white/80' : 'text-slate-500'}`}>
+                      {day.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short' })}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <FilterBarV2
+            filters={filters}
+            vehicles={vehicles}
+            customers={customers}
+            onFiltersChange={handleFiltersChange}
+            loading={loading}
+            className="rounded-2xl border border-white bg-white/90 shadow-sm"
+          />
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <>
     <div className="space-y-6 px-4 py-6 sm:space-y-8 sm:px-6 lg:px-8">
       <section className="space-y-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{tr('Financial Overview', 'Aperçu financier')}</p>
-          <h2 className="mt-2 text-2xl font-bold text-slate-900 sm:text-3xl">{tr('Finance command center', 'Centre de commande financier')}</h2>
-        </div>
-
-        <div className="rounded-[28px] border border-violet-100 bg-white p-4 shadow-[0_24px_70px_rgba(76,29,149,0.08)] sm:p-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div className="space-y-1">
-              <div className="flex items-center gap-3">
-                <div className="rounded-2xl bg-violet-50 p-3">
-                  <BarChart3 className="h-6 w-6 text-violet-700" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-slate-900 sm:text-xl">{tr('Finance dashboard', 'Tableau de bord financier')}</h3>
-                  <p className="text-sm text-slate-500">
-                    {tr('Last refreshed', 'Dernière actualisation')} {lastRefresh.toLocaleTimeString(isFrench ? 'fr-FR' : 'en-US')}
-                  </p>
-                </div>
+        <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+                <BarChart3 className="h-6 w-6 text-violet-700" />
               </div>
+              <h1 className="text-[2rem] font-bold tracking-[-0.03em] text-slate-950 sm:text-[2.5rem]">
+                {tr('Finance', 'Finance')}
+              </h1>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => {
+                  setActiveTab('receive-funds');
+                }}
+                className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(16,185,129,0.22)] transition-all hover:scale-[1.01]"
+              >
+                <DollarSign className="h-4 w-4" />
+                {tr('Record Funds', 'Enregistrer des fonds')}
+              </button>
+
               <button
                 onClick={handleRefresh}
                 disabled={isRefreshing}
@@ -593,9 +1045,16 @@ const FinanceDashboardV2 = () => {
                 <RotateCcw className="h-4 w-4" />
                 {tr('Reset', 'Réinitialiser')}
               </button>
+
+              <button
+                onClick={() => setActiveTab('reports')}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700"
+              >
+                <FileText className="h-4 w-4" />
+                {tr('Reports', 'Rapports')}
+              </button>
             </div>
           </div>
-
         </div>
       </section>
 
@@ -631,137 +1090,23 @@ const FinanceDashboardV2 = () => {
             })}
           </nav>
 
-          <div className="mt-3 rounded-[20px] border border-violet-100 bg-slate-50/70 p-3 shadow-sm">
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-              <div className="flex items-center gap-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Fast date focus', 'Focus date rapide')}</p>
-                <div className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600">
-                  <span className="font-semibold text-slate-900">{activeQuickRangeLabel}</span>
-                  <span className="mx-2 text-slate-300">•</span>
-                  <span>{filters.startDate} → {filters.endDate}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap gap-2">
-              {[
-                { key: 'today', label: tr('Today', "Aujourd'hui") },
-                { key: 'yesterday', label: tr('Yesterday', 'Hier') },
-                { key: 'week', label: tr('This Week', 'Cette semaine') },
-                { key: 'last7', label: tr('Last 7 Days', '7 derniers jours') },
-                { key: 'month', label: tr('This Month', 'Ce mois') }
-              ].map((chip) => (
-                <button
-                  key={chip.key}
-                  type="button"
-                  onClick={() => applyQuickRange(chip.key)}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-violet-200 hover:bg-white hover:text-violet-700"
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="mt-3 rounded-[18px] border border-slate-200 bg-white p-2.5">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={() => shiftWeek(-1)}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
-                >
-                  {tr('Prev Week', 'Semaine préc.')}
-                </button>
-                <p className="text-xs font-semibold text-slate-900 sm:text-sm">
-                  {weekStart.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - {weekEnd.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => shiftWeek(1)}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
-                >
-                  {tr('Next Week', 'Semaine suiv.')}
-                </button>
-              </div>
-
-              <div className="-mx-1 overflow-x-auto pb-1">
-                <div className="flex min-w-max gap-2 px-1 xl:grid xl:min-w-0 xl:grid-cols-7">
-                  {weekDays.map((day) => {
-                    const dayValue = toDateInputValue(day);
-                    const isActiveDay = filters.startDate === dayValue && filters.endDate === dayValue;
-                    return (
-                      <button
-                        key={dayValue}
-                        type="button"
-                        onClick={() => applyQuickRange('day', day)}
-                        className={`min-w-[76px] rounded-[1rem] border px-2.5 py-2 text-left transition xl:min-w-0 ${
-                          isActiveDay
-                            ? 'border-violet-300 bg-gradient-to-br from-violet-50 via-white to-indigo-50 shadow-[0_12px_28px_rgba(76,29,149,0.10)]'
-                            : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/40'
-                        }`}
-                      >
-                        <p className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${isActiveDay ? 'text-violet-600' : 'text-slate-500'}`}>
-                          {day.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { weekday: 'short' })}
-                        </p>
-                        <p className="mt-0.5 text-base font-bold text-slate-900">{day.getDate()}</p>
-                        <p className="text-xs text-slate-500">
-                          {day.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short' })}
-                        </p>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3">
-              <FilterBarV2
-                filters={filters}
-                vehicles={vehicles}
-                customers={customers}
-                onFiltersChange={handleFiltersChange}
-                loading={loading}
-                className="rounded-2xl border border-white bg-white/90 shadow-sm"
-              />
-            </div>
-          </div>
+          {renderDateFocusControls()}
         </div>
 
         <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-6">
-          <div className="mb-4">
-            <div className="rounded-[24px] border border-violet-100 bg-gradient-to-r from-violet-50 via-white to-indigo-50 p-3">
-              <div className="flex items-center space-x-3">
-                <div className="rounded-2xl bg-violet-100 p-2">
-                  {React.createElement(activeTabConfig?.icon || BarChart3, {
-                    className: "h-5 w-5 text-violet-700"
-                  })}
-                </div>
-                <div>
-                  <h2 className="text-lg font-semibold text-slate-900">
-                    {activeTabConfig?.label}
-                  </h2>
-                  {showActiveTabMeta && activeTabConfig?.description && (
-                    <p className="text-sm text-slate-600">
-                      {activeTabConfig?.description}
-                    </p>
-                  )}
-                  {showActiveTabMeta && activeTabConfig?.dataScope && (
-                    <p className="mt-1 text-xs text-slate-500">
-                      {activeTabConfig?.dataScope}
-                    </p>
-                  )}
-                </div>
-              </div>
+          <div className="mb-4 flex items-center gap-3">
+            <div className="rounded-2xl bg-violet-50 p-2.5">
+              {React.createElement(activeTabConfig?.icon || BarChart3, {
+                className: "h-5 w-5 text-violet-700"
+              })}
             </div>
+            <h2 className="text-lg font-semibold text-slate-900">
+              {activeTabConfig?.label}
+            </h2>
           </div>
 
           <div className="min-h-[520px]">
             {renderTabContent()}
-          </div>
-
-          <div id="finance-reports" className="mt-8 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-center text-xs text-slate-500">
-              {tr('Note: Overview shows data for the selected period, while Vehicle Finance shows total lifetime performance.', "Remarque : l’aperçu affiche les données de la période sélectionnée, tandis que la finance véhicule affiche la performance totale à vie.")}
-            </p>
           </div>
         </div>
       </section>

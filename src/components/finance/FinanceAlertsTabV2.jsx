@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import toast from 'react-hot-toast';
 import {
   AlertTriangle,
   ShieldAlert,
@@ -12,6 +13,7 @@ import {
   BadgeCheck
 } from 'lucide-react';
 import { financeApiV2 } from '../../services/financeApiV2';
+import walletTopupApi from '../../services/walletTopupApi';
 import i18n from '../../i18n';
 
 const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
@@ -20,6 +22,7 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
   const [loading, setLoading] = useState(true);
   const [alertsData, setAlertsData] = useState(null);
   const [trustData, setTrustData] = useState(null);
+  const [reviewingTopupId, setReviewingTopupId] = useState('');
 
   useEffect(() => {
     const loadAlerts = async () => {
@@ -42,6 +45,53 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
 
     loadAlerts();
   }, [filters, refreshTrigger]);
+
+  const reloadAlerts = async () => {
+    try {
+      setLoading(true);
+      const [alerts, trust] = await Promise.all([
+        financeApiV2.getFinanceAlerts(filters),
+        financeApiV2.getFinanceTrustData(filters)
+      ]);
+      setAlertsData(alerts);
+      setTrustData(trust);
+    } catch (error) {
+      console.error('Error reloading finance alerts:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReviewWalletTopup = async (row, nextStatus) => {
+    try {
+      setReviewingTopupId(row.id);
+      const reviewNote = nextStatus === 'rejected'
+        ? (window.prompt(tr('Add a short rejection note', 'Ajoutez une courte note de rejet')) || '').trim()
+        : '';
+
+      if (nextStatus === 'rejected' && !reviewNote) {
+        toast.error(tr('A rejection note is required.', 'Une note de rejet est requise.'));
+        return;
+      }
+
+      await walletTopupApi.reviewTopup(row.id, {
+        status: nextStatus,
+        reviewNote,
+      });
+
+      toast.success(
+        nextStatus === 'approved'
+          ? tr('Wallet top-up approved and credited.', 'Recharge portefeuille approuvée et créditée.')
+          : tr('Wallet top-up rejected.', 'Recharge portefeuille rejetée.')
+      );
+
+      await reloadAlerts();
+    } catch (error) {
+      toast.error(error?.message || tr('Unable to review this top-up.', "Impossible d'examiner cette recharge."));
+    } finally {
+      setReviewingTopupId('');
+    }
+  };
 
   const formatCurrency = (value) =>
     `${new Intl.NumberFormat(isFrench ? 'fr-MA' : 'en-US', {
@@ -201,6 +251,9 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
                         {row.ownerLabel} • {row.methodLabel}
                         {row.submittedAt ? ` • ${new Date(row.submittedAt).toLocaleString(isFrench ? 'fr-FR' : 'en-US')}` : ''}
                       </p>
+                      {row.reviewNote ? (
+                        <p className="mt-2 text-sm text-slate-500">{row.reviewNote}</p>
+                      ) : null}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3 lg:justify-end">
@@ -208,7 +261,18 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
                         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{tr('Amount', 'Montant')}</p>
                         <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(row.amount)}</p>
                       </div>
-                      {row.href && (
+                      {row.proofUrl ? (
+                        <a
+                          href={row.proofUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700"
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                          {tr('Open proof', 'Ouvrir la preuve')}
+                        </a>
+                      ) : null}
+                      {row.href && row.proofType !== 'wallet' ? (
                         <button
                           type="button"
                           onClick={() => window.location.href = row.href}
@@ -217,7 +281,29 @@ const FinanceAlertsTabV2 = ({ filters, refreshTrigger }) => {
                           <ExternalLink className="h-4 w-4" />
                           {tr('Open', 'Ouvrir')}
                         </button>
-                      )}
+                      ) : null}
+                      {row.proofType === 'wallet' && ['pending', 'submitted', 'review'].includes(row.status) ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={reviewingTopupId === row.id}
+                            onClick={() => handleReviewWalletTopup(row, 'approved')}
+                            className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 shadow-sm transition hover:border-emerald-300"
+                          >
+                            <BadgeCheck className="h-4 w-4" />
+                            {tr('Approve', 'Approuver')}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={reviewingTopupId === row.id}
+                            onClick={() => handleReviewWalletTopup(row, 'rejected')}
+                            className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 shadow-sm transition hover:border-rose-300"
+                          >
+                            <AlertTriangle className="h-4 w-4" />
+                            {tr('Reject', 'Rejeter')}
+                          </button>
+                        </>
+                      ) : null}
                     </div>
                   </div>
                 </div>

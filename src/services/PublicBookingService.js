@@ -22,6 +22,32 @@ const requestPublicBookingApi = async (action, body, method = 'POST') => {
   return payload;
 };
 
+const requestPublicBookingLookup = async (action, params = {}) => {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData?.session?.access_token;
+  const searchParams = new URLSearchParams({ action });
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    searchParams.set(key, String(value));
+  });
+
+  const response = await fetch(`/api/public-bookings?${searchParams.toString()}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.error || 'Failed to load booking request');
+  }
+
+  return payload;
+};
+
 class PublicBookingService {
   static async createCertifiedBooking(payload) {
     return requestPublicBookingApi('create-certified', payload, 'POST');
@@ -29,6 +55,15 @@ class PublicBookingService {
 
   static async createMarketplaceRequest(payload) {
     return requestPublicBookingApi('create-marketplace', payload, 'POST');
+  }
+
+  static async getExistingMarketplaceRequest(listingId) {
+    if (!listingId) return null;
+    return requestPublicBookingLookup('existing-marketplace', { listingId });
+  }
+
+  static async getExistingMarketplaceRequests() {
+    return requestPublicBookingLookup('existing-marketplace-list');
   }
 
   static async updateWebsiteBookingState(rentalId, payload = {}) {

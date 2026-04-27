@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Building2, CheckCircle2, Clock3, ExternalLink, RefreshCw, Search, ShieldAlert, X } from 'lucide-react';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
+import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
 import {
   completeTenantProvisioning,
   failTenantProvisioning,
@@ -51,7 +52,7 @@ const buildWorkspaceRows = (businessOwners = []) => businessOwners.map((entry) =
     provisioningJob,
     ownerName: businessAccount?.full_name || businessAccount?.email || 'Business owner',
     ownerEmail: businessAccount?.email || '',
-    name: tenant?.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Workspace',
+    name: tenant?.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Tenant',
     slug: tenant?.tenant_slug || '',
     status,
     createdAt: tenant?.created_at || businessAccount?.created_at,
@@ -98,7 +99,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated }) => {
 
   const runAction = async (action) => {
     if (!job?.id && !(action === 'start' && workspace?.businessAccount?.id)) {
-      alert(tr('No provisioning job is linked to this workspace yet.', 'Aucun job de provisionnement n’est lié à cet espace.'));
+      alert(tr('No provisioning job is linked to this tenant yet.', 'Aucun job de provisionnement n’est lié à ce tenant.'));
       return;
     }
 
@@ -128,7 +129,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated }) => {
       }
       await onUpdated?.();
     } catch (error) {
-      alert(error?.message || tr('Unable to update workspace.', 'Impossible de mettre à jour l’espace.'));
+          alert(error?.message || tr('Unable to update tenant.', 'Impossible de mettre à jour le tenant.'));
     } finally {
       setBusy('');
     }
@@ -150,7 +151,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated }) => {
         <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-6 py-5 backdrop-blur">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-500">{tr('Tenant workspace', 'Espace tenant')}</p>
+              <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-500">{tr('Tenant', 'Tenant')}</p>
               <h2 className="mt-1 text-2xl font-black text-slate-950">{workspace.name}</h2>
               <p className="mt-1 text-sm font-semibold text-slate-500">{workspace.ownerEmail}</p>
             </div>
@@ -197,10 +198,10 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated }) => {
               <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Provisioning pipeline', 'Pipeline de provisionnement')}</p>
               <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
                 {status === 'pending'
-                  ? tr('Start the automatic provisioning job. The backend worker will create and connect the private workspace.', 'Démarrez le job automatique. Le worker backend créera et connectera l’espace privé.')
+                  ? tr('Start the automatic provisioning job. The backend worker will create and connect the private tenant.', 'Démarrez le job automatique. Le worker backend créera et connectera le tenant privé.')
                   : automationWasDispatched
-                    ? tr('The worker has been notified. This drawer refreshes automatically; when it finishes, status changes to Active and Open Workspace appears.', 'Le worker a été notifié. Ce panneau se rafraîchit automatiquement; quand il termine, le statut passe à Actif et Ouvrir l’espace apparaît.')
-                    : tr('The workspace is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'L’espace est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')}
+                    ? tr('The worker has been notified. This drawer refreshes automatically; when it finishes, status changes to Active and Open Tenant appears.', 'Le worker a été notifié. Ce panneau se rafraîchit automatiquement; quand il termine, le statut passe à Actif et Ouvrir le tenant apparaît.')
+                    : tr('The tenant is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'Le tenant est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')}
               </p>
 
               <button
@@ -360,10 +361,10 @@ const Workspaces = () => {
       <AdminModuleHero
         icon={<Building2 className="h-6 w-6 text-white" />}
         eyebrow={tr('Platform operations', 'Opérations plateforme')}
-        title={tr('Workspaces', 'Espaces de travail')}
+        title={tr('Tenant', 'Tenant')}
         description={tr('Provision and monitor isolated business tenant workspaces.', 'Provisionnez et surveillez les espaces tenant business isolés.')}
         actions={(
-          <button type="button" onClick={load} disabled={loading} className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white/20 disabled:opacity-60">
+          <button type="button" onClick={load} disabled={loading} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60">
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             {tr('Refresh', 'Actualiser')}
           </button>
@@ -371,7 +372,7 @@ const Workspaces = () => {
       />
 
       <main className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
-        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <AdminMobileStatsRow>
           {[
             ['pending', tr('Pending', 'En attente')],
             ['provisioning', tr('Provisioning', 'Provisionnement')],
@@ -384,7 +385,7 @@ const Workspaces = () => {
               <p className="mt-1 text-xs font-semibold text-slate-500">{tr('Tenant workspaces', 'Espaces tenant')}</p>
             </div>
           ))}
-        </section>
+        </AdminMobileStatsRow>
 
         <section className="rounded-[34px] border border-violet-100 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.06)] sm:p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
