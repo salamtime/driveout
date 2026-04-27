@@ -20765,53 +20765,55 @@ Breakdown:
         />
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 z-10 border-t border-violet-100/80 bg-white/96 px-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-3 shadow-[0_-18px_36px_rgba(76,29,149,0.08)] backdrop-blur sm:hidden">
-    <div className="rounded-[24px] border border-violet-100/80 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-2 shadow-[0_14px_30px_rgba(76,29,149,0.08)]">
-      <div className="grid grid-cols-4 gap-2">
-        <Button
-            onClick={() => setContractPreviewModal(true)}
-            className={`h-auto ${MOBILE_FOOTER_SECONDARY_CLASS}`}
-            size="sm"
-        >
-            {isGeneratingContract ? '...' : 'Contract'}
-        </Button>
-        <Button
-            onClick={() => setReceiptPreviewModal(true)}
-            className={`h-auto ${MOBILE_FOOTER_PRIMARY_CLASS}`}
-            size="sm"
-        >
-            {isGeneratingReceipt ? '...' : 'Receipt'}
-        </Button>
-        <Button
-            onClick={handleWhatsAppClick}
-            onTouchStart={ensurePDFsReady}
-            disabled={isSharing}
-            className={`h-auto ${isSharing ? MOBILE_FOOTER_DISABLED_CLASS : MOBILE_FOOTER_SUCCESS_CLASS}`}
-            size="sm"
-        >
-            {isSharing ? (
-              <Loader className="w-4 h-4 animate-spin" />
-            ) : (
-              <FaWhatsapp size={12} className="mr-1" />
-            )}
-            {isSharing ? '...' : 'WhatsApp'}
-        </Button>
-        <Button
-            onClick={handleSmartSendEmail}
-            disabled={isSendingEmail || !canSendEmailDocuments}
-            className={`h-auto ${isSendingEmail || !canSendEmailDocuments ? MOBILE_FOOTER_DISABLED_CLASS : MOBILE_FOOTER_SECONDARY_CLASS}`}
-            size="sm"
-        >
-            {isSendingEmail ? (
-              <Loader className="w-4 h-4 animate-spin" />
-            ) : (
-              <Mail className="mr-1 h-3.5 w-3.5" />
-            )}
-            {isSendingEmail ? '...' : tr('Email', 'E-mail')}
-        </Button>
-      </div>
-    </div>
-</div>
+      {!isLightRentalDetailsMode && (
+        <div className="fixed bottom-0 left-0 right-0 z-10 border-t border-violet-100/80 bg-white/96 px-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-3 shadow-[0_-18px_36px_rgba(76,29,149,0.08)] backdrop-blur sm:hidden">
+          <div className="rounded-[24px] border border-violet-100/80 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-2 shadow-[0_14px_30px_rgba(76,29,149,0.08)]">
+            <div className="grid grid-cols-4 gap-2">
+              <Button
+                onClick={() => setContractPreviewModal(true)}
+                className={`h-auto ${MOBILE_FOOTER_SECONDARY_CLASS}`}
+                size="sm"
+              >
+                {isGeneratingContract ? '...' : 'Contract'}
+              </Button>
+              <Button
+                onClick={() => setReceiptPreviewModal(true)}
+                className={`h-auto ${MOBILE_FOOTER_PRIMARY_CLASS}`}
+                size="sm"
+              >
+                {isGeneratingReceipt ? '...' : 'Receipt'}
+              </Button>
+              <Button
+                onClick={handleWhatsAppClick}
+                onTouchStart={ensurePDFsReady}
+                disabled={isSharing}
+                className={`h-auto ${isSharing ? MOBILE_FOOTER_DISABLED_CLASS : MOBILE_FOOTER_SUCCESS_CLASS}`}
+                size="sm"
+              >
+                {isSharing ? (
+                  <Loader className="w-4 h-4 animate-spin" />
+                ) : (
+                  <FaWhatsapp size={12} className="mr-1" />
+                )}
+                {isSharing ? '...' : 'WhatsApp'}
+              </Button>
+              <Button
+                onClick={handleSmartSendEmail}
+                disabled={isSendingEmail || !canSendEmailDocuments}
+                className={`h-auto ${isSendingEmail || !canSendEmailDocuments ? MOBILE_FOOTER_DISABLED_CLASS : MOBILE_FOOTER_SECONDARY_CLASS}`}
+                size="sm"
+              >
+                {isSendingEmail ? (
+                  <Loader className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Mail className="mr-1 h-3.5 w-3.5" />
+                )}
+                {isSendingEmail ? '...' : tr('Email', 'E-mail')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showCopyConfirmation ? (
         <div className="pointer-events-none fixed inset-0 z-[120] flex items-center justify-center px-6">

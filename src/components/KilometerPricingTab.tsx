@@ -61,7 +61,7 @@ interface PackageFormData {
 
 const HALF_HOUR_SELECTION = 'half_hour';
 const HALF_DAY_SELECTION = 'half_day';
-const MAX_PRINT_PACKAGES_PER_PAGE = 5;
+const MAX_PRINT_PACKAGES_PER_PAGE = 8;
 
 const detectHalfDayPackage = (pkg?: { name?: string; description?: string } | null) => {
   const combinedText = `${pkg?.name || ''} ${pkg?.description || ''}`.toLowerCase();
@@ -502,20 +502,19 @@ const KilometerPricingTab: React.FC = () => {
   const isPrintSelected = (pkg: RentalPackage | PackageFormData) =>
     pkg.show_on_print === true || pkg.showOnPrint === true;
 
-  const getPrintSelectedCountForPage = (vehicleModelId: string, rateTypeId: number, excludePackageId?: number | string | null) =>
+  const getPrintSelectedCountForPage = (vehicleModelId: string, excludePackageId?: number | string | null) =>
     packages.filter((pkg) =>
       String(pkg.vehicle_model_id || '') === String(vehicleModelId || '') &&
-      Number(pkg.rate_type_id) === Number(rateTypeId) &&
       String(pkg.id || '') !== String(excludePackageId || '') &&
       isPrintSelected(pkg)
     ).length;
 
-  const canSelectPackageForPrint = (vehicleModelId: string, rateTypeId: number, excludePackageId?: number | string | null) =>
-    getPrintSelectedCountForPage(vehicleModelId, rateTypeId, excludePackageId) < MAX_PRINT_PACKAGES_PER_PAGE;
+  const canSelectPackageForPrint = (vehicleModelId: string, excludePackageId?: number | string | null) =>
+    getPrintSelectedCountForPage(vehicleModelId, excludePackageId) < MAX_PRINT_PACKAGES_PER_PAGE;
 
   const handleToggleShowOnPrint = async (pkg: RentalPackage, checked: boolean) => {
-    if (checked && !canSelectPackageForPrint(pkg.vehicle_model_id, pkg.rate_type_id, pkg.id)) {
-      setError(tr('Maximum 5 packages allowed per print page', 'Maximum 5 packages autorisés par page d’impression'));
+    if (checked && !canSelectPackageForPrint(pkg.vehicle_model_id, pkg.id)) {
+      setError(tr('Maximum 8 packages allowed per model print page', 'Maximum 8 packages autorisés par page d’impression par modèle'));
       return;
     }
 
@@ -571,9 +570,9 @@ const KilometerPricingTab: React.FC = () => {
     }
     if (
       formData.show_on_print &&
-      !canSelectPackageForPrint(formData.vehicle_model_id, formData.rate_type_id, editingPackage?.id)
+      !canSelectPackageForPrint(formData.vehicle_model_id, editingPackage?.id)
     ) {
-      return tr('Maximum 5 packages allowed per print page', 'Maximum 5 packages autorisés par page d’impression');
+      return tr('Maximum 8 packages allowed per model print page', 'Maximum 8 packages autorisés par page d’impression par modèle');
     }
     
     return null;
@@ -752,6 +751,20 @@ const KilometerPricingTab: React.FC = () => {
       String(left.name || '').localeCompare(String(right.name || ''))
     );
 
+  const getPrintPreviewBadge = (pkg: RentalPackage) => {
+    if (pkg.included_kilometers !== null && pkg.included_kilometers !== undefined) {
+      return `${pkg.included_kilometers} km`;
+    }
+    return tr('Unlimited km', 'Km illimité');
+  };
+
+  const getPrintPreviewSubtitle = (pkg: RentalPackage) => {
+    if (detectHalfHourPackage(pkg)) return tr('30 min package', 'Forfait 30 min');
+    if (detectHalfDayPackage(pkg)) return tr('4 hour package', 'Forfait 4 heures');
+    const rateTypeName = rateTypes.find((rateType) => rateType.id === pkg.rate_type_id)?.name || tr('Package', 'Forfait');
+    return `${translatePrintPackageText(rateTypeName)} ${tr('package', 'forfait')}`;
+  };
+
   const buildMarketingPrintPages = () => {
     const scopedPackages = packages.filter((pkg) => {
       if (pkg.is_active === false) return false;
@@ -760,15 +773,14 @@ const KilometerPricingTab: React.FC = () => {
       return true;
     });
 
-    const pageKeys = new Map<string, { model: VehicleModel | undefined; rateType: RateType | undefined; packages: RentalPackage[] }>();
+    const pageKeys = new Map<string, { model: VehicleModel | undefined; packages: RentalPackage[] }>();
 
     scopedPackages.forEach((pkg) => {
       const model = vehicleModels.find((vehicleModel) => vehicleModel.id === pkg.vehicle_model_id) || pkg.vehicle_model;
-      const rateType = rateTypes.find((item) => item.id === pkg.rate_type_id);
-      const key = `${pkg.vehicle_model_id}__${pkg.rate_type_id}`;
+      const key = String(pkg.vehicle_model_id || '');
 
       if (!pageKeys.has(key)) {
-        pageKeys.set(key, { model, rateType, packages: [] });
+        pageKeys.set(key, { model, packages: [] });
       }
       pageKeys.get(key)?.packages.push(pkg);
     });
@@ -787,10 +799,7 @@ const KilometerPricingTab: React.FC = () => {
         };
       })
       .filter((page) => page.packages.length > 0)
-      .sort((left, right) =>
-        getVehicleModelDisplay(left.model).localeCompare(getVehicleModelDisplay(right.model)) ||
-        String(left.rateType?.name || '').localeCompare(String(right.rateType?.name || ''))
-      );
+      .sort((left, right) => getVehicleModelDisplay(left.model).localeCompare(getVehicleModelDisplay(right.model)));
   };
 
   const marketingPrintPages = buildMarketingPrintPages();
@@ -1147,7 +1156,7 @@ const KilometerPricingTab: React.FC = () => {
                 </p>
                 <h3 className="text-lg font-bold">{tr('A4 package preview', 'Aperçu A4 des packages')}</h3>
                 <p className="text-sm text-slate-300">
-                  {marketingPrintPages.length} {marketingPrintPages.length === 1 ? tr('page', 'page') : tr('pages', 'pages')} • {selectedPrintPackagesCount} {tr('selected packages', 'packages sélectionnés')}
+                  {marketingPrintPages.length} {marketingPrintPages.length === 1 ? tr('model page', 'page modèle') : tr('model pages', 'pages modèles')} • {selectedPrintPackagesCount} {tr('selected packages', 'packages sélectionnés')}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -1173,81 +1182,98 @@ const KilometerPricingTab: React.FC = () => {
               <div className="marketing-print-pages mx-auto flex w-fit flex-col gap-8">
                 {marketingPrintPages.map((page, pageIndex) => {
                   const modelName = getVehicleModelDisplay(page.model);
-                  const rateTypeName = page.rateType?.name || tr('Rate type', 'Type de tarif');
-                  const translatedRateTypeName = translatePrintPackageText(rateTypeName);
                   const damageDepositAmount = Number(page.damageDepositPreset?.amount || 0) || 0;
+                  const visiblePrices = page.packages.map((pkg) => Number(pkg.fixed_amount || 0)).filter((value) => value > 0);
+                  const lowestPrice = visiblePrices.length > 0 ? Math.min(...visiblePrices) : 0;
+                  const highestPrice = visiblePrices.length > 0 ? Math.max(...visiblePrices) : 0;
                   return (
                     <section
-                      key={`${page.model?.id || 'model'}-${page.rateType?.id || 'rate'}-${pageIndex}`}
+                      key={`${page.model?.id || 'model'}-${pageIndex}`}
                       className="marketing-print-page flex min-h-[297mm] w-[210mm] max-w-full flex-col overflow-hidden rounded-[28px] bg-white p-10 text-slate-950 shadow-2xl"
                     >
-                      <header className="flex items-start justify-between gap-6 border-b border-slate-200 pb-6">
-                        <div>
-                          <p className="text-xs font-bold uppercase tracking-[0.36em] text-violet-600">SaharaX</p>
-                          <h1 className="mt-3 text-5xl font-black tracking-tight">{modelName}</h1>
-                          <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-bold text-slate-700">
-                            {getRateTypeIcon(rateTypeName)}
-                            {translatedRateTypeName}
+                      <header className="overflow-hidden rounded-[30px] border border-violet-200 bg-[linear-gradient(145deg,#ffffff_0%,#faf5ff_46%,#eefbf7_100%)] px-7 py-7">
+                        <div className="flex items-start justify-between gap-6">
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-[0.36em] text-violet-600">SaharaX</p>
+                            <h1 className="mt-3 text-5xl font-black tracking-tight">{modelName}</h1>
+                            <p className="mt-2 text-base font-medium text-slate-600">
+                              {tr('Customer package menu', 'Menu client des packages')}
+                            </p>
+                          </div>
+                          <div className="rounded-[22px] border border-violet-200 bg-white px-5 py-4 text-right shadow-sm">
+                            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{tr('Packages', 'Packages')}</p>
+                            <p className="mt-1 text-3xl font-black text-violet-600">{page.packages.length}</p>
                           </div>
                         </div>
-                        <div className="text-right">
-                          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{tr('Package sheet', 'Fiche package')}</p>
-                          <p className="mt-2 text-3xl font-black text-violet-600">{page.packages.length}</p>
-                          <p className="text-sm font-semibold text-slate-500">{tr('offers', 'offres')}</p>
+                        <div className="mt-5 grid grid-cols-3 gap-3">
+                          <div className="rounded-[20px] border border-white/70 bg-white/85 px-4 py-3">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">{tr('Starting from', 'À partir de')}</p>
+                            <p className="mt-1 text-xl font-black text-slate-950">{formatCurrency(lowestPrice)}</p>
+                          </div>
+                          <div className="rounded-[20px] border border-white/70 bg-white/85 px-4 py-3">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">{tr('Top package', 'Forfait premium')}</p>
+                            <p className="mt-1 text-xl font-black text-slate-950">{formatCurrency(highestPrice)}</p>
+                          </div>
+                          <div className="rounded-[20px] border border-emerald-200 bg-emerald-50 px-4 py-3">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-700">{tr('Deposit', 'Caution')}</p>
+                            <p className="mt-1 text-xl font-black text-emerald-800">{formatCurrency(damageDepositAmount)}</p>
+                          </div>
                         </div>
                       </header>
 
-                      <div className="mt-5 rounded-[24px] border border-emerald-200 bg-emerald-50 px-5 py-4">
+                      <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
                         <div className="flex items-center justify-between gap-5">
                           <div>
-                            <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">
-                              {tr('Security damage deposit', 'Caution de garantie')}
+                            <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">
+                              {tr('Printed menu note', 'Note du menu imprimé')}
                             </p>
-                            <p className="mt-1 text-sm font-semibold leading-relaxed text-emerald-800">
-                              {tr('Refundable at return if the vehicle comes back in the same condition.', 'Remboursable au retour si le véhicule revient dans le même état.')}
+                            <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
+                              {tr('Choose your time and kilometers first. Security deposit is separate and refundable after return.', 'Choisissez d’abord votre durée et vos kilomètres. La caution est séparée et remboursable au retour.')}
                             </p>
                           </div>
                           <div className="rounded-[20px] bg-white px-5 py-3 text-right shadow-sm">
-                            <p className="text-2xl font-black text-emerald-800">{formatCurrency(damageDepositAmount)}</p>
+                            <p className="text-base font-black text-slate-900">
+                              {page.damageDepositPreset?.label || tr('Refundable deposit', 'Caution remboursable')}
+                            </p>
                             {page.damageDepositPreset?.label && (
-                              <p className="mt-0.5 text-xs font-semibold text-emerald-600">{page.damageDepositPreset.label}</p>
+                              <p className="mt-0.5 text-xs font-semibold text-slate-500">{tr('Shown separately on contract', 'Affichée séparément sur le contrat')}</p>
                             )}
                           </div>
                         </div>
                       </div>
 
-                      <div className="mt-8 grid flex-1 grid-cols-1 gap-5">
+                      <div className="mt-8 grid flex-1 grid-cols-2 gap-4">
                         {page.packages.map((pkg) => {
                           const isUnlimited = (pkg.included_kilometers === null || pkg.included_kilometers === undefined) && (!pkg.extra_km_rate || pkg.extra_km_rate === 0);
                           const packageName = translatePrintPackageText(pkg.name);
                           const packageDescription = translatePrintPackageText(pkg.description);
                           return (
-                            <article key={pkg.id} className="marketing-print-card rounded-[26px] border border-slate-200 bg-slate-50 p-6">
+                            <article key={pkg.id} className="marketing-print-card rounded-[26px] border border-violet-200 bg-white p-5 shadow-[0_14px_30px_rgba(124,58,237,0.08)]">
                               <div className="flex items-start justify-between gap-4">
                                 <div>
-                                  <h2 className="text-2xl font-black text-slate-950">{packageName}</h2>
+                                  <div className="inline-flex rounded-full bg-violet-100 px-4 py-2 text-xl font-black text-violet-700">
+                                    {getPrintPreviewBadge(pkg)}
+                                  </div>
+                                  <p className="mt-3 text-sm font-bold uppercase tracking-[0.18em] text-slate-400">
+                                    {getPrintPreviewSubtitle(pkg)}
+                                  </p>
+                                  <h2 className="mt-2 text-2xl font-black text-slate-950">{packageName}</h2>
                                   {packageDescription && (
                                     <p className="mt-2 max-w-2xl text-sm font-medium leading-relaxed text-slate-500">{packageDescription}</p>
                                   )}
                                 </div>
+                              </div>
+
+                              <div className="mt-5 flex items-end justify-between gap-4">
+                                <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">{tr('Extra km', 'Km supp.')}</p>
+                                  <p className="mt-1 text-lg font-black text-slate-900">
+                                    {isUnlimited || !pkg.extra_km_rate ? tr('Included', 'Inclus') : `${pkg.extra_km_rate} MAD/km`}
+                                  </p>
+                                </div>
                                 <div className="marketing-print-price rounded-[22px] bg-violet-600 px-5 py-4 text-right text-white shadow-lg shadow-violet-200">
                                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-100">{tr('Price', 'Prix')}</p>
                                   <p className="mt-1 text-3xl font-black">{formatCurrency(pkg.fixed_amount)}</p>
-                                </div>
-                              </div>
-
-                              <div className="mt-5 grid grid-cols-2 gap-3">
-                                <div className="rounded-2xl bg-white px-4 py-3">
-                                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">{tr('Included', 'Inclus')}</p>
-                                  <p className="mt-1 text-lg font-black text-slate-900">
-                                    {isUnlimited ? tr('Unlimited km', 'Km illimité') : `${pkg.included_kilometers || 0} km`}
-                                  </p>
-                                </div>
-                                <div className="rounded-2xl bg-white px-4 py-3">
-                                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">{tr('Extra km', 'Km supp.')}</p>
-                                  <p className="mt-1 text-lg font-black text-slate-900">
-                                    {!pkg.extra_km_rate ? tr('Not applied', 'Non appliqué') : `${pkg.extra_km_rate} MAD/km`}
-                                  </p>
                                 </div>
                               </div>
                             </article>
@@ -1256,7 +1282,7 @@ const KilometerPricingTab: React.FC = () => {
                       </div>
 
                       <footer className="mt-8 flex items-center justify-between border-t border-slate-200 pt-5 text-sm font-semibold text-slate-500">
-                        <span>{tr('SaharaX Rentals, tours, and more', 'SaharaX Locations, tours et plus')}</span>
+                        <span>{tr('Printed customer menu for SaharaX packages', 'Menu client imprimé des packages SaharaX')}</span>
                         <span>{tr('Page', 'Page')} {pageIndex + 1}</span>
                       </footer>
                     </section>
