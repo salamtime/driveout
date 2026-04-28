@@ -18,9 +18,18 @@ const DOCUMENT_TYPES = new Set([
 const generateCode = () =>
   Array.from({ length: 6 }, () => CHARS[Math.floor(Math.random() * CHARS.length)]).join('');
 
+const buildCacheKey = (url, type) => {
+  try {
+    const encodedUrl = encodeURIComponent(String(url || ''));
+    return `${CACHE_PREFIX}${type}_${encodedUrl}`;
+  } catch {
+    return `${CACHE_PREFIX}${type}_${String(url || '')}`;
+  }
+};
+
 const getCached = (url, type) => {
   try {
-    const key = CACHE_PREFIX + type + '_' + btoa(url).substring(0, 30);
+    const key = buildCacheKey(url, type);
     const item = localStorage.getItem(key);
     if (item) {
       const { shortUrl, ts } = JSON.parse(item);
@@ -33,7 +42,7 @@ const getCached = (url, type) => {
 
 const setCache = (url, shortUrl, type) => {
   try {
-    const key = CACHE_PREFIX + type + '_' + btoa(url).substring(0, 30);
+    const key = buildCacheKey(url, type);
     localStorage.setItem(key, JSON.stringify({ shortUrl, ts: Date.now() }));
   } catch {}
 };
