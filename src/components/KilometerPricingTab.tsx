@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Info, Package, Plus, Edit, Trash2, CheckCircle, XCircle, Loader, X, Save, AlertCircle, Car, Filter, DollarSign, Clock, Calendar, CalendarDays, CalendarRange, Printer } from 'lucide-react';
+import { Info, Package, Plus, Edit, Trash2, CheckCircle, XCircle, Loader, X, Save, AlertCircle, Car, Filter, DollarSign, Clock, Calendar, CalendarDays, CalendarRange, Printer, Download } from 'lucide-react';
 import KilometerPricingHelpModal from './KilometerPricingHelpModal';
 import PackageService from '../services/PackageService';
 import { supabase } from '../lib/supabase';
@@ -62,7 +63,6 @@ interface PackageFormData {
 const HALF_HOUR_SELECTION = 'half_hour';
 const HALF_DAY_SELECTION = 'half_day';
 const MAX_PRINT_PACKAGES_PER_PAGE = 8;
-
 const detectHalfDayPackage = (pkg?: { name?: string; description?: string } | null) => {
   const combinedText = `${pkg?.name || ''} ${pkg?.description || ''}`.toLowerCase();
   return combinedText.includes('half day') || combinedText.includes('half-day') || combinedText.includes('4 hour');
@@ -193,6 +193,8 @@ const KilometerPricingTab: React.FC = () => {
   const [deleteLoading, setDeleteLoading] = useState<number | null>(null);
   const [printToggleLoading, setPrintToggleLoading] = useState<number | null>(null);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
+  const [exportingPrintPng, setExportingPrintPng] = useState(false);
+  const marketingPrintPagesRef = useRef<HTMLDivElement | null>(null);
   
   // Form state
   const [showPackageForm, setShowPackageForm] = useState(false);
@@ -217,6 +219,17 @@ const KilometerPricingTab: React.FC = () => {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (!showPrintPreview || typeof document === 'undefined') return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [showPrintPreview]);
 
   useEffect(() => {
     // Apply filters
@@ -699,11 +712,23 @@ const KilometerPricingTab: React.FC = () => {
     }).format(amount).replace('MAD', '').trim() + ' MAD';
   };
 
+  const normalizePrintPackageText = (value?: string | null) =>
+    String(value || '')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/(\d)([A-Za-z])/g, '$1 $2')
+      .replace(/\bKM(?=per)/gi, 'KM ')
+      .replace(/\bper(?=(Hour|Day|Week|Month)\b)/gi, 'per ')
+      .replace(/\bKM\b/gi, 'KM')
+      .replace(/\s+/g, ' ')
+      .trim();
+
   const translatePrintPackageText = (value?: string | null) => {
-    const text = String(value || '');
+    const text = normalizePrintPackageText(value);
     if (!isFrench || !text) return text;
 
     return text
+      .replace(/\bper\s+30\s+min\b/gi, 'par 30 min')
+      .replace(/\bper\s+30\s+minutes\b/gi, 'par 30 minutes')
       .replace(/\bper\s+hour\b/gi, 'par heure')
       .replace(/\bper\s+day\b/gi, 'par jour')
       .replace(/\bper\s+week\b/gi, 'par semaine')
@@ -751,6 +776,25 @@ const KilometerPricingTab: React.FC = () => {
       String(left.name || '').localeCompare(String(right.name || ''))
     );
 
+  const formatPackageNumber = (number: number) => String(number || 0).padStart(2, '0');
+
+  const getPackageDisplayNumber = (pkg: RentalPackage) => {
+    const sameModelPackages = sortPackagesForPrint(
+      packages.filter((candidate) =>
+        String(candidate.vehicle_model_id || '') === String(pkg.vehicle_model_id || '') &&
+        candidate.is_active !== false
+      )
+    );
+    const activeIndex = sameModelPackages.findIndex((candidate) => String(candidate.id) === String(pkg.id));
+    if (activeIndex >= 0) return activeIndex + 1;
+
+    const fallbackPackages = sortPackagesForPrint(
+      packages.filter((candidate) => String(candidate.vehicle_model_id || '') === String(pkg.vehicle_model_id || ''))
+    );
+    const fallbackIndex = fallbackPackages.findIndex((candidate) => String(candidate.id) === String(pkg.id));
+    return fallbackIndex >= 0 ? fallbackIndex + 1 : 0;
+  };
+
   const getPrintPreviewBadge = (pkg: RentalPackage) => {
     if (pkg.included_kilometers !== null && pkg.included_kilometers !== undefined) {
       return `${pkg.included_kilometers} km`;
@@ -758,17 +802,38 @@ const KilometerPricingTab: React.FC = () => {
     return tr('Unlimited km', 'Km illimité');
   };
 
-  const getPrintPreviewSubtitle = (pkg: RentalPackage) => {
-    if (detectHalfHourPackage(pkg)) return tr('30 min package', 'Forfait 30 min');
-    if (detectHalfDayPackage(pkg)) return tr('4 hour package', 'Forfait 4 heures');
-    const rateTypeName = rateTypes.find((rateType) => rateType.id === pkg.rate_type_id)?.name || tr('Package', 'Forfait');
-    return `${translatePrintPackageText(rateTypeName)} ${tr('package', 'forfait')}`;
+  const getPrintFamilyLabel = (pageFamily: 'hourly' | 'daily') =>
+    isFrench
+      ? pageFamily === 'hourly'
+        ? 'FORFAITS HORAIRES'
+        : 'FORFAITS JOURNÉE'
+      : pageFamily === 'hourly'
+        ? 'HOURLY PACKAGES'
+        : 'DAILY PACKAGES';
+
+  const getPrintPackageBadgeLabel = () => (isFrench ? 'FORFAIT' : 'PACKAGE');
+
+  const getPrintFeaturedLabel = () => 'SPECIAL';
+
+  const getPrintCountLabel = () => (isFrench ? 'FORFAITS' : 'PACKAGES');
+
+  const getMarketingPrintDescription = (pkg: RentalPackage) => {
+    if (detectHalfHourPackage(pkg) || detectHalfDayPackage(pkg)) return '';
+    return translatePrintPackageText(pkg.description);
+  };
+
+  const getPrintPageFamily = (pkg: RentalPackage) => {
+    if (detectHalfHourPackage(pkg) || detectHalfDayPackage(pkg)) return 'hourly';
+    const rateName = String(rateTypes.find((rateType) => rateType.id === pkg.rate_type_id)?.name || '').toLowerCase();
+    if (rateName.includes('hour')) return 'hourly';
+    if (rateName.includes('day')) return 'daily';
+    return 'other';
   };
 
   const buildMarketingPrintPages = () => {
     const scopedPackages = packages.filter((pkg) => {
       if (pkg.is_active === false) return false;
-      if (filterVehicleModel && pkg.vehicle_model_id !== filterVehicleModel) return false;
+      if (filterVehicleModel && String(pkg.vehicle_model_id || '') !== String(filterVehicleModel)) return false;
       if (filterRateType && Number(pkg.rate_type_id) !== Number(filterRateType)) return false;
       return true;
     });
@@ -786,24 +851,116 @@ const KilometerPricingTab: React.FC = () => {
     });
 
     return Array.from(pageKeys.values())
-      .map((page) => {
-        const selectedPackages = page.packages.filter(isPrintSelected);
-        const usesFallback = selectedPackages.length === 0;
-        const visiblePackages = sortPackagesForPrint(usesFallback ? page.packages : selectedPackages).slice(0, MAX_PRINT_PACKAGES_PER_PAGE);
+      .flatMap((page) => {
+        const sortedPackages = sortPackagesForPrint(page.packages);
+        const hourlyPackages = sortedPackages.filter((pkg) => getPrintPageFamily(pkg) === 'hourly');
+        const dailyPackages = sortedPackages.filter((pkg) => getPrintPageFamily(pkg) !== 'hourly');
+        const buildFamilyPage = (familyPackages: RentalPackage[], pageFamily: 'hourly' | 'daily') =>
+          familyPackages.length === 0
+            ? null
+            : {
+                ...page,
+                packages: familyPackages,
+                usesFallback: false,
+                damageDepositPreset: getModelDamageDepositPreset(page.model),
+                pageFamily,
+              };
 
-        return {
-          ...page,
-          packages: visiblePackages,
-          usesFallback,
-          damageDepositPreset: getModelDamageDepositPreset(page.model)
-        };
+        return [
+          buildFamilyPage(hourlyPackages, 'hourly'),
+          buildFamilyPage(dailyPackages, 'daily'),
+        ];
       })
-      .filter((page) => page.packages.length > 0)
-      .sort((left, right) => getVehicleModelDisplay(left.model).localeCompare(getVehicleModelDisplay(right.model)));
+      .filter((page): page is NonNullable<typeof page> => Boolean(page?.packages?.length))
+      .sort((left, right) => {
+        const modelSort = getVehicleModelDisplay(left.model).localeCompare(getVehicleModelDisplay(right.model));
+        if (modelSort !== 0) return modelSort;
+        return (left.pageFamily === 'hourly' ? 0 : 1) - (right.pageFamily === 'hourly' ? 0 : 1);
+      });
   };
 
   const marketingPrintPages = buildMarketingPrintPages();
-  const selectedPrintPackagesCount = packages.filter((pkg) => pkg.is_active !== false && isPrintSelected(pkg)).length;
+  const totalPrintPackagesCount = marketingPrintPages.reduce((total, page) => total + page.packages.length, 0);
+  const formatPrintPrice = (amount?: number | null) => {
+    const numericAmount = Number(amount || 0);
+    return {
+      value: new Intl.NumberFormat('en-US').format(numericAmount),
+      currency: 'MAD',
+    };
+  };
+
+  const makePrintExportFilename = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'package-menu';
+
+  const downloadCanvasAsPng = (canvas: HTMLCanvasElement, filename: string) => {
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL('image/png');
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleDownloadMarketingPngPages = async () => {
+    const pageElements = Array.from(
+      marketingPrintPagesRef.current?.querySelectorAll<HTMLElement>('.marketing-print-page') || []
+    );
+
+    if (pageElements.length === 0) {
+      setError(tr('No print pages available to export.', 'Aucune page d’impression disponible à exporter.'));
+      return;
+    }
+
+    setExportingPrintPng(true);
+    setError(null);
+
+    try {
+      if ('fonts' in document) {
+        await (document as Document & { fonts?: { ready?: Promise<void> } }).fonts?.ready;
+      }
+
+      const { default: html2canvas } = await import('html2canvas');
+
+      for (const [index, pageElement] of pageElements.entries()) {
+        const page = marketingPrintPages[index];
+        const modelName = getVehicleModelDisplay(page?.model);
+        const familyName = page?.pageFamily === 'daily' ? 'daily' : 'hourly';
+        const exportName = makePrintExportFilename(`saharax-${modelName}-${familyName}-packages`);
+        const scale = Math.min(4, Math.max(2, 2480 / Math.max(pageElement.offsetWidth, 1)));
+
+        const canvas = await html2canvas(pageElement, {
+          backgroundColor: '#ffffff',
+          logging: false,
+          scale,
+          useCORS: true,
+          width: pageElement.offsetWidth,
+          height: pageElement.offsetHeight,
+          windowWidth: pageElement.scrollWidth,
+          windowHeight: pageElement.scrollHeight,
+        });
+
+        downloadCanvasAsPng(canvas, `${index + 1}-${exportName}.png`);
+
+        // Give Safari/Chrome a small pause so multiple downloads are not swallowed.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+
+      setSuccessMessage(
+        tr(
+          'High-quality PNG pages downloaded. Print those files for the exact menu design.',
+          'Pages PNG haute qualité téléchargées. Imprimez ces fichiers pour garder exactement le design du menu.'
+        )
+      );
+    } catch (err) {
+      console.error('Failed to export marketing package PNG pages:', err);
+      setError(tr('Failed to export PNG pages. Please try again.', 'Échec de l’export PNG. Veuillez réessayer.'));
+    } finally {
+      setExportingPrintPng(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -933,6 +1090,7 @@ const KilometerPricingTab: React.FC = () => {
             const rateTypeColor = getRateTypeColor(rateTypeName);
             const rateTypeIcon = getRateTypeIcon(rateTypeName);
             const showOnPrint = isPrintSelected(pkg);
+            const packageDisplayNumber = getPackageDisplayNumber(pkg);
             
             return (
               <div
@@ -941,6 +1099,14 @@ const KilometerPricingTab: React.FC = () => {
               >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex-1">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className="inline-flex h-8 items-center rounded-full bg-violet-600 px-3 text-sm font-black text-white shadow-sm shadow-violet-200">
+                        #{formatPackageNumber(packageDisplayNumber)}
+                      </span>
+                      <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-violet-600">
+                        {tr('Package number', 'Numéro package')}
+                      </span>
+                    </div>
                     <h4 className="font-semibold text-gray-900">{pkg.name}</h4>
                     <p className="text-sm text-gray-600 mt-1">{pkg.description}</p>
                     
@@ -1078,8 +1244,8 @@ const KilometerPricingTab: React.FC = () => {
       )}
 
       {/* Marketing Print Preview */}
-      {showPrintPreview && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm">
+      {showPrintPreview && typeof document !== 'undefined' ? createPortal(
+        <div className="marketing-print-preview-overlay fixed inset-0 z-[10050] bg-slate-950/70 backdrop-blur-sm">
           <style>
             {`
               @media print {
@@ -1102,19 +1268,49 @@ const KilometerPricingTab: React.FC = () => {
                   -webkit-print-color-adjust: exact !important;
                   print-color-adjust: exact !important;
                 }
+                .marketing-print-preview-overlay,
+                .marketing-print-preview-shell,
+                .marketing-print-preview-scroll,
                 .marketing-print-pages,
                 .marketing-print-pages * {
                   visibility: visible !important;
                 }
-                .marketing-print-pages {
-                  position: absolute !important;
-                  inset: 0 auto auto 0 !important;
+                .marketing-print-preview-overlay {
+                  position: static !important;
+                  inset: auto !important;
                   display: block !important;
                   width: 210mm !important;
+                  height: auto !important;
+                  min-height: 0 !important;
+                  margin: 0 !important;
+                  padding: 0 !important;
+                  overflow: visible !important;
+                  background: white !important;
+                  backdrop-filter: none !important;
+                }
+                .marketing-print-preview-shell,
+                .marketing-print-preview-scroll {
+                  display: block !important;
+                  width: 210mm !important;
+                  height: auto !important;
+                  min-height: 0 !important;
+                  margin: 0 !important;
+                  padding: 0 !important;
+                  overflow: visible !important;
+                  background: white !important;
+                }
+                .marketing-print-pages {
+                  position: static !important;
+                  display: block !important;
+                  width: 210mm !important;
+                  margin: 0 !important;
+                  padding: 0 !important;
                   background: white !important;
                   gap: 0 !important;
                 }
                 .marketing-print-page {
+                  display: block !important;
+                  position: relative !important;
                   width: 210mm !important;
                   height: 297mm !important;
                   min-height: 297mm !important;
@@ -1124,6 +1320,8 @@ const KilometerPricingTab: React.FC = () => {
                   box-shadow: none !important;
                   border-radius: 0 !important;
                   overflow: hidden !important;
+                  break-inside: avoid-page !important;
+                  page-break-inside: avoid !important;
                   break-after: page !important;
                   page-break-after: always !important;
                   background: white !important;
@@ -1133,8 +1331,24 @@ const KilometerPricingTab: React.FC = () => {
                   page-break-after: auto !important;
                 }
                 .marketing-print-card {
+                  display: block !important;
+                  position: relative !important;
+                  z-index: 1 !important;
                   break-inside: avoid !important;
                   page-break-inside: avoid !important;
+                  box-shadow: none !important;
+                }
+                .marketing-print-stack {
+                  display: grid !important;
+                  height: 232mm !important;
+                  grid-auto-rows: minmax(0, 1fr) !important;
+                  gap: 3mm !important;
+                  margin-top: 3mm !important;
+                  overflow: hidden !important;
+                }
+                .marketing-print-page header,
+                .marketing-print-page .marketing-print-price {
+                  box-shadow: none !important;
                 }
                 .marketing-print-price {
                   background: #7c3aed !important;
@@ -1148,7 +1362,7 @@ const KilometerPricingTab: React.FC = () => {
             `}
           </style>
 
-          <div className="flex h-full flex-col">
+          <div className="marketing-print-preview-shell flex h-full flex-col">
             <div className="no-print flex flex-col gap-3 border-b border-white/10 bg-slate-950/85 px-4 py-3 text-white shadow-2xl sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-200">
@@ -1156,10 +1370,23 @@ const KilometerPricingTab: React.FC = () => {
                 </p>
                 <h3 className="text-lg font-bold">{tr('A4 package preview', 'Aperçu A4 des packages')}</h3>
                 <p className="text-sm text-slate-300">
-                  {marketingPrintPages.length} {marketingPrintPages.length === 1 ? tr('model page', 'page modèle') : tr('model pages', 'pages modèles')} • {selectedPrintPackagesCount} {tr('selected packages', 'packages sélectionnés')}
+                  {marketingPrintPages.length} {marketingPrintPages.length === 1 ? tr('A4 page', 'page A4') : tr('A4 pages', 'pages A4')} • {totalPrintPackagesCount} {tr('active packages', 'packages actifs')}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadMarketingPngPages}
+                  disabled={exportingPrintPng}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:cursor-wait disabled:bg-violet-400"
+                >
+                  {exportingPrintPng ? (
+                    <Loader className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                  {exportingPrintPng ? tr('Exporting...', 'Export...') : tr('Download PNG pages', 'Télécharger les pages PNG')}
+                </button>
                 <button
                   type="button"
                   onClick={() => window.print()}
@@ -1178,102 +1405,230 @@ const KilometerPricingTab: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex-1 overflow-auto bg-slate-200 px-3 py-6 sm:px-8">
-              <div className="marketing-print-pages mx-auto flex w-fit flex-col gap-8">
+            <div className="marketing-print-preview-scroll flex-1 overflow-auto bg-slate-200 px-3 py-6 sm:px-8">
+              <div ref={marketingPrintPagesRef} className="marketing-print-pages mx-auto flex w-fit flex-col gap-8">
                 {marketingPrintPages.map((page, pageIndex) => {
                   const modelName = getVehicleModelDisplay(page.model);
-                  const damageDepositAmount = Number(page.damageDepositPreset?.amount || 0) || 0;
                   const visiblePrices = page.packages.map((pkg) => Number(pkg.fixed_amount || 0)).filter((value) => value > 0);
-                  const lowestPrice = visiblePrices.length > 0 ? Math.min(...visiblePrices) : 0;
-                  const highestPrice = visiblePrices.length > 0 ? Math.max(...visiblePrices) : 0;
+                  const familyLabel = getPrintFamilyLabel(page.pageFamily);
+                  const isDensePrintPage = page.packages.length >= 5;
                   return (
                     <section
                       key={`${page.model?.id || 'model'}-${pageIndex}`}
-                      className="marketing-print-page flex min-h-[297mm] w-[210mm] max-w-full flex-col overflow-hidden rounded-[28px] bg-white p-10 text-slate-950 shadow-2xl"
+                      className={`marketing-print-page flex h-[297mm] min-h-[297mm] w-[210mm] max-w-full flex-col overflow-hidden rounded-[24px] bg-white text-slate-950 shadow-2xl ${isDensePrintPage ? 'p-4' : 'p-5'}`}
                     >
-                      <header className="overflow-hidden rounded-[30px] border border-violet-200 bg-[linear-gradient(145deg,#ffffff_0%,#faf5ff_46%,#eefbf7_100%)] px-7 py-7">
-                        <div className="flex items-start justify-between gap-6">
-                          <div>
-                            <p className="text-xs font-bold uppercase tracking-[0.36em] text-violet-600">SaharaX</p>
-                            <h1 className="mt-3 text-5xl font-black tracking-tight">{modelName}</h1>
-                            <p className="mt-2 text-base font-medium text-slate-600">
-                              {tr('Customer package menu', 'Menu client des packages')}
-                            </p>
+                      <header className={`rounded-[22px] border border-violet-200 bg-[linear-gradient(145deg,#ffffff_0%,#faf5ff_46%,#eefbf7_100%)] ${isDensePrintPage ? 'px-3.5 py-1' : 'px-4 py-2'}`}>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className={`font-bold uppercase tracking-[0.34em] text-violet-600 ${isDensePrintPage ? 'text-[9px]' : 'text-[10px]'}`}>SaharaX</p>
+                            <div className="mt-1 flex flex-wrap items-end gap-x-3 gap-y-1">
+                              <h1 className={`font-black leading-none tracking-tight break-words ${isDensePrintPage ? 'text-[20px]' : 'text-[22px]'}`}>{modelName}</h1>
+                              <div className="overflow-hidden rounded-full">
+                                <svg
+                                  width={isDensePrintPage ? '234' : '252'}
+                                  height={isDensePrintPage ? '34' : '38'}
+                                  viewBox={isDensePrintPage ? '0 0 234 34' : '0 0 252 38'}
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  role="img"
+                                  aria-label={familyLabel}
+                                  className="block"
+                                >
+                                  <rect width={isDensePrintPage ? '234' : '252'} height={isDensePrintPage ? '34' : '38'} rx={isDensePrintPage ? '17' : '19'} fill="#EDE9FE" />
+                                  <text
+                                    x={isDensePrintPage ? '117' : '126'}
+                                    y={isDensePrintPage ? '20' : '22'}
+                                    textAnchor="middle"
+                                    dominantBaseline="middle"
+                                    fontSize={isDensePrintPage ? '16' : '17'}
+                                    fontWeight="900"
+                                    fill="#6D28D9"
+                                    letterSpacing="2.2"
+                                  >
+                                    {familyLabel}
+                                  </text>
+                                </svg>
+                              </div>
+                            </div>
                           </div>
-                          <div className="rounded-[22px] border border-violet-200 bg-white px-5 py-4 text-right shadow-sm">
-                            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{tr('Packages', 'Packages')}</p>
-                            <p className="mt-1 text-3xl font-black text-violet-600">{page.packages.length}</p>
-                          </div>
-                        </div>
-                        <div className="mt-5 grid grid-cols-3 gap-3">
-                          <div className="rounded-[20px] border border-white/70 bg-white/85 px-4 py-3">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">{tr('Starting from', 'À partir de')}</p>
-                            <p className="mt-1 text-xl font-black text-slate-950">{formatCurrency(lowestPrice)}</p>
-                          </div>
-                          <div className="rounded-[20px] border border-white/70 bg-white/85 px-4 py-3">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">{tr('Top package', 'Forfait premium')}</p>
-                            <p className="mt-1 text-xl font-black text-slate-950">{formatCurrency(highestPrice)}</p>
-                          </div>
-                          <div className="rounded-[20px] border border-emerald-200 bg-emerald-50 px-4 py-3">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-700">{tr('Deposit', 'Caution')}</p>
-                            <p className="mt-1 text-xl font-black text-emerald-800">{formatCurrency(damageDepositAmount)}</p>
+                          <div className="overflow-hidden rounded-[16px] border border-violet-200 bg-white shadow-sm">
+                            <svg
+                              width={isDensePrintPage ? '116' : '124'}
+                              height={isDensePrintPage ? '70' : '76'}
+                              viewBox={isDensePrintPage ? '0 0 116 76' : '0 0 124 82'}
+                              xmlns="http://www.w3.org/2000/svg"
+                              role="img"
+                              aria-label={`${tr('Packages', 'Packages')} ${page.packages.length}`}
+                              className="block"
+                            >
+                              <rect x="0" y="3" width={isDensePrintPage ? '116' : '124'} height={isDensePrintPage ? '68' : '76'} rx="16" fill="#FFFFFF" />
+                              <text
+                                x={isDensePrintPage ? '58' : '62'}
+                                y={isDensePrintPage ? '25' : '27'}
+                                textAnchor="middle"
+                                dominantBaseline="middle"
+                                fontSize={isDensePrintPage ? '9' : '10'}
+                                fontWeight="600"
+                                letterSpacing="2.2"
+                                fill="#94A3B8"
+                              >
+                                {getPrintCountLabel()}
+                              </text>
+                              <text
+                                x={isDensePrintPage ? '58' : '62'}
+                                y={isDensePrintPage ? '49' : '54'}
+                                textAnchor="middle"
+                                dominantBaseline="middle"
+                                fontSize={isDensePrintPage ? '22' : '24'}
+                                fontWeight="900"
+                                fill="#7C3AED"
+                              >
+                                {page.packages.length}
+                              </text>
+                            </svg>
                           </div>
                         </div>
                       </header>
 
-                      <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
-                        <div className="flex items-center justify-between gap-5">
-                          <div>
-                            <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">
-                              {tr('Printed menu note', 'Note du menu imprimé')}
-                            </p>
-                            <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
-                              {tr('Choose your time and kilometers first. Security deposit is separate and refundable after return.', 'Choisissez d’abord votre durée et vos kilomètres. La caution est séparée et remboursable au retour.')}
-                            </p>
-                          </div>
-                          <div className="rounded-[20px] bg-white px-5 py-3 text-right shadow-sm">
-                            <p className="text-base font-black text-slate-900">
-                              {page.damageDepositPreset?.label || tr('Refundable deposit', 'Caution remboursable')}
-                            </p>
-                            {page.damageDepositPreset?.label && (
-                              <p className="mt-0.5 text-xs font-semibold text-slate-500">{tr('Shown separately on contract', 'Affichée séparément sur le contrat')}</p>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="mt-8 grid flex-1 grid-cols-2 gap-4">
+                      <div
+                        className={`marketing-print-stack grid flex-1 overflow-hidden ${isDensePrintPage ? 'mt-[1.25mm] gap-[1.4mm]' : 'mt-[2mm] gap-[2.5mm]'}`}
+                        style={{
+                          gridTemplateRows: `repeat(${page.packages.length}, minmax(0, 1fr))`,
+                          transform: isDensePrintPage ? 'scale(0.94)' : undefined,
+                          transformOrigin: 'top left',
+                          width: isDensePrintPage ? '106.4%' : undefined,
+                        }}
+                      >
                         {page.packages.map((pkg) => {
                           const isUnlimited = (pkg.included_kilometers === null || pkg.included_kilometers === undefined) && (!pkg.extra_km_rate || pkg.extra_km_rate === 0);
+                          const isFeaturedOnPrint = isPrintSelected(pkg);
+                          const packageDisplayNumber = getPackageDisplayNumber(pkg);
                           const packageName = translatePrintPackageText(pkg.name);
-                          const packageDescription = translatePrintPackageText(pkg.description);
+                          const packageDescription = getMarketingPrintDescription(pkg);
+                          const printPrice = formatPrintPrice(pkg.fixed_amount);
+                          const hasSeparateFuelCharge = Boolean(pkg.fuel_charge_enabled);
                           return (
-                            <article key={pkg.id} className="marketing-print-card rounded-[26px] border border-violet-200 bg-white p-5 shadow-[0_14px_30px_rgba(124,58,237,0.08)]">
-                              <div className="flex items-start justify-between gap-4">
-                                <div>
-                                  <div className="inline-flex rounded-full bg-violet-100 px-4 py-2 text-xl font-black text-violet-700">
-                                    {getPrintPreviewBadge(pkg)}
+                            <article
+                              key={pkg.id}
+                              className={`marketing-print-card h-full overflow-hidden rounded-[22px] border border-violet-200 bg-white shadow-[0_10px_24px_rgba(124,58,237,0.07)] ${isDensePrintPage ? 'p-2' : 'p-3'}`}
+                            >
+                              <div className={`flex items-stretch ${isDensePrintPage ? 'gap-2.5' : 'gap-3'}`}>
+                                <div className="min-w-0 flex-1">
+                                  <div className={`flex flex-wrap items-center ${isDensePrintPage ? 'gap-1.5' : 'gap-2'}`}>
+                                    <div className="overflow-hidden rounded-[20px] shadow-md shadow-violet-200">
+                                      <svg
+                                        width="104"
+                                        height="62"
+                                        viewBox="0 0 104 68"
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        role="img"
+                                        aria-label={`${getPrintPackageBadgeLabel()} #${formatPackageNumber(packageDisplayNumber)}`}
+                                        className="block"
+                                      >
+                                        <rect x="0" y="3" width="104" height="62" rx="20" fill="#7C3AED" />
+                                        <text
+                                          x="52"
+                                          y="22"
+                                          textAnchor="middle"
+                                          dominantBaseline="middle"
+                                          fontSize="8"
+                                          fontWeight="700"
+                                          letterSpacing="2.2"
+                                          fill="#E9D5FF"
+                                          style={{ textTransform: 'uppercase' }}
+                                        >
+                                          {getPrintPackageBadgeLabel()}
+                                        </text>
+                                        <text
+                                          x="52"
+                                          y="47"
+                                          textAnchor="middle"
+                                          dominantBaseline="middle"
+                                          fontSize="22"
+                                          fontWeight="900"
+                                          fill="#FFFFFF"
+                                        >
+                                          #{formatPackageNumber(packageDisplayNumber)}
+                                        </text>
+                                      </svg>
+                                    </div>
+                                    <div className="overflow-hidden rounded-full">
+                                      <svg
+                                        width="112"
+                                        height="38"
+                                        viewBox="0 0 112 38"
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        role="img"
+                                        aria-label={getPrintPreviewBadge(pkg)}
+                                        className="block"
+                                      >
+                                        <rect width="112" height="38" rx="19" fill="#EDE9FE" />
+                                        <text
+                                          x="56"
+                                          y="22"
+                                          textAnchor="middle"
+                                          dominantBaseline="middle"
+                                          fontSize="18"
+                                          fontWeight="900"
+                                          fill="#6D28D9"
+                                        >
+                                          {getPrintPreviewBadge(pkg)}
+                                        </text>
+                                      </svg>
+                                    </div>
+                                    {isFeaturedOnPrint && (
+                                      <div className="overflow-hidden rounded-full">
+                                        <svg
+                                          width="170"
+                                          height="32"
+                                          viewBox="0 0 170 32"
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          role="img"
+                                          aria-label={getPrintFeaturedLabel()}
+                                          className="block"
+                                        >
+                                          <rect x="0.75" y="0.75" width="168.5" height="30.5" rx="15.25" fill="#ECFDF5" stroke="#86EFAC" strokeWidth="1.5" />
+                                          <circle cx="28" cy="16" r="10" fill="none" stroke="#047857" strokeWidth="2" />
+                                          <path d="M23 16.5L27 20L34 12" fill="none" stroke="#047857" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                                          <text
+                                            x="99"
+                                            y="18"
+                                            textAnchor="middle"
+                                            dominantBaseline="middle"
+                                            fontSize="12"
+                                            fontWeight="900"
+                                            letterSpacing="2.2"
+                                            fill="#047857"
+                                          >
+                                            {getPrintFeaturedLabel()}
+                                          </text>
+                                        </svg>
+                                      </div>
+                                    )}
                                   </div>
-                                  <p className="mt-3 text-sm font-bold uppercase tracking-[0.18em] text-slate-400">
-                                    {getPrintPreviewSubtitle(pkg)}
-                                  </p>
-                                  <h2 className="mt-2 text-2xl font-black text-slate-950">{packageName}</h2>
+                                  <h2 className={`font-black leading-tight text-slate-950 ${isDensePrintPage ? 'mt-1 text-[21px]' : 'mt-1.5 text-[28px]'}`}>{packageName}</h2>
                                   {packageDescription && (
-                                    <p className="mt-2 max-w-2xl text-sm font-medium leading-relaxed text-slate-500">{packageDescription}</p>
+                                    <p className={`max-w-2xl font-medium leading-snug text-slate-500 ${isDensePrintPage ? 'mt-0.5 text-[10px]' : 'mt-1 text-[12px]'}`}>{packageDescription}</p>
                                   )}
-                                </div>
-                              </div>
-
-                              <div className="mt-5 flex items-end justify-between gap-4">
-                                <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">{tr('Extra km', 'Km supp.')}</p>
-                                  <p className="mt-1 text-lg font-black text-slate-900">
-                                    {isUnlimited || !pkg.extra_km_rate ? tr('Included', 'Inclus') : `${pkg.extra_km_rate} MAD/km`}
+                                  <p className={`font-bold text-slate-700 ${isDensePrintPage ? 'mt-1 text-[12px]' : 'mt-1.5 text-sm'}`}>
+                                    {tr('Extra km', 'Km supp.')}:
+                                    {' '}
+                                    <span className="text-slate-950">
+                                      {isUnlimited || !pkg.extra_km_rate ? tr('Included', 'Inclus') : `${pkg.extra_km_rate} MAD/km`}
+                                    </span>
+                                  </p>
+                                  <p className={`font-semibold ${isDensePrintPage ? 'mt-0.5 text-[12px]' : 'mt-1 text-sm'} ${hasSeparateFuelCharge ? 'text-amber-700' : 'text-emerald-700'}`}>
+                                    {tr('Fuel', 'Carburant')}: {hasSeparateFuelCharge ? tr('Not included', 'Non inclus') : tr('Included', 'Inclus')}
                                   </p>
                                 </div>
-                                <div className="marketing-print-price rounded-[22px] bg-violet-600 px-5 py-4 text-right text-white shadow-lg shadow-violet-200">
-                                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-100">{tr('Price', 'Prix')}</p>
-                                  <p className="mt-1 text-3xl font-black">{formatCurrency(pkg.fixed_amount)}</p>
+
+                                <div className={`flex items-center ${isDensePrintPage ? 'min-w-[158px] max-w-[158px]' : 'min-w-[180px] max-w-[180px]'}`}>
+                                  <div className={`marketing-print-price w-full rounded-[20px] bg-violet-600 text-right text-white shadow-lg shadow-violet-200 ${isDensePrintPage ? 'px-3 py-2' : 'px-4 py-3'}`}>
+                                    <p className={`font-semibold uppercase tracking-[0.18em] text-violet-100 ${isDensePrintPage ? 'text-[9px]' : 'text-[10px]'}`}>{tr('Price', 'Prix')}</p>
+                                    <p className={`flex flex-col items-end font-black leading-none ${isDensePrintPage ? 'mt-0.5 text-[22px]' : 'mt-1 text-[28px]'}`}>
+                                      <span>{printPrice.value}</span>
+                                      <span className="mt-0.5">MAD</span>
+                                    </p>
+                                  </div>
                                 </div>
                               </div>
                             </article>
@@ -1281,18 +1636,15 @@ const KilometerPricingTab: React.FC = () => {
                         })}
                       </div>
 
-                      <footer className="mt-8 flex items-center justify-between border-t border-slate-200 pt-5 text-sm font-semibold text-slate-500">
-                        <span>{tr('Printed customer menu for SaharaX packages', 'Menu client imprimé des packages SaharaX')}</span>
-                        <span>{tr('Page', 'Page')} {pageIndex + 1}</span>
-                      </footer>
                     </section>
                   );
                 })}
               </div>
             </div>
           </div>
-        </div>
-      )}
+        </div>,
+        document.body
+      ) : null}
 
       {/* Package Form Modal */}
       {showPackageForm && (
@@ -1691,7 +2043,7 @@ const KilometerPricingTab: React.FC = () => {
                         {tr('Show on Marketing Print', 'Afficher sur l’impression marketing')}
                       </span>
                       <p className="mt-1 text-xs text-violet-700/80">
-                        {tr('Limit 5 packages per print page.', 'Limite de 5 packages par page d’impression.')}
+                        {tr('Limit 8 packages per model print page.', 'Limite de 8 packages par page d’impression par modèle.')}
                       </p>
                     </div>
                   </label>

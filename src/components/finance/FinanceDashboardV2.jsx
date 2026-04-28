@@ -147,6 +147,7 @@ const FinanceDashboardV2 = () => {
   const [breakdownType, setBreakdownType] = useState(null);
   const [receiveFundsComposerRequest, setReceiveFundsComposerRequest] = useState(0);
   const [expenseComposerRequest, setExpenseComposerRequest] = useState(0);
+  const [editComposerRequest, setEditComposerRequest] = useState(null);
   const [showDateFocusPanel, setShowDateFocusPanel] = useState(false);
   const [overviewPulseDetailOpen, setOverviewPulseDetailOpen] = useState(false);
   const [bouncingWeekDayKey, setBouncingWeekDayKey] = useState(null);
@@ -784,6 +785,7 @@ const FinanceDashboardV2 = () => {
               refreshTrigger={lastRefresh.getTime()}
               openComposerRequest={receiveFundsComposerRequest}
               openExpenseComposerRequest={expenseComposerRequest}
+              openEditComposerRequest={editComposerRequest}
             />
           </div>
         );
@@ -796,6 +798,10 @@ const FinanceDashboardV2 = () => {
               onAddExpense={() => {
                 setActiveTab('receive-funds');
                 setExpenseComposerRequest(Date.now());
+              }}
+              onEditExpense={(entry) => {
+                setActiveTab('receive-funds');
+                setEditComposerRequest({ requestId: Date.now(), entry });
               }}
             />
           </div>

@@ -1173,6 +1173,7 @@ const VehicleProfile = () => {
     <div className="min-h-screen bg-slate-50">
       <AdminModuleHero
         icon={<Car className="h-8 w-8 text-white" />}
+        iconContainerClassName="border-violet-500 bg-gradient-to-br from-violet-600 to-indigo-700 shadow-[0_18px_38px_rgba(124,58,237,0.28)]"
         eyebrow={tr('Vehicles', 'Véhicules')}
         title={vehicle.name}
         description={vehicle.plate_number ? `${vehicle.plate_number} • ${vehicle.model || tr('Vehicle Profile', 'Profil véhicule')}` : tr('Vehicle profile', 'Profil véhicule')}

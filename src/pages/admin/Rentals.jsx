@@ -31,6 +31,13 @@ const scheduleBackgroundTask = (callback) => {
 
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+const normalizeRentalSearchText = (value) =>
+  String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
 const openRentalWizard = (setShowStepperForm, setWizardUiVariant, variant = 'default') => () => {
   setWizardUiVariant(variant);
   setShowStepperForm(true);
@@ -2165,14 +2172,19 @@ const Rentals = () => {
   );
 
   const baseVisibleRentals = useMemo(() => {
-    const normalizedSearch = deferredSearchTerm.trim().toLowerCase();
+    const normalizedSearch = normalizeRentalSearchText(deferredSearchTerm);
+    const isBroadSearch = normalizedSearch.length >= 3;
+    const searchSource = isBroadSearch && rentalUniverse.length > 0
+      ? rentalUniverse
+      : dateFocusRentalSource;
+    const normalizedPhoneSearch = normalizePhone(normalizedSearch);
 
-    return dateFocusRentalSource.filter((rental) => {
-      if (!matchesWorkspaceTab(rental)) {
+    return searchSource.filter((rental) => {
+      if (!isBroadSearch && !matchesWorkspaceTab(rental)) {
         return false;
       }
 
-      if (!matchesDateFocusFilter(rental)) {
+      if (!isBroadSearch && !matchesDateFocusFilter(rental)) {
         return false;
       }
 
@@ -2180,20 +2192,42 @@ const Rentals = () => {
         return true;
       }
 
-      const rentalContractId = formatRentalId(rental).toLowerCase();
+      const rentalContractId = formatRentalId(rental);
       const rentalContractSuffix = rentalContractId.split('-').pop() || '';
+      const searchableValues = [
+        rental.customer_name,
+        rental.customer?.full_name,
+        rental.customer?.name,
+        rental.customer_email,
+        rental.customer?.email,
+        rental.customer_phone,
+        rental.customer?.phone,
+        rental.customer_id,
+        rental.customer_id_number,
+        rental.customer_licence_number,
+        rental.customer_license_number,
+        rental.vehicle?.name,
+        rental.vehicle?.model,
+        rental.vehicle?.plate_number,
+        rental.vehicle_plate_number,
+        rental.id,
+        rentalContractId,
+        rentalContractSuffix,
+        rental.reference,
+      ];
 
-      return (
-        rental.customer_name?.toLowerCase().includes(normalizedSearch) ||
-        rental.customer_email?.toLowerCase().includes(normalizedSearch) ||
-        rental.vehicle?.name?.toLowerCase().includes(normalizedSearch) ||
-        rental.vehicle?.plate_number?.toLowerCase().includes(normalizedSearch) ||
-        rental.id?.toString().toLowerCase().includes(normalizedSearch) ||
-        rentalContractId.includes(normalizedSearch) ||
-        rentalContractSuffix.includes(normalizedSearch)
+      const textMatches = searchableValues.some((value) =>
+        normalizeRentalSearchText(value).includes(normalizedSearch)
       );
+      const phoneMatches = normalizedPhoneSearch
+        ? [rental.customer_phone, rental.customer?.phone].some((phone) =>
+            normalizePhone(phone).includes(normalizedPhoneSearch)
+          )
+        : false;
+
+      return textMatches || phoneMatches;
     });
-  }, [dateFocusRentalSource, deferredSearchTerm, matchesDateFocusFilter, matchesWorkspaceTab]);
+  }, [dateFocusRentalSource, deferredSearchTerm, matchesDateFocusFilter, matchesWorkspaceTab, rentalUniverse]);
 
   const filteredRentals = useMemo(() => {
     const normalizedStatus = String(statusFilter || 'all').toLowerCase();

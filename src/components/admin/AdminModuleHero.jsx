@@ -7,6 +7,7 @@ const AdminModuleHero = ({
   description,
   actions = null,
   className = '',
+  iconContainerClassName = '',
 }) => {
   return (
     <div className={className}>
@@ -15,7 +16,7 @@ const AdminModuleHero = ({
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="flex items-center gap-3">
               {icon ? (
-                <div className="rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)]">
+                <div className={`rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)] ${iconContainerClassName}`}>
                   {icon}
                 </div>
               ) : null}

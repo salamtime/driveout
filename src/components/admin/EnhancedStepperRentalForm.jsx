@@ -8402,6 +8402,26 @@ const SimplifiedRentalWizard = ({
     if (formData.rental_type === 'daily') return pkgRateType === 'daily';
     return true;
   });
+  const standardFallbackPackage = filteredPackageOptions.find((pkg) => {
+    const pkgName = String(pkg?.name || pkg?.package_name || '').toLowerCase();
+    const includedKm = Number(pkg?.included_kilometers ?? pkg?.included_km ?? pkg?.km_limit ?? 0) || 0;
+    const extraRate = Number(pkg?.extra_km_rate ?? pkg?.extra_rate ?? 0) || 0;
+    return (
+      pkgName.includes('unlimited')
+      || pkgName.includes('free')
+      || (includedKm <= 0 && extraRate <= 0)
+    );
+  }) || null;
+  const standardFallbackLabel = (() => {
+    if (!standardFallbackPackage) return tr('Standard', 'Standard');
+    const includedKm = Number(
+      standardFallbackPackage?.included_kilometers
+      ?? standardFallbackPackage?.included_km
+      ?? standardFallbackPackage?.km_limit
+      ?? 0
+    ) || 0;
+    return includedKm > 0 ? `${includedKm} KM` : tr('Unlimited km', 'KM illimités');
+  })();
   const hasDurationSelection = Boolean(Number(
     formData.rental_type === 'hourly'
       ? (formData.quantity_hours ?? formData.quantity_days)
@@ -8450,6 +8470,21 @@ const SimplifiedRentalWizard = ({
     ) || 0;
   };
   const getLightVehicleDisplayPrice = (vehicle) => {
+    if (formData.use_package_pricing && selectedLightPackage) {
+      const selectedPackagePrice = getLightPackagePreviewTotal(selectedLightPackage);
+      if (selectedPackagePrice > 0) {
+        const selectedPackageModelId = String(
+          selectedLightPackage?.vehicle_model_id
+          ?? selectedLightPackage?.vehicleModelId
+          ?? ''
+        );
+        const vehicleModelId = String(vehicle?.vehicle_model_id ?? '');
+        if (!selectedPackageModelId || !vehicleModelId || selectedPackageModelId === vehicleModelId) {
+          return selectedPackagePrice;
+        }
+      }
+    }
+
     const kmPackagePrice = getLightKmPackagePriceForVehicleModel(vehicle?.vehicle_model_id);
     if (kmPackagePrice > 0) {
       return kmPackagePrice;
@@ -8499,6 +8534,9 @@ const SimplifiedRentalWizard = ({
     }
     return baseUnitPrice;
   })();
+  const standardFallbackPreviewTotal = standardFallbackPackage
+    ? getLightPackagePreviewTotal(standardFallbackPackage)
+    : standardLightPreviewTotal;
   const liveTotalAmount = formData.use_package_pricing
     ? (selectedLightPackage ? getLightPackagePreviewTotal(selectedLightPackage) : getFixedPackageAmount(formData))
     : standardLightPreviewTotal;
@@ -9428,9 +9466,25 @@ const SimplifiedRentalWizard = ({
 
     const loadLightVehiclePrices = async () => {
       const packageCache = new Map();
+      const selectedPackagePrice = formData.use_package_pricing && selectedLightPackage
+        ? getLightPackagePreviewTotal(selectedLightPackage)
+        : 0;
+      const selectedPackageModelId = String(
+        selectedLightPackage?.vehicle_model_id
+        ?? selectedLightPackage?.vehicleModelId
+        ?? ''
+      );
       const entries = await Promise.all(
         visibleVehicles.map(async (vehicle) => {
           const resolvedModelId = resolveLightVehicleModelId(vehicle);
+          const vehicleModelId = String(resolvedModelId ?? '');
+
+          if (
+            selectedPackagePrice > 0
+            && (!selectedPackageModelId || !vehicleModelId || selectedPackageModelId === vehicleModelId)
+          ) {
+            return [String(vehicle.id), selectedPackagePrice];
+          }
 
           if (formData.rental_type === 'hourly' && durationUnits === 0.5 && resolvedModelId) {
             const modelId = String(resolvedModelId);
@@ -9477,9 +9531,11 @@ const SimplifiedRentalWizard = ({
     formData.quantity_days,
     formData.quantity_hours,
     formData.rental_type,
+    formData.use_package_pricing,
     lightHasDurationSelection,
     isLightVariant,
     resolveLightVehicleModelId,
+    selectedLightPackage,
     visibleVehicles,
   ]);
 
@@ -9864,10 +9920,10 @@ const SimplifiedRentalWizard = ({
                               : 'border-slate-200 bg-white hover:border-violet-300 hover:shadow-sm'
                           }`}
                         >
-                          <p className="text-lg font-bold text-slate-900">{tr('Standard', 'Standard')}</p>
+                          <p className="text-lg font-bold text-slate-900">{standardFallbackLabel}</p>
                           <p className="mt-2 text-sm text-slate-500">{selectedDurationLabel}</p>
                           <p className="mt-3 text-2xl font-bold text-slate-900">
-                            {formatDynamicMad(standardLightPreviewTotal)} MAD
+                            {formatDynamicMad(standardFallbackPreviewTotal)} MAD
                           </p>
                         </button>
                       )}

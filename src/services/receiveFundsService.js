@@ -51,7 +51,13 @@ const buildRecorderDisplay = (profile) =>
   String(
     profile?.fullName ||
       profile?.full_name ||
+      profile?.display_name ||
       profile?.name ||
+      profile?.user_metadata?.full_name ||
+      profile?.user_metadata?.display_name ||
+      profile?.user_metadata?.name ||
+      [profile?.first_name, profile?.last_name].filter(Boolean).join(' ').trim() ||
+      [profile?.user_metadata?.first_name, profile?.user_metadata?.last_name].filter(Boolean).join(' ').trim() ||
       profile?.username ||
       profile?.email ||
       'Team'
@@ -105,7 +111,7 @@ const mapExpenseRow = (row) => ({
   note: parseExpenseNote(row.notes || row.description || '').noteBody,
   status: normalizeStatus(row.status),
   recordedByUserId: row.created_by || null,
-  recordedByDisplayName: row.created_by_display_name || 'Team',
+  recordedByDisplayName: row.created_by_display_name || row.created_by_name || 'Team',
   recordedByEmail: '',
   receivedByAdminUserId: null,
   receivedByAdminDisplayName: '',
@@ -121,6 +127,11 @@ const mapExpenseRow = (row) => ({
   organizationId: row.organization_id || null,
   workspaceId: row.workspace_id || null,
 });
+
+const normalizeExpenseId = (entryId) =>
+  String(entryId || '')
+    .replace(/^expense-/, '')
+    .trim();
 
 const createReviewItems = (entries, expectedRevenue, totalReceived) => {
   const activeEntries = entries.filter((entry) => entry.status === 'active');
@@ -445,6 +456,51 @@ class ReceiveFundsService {
     return data;
   }
 
+  async updateEntry(entryId, payload, userProfile) {
+    const tableReady = await this.checkTableExists();
+    if (!tableReady) {
+      throw new Error('Receive Funds table is not ready yet. Please run the SQL migration first.');
+    }
+
+    const amount = roundCurrency(payload.amount);
+    if (!(amount > 0)) {
+      throw new Error('Enter a valid amount before saving.');
+    }
+
+    const updatePayload = {
+      amount,
+      currency: payload.currency || DEFAULT_CURRENCY,
+      method: normalizeMethod(payload.method),
+      received_date: formatDateKey(payload.receivedDate) || formatDateKey(new Date()),
+      note: String(payload.note || '').trim() || null,
+      received_by_admin_user_id: payload.receivedByAdminUserId || null,
+      received_by_admin_display_name: String(payload.receivedByAdminDisplayName || '').trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'receiptImageUrl')) {
+      updatePayload.receipt_image_url = String(payload.receiptImageUrl || '').trim() || null;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'receiptImagePath')) {
+      updatePayload.receipt_image_path = String(payload.receiptImagePath || '').trim() || null;
+    }
+
+    const { data, error } = await supabase
+      .from(RECEIVE_FUNDS_TABLE)
+      .update(updatePayload)
+      .eq('id', entryId)
+      .eq('status', 'active')
+      .select('*')
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  }
+
   async recordExpense(payload, userProfile) {
     const tableReady = await this.checkExpensesTableExists();
     if (!tableReady) {
@@ -453,6 +509,7 @@ class ReceiveFundsService {
 
     const organizationId = getScopedOrganizationId(userProfile);
     const workspaceId = buildWorkspaceId(userProfile, organizationId);
+    const actorName = buildRecorderDisplay(userProfile);
     const amount = roundCurrency(payload.amount);
 
     if (!(amount > 0)) {
@@ -472,6 +529,7 @@ class ReceiveFundsService {
       invoice_url: String(payload.receiptImageUrl || '').trim() || null,
       notes: expenseNote || null,
       created_by: userProfile?.id || null,
+      created_by_display_name: actorName,
       reference_type: 'receive_funds_drawer',
       status: 'active',
     };
@@ -508,6 +566,47 @@ class ReceiveFundsService {
     }
 
     return result.data;
+  }
+
+  async updateExpense(entryId, payload, userProfile) {
+    const tableReady = await this.checkExpensesTableExists();
+    if (!tableReady) {
+      throw new Error('Finance expenses table is not ready yet. Please run the SQL migration first.');
+    }
+
+    const expenseId = normalizeExpenseId(entryId);
+    const amount = roundCurrency(payload.amount);
+    if (!(amount > 0)) {
+      throw new Error('Enter a valid amount before saving.');
+    }
+
+    const expenseLabels = Array.isArray(payload.labels) ? payload.labels : [];
+    const expenseNote = buildExpenseNote(payload.note, expenseLabels);
+    const updatePayload = {
+      description: buildExpenseDescription(expenseLabels),
+      amount,
+      expense_date: formatDateKey(payload.receivedDate) || formatDateKey(new Date()),
+      notes: expenseNote || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'receiptImageUrl')) {
+      updatePayload.invoice_url = String(payload.receiptImageUrl || '').trim() || null;
+    }
+
+    const { data, error } = await supabase
+      .from(FINANCE_EXPENSES_TABLE)
+      .update(updatePayload)
+      .eq('id', expenseId)
+      .eq('status', 'active')
+      .select('*')
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
   }
 }
 

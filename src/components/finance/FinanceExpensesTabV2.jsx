@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CalendarDays, ClipboardList, Loader2, Plus, Receipt, Tag, User } from 'lucide-react';
+import { CalendarDays, ClipboardList, Loader2, Pencil, Plus, Receipt, Tag, User } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { receiveFundsService } from '../../services/receiveFundsService';
+import { getStaffDirectory } from '../../services/UserService';
 import { canRecordReceiveFunds } from '../../utils/permissionHelpers';
+import { buildStaffDisplayMap, buildStaffDisplayName } from '../../utils/receiveFundsUi';
 import i18n from '../../i18n';
 
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
@@ -30,16 +32,31 @@ const isEmbeddableImage = (url) =>
   /^blob:/i.test(String(url || '')) ||
   /\.(png|jpe?g|webp|gif|bmp|svg)(\?|#|$)/i.test(String(url || ''));
 
-const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense }) => {
+const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense, onEditExpense }) => {
   const { userProfile } = useAuth();
   const canRecord = canRecordReceiveFunds(userProfile);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [entries, setEntries] = useState([]);
   const [receiptPreview, setReceiptPreview] = useState(null);
+  const [staffDisplayMap, setStaffDisplayMap] = useState({});
 
   useEffect(() => {
     let isActive = true;
+
+    const loadStaffDirectory = async () => {
+      try {
+        const users = await getStaffDirectory();
+        if (isActive) {
+          setStaffDisplayMap(buildStaffDisplayMap(users));
+        }
+      } catch (staffError) {
+        console.error('Failed to load finance expense staff directory:', staffError);
+        if (isActive) {
+          setStaffDisplayMap({});
+        }
+      }
+    };
 
     const loadExpenses = async () => {
       try {
@@ -58,11 +75,26 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense }) => {
       }
     };
 
+    void loadStaffDirectory();
     void loadExpenses();
     return () => {
       isActive = false;
     };
   }, [filters, refreshTrigger, userProfile]);
+
+  const getExpenseStaffName = (entry) => {
+    const recordedById = String(entry?.recordedByUserId || '').trim();
+    const storedDisplayName = String(entry?.recordedByDisplayName || '').trim();
+    const isGenericStoredName = !storedDisplayName || storedDisplayName.toLowerCase() === 'team';
+    const currentUserId = String(userProfile?.id || '').trim();
+
+    return (
+      (recordedById && staffDisplayMap[recordedById]) ||
+      (!isGenericStoredName ? storedDisplayName : '') ||
+      (recordedById && currentUserId && recordedById === currentUserId ? buildStaffDisplayName(userProfile, '') : '') ||
+      tr('Team', 'Équipe')
+    );
+  };
 
   const summary = useMemo(() => {
     const total = entries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
@@ -160,6 +192,16 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense }) => {
                         <Tag className="h-3.5 w-3.5" />
                         {firstLabel}
                       </span>
+                      {canRecord && entry.status === 'active' && onEditExpense ? (
+                        <button
+                          type="button"
+                          onClick={() => onEditExpense(entry)}
+                          className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          {tr('Edit', 'Modifier')}
+                        </button>
+                      ) : null}
                     </div>
 
                     <p className="mt-3 text-2xl font-bold tracking-[-0.05em] text-slate-950">{formatMoney(entry.amount)}</p>
@@ -181,7 +223,7 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense }) => {
                         <User className="h-3.5 w-3.5" />
                         {tr('Staff', 'Staff')}
                       </p>
-                      <p className="mt-2 font-semibold text-slate-900">{entry.recordedByDisplayName || tr('Team', 'Équipe')}</p>
+                      <p className="mt-2 font-semibold text-slate-900">{getExpenseStaffName(entry)}</p>
                     </div>
                     <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-3 py-3">
                       <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">

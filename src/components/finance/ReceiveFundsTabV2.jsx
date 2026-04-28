@@ -11,6 +11,7 @@ import {
   ClipboardList,
   Landmark,
   Loader2,
+  Pencil,
   Plus,
   RefreshCw,
 } from 'lucide-react';
@@ -24,7 +25,7 @@ import {
 import { receiveFundsService } from '../../services/receiveFundsService';
 import { getStaffDirectory } from '../../services/UserService';
 import { uploadFile } from '../../utils/storageUpload';
-import { normalizeAdminRecipients } from '../../utils/receiveFundsUi';
+import { buildStaffDisplayMap, buildStaffDisplayName, normalizeAdminRecipients } from '../../utils/receiveFundsUi';
 import { buildExpenseNote, loadExpenseLabelPresets, saveExpenseLabelPresets, uniqueLabels } from '../../utils/expenseLabels';
 import PhotoCapture from '../video/PhotoCapture';
 import i18n from '../../i18n';
@@ -144,7 +145,7 @@ const getEntryVisual = (entry) => {
   };
 };
 
-const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, openExpenseComposerRequest = 0 }) => {
+const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, openExpenseComposerRequest = 0, openEditComposerRequest = null }) => {
   const { userProfile } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -170,9 +171,11 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
   });
   const [showComposer, setShowComposer] = useState(false);
   const [composerMode, setComposerMode] = useState('funds');
+  const [editingEntry, setEditingEntry] = useState(null);
   const [expenseModeReady, setExpenseModeReady] = useState(false);
   const [showDateInput, setShowDateInput] = useState(false);
   const [adminRecipients, setAdminRecipients] = useState([]);
+  const [staffDisplayMap, setStaffDisplayMap] = useState({});
   const [adminsLoading, setAdminsLoading] = useState(false);
   const [receiptFile, setReceiptFile] = useState(null);
   const [receiptPreviewUrl, setReceiptPreviewUrl] = useState('');
@@ -200,6 +203,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
   const canUseBankDeposit = canUseBankDepositMethod(userProfile);
   const selectedMethodOption = METHOD_OPTIONS.find((option) => option.key === form.method) || METHOD_OPTIONS[0];
   const isExpenseMode = composerMode === 'expense';
+  const isEditing = Boolean(editingEntry);
   const expenseLabelsScopeId = String(
     userProfile?.organization_id ||
     userProfile?.organizationId ||
@@ -208,7 +212,10 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
     'shared'
   ).trim() || 'shared';
 
-  const resetComposerForm = (mode = composerMode, recipients = adminRecipients) => {
+  const resetComposerForm = (mode = composerMode, recipients = adminRecipients, options = {}) => {
+    if (options.clearEditing !== false) {
+      setEditingEntry(null);
+    }
     setForm({
       method: 'cash',
       amount: '',
@@ -236,6 +243,47 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
     setReceiptFile(nextFile);
     setShowReceiptCapture(false);
     event.target.value = '';
+  };
+
+  const openEditEntry = async (entry) => {
+    if (!entry || entry.status !== 'active') {
+      toast.error(tr('Reversed entries cannot be edited.', 'Les entrées annulées ne peuvent pas être modifiées.'));
+      return;
+    }
+
+    if (entry.entryType === 'expense') {
+      const ready = await receiveFundsService.refreshExpensesTableExists();
+      setExpenseModeReady(Boolean(ready));
+      if (!ready) {
+        toast.error(
+          tr(
+            'Edit Expense needs the finance_expenses table. Run the finance expenses migration first.',
+            "Modifier une dépense nécessite la table finance_expenses. Exécutez d'abord la migration des dépenses finance."
+          )
+        );
+        return;
+      }
+    }
+
+    const nextMode = entry.entryType === 'expense' ? 'expense' : 'funds';
+    setComposerMode(nextMode);
+    setEditingEntry(entry);
+    setForm({
+      method: nextMode === 'funds' ? (entry.method || 'cash') : 'cash',
+      amount: String(entry.amount || ''),
+      receivedDate: entry.receivedDate || todayKey(),
+      receivedByAdminUserId: nextMode === 'funds' ? (entry.receivedByAdminUserId || '') : '',
+      receivedByAdminDisplayName: nextMode === 'funds' ? (entry.receivedByAdminDisplayName || '') : '',
+      note: entry.note || '',
+    });
+    setReceiptFile(null);
+    setShowDateInput(false);
+    setShowReceiptCapture(false);
+    setSelectedExpenseLabels(nextMode === 'expense' && Array.isArray(entry.labels) ? entry.labels : []);
+    setNewExpenseLabel('');
+    setShowExpenseNote(false);
+    setExpenseSaveFeedback(null);
+    setShowComposer(true);
   };
 
   const loadDashboard = async () => {
@@ -269,6 +317,12 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
       void openExpenseMode(true);
     }
   }, [openExpenseComposerRequest, canRecord]);
+
+  useEffect(() => {
+    if (openEditComposerRequest?.entry && canRecord) {
+      void openEditEntry(openEditComposerRequest.entry);
+    }
+  }, [openEditComposerRequest?.requestId, canRecord]);
 
   useEffect(() => {
     let isActive = true;
@@ -338,6 +392,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
         const users = await getStaffDirectory();
         if (!isActive) return;
         const nextAdmins = normalizeAdminRecipients(users);
+        setStaffDisplayMap(buildStaffDisplayMap(users));
         setAdminRecipients(nextAdmins);
         setForm((current) => {
           if (current.receivedByAdminUserId || nextAdmins.length === 0) {
@@ -352,6 +407,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
       } catch (loadError) {
         console.error('Failed to load admin recipients:', loadError);
         if (isActive) {
+          setStaffDisplayMap({});
           setAdminRecipients([]);
         }
       } finally {
@@ -400,6 +456,11 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
         return;
       }
 
+      if (isEditing && editingEntry?.status !== 'active') {
+        toast.error(tr('Reversed entries cannot be edited.', 'Les entrées annulées ne peuvent pas être modifiées.'));
+        return;
+      }
+
       setSaving(true);
       let receiptUpload = null;
       if (receiptFile) {
@@ -419,6 +480,47 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
           throw new Error(receiptUpload?.error || tr('Receipt upload failed.', "L'envoi du reçu a échoué."));
         }
       }
+
+      if (isEditing) {
+        if (isExpenseMode) {
+          await receiveFundsService.updateExpense(
+            editingEntry.id,
+            {
+              amount: form.amount,
+              receivedDate: form.receivedDate,
+              note: form.note,
+              labels: selectedExpenseLabels,
+              ...(receiptUpload?.url ? { receiptImageUrl: receiptUpload.url } : {}),
+            },
+            userProfile
+          );
+          toast.success(tr('Expense updated.', 'Dépense mise à jour.'));
+        } else {
+          await receiveFundsService.updateEntry(
+            editingEntry.id,
+            {
+              amount: form.amount,
+              method: form.method,
+              receivedDate: form.receivedDate,
+              receivedByAdminUserId: form.receivedByAdminUserId,
+              receivedByAdminDisplayName: form.receivedByAdminDisplayName,
+              note: form.note,
+              ...(receiptUpload?.url ? { receiptImageUrl: receiptUpload.url } : {}),
+              ...(receiptUpload?.path ? { receiptImagePath: receiptUpload.path } : {}),
+            },
+            userProfile
+          );
+          toast.success(tr('Funds updated.', 'Fonds mis à jour.'));
+        }
+
+        resetComposerForm(isExpenseMode ? 'expense' : 'funds');
+        setShowComposer(false);
+        void loadDashboard().catch((refreshError) => {
+          console.error('Receive funds refresh failed after update:', refreshError);
+        });
+        return;
+      }
+
       if (isExpenseMode) {
         await receiveFundsService.recordExpense(
           {
@@ -572,6 +674,20 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
   );
 
   const shouldShowReview = dashboard.summary.reconciliationStatus !== 'matched' || dashboard.reviewItems.length > 0;
+
+  const getEntryStaffName = (entry) => {
+    const recordedById = String(entry?.recordedByUserId || '').trim();
+    const storedDisplayName = String(entry?.recordedByDisplayName || '').trim();
+    const isGenericStoredName = !storedDisplayName || storedDisplayName.toLowerCase() === 'team';
+    const currentUserId = String(userProfile?.id || '').trim();
+
+    return (
+      (recordedById && staffDisplayMap[recordedById]) ||
+      (!isGenericStoredName ? storedDisplayName : '') ||
+      (recordedById && currentUserId && recordedById === currentUserId ? buildStaffDisplayName(userProfile, '') : '') ||
+      tr('Team', 'Équipe')
+    );
+  };
 
   if (!dashboard.tableReady && !loading) {
     return (
@@ -734,6 +850,9 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
             {dashboard.entries.map((entry) => {
               const entryVisual = getEntryVisual(entry);
               const EntryIcon = entryVisual.icon;
+              const entryLabels = entry.entryType === 'expense' && Array.isArray(entry.labels)
+                ? entry.labels.filter(Boolean)
+                : [];
               return (
                 <article
                   key={entry.id}
@@ -752,6 +871,14 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                           <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${entryVisual.chipClass}`}>
                             {entryVisual.label}
                           </span>
+                          {entryLabels.map((label) => (
+                            <span
+                              key={`${entry.id}-${label}`}
+                              className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-700"
+                            >
+                              {label}
+                            </span>
+                          ))}
                           <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
                             entry.status === 'active'
                               ? 'bg-slate-100 text-slate-700'
@@ -762,7 +889,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                         </div>
 
                         <p className="mt-2 text-sm text-slate-500">
-                          {formatDateLabel(entry.receivedDate, { weekday: 'short', month: 'short', day: 'numeric' })} · {entry.recordedByDisplayName}
+                          {formatDateLabel(entry.receivedDate, { weekday: 'short', month: 'short', day: 'numeric' })} · {getEntryStaffName(entry)}
                         </p>
 
                         {entry.receivedByAdminDisplayName && entry.entryType !== 'expense' ? (
@@ -778,6 +905,16 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                     </div>
 
                     <div className="flex items-center gap-2">
+                      {canRecord && entry.status === 'active' ? (
+                        <button
+                          type="button"
+                          onClick={() => void openEditEntry(entry)}
+                          className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                        >
+                          <Pencil className="h-4 w-4" />
+                          {tr('Edit', 'Modifier')}
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => setExpandedEntryId((current) => (current === entry.id ? null : entry.id))}
@@ -874,7 +1011,13 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">
-                      {isExpenseMode ? tr('Add Expense', 'Ajouter une dépense') : tr('Record Funds', 'Enregistrer des fonds')}
+                      {isEditing
+                        ? isExpenseMode
+                          ? tr('Edit Expense', 'Modifier la dépense')
+                          : tr('Edit Funds', 'Modifier les fonds')
+                        : isExpenseMode
+                          ? tr('Add Expense', 'Ajouter une dépense')
+                          : tr('Record Funds', 'Enregistrer des fonds')}
                     </p>
                     <h4 className="mt-2 text-2xl font-bold tracking-[-0.04em] text-slate-950">
                       {isExpenseMode ? tr('Purchase Expense', "Dépense d'achat") : selectedMethodOption.title}
@@ -894,27 +1037,31 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                     <button
                       type="button"
                       onClick={() => {
+                        if (isEditing) return;
                         setComposerMode('funds');
                         resetComposerForm('funds');
                       }}
+                      disabled={isEditing}
                       className={`rounded-[18px] px-4 py-3 text-left transition ${
                         !isExpenseMode
                           ? 'bg-white text-violet-700 shadow-sm'
                           : 'text-slate-600 hover:bg-white/70'
-                      }`}
+                      } ${isEditing ? 'cursor-not-allowed opacity-60' : ''}`}
                     >
                       <p className="text-sm font-semibold">{tr('Record Funds', 'Enregistrer des fonds')}</p>
                     </button>
                     <button
                       type="button"
                       onClick={() => {
+                        if (isEditing) return;
                         void openExpenseMode();
                       }}
+                      disabled={isEditing}
                       className={`rounded-[18px] px-4 py-3 text-left transition ${
                         isExpenseMode
                           ? 'bg-white text-slate-800 shadow-sm'
                           : 'text-slate-600 hover:bg-white/70'
-                      }`}
+                      } ${isEditing ? 'cursor-not-allowed opacity-60' : ''}`}
                     >
                       <p className="text-sm font-semibold">{tr('Add Expense', 'Ajouter une dépense')}</p>
                     </button>
@@ -1214,6 +1361,19 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                       </div>
                     </div>
                   ) : null}
+                  {isEditing && editingEntry?.receiptImageUrl && !receiptPreviewUrl ? (
+                    <div className="mt-3 flex items-center gap-3 rounded-2xl border border-dashed border-violet-200 bg-violet-50/70 px-4 py-3">
+                      <img src={editingEntry.receiptImageUrl} alt={tr('Current receipt', 'Reçu actuel')} className="h-14 w-14 rounded-xl object-cover" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-900">
+                          {tr('Current receipt will be kept', 'Le reçu actuel sera conservé')}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          {tr('Import or capture a new image only if you want to replace it.', "Importez ou capturez une nouvelle image seulement si vous voulez le remplacer.")}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
                   {showReceiptCapture ? (
                     <div ref={receiptCaptureRef} className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                       <PhotoCapture
@@ -1253,9 +1413,13 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                     {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                     {saving
                       ? tr('Saving…', 'Enregistrement…')
-                      : isExpenseMode
-                        ? tr('Save expense', 'Enregistrer la dépense')
-                        : tr('Save received funds', 'Enregistrer les fonds reçus')}
+                      : isEditing
+                        ? isExpenseMode
+                          ? tr('Update expense', 'Mettre à jour la dépense')
+                          : tr('Update funds', 'Mettre à jour les fonds')
+                        : isExpenseMode
+                          ? tr('Save expense', 'Enregistrer la dépense')
+                          : tr('Save received funds', 'Enregistrer les fonds reçus')}
                   </button>
                   <button
                     type="button"
