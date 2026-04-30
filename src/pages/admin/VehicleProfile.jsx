@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Calendar, Car, Check, Clock3, DollarSign, Edit, FileText, Gauge, MoreHorizontal, Shield, StickyNote, Wrench, X, Fuel, ExternalLink, MapPin } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
 import { TBL } from '../../config/tables';
 import DocumentUpload from '../../components/DocumentUpload';
@@ -20,6 +21,7 @@ import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import { useAuth } from '../../contexts/AuthContext';
 import { canAdjustVehicleFuelLevel } from '../../utils/permissionHelpers';
 import i18n from '../../i18n';
+import useFuelRealtimeSync from '../../hooks/useFuelRealtimeSync';
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
@@ -445,6 +447,14 @@ const VehicleProfile = () => {
         setVehicleFinanceLoading(true);
         setLoading(false);
 
+        FuelTransactionService.getVehicleFuelState(vehicleId)
+          .then((state) => {
+            setVehicleFuelState(state || null);
+          })
+          .catch((fuelStateError) => {
+            console.error('Failed to load early vehicle fuel state:', fuelStateError);
+          });
+
         scheduleBackgroundTask(async () => {
           try {
             const { data: earlyRentalRows } = await supabase
@@ -612,6 +622,20 @@ const VehicleProfile = () => {
     setVehicleFuelState(await FuelTransactionService.getVehicleFuelState(vehicleId));
     setVehicleFuelSummary(fuelSummaryResult?.summary || null);
   };
+
+  const refreshFuelPanelRealtime = useCallback(() => {
+    void refreshFuelPanel().catch((refreshError) => {
+      console.error('Failed to refresh vehicle fuel panel from realtime sync:', refreshError);
+    });
+  }, [vehicleId, rentalHistory.length]);
+
+  useFuelRealtimeSync(() => {
+    if (vehicleId) {
+      refreshFuelPanelRealtime();
+    }
+  }, {
+    enabled: Boolean(vehicleId),
+  });
 
   const handleChange = (field, value) => {
     setFormData((current) => ({
@@ -897,6 +921,12 @@ const VehicleProfile = () => {
           ),
       }));
       setFuelAdjustOpen(false);
+      toast.success(
+        tr(
+          `Fuel level updated to ${result?.state?.current_fuel_lines ?? nextLines}/8`,
+          `Niveau de carburant mis à jour à ${result?.state?.current_fuel_lines ?? nextLines}/8`
+        )
+      );
       void refreshFuelPanel().catch((refreshError) => {
         console.error('Failed to refresh fuel panel after fuel adjust:', refreshError);
       });
@@ -2023,10 +2053,16 @@ const VehicleProfile = () => {
                   <button
                     type="button"
                     onClick={handleOpenFuelAdjust}
-                    className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+                    className={`inline-flex items-center gap-2 rounded-2xl px-3 py-2 text-sm font-semibold transition-colors ${
+                      fuelAdjustOpen
+                        ? 'border border-emerald-600 bg-emerald-600 text-white shadow-[0_12px_24px_rgba(16,185,129,0.22)]'
+                        : 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                    }`}
                   >
                     <Edit className="w-4 h-4" />
-                    {tr('Adjust Fuel', 'Ajuster le carburant')}
+                    {fuelAdjustOpen
+                      ? tr('Editing Fuel', 'Modification carburant')
+                      : tr('Adjust Fuel', 'Ajuster le carburant')}
                   </button>
                 ) : null}
                 <button
@@ -2046,15 +2082,27 @@ const VehicleProfile = () => {
             )}
           >
             <div className="space-y-4">
+              {fuelAdjustOpen ? (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 text-sm font-medium text-emerald-800">
+                  {tr(
+                    'Fuel edit mode is active. Choose the corrected lines in the editor.',
+                    "Le mode d'édition du carburant est actif. Choisissez les barres corrigées dans l'éditeur."
+                  )}
+                </div>
+              ) : null}
               <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-emerald-600">{tr('Current Vehicle Fuel', 'Carburant actuel du véhicule')}</p>
                     <p className="mt-2 text-4xl font-black tracking-tight text-slate-900">
-                      {vehicleFuelState?.current_fuel_lines ?? 0}/8
+                      {vehicleFuelState ? `${vehicleFuelState.current_fuel_lines ?? 0}/8` : '—/8'}
                     </p>
                     <p className="mt-1 text-base font-medium text-slate-600">
-                      {isFrenchLocale() ? `${Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L dans le réservoir` : `${Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L in tank`}
+                      {vehicleFuelState
+                        ? (isFrenchLocale()
+                          ? `${Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L dans le réservoir`
+                          : `${Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L in tank`)
+                        : tr('Loading fuel state…', 'Chargement du niveau carburant…')}
                     </p>
                   </div>
                   <span className="inline-flex rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
@@ -2115,110 +2163,128 @@ const VehicleProfile = () => {
           ) : null}
 
           {activeProfileTab === 'finance' && fuelAdjustOpen ? (
-            <section className="rounded-xl border border-emerald-100 bg-white p-5 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">{tr('Adjust Fuel', 'Ajuster le carburant')}</p>
-                  <h3 className="mt-2 text-xl font-bold text-slate-900">{tr('Set vehicle fuel level', 'Définir le niveau de carburant du véhicule')}</h3>
-                  <p className="mt-1 text-sm text-slate-500">{tr('This updates the Fleet fuel source of truth for this vehicle.', 'Cela met à jour la source de vérité carburant de la flotte pour ce véhicule.')}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setFuelAdjustOpen(false)}
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="mt-5 grid gap-4 lg:grid-cols-2">
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Current fuel', 'Carburant actuel')}</p>
-                  <p className="mt-2 text-3xl font-black tracking-tight text-slate-900">
-                    {vehicleFuelState?.current_fuel_lines ?? 0}/8
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-slate-600">
-                    {Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L
-                  </p>
-                </div>
-                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">{tr('New fuel level', 'Nouveau niveau de carburant')}</p>
-                  <div className="mt-3">
-                    <label className="text-sm font-medium text-slate-700">{tr('Fuel lines', 'Barres de carburant')}</label>
-                    <div className="mt-2 grid grid-cols-4 gap-2 lg:flex lg:flex-wrap">
-                      {Array.from({ length: 8 }, (_, index) => {
-                        const lineValue = index + 1;
-                        const selected = Number(fuelAdjustForm.fuel_lines) === lineValue;
-                        return (
-                          <button
-                            key={lineValue}
-                            type="button"
-                            onClick={() => handleFuelAdjustChange('fuel_lines', lineValue)}
-                            className={`rounded-2xl border px-3 py-3 text-center text-sm font-bold transition-all lg:min-w-[72px] lg:flex-none ${
-                              selected
-                                ? 'border-emerald-500 bg-emerald-500 text-white shadow-[0_10px_24px_rgba(16,185,129,0.24)]'
-                                : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50'
-                            }`}
-                          >
-                            {lineValue}/8
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <p className="mt-2 text-sm text-slate-500">
-                      {Number.isFinite(Number(fuelAdjustForm.fuel_lines))
-                        ? `${FuelTransactionService.linesToLiters(Number(fuelAdjustForm.fuel_lines), vehicleFuelState?.tank_capacity_liters || undefined).toFixed(1)} L after adjustment`
-                        : tr('Enter the corrected fuel level', 'Entrez le niveau corrigé de carburant')}
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-[2px]"
+              onClick={() => {
+                if (!fuelAdjustSaving) {
+                  setFuelAdjustOpen(false);
+                }
+              }}
+            >
+              <section
+                className="max-h-[calc(100vh-3rem)] w-full max-w-4xl overflow-y-auto rounded-3xl border border-emerald-100 bg-white p-5 shadow-[0_24px_80px_rgba(15,23,42,0.24)] lg:p-6"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">{tr('Adjust Fuel', 'Ajuster le carburant')}</p>
+                    <h3 className="mt-2 text-xl font-bold text-slate-900">{tr('Set vehicle fuel level', 'Définir le niveau de carburant du véhicule')}</h3>
+                    <p className="mt-1 text-sm text-slate-500">{tr('This updates the Fleet fuel source of truth for this vehicle.', 'Cela met à jour la source de vérité carburant de la flotte pour ce véhicule.')}</p>
+                    <p className="mt-3 text-sm font-medium text-slate-700">
+                      {tr(
+                        'Select the corrected fuel lines below, then save to update this vehicle immediately across Fleet and Fuel.',
+                        "Sélectionnez ci-dessous les barres corrigées, puis enregistrez pour mettre ce véhicule à jour immédiatement dans la flotte et le carburant."
+                      )}
                     </p>
                   </div>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                <div>
-                  <label className="text-sm font-medium text-slate-700">{tr('Reason', 'Raison')}</label>
-                  <select
-                    value={fuelAdjustForm.reason}
-                    onChange={(event) => handleFuelAdjustChange('reason', event.target.value)}
-                    className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none focus:border-emerald-400"
+                  <button
+                    type="button"
+                    onClick={() => setFuelAdjustOpen(false)}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
                   >
-                    <option value="Manual correction">{tr('Manual correction', 'Correction manuelle')}</option>
-                    <option value="Inspection update">{tr('Inspection update', "Mise à jour d'inspection")}</option>
-                    <option value="After external fuel use">{tr('After external fuel use', 'Après utilisation externe du carburant')}</option>
-                    <option value="Staff correction">{tr('Staff correction', "Correction de l'équipe")}</option>
-                  </select>
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-                <div>
-                  <label className="text-sm font-medium text-slate-700">{tr('Note', 'Note')}</label>
-                  <input
-                    type="text"
-                    value={fuelAdjustForm.notes}
-                    onChange={(event) => handleFuelAdjustChange('notes', event.target.value)}
-                    placeholder={tr('Optional note', 'Note facultative')}
-                    className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none focus:border-emerald-400"
-                  />
-                </div>
-              </div>
 
-              <div className="mt-5 flex flex-wrap justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setFuelAdjustOpen(false)}
-                  disabled={fuelAdjustSaving}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                >
-                  {tr('Cancel', 'Annuler')}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveFuelAdjust}
-                  disabled={fuelAdjustSaving}
-                  className="rounded-2xl bg-gradient-to-r from-emerald-600 to-green-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(22,163,74,0.22)] hover:from-emerald-700 hover:to-green-800 disabled:opacity-60"
-                >
-                  {fuelAdjustSaving ? tr('Saving...', 'Enregistrement...') : tr('Set Fuel Level', 'Définir le niveau')}
-                </button>
-              </div>
-            </section>
+                <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Current fuel', 'Carburant actuel')}</p>
+                    <p className="mt-2 text-3xl font-black tracking-tight text-slate-900">
+                      {vehicleFuelState ? `${vehicleFuelState.current_fuel_lines ?? 0}/8` : '—/8'}
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-slate-600">
+                      {vehicleFuelState ? `${Number(vehicleFuelState?.current_fuel_liters || 0).toFixed(1)} L` : tr('Loading…', 'Chargement…')}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">{tr('New fuel level', 'Nouveau niveau de carburant')}</p>
+                    <div className="mt-3">
+                      <label className="text-sm font-medium text-slate-700">{tr('Fuel lines', 'Barres de carburant')}</label>
+                      <div className="mt-2 grid grid-cols-4 gap-2 lg:flex lg:flex-wrap">
+                        {Array.from({ length: 8 }, (_, index) => {
+                          const lineValue = index + 1;
+                          const selected = Number(fuelAdjustForm.fuel_lines) === lineValue;
+                          return (
+                            <button
+                              key={lineValue}
+                              type="button"
+                              onClick={() => handleFuelAdjustChange('fuel_lines', lineValue)}
+                              className={`rounded-2xl border px-3 py-3 text-center text-sm font-bold transition-all lg:min-w-[72px] lg:flex-none ${
+                                selected
+                                  ? 'border-emerald-500 bg-emerald-500 text-white shadow-[0_10px_24px_rgba(16,185,129,0.24)]'
+                                  : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50'
+                              }`}
+                            >
+                              {lineValue}/8
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-2 text-sm text-slate-500">
+                        {Number.isFinite(Number(fuelAdjustForm.fuel_lines))
+                          ? `${FuelTransactionService.linesToLiters(Number(fuelAdjustForm.fuel_lines), vehicleFuelState?.tank_capacity_liters || undefined).toFixed(1)} L after adjustment`
+                          : tr('Enter the corrected fuel level', 'Entrez le niveau corrigé de carburant')}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  <div>
+                    <label className="text-sm font-medium text-slate-700">{tr('Reason', 'Raison')}</label>
+                    <select
+                      value={fuelAdjustForm.reason}
+                      onChange={(event) => handleFuelAdjustChange('reason', event.target.value)}
+                      className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none focus:border-emerald-400"
+                    >
+                      <option value="Manual correction">{tr('Manual correction', 'Correction manuelle')}</option>
+                      <option value="Inspection update">{tr('Inspection update', "Mise à jour d'inspection")}</option>
+                      <option value="After external fuel use">{tr('After external fuel use', 'Après utilisation externe du carburant')}</option>
+                      <option value="Staff correction">{tr('Staff correction', "Correction de l'équipe")}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-slate-700">{tr('Note', 'Note')}</label>
+                    <input
+                      type="text"
+                      value={fuelAdjustForm.notes}
+                      onChange={(event) => handleFuelAdjustChange('notes', event.target.value)}
+                      placeholder={tr('Optional note', 'Note facultative')}
+                      className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none focus:border-emerald-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setFuelAdjustOpen(false)}
+                    disabled={fuelAdjustSaving}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    {tr('Cancel', 'Annuler')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveFuelAdjust}
+                    disabled={fuelAdjustSaving}
+                    className="rounded-2xl bg-gradient-to-r from-emerald-600 to-green-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(22,163,74,0.22)] hover:from-emerald-700 hover:to-green-800 disabled:opacity-60"
+                  >
+                    {fuelAdjustSaving ? tr('Saving...', 'Enregistrement...') : tr('Set Fuel Level', 'Définir le niveau')}
+                  </button>
+                </div>
+              </section>
+            </div>
           ) : null}
 
           {activeProfileTab === 'overview' ? (
