@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
@@ -90,10 +91,12 @@ const getTrialDaysRemaining = (trialEndsAt) => {
 const AdminLayout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [modalFocusDepth, setModalFocusDepth] = useState(0);
+  const [forcedModalShellHidden, setForcedModalShellHidden] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [isTablet, setIsTablet] = useState(false);
   const [taskStats, setTaskStats] = useState({ active: 0, my: 0, open: 0, attention: 0, unreadComments: 0 });
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [profileMenuPosition, setProfileMenuPosition] = useState({ top: 76, right: 16, width: 288 });
   const [tenantLogoUrl, setTenantLogoUrl] = useState('');
   const location = useLocation();
   const navigate = useNavigate();
@@ -101,6 +104,7 @@ const AdminLayout = () => {
   const { i18n } = useTranslation();
   const { setLanguage } = useLanguageContext();
   const profileMenuRef = useRef(null);
+  const profileMenuButtonRef = useRef(null);
   const isFrench = i18n.resolvedLanguage === 'fr';
   const activeLanguage = isFrench ? 'fr' : 'en';
   const inheritedTenantLogoUrl = getTenantLogoFallback();
@@ -261,6 +265,14 @@ const AdminLayout = () => {
       moduleName: 'Workspaces'
     },
     {
+      id: 'platform-admins',
+      name: isFrench ? 'Admins plateforme' : 'Platform Admins',
+      icon: Shield,
+      accent: 'from-violet-500 to-indigo-700',
+      path: '/admin/platform-admins',
+      moduleName: 'Platform Admins'
+    },
+    {
       id: 'marketplace',
       name: isFrench ? 'Marketplace' : 'Marketplace',
       icon: Store,
@@ -377,8 +389,21 @@ const AdminLayout = () => {
       return undefined;
     }
 
+    const updateProfileMenuPosition = () => {
+      const trigger = profileMenuButtonRef.current;
+      if (!trigger || typeof window === 'undefined') return;
+      const rect = trigger.getBoundingClientRect();
+      setProfileMenuPosition({
+        top: rect.bottom + 12,
+        right: Math.max(12, window.innerWidth - rect.right),
+        width: Math.min(288, Math.max(240, window.innerWidth - 24)),
+      });
+    };
+
     const handlePointerDown = (event) => {
-      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target)) {
+      const clickedInsideMenu = profileMenuRef.current?.contains(event.target);
+      const clickedTrigger = profileMenuButtonRef.current?.contains(event.target);
+      if (!clickedInsideMenu && !clickedTrigger) {
         setProfileMenuOpen(false);
       }
     };
@@ -389,12 +414,17 @@ const AdminLayout = () => {
       }
     };
 
-    document.addEventListener('mousedown', handlePointerDown);
+    updateProfileMenuPosition();
+    document.addEventListener('pointerdown', handlePointerDown);
     document.addEventListener('keydown', handleEscape);
+    window.addEventListener('resize', updateProfileMenuPosition);
+    window.addEventListener('scroll', updateProfileMenuPosition, true);
 
     return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('pointerdown', handlePointerDown);
       document.removeEventListener('keydown', handleEscape);
+      window.removeEventListener('resize', updateProfileMenuPosition);
+      window.removeEventListener('scroll', updateProfileMenuPosition, true);
     };
   }, [profileMenuOpen]);
 
@@ -451,6 +481,66 @@ const AdminLayout = () => {
       window.removeEventListener('admin:modal-close', handleAdminModalClose);
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') {
+      return undefined;
+    }
+
+    const hasVisibleFullscreenModal = () => {
+      const candidates = Array.from(document.querySelectorAll('body *')).filter((element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        if (element.dataset?.adminShellIgnore === 'true') return false;
+        const className = String(element.className || '');
+        if (!className.includes('fixed') || !className.includes('inset-0')) return false;
+        const style = window.getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        if (style.position !== 'fixed') return false;
+        if (!style.inset || style.inset === 'auto') {
+          const coversViewport =
+            style.top === '0px' &&
+            style.right === '0px' &&
+            style.bottom === '0px' &&
+            style.left === '0px';
+          if (!coversViewport) return false;
+        }
+
+        const looksLikeModalLayer =
+          className.includes('z-50') ||
+          className.includes('z-[') ||
+          className.includes('backdrop-blur') ||
+          className.includes('bg-black') ||
+          className.includes('bg-slate-950') ||
+          element.getAttribute('role') === 'dialog' ||
+          element.dataset?.adminModalOpen === 'true';
+
+        return looksLikeModalLayer;
+      });
+
+      return candidates.length > 0;
+    };
+
+    const syncForcedModalShellHidden = () => {
+      const bodyFlag = document.body?.dataset?.workspaceDrawerOpen === 'true';
+      const modalFlag = Boolean(
+        document.querySelector('[data-admin-modal-open="true"], [role="dialog"][aria-modal="true"]')
+      );
+      const fullscreenModalFlag = hasVisibleFullscreenModal();
+      setForcedModalShellHidden(bodyFlag || modalFlag || fullscreenModalFlag);
+    };
+
+    syncForcedModalShellHidden();
+
+    const observer = new MutationObserver(syncForcedModalShellHidden);
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-workspace-drawer-open', 'class', 'style', 'role', 'aria-modal', 'data-admin-modal-open'],
+      childList: true,
+      subtree: true,
+    });
+
+    return () => observer.disconnect();
+  }, [location.pathname]);
 
   useEffect(() => {
     if (modalFocusDepth === 0) {
@@ -677,7 +767,7 @@ const AdminLayout = () => {
 
   const shouldShowHamburger = isMobile || isTablet;
   const shouldFixSidebar = !isMobile && !isTablet;
-  const shouldHideSidebarForModal = modalFocusDepth > 0;
+  const shouldHideSidebarForModal = modalFocusDepth > 0 || forcedModalShellHidden;
   const shouldCollapseDesktopSidebar = shouldFixSidebar && shouldHideSidebarForModal;
   const previewBusinessOwnerId = new URLSearchParams(location.search).get('business_owner_id');
   const subscriptionStatus = String(userProfile?.subscriptionStatus || user?.user_metadata?.subscription_status || '').toLowerCase();
@@ -947,7 +1037,7 @@ const AdminLayout = () => {
       </div>
 
       <div className={`flex-1 flex flex-col overflow-hidden ${shouldFixSidebar ? 'ml-0' : ''}`}>
-        <header className={`isolate h-16 border-b border-slate-200 bg-white/90 backdrop-blur-xl shadow-sm flex items-center justify-between px-4 lg:px-6 ${shouldShowHamburger ? 'fixed inset-x-0 top-0 z-[80]' : 'sticky top-0'} ${shouldHideSidebarForModal ? 'z-[20]' : shouldShowHamburger ? 'z-[80]' : 'z-[90]'}`}>
+        <header className={`isolate h-16 border-b border-slate-200 bg-white/90 backdrop-blur-xl shadow-sm flex items-center justify-between px-4 lg:px-6 transition-opacity duration-200 ${shouldShowHamburger ? 'fixed inset-x-0 top-0 z-[80]' : 'sticky top-0'} ${shouldHideSidebarForModal ? 'pointer-events-none opacity-0 z-[20]' : shouldShowHamburger ? 'z-[80] opacity-100' : 'z-[90] opacity-100'}`}>
           <div className="flex items-center space-x-4">
             {shouldShowHamburger && (
               <button
@@ -982,7 +1072,16 @@ const AdminLayout = () => {
             <div className="relative" ref={profileMenuRef}>
               <button
                 type="button"
-                onClick={() => setProfileMenuOpen((current) => !current)}
+                ref={profileMenuButtonRef}
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setProfileMenuPosition({
+                    top: rect.bottom + 12,
+                    right: Math.max(12, window.innerWidth - rect.right),
+                    width: Math.min(288, Math.max(240, window.innerWidth - 24)),
+                  });
+                  setProfileMenuOpen((current) => !current);
+                }}
                 className="flex items-center gap-3 rounded-2xl px-2 py-1.5 transition hover:bg-slate-100"
                 title={isFrench ? 'Ouvrir le menu profil' : 'Open profile menu'}
                 aria-expanded={profileMenuOpen}
@@ -1000,47 +1099,56 @@ const AdminLayout = () => {
                 />
               </button>
 
-              {profileMenuOpen ? (
-                <>
-                  <div className="fixed inset-0 z-[110] bg-slate-950/8 backdrop-blur-[1px]" />
-                  <div className="fixed right-4 top-[4.7rem] z-[120] w-72 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white p-2.5 shadow-[0_28px_80px_rgba(15,23,42,0.18)] lg:right-6">
-                    <div className="border-b border-slate-100 px-4 py-3.5">
-                      <p className="truncate text-sm font-semibold text-slate-900">{user?.email}</p>
-                      <p className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-500">{userProfile?.role || 'Administrator'}</p>
-                    </div>
+              {profileMenuOpen && typeof document !== 'undefined'
+                ? createPortal(
+                    <div
+                      ref={profileMenuRef}
+                      className="fixed z-[140] overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white p-2.5 shadow-[0_28px_80px_rgba(15,23,42,0.18)]"
+                      style={{
+                        top: `${profileMenuPosition.top}px`,
+                        right: `${profileMenuPosition.right}px`,
+                        width: `${profileMenuPosition.width}px`,
+                        maxWidth: 'calc(100vw - 1.5rem)',
+                      }}
+                    >
+                      <div className="border-b border-slate-100 px-4 py-3.5">
+                        <p className="truncate text-sm font-semibold text-slate-900">{user?.email}</p>
+                        <p className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-500">{userProfile?.role || 'Administrator'}</p>
+                      </div>
 
-                    <div className="space-y-1.5 px-1 py-2" role="menu">
-                      <button
-                        type="button"
-                        onClick={openAdminProfile}
-                        className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-violet-700"
-                        role="menuitem"
-                      >
-                        <Settings className="h-4 w-4" />
-                        <span>{isFrench ? 'Paramètres du profil' : 'Profile settings'}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={openHelpSupport}
-                        className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-violet-700"
-                        role="menuitem"
-                      >
-                        <CircleHelp className="h-4 w-4" />
-                        <span>{isFrench ? 'Aide et support' : 'Help & support'}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleLogout}
-                        className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
-                        role="menuitem"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        <span>{isFrench ? 'Déconnexion' : 'Log out'}</span>
-                      </button>
-                    </div>
-                  </div>
-                </>
-              ) : null}
+                      <div className="space-y-1.5 px-1 py-2" role="menu">
+                        <button
+                          type="button"
+                          onClick={openAdminProfile}
+                          className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-violet-700"
+                          role="menuitem"
+                        >
+                          <Settings className="h-4 w-4" />
+                          <span>{isFrench ? 'Paramètres du profil' : 'Profile settings'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={openHelpSupport}
+                          className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-violet-700"
+                          role="menuitem"
+                        >
+                          <CircleHelp className="h-4 w-4" />
+                          <span>{isFrench ? 'Aide et support' : 'Help & support'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleLogout}
+                          className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
+                          role="menuitem"
+                        >
+                          <LogOut className="h-4 w-4" />
+                          <span>{isFrench ? 'Déconnexion' : 'Log out'}</span>
+                        </button>
+                      </div>
+                    </div>,
+                    document.body
+                  )
+                : null}
             </div>
           </div>
         </header>
