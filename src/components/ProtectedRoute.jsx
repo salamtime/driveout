@@ -5,6 +5,20 @@ import i18n from '../i18n';
 import { isBusinessOwnerAccountType } from '../utils/accountType';
 import AuthTransitionScreen from './auth/AuthTransitionScreen';
 
+const BUSINESS_OWNER_STATUS_ROUTES = [
+  '/pending-approval',
+  '/no-workspace',
+  '/workspace-pending',
+  '/workspace-preparing',
+  '/workspace-error',
+  '/workspace-suspended',
+  '/choose-plan',
+  '/business/workspace',
+];
+
+const isBusinessOwnerStatusRoute = (pathname = '') =>
+  BUSINESS_OWNER_STATUS_ROUTES.some((route) => pathname === route || pathname.startsWith(`${route}/`));
+
 const ExternalRedirect = ({ to }) => {
   React.useEffect(() => {
     if (typeof window !== 'undefined' && to) {
@@ -57,8 +71,29 @@ const ProtectedRoute = ({
         account_type: userProfile?.accountType,
         verification_status: userProfile?.verificationStatus,
         subscription_status: userProfile?.subscriptionStatus,
+        billing_status: userProfile?.billingStatus,
       })
     : null;
+  const isSameRouteRedirect =
+    businessOwnerFreezeRedirect &&
+    !/^https?:\/\//i.test(String(businessOwnerFreezeRedirect || '')) &&
+    String(businessOwnerFreezeRedirect || '').trim() === String(location.pathname || '').trim();
+  const isSameHostExternalRedirect = (() => {
+    if (!businessOwnerFreezeRedirect || !/^https?:\/\//i.test(String(businessOwnerFreezeRedirect || '')) || typeof window === 'undefined') {
+      return false;
+    }
+
+    try {
+      const targetUrl = new URL(String(businessOwnerFreezeRedirect || '').trim());
+      return (
+        String(targetUrl.hostname || '').trim().toLowerCase() === String(window.location.hostname || '').trim().toLowerCase() &&
+        String(targetUrl.pathname || '').trim() === String(location.pathname || '').trim()
+      );
+    } catch (error) {
+      console.warn('Unable to compare business owner redirect target:', error);
+      return false;
+    }
+  })();
 
   // Show loading while auth is initializing
   if (!initialized || loading) {
@@ -72,10 +107,7 @@ const ProtectedRoute = ({
     return <Navigate to={fallbackPath} state={{ from: location }} replace />;
   }
 
-  if (
-    businessOwnerFreezeRedirect &&
-    (location.pathname.startsWith('/admin') || location.pathname.startsWith('/guide'))
-  ) {
+  if (businessOwnerFreezeRedirect && !isBusinessOwnerStatusRoute(location.pathname) && !isSameRouteRedirect && !isSameHostExternalRedirect) {
     if (/^https?:\/\//i.test(businessOwnerFreezeRedirect)) {
       return <ExternalRedirect to={businessOwnerFreezeRedirect} />;
     }
