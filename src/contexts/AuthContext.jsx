@@ -10,9 +10,11 @@ import {
   normalizePermissionMap as normalizeCatalogPermissionMap,
   buildBusinessOwnerPermissionMap,
   resolvePermissionKey,
+  isModuleAllowedByTenantFeatures,
 } from '../utils/permissionCatalog';
 import { getBusinessOwnerFreezeRedirect, hasBusinessOwnerRequest, isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../utils/accountType';
 import { resolveUserEntry } from '../utils/tenantEntryResolver';
+import { getHostContext } from '../utils/hostContext';
 
 const GLOBAL_AUTH_CONTEXT_KEY = '__SAHARAX_AUTH_CONTEXT__';
 const AuthContext = globalThis[GLOBAL_AUTH_CONTEXT_KEY] || createContext(null);
@@ -21,6 +23,7 @@ if (typeof globalThis !== 'undefined' && !globalThis[GLOBAL_AUTH_CONTEXT_KEY]) {
   globalThis[GLOBAL_AUTH_CONTEXT_KEY] = AuthContext;
 }
 const PENDING_ACCOUNT_INTENT_KEY = 'saharax_pending_account_type';
+const PLATFORM_PERMISSION_MODULES = new Set(['Workspaces', 'Platform Admins']);
 
 const getPendingAccountIntent = () => {
   if (typeof window === 'undefined') return null;
@@ -181,6 +184,7 @@ export const AuthProvider = ({ children }) => {
   });
   const [session, setSession] = useState(null);
   const [tenantSession, setTenantSession] = useState(null);
+  const [platformAccess, setPlatformAccess] = useState(null);
   const [loading, setLoading] = useState(true);
   const [initialized, setInitialized] = useState(false);
   const isLoadingProfile = useRef(false);
@@ -316,6 +320,8 @@ export const AuthProvider = ({ children }) => {
     if (!authUser) {
       setUserProfile(null);
       setSession(null);
+      setTenantSession(null);
+      setPlatformAccess(null);
       setLoading(false);
       setInitialized(true);
       return;
@@ -462,19 +468,48 @@ export const AuthProvider = ({ children }) => {
       setUserProfile(profile);
       setSession(session);
 
-      if (!privilegedOwnerOverride && hasBusinessOwnerRequest({
-        account_type: profile?.accountType,
-        certification_request_status: session?.user?.user_metadata?.certification_request_status || session?.user?.app_metadata?.certification_request_status,
-      })) {
+      const shouldLoadWorkspaceSession =
+        privilegedOwnerOverride ||
+        userRole === 'owner' ||
+        userRole === 'admin' ||
+        userPermissionsMap.Workspaces === true ||
+        userPermissionsMap['Platform Admins'] === true ||
+        hasBusinessOwnerRequest({
+          account_type: profile?.accountType,
+          certification_request_status: session?.user?.user_metadata?.certification_request_status || session?.user?.app_metadata?.certification_request_status,
+        });
+
+      if (shouldLoadWorkspaceSession) {
         try {
           const tenantResponse = await adminApiRequest('/api/tenants?resource=session');
-          setTenantSession(tenantResponse?.session || null);
+          const nextSession = tenantResponse?.session || null;
+          setTenantSession(nextSession);
+          setPlatformAccess(
+            nextSession?.platform_access && typeof nextSession.platform_access === 'object'
+              ? nextSession.platform_access
+              : null
+          );
         } catch (tenantError) {
           console.warn('Unable to load tenant session:', tenantError);
           setTenantSession(null);
+          setPlatformAccess(
+            privilegedOwnerOverride
+              ? {
+                  role: 'platform_owner',
+                  access_enabled: true,
+                  is_platform_owner: true,
+                  is_platform_admin: true,
+                  permissions: {
+                    Workspaces: true,
+                    'Platform Admins': true,
+                  },
+                }
+              : null
+          );
         }
       } else {
         setTenantSession(null);
+        setPlatformAccess(null);
       }
 
       if (shouldSyncCustomerAccount(profile, authUser) && !syncedCustomerAccountsRef.current.has(authUser.id)) {
@@ -546,6 +581,20 @@ export const AuthProvider = ({ children }) => {
       setUserProfile(fallbackProfile);
       setSession(session);
       setTenantSession(null);
+      setPlatformAccess(
+        privilegedOwnerOverride
+          ? {
+              role: 'platform_owner',
+              access_enabled: true,
+              is_platform_owner: true,
+              is_platform_admin: true,
+              permissions: {
+                Workspaces: true,
+                'Platform Admins': true,
+              },
+            }
+          : null
+      );
 
       if (shouldSyncCustomerAccount(fallbackProfile, authUser) && !syncedCustomerAccountsRef.current.has(authUser.id)) {
         syncedCustomerAccountsRef.current.add(authUser.id);
@@ -918,19 +967,56 @@ export const AuthProvider = ({ children }) => {
     if (!userProfile) return false;
     const normalizedEmail = (userProfile.email || '').toLowerCase();
     const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
+    const hostContext = getHostContext();
+    const tenantFeatureAccess =
+      tenantSession?.tenant?.metadata?.feature_access && typeof tenantSession.tenant.metadata.feature_access === 'object'
+        ? tenantSession.tenant.metadata.feature_access
+        : {};
+    const enforceTenantFeatureAccess =
+      String(userProfile.role || '').toLowerCase() === 'business_owner'
+      || hostContext.kind === 'tenant';
+    const resolvedModuleKey = resolvePermissionKey(moduleName);
+    const normalizedPlatformPermissions =
+      platformAccess?.permissions && typeof platformAccess.permissions === 'object' && !Array.isArray(platformAccess.permissions)
+        ? platformAccess.permissions
+        : {};
 
-    if (String(userProfile.role || '').toLowerCase() === 'owner' || platformOwnerOverride) {
-      return true;
+    if (PLATFORM_PERMISSION_MODULES.has(resolvedModuleKey)) {
+      if (platformOwnerOverride) {
+        return true;
+      }
+
+      if (platformAccess?.access_enabled === false) {
+        return false;
+      }
+
+      return normalizedPlatformPermissions[resolvedModuleKey] === true;
     }
 
-    const dbName = resolvePermissionKey(moduleName);
+    if (String(userProfile.role || '').toLowerCase() === 'owner' || platformOwnerOverride) {
+      return enforceTenantFeatureAccess
+        ? isModuleAllowedByTenantFeatures(moduleName, tenantFeatureAccess)
+        : true;
+    }
+
+    const dbName = resolvedModuleKey;
     const permissionList = Array.isArray(userProfile.permissions) ? userProfile.permissions : [];
     const permission = permissionList.find((entry) =>
       String(entry?.module_name || '').toLowerCase() === dbName.toLowerCase()
     );
 
-    return permission ? permission.has_access === true : false;
-  }, [userProfile]);
+    const hasBasePermission = permission ? permission.has_access === true : false;
+
+    if (!hasBasePermission) {
+      return false;
+    }
+
+    if (!enforceTenantFeatureAccess) {
+      return true;
+    }
+
+    return isModuleAllowedByTenantFeatures(moduleName, tenantFeatureAccess);
+  }, [platformAccess?.access_enabled, platformAccess?.permissions, tenantSession?.tenant?.metadata?.feature_access, userProfile]);
 
   const refreshPermissions = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -950,6 +1036,7 @@ export const AuthProvider = ({ children }) => {
       account_type: userProfile?.accountType || session?.user?.user_metadata?.account_type || session?.user?.app_metadata?.account_type,
       verification_status: userProfile?.verificationStatus || session?.user?.user_metadata?.verification_status || session?.user?.app_metadata?.verification_status,
       subscription_status: userProfile?.subscriptionStatus || session?.user?.user_metadata?.subscription_status || session?.user?.app_metadata?.subscription_status,
+      billing_status: userProfile?.billingStatus || session?.user?.user_metadata?.billing_status || session?.user?.app_metadata?.billing_status,
     };
 
     if (!hasBusinessOwnerRequest(profileMetadata)) {
@@ -957,30 +1044,54 @@ export const AuthProvider = ({ children }) => {
     }
 
     const workspaceState = String(tenantSession?.workspace_state || tenantSession?.workspaceState || '').trim().toLowerCase();
-    if (workspaceState === 'expired') {
+    if (workspaceState === 'expired' || workspaceState === 'billing_issue') {
       return '/choose-plan';
     }
 
     if (workspaceState || tenantSession?.tenant || tenantSession?.tenantId) {
+      const sessionIndicatesProvisionedBusinessOwner =
+        Boolean(tenantSession?.tenant || tenantSession?.tenantId) ||
+        ['pending', 'provisioning', 'tenant_ready', 'failed', 'suspended', 'no_workspace'].includes(workspaceState);
       const entry = resolveUserEntry({
-        approved: isApprovedBusinessOwnerAccount(profileMetadata),
+        approved: isApprovedBusinessOwnerAccount(profileMetadata) || sessionIndicatesProvisionedBusinessOwner,
         tenantSession,
       });
+
+      if (entry?.type === 'external' && entry?.target) {
+        const host = getHostContext();
+        if (host.kind === 'tenant' && typeof window !== 'undefined') {
+          try {
+            const targetUrl = new URL(entry.target);
+            const currentHostname = String(window.location.hostname || '').trim().toLowerCase();
+            const targetHostname = String(targetUrl.hostname || '').trim().toLowerCase();
+
+            if (currentHostname && currentHostname === targetHostname) {
+              return '/admin/dashboard';
+            }
+          } catch (error) {
+            console.warn('Unable to normalize tenant workspace redirect target:', error);
+          }
+        }
+      }
+
       return entry.target;
     }
 
     return getBusinessOwnerFreezeRedirect(profileMetadata);
   }, [
     session?.user?.app_metadata?.account_type,
+    session?.user?.app_metadata?.billing_status,
     session?.user?.app_metadata?.subscription_status,
     session?.user?.app_metadata?.verification_status,
     session?.user?.user_metadata?.account_type,
+    session?.user?.user_metadata?.billing_status,
     session?.user?.user_metadata?.subscription_status,
     session?.user?.user_metadata?.verification_status,
     tenantSession?.workspaceState,
     tenantSession?.workspace_state,
     userProfile?.email,
     userProfile?.accountType,
+    userProfile?.billingStatus,
     userProfile?.subscriptionStatus,
     userProfile?.verificationStatus,
     session?.user?.email,
@@ -1119,6 +1230,7 @@ export const AuthProvider = ({ children }) => {
     refreshPermissions,
     getUserRole,
     tenantSession,
+    platformAccess,
     getBusinessOwnerHomePath,
   };
 
