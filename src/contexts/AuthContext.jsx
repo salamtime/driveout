@@ -374,8 +374,15 @@ export const AuthProvider = ({ children }) => {
         ...rpcPermissionsMap,
       };
       const privilegedOwnerOverride = isPlatformOwnerEmail(authUser.email);
-      const approvedBusinessOwner = !privilegedOwnerOverride && isApprovedBusinessOwnerAccount(authUser.user_metadata || authUser.app_metadata || {});
-      const userPermissionsMap = approvedBusinessOwner
+      const businessOwnerLikeAccount = !privilegedOwnerOverride && hasBusinessOwnerRequest({
+        ...(authUser.app_metadata || {}),
+        ...(authUser.user_metadata || {}),
+      });
+      const approvedBusinessOwner = businessOwnerLikeAccount && isApprovedBusinessOwnerAccount({
+        ...(authUser.app_metadata || {}),
+        ...(authUser.user_metadata || {}),
+      });
+      const userPermissionsMap = businessOwnerLikeAccount
         ? {
             ...mergedPermissionMap,
             ...buildBusinessOwnerPermissionMap(),
@@ -390,7 +397,7 @@ export const AuthProvider = ({ children }) => {
 
       const inferredRole = inferRoleFromPermissions(userPermissionsMap);
       const userRole =
-        approvedBusinessOwner
+        businessOwnerLikeAccount
           ? 'business_owner'
           : appRecordRole ||
         (normalizedMetadataRole && normalizedMetadataRole !== 'customer' ? normalizedMetadataRole : null) ||
@@ -522,7 +529,15 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error('Failed to load user profile and permissions:', error);
       const privilegedOwnerOverride = isPlatformOwnerEmail(authUser.email);
-      const fallbackProfile = !privilegedOwnerOverride && isApprovedBusinessOwnerAccount(authUser.user_metadata || authUser.app_metadata || {})
+      const fallbackBusinessOwnerLikeAccount = !privilegedOwnerOverride && hasBusinessOwnerRequest({
+        ...(authUser.app_metadata || {}),
+        ...(authUser.user_metadata || {}),
+      });
+      const fallbackApprovedBusinessOwner = fallbackBusinessOwnerLikeAccount && isApprovedBusinessOwnerAccount({
+        ...(authUser.app_metadata || {}),
+        ...(authUser.user_metadata || {}),
+      });
+      const fallbackProfile = fallbackApprovedBusinessOwner
         ? buildApprovedBusinessOwnerProfile(
             authUser,
             null,
@@ -531,7 +546,7 @@ export const AuthProvider = ({ children }) => {
         : {
             id: authUser.id,
             email: authUser.email,
-            role: privilegedOwnerOverride ? 'owner' : (authUser.user_metadata?.role || authUser.app_metadata?.role || 'customer'),
+            role: privilegedOwnerOverride ? 'owner' : (fallbackBusinessOwnerLikeAccount ? 'business_owner' : (authUser.user_metadata?.role || authUser.app_metadata?.role || 'customer')),
             username: authUser.user_metadata?.username || '',
             fullName: authUser.user_metadata?.full_name || authUser.app_metadata?.full_name || authUser.email,
             full_name: authUser.user_metadata?.full_name || authUser.app_metadata?.full_name || authUser.email,
@@ -558,7 +573,14 @@ export const AuthProvider = ({ children }) => {
             preferences: authUser.user_metadata?.preferences || {},
             staff_id_documents: authUser.user_metadata?.staff_id_documents || [],
             accountType: authUser.user_metadata?.account_type || authUser.app_metadata?.account_type || 'customer',
-            permissions: [],
+            permissions: Object.entries(
+              fallbackBusinessOwnerLikeAccount
+                ? buildBusinessOwnerPermissionMap()
+                : {}
+            ).map(([module_name, has_access]) => ({
+              module_name,
+              has_access,
+            })),
             verificationStatus: authUser.user_metadata?.verification_status || authUser.app_metadata?.verification_status || 'pending',
             approvedAt: authUser.user_metadata?.approved_at || authUser.app_metadata?.approved_at || null,
             approvedBy: authUser.user_metadata?.approved_by || authUser.app_metadata?.approved_by || null,
