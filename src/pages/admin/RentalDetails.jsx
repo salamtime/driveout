@@ -47,8 +47,9 @@ import { fetchSystemSettings } from '../../services/systemSettingsApi';
 import { adminApiRequest } from '../../services/adminApi';
 import { deriveEffectiveRentalStatus } from '../../utils/rentalLifecycle';
 import { TABLE_NAMES } from '../../config/tableNames';
-import { calculateSimpleRentalPricing } from '../../utils/simpleRentalPricing';
+import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../../utils/simpleRentalPricing';
 import { sendRentalDocumentsEmail } from '../../services/emailApi';
+import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 
 
 // Set to true to enable verbose logging in RentalDetails
@@ -63,8 +64,24 @@ const MOBILE_FOOTER_SECONDARY_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border
 const MOBILE_FOOTER_PRIMARY_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-violet-600 bg-violet-600 text-white hover:bg-violet-700 hover:border-violet-700`;
 const MOBILE_FOOTER_SUCCESS_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 hover:border-emerald-700`;
 const MOBILE_FOOTER_DISABLED_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-slate-200 bg-slate-100 text-slate-400 shadow-none`;
-const LIGHT_RENTAL_ACTION_DOCK_CLASS = 'fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur lg:left-[calc(50vw+9.5rem)] lg:right-auto lg:w-[min(72rem,calc(100vw-21rem))] lg:-translate-x-1/2';
+const LIGHT_RENTAL_ACTION_DOCK_CLASS = 'pointer-events-auto fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur lg:left-[calc(50vw+9.5rem)] lg:right-auto lg:w-[min(72rem,calc(100vw-21rem))] lg:-translate-x-1/2';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const buildRentalTelegramVehicleLabel = (rentalLike) => {
+  const model =
+    rentalLike?.vehicle?.vehicle_model?.name ||
+    rentalLike?.vehicle?.model ||
+    rentalLike?.selected_vehicle_model_snapshot ||
+    rentalLike?.vehicle?.name ||
+    'Vehicle';
+  const plate =
+    rentalLike?.vehicle?.plate_number ||
+    rentalLike?.vehicle_plate_number ||
+    rentalLike?.selected_vehicle_plate_snapshot ||
+    rentalLike?.vehicle?.license_plate ||
+    '';
+
+  return [model, plate].filter(Boolean).join(' • ');
+};
 const normalizeRentalDetailsViewMode = (value) =>
   String(value || '').trim().toLowerCase() === 'light' ? 'light' : 'standard';
 
@@ -391,6 +408,8 @@ const getRentalAttentionState = (rental, vehicleReport) => {
 };
 
 const getRentalKilometerPackage = (rental, packageDetails) => {
+  if (!isPackagePricingEnabled(rental)) return null;
+
   const pkg = rental?.package || packageDetails;
   if (!pkg) return null;
 
@@ -702,6 +721,21 @@ const selectAppliedKilometerPackage = ({
   gracePeriodMinutes = DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
   totalDistance = 0,
 } = {}) => {
+  if (!isPackagePricingEnabled(rental)) {
+    return {
+      originalPackage: null,
+      appliedPackage: null,
+      originalLimit: 0,
+      appliedLimit: 0,
+      originalPrice: 0,
+      appliedPrice: 0,
+      appliedExtraRate: 0,
+      upgraded: false,
+      overageKm: 0,
+      overageCharge: 0,
+    };
+  }
+
   const originalPackage = bookedPackage || getRentalKilometerPackage(rental, packageDetails);
   const candidatePackages = dedupeKilometerPackages([
     ...availablePackages,
@@ -4714,6 +4748,7 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
       hourlyRate: getRentalHourlyRate(rental),
       totalKmUsed: Number(rental?.total_kilometers_driven || rental?.total_distance || 0),
       packages: packagePool,
+      usePackagePricing: isPackagePricingEnabled(rental),
       rentalType: rental?.rental_type,
       originalPackage: bookedKilometerPackage,
       durationUnits: getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1,
@@ -6412,14 +6447,7 @@ Click the link above to review and approve the extension.`;
     const rentalChargeAmount = getStoredRentalChargeAmount() || (baseAmount + (parseFloat(totalExtensionFees || 0) || 0));
     const totalDrivenKm = Math.max(0, Number(rental?.total_kilometers_driven || rental?.total_distance || 0) || 0);
     const bookedPackageForBilling = getRentalKilometerPackage(rental, packageDetails);
-    const hasBookedPackageForBilling = Boolean(
-      bookedPackageForBilling &&
-      (
-        rental?.use_package_pricing ||
-        rental?.package_id ||
-        rental?.selected_package_id
-      )
-    );
+    const hasBookedPackageForBilling = Boolean(bookedPackageForBilling && isPackagePricingEnabled(rental));
     const packageApplication = hasBookedPackageForBilling
       ? selectAppliedKilometerPackage({
           rental,
@@ -7461,6 +7489,23 @@ const FuelChargeToggle = ({
 
       if (error) throw error;
 
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'deposit_returned',
+        actor: 'admin',
+        rental: {
+          id: rental.id,
+          reference: rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(rental),
+          customer: rental.customer_name,
+          start: rental.rental_start_date,
+          end: rental.rental_end_date,
+          total: rental.total_amount || 0,
+          remaining: updateData.remaining_amount ?? rental.remaining_amount ?? 0,
+          depositReturnedAmount: depositReturn,
+          depositDeductionAmount: deductionAmount,
+        },
+      });
+
       setShowDepositSignatureModal(false);
       setDeductFromDeposit(false);
       await loadRentalData(true);
@@ -7650,24 +7695,31 @@ const FuelChargeToggle = ({
     }));
 
     if (rental?.vehicle_id) {
-      await FuelTransactionService.recordRentalFuelSnapshot({
-        rentalId: id,
-        vehicleId: rental.vehicle_id,
-        fuelLevel,
-        stage: 'rental_closing_level',
-        actor: currentUser,
-          notes: `Rental return fuel recorded${charge > 0 ? ` with ${charge.toFixed(2)} MAD fuel charge` : ''}`,
-        });
-      }
-      await broadcastRentalWorkflowUpdate('finish', 'end_fuel', {
-        showWorkflow: true,
-        steps: {
-          ...buildFinishWorkflowState(),
-          endFuelComplete: true,
-        },
-      });
+      void (async () => {
+        try {
+          await FuelTransactionService.recordRentalFuelSnapshot({
+            rentalId: id,
+            vehicleId: rental.vehicle_id,
+            fuelLevel,
+            stage: 'rental_closing_level',
+            actor: currentUser,
+            notes: `Rental return fuel recorded${charge > 0 ? ` with ${charge.toFixed(2)} MAD fuel charge` : ''}`,
+          });
+        } catch (snapshotError) {
+          console.warn('⚠️ End fuel snapshot sync failed after save:', snapshotError);
+        }
+      })();
+    }
 
-      if (RENTAL_DEBUG) console.log('✅ End fuel level saved:', { fuelLevel, charge, rentalType: rental.rental_type });
+    void broadcastRentalWorkflowUpdate('finish', 'end_fuel', {
+      showWorkflow: true,
+      steps: {
+        ...buildFinishWorkflowState(),
+        endFuelComplete: true,
+      },
+    });
+
+    if (RENTAL_DEBUG) console.log('✅ End fuel level saved:', { fuelLevel, charge, rentalType: rental.rental_type });
     
     if (charge > 0 && fuelChargeEnabled) {
       toast.success(`Fuel charge applied: ${charge.toFixed(2)} MAD (deficit: ${(startFuelLevel || rental?.start_fuel_level) - fuelLevel} lines)`);
@@ -8249,6 +8301,23 @@ const handleFuelChargeToggle = async (enabled) => {
         }) : prev);
       }
 
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'rental_completed',
+        actor: 'admin',
+        rental: {
+          id: rental.id,
+          reference: effectiveCompletionRental?.rental_id || rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(completedRental || effectiveCompletionRental || rental),
+          customer: (completedRental || effectiveCompletionRental)?.customer_name || rental.customer_name,
+          start: (completedRental || effectiveCompletionRental)?.rental_start_date || rental.rental_start_date,
+          end: completedAt,
+          completed_at: completedAt,
+          total: (completedRental || effectiveCompletionRental)?.total_amount || rental.total_amount || 0,
+          amountPaid: (completedRental || effectiveCompletionRental)?.deposit_amount || rental.deposit_amount || 0,
+          remaining: (completedRental || effectiveCompletionRental)?.remaining_amount || rental.remaining_amount || 0,
+        },
+      });
+
       await ensureCompletedRentalPersistence({
         rentalId: rental.id,
         vehicleId: rental.vehicle_id,
@@ -8520,6 +8589,7 @@ const loadFuelChargeSettings = async () => {
         hourlyRate: getRentalHourlyRate(rental),
         totalKmUsed: totalDistance,
         packages: availableKmPackages.length > 0 ? availableKmPackages : [rental?.package, packageDetails].filter(Boolean),
+        usePackagePricing: isPackagePricingEnabled(rental),
         rentalType: rental?.rental_type,
         originalPackage: getRentalKilometerPackage(rental, packageDetails),
         durationUnits: getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1,
@@ -8765,6 +8835,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       hourlyRate: getRentalHourlyRate(rental),
       totalKmUsed: totalDistance,
       packages: availableKmPackages.length > 0 ? availableKmPackages : [rental?.package, packageDetails].filter(Boolean),
+      usePackagePricing: isPackagePricingEnabled(rental),
       rentalType: rental?.rental_type,
       originalPackage: getRentalKilometerPackage(rental, packageDetails),
       durationUnits: getRentalActualDurationUnits(rental) || getRentalDurationUnits(rental) || 1,
@@ -9702,7 +9773,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
   // Update finish steps when end fuel is saved
 useEffect(() => {
-  if ((endFuelLevel !== null || rental?.end_fuel_level) && finishRentalSteps.showWorkflow) {
+  if ((endFuelLevel !== null || rental?.end_fuel_level !== null) && finishRentalSteps.showWorkflow) {
     setFinishRentalSteps(prev => (
       prev.endFuelComplete ? prev : {
         ...prev,
@@ -9711,8 +9782,8 @@ useEffect(() => {
     ));
     
     // Calculate fuel charge - only for daily rentals and if fuel charge is enabled
-    const startLevel = startFuelLevel || rental?.start_fuel_level;
-    const endLevel = endFuelLevel || rental?.end_fuel_level;
+    const startLevel = startFuelLevel ?? rental?.start_fuel_level;
+    const endLevel = endFuelLevel ?? rental?.end_fuel_level;
     
     // Only calculate and set fuel charge if fuel charge is enabled
     if (fuelChargeEnabled) {
@@ -10332,6 +10403,22 @@ useEffect(() => {
         const autoExpireKey = `${rental.id}:scheduled-expired`;
         await supabase.from('app_4c3a7a6153_rentals').update({ rental_status: 'expired' }).eq('id', rental.id);
         if (rental.vehicle_id) await supabase.from('saharax_0u4w4d_vehicles').update({ status: 'available' }).eq('id', rental.vehicle_id);
+        void dispatchRentalLifecycleTelegramEvent({
+          eventType: 'rental_overdue',
+          actor: 'admin',
+          rental: {
+            id: rental.id,
+            reference: rental.rental_id || '',
+            vehicle: buildRentalTelegramVehicleLabel(rental),
+            customer: rental.customer_name,
+            start: rental.rental_start_date,
+            end: rental.rental_end_date,
+            total: rental.total_amount || 0,
+            amountPaid: rental.deposit_amount || 0,
+            remaining: rental.remaining_amount || 0,
+            overdueReason: `Scheduled rental expired after the grace window (${EXPIRY_MINUTES} min)`,
+          },
+        });
         await loadRentalData(true);
         if (!notifiedAutoExpiredRentalsRef.current.has(autoExpireKey)) {
           notifiedAutoExpiredRentalsRef.current.add(autoExpireKey);
@@ -10481,6 +10568,19 @@ useEffect(() => {
         console.warn('Broadcast failed (non-critical):', broadcastErr);
       }
       if (rental.signature_url) setTimeout(() => generateAndCacheContractPDF(), 1000);
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'rental_started',
+        actor: 'admin',
+        rental: {
+          id: rental.id,
+          reference: updatedRental?.rental_id || rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(updatedRental || rental),
+          customer: updatedRental?.customer_name || rental.customer_name,
+          start: actualStartTime,
+          end: actualEndTime,
+          total: updatedRental?.total_amount || rental.total_amount || 0,
+        },
+      });
       setRental((prev) => prev ? ({
         ...prev,
         ...updatedRental,
@@ -10580,6 +10680,23 @@ useEffect(() => {
         .eq('id', rental.id);
 
       if (error) throw error;
+
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'rental_completed',
+        actor: 'admin',
+        rental: {
+          id: rental.id,
+          reference: effectiveCompletionRental?.rental_id || rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(effectiveCompletionRental || rental),
+          customer: effectiveCompletionRental?.customer_name || rental.customer_name,
+          start: effectiveCompletionRental?.rental_start_date || rental.rental_start_date,
+          end: completedAt,
+          completed_at: completedAt,
+          total: effectiveCompletionRental?.total_amount || rental.total_amount || 0,
+          amountPaid: effectiveCompletionRental?.deposit_amount || rental.deposit_amount || 0,
+          remaining: effectiveCompletionRental?.remaining_amount || rental.remaining_amount || 0,
+        },
+      });
       
       if (rental.vehicle_id) {
         const { error: vehicleError } = await supabase
@@ -10701,6 +10818,20 @@ useEffect(() => {
         } catch (activityError) {
           console.warn('⚠️ Failed to record rental cancellation activity:', activityError);
         }
+        void dispatchRentalLifecycleTelegramEvent({
+          eventType: 'rental_cancelled',
+          actor: 'admin',
+          rental: {
+            id: rental.id,
+            reference: rental.rental_id || '',
+            vehicle: buildRentalTelegramVehicleLabel(rental),
+            customer: rental.customer_name,
+            start: rental.rental_start_date,
+            end: rental.rental_end_date,
+            total: rental.total_amount || 0,
+            cancellationReason: 'Cancelled by staff',
+          },
+        });
         
         toast.success('Rental cancelled successfully!');
       } catch (err) {
@@ -10755,6 +10886,21 @@ useEffect(() => {
 
         if (vehicleError) throw vehicleError;
       }
+
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'rental_cancelled',
+        actor: 'admin',
+        rental: {
+          id: rental.id,
+          reference: rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(rental),
+          customer: rental.customer_name,
+          start: rental.rental_start_date,
+          end: rental.rental_end_date,
+          total: rental.total_amount || 0,
+          cancellationReason: 'No-show',
+        },
+      });
 
       await loadRentalData(true);
       toast.success(tr('Rental cancelled as no-show. Vehicle released.', 'Location annulée comme absence. Véhicule libéré.'));
@@ -11515,6 +11661,26 @@ useEffect(() => {
         overrideMeta,
       });
 
+      if (paymentReceivedNow > 0) {
+        void dispatchRentalLifecycleTelegramEvent({
+          eventType: 'payment_received',
+          actor: 'admin',
+          rental: {
+            id: updatedRental.id,
+            reference: updatedRental.rental_id || rental.rental_id || '',
+            vehicle: buildRentalTelegramVehicleLabel(updatedRental),
+            customer: updatedRental.customer_name || rental.customer_name,
+            start: updatedRental.rental_start_date || rental.rental_start_date,
+            end: updatedRental.rental_end_date || rental.rental_end_date,
+            total: updatedRental.total_amount || rental.total_amount || 0,
+            amountPaid: updatedRental.deposit_amount || 0,
+            remaining: updatedRental.remaining_amount || 0,
+            paymentReceivedNow,
+            companyDiscount,
+          },
+        });
+      }
+
       setRental(updatedRental);
       setAmountDueAuditMeta({
         note: overrideMeta.note,
@@ -11544,6 +11710,39 @@ useEffect(() => {
       setIsSavingAmountDue(false);
     }
   };
+
+  useEffect(() => {
+    if (!rental?.id) return;
+    if (String(rental?.rental_status || '').toLowerCase() !== 'active') return;
+    if (!rental?.rental_end_date) return;
+
+    const endDate = new Date(rental.rental_end_date);
+    if (Number.isNaN(endDate.getTime()) || endDate.getTime() > Date.now()) return;
+
+    const dedupeKey = `telegram-overdue-rental:${rental.id}:${rental.rental_end_date}`;
+    if (typeof window !== 'undefined' && window.sessionStorage.getItem(dedupeKey)) return;
+
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(dedupeKey, '1');
+    }
+
+    void dispatchRentalLifecycleTelegramEvent({
+      eventType: 'rental_overdue',
+      actor: 'admin',
+      rental: {
+        id: rental.id,
+        reference: rental.rental_id || '',
+        vehicle: buildRentalTelegramVehicleLabel(rental),
+        customer: rental.customer_name,
+        start: rental.rental_start_date,
+        end: rental.rental_end_date,
+        total: rental.total_amount || 0,
+        amountPaid: rental.deposit_amount || 0,
+        remaining: rental.remaining_amount || 0,
+        overdueReason: 'Active rental is past its expected return time',
+      },
+    });
+  }, [rental?.id, rental?.rental_status, rental?.rental_end_date, rental?.customer_name, rental?.rental_start_date, rental?.total_amount, rental?.deposit_amount, rental?.remaining_amount]);
 
   const handleApprovePrice = async () => {
     if (!rental.pending_total_request) {
@@ -12997,7 +13196,7 @@ useEffect(() => {
   );
 
   const renderLightActiveRentalMobile = () => (
-    <div className="mb-6 lg:hidden">
+    <div className="mb-6">
       <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)]">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -13213,20 +13412,85 @@ useEffect(() => {
     ];
 
     const inspectionNeedsAdvancedView = reportRequired || reportSaved || reportHasUnsavedChanges || reportWorkflowLocked;
+    const finishChecklistRows = [
+      {
+        key: 'inspection',
+        index: 1,
+        title: tr('Vehicle inspection', 'Inspection véhicule'),
+        description: closingInspectionStepComplete
+          ? tr('Return inspection completed.', "L'inspection de retour est terminée.")
+          : inspectionNeedsAdvancedView
+            ? tr('Damage or report workflow detected. Use advanced view.', 'Un rapport de dommage ou incident est détecté. Utilisez la vue avancée.')
+            : tr('Add or review return media to continue.', 'Ajoutez ou vérifiez les médias de retour pour continuer.'),
+        complete: closingInspectionStepComplete,
+        icon: Camera,
+        actionLabel: inspectionNeedsAdvancedView
+          ? tr('Open advanced view', 'Ouvrir la vue avancée')
+          : tr('Open inspection', "Ouvrir l'inspection"),
+        onAction: () => {
+          if (inspectionNeedsAdvancedView) {
+            handleSwitchRentalDetailsView('standard');
+            return;
+          }
+          handleOpenClosingModal();
+        },
+      },
+      {
+        key: 'odometer',
+        index: 2,
+        title: tr('Ending odometer', 'Kilométrage de retour'),
+        description: finishRentalSteps.endOdometerComplete
+          ? `${rental?.ending_odometer || 0} km`
+          : tr('Enter the return kilometer reading.', 'Saisissez le kilométrage au retour.'),
+        complete: finishRentalSteps.endOdometerComplete,
+        icon: Gauge,
+        actionLabel: finishRentalSteps.endOdometerComplete
+          ? tr('Edit reading', 'Modifier le relevé')
+          : tr('Add reading', 'Ajouter le relevé'),
+        onAction: () => {
+          if (finishRentalSteps.endOdometerComplete) {
+            setIsEditingEndOdometer(true);
+            setEndOdometerEditValue(rental?.ending_odometer?.toString() || '');
+            return;
+          }
+          setShowEndOdometerPrompt(true);
+        },
+        extra: null,
+      },
+      {
+        key: 'fuel',
+        index: 3,
+        title: tr('Fuel level', 'Niveau de carburant'),
+        description: finishRentalSteps.endFuelComplete
+          ? `${endFuelLevel ?? rental?.end_fuel_level ?? 0}/8`
+          : tr('Record the return fuel level.', 'Enregistrez le niveau de carburant au retour.'),
+        complete: finishRentalSteps.endFuelComplete,
+        icon: Fuel,
+        actionLabel: finishRentalSteps.endFuelComplete
+          ? tr('Edit fuel', 'Modifier le carburant')
+          : tr('Record fuel', 'Enregistrer le carburant'),
+        onAction: () => setShowEndFuelModal(true),
+        extra: finishRentalSteps.endFuelComplete && ((fuelCharge ?? rental?.fuel_charge ?? 0) > 0)
+          ? `${tr('Fuel charge applied', 'Frais carburant appliqués')}: ${formatCurrency(fuelCharge ?? rental?.fuel_charge ?? 0)} MAD`
+          : '',
+      },
+    ];
 
     return (
-      <div ref={lightFinishSectionRef} className="mb-6 lg:hidden">
+      <div ref={lightFinishSectionRef} className="mb-6">
         <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)]">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">
                 {tr('Ready to finish', 'Prêt à terminer')}
               </p>
-              <h3 className="mt-2 text-xl font-bold text-slate-900">
-                {tr('Close rental flow', 'Flux de clôture')}
+              <h3 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-slate-900">
+                {tr('Ready to Finish Rental', 'Prêt à terminer la location')}
               </h3>
               <p className="mt-2 text-sm text-slate-600">
-                {nextFinishWorkflowStep ? finishWorkflowNextStepHint : tr('All finish steps are complete.', 'Toutes les étapes de clôture sont terminées.')}
+                {nextFinishWorkflowStep
+                  ? tr('The return checklist is now the main operational focus.', 'La checklist de retour devient maintenant la priorité opérationnelle.')
+                  : tr('All finish steps are complete.', 'Toutes les étapes de clôture sont terminées.')}
               </p>
             </div>
             <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-violet-700 shadow-sm">
@@ -13234,223 +13498,104 @@ useEffect(() => {
             </div>
           </div>
 
-          <div className="mt-4 rounded-[22px] border border-violet-100 bg-white/90 px-4 py-4 shadow-[0_10px_28px_rgba(76,29,149,0.05)]">
-            <div className="flex items-center gap-2">
-              {finishWorkflowStepsModel.map((step, index) => {
-                const isActive = nextFinishWorkflowStep?.key === step.key;
-                const isComplete = step.complete;
-                return (
-                  <Fragment key={step.key}>
-                    <div
-                      className={`flex h-10 w-10 items-center justify-center rounded-full border text-sm font-extrabold shadow-sm transition-all ${
-                        isComplete
-                          ? 'border-emerald-500 bg-emerald-500 text-white'
-                          : isActive
-                            ? 'border-violet-600 bg-violet-600 text-white shadow-[0_10px_24px_rgba(76,29,149,0.22)]'
-                            : 'border-violet-200 bg-white text-violet-400'
-                      }`}
-                    >
-                      {isComplete ? <CheckCircle className="h-5 w-5" /> : index + 1}
-                    </div>
-                    {index < finishWorkflowStepsModel.length - 1 && (
-                      <div className="h-[3px] flex-1 overflow-hidden rounded-full bg-slate-100">
-                        <div
-                          className={`h-full rounded-full transition-all ${
-                            finishWorkflowStepsModel[index].complete ? 'bg-emerald-400' : isActive ? 'bg-violet-200' : 'bg-transparent'
-                          }`}
-                        />
-                      </div>
-                    )}
-                  </Fragment>
-                );
-              })}
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="rounded-[22px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+              <div className="mb-3 flex items-center gap-2">
+                <CheckCircle className={`h-4 w-4 flex-shrink-0 ${lightFinishCanComplete ? 'text-emerald-600' : 'text-violet-600'}`} />
+                <p className="text-sm font-medium text-slate-600">
+                  {tr('Checklist progress', 'Progression checklist')}
+                </p>
+              </div>
+              <p className={`mt-1 block text-3xl font-extrabold leading-[0.92] tracking-[-0.05em] tabular-nums ${lightFinishCanComplete ? 'text-emerald-600' : 'text-violet-700'}`}>
+                {finishWorkflowStepsModel.filter((step) => step.complete).length}/{finishWorkflowStepsModel.length}
+              </p>
+              <p className="mt-2 text-xs text-slate-500">
+                {lightFinishCanComplete
+                  ? tr('Everything is ready to close this rental.', 'Tout est prêt pour clôturer cette location.')
+                  : nextFinishWorkflowStep
+                    ? finishWorkflowNextStepHint
+                    : tr('Finish workflow is still locked.', 'Le workflow de clôture est encore verrouillé.')}
+              </p>
+            </div>
+            <div className="rounded-[22px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+              <div className="mb-3 flex items-center gap-2">
+                <MapPin className="h-4 w-4 flex-shrink-0 text-violet-600" />
+                <p className="text-sm font-medium text-slate-600">
+                  {tr('Return location', 'Lieu de retour')}
+                </p>
+              </div>
+              <p className="mt-1 text-lg font-bold tracking-tight text-slate-900">
+                {selectedReturnLocationName || tr('Select location', 'Sélectionner un emplacement')}
+              </p>
+              <select
+                value={selectedReturnLocationId}
+                onChange={(e) => setSelectedReturnLocationId(e.target.value)}
+                disabled={fleetLocations.length === 0 || isFinishWorkflowSoftLocked}
+                className="mt-3 w-full rounded-2xl border border-violet-200 bg-violet-50 px-3 py-3 text-sm font-medium text-violet-700 outline-none transition-colors focus:border-violet-400 focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {fleetLocations.length === 0 ? (
+                  <option value="">{tr('No locations', 'Aucun emplacement')}</option>
+                ) : (
+                  fleetLocations.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
           </div>
 
           <div className="mt-4 space-y-3">
-            <div className={`rounded-[22px] border p-4 transition-all ${
-              closingInspectionStepComplete
-                ? 'border-emerald-200 bg-emerald-50/90'
-                : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
-            }`}>
-              <div className="flex items-start gap-3">
-                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
-                  closingInspectionStepComplete ? 'bg-emerald-500 text-white' : 'border border-violet-200 bg-violet-50 text-violet-700'
-                }`}>
-                  {closingInspectionStepComplete ? <CheckCircle className="h-5 w-5" /> : <span className="text-sm font-bold">1</span>}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-slate-900">{tr('Vehicle inspection', 'Inspection véhicule')}</p>
-                      <p className={`mt-1 text-xs ${closingInspectionStepComplete ? 'text-emerald-700' : 'text-slate-500'}`}>
-                        {closingInspectionStepComplete
-                          ? tr('Return inspection completed.', "L'inspection de retour est terminée.")
-                          : inspectionNeedsAdvancedView
-                            ? tr('Damage or report workflow detected. Use advanced view.', 'Un rapport de dommage ou incident est détecté. Utilisez la vue avancée.')
-                            : tr('Add or review return media to continue.', 'Ajoutez ou vérifiez les médias de retour pour continuer.')}
-                      </p>
+            {finishChecklistRows.map((step) => {
+              const StepIcon = step.icon;
+              return (
+                <div
+                  key={step.key}
+                  className={`rounded-[22px] border p-4 transition-all ${
+                    step.complete
+                      ? 'border-emerald-200 bg-emerald-50/90'
+                      : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
+                      step.complete ? 'bg-emerald-500 text-white' : 'border border-violet-200 bg-violet-50 text-violet-700'
+                    }`}>
+                      {step.complete ? <CheckCircle className="h-5 w-5" /> : <span className="text-sm font-bold">{step.index}</span>}
                     </div>
-                    <Camera className={`mt-0.5 h-4 w-4 flex-shrink-0 ${closingInspectionStepComplete ? 'text-emerald-600' : 'text-violet-600'}`} />
-                  </div>
-                  {!closingInspectionStepComplete && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (inspectionNeedsAdvancedView) {
-                          handleSwitchRentalDetailsView('standard');
-                          return;
-                        }
-                        handleOpenClosingModal();
-                      }}
-                      disabled={isFinishWorkflowSoftLocked}
-                      className="mt-3 inline-flex items-center gap-2 rounded-full bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
-                    >
-                      {inspectionNeedsAdvancedView
-                        ? tr('Open advanced view', 'Ouvrir la vue avancée')
-                        : tr('Open inspection', "Ouvrir l'inspection")}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className={`rounded-[22px] border p-4 transition-all ${
-              finishRentalSteps.endOdometerComplete
-                ? 'border-emerald-200 bg-emerald-50/90'
-                : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
-            }`}>
-              <div className="flex items-start gap-3">
-                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
-                  finishRentalSteps.endOdometerComplete ? 'bg-emerald-500 text-white' : 'border border-violet-200 bg-violet-50 text-violet-700'
-                }`}>
-                  {finishRentalSteps.endOdometerComplete ? <CheckCircle className="h-5 w-5" /> : <span className="text-sm font-bold">2</span>}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-slate-900">{tr('Ending odometer', 'Kilométrage de retour')}</p>
-                      <p className={`mt-1 text-xs ${finishRentalSteps.endOdometerComplete ? 'text-emerald-700' : 'text-slate-500'}`}>
-                        {finishRentalSteps.endOdometerComplete
-                          ? `${rental?.ending_odometer || 0} km`
-                          : tr('Enter the return kilometer reading.', 'Saisissez le kilométrage au retour.')}
-                      </p>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-slate-900">{step.title}</p>
+                          <p className={`mt-1 text-xs ${step.complete ? 'text-emerald-700' : 'text-slate-500'}`}>
+                            {step.description}
+                          </p>
+                        </div>
+                        <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${step.complete ? 'text-emerald-600' : 'text-violet-600'}`} />
+                      </div>
+                      {step.extra ? (
+                        <p className="mt-2 text-xs font-semibold text-amber-700">
+                          {step.extra}
+                        </p>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={step.onAction}
+                        disabled={isFinishWorkflowSoftLocked}
+                        className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
+                          isFinishWorkflowSoftLocked
+                            ? 'cursor-not-allowed bg-slate-200 text-slate-500'
+                            : 'bg-violet-600 text-white'
+                        }`}
+                      >
+                        {step.actionLabel}
+                      </button>
                     </div>
-                    <Gauge className={`mt-0.5 h-4 w-4 flex-shrink-0 ${finishRentalSteps.endOdometerComplete ? 'text-emerald-600' : 'text-violet-600'}`} />
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (finishRentalSteps.endOdometerComplete) {
-                        setIsEditingEndOdometer(true);
-                        setEndOdometerEditValue(rental?.ending_odometer?.toString() || '');
-                        return;
-                      }
-                      setShowEndOdometerPrompt(true);
-                    }}
-                    disabled={isFinishWorkflowSoftLocked}
-                    className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
-                      isFinishWorkflowSoftLocked
-                        ? 'cursor-not-allowed bg-slate-200 text-slate-500'
-                        : 'bg-violet-600 text-white'
-                    }`}
-                  >
-                    {finishRentalSteps.endOdometerComplete
-                      ? tr('Edit reading', 'Modifier le relevé')
-                      : tr('Add reading', 'Ajouter le relevé')}
-                  </button>
                 </div>
-              </div>
-            </div>
-
-            <div className={`rounded-[22px] border p-4 transition-all ${
-              finishRentalSteps.endFuelComplete
-                ? 'border-emerald-200 bg-emerald-50/90'
-                : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
-            }`}>
-              <div className="flex items-start gap-3">
-                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
-                  finishRentalSteps.endFuelComplete ? 'bg-emerald-500 text-white' : 'border border-violet-200 bg-violet-50 text-violet-700'
-                }`}>
-                  {finishRentalSteps.endFuelComplete ? <CheckCircle className="h-5 w-5" /> : <span className="text-sm font-bold">3</span>}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-slate-900">{tr('Fuel level', 'Niveau de carburant')}</p>
-                      <p className={`mt-1 text-xs ${finishRentalSteps.endFuelComplete ? 'text-emerald-700' : 'text-slate-500'}`}>
-                        {finishRentalSteps.endFuelComplete
-                          ? `${endFuelLevel || rental?.end_fuel_level || 0}/8`
-                          : tr('Record the return fuel level.', 'Enregistrez le niveau de carburant au retour.')}
-                      </p>
-                    </div>
-                    <Fuel className={`mt-0.5 h-4 w-4 flex-shrink-0 ${finishRentalSteps.endFuelComplete ? 'text-emerald-600' : 'text-violet-600'}`} />
-                  </div>
-                  {finishRentalSteps.endFuelComplete && (fuelCharge || rental?.fuel_charge) > 0 ? (
-                    <p className="mt-2 text-xs font-semibold text-amber-700">
-                      {tr('Fuel charge applied', 'Frais carburant appliqués')}: {formatCurrency(fuelCharge || rental?.fuel_charge || 0)} MAD
-                    </p>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => setShowEndFuelModal(true)}
-                    disabled={isFinishWorkflowSoftLocked}
-                    className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
-                      isFinishWorkflowSoftLocked
-                        ? 'cursor-not-allowed bg-slate-200 text-slate-500'
-                        : 'bg-violet-600 text-white'
-                    }`}
-                  >
-                    {finishRentalSteps.endFuelComplete
-                      ? tr('Edit fuel', 'Modifier le carburant')
-                      : tr('Record fuel', 'Enregistrer le carburant')}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 flex justify-center">
-            <button
-              type="button"
-              onClick={handleCancelFinishWorkflow}
-              disabled={isFinishWorkflowSoftLocked}
-              className="inline-flex min-w-[210px] items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {tr('Cancel workflow', 'Annuler le workflow')}
-            </button>
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-2xl bg-violet-100 text-violet-600">
-                <MapPin className="h-4 w-4" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-                  {tr('Return location', 'Lieu de retour')}
-                </p>
-                <p className="mt-1 truncate text-sm font-semibold text-slate-900">
-                  {selectedReturnLocationName || tr('Select location', 'Sélectionner un emplacement')}
-                </p>
-              </div>
-            </div>
-            <select
-              value={selectedReturnLocationId}
-              onChange={(e) => setSelectedReturnLocationId(e.target.value)}
-              disabled={fleetLocations.length === 0 || isFinishWorkflowSoftLocked}
-              className="mt-3 w-full rounded-2xl border border-violet-200 bg-violet-50 px-3 py-3 text-sm font-medium text-violet-700 outline-none transition-colors focus:border-violet-400 focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {fleetLocations.length === 0 ? (
-                <option value="">{tr('No locations', 'Aucun emplacement')}</option>
-              ) : (
-                fleetLocations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.name}
-                  </option>
-                ))
-              )}
-            </select>
+              );
+            })}
           </div>
 
           <div className="mt-4 overflow-hidden rounded-[22px] border border-slate-200 bg-white">
@@ -13483,16 +13628,19 @@ useEffect(() => {
             )}
           </div>
 
-          <div className="mt-4 flex items-center justify-center gap-3">
-            {inspectionNeedsAdvancedView && !closingInspectionStepComplete && (
-              <button
-                type="button"
-                onClick={() => handleSwitchRentalDetailsView('standard')}
-                className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700 shadow-sm"
-              >
-                {tr('Open advanced view', 'Ouvrir la vue avancée')}
-              </button>
-            )}
+          <div className="mt-4 rounded-2xl border border-violet-100 bg-white/90 px-4 py-3 text-xs text-slate-500 shadow-sm">
+            {nextFinishWorkflowStep ? finishWorkflowNextStepHint : tr('All finish steps are complete.', 'Toutes les étapes de clôture sont terminées.')}
+          </div>
+
+          <div className="mt-4 flex justify-center">
+            <button
+              type="button"
+              onClick={handleCancelFinishWorkflow}
+              disabled={isFinishWorkflowSoftLocked}
+              className="inline-flex min-w-[210px] items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {tr('Cancel workflow', 'Annuler le workflow')}
+            </button>
           </div>
         </div>
 
@@ -13623,23 +13771,25 @@ useEffect(() => {
               </Button>
             )}
 
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="relative z-20 flex flex-col gap-3 pointer-events-auto lg:flex-row lg:items-center lg:justify-between">
               <div className={`grid grid-cols-3 gap-2 sm:flex sm:flex-wrap ${
-                showLightActiveRentalMobile || showLightFinishRentalMobile ? 'hidden lg:flex' : ''
+                showLightActiveRentalMobile || showLightFinishRentalMobile ? 'hidden' : ''
               }`}>
                 {syncedCustomerPhone && (
                   <>
                     <Button
+                      type="button"
                       onClick={() => setContractPreviewModal(true)}
                       disabled={!canSendContract}
                       variant="outline"
-                      className="rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                      className="touch-manipulation rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
                       title={tr('Preview contract', 'Aperçu du contrat')}
                     >
                       <FileText className="mr-2 h-4 w-4" />
                       {tr('Contract', 'Contrat')}
                     </Button>
                     <Button
+                      type="button"
                       onClick={async () => {
                         if (isMobileDevice()) {
                           await forceMobileRender();
@@ -13649,18 +13799,19 @@ useEffect(() => {
                       }}
                       disabled={!canSendReceipt}
                       variant="outline"
-                      className="rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                      className="touch-manipulation rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
                       title={tr('Preview receipt', 'Aperçu du reçu')}
                     >
                       <Receipt className="mr-2 h-4 w-4" />
                       {tr('Receipt', 'Reçu')}
                     </Button>
                     <Button
+                      type="button"
                       onClick={handleWhatsAppClick}
                       onMouseEnter={ensurePDFsReady}
                       disabled={isSharing || !canSendBoth}
                       variant="outline"
-                      className="rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                      className="touch-manipulation rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
                       title={tr('Send documents via WhatsApp', 'Envoyer les documents via WhatsApp')}
                     >
                       {isSharing ? (
@@ -13671,10 +13822,11 @@ useEffect(() => {
                       WhatsApp
                     </Button>
                     <Button
+                      type="button"
                       onClick={handleSmartSendEmail}
                       disabled={isSendingEmail || !canSendEmailDocuments}
                       variant="outline"
-                      className="rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                      className="touch-manipulation rounded-full border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
                       title={
                         canSendEmailDocuments
                           ? tr('Send contract and receipt by email', 'Envoyer le contrat et le reçu par e-mail')
@@ -13692,11 +13844,11 @@ useEffect(() => {
                 )}
               </div>
 
-              <div className="flex items-center justify-between gap-2 sm:justify-end">
+              <div className="flex items-center justify-between gap-2 pointer-events-auto sm:justify-end">
                 <button
                   type="button"
                   onClick={() => handleSwitchRentalDetailsView(isLightRentalDetailsMode ? 'standard' : 'light')}
-                  className={`flex items-center rounded-full px-4 py-2 text-sm font-medium transition ${
+                  className={`touch-manipulation flex items-center rounded-full px-4 py-2 text-sm font-medium transition ${
                     isLightRentalDetailsMode
                       ? 'border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100'
                       : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
@@ -13860,7 +14012,7 @@ useEffect(() => {
             )}
 
             <div className={`grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4 ${
-              showLightActiveRentalMobile || showLightFinishRentalMobile ? 'hidden lg:grid' : ''
+              showLightActiveRentalMobile || showLightFinishRentalMobile ? 'hidden' : ''
             }`}>
               <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{tr('Customer', 'Client')}</p>
@@ -13928,11 +14080,9 @@ useEffect(() => {
 
         <Card
           className={`overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)] ${
-            showLightReadyToStartMobile
+            showLightReadyToStartMobile || showLightActiveRentalMobile || showLightFinishRentalMobile
               ? 'hidden'
-              : showLightActiveRentalMobile || showLightFinishRentalMobile
-                ? 'hidden lg:block'
-                : ''
+              : ''
           }`}
         >
         <CardContent className="p-4 sm:p-6">
@@ -13941,7 +14091,7 @@ useEffect(() => {
             <div
               ref={replacementResumeWorkflowRef}
               className={`mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-3 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6 ${
-                isLightRentalDetailsMode ? 'hidden lg:block' : ''
+                isLightRentalDetailsMode ? 'hidden' : ''
               }`}
             >
               <div className="mb-3 sm:mb-4">
@@ -14602,7 +14752,7 @@ useEffect(() => {
           {/* Contract Signed but Not Started - Show Start Button */}
           {hasEffectiveContractSignature && !isCompleted && (!isActive || effectiveReplacementPauseStartedAt) && !isReplacementResumeFlow && (
             <div className={`rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6 ${
-              isLightRentalDetailsMode ? 'hidden lg:block' : ''
+              isLightRentalDetailsMode ? 'hidden' : ''
             }`}>
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
                 <h3 className="text-base sm:text-lg font-semibold text-gray-800 flex items-center gap-2">
@@ -14735,7 +14885,7 @@ useEffect(() => {
               {!finishRentalSteps.showWorkflow ? (
                 /* Show Timer + End Now Button when NOT in finish workflow */
                 <div className={`mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6 ${
-                  isLightRentalDetailsMode ? 'hidden lg:block' : ''
+                  isLightRentalDetailsMode ? 'hidden' : ''
                 }`}>
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-2">
                     <h3 className="text-base sm:text-lg font-semibold text-gray-800 flex items-center gap-2">
@@ -14894,7 +15044,7 @@ useEffect(() => {
               ) : (
                 /* MATCHING "Ready to Start Rental" Harmonic Design */
                 <div className={`mb-6 rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-3 shadow-[0_18px_45px_rgba(76,29,149,0.06)] sm:p-6 ${
-                  isLightRentalDetailsMode ? 'hidden lg:block' : ''
+                  isLightRentalDetailsMode ? 'hidden' : ''
                 }`}>
                   <div className="mb-3 sm:mb-4">
                     <h3 className="mb-1 text-sm font-semibold text-slate-900 sm:text-base">
@@ -15413,7 +15563,7 @@ useEffect(() => {
         <h4 className="font-medium text-xs sm:text-sm text-gray-900">Fuel Level</h4>
         <p className="text-xs text-gray-600 mt-0.5 break-words">
           {finishRentalSteps.endFuelComplete 
-            ? `✓ Ending fuel: ${endFuelLevel || rental?.end_fuel_level}/8 ${startFuelLevel ? `(Started: ${startFuelLevel}/8)` : ''}` 
+            ? `✓ Ending fuel: ${endFuelLevel ?? rental?.end_fuel_level}/8 ${(startFuelLevel ?? rental?.start_fuel_level) !== null && (startFuelLevel ?? rental?.start_fuel_level) !== undefined ? `(Started: ${startFuelLevel ?? rental?.start_fuel_level}/8)` : ''}` 
             : 'Record fuel level at return'}
         </p>
       </div>
@@ -15438,10 +15588,10 @@ useEffect(() => {
       <>
         {fuelChargeEnabled ? (
           (() => {
-            const startL = startFuelLevel || rental?.start_fuel_level || 0;
-            const endL   = endFuelLevel   || rental?.end_fuel_level   || 0;
+            const startL = startFuelLevel ?? rental?.start_fuel_level ?? 0;
+            const endL   = endFuelLevel   ?? rental?.end_fuel_level   ?? 0;
             const deficit = Math.max(0, startL - endL);
-            const charge  = fuelCharge || rental?.fuel_charge || 0;
+            const charge  = fuelCharge ?? rental?.fuel_charge ?? 0;
             return (
               <div className="mt-2 bg-gray-50 rounded-lg px-2.5 py-2 space-y-1">
                 {/* One-line summary */}
@@ -15480,8 +15630,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${charge.toFixed(2)} MAD`, charge.
         ) : (
           /* Disabled — show what WOULD be charged */
           (() => {
-            const startL  = startFuelLevel || rental?.start_fuel_level || 0;
-            const endL    = endFuelLevel   || rental?.end_fuel_level   || 0;
+            const startL  = startFuelLevel ?? rental?.start_fuel_level ?? 0;
+            const endL    = endFuelLevel   ?? rental?.end_fuel_level   ?? 0;
             const deficit = Math.max(0, startL - endL);
             const wouldBe = deficit * (fuelPricePerLine || 0);
             return (
@@ -16202,7 +16352,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <p>
                     <strong>⛽ {tr('Fuel at Departure:', 'Carburant au départ :')}</strong>{' '}
                     <span className="text-blue-600 font-semibold">
-                      {startFuelLevel || rental.start_fuel_level}/8
+                      {startFuelLevel ?? rental.start_fuel_level}/8
                     </span>
                   </p>
                   {/* Fuel Gauge Progress Bar */}
@@ -16210,7 +16360,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     {[1,2,3,4,5,6,7,8].map(segment => (
                       <div 
                         key={segment}
-                        className={`w-3 h-5 rounded ${segment <= (startFuelLevel || rental.start_fuel_level) ? 'bg-green-500' : 'bg-gray-300'}`}
+                        className={`w-3 h-5 rounded ${segment <= (startFuelLevel ?? rental.start_fuel_level) ? 'bg-green-500' : 'bg-gray-300'}`}
                       />
                     ))}
                   </div>
@@ -16221,13 +16371,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <p>
                     <strong>⛽ {tr('Fuel at Return:', 'Carburant au retour :')}</strong>{' '}
                     <span className={`font-semibold ${
-                      (endFuelLevel || rental.end_fuel_level) >= (startFuelLevel || rental.start_fuel_level) 
+                      (endFuelLevel ?? rental.end_fuel_level) >= (startFuelLevel ?? rental.start_fuel_level) 
                         ? 'text-green-600' 
                         : 'text-orange-600'
                     }`}>
-                      {endFuelLevel || rental.end_fuel_level}/8
+                      {endFuelLevel ?? rental.end_fuel_level}/8
                     </span>
-                    {(endFuelLevel || rental.end_fuel_level) >= (startFuelLevel || rental.start_fuel_level) && (
+                    {(endFuelLevel ?? rental.end_fuel_level) >= (startFuelLevel ?? rental.start_fuel_level) && (
                       <span className="text-green-600 ml-2">✓</span>
                     )}
                   </p>
@@ -19575,48 +19725,53 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
       {/* End Odometer Prompt Modal */}
       <Dialog open={showEndOdometerPrompt} onOpenChange={setShowEndOdometerPrompt}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-lg sm:text-xl">
-              <Gauge className="w-5 h-5 text-blue-600" />
-              Enter Ending Odometer Reading
+        <DialogContent className={isLightRentalDetailsMode ? "mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]" : "sm:max-w-md"}>
+          <DialogHeader className={isLightRentalDetailsMode ? "border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/40 to-slate-50 px-5 pb-4 pt-5 text-left" : ""}>
+            <DialogTitle className={isLightRentalDetailsMode ? "flex items-center gap-3 text-[1.55rem] font-bold tracking-[-0.04em] text-slate-950" : "flex items-center gap-2 text-lg sm:text-xl"}>
+              <Gauge className={isLightRentalDetailsMode ? "h-6 w-6 text-violet-600" : "w-5 h-5 text-blue-600"} />
+              {tr('Enter Ending Odometer Reading', "Saisir le kilométrage d'arrivée")}
             </DialogTitle>
-            <DialogDescription className="text-sm text-gray-600">
-              Please enter the vehicle's odometer reading at the end of the rental.
+            <DialogDescription className={isLightRentalDetailsMode ? "mt-2 text-sm leading-6 text-slate-500" : "text-sm text-gray-600"}>
+              {tr("Please enter the vehicle's odometer reading at the end of the rental.", "Veuillez saisir le kilométrage du véhicule à la fin de la location.")}
             </DialogDescription>
           </DialogHeader>
           
-          <div className="space-y-4">
-            <Alert className="bg-blue-50 border-blue-200">
-              <Info className="h-4 w-4 text-blue-600" />
-              <AlertDescription className="text-sm text-blue-800">
-                Please enter the vehicle's odometer reading at the end of the rental.
-                {displayedStartingOdometer > 0 && (
-                  <p className="mt-2">
-                    <strong>Starting odometer:</strong> {displayedStartingOdometer} km
+          <div className={isLightRentalDetailsMode ? "space-y-5 px-5 pb-5 pt-4" : "space-y-4"}>
+            <div className={isLightRentalDetailsMode ? "rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]" : "rounded-2xl border border-sky-200 bg-sky-50/70 p-4"}>
+              <div className="flex items-start gap-3">
+                <Info className={isLightRentalDetailsMode ? "mt-0.5 h-5 w-5 flex-shrink-0 text-violet-600" : "h-4 w-4 text-blue-600"} />
+                <div>
+                  <p className={isLightRentalDetailsMode ? "text-sm leading-6 text-slate-700" : "text-sm text-blue-800"}>
+                    {tr("Please enter the vehicle's odometer reading at the end of the rental.", "Veuillez saisir le kilométrage du véhicule à la fin de la location.")}
                   </p>
-                )}
-              </AlertDescription>
-            </Alert>
+                  {displayedStartingOdometer > 0 && (
+                    <p className={isLightRentalDetailsMode ? "mt-3 text-sm font-semibold text-slate-900" : "mt-2 text-sm text-blue-800"}>
+                      <strong>{tr('Starting odometer:', 'Kilométrage de départ :')}</strong> {displayedStartingOdometer} km
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Ending Odometer (km)
+              <label className={isLightRentalDetailsMode ? "block text-sm font-semibold text-slate-900" : "mb-2 block text-sm font-medium text-gray-700"}>
+                {tr('Ending Odometer (km)', "Kilométrage d'arrivée (km)")}
               </label>
               <input
                 ref={endOdometerPromptInputRef}
                 type="number"
                 value={endOdometer}
                 onChange={(e) => setEndOdometer(e.target.value)}
-                placeholder="Enter ending odometer reading"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder={tr('Enter ending odometer reading', "Saisissez le kilométrage d'arrivée")}
+                className={isLightRentalDetailsMode ? "mt-3 w-full rounded-[20px] border border-slate-200 bg-white px-4 py-4 text-[2rem] font-extrabold leading-none tracking-[-0.05em] text-slate-950 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100" : "w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"}
                 min={displayedStartingOdometer || 0}
                 step="1"
                 autoFocus
+                inputMode="numeric"
               />
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-2 pt-2">
+            <div className={isLightRentalDetailsMode ? "grid grid-cols-1 gap-3 pt-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]" : "flex flex-col gap-2 pt-2 sm:flex-row"}>
               <Button 
                 type="button"
                 variant="outline" 
@@ -19624,9 +19779,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   setShowEndOdometerPrompt(false);
                   setEndOdometer('');
                 }}
-                className="w-full sm:w-auto order-2 sm:order-1"
+                className={isLightRentalDetailsMode ? "h-14 rounded-[20px] border-slate-200 text-base font-semibold text-slate-700 hover:bg-slate-50" : "order-2 w-full sm:order-1 sm:w-auto"}
               >
-                Skip for Now
+                {tr('Skip for Now', 'Passer pour le moment')}
               </Button>
               <Button 
                 type="button"
@@ -19635,16 +19790,16 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   e.stopPropagation();
                   handleEndOdometerSubmit();
                 }}
-                className={`order-1 w-full sm:order-2 sm:flex-1 ${PRIMARY_ACTION_BUTTON_CLASS}`}
+                className={isLightRentalDetailsMode ? "h-14 rounded-[20px] bg-violet-700 text-base font-bold text-white shadow-[0_14px_34px_rgba(76,29,149,0.24)] hover:bg-violet-800" : `order-1 w-full sm:order-2 sm:flex-1 ${PRIMARY_ACTION_BUTTON_CLASS}`}
               >
                 {isProcessingEndOdometer ? (
                   <>
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+                    <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
                     {tr('Saving...', 'Enregistrement...')}
                   </>
                 ) : (
                   <>
-                    <Save className="w-4 h-4 mr-2" />
+                    <Save className="mr-2 h-4 w-4" />
                     {tr('Save Odometer', "Enregistrer l'odomètre")}
                   </>
                 )}
@@ -19660,7 +19815,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           isOpen={showEndFuelModal}
           onClose={() => setShowEndFuelModal(false)}
           onSave={handleSaveEndFuel}
-          currentLevel={endFuelLevel}
+          currentLevel={endFuelLevel ?? rental?.end_fuel_level ?? startFuelLevel ?? rental?.start_fuel_level ?? currentVehicleFuelLevel}
           title="Ending Fuel Level"
           description="Select the fuel level at return"
           variant={isLightRentalDetailsMode ? 'light' : 'standard'}
@@ -20766,28 +20921,31 @@ Breakdown:
       </div>
 
       {!isLightRentalDetailsMode && (
-        <div className="fixed bottom-0 left-0 right-0 z-10 border-t border-violet-100/80 bg-white/96 px-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-3 shadow-[0_-18px_36px_rgba(76,29,149,0.08)] backdrop-blur sm:hidden">
+        <div className="fixed bottom-0 left-0 right-0 z-10 border-t border-violet-100/80 bg-white/96 px-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-3 shadow-[0_-18px_36px_rgba(76,29,149,0.08)] backdrop-blur pointer-events-auto sm:hidden">
           <div className="rounded-[24px] border border-violet-100/80 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-2 shadow-[0_14px_30px_rgba(76,29,149,0.08)]">
             <div className="grid grid-cols-4 gap-2">
               <Button
+                type="button"
                 onClick={() => setContractPreviewModal(true)}
-                className={`h-auto ${MOBILE_FOOTER_SECONDARY_CLASS}`}
+                className={`h-auto touch-manipulation ${MOBILE_FOOTER_SECONDARY_CLASS}`}
                 size="sm"
               >
                 {isGeneratingContract ? '...' : 'Contract'}
               </Button>
               <Button
+                type="button"
                 onClick={() => setReceiptPreviewModal(true)}
-                className={`h-auto ${MOBILE_FOOTER_PRIMARY_CLASS}`}
+                className={`h-auto touch-manipulation ${MOBILE_FOOTER_PRIMARY_CLASS}`}
                 size="sm"
               >
                 {isGeneratingReceipt ? '...' : 'Receipt'}
               </Button>
               <Button
+                type="button"
                 onClick={handleWhatsAppClick}
                 onTouchStart={ensurePDFsReady}
                 disabled={isSharing}
-                className={`h-auto ${isSharing ? MOBILE_FOOTER_DISABLED_CLASS : MOBILE_FOOTER_SUCCESS_CLASS}`}
+                className={`h-auto touch-manipulation ${isSharing ? MOBILE_FOOTER_DISABLED_CLASS : MOBILE_FOOTER_SUCCESS_CLASS}`}
                 size="sm"
               >
                 {isSharing ? (
@@ -20798,9 +20956,10 @@ Breakdown:
                 {isSharing ? '...' : 'WhatsApp'}
               </Button>
               <Button
+                type="button"
                 onClick={handleSmartSendEmail}
                 disabled={isSendingEmail || !canSendEmailDocuments}
-                className={`h-auto ${isSendingEmail || !canSendEmailDocuments ? MOBILE_FOOTER_DISABLED_CLASS : MOBILE_FOOTER_SECONDARY_CLASS}`}
+                className={`h-auto touch-manipulation ${isSendingEmail || !canSendEmailDocuments ? MOBILE_FOOTER_DISABLED_CLASS : MOBILE_FOOTER_SECONDARY_CLASS}`}
                 size="sm"
               >
                 {isSendingEmail ? (
