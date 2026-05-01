@@ -8331,7 +8331,7 @@ const handleFuelChargeToggle = async (enabled) => {
         }) : prev);
       }
 
-      void dispatchRentalLifecycleTelegramEvent({
+      await dispatchRentalTelegramEventSafely({
         eventType: 'rental_completed',
         actor: 'admin',
         rental: {
@@ -8346,7 +8346,7 @@ const handleFuelChargeToggle = async (enabled) => {
           amountPaid: (completedRental || effectiveCompletionRental)?.deposit_amount || rental.deposit_amount || 0,
           remaining: (completedRental || effectiveCompletionRental)?.remaining_amount || rental.remaining_amount || 0,
         },
-      });
+      }, 'rental completed');
 
       await ensureCompletedRentalPersistence({
         rentalId: rental.id,
@@ -10717,7 +10717,7 @@ useEffect(() => {
 
       if (error) throw error;
 
-      void dispatchRentalLifecycleTelegramEvent({
+      await dispatchRentalTelegramEventSafely({
         eventType: 'rental_completed',
         actor: 'admin',
         rental: {
@@ -10732,7 +10732,7 @@ useEffect(() => {
           amountPaid: effectiveCompletionRental?.deposit_amount || rental.deposit_amount || 0,
           remaining: effectiveCompletionRental?.remaining_amount || rental.remaining_amount || 0,
         },
-      });
+      }, 'rental completed');
       
       if (rental.vehicle_id) {
         const { error: vehicleError } = await supabase
@@ -11528,6 +11528,14 @@ useEffect(() => {
     setAmountDuePaymentReceivedNow('');
     setAmountDueCompanyDiscount('');
     setAmountDueOverrideReason('');
+  };
+
+  const dispatchRentalTelegramEventSafely = async (payload, contextLabel = 'rental lifecycle') => {
+    try {
+      await dispatchRentalLifecycleTelegramEvent(payload);
+    } catch (telegramDispatchError) {
+      console.warn(`⚠️ ${contextLabel} Telegram dispatch failed (non-blocking):`, telegramDispatchError);
+    }
   };
 
   useEffect(() => {
