@@ -18,19 +18,6 @@ const getSafeRedirectPath = (value = '') => {
 
 const resolveHostAwareRedirect = (pathname = '/') => {
   const normalizedPath = getSafeRedirectPath(pathname) || '/';
-  const host = getHostContext();
-
-  if (
-    host.kind === 'tenant' &&
-    host.tenantSlug === 'saharax' &&
-    (normalizedPath.startsWith('/admin') || normalizedPath.startsWith('/guide'))
-  ) {
-    return buildHostUrl({
-      kind: 'admin',
-      pathname: normalizedPath,
-    });
-  }
-
   return normalizedPath;
 };
 
@@ -69,12 +56,13 @@ const Login = () => {
   const { user, session, signIn, signInWithGoogle, loading: authLoading, initialized, getBusinessOwnerHomePath } = useAuth();
   const getRedirectPathForRole = (role, accountType = '') => {
     const platformOwnerOverride = isPlatformOwnerEmail(user?.email);
+    const internalTenantRole = ['owner', 'admin', 'employee', 'guide'].includes(String(role || '').trim().toLowerCase());
     const approvedBusinessOwner = !platformOwnerOverride && isApprovedBusinessOwnerAccount({
       account_type: accountType,
       verification_status: user?.user_metadata?.verification_status || user?.app_metadata?.verification_status,
       certification_request_status: user?.user_metadata?.certification_request_status || user?.app_metadata?.certification_request_status,
     });
-    const businessOwnerFreezeRedirect = !platformOwnerOverride && hasBusinessOwnerRequest({
+    const businessOwnerFreezeRedirect = !platformOwnerOverride && !internalTenantRole && hasBusinessOwnerRequest({
       account_type: accountType,
       certification_request_status: user?.user_metadata?.certification_request_status || user?.app_metadata?.certification_request_status,
     })

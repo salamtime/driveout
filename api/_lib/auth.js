@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { APP_USERS_TABLE, PLATFORM_ADMIN_ACCOUNTS_TABLE, createSupabaseClients } from './supabase.js';
 
 const PLATFORM_OWNER_EMAILS = new Set(['salamtime2016@gmail.com']);
-const PLATFORM_ADMIN_EMAILS = new Set(['oualidazzouni10@gmail.com']);
+const PLATFORM_ADMIN_EMAILS = new Set([]);
 const isPlatformOwnerEmail = (email = '') =>
   PLATFORM_OWNER_EMAILS.has(String(email || '').trim().toLowerCase());
 const isPlatformAdminEmail = (email = '') =>

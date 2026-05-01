@@ -5,7 +5,7 @@ export const BUSINESS_ACCOUNT_TYPES = new Set([
   'rental_business',
 ]);
 export const PLATFORM_OWNER_EMAILS = new Set(['salamtime2016@gmail.com']);
-export const PLATFORM_ADMIN_EMAILS = new Set(['oualidazzouni10@gmail.com']);
+export const PLATFORM_ADMIN_EMAILS = new Set([]);
 export const PRIVATE_OWNER_ACCOUNT_TYPES = new Set([
   'individual_owner',
   'private_owner',

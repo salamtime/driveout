@@ -178,11 +178,7 @@ const buildProfileFromAuthUser = (user, profile = null) => {
 
   const baseRole = fromProfile('role', user?.user_metadata?.role || user?.app_metadata?.role || 'customer');
   const resolvedPermissions = resolvePermissionsMap(fromProfile('permissions', user?.user_metadata?.permissions || null));
-  const normalizedEmail = String(fromProfile('email', user?.email || '') || '').trim().toLowerCase();
-  const adminEmails = new Set(['oualidazzouni10@gmail.com']);
-  const resolvedRole = adminEmails.has(normalizedEmail)
-    ? 'admin'
-    : baseRole;
+  const resolvedRole = baseRole;
 
   return {
     ...(profile || {}),

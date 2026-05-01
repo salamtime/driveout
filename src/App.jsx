@@ -350,7 +350,8 @@ const HomeRedirect = () => {
     '';
   const approvedBusinessOwner = !platformOwnerOverride && isApprovedBusinessOwnerAccount(session?.user?.user_metadata || user?.user_metadata || {});
   const tenantBusinessOwnerLike = !platformOwnerOverride && isBusinessOwnerAccountType(accountType);
-  const businessOwnerFreezeRedirect = !platformOwnerOverride && isBusinessOwnerAccountType(accountType)
+  const internalTenantRole = ['owner', 'admin', 'employee', 'guide'].includes(String(role || '').trim().toLowerCase());
+  const businessOwnerFreezeRedirect = !platformOwnerOverride && !internalTenantRole && isBusinessOwnerAccountType(accountType)
     ? getBusinessOwnerHomePath({
         account_type: accountType,
         verification_status: userProfile?.verificationStatus || session?.user?.user_metadata?.verification_status || user?.user_metadata?.verification_status,
