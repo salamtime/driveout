@@ -61,10 +61,11 @@ const ProtectedRoute = ({
     platformOwnerOverride
       ? 'owner'
       : userProfile?.role;
+  const internalTenantRole = ['owner', 'admin', 'employee', 'guide'].includes(String(effectiveRole || '').trim().toLowerCase());
   const businessOwnerLike =
     !platformOwnerOverride && (
       effectiveRole === 'business_owner' ||
-      isBusinessOwnerAccountType(userProfile?.accountType)
+      (!internalTenantRole && isBusinessOwnerAccountType(userProfile?.accountType))
     );
   const businessOwnerFreezeRedirect = businessOwnerLike
     ? getBusinessOwnerHomePath({

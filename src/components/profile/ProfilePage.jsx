@@ -71,6 +71,14 @@ const hasUsableTenantWorkspaceSession = (session = null) =>
     String(session?.businessAccountId || session?.businessAccount?.id || session?.business_account?.id || '').trim()
   );
 
+const isTenantHost = () => {
+  if (typeof window === 'undefined') return false;
+  const hostname = String(window.location.hostname || '').toLowerCase();
+  if (!hostname || hostname === 'localhost' || hostname === '127.0.0.1') return false;
+  if (hostname === 'admin.driveout.io' || hostname === 'www.driveout.io' || hostname === 'driveout.io') return false;
+  return hostname.endsWith('.driveout.io') || hostname.endsWith('.saharax.co');
+};
+
 const pickLocalRegistryWorkspaceEntry = (entries = [], userProfile = null) => {
   const localRegistryEntries = Array.isArray(entries) ? entries : [];
   return (
@@ -468,16 +476,18 @@ const ProfilePage = () => {
         return;
       }
 
-      if (!isLocalHost()) {
-        setEffectiveTenantWorkspaceSession(null);
-        return;
-      }
-
       try {
         const directSession = await getTenantSession().catch(() => null);
         if (hasUsableTenantWorkspaceSession(directSession)) {
           if (!cancelled) {
             setEffectiveTenantWorkspaceSession(directSession);
+          }
+          return;
+        }
+
+        if (!isLocalHost()) {
+          if (!cancelled) {
+            setEffectiveTenantWorkspaceSession(null);
           }
           return;
         }
@@ -517,12 +527,15 @@ const ProfilePage = () => {
         ? normalizeTelegramEventTypes(tenantSettings.telegram_event_types, true)
         : buildDefaultTelegramEventTypes(true);
     const workspaceEnabled = tenantSettings.telegram_enabled === true;
-    const ownerLikeUser =
+    const internalWorkspaceUser =
       isBusinessOwner ||
       userRole === 'owner' ||
-      userRole === 'admin';
+      userRole === 'admin' ||
+      userRole === 'employee' ||
+      userRole === 'guide' ||
+      (isTenantHost() && userRole !== 'customer');
 
-    if (!ownerLikeUser) {
+    if (!internalWorkspaceUser) {
       return storedTelegramAdminSettings;
     }
 
@@ -1135,9 +1148,9 @@ const ProfilePage = () => {
                       <p className="text-sm font-bold text-slate-900">
                         {tr('profile.telegram.receiveToggle', 'Receive Telegram alerts')}
                       </p>
-                      <p className="mt-1 text-sm text-slate-500">
-                        {telegramAdminSettings.allowed
-                          ? tr('profile.telegram.receiveHint', 'Turn this on to start receiving the Telegram alert types enabled for you by admin.')
+                    <p className="mt-1 text-sm text-slate-500">
+                      {telegramAdminSettings.allowed
+                          ? tr('profile.telegram.receiveHint', 'Workspace Telegram is already connected by your owner/admin. Turn this on to receive the alert types enabled for you.')
                           : tr('profile.telegram.disabledHint', 'Your admin has not enabled Telegram alerts for your account yet.')}
                       </p>
                     </div>
@@ -1204,7 +1217,9 @@ const ProfilePage = () => {
                     {tr('profile.telegram.personalChatIds', 'My Telegram Chat ID(s)')}
                   </label>
                   <p className="mt-1 text-sm text-slate-500">
-                    {tr('profile.telegram.personalChatIdsHint', 'Add your own Telegram chat IDs here if you want alerts sent directly to you, separated by commas.')}
+                    {telegramAdminSettings.allowed
+                      ? tr('profile.telegram.personalChatIdsWorkspaceHint', 'Workspace Telegram is connected. Add your own Telegram chat IDs here if you also want alerts sent directly to you, separated by commas.')
+                      : tr('profile.telegram.personalChatIdsHint', 'Add your own Telegram chat IDs here if you want alerts sent directly to you, separated by commas.')}
                   </p>
                   {!telegramAdminSettings.allowed ? (
                     <p className="mt-2 text-xs font-semibold text-amber-600">

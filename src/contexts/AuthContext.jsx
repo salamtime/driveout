@@ -1053,6 +1053,11 @@ export const AuthProvider = ({ children }) => {
     if (isPlatformOwnerEmail(normalizedEmail)) {
       return null;
     }
+    const host = getHostContext();
+    const normalizedRole = String(userProfile?.role || session?.user?.user_metadata?.role || session?.user?.app_metadata?.role || '').trim().toLowerCase();
+    if (host.kind === 'tenant' && ['owner', 'admin', 'employee', 'guide'].includes(normalizedRole)) {
+      return null;
+    }
 
     const profileMetadata = metadata || {
       account_type: userProfile?.accountType || session?.user?.user_metadata?.account_type || session?.user?.app_metadata?.account_type,
@@ -1080,7 +1085,6 @@ export const AuthProvider = ({ children }) => {
       });
 
       if (entry?.type === 'external' && entry?.target) {
-        const host = getHostContext();
         if (host.kind === 'tenant' && typeof window !== 'undefined') {
           try {
             const targetUrl = new URL(entry.target);

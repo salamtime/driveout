@@ -72,17 +72,6 @@ const WorkspaceUnavailableState = ({
 
 const resolveHostAwarePath = (host, pathname = '/') => {
   const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
-
-  if (
-    isFirstPartyTenantHost(host) &&
-    (normalizedPath.startsWith('/admin') || normalizedPath.startsWith('/guide'))
-  ) {
-    return buildHostUrl({
-      kind: 'admin',
-      pathname: normalizedPath,
-    });
-  }
-
   return normalizedPath;
 };
 
