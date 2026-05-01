@@ -14,6 +14,28 @@ import {
 import { bootstrapAutomaticBusinessOwnerProvisioning } from './tenantProvisioningHandler.js';
 import { getCachedWorkspaceReadiness, resolveWorkspaceReadiness } from './tenantWorkspaceReadiness.js';
 
+const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
+const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
+
+const normalizeHostname = (value = '') => {
+  const trimmed = String(value || '').trim().toLowerCase();
+  if (!trimmed) return '';
+
+  try {
+    return new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).hostname.toLowerCase();
+  } catch {
+    return trimmed.split('/')[0].split(':')[0].toLowerCase();
+  }
+};
+
+const getTenantSlugFromHostname = (hostname = '') => {
+  const normalizedHostname = normalizeHostname(hostname);
+  if (!normalizedHostname.endsWith(`.${DRIVEOUT_BASE_DOMAIN}`)) return '';
+
+  const slug = normalizedHostname.slice(0, -(`.${DRIVEOUT_BASE_DOMAIN}`.length));
+  return slug && !RESERVED_SUBDOMAINS.has(slug) ? slug : '';
+};
+
 const isRetryableTenantBootstrapFailure = (tenant = {}, provisioningJob = null) => {
   const tenantStatus = String(tenant?.tenant_status || '').trim().toLowerCase();
   const jobStatus = String(provisioningJob?.job_status || '').trim().toLowerCase();
@@ -166,65 +188,126 @@ export default async function handler(req, res) {
     permissions: platformAccess?.permissions || {},
   };
 
-  if (!isBusinessOwnerAccountType(accountType)) {
-    res.status(200).json({
-      session: {
-        account_type: accountType,
-        workspace_state: null,
-        business_account: null,
-        subscription: null,
-        tenant: null,
-        provisioning_job: null,
-        platform_access: platformAccessPayload,
-      },
-    });
-    return;
-  }
+  const requestedHostname = normalizeHostname(
+    req.query?.hostname ||
+    req.headers['x-forwarded-host'] ||
+    req.headers.host ||
+    ''
+  );
+  const requestedTenantSlug = getTenantSlugFromHostname(requestedHostname);
 
   try {
-    let businessAccountResult = await adminClient
-      .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
-      .select('*')
-      .eq('auth_user_id', user.id)
-      .maybeSingle();
+    const canUseBusinessOwnerSession = isBusinessOwnerAccountType(accountType);
+    const canUsePlatformTenantHostSession =
+      !canUseBusinessOwnerSession &&
+      hasPlatformAccess &&
+      Boolean(requestedTenantSlug);
 
-    let businessAccount = businessAccountResult.data || null;
-    let businessAccountId = businessAccount?.id || null;
+    if (!canUseBusinessOwnerSession && !canUsePlatformTenantHostSession) {
+      res.status(200).json({
+        session: {
+          account_type: accountType,
+          workspace_state: null,
+          business_account: null,
+          subscription: null,
+          tenant: null,
+          provisioning_job: null,
+          platform_access: platformAccessPayload,
+        },
+      });
+      return;
+    }
 
-    let [subscriptionResult, tenantResult, provisioningJobResult] = await Promise.all([
-      businessAccountId
-        ? adminClient
-            .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
-            .select('*')
-            .eq('business_account_id', businessAccountId)
-            .maybeSingle()
-        : Promise.resolve({ data: null, error: null }),
-      businessAccountId
-        ? adminClient
-            .from(PLATFORM_TENANTS_TABLE)
-            .select('*')
-            .eq('business_account_id', businessAccountId)
-            .maybeSingle()
-        : Promise.resolve({ data: null, error: null }),
-      businessAccountId
-        ? adminClient
-            .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
-            .select('*')
-            .eq('business_account_id', businessAccountId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle()
-        : Promise.resolve({ data: null, error: null }),
-    ]);
+    let businessAccount = null;
+    let businessAccountId = null;
+    let subscription = null;
+    let tenant = null;
+    let provisioningJob = null;
 
-    let subscription = subscriptionResult.data || null;
-    let tenant = tenantResult.data || null;
-    let provisioningJob = provisioningJobResult.data || null;
+    if (canUseBusinessOwnerSession) {
+      const businessAccountResult = await adminClient
+        .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
+        .select('*')
+        .eq('auth_user_id', user.id)
+        .maybeSingle();
+
+      businessAccount = businessAccountResult.data || null;
+      businessAccountId = businessAccount?.id || null;
+
+      const [subscriptionResult, tenantResult, provisioningJobResult] = await Promise.all([
+        businessAccountId
+          ? adminClient
+              .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
+              .select('*')
+              .eq('business_account_id', businessAccountId)
+              .maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        businessAccountId
+          ? adminClient
+              .from(PLATFORM_TENANTS_TABLE)
+              .select('*')
+              .eq('business_account_id', businessAccountId)
+              .maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        businessAccountId
+          ? adminClient
+              .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+              .select('*')
+              .eq('business_account_id', businessAccountId)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+      ]);
+
+      subscription = subscriptionResult.data || null;
+      tenant = tenantResult.data || null;
+      provisioningJob = provisioningJobResult.data || null;
+    } else if (canUsePlatformTenantHostSession) {
+      const tenantResult = await adminClient
+        .from(PLATFORM_TENANTS_TABLE)
+        .select('*')
+        .eq('tenant_slug', requestedTenantSlug)
+        .maybeSingle();
+
+      tenant = tenantResult.data || null;
+      businessAccountId = tenant?.business_account_id || null;
+
+      const [businessAccountResult, subscriptionResult, provisioningJobResult] = await Promise.all([
+        businessAccountId
+          ? adminClient
+              .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
+              .select('*')
+              .eq('id', businessAccountId)
+              .maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        businessAccountId
+          ? adminClient
+              .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
+              .select('*')
+              .eq('business_account_id', businessAccountId)
+              .maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        businessAccountId
+          ? adminClient
+              .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+              .select('*')
+              .eq('business_account_id', businessAccountId)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+      ]);
+
+      businessAccount = businessAccountResult.data || null;
+      subscription = subscriptionResult.data || null;
+      provisioningJob = provisioningJobResult.data || null;
+    }
 
     const tenantStatus = String(tenant?.tenant_status || '').trim().toLowerCase();
     const provisioningStatus = String(provisioningJob?.job_status || '').trim().toLowerCase();
     const shouldBootstrapAutomaticSignup =
-      isBusinessOwnerAccountType(accountType) &&
+      canUseBusinessOwnerSession &&
       (!businessAccountId ||
         !tenant?.id ||
         tenantStatus === 'pending' ||
