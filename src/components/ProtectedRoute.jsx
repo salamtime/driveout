@@ -102,7 +102,7 @@ const ProtectedRoute = ({
   }
 
   // Check authentication requirement
-  const isAuthenticated = Boolean(session?.user || user);
+  const isAuthenticated = Boolean(session?.user);
 
   if (requireAuth && !isAuthenticated) {
     return <Navigate to={fallbackPath} state={{ from: location }} replace />;

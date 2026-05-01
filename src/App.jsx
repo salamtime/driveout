@@ -91,13 +91,24 @@ const buildMarketplaceLoginHandoffUrl = ({ email = '', redirect = '/customer/das
 const shouldUseFirstPartyTenantPublicShell = (host, pathname) =>
   isFirstPartyTenantHost(host) && isFirstPartyStorefrontPath(pathname);
 
-const shouldUseFirstPartyTenantUnifiedShell = (host, pathname) =>
-  isFirstPartyTenantHost(host) && isFirstPartyUnifiedPath(pathname);
+const shouldUseFirstPartyTenantUnifiedShell = (host, pathname, search = '') => {
+  if (!isFirstPartyTenantHost(host)) {
+    return false;
+  }
+
+  const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
+  if (['/login', '/register', '/reset-password'].includes(normalizedPath)) {
+    const params = new URLSearchParams(search || '');
+    return params.get('tenantAccess') === 'marketplace-customer';
+  }
+
+  return isFirstPartyUnifiedPath(normalizedPath);
+};
 
 const TenantWorkspaceBoot = ({ children }) => {
   const host = getHostContext();
   const location = useLocation();
-  const shouldUsePublicStorefront = shouldUseFirstPartyTenantUnifiedShell(host, location.pathname);
+  const shouldUsePublicStorefront = shouldUseFirstPartyTenantUnifiedShell(host, location.pathname, location.search);
 
   if (host.kind !== 'tenant' || shouldUsePublicStorefront) {
     configureMasterSupabaseClient();
@@ -318,14 +329,14 @@ const HomeRedirect = () => {
   const { user, userProfile, initialized, session, getBusinessOwnerHomePath } = useAuth();
   const host = getHostContext();
   const location = useLocation();
-  const shouldUsePublicStorefront = shouldUseFirstPartyTenantUnifiedShell(host, location.pathname);
+  const shouldUsePublicStorefront = shouldUseFirstPartyTenantUnifiedShell(host, location.pathname, location.search);
   const isPublicLikeHost = host.kind === 'public' || shouldUsePublicStorefront;
 
   if (!initialized) {
     return <AuthTransitionScreen title="Preparing your workspace" description="We are checking your workspace access and loading the right destination." />;
   }
 
-  const isAuthenticated = Boolean(session?.user || user);
+  const isAuthenticated = Boolean(session?.user);
 
   if (!isAuthenticated) {
     if (!isPublicLikeHost && (host.kind === 'admin' || host.kind === 'app' || host.kind === 'tenant')) {
