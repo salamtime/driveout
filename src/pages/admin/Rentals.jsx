@@ -429,10 +429,26 @@ const getBusinessWeekWindow = (now = new Date()) => {
   return { start, end };
 };
 
+const getCalendarDayWindow = (now = new Date()) => {
+  const start = new Date(now);
+  const end = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+};
+
 const getDateFocusWindow = (focus, workspace, now = new Date(), customRange = null) => {
   if (focus === 'custom' && customRange?.start && customRange?.end) {
     const start = new Date(customRange.start);
     const end = new Date(customRange.end);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  }
+
+  if (focus === 'calendar-day') {
+    const start = new Date(now);
+    const end = new Date(now);
     start.setHours(0, 0, 0, 0);
     end.setHours(23, 59, 59, 999);
     return { start, end };
@@ -478,7 +494,7 @@ const getDateFocusWindow = (focus, workspace, now = new Date(), customRange = nu
 };
 
 const getDefaultDateFocusForWorkspace = (workspace) => {
-  if (workspace === 'today') return 'day';
+  if (workspace === 'today') return 'calendar-day';
   return 'all';
 };
 
@@ -629,20 +645,20 @@ const doesRentalIntersectWindow = (rental, windowStart, windowEnd) => {
 
 const getRentalWorkspaceBucket = (rental, now = new Date()) => {
   const { start, end } = getRentalOperationalWindow(rental);
-  const { start: businessStart, end: businessEnd } = getBusinessDayWindow(now);
+  const { start: dayStart, end: dayEnd } = getCalendarDayWindow(now);
 
-  if (doesRentalIntersectWindow(rental, businessStart, businessEnd)) {
+  if (doesRentalIntersectWindow(rental, dayStart, dayEnd)) {
     return 'today';
   }
 
   const effectiveStart = start || end;
   const effectiveEnd = end || start;
 
-  if (effectiveStart && effectiveStart >= businessEnd) {
+  if (effectiveStart && effectiveStart >= dayEnd) {
     return 'upcoming';
   }
 
-  if (effectiveEnd && effectiveEnd < businessStart) {
+  if (effectiveEnd && effectiveEnd < dayStart) {
     return 'past';
   }
 
@@ -1127,11 +1143,11 @@ const Rentals = () => {
     let nextAnchor = new Date(base);
     if (mode === 'today') {
       nextAnchor = new Date(todayBase);
-      setDateFocusFilter('day');
+      setDateFocusFilter('calendar-day');
     } else if (mode === 'yesterday') {
       nextAnchor = new Date(todayBase);
       nextAnchor.setDate(nextAnchor.getDate() - 1);
-      setDateFocusFilter('day');
+      setDateFocusFilter('calendar-day');
     } else if (mode === 'week') {
       setDateFocusFilter('week');
     } else if (mode === 'last7') {
@@ -1139,7 +1155,7 @@ const Rentals = () => {
     } else if (mode === 'month') {
       setDateFocusFilter('month');
     } else if (mode === 'day') {
-      setDateFocusFilter('day');
+      setDateFocusFilter('calendar-day');
     }
 
     setCustomDateRange(null);
@@ -1674,7 +1690,7 @@ const Rentals = () => {
   const fetchDateFocusCounts = useCallback(async (currentStatusFilter = statusFilter, currentPaymentStatusFilter = paymentStatusFilter) => {
     try {
       const now = new Date();
-      const { start: startOfToday, end: endOfToday } = getBusinessDayWindow(now);
+      const { start: startOfToday, end: endOfToday } = getCalendarDayWindow(now);
       const { start: startOfWeek, end: endOfWeek } = getBusinessWeekWindow(now);
 
       const buildCountQuery = (fromDate, toDate) => {
@@ -2561,13 +2577,13 @@ const Rentals = () => {
     if (customDateRange?.start) {
       return `${tr('Custom Range Start', 'Début plage personnalisée')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
     }
-    if (dateFocusFilter === 'day' && isSameCalendarDay(dateFocusAnchorDate, todayBase)) {
+    if ((dateFocusFilter === 'day' || dateFocusFilter === 'calendar-day') && isSameCalendarDay(dateFocusAnchorDate, todayBase)) {
       return `${tr('Today', "Aujourd'hui")} • ${todayBase.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
     }
-    if (dateFocusFilter === 'day' && isSameCalendarDay(dateFocusAnchorDate, yesterdayBase)) {
+    if ((dateFocusFilter === 'day' || dateFocusFilter === 'calendar-day') && isSameCalendarDay(dateFocusAnchorDate, yesterdayBase)) {
       return `${tr('Yesterday', 'Hier')} • ${yesterdayBase.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
     }
-    if (dateFocusFilter === 'day') {
+    if (dateFocusFilter === 'day' || dateFocusFilter === 'calendar-day') {
       return `${tr('Selected Date', 'Date sélectionnée')} • ${dateFocusAnchorDate.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
     }
     if (dateFocusFilter === 'week') {
@@ -2602,7 +2618,7 @@ const Rentals = () => {
       : tr('Choose the end date', 'Choisissez la date de fin')
     : dateFocusFilter === 'all'
       ? tr('Showing every rental', 'Toutes les locations affichées')
-      : dateFocusFilter === 'day'
+      : dateFocusFilter === 'day' || dateFocusFilter === 'calendar-day'
         ? formatPreviewDate(dateFocusAnchor)
         : dateFocusFilter === 'week'
           ? `${formatPreviewDate(toDateInputValue(weekStart))} → ${formatPreviewDate(toDateInputValue(weekEnd))}`
@@ -2661,11 +2677,11 @@ const Rentals = () => {
             { key: 'month', label: tr('This Month', 'Ce mois') },
           ].map((chip) => {
             const isActive =
-              (chip.key === 'today' && dateFocusFilter === 'day' && isSameCalendarDay(dateFocusAnchorDate, new Date())) ||
+              (chip.key === 'today' && (dateFocusFilter === 'day' || dateFocusFilter === 'calendar-day') && isSameCalendarDay(dateFocusAnchorDate, new Date())) ||
               (chip.key === 'yesterday' && (() => {
                 const yesterday = new Date();
                 yesterday.setDate(yesterday.getDate() - 1);
-                return dateFocusFilter === 'day' && isSameCalendarDay(dateFocusAnchorDate, yesterday);
+                return (dateFocusFilter === 'day' || dateFocusFilter === 'calendar-day') && isSameCalendarDay(dateFocusAnchorDate, yesterday);
               })()) ||
               (chip.key !== 'today' && chip.key !== 'yesterday' && dateFocusFilter === chip.key);
 
@@ -4138,8 +4154,8 @@ const Rentals = () => {
 
                           {renderFuelProgressBar(rental, true)}
 
-                          <div className={`grid grid-cols-3 gap-2 rounded-xl border border-slate-100 bg-slate-50/90 ${isCompactMobileCard ? 'mt-1 p-2' : 'mt-2 p-2.5'}`}>
-                            <div>
+                          <div className={`grid gap-2 rounded-xl border border-slate-100 bg-slate-50/90 ${isCompactMobileCard ? 'mt-1 grid-cols-2 p-2' : 'mt-2 grid-cols-3 p-2.5'}`}>
+                            <div className={isCompactMobileCard ? 'min-w-0' : ''}>
                               <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                                 {tr('Paid', 'Payé')}
                               </div>
@@ -4147,7 +4163,7 @@ const Rentals = () => {
                                 {paymentSnapshot.amountPaid.toFixed(0)} MAD
                               </div>
                             </div>
-                            <div className="text-right">
+                            <div className={`min-w-0 ${isCompactMobileCard ? 'text-right' : 'text-right'}`}>
                               <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                                 {tr('Remaining', 'Restant')}
                               </div>
@@ -4155,7 +4171,7 @@ const Rentals = () => {
                                 {paymentSnapshot.balanceDue.toFixed(0)} MAD
                               </div>
                             </div>
-                            <div className="text-right">
+                            <div className={`min-w-0 ${isCompactMobileCard ? 'col-span-2 border-t border-slate-200 pt-2 text-left' : 'text-right'}`}>
                               <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                                 {tr('Total', 'Total')}
                               </div>

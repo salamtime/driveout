@@ -387,7 +387,7 @@ const TaskCard = ({
       : 'border-slate-300/70 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.05)]';
 
   return (
-    <div className={`relative overflow-hidden rounded-3xl border p-4 transition ${cardAttentionClass}`}>
+    <div className={`relative overflow-visible rounded-3xl border p-4 transition ${cardAttentionClass}`}>
       {(highlighted || assignedToMe || hasUnreadComments) && (
         <span className={`absolute inset-y-4 left-0 w-1 rounded-r-full ${hasUnreadComments ? 'bg-emerald-300' : 'bg-violet-300'}`} />
       )}
@@ -547,7 +547,7 @@ const TaskCard = ({
               {tr('More', 'Plus')}
             </Button>
             {showMore && (
-              <div className="absolute right-0 z-20 mt-2 w-44 overflow-hidden rounded-2xl border border-slate-200 bg-white p-1 shadow-xl">
+              <div className="absolute right-0 z-40 mt-2 w-44 overflow-hidden rounded-2xl border border-slate-200 bg-white p-1 shadow-xl">
                 <button
                   type="button"
                   onClick={() => {

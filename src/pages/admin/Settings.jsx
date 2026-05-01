@@ -2437,7 +2437,7 @@ const SettingsPage = () => {
               </div>
             </div>
 
-            <div className="mt-4 space-y-3">
+            <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
               {telegramAuditLoading ? (
                 <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
                   {isFrench ? 'Chargement du journal Telegram...' : 'Loading Telegram log...'}
