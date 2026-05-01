@@ -3031,6 +3031,19 @@ const openReplacementResumeWorkflow = useCallback(() => {
     }
   };
 
+  const readPersistedFinishWorkflowReturnStartedAt = () => {
+    if (typeof window === 'undefined' || !id) return null;
+    try {
+      const rawState = window.localStorage.getItem(`rental_finish_workflow_${id}`);
+      if (!rawState) return null;
+      const parsedState = JSON.parse(rawState);
+      return parsedState?.returnStartedAt || parsedState?.billingResult?.calculatedAt || null;
+    } catch (error) {
+      console.error('Failed to read persisted finish workflow return time:', error);
+      return null;
+    }
+  };
+
   const [finishRentalSteps, setFinishRentalSteps] = useState(() => ({
     showWorkflow: readPersistedFinishWorkflowFlag(),
     closingVideoComplete: false,
@@ -3038,6 +3051,12 @@ const openReplacementResumeWorkflow = useCallback(() => {
     endOdometerComplete: false,
     endFuelComplete: false
   }));
+  const [returnWorkflowBillingResult, setReturnWorkflowBillingResult] = useState(() => {
+    const calculatedAt = readPersistedFinishWorkflowReturnStartedAt();
+    return calculatedAt
+      ? { calculatedAt, autoVoidedExtension: false, overtimeAdjustment: null }
+      : null;
+  });
   const [requiresClosingInspectionReview, setRequiresClosingInspectionReview] = useState(false);
   const [vehicleReportDraft, setVehicleReportDraft] = useState(DEFAULT_VEHICLE_REPORT_DRAFT);
   const [vehicleReport, setVehicleReport] = useState(null);
@@ -8013,13 +8032,15 @@ const handleFuelChargeToggle = async (enabled) => {
     window.localStorage.removeItem(finishWorkflowStorageKey);
   };
 
-  const persistFinishWorkflowState = (nextDraft = vehicleReportDraft) => {
+  const persistFinishWorkflowState = (nextDraft = vehicleReportDraft, extras = {}) => {
     if (!finishWorkflowStorageKey || typeof window === 'undefined') return;
     window.localStorage.setItem(
       finishWorkflowStorageKey,
       JSON.stringify({
         showWorkflow: true,
         vehicleReportDraft: nextDraft,
+        returnStartedAt: extras.returnStartedAt || returnWorkflowBillingResult?.calculatedAt || null,
+        billingResult: extras.billingResult || returnWorkflowBillingResult || null,
         updatedAt: new Date().toISOString(),
       })
     );
@@ -8034,12 +8055,57 @@ const handleFuelChargeToggle = async (enabled) => {
   });
 
   const openFinishWorkflow = async () => {
+    const returnStartedAt = new Date().toISOString();
+    let workflowRental = rental;
+    let autoVoidResult = null;
+    let overtimeAdjustment = null;
+
+    try {
+      autoVoidResult = await maybeAutoVoidLatestExtensionOnReturn({
+        completedAt: returnStartedAt,
+        currentRental: workflowRental,
+      });
+      workflowRental = autoVoidResult?.rental || workflowRental;
+
+      const overtimeResult = await applyBaseHourlyOvertimeOnClose({
+        completedAt: returnStartedAt,
+        currentRental: workflowRental,
+      });
+      workflowRental = overtimeResult?.rental || workflowRental;
+      overtimeAdjustment = overtimeResult?.adjustment || null;
+    } catch (error) {
+      console.error('❌ Failed to update return billing before finish workflow:', error);
+      toast.error(tr(
+        'Could not update return billing. Please try End Now again before closing.',
+        'Impossible de mettre à jour la facturation du retour. Réessayez Terminer maintenant avant la clôture.'
+      ));
+      return;
+    }
+
+    const billingResult = overtimeAdjustment || autoVoidResult?.autoVoided
+      ? {
+          calculatedAt: returnStartedAt,
+          autoVoidedExtension: Boolean(autoVoidResult?.autoVoided),
+          overtimeAdjustment,
+        }
+      : null;
+    setReturnWorkflowBillingResult(billingResult);
+
     const nextState = buildFinishWorkflowState();
     setFinishRentalSteps(nextState);
-    persistFinishWorkflowState();
+    persistFinishWorkflowState(vehicleReportDraft, {
+      returnStartedAt,
+      billingResult,
+    });
     await broadcastRentalWorkflowUpdate('finish', 'workflow_opened', {
       showWorkflow: true,
       steps: nextState,
+      return_billing_updated: Boolean(billingResult),
+      rental_end_date: workflowRental?.rental_end_date,
+      actual_end_date: workflowRental?.actual_end_date,
+      quantity_hours: workflowRental?.quantity_hours,
+      total_amount: workflowRental?.total_amount,
+      remaining_amount: workflowRental?.remaining_amount,
     });
   };
 
@@ -8074,6 +8140,7 @@ const handleFuelChargeToggle = async (enabled) => {
       setFuelCharge(0);
       setShowEndFuelModal(false);
       setRequiresClosingInspectionReview(closingMedia.length > 0);
+      setReturnWorkflowBillingResult(null);
 
       const nextState = {
         showWorkflow: false,
@@ -8388,6 +8455,16 @@ const handleFuelChargeToggle = async (enabled) => {
     return { rental: nextRental, adjustment };
   };
 
+  const getReturnWorkflowCloseTime = (fallbackTime) => {
+    const candidate =
+      returnWorkflowBillingResult?.calculatedAt ||
+      (finishRentalSteps.showWorkflow && rental?.actual_end_date ? rental.actual_end_date : null);
+    const parsedCandidate = candidate ? new Date(candidate) : null;
+    return parsedCandidate && Number.isFinite(parsedCandidate.getTime())
+      ? parsedCandidate.toISOString()
+      : fallbackTime;
+  };
+
   const finalizeRentalCompletion = async () => {
     try {
       let latestReport = vehicleReport;
@@ -8398,6 +8475,7 @@ const handleFuelChargeToggle = async (enabled) => {
       const effectiveEndingOdometer = rental?.ending_odometer ?? endOdometer ?? null;
       const effectiveEndFuelLevel = endFuelLevel ?? rental?.end_fuel_level ?? null;
       const completedAt = new Date().toISOString();
+      const billingCloseTime = getReturnWorkflowCloseTime(completedAt);
 
       if (!effectiveEndingOdometer) {
         toast.error('Please enter ending odometer first');
@@ -8410,17 +8488,17 @@ const handleFuelChargeToggle = async (enabled) => {
       }
 
       const { rental: completionRental } = await maybeAutoVoidLatestExtensionOnReturn({
-        completedAt,
+        completedAt: billingCloseTime,
         currentRental: rental,
       });
 
       const { rental: overtimeRental, adjustment: overtimeAdjustment } = await applyBaseHourlyOvertimeOnClose({
-        completedAt,
+        completedAt: billingCloseTime,
         currentRental: completionRental || rental,
       });
 
       const effectiveCompletionRental = overtimeRental || completionRental || rental;
-      const actualReturnEndTime = completedAt;
+      const actualReturnEndTime = billingCloseTime;
       const currentPaymentStatus = normalizePaymentStatus(
         effectiveCompletionRental?.payment_status,
         effectiveCompletionRental?.remaining_amount
@@ -8512,7 +8590,7 @@ const handleFuelChargeToggle = async (enabled) => {
           vehicle: buildRentalTelegramVehicleLabel(completedRental || effectiveCompletionRental || rental),
           customer: (completedRental || effectiveCompletionRental)?.customer_name || rental.customer_name,
           start: (completedRental || effectiveCompletionRental)?.rental_start_date || rental.rental_start_date,
-          end: completedAt,
+          end: actualReturnEndTime,
           completed_at: completedAt,
           total: (completedRental || effectiveCompletionRental)?.total_amount || rental.total_amount || 0,
           amountPaid: (completedRental || effectiveCompletionRental)?.deposit_amount || rental.deposit_amount || 0,
@@ -8594,6 +8672,7 @@ const handleFuelChargeToggle = async (enabled) => {
         endFuelComplete: false
       });
       clearFinishWorkflowState();
+      setReturnWorkflowBillingResult(null);
       
       setReturnSignatureUrl(null);
       window.setTimeout(() => {
@@ -10877,15 +10956,16 @@ useEffect(() => {
     // Step 3: If both closing video and ending odometer exist, complete the rental
     try {
       const completedAt = new Date().toISOString();
+      const billingCloseTime = getReturnWorkflowCloseTime(completedAt);
       const { rental: completionRental } = await maybeAutoVoidLatestExtensionOnReturn({
-        completedAt,
+        completedAt: billingCloseTime,
         currentRental: rental,
       });
       const { rental: overtimeRental, adjustment: overtimeAdjustment } = await applyBaseHourlyOvertimeOnClose({
-        completedAt,
+        completedAt: billingCloseTime,
         currentRental: completionRental || rental,
       });
-      const actualReturnEndTime = completedAt;
+      const actualReturnEndTime = billingCloseTime;
       const effectiveCompletionRental = overtimeRental || completionRental || rental;
       const currentPaymentStatus = normalizePaymentStatus(
         effectiveCompletionRental?.payment_status,
@@ -10923,7 +11003,7 @@ useEffect(() => {
           vehicle: buildRentalTelegramVehicleLabel(effectiveCompletionRental || rental),
           customer: effectiveCompletionRental?.customer_name || rental.customer_name,
           start: effectiveCompletionRental?.rental_start_date || rental.rental_start_date,
-          end: completedAt,
+          end: actualReturnEndTime,
           completed_at: completedAt,
           total: effectiveCompletionRental?.total_amount || rental.total_amount || 0,
           amountPaid: effectiveCompletionRental?.deposit_amount || rental.deposit_amount || 0,
@@ -11012,6 +11092,7 @@ useEffect(() => {
         },
       });
       await loadRentalData(true);
+      setReturnWorkflowBillingResult(null);
       
       toast.success('Rental completed successfully!');
     } catch (err) {
@@ -14073,6 +14154,28 @@ useEffect(() => {
           </div>
 
           <div className="mt-4 space-y-3">
+            {returnWorkflowBillingResult?.overtimeAdjustment ? (
+              <div className="rounded-[22px] border border-emerald-200 bg-emerald-50/90 px-4 py-3 text-sm text-emerald-900 shadow-sm">
+                <p className="font-bold">
+                  {tr('Return price updated', 'Prix de retour mis à jour')}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-emerald-800">
+                  {tr(
+                    `Rental period is now ${returnWorkflowBillingResult.overtimeAdjustment.billedHours}h. Added ${formatCurrency(returnWorkflowBillingResult.overtimeAdjustment.addedCharge)} MAD after the ${returnWorkflowBillingResult.overtimeAdjustment.thresholdMinutes} min threshold.`,
+                    `La période est maintenant de ${returnWorkflowBillingResult.overtimeAdjustment.billedHours}h. ${formatCurrency(returnWorkflowBillingResult.overtimeAdjustment.addedCharge)} MAD ajoutés après le seuil de ${returnWorkflowBillingResult.overtimeAdjustment.thresholdMinutes} min.`
+                  )}
+                </p>
+                {returnWorkflowBillingResult.overtimeAdjustment.remainingAmount > 0 ? (
+                  <p className="mt-1 text-xs font-semibold text-emerald-900">
+                    {tr(
+                      `Due now: ${formatCurrency(returnWorkflowBillingResult.overtimeAdjustment.remainingAmount)} MAD`,
+                      `À payer maintenant : ${formatCurrency(returnWorkflowBillingResult.overtimeAdjustment.remainingAmount)} MAD`
+                    )}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             {finishChecklistRows.map((step) => {
               const StepIcon = step.icon;
               return (
@@ -16268,6 +16371,28 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         </select>
                       </div>
                     </div>
+
+                    {returnWorkflowBillingResult?.overtimeAdjustment ? (
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs text-emerald-900 shadow-sm">
+                        <p className="font-bold">
+                          {tr('Return price updated', 'Prix de retour mis à jour')}
+                        </p>
+                        <p className="mt-1 leading-5 text-emerald-800">
+                          {tr(
+                            `Rental period is now ${returnWorkflowBillingResult.overtimeAdjustment.billedHours}h. Added ${formatCurrency(returnWorkflowBillingResult.overtimeAdjustment.addedCharge)} MAD after the ${returnWorkflowBillingResult.overtimeAdjustment.thresholdMinutes} min threshold.`,
+                            `La période est maintenant de ${returnWorkflowBillingResult.overtimeAdjustment.billedHours}h. ${formatCurrency(returnWorkflowBillingResult.overtimeAdjustment.addedCharge)} MAD ajoutés après le seuil de ${returnWorkflowBillingResult.overtimeAdjustment.thresholdMinutes} min.`
+                          )}
+                        </p>
+                        {returnWorkflowBillingResult.overtimeAdjustment.remainingAmount > 0 ? (
+                          <p className="mt-1 font-semibold">
+                            {tr(
+                              `Due now: ${formatCurrency(returnWorkflowBillingResult.overtimeAdjustment.remainingAmount)} MAD`,
+                              `À payer maintenant : ${formatCurrency(returnWorkflowBillingResult.overtimeAdjustment.remainingAmount)} MAD`
+                            )}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     {canOpenExtensionFlow && (
                       <div className={`rounded-xl border px-3 py-2.5 shadow-sm ${
