@@ -1949,6 +1949,26 @@ const Rentals = () => {
                   : prev.filter((item) => item.id !== changedRental.id);
               }
 
+              if (payload.eventType === 'INSERT') {
+                const normalizedInsertedRental = normalizeRentalLifecycle(changedRental);
+
+                if (!doesRentalMatchFilters(normalizedInsertedRental)) {
+                  return prev;
+                }
+
+                if (existingIndex !== -1) {
+                  const next = [...prev];
+                  next[existingIndex] = {
+                    ...prev[existingIndex],
+                    ...normalizedInsertedRental,
+                  };
+                  return next;
+                }
+
+                const next = [normalizedInsertedRental, ...prev];
+                return next.slice(0, itemsPerPage);
+              }
+
               if (existingIndex === -1) {
                 return prev;
               }

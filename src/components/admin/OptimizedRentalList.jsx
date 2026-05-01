@@ -131,6 +131,11 @@ const OptimizedRentalList = ({
   useEffect(() => {
     const channel = supabase
       .channel('rental-updates-list')
+      .on('broadcast', { event: 'rental_created' }, (payload) => {
+        console.log('🔄 Rental created received:', payload);
+        loadRentals(false);
+        loadStats();
+      })
       .on('broadcast', { event: 'payment_updated' }, (payload) => {
         console.log('🔄 Payment update received:', payload);
         loadRentals(false);
@@ -148,9 +153,9 @@ const OptimizedRentalList = ({
       .channel('rental-db-changes')
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'app_4c3a7a6153_rentals' },
-        () => {
-          console.log('🔄 DB rental updated, refreshing...');
+        { event: '*', schema: 'public', table: 'app_4c3a7a6153_rentals' },
+        (payload) => {
+          console.log('🔄 DB rental changed, refreshing...', payload?.eventType);
           loadRentals(false);
           loadStats();
         }
