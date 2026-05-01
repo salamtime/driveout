@@ -101,8 +101,7 @@ const Login = () => {
   const [resetEmail, setResetEmail] = useState('');
   const [resetSending, setResetSending] = useState(false);
   const [resetSuccess, setResetSuccess] = useState('');
-  const showInlineTransition = Boolean(session?.user) && (!initialized || authLoading);
-  const isBusy = authLoading || showInlineTransition;
+  const isBusy = authLoading;
   const marketplaceTenantNotice = tenantAccessNotice === 'marketplace-customer'
     ? tr(
         'This email signs in on Driveout marketplace, not inside the SaharaX private workspace. Continue below and we will take you to the right place.',
@@ -157,26 +156,6 @@ const Login = () => {
       navigate(finalRedirectTo, { replace: true });
     }
   }, [authLoading, formData.email, host.kind, initialized, location.state, navigate, redirectQuery, session?.user, session?.user?.app_metadata?.certification_request_status, session?.user?.app_metadata?.verification_status, session?.user?.user_metadata?.certification_request_status, session?.user?.user_metadata?.verification_status, user]);
-
-  useEffect(() => {
-    const preloadDashboard = () => {
-      void import('../admin/Dashboard');
-    };
-
-    const currentParams = new URLSearchParams(location.search);
-    if (currentParams.has('code') || currentParams.has('token_hash')) {
-      preloadDashboard();
-      return undefined;
-    }
-
-    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-      const preloadId = window.requestIdleCallback(preloadDashboard, { timeout: 1200 });
-      return () => window.cancelIdleCallback?.(preloadId);
-    }
-
-    const preloadId = window.setTimeout(preloadDashboard, 300);
-    return () => window.clearTimeout(preloadId);
-  }, [location.search]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -307,27 +286,6 @@ const Login = () => {
                   )}
                 </p>
               </div>
-
-              {showInlineTransition && (
-                <div className="mb-6 rounded-2xl border border-violet-100 bg-violet-50/80 px-4 py-4 shadow-sm">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white shadow-inner shadow-violet-100">
-                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-violet-200 border-t-violet-600" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {tr('Opening your workspace', 'Ouverture de votre espace')}
-                      </p>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">
-                        {tr(
-                          'One moment while we confirm your access and take you straight to the dashboard.',
-                          'Un instant pendant que nous confirmons votre accès et vous amenons directement au tableau de bord.'
-                        )}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
 
               <div className="space-y-4">
                 <button
@@ -471,9 +429,7 @@ const Login = () => {
                   {isBusy ? (
                     <>
                       <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                      {showInlineTransition
-                        ? tr('Opening workspace...', 'Ouverture de l’espace...')
-                        : tr('Signing in...', 'Connexion...')}
+                      {tr('Signing in...', 'Connexion...')}
                     </>
                   ) : (
                     <>

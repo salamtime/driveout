@@ -8,6 +8,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import AuthTransitionScreen from './components/auth/AuthTransitionScreen';
 import { isApprovedBusinessOwnerAccount, isBusinessAccountType, isBusinessOwnerAccountType, isPlatformOwnerEmail } from './utils/accountType';
 import RouteLoadingFallback from './components/navigation/RouteLoadingFallback';
+import AdminDashboard from './pages/admin/Dashboard';
 import {
   buildHostUrl,
   getHostContext,
@@ -263,7 +264,6 @@ const RentalBooking = lazy(() => import('./pages/RentalBooking'));
 const Rentals = lazy(() => import('./pages/admin/Rentals'));
 const RentalDetails = lazy(() => import('./pages/admin/RentalDetails'));
 const InvoicePage = lazy(() => import('./pages/admin/InvoicePage'));
-const AdminDashboard = lazy(() => import('./pages/admin/Dashboard'));
 const GuideDashboard = lazy(() => import('./pages/guide/Dashboard'));
 const AccountWorkspaceLayout = lazy(() => import('./components/account/AccountWorkspaceLayout'));
 const AccountOverview = lazy(() => import('./pages/account/AccountOverview'));

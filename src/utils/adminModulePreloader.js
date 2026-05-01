@@ -1,5 +1,4 @@
 const adminModuleLoaders = [
-  { path: '/admin/dashboard', load: () => import('../pages/admin/Dashboard') },
   { path: '/admin/calendar', load: () => import('../pages/admin/Calendar') },
   { path: '/admin/tours', load: () => import('../pages/admin/Tours') },
   { path: '/admin/rentals', load: () => import('../pages/admin/Rentals') },
