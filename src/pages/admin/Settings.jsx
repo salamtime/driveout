@@ -2072,13 +2072,13 @@ const SettingsPage = () => {
             </p>
             <p>
               {isFrench
-                ? 'Il n’existe pas de seconde période distincte pour les locations horaires aujourd’hui: cette même règle est la source de vérité.'
-                : 'There is no second separate hourly grace today: this same rule is the source of truth.'}
+                ? "Le seuil d’heure supplémentaire est la règle de retour tardif : au-delà de ce délai, la clôture ajoute automatiquement l’heure suivante."
+                : 'The extra-hour threshold is the late-return rule: once a return passes this window, closing the rental automatically adds the next billable hour.'}
             </p>
             <p>
               {isFrench
-                ? "Le seuil d’annulation d’extension prépare la prochaine règle: si le client revient très tôt dans l’heure ajoutée, cette extension pourra être annulée automatiquement."
-                : 'The extension void threshold prepares the next rule: if the customer comes back very early in the added hour, that extension can be voided automatically.'}
+                ? "La période de grâce de réservation reste séparée : elle contrôle les départs planifiés en retard et l’expiration automatique des réservations."
+                : 'The booking grace period stays separate: it controls late scheduled starts and automatic booking expiry.'}
             </p>
           </div>
         </div>

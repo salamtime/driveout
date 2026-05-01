@@ -8112,15 +8112,11 @@ const handleFuelChargeToggle = async (enabled) => {
     vehicleStatus,
     extraRentalFields = {},
   }) => {
-    const preservedEndTime =
-      getRentalDisplayEndTime(rental) ||
-      getRentalEffectiveEndTime(rental) ||
-      completedAt;
     const completionPayload = {
       rental_status: 'completed',
       status: 'completed',
       completed_at: completedAt,
-      actual_end_date: preservedEndTime,
+      actual_end_date: completedAt,
       updated_at: new Date().toISOString(),
       ...extraRentalFields,
     };
@@ -8283,6 +8279,115 @@ const handleFuelChargeToggle = async (enabled) => {
     };
   };
 
+  const calculateBaseHourlyOvertimeAdjustment = (currentRental = rental, completedAt) => {
+    if (!currentRental?.id || !completedAt) return null;
+    if (String(currentRental?.rental_status || '').toLowerCase() !== 'active') return null;
+    if (String(currentRental?.rental_type || '').toLowerCase() !== 'hourly') return null;
+    if (isPackagePricingEnabled(currentRental)) return null;
+
+    const startValue = currentRental?.started_at || currentRental?.rental_start_date;
+    const startTime = new Date(startValue || '');
+    const closeTime = new Date(completedAt || '');
+    if (!Number.isFinite(startTime.getTime()) || !Number.isFinite(closeTime.getTime())) return null;
+
+    const thresholdMinutes = Math.max(
+      0,
+      Number(
+        rentalTimingSettings?.extraHourThresholdMinutes ??
+        DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes
+      ) || DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes
+    );
+    const durationMinutes = Math.max(0, Math.ceil((closeTime.getTime() - startTime.getTime()) / 60000));
+    const currentBilledHours = Math.max(
+      1,
+      Math.ceil(
+        Number(currentRental?.quantity_hours || 0) ||
+        Number(getRentalDurationUnits(currentRental) || 0) ||
+        1
+      )
+    );
+    const suggestedBilledHours = Math.max(
+      currentBilledHours,
+      Math.ceil(Math.max(0, durationMinutes - thresholdMinutes) / 60) || currentBilledHours
+    );
+
+    if (suggestedBilledHours <= currentBilledHours) return null;
+
+    const hourlyRate = Number(getRentalHourlyRate(currentRental) || currentRental?.unit_price || 0) || 0;
+    if (hourlyRate <= 0) return null;
+
+    const previousRentalCharge = Number((hourlyRate * currentBilledHours).toFixed(2));
+    const nextRentalCharge = Number((hourlyRate * suggestedBilledHours).toFixed(2));
+    const addedCharge = Number(Math.max(0, nextRentalCharge - previousRentalCharge).toFixed(2));
+    if (addedCharge <= 0) return null;
+
+    const currentTotal = Number(currentRental?.total_amount || 0) || previousRentalCharge;
+    const currentRemaining = Math.max(0, Number(currentRental?.remaining_amount || 0) || 0);
+    const paidAmount = Math.max(0, currentTotal - currentRemaining);
+    const nextTotal = Number((currentTotal + addedCharge).toFixed(2));
+    const nextRemaining = Number(Math.max(0, nextTotal - paidAmount).toFixed(2));
+
+    return {
+      thresholdMinutes,
+      durationMinutes,
+      previousHours: currentBilledHours,
+      billedHours: suggestedBilledHours,
+      addedHours: suggestedBilledHours - currentBilledHours,
+      hourlyRate,
+      addedCharge,
+      totalAmount: nextTotal,
+      remainingAmount: nextRemaining,
+      paymentStatus: nextRemaining <= 0 ? 'paid' : (paidAmount > 0 ? 'partial' : 'unpaid'),
+    };
+  };
+
+  const applyBaseHourlyOvertimeOnClose = async ({
+    completedAt,
+    currentRental = rental,
+  }) => {
+    const adjustment = calculateBaseHourlyOvertimeAdjustment(currentRental, completedAt);
+    if (!adjustment) {
+      return { rental: currentRental, adjustment: null };
+    }
+
+    const overtimePayload = {
+      rental_end_date: completedAt,
+      actual_end_date: completedAt,
+      quantity_hours: adjustment.billedHours,
+      quantity_days: adjustment.billedHours,
+      total_amount: adjustment.totalAmount,
+      remaining_amount: adjustment.remainingAmount,
+      payment_status: adjustment.paymentStatus,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: updatedRental, error: overtimeError } = await updateRentalWithSchemaFallback(overtimePayload);
+    if (overtimeError) {
+      throw overtimeError;
+    }
+
+    const nextRental = updatedRental || {
+      ...currentRental,
+      ...overtimePayload,
+    };
+
+    setRental((prev) => prev ? ({
+      ...prev,
+      ...nextRental,
+      vehicle: nextRental.vehicle || prev.vehicle,
+      package: nextRental.package || prev.package,
+    }) : nextRental);
+
+    toast.success(
+      tr(
+        `Late return billed automatically: ${adjustment.billedHours} hours total (+${adjustment.addedCharge.toFixed(2)} MAD).`,
+        `Retour tardif facturé automatiquement : ${adjustment.billedHours} heures au total (+${adjustment.addedCharge.toFixed(2)} MAD).`
+      )
+    );
+
+    return { rental: nextRental, adjustment };
+  };
+
   const finalizeRentalCompletion = async () => {
     try {
       let latestReport = vehicleReport;
@@ -8309,11 +8414,13 @@ const handleFuelChargeToggle = async (enabled) => {
         currentRental: rental,
       });
 
-      const effectiveCompletionRental = completionRental || rental;
-      const preservedEndTime =
-        getRentalDisplayEndTime(effectiveCompletionRental) ||
-        getRentalEffectiveEndTime(effectiveCompletionRental) ||
-        completedAt;
+      const { rental: overtimeRental, adjustment: overtimeAdjustment } = await applyBaseHourlyOvertimeOnClose({
+        completedAt,
+        currentRental: completionRental || rental,
+      });
+
+      const effectiveCompletionRental = overtimeRental || completionRental || rental;
+      const actualReturnEndTime = completedAt;
       const currentPaymentStatus = normalizePaymentStatus(
         effectiveCompletionRental?.payment_status,
         effectiveCompletionRental?.remaining_amount
@@ -8334,7 +8441,7 @@ const handleFuelChargeToggle = async (enabled) => {
         rental_status: 'completed', 
         status: 'completed',
         completed_at: completedAt,
-        actual_end_date: preservedEndTime,
+        actual_end_date: actualReturnEndTime,
         ending_odometer: effectiveEndingOdometer,
         end_fuel_level: effectiveEndFuelLevel,
         return_location_id: selectedReturnLocationId ? Number(selectedReturnLocationId) : null,
@@ -8380,11 +8487,11 @@ const handleFuelChargeToggle = async (enabled) => {
       } else {
         setRental((prev) => prev ? ({
           ...prev,
-          ...(completionRental || {}),
+          ...(effectiveCompletionRental || {}),
           rental_status: 'completed',
           status: 'completed',
           completed_at: completedAt,
-          actual_end_date: preservedEndTime,
+          actual_end_date: actualReturnEndTime,
           ending_odometer: effectiveEndingOdometer,
           end_fuel_level: effectiveEndFuelLevel,
           vehicle: prev?.vehicle
@@ -8410,6 +8517,13 @@ const handleFuelChargeToggle = async (enabled) => {
           total: (completedRental || effectiveCompletionRental)?.total_amount || rental.total_amount || 0,
           amountPaid: (completedRental || effectiveCompletionRental)?.deposit_amount || rental.deposit_amount || 0,
           remaining: (completedRental || effectiveCompletionRental)?.remaining_amount || rental.remaining_amount || 0,
+          overtime: overtimeAdjustment
+            ? {
+                addedHours: overtimeAdjustment.addedHours,
+                addedCharge: overtimeAdjustment.addedCharge,
+                thresholdMinutes: overtimeAdjustment.thresholdMinutes,
+              }
+            : null,
         },
       }, 'rental completed');
 
@@ -8419,6 +8533,15 @@ const handleFuelChargeToggle = async (enabled) => {
         completedAt,
         vehicleStatus: targetVehicleStatus,
         extraRentalFields: {
+          actual_end_date: actualReturnEndTime,
+          ...(overtimeAdjustment ? {
+            rental_end_date: actualReturnEndTime,
+            quantity_hours: overtimeAdjustment.billedHours,
+            quantity_days: overtimeAdjustment.billedHours,
+            total_amount: overtimeAdjustment.totalAmount,
+            remaining_amount: overtimeAdjustment.remainingAmount,
+            payment_status: overtimeAdjustment.paymentStatus,
+          } : {}),
           ending_odometer: effectiveEndingOdometer,
           end_fuel_level: effectiveEndFuelLevel,
           signature_url: returnSignatureUrl || rental?.signature_url || null,
@@ -10758,11 +10881,12 @@ useEffect(() => {
         completedAt,
         currentRental: rental,
       });
-      const preservedEndTime =
-        getRentalDisplayEndTime(completionRental || rental) ||
-        getRentalEffectiveEndTime(completionRental || rental) ||
-        completedAt;
-      const effectiveCompletionRental = completionRental || rental;
+      const { rental: overtimeRental, adjustment: overtimeAdjustment } = await applyBaseHourlyOvertimeOnClose({
+        completedAt,
+        currentRental: completionRental || rental,
+      });
+      const actualReturnEndTime = completedAt;
+      const effectiveCompletionRental = overtimeRental || completionRental || rental;
       const currentPaymentStatus = normalizePaymentStatus(
         effectiveCompletionRental?.payment_status,
         effectiveCompletionRental?.remaining_amount
@@ -10784,7 +10908,7 @@ useEffect(() => {
           rental_status: 'completed', 
           status: 'completed',
           completed_at: completedAt,
-          actual_end_date: preservedEndTime,
+          actual_end_date: actualReturnEndTime,
         })
         .eq('id', rental.id);
 
@@ -10804,6 +10928,13 @@ useEffect(() => {
           total: effectiveCompletionRental?.total_amount || rental.total_amount || 0,
           amountPaid: effectiveCompletionRental?.deposit_amount || rental.deposit_amount || 0,
           remaining: effectiveCompletionRental?.remaining_amount || rental.remaining_amount || 0,
+          overtime: overtimeAdjustment
+            ? {
+                addedHours: overtimeAdjustment.addedHours,
+                addedCharge: overtimeAdjustment.addedCharge,
+                thresholdMinutes: overtimeAdjustment.thresholdMinutes,
+              }
+            : null,
         },
       }, 'rental completed');
       
@@ -10844,11 +10975,11 @@ useEffect(() => {
 
       setRental((prev) => prev ? ({
         ...prev,
-        ...(completionRental || {}),
+        ...(effectiveCompletionRental || {}),
         rental_status: 'completed',
         status: 'completed',
         completed_at: completedAt,
-        actual_end_date: preservedEndTime,
+        actual_end_date: actualReturnEndTime,
         vehicle: prev?.vehicle
           ? {
               ...prev.vehicle,
@@ -10868,6 +10999,17 @@ useEffect(() => {
         vehicleId: rental.vehicle_id,
         completedAt,
         vehicleStatus: 'available',
+        extraRentalFields: {
+          actual_end_date: actualReturnEndTime,
+          ...(overtimeAdjustment ? {
+            rental_end_date: actualReturnEndTime,
+            quantity_hours: overtimeAdjustment.billedHours,
+            quantity_days: overtimeAdjustment.billedHours,
+            total_amount: overtimeAdjustment.totalAmount,
+            remaining_amount: overtimeAdjustment.remainingAmount,
+            payment_status: overtimeAdjustment.paymentStatus,
+          } : {}),
+        },
       });
       await loadRentalData(true);
       
