@@ -77,6 +77,11 @@ const normalizePreviewableImageUrl = (value = '') => {
 const MARKETPLACE_PARTICIPANT_ROLES = new Set(['owner', 'business_owner', 'customer', 'renter']);
 const MARKETPLACE_STAFF_ROLES = new Set(['admin', 'employee', 'staff', 'support', 'guide']);
 
+const getWorkspaceRentalPathPrefix = (pathname = '') => {
+  const normalizedPath = String(pathname || '').trim().toLowerCase();
+  return normalizedPath.startsWith('/admin') || normalizedPath.startsWith('/guide') ? '/admin/rentals/' : '/account/rentals/';
+};
+
 const ConversationThread = ({
   threadId,
   contextType,
@@ -1314,7 +1319,7 @@ const ConversationThread = ({
     ''
   ).trim();
   const marketplaceRentalDetailsHref = bookingRentalLookupId
-    ? `/account/rentals/${encodeURIComponent(bookingRentalLookupId)}`
+    ? `${getWorkspaceRentalPathPrefix(location.pathname)}${encodeURIComponent(bookingRentalLookupId)}`
     : '';
   const normalizedBookingHref = String(bookingHref || '').trim();
   const marketplaceRequestDetailsHref = (() => {

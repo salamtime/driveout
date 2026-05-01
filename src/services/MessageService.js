@@ -100,12 +100,20 @@ const buildSharedThreadSummary = (thread = {}) => {
   return 'This thread is stored in the shared message layer and stays linked to its source context.';
 };
 
+const getCurrentWorkspaceRoutePrefix = () => {
+  if (typeof window === 'undefined') return '/account';
+  const pathname = String(window.location.pathname || '').trim().toLowerCase();
+  return pathname.startsWith('/admin') || pathname.startsWith('/guide') ? '/admin' : '/account';
+};
+
 const buildThreadHref = (thread = {}) => {
   const metadata = thread?.metadata && typeof thread.metadata === 'object' ? thread.metadata : {};
   if (metadata.href) return String(metadata.href);
 
+  const routePrefix = getCurrentWorkspaceRoutePrefix();
+
   if (thread.family === MESSAGE_FAMILIES.verification) return '/account/verification';
-  if (thread.family === MESSAGE_FAMILIES.bookings && thread.entity_id) return `/account/rentals/${encodeURIComponent(String(thread.entity_id))}`;
+  if (thread.family === MESSAGE_FAMILIES.bookings && thread.entity_id) return `${routePrefix}/rentals/${encodeURIComponent(String(thread.entity_id))}`;
   if (thread.family === MESSAGE_FAMILIES.tours && thread.entity_id) return `/account/tours/${encodeURIComponent(String(thread.entity_id))}`;
   if (thread.family === MESSAGE_FAMILIES.marketplace && thread.entity_id) {
     return `/account/rentals/requests/${encodeURIComponent(String(thread.entity_id))}`;
