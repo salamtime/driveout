@@ -224,18 +224,21 @@ CREATE TRIGGER trg_update_rental_extensions_timestamp
 ALTER TABLE rental_extensions ENABLE ROW LEVEL SECURITY;
 
 -- Policy: Allow authenticated users to read all extensions
+DROP POLICY IF EXISTS "allow_read_all_extensions" ON rental_extensions;
 CREATE POLICY "allow_read_all_extensions" ON rental_extensions
     FOR SELECT
     TO authenticated
     USING (true);
 
 -- Policy: Allow authenticated users to insert extensions
+DROP POLICY IF EXISTS "allow_insert_extensions" ON rental_extensions;
 CREATE POLICY "allow_insert_extensions" ON rental_extensions
     FOR INSERT
     TO authenticated
     WITH CHECK (true);
 
 -- Policy: Allow users to update their own extensions or admins to update any
+DROP POLICY IF EXISTS "allow_update_extensions" ON rental_extensions;
 CREATE POLICY "allow_update_extensions" ON rental_extensions
     FOR UPDATE
     TO authenticated

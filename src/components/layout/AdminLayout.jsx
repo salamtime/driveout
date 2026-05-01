@@ -13,6 +13,7 @@ import { getTaskStats } from '../../services/TaskService';
 import { fetchSystemSettings, SYSTEM_SETTINGS_UPDATED_EVENT } from '../../services/systemSettingsApi';
 import { prefetchAdminModuleChunk, prewarmAdminModuleChunks } from '../../utils/adminModulePreloader';
 import { isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../../utils/accountType';
+import { getHostContext } from '../../utils/hostContext';
 import OptimizedAvatar from '../common/OptimizedAvatar';
 import MessageService from '../../services/MessageService';
 import {
@@ -108,6 +109,7 @@ const AdminLayout = () => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const activeLanguage = isFrench ? 'fr' : 'en';
   const inheritedTenantLogoUrl = getTenantLogoFallback();
+  const hostContext = getHostContext();
   const personalProfileImage =
     userProfile?.profile_picture_url ||
     userProfile?.avatar_url ||
@@ -307,6 +309,10 @@ const AdminLayout = () => {
   ];
 
   const visibleNavigationModules = navigationModules.filter((module) => {
+    if (hostContext.kind === 'tenant' && ['workspaces', 'platform-admins'].includes(module.id)) {
+      return false;
+    }
+
     if (isBusinessOwnerWorkspace && ['marketplace', 'website', 'export'].includes(module.id)) {
       return false;
     }

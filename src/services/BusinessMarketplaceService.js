@@ -12,6 +12,7 @@ import {
   isMarketplaceChatUnlocked,
   normalizeMarketplaceRequestLifecycleStatus,
 } from '../utils/marketplaceRequestState';
+import { assertCanCreateListing } from './TenantLimitService';
 
 const VEHICLE_PROFILES_TABLE = 'app_vehicle_public_profiles';
 const MARKETPLACE_LISTINGS_TABLE = 'app_marketplace_listings';
@@ -1357,6 +1358,10 @@ class BusinessMarketplaceService {
     let savedListing = existingListing || null;
 
     if (shouldSaveListing || existingListing?.id) {
+      if (!existingListing?.id) {
+        await assertCanCreateListing();
+      }
+
       if (submitForReview) {
         await ensureVehicleVerificationReady(fleetResult.vehicle.id);
       }

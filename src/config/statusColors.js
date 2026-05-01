@@ -50,6 +50,12 @@ export const normalizePaymentStatus = (status, remainingAmount = null) => {
     return 'paid';
   }
 
+  if (normalizedRemaining !== null && normalizedRemaining > 0) {
+    if (statusLower === 'overdue') return 'overdue';
+    if (statusLower === 'refunded') return 'refunded';
+    if (statusLower === 'partial' || statusLower === 'paid') return 'partial';
+  }
+
   return paymentStatusColors[statusLower] ? statusLower : 'unpaid';
 };
 

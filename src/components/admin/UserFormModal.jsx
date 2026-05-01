@@ -3,6 +3,7 @@ import { X, Eye, EyeOff } from 'lucide-react';
 import { supabase } from '../../utils/supabaseClient';
 import toast from 'react-hot-toast';
 import i18n from '../../i18n';
+import { assertCanCreateStaffUser, clearTenantRuntimeControlsCache } from '../../services/TenantLimitService';
 
 const UserFormModal = ({ isOpen, onClose, onUserCreated }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
@@ -39,6 +40,10 @@ const UserFormModal = ({ isOpen, onClose, onUserCreated }) => {
     setLoading(true);
     try {
       console.log('🔄 Creating new user...', formData.email);
+      const normalizedRole = String(formData?.role || '').trim().toLowerCase();
+      if (normalizedRole && normalizedRole !== 'customer') {
+        await assertCanCreateStaffUser();
+      }
       
       // Create user with Supabase Auth Admin API
       const { data, error } = await supabase.auth.admin.createUser({
@@ -54,6 +59,7 @@ const UserFormModal = ({ isOpen, onClose, onUserCreated }) => {
       if (error) throw error;
 
       console.log('✅ User created successfully:', data.user);
+      clearTenantRuntimeControlsCache();
       toast.success(tr(`User ${formData.email} created successfully!`, `L'utilisateur ${formData.email} a été créé avec succès !`));
       
       // Store password for credentials display

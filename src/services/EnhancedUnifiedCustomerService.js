@@ -4,8 +4,10 @@ import { buildApiUrl, GEMINI_PROXY_PATH } from './apiUrl.js';
 import { uploadFile } from '../utils/storageUpload.js';
 import { optimizeFileForUpload } from '../utils/storageUpload.js';
 import {
+  mergeUniqueCustomersById,
   normalizeCustomerIdentityFields,
   pickBestExistingCustomerMatch,
+  pickMostCompleteCustomerProfile,
 } from '../utils/customerIdentity.js';
 
 /**
@@ -27,15 +29,96 @@ class EnhancedUnifiedCustomerService {
     this.geminiProxyUrl = buildApiUrl(GEMINI_PROXY_PATH);
   }
 
+  normalizeOcrIdentityPayload(payload = {}) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    const fullName =
+      source.fullName ||
+      source.full_name ||
+      source.customer_name ||
+      source.name ||
+      source.raw_name ||
+      '';
+    const dateOfBirth =
+      source.dateOfBirth ||
+      source.date_of_birth ||
+      source.customer_dob ||
+      '';
+    const nationality =
+      source.nationality ||
+      source.customer_nationality ||
+      source.country ||
+      '';
+    const email =
+      source.email ||
+      source.customer_email ||
+      '';
+    const phone =
+      source.phone ||
+      source.customer_phone ||
+      '';
+    const normalizedIdentity = normalizeCustomerIdentityFields({
+      licenceNumber:
+        source.licence_number ||
+        source.license_number ||
+        source.document_number ||
+        source.idNumber ||
+        source.id_number,
+      idNumber:
+        source.idNumber ||
+        source.id_number ||
+        source.document_number ||
+        source.licence_number ||
+        source.license_number,
+    });
+    const canonicalDocumentNumber =
+      normalizedIdentity.licenceNumber ||
+      normalizedIdentity.idNumber ||
+      source.document_number ||
+      source.idNumber ||
+      source.id_number ||
+      source.licence_number ||
+      source.license_number ||
+      '';
+
+    return {
+      ...source,
+      fullName: fullName || null,
+      full_name: fullName || null,
+      customer_name: fullName || '',
+      dateOfBirth: dateOfBirth || null,
+      date_of_birth: dateOfBirth || null,
+      customer_dob: dateOfBirth || '',
+      nationality: nationality || null,
+      customer_nationality: nationality || '',
+      email: email || null,
+      customer_email: email || '',
+      phone: phone || null,
+      customer_phone: phone || '',
+      idNumber: canonicalDocumentNumber || null,
+      id_number: canonicalDocumentNumber || null,
+      customer_id_number: canonicalDocumentNumber || '',
+      licence_number: canonicalDocumentNumber || null,
+      customer_licence_number: canonicalDocumentNumber || '',
+      document_number: canonicalDocumentNumber || null,
+    };
+  }
+
+  hasMinimumOcrIdentity(payload = {}) {
+    const normalized = this.normalizeOcrIdentityPayload(payload);
+    return Boolean(
+      String(normalized.fullName || '').trim() &&
+      String(normalized.document_number || normalized.idNumber || '').trim()
+    );
+  }
+
   buildDirectOcrPrompt(mode = 'fast') {
     if (mode === 'fast') {
-      return `Extract the essential rental check-in fields from this ID document. Return ONLY this JSON object, with null for missing values:
+      return `Extract only the minimum rental check-in fields from this ID document. Return ONLY valid JSON, with double-quoted keys and string values, and null for missing values. Do not include explanations, markdown, or code fences.
 {
   "fullName": "full name",
   "dateOfBirth": "date of birth (YYYY-MM-DD)",
   "idNumber": "ID or license number",
-  "nationality": "nationality",
-  "rawText": "all extracted text"
+  "nationality": "nationality"
 }`;
     }
 
@@ -66,15 +149,52 @@ class EnhancedUnifiedCustomerService {
     });
   }
 
-  async requestDirectGeminiOCR(file, prompt) {
+  async requestDirectGeminiOCR(file, prompt, mode = 'fast') {
     const base64Image = await this.convertFileToBase64(file);
     const mimeType = file?.type || 'image/jpeg';
+
+    const parseJsonFromText = (rawText = '') => {
+      const text = String(rawText || '').trim();
+      if (!text) return {};
+
+      const fencedMatch =
+        text.match(/```json\s*([\s\S]*?)\s*```/i) ||
+        text.match(/```\s*([\s\S]*?)\s*```/i);
+      const candidateText = fencedMatch?.[1] || text;
+
+      const directCandidates = [
+        candidateText,
+        ...(candidateText.match(/\{[\s\S]*\}/g) || []),
+      ];
+
+      for (const candidate of directCandidates) {
+        try {
+          return JSON.parse(candidate);
+        } catch (_error) {
+          // Continue to repair attempts below.
+        }
+
+        try {
+          const repaired = candidate
+            .replace(/^[^{]*/, '')
+            .replace(/[^}]*$/, '')
+            .replace(/,\s*}/g, '}')
+            .replace(/,\s*]/g, ']');
+          return JSON.parse(repaired);
+        } catch (_error) {
+          // Continue searching.
+        }
+      }
+
+      return { rawText: text };
+    };
 
     let ocrData = {};
     let ocrUnavailable = false;
     let ocrErrorMessage = null;
 
     try {
+      const isFastMode = mode === 'fast';
       const geminiResponse = await fetch(this.geminiProxyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -96,8 +216,9 @@ class EnhancedUnifiedCustomerService {
             }
           ],
           generationConfig: {
-            maxOutputTokens: 8192,
-            temperature: 0.1
+            maxOutputTokens: isFastMode ? 512 : 2048,
+            temperature: 0,
+            responseMimeType: 'application/json',
           }
         })
       });
@@ -124,16 +245,7 @@ class EnhancedUnifiedCustomerService {
       const geminiResult = await geminiResponse.json();
       const ocrText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-      try {
-        const jsonMatch = ocrText.match(/```json\s*([\s\S]*?)\s*```/) || ocrText.match(/```\s*([\s\S]*?)\s*```/);
-        if (jsonMatch) {
-          ocrData = JSON.parse(jsonMatch[1]);
-        } else {
-          ocrData = JSON.parse(ocrText);
-        }
-      } catch (_parseError) {
-        ocrData = { rawText: ocrText };
-      }
+      ocrData = parseJsonFromText(ocrText);
     } catch (ocrError) {
       ocrUnavailable = true;
       ocrErrorMessage = ocrError.message || 'OCR unavailable';
@@ -236,25 +348,63 @@ class EnhancedUnifiedCustomerService {
     } = options;
 
     const prompt = this.buildDirectOcrPrompt(ocrMode);
+    const pipelineStartedAt = performance.now();
     const preparedFile = await this.prepareOcrFile(file);
-    // Mobile browsers can abort one of the streams if the same captured File is
-    // uploaded and read for OCR at the exact same time. Run these sequentially
-    // so camera-captured scans stay reliable on phones.
-    const uploadResult = await this.uploadPreparedOcrSourceImage(preparedFile, scanId, folder);
+    const preparedAt = performance.now();
+    const ocrFile = new File([preparedFile], preparedFile.name || 'document.webp', {
+      type: preparedFile.type || 'image/webp',
+      lastModified: Date.now(),
+    });
+    const uploadFileClone = new File([preparedFile], preparedFile.name || 'document.webp', {
+      type: preparedFile.type || 'image/webp',
+      lastModified: Date.now(),
+    });
+    const [uploadResult, ocrResult] = await Promise.all([
+      this.uploadPreparedOcrSourceImage(uploadFileClone, scanId, folder),
+      this.requestDirectGeminiOCR(ocrFile, prompt, ocrMode),
+    ]);
+    const completedAt = performance.now();
 
     if (!uploadResult.success) {
       console.error('❌ [UPLOAD] Failed:', uploadResult.error);
       throw new Error(`Upload failed: ${uploadResult.error}`);
     }
-
-    const ocrResult = await this.requestDirectGeminiOCR(preparedFile, prompt);
     const publicUrl = uploadResult.url;
-    const { ocrData, ocrUnavailable, ocrErrorMessage } = ocrResult;
+    let { ocrData, ocrUnavailable, ocrErrorMessage } = ocrResult;
+    let normalizedOcrData = this.normalizeOcrIdentityPayload(ocrData);
+
+    if (!ocrUnavailable && ocrMode === 'fast' && !this.hasMinimumOcrIdentity(normalizedOcrData)) {
+      console.warn('⚠️ [OCR PIPELINE] Fast OCR returned no usable identity. Falling back to full OCR.');
+      try {
+        const fallbackResult = await geminiVisionOCR.processIdDocument(ocrFile);
+        if (fallbackResult?.success && fallbackResult?.data) {
+          normalizedOcrData = this.normalizeOcrIdentityPayload(fallbackResult.data);
+          ocrData = normalizedOcrData;
+          console.log('✅ [OCR PIPELINE] Full OCR fallback recovered usable identity:', {
+            fullName: normalizedOcrData.fullName,
+            documentNumber: normalizedOcrData.document_number,
+          });
+        }
+      } catch (fallbackError) {
+        console.warn('⚠️ [OCR PIPELINE] Full OCR fallback failed:', fallbackError?.message || fallbackError);
+      }
+    }
+
+    if (!this.hasMinimumOcrIdentity(normalizedOcrData) && ocrData?.rawText) {
+      normalizedOcrData = this.normalizeOcrIdentityPayload(ocrData);
+    }
+
+    console.log('⚡ [OCR PIPELINE] timings', {
+      mode: ocrMode,
+      prepareMs: Math.round(preparedAt - pipelineStartedAt),
+      totalMs: Math.round(completedAt - pipelineStartedAt),
+      overlapMsSaved: Math.max(0, Math.round((completedAt - preparedAt))),
+    });
 
     return {
       success: true,
-      data: ocrData,
-      extractedData: ocrData,
+      data: normalizedOcrData,
+      extractedData: normalizedOcrData,
       imageUrl: publicUrl,
       ...(includePublicUrl ? { publicUrl } : {}),
       storagePath: uploadResult.path,
@@ -411,38 +561,99 @@ class EnhancedUnifiedCustomerService {
         throw new Error('Customer full name is required');
       }
 
-      // Step 7: DUPLICATE PREVENTION & CUSTOMER LOOKUP - FIXED to handle multiple results
+      // Step 7: DUPLICATE PREVENTION & CUSTOMER LOOKUP
       if (finalCustomerData.full_name) {
-        console.log('🔍 DUPLICATE CHECK: Checking for customer with name and licence:', {
+        console.log('🔍 DUPLICATE CHECK: Checking for customer with identity:', {
           name: finalCustomerData.full_name,
-          licence: finalCustomerData.licence_number
+          licence: finalCustomerData.licence_number,
+          idNumber: finalCustomerData.id_number,
+          phone: finalCustomerData.phone,
+          email: finalCustomerData.email,
         });
-        
-        const { data: duplicateCustomers, error: lookupError } = await supabase
-          .from('app_4c3a7a6153_customers')
-          .select('*')
-          .ilike('full_name', finalCustomerData.full_name)
-          .limit(5);
 
-        if (lookupError) {
-          console.error('❌ DUPLICATE CHECK: Error looking up customer:', lookupError);
-          throw new Error(`Customer lookup failed: ${lookupError.message}`);
+        let duplicateCustomer = null;
+
+        const runLookup = async (builder) => {
+          const { data, error } = await builder;
+          if (error) {
+            console.error('❌ DUPLICATE CHECK: Error looking up customer:', error);
+            throw new Error(`Customer lookup failed: ${error.message}`);
+          }
+          return data || [];
+        };
+
+        const exactMatchGroups = await Promise.all([
+          finalCustomerData.id_number
+            ? runLookup(
+                supabase
+                  .from('app_4c3a7a6153_customers')
+                  .select('*')
+                  .eq('id_number', finalCustomerData.id_number)
+                  .limit(10)
+              )
+            : Promise.resolve([]),
+          finalCustomerData.licence_number
+            ? runLookup(
+                supabase
+                  .from('app_4c3a7a6153_customers')
+                  .select('*')
+                  .eq('licence_number', finalCustomerData.licence_number)
+                  .limit(10)
+              )
+            : Promise.resolve([]),
+          finalCustomerData.phone
+            ? runLookup(
+                supabase
+                  .from('app_4c3a7a6153_customers')
+                  .select('*')
+                  .eq('phone', finalCustomerData.phone)
+                  .limit(10)
+              )
+            : Promise.resolve([]),
+          finalCustomerData.email
+            ? runLookup(
+                supabase
+                  .from('app_4c3a7a6153_customers')
+                  .select('*')
+                  .eq('email', finalCustomerData.email)
+                  .limit(10)
+              )
+            : Promise.resolve([]),
+        ]);
+
+        duplicateCustomer = pickMostCompleteCustomerProfile(
+          mergeUniqueCustomersById(...exactMatchGroups)
+        );
+
+        if (!duplicateCustomer) {
+          const { data: duplicateCustomers, error: lookupError } = await supabase
+            .from('app_4c3a7a6153_customers')
+            .select('*')
+            .ilike('full_name', finalCustomerData.full_name)
+            .limit(5);
+
+          if (lookupError) {
+            console.error('❌ DUPLICATE CHECK: Error looking up customer:', lookupError);
+            throw new Error(`Customer lookup failed: ${lookupError.message}`);
+          }
+
+          duplicateCustomer = pickBestExistingCustomerMatch({
+            incomingCustomer: finalCustomerData,
+            candidates: duplicateCustomers || [],
+          });
         }
-
-        // Check if we found any duplicates
-        const duplicateCustomer = pickBestExistingCustomerMatch({
-          incomingCustomer: finalCustomerData,
-          candidates: duplicateCustomers || [],
-        });
 
         if (duplicateCustomer && duplicateCustomer.id !== customerData.id) {
           console.log('✅ DUPLICATE CHECK: Customer already exists. Updating existing profile:', duplicateCustomer.id);
 
-          // Merge with existing customer, protecting manual input
+          // Merge with existing customer, preserving saved contact details unless the
+          // incoming payload explicitly contains a real replacement value.
           const updatePayload = {
             ...duplicateCustomer,
             ...finalCustomerData,
             id: duplicateCustomer.id, // Keep original ID
+            email: finalCustomerData.email ?? duplicateCustomer.email ?? null,
+            phone: finalCustomerData.phone ?? duplicateCustomer.phone ?? null,
             updated_at: new Date().toISOString()
           };
           
@@ -495,33 +706,44 @@ class EnhancedUnifiedCustomerService {
 
           let conflictingRecord = null;
 
-          // Try to find by licence_number first, then id_number, then phone, then strong full_name match
-          if (customerToUpsert.licence_number) {
-            const { data } = await supabase
-              .from('app_4c3a7a6153_customers')
-              .select('*')
-              .eq('licence_number', customerToUpsert.licence_number)
-              .limit(1);
-            conflictingRecord = data?.[0] ?? null;
-          }
+          const exactConflictGroups = await Promise.all([
+            customerToUpsert.licence_number
+              ? supabase
+                  .from('app_4c3a7a6153_customers')
+                  .select('*')
+                  .eq('licence_number', customerToUpsert.licence_number)
+                  .limit(10)
+                  .then(({ data }) => data || [])
+              : Promise.resolve([]),
+            customerToUpsert.id_number
+              ? supabase
+                  .from('app_4c3a7a6153_customers')
+                  .select('*')
+                  .eq('id_number', customerToUpsert.id_number)
+                  .limit(10)
+                  .then(({ data }) => data || [])
+              : Promise.resolve([]),
+            customerToUpsert.phone
+              ? supabase
+                  .from('app_4c3a7a6153_customers')
+                  .select('*')
+                  .eq('phone', customerToUpsert.phone)
+                  .limit(10)
+                  .then(({ data }) => data || [])
+              : Promise.resolve([]),
+            customerToUpsert.email
+              ? supabase
+                  .from('app_4c3a7a6153_customers')
+                  .select('*')
+                  .eq('email', customerToUpsert.email)
+                  .limit(10)
+                  .then(({ data }) => data || [])
+              : Promise.resolve([]),
+          ]);
 
-          if (!conflictingRecord && customerToUpsert.id_number) {
-            const { data } = await supabase
-              .from('app_4c3a7a6153_customers')
-              .select('*')
-              .eq('id_number', customerToUpsert.id_number)
-              .limit(1);
-            conflictingRecord = data?.[0] ?? null;
-          }
-
-          if (!conflictingRecord && customerToUpsert.phone) {
-            const { data } = await supabase
-              .from('app_4c3a7a6153_customers')
-              .select('*')
-              .eq('phone', customerToUpsert.phone)
-              .limit(1);
-            conflictingRecord = data?.[0] ?? null;
-          }
+          conflictingRecord = pickMostCompleteCustomerProfile(
+            mergeUniqueCustomersById(...exactConflictGroups)
+          ) ?? null;
 
           if (!conflictingRecord && customerToUpsert.full_name) {
             const { data } = await supabase

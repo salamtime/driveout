@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, Clock3, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantSession } from '../services/TenantRegistryService';
+import { hasBusinessOwnerRequest, isBusinessOwnerAccountType } from '../utils/accountType';
 import i18n from '../i18n';
 
 const statusToneMap = {
@@ -20,6 +21,15 @@ const PendingApproval = () => {
   const tr = (en, fr) => (isFrench ? fr : en);
   const verificationStatus = String(userProfile?.verificationStatus || 'pending').toLowerCase();
   const subscriptionStatus = String(userProfile?.subscriptionStatus || '').toLowerCase();
+  const accountType = String(userProfile?.accountType || '').trim().toLowerCase();
+  const isBusinessOwnerOnboarding =
+    isBusinessOwnerAccountType(accountType) ||
+    hasBusinessOwnerRequest({
+      account_type: userProfile?.accountType,
+      verification_status: userProfile?.verificationStatus,
+      certification_request_status: userProfile?.verificationStatus,
+      subscription_status: userProfile?.subscriptionStatus,
+    });
   const displayStatus = subscriptionStatus === 'suspended'
     ? 'suspended'
     : verificationStatus === 'approved'
@@ -45,14 +55,52 @@ const PendingApproval = () => {
       }
     };
 
-    if (displayStatus === 'approved') {
+    if (isBusinessOwnerOnboarding || displayStatus === 'approved') {
       void loadTenantSession();
     }
 
     return () => {
       cancelled = true;
     };
-  }, [displayStatus]);
+  }, [displayStatus, isBusinessOwnerOnboarding]);
+
+  const workspaceState = String(tenantSession?.workspaceState || tenantSession?.workspace_state || '').trim().toLowerCase();
+  const showsAutomaticWorkspacePreparation =
+    !['rejected', 'needs_info', 'suspended'].includes(displayStatus) &&
+    (['pending', 'provisioning', 'tenant_ready', 'no_workspace'].includes(workspaceState) || isBusinessOwnerOnboarding);
+
+  useEffect(() => {
+    if (!isBusinessOwnerOnboarding) {
+      return undefined;
+    }
+
+    if (['tenant_ready', 'failed', 'suspended', 'no_workspace'].includes(workspaceState)) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const session = await getTenantSession();
+        if (!cancelled) {
+          setTenantSession(session);
+        }
+      } catch {
+        if (!cancelled) {
+          setTenantSession((current) => current);
+        }
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void poll();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [isBusinessOwnerOnboarding, workspaceState]);
 
   useEffect(() => {
     if (tenantSession?.workspaceState === 'tenant_ready') {
@@ -126,15 +174,15 @@ const PendingApproval = () => {
       };
     }
 
-    if (displayStatus === 'approved') {
+    if (showsAutomaticWorkspacePreparation || displayStatus === 'approved') {
       return {
         icon: Clock3,
         title: tr('Your private business workspace is being prepared', 'Votre espace business privé est en cours de préparation'),
         description: tr(
-          'Your account is approved, but access to SaharaX internal operations modules stays blocked while your dedicated tenant workspace is prepared.',
-          "Votre compte est approuvé, mais l'accès aux modules internes SaharaX reste bloqué pendant la préparation de votre espace tenant dédié."
+          'We are creating your dedicated DriveOut workspace automatically. Keep this page open and we will take you in as soon as everything is ready.',
+          "Nous créons automatiquement votre espace DriveOut dédié. Gardez cette page ouverte et nous vous y emmènerons dès que tout sera prêt."
         ),
-        badge: tr('Provisioning', 'Provisionnement'),
+        badge: tr('Preparing workspace', 'Préparation de l’espace'),
       };
     }
 
@@ -147,7 +195,7 @@ const PendingApproval = () => {
       ),
       badge: tr('Pending', 'En attente'),
     };
-  }, [displayStatus, isFrench, rejectionReason, suspensionReason, tr]);
+  }, [displayStatus, isFrench, rejectionReason, showsAutomaticWorkspacePreparation, suspensionReason, tr]);
 
   const Icon = content.icon;
   const statusTone = statusToneMap[displayStatus] || statusToneMap.pending;
@@ -165,8 +213,8 @@ const PendingApproval = () => {
             </h1>
             <p className="mt-3 max-w-2xl text-sm font-medium text-violet-100">
               {tr(
-                'Your business owner activation is managed by the master owner before operations access is unlocked.',
-                "L'activation du compte business est gérée par le propriétaire maître avant le déverrouillage de l'accès opérations."
+                'Your business workspace is created automatically after signup. We are finishing the private tenant setup and will redirect you once it is ready.',
+                "Votre espace business est créé automatiquement après l’inscription. Nous terminons la configuration du tenant privé et vous redirigerons dès qu’il sera prêt."
               )}
             </p>
           </div>
@@ -199,15 +247,19 @@ const PendingApproval = () => {
                 </div>
               ) : null}
 
-              {displayStatus === 'approved' ? (
+              {showsAutomaticWorkspacePreparation || displayStatus === 'approved' ? (
                 <div className="mt-5 rounded-2xl border border-violet-200 bg-white px-4 py-4">
                   <p className="text-xs font-bold uppercase tracking-[0.18em] text-violet-500">
                     {tr('Provisioning status', 'Statut du provisionnement')}
                   </p>
                   <p className="mt-2 text-sm font-medium text-slate-700">
-                    {tenantSession?.workspaceState === 'provisioning'
-                      ? tr('Your tenant workspace is queued for provisioning.', 'Votre espace tenant est en file de provisionnement.')
-                      : tr('Your tenant workspace is being prepared.', 'Votre espace tenant est en cours de préparation.')}
+                    {tenantSession?.workspaceState === 'tenant_ready'
+                      ? tr('Your tenant workspace is ready. Redirecting now.', 'Votre espace tenant est prêt. Redirection en cours.')
+                      : tenantSession?.workspaceState === 'provisioning'
+                        ? tr('Your tenant workspace is currently provisioning.', 'Votre espace tenant est actuellement en cours de provisionnement.')
+                        : tenantSession?.workspaceState === 'pending'
+                        ? tr('Your tenant workspace request has been accepted and setup is starting.', 'La demande de votre espace tenant est acceptée et la configuration démarre.')
+                          : tr('Your tenant workspace is being prepared automatically. This can take a few minutes on the first setup.', 'Votre espace tenant est en cours de préparation automatique. Cela peut prendre quelques minutes lors de la première configuration.')}
                   </p>
                   {tenantSession?.tenantName ? (
                     <p className="mt-2 text-sm text-slate-500">

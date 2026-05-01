@@ -105,7 +105,7 @@ begin
   select
     platform_org_id,
     u.id,
-    case lower(coalesce(u.role, ''))
+    case lower(coalesce(u.role::text, ''))
       when 'owner' then 'org_owner'
       when 'admin' then 'org_admin'
       when 'guide' then 'guide'

@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { APP_USERS_TABLE, createSupabaseClients } from './supabase.js';
+import { APP_USERS_TABLE, PLATFORM_ADMIN_ACCOUNTS_TABLE, createSupabaseClients } from './supabase.js';
 
 const PLATFORM_OWNER_EMAILS = new Set(['salamtime2016@gmail.com']);
 const PLATFORM_ADMIN_EMAILS = new Set(['oualidazzouni10@gmail.com']);
@@ -7,6 +7,84 @@ const isPlatformOwnerEmail = (email = '') =>
   PLATFORM_OWNER_EMAILS.has(String(email || '').trim().toLowerCase());
 const isPlatformAdminEmail = (email = '') =>
   PLATFORM_ADMIN_EMAILS.has(String(email || '').trim().toLowerCase());
+
+const resolvePermissionsMap = (value) => {
+  if (!value) return {};
+  if (Array.isArray(value)) {
+    return value.reduce((acc, permission) => {
+      if (!permission?.module_name) return acc;
+      acc[permission.module_name] = permission.has_access === true;
+      return acc;
+    }, {});
+  }
+  if (typeof value === 'object') {
+    return value;
+  }
+  return {};
+};
+
+const isPlatformAccessTableUnavailable = (error) => {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '').toLowerCase();
+  const details = String(error?.details || '').toLowerCase();
+
+  return (
+    code === '42P01' ||
+    code === 'PGRST205' ||
+    code === 'PGRST204' ||
+    message.includes('does not exist') ||
+    message.includes('schema cache') ||
+    details.includes('schema cache')
+  );
+};
+
+const loadPlatformAccessRecord = async (adminClient, user) => {
+  if (!user?.id) {
+    return null;
+  }
+
+  const { data, error } = await adminClient
+    .from(PLATFORM_ADMIN_ACCOUNTS_TABLE)
+    .select('*')
+    .eq('auth_user_id', user.id)
+    .maybeSingle();
+
+  if (error) {
+    if (isPlatformAccessTableUnavailable(error)) {
+      return null;
+    }
+    throw error;
+  }
+
+  return data || null;
+};
+
+export const resolvePlatformAccessContext = async (adminClient, user) => {
+  const normalizedEmail = String(user?.email || '').trim().toLowerCase();
+  const record = await loadPlatformAccessRecord(adminClient, user);
+  const recordPermissions = resolvePermissionsMap(record?.permissions);
+  const roleFromRecord = String(record?.platform_role || '').trim().toLowerCase();
+  const accessEnabled = record ? record.access_enabled !== false : true;
+  const isOwner =
+    accessEnabled &&
+    (roleFromRecord === 'platform_owner' || isPlatformOwnerEmail(normalizedEmail));
+  const isAdmin =
+    accessEnabled &&
+    (
+      roleFromRecord === 'platform_owner' ||
+      roleFromRecord === 'platform_admin' ||
+      isPlatformOwnerEmail(normalizedEmail) ||
+      isPlatformAdminEmail(normalizedEmail)
+    );
+
+  return {
+    record,
+    permissions: recordPermissions,
+    accessEnabled,
+    isPlatformOwner: isOwner,
+    isPlatformAdmin: isAdmin,
+  };
+};
 
 const getAuthHeader = (req) => req.headers.authorization || req.headers.Authorization;
 
@@ -164,15 +242,16 @@ export const requireOwner = async (req) => {
       .eq('id', user.id)
       .maybeSingle();
 
+    const platformAccess = await resolvePlatformAccessContext(adminClient, user);
     const effectiveRole = profile?.role || user.user_metadata?.role;
 
-    if (effectiveRole !== 'owner' && !isPlatformOwnerEmail(user?.email)) {
+    if (effectiveRole !== 'owner' && !platformAccess.isPlatformOwner) {
       return {
         error: { status: 403, body: { error: 'Owner access required' } },
       };
     }
 
-    return { user, adminClient };
+    return { user, adminClient, platformAccess };
   } catch (error) {
     return {
       error: { status: 500, body: { error: error.message } },
@@ -189,21 +268,6 @@ export const requireOwnerOrAdmin = async (req) => {
 
   const { user, adminClient } = auth;
 
-  const resolvePermissionsMap = (value) => {
-    if (!value) return {};
-    if (Array.isArray(value)) {
-      return value.reduce((acc, permission) => {
-        if (!permission?.module_name) return acc;
-        acc[permission.module_name] = permission.has_access === true;
-        return acc;
-      }, {});
-    }
-    if (typeof value === 'object') {
-      return value;
-    }
-    return {};
-  };
-
   try {
     const { data: profile } = await adminClient
       .from(APP_USERS_TABLE)
@@ -211,6 +275,7 @@ export const requireOwnerOrAdmin = async (req) => {
       .eq('id', user.id)
       .maybeSingle();
 
+    const platformAccess = await resolvePlatformAccessContext(adminClient, user);
     const effectiveRole = String(profile?.role || user.user_metadata?.role || user.app_metadata?.role || '').trim().toLowerCase();
     const permissionsMap = resolvePermissionsMap(profile?.permissions || user.user_metadata?.permissions || null);
     const adminSignals = [
@@ -222,13 +287,76 @@ export const requireOwnerOrAdmin = async (req) => {
     ];
     const hasAdminPermission = adminSignals.some((permissionKey) => permissionsMap[permissionKey] === true);
 
-    if (!['owner', 'admin'].includes(effectiveRole) && !hasAdminPermission && !isPlatformOwnerEmail(user?.email) && !isPlatformAdminEmail(user?.email)) {
+    if (!['owner', 'admin'].includes(effectiveRole) && !hasAdminPermission && !platformAccess.isPlatformAdmin) {
       return {
         error: { status: 403, body: { error: 'Owner or admin access required' } },
       };
     }
 
-    return { user, adminClient };
+    return { user, adminClient, platformAccess };
+  } catch (error) {
+    return {
+      error: { status: 500, body: { error: error.message } },
+    };
+  }
+};
+
+export const requirePlatformOwner = async (req) => {
+  const auth = await authenticateRequest(req);
+
+  if (auth.error) {
+    return auth;
+  }
+
+  const { user, adminClient } = auth;
+
+  try {
+    const platformAccess = await resolvePlatformAccessContext(adminClient, user);
+
+    if (!platformAccess.isPlatformOwner) {
+      return {
+        error: { status: 403, body: { error: 'Platform owner access required' } },
+      };
+    }
+
+    return { user, adminClient, platformAccess };
+  } catch (error) {
+    return {
+      error: { status: 500, body: { error: error.message } },
+    };
+  }
+};
+
+export const requirePlatformOwnerOrAdmin = async (req, requiredPermission = '') => {
+  const auth = await authenticateRequest(req);
+
+  if (auth.error) {
+    return auth;
+  }
+
+  const { user, adminClient } = auth;
+
+  try {
+    const platformAccess = await resolvePlatformAccessContext(adminClient, user);
+
+    if (!platformAccess.isPlatformAdmin) {
+      return {
+        error: { status: 403, body: { error: 'Platform admin access required' } },
+      };
+    }
+
+    const resolvedPermission = String(requiredPermission || '').trim();
+    if (
+      resolvedPermission &&
+      !platformAccess.isPlatformOwner &&
+      platformAccess.permissions[resolvedPermission] !== true
+    ) {
+      return {
+        error: { status: 403, body: { error: `${resolvedPermission} permission required` } },
+      };
+    }
+
+    return { user, adminClient, platformAccess };
   } catch (error) {
     return {
       error: { status: 500, body: { error: error.message } },

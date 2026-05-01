@@ -1,5 +1,6 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { supabase } from '../../utils/supabaseClient';
+import { assertCanCreateStaffUser, clearTenantRuntimeControlsCache } from '../../services/TenantLimitService';
 
 // Async thunks
 export const fetchUsers = createAsyncThunk(
@@ -57,6 +58,10 @@ export const createUser = createAsyncThunk(
   async (userData, { rejectWithValue }) => {
     try {
       console.log('👤 Creating user:', userData);
+      const normalizedRole = String(userData?.role || '').trim().toLowerCase();
+      if (normalizedRole && normalizedRole !== 'customer') {
+        await assertCanCreateStaffUser();
+      }
       
       // Create user in auth first
       const { data: authData, error: authError } = await supabase.auth.admin.createUser({
@@ -93,6 +98,7 @@ export const createUser = createAsyncThunk(
       }
       
       console.log('✅ User created successfully:', authData.user);
+      clearTenantRuntimeControlsCache();
       
       return {
         id: authData.user.id,

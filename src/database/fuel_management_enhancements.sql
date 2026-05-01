@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS public.vehicle_fuel_state (
 
 ALTER TABLE public.vehicle_fuel_state ENABLE ROW LEVEL SECURITY;
 
+GRANT USAGE ON SCHEMA public TO authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.vehicle_fuel_state TO authenticated, service_role;
+
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -78,6 +81,8 @@ CREATE TABLE IF NOT EXISTS public.fuel_operation_logs (
 );
 
 ALTER TABLE public.fuel_operation_logs ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.fuel_operation_logs TO authenticated, service_role;
 
 DO $$
 BEGIN
@@ -134,6 +139,11 @@ SET
   performed_by_name = COALESCE(performed_by_name, filled_by),
   source = COALESCE(source, 'tank_transfer'),
   is_financial_expense = false;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.fuel_tank TO authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.fuel_refills TO authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.vehicle_fuel_refills TO authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.fuel_withdrawals TO authenticated, service_role;
 
 -- 5. Helpful indexes
 CREATE INDEX IF NOT EXISTS idx_vehicle_fuel_state_last_updated_at

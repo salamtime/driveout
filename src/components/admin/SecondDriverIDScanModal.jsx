@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   X, Upload, FileImage, Loader, CheckCircle, AlertCircle, User, 
   CreditCard, Calendar, MapPin, Scan, FileText, Globe, Mail, Phone,
@@ -400,8 +401,13 @@ const SecondDriverIDScanModal = ({
     activeTab === 'manual' || canSubmitFromScan
   );
 
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+  return createPortal(
+    <div
+      className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-[10050] p-0 sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      data-admin-modal-open="true"
+    >
       {/* Mobile Bottom Sheet / Desktop Modal */}
       <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl h-[90vh] sm:h-auto max-h-[90vh] flex flex-col">
         {/* Header */}
@@ -876,7 +882,8 @@ const SecondDriverIDScanModal = ({
         </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 

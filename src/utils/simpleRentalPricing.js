@@ -1,5 +1,14 @@
 export const DEFAULT_SIMPLE_RENTAL_GRACE_MINUTES = 60;
 
+export const isPackagePricingEnabled = (rentalLike = {}) => {
+  const value = rentalLike?.use_package_pricing;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+};
+
 const toNumber = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -327,6 +336,7 @@ export const calculateSimpleRentalPricing = ({
   hourlyRate = 0,
   totalKmUsed = 0,
   packages = [],
+  usePackagePricing = true,
   rentalType = 'hourly',
   originalPackage = null,
   durationUnits = null,
@@ -344,14 +354,20 @@ export const calculateSimpleRentalPricing = ({
     : Math.max(1, requestedDurationUnits);
   const safeHourlyRate = Math.max(0, toNumber(hourlyRate, 0));
   const safeKmUsed = Math.max(0, toNumber(totalKmUsed, 0));
-  const packageMatch = selectBestKilometerPackage(packages, safeKmUsed, {
-    rentalType: normalizedRentalType,
-    durationMinutes,
-    gracePeriodMinutes,
-    billedUnits: billedHours,
-    originalPackage,
-    requestedDurationUnits,
-  });
+  const packageMatch = usePackagePricing
+    ? selectBestKilometerPackage(packages, safeKmUsed, {
+        rentalType: normalizedRentalType,
+        durationMinutes,
+        gracePeriodMinutes,
+        billedUnits: billedHours,
+        originalPackage,
+        requestedDurationUnits,
+      })
+    : {
+        selectedPackage: null,
+        packageLimitKm: 0,
+        packageOverflowKm: 0,
+      };
 
   return {
     durationMinutes,

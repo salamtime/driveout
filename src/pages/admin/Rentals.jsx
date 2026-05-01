@@ -13,7 +13,7 @@ import rentalSummaryService from '../../services/RentalSummaryService';
 import { DEFAULT_RENTAL_TIMING_SETTINGS, deriveEffectiveRentalStatus, getScheduledRentalTimingState, normalizeRentalLifecycle } from '../../utils/rentalLifecycle';
 import { getPaymentStatusStyle, normalizePaymentStatus } from '../../config/statusColors';
 import { roundTo } from '../../utils/fuelMath';
-import { Plus, Clock, ClipboardList, List, Grid, LayoutGrid, CheckCircle, XCircle, Calendar, MessageCircle, RectangleHorizontal } from 'lucide-react';
+import { Plus, Clock, ClipboardList, List, Grid, LayoutGrid, CheckCircle, XCircle, Calendar, MessageCircle, RectangleHorizontal, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import i18n from '../../i18n';
@@ -332,6 +332,65 @@ const getStoredRentalsWorkspace = () => {
 };
 const STATUS_TAB_KEYS = ['all', 'active', 'scheduled', 'completed', 'no_show_review', 'cancelled', 'maintenance', 'impounded'];
 
+const toDateInputValue = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const localDate = new Date(date);
+  localDate.setMinutes(localDate.getMinutes() - localDate.getTimezoneOffset());
+  return localDate.toISOString().slice(0, 10);
+};
+
+const fromDateInputValue = (value) => {
+  if (!value) return new Date();
+  const parsed = new Date(`${value}T12:00:00`);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+};
+
+const startOfWeek = (date) => {
+  const base = new Date(date);
+  const day = base.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  base.setDate(base.getDate() + diff);
+  base.setHours(12, 0, 0, 0);
+  return base;
+};
+
+const endOfWeek = (date) => {
+  const base = startOfWeek(date);
+  base.setDate(base.getDate() + 6);
+  base.setHours(12, 0, 0, 0);
+  return base;
+};
+
+const startOfMonth = (date) => {
+  const base = new Date(date);
+  base.setDate(1);
+  base.setHours(12, 0, 0, 0);
+  return base;
+};
+
+const normalizeDateRange = (start, end) => {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  startDate.setHours(12, 0, 0, 0);
+  endDate.setHours(12, 0, 0, 0);
+  return startDate <= endDate
+    ? { start: startDate, end: endDate }
+    : { start: endDate, end: startDate };
+};
+
+const isSameCalendarDay = (left, right) => {
+  const leftDate = new Date(left);
+  const rightDate = new Date(right);
+  return toDateInputValue(leftDate) === toDateInputValue(rightDate);
+};
+
+const isDateWithinInclusiveRange = (date, start, end) => {
+  const target = new Date(date).getTime();
+  const from = new Date(start).getTime();
+  const to = new Date(end).getTime();
+  return target >= from && target <= to;
+};
+
 const toSafeDate = (value) => {
   const parsed = value ? new Date(value) : null;
   return parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed : null;
@@ -370,7 +429,15 @@ const getBusinessWeekWindow = (now = new Date()) => {
   return { start, end };
 };
 
-const getDateFocusWindow = (focus, workspace, now = new Date()) => {
+const getDateFocusWindow = (focus, workspace, now = new Date(), customRange = null) => {
+  if (focus === 'custom' && customRange?.start && customRange?.end) {
+    const start = new Date(customRange.start);
+    const end = new Date(customRange.end);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  }
+
   if (focus === 'day') {
     return getBusinessDayWindow(now);
   }
@@ -391,6 +458,20 @@ const getDateFocusWindow = (focus, workspace, now = new Date()) => {
     }
 
     return getBusinessWeekWindow(now);
+  }
+
+  if (focus === 'last7') {
+    const { end } = getBusinessDayWindow(now);
+    const start = new Date(end);
+    start.setDate(start.getDate() - 7);
+    return { start, end };
+  }
+
+  if (focus === 'month') {
+    const { end } = getBusinessDayWindow(now);
+    const start = startOfMonth(now);
+    start.setHours(BUSINESS_DAY_START_HOUR, 0, 0, 0);
+    return { start, end };
   }
 
   return null;
@@ -453,9 +534,10 @@ const getRentalFinancialSnapshot = (rental) => {
       ? balanceDue
       : storedRemainingAmount
   );
-  const amountPaid = normalizedPaymentStatus === 'paid'
-    ? grandTotal
-    : cappedPaidAmount;
+  // Rental Details displays the saved paid amount from the contract row.
+  // Keep the list consistent with that source of truth instead of inflating
+  // paid-in-full rows to the grand total when remaining_amount is zero.
+  const amountPaid = cappedPaidAmount;
 
   let status = 'UNPAID';
   let className = 'rounded-full bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-100';
@@ -852,6 +934,11 @@ const Rentals = () => {
   const [availabilityQuickFilter, setAvailabilityQuickFilter] = useState('all');
   const [dateFocusFilter, setDateFocusFilter] = useState(() => getDefaultDateFocusForWorkspace(initialWorkspaceTab));
   const [dateFocusCounts, setDateFocusCounts] = useState(() => warmRentalsSnapshot?.dateFocusCounts || { day: 0, week: 0 });
+  const [showDateFocusPanel, setShowDateFocusPanel] = useState(false);
+  const [bouncingWeekDayKey, setBouncingWeekDayKey] = useState(null);
+  const [bouncingDateFocusLauncher, setBouncingDateFocusLauncher] = useState(false);
+  const [customDateRange, setCustomDateRange] = useState(null);
+  const [dateFocusAnchor, setDateFocusAnchor] = useState(() => toDateInputValue(new Date()));
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 640 : false
   );
@@ -875,6 +962,22 @@ const Rentals = () => {
   const isFetchingRentalsRef = useRef(false);
   const activeRentalsFetchRef = useRef(null);
   const userSelectedWorkspaceRef = useRef(false);
+  const quickDayBounceTimeoutRef = useRef(null);
+  const dateFocusLauncherBounceTimeoutRef = useRef(null);
+  const lastQuickDateTapRef = useRef({ key: null, timestamp: 0 });
+
+  const dateFocusAnchorDate = useMemo(() => fromDateInputValue(dateFocusAnchor), [dateFocusAnchor]);
+  const weekStart = useMemo(() => startOfWeek(dateFocusAnchorDate), [dateFocusAnchorDate]);
+  const weekEnd = useMemo(() => endOfWeek(dateFocusAnchorDate), [dateFocusAnchorDate]);
+  const weekDays = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, index) => {
+        const day = new Date(weekStart);
+        day.setDate(weekStart.getDate() + index);
+        return day;
+      }),
+    [weekStart]
+  );
 
   const matchesWorkspaceTab = useCallback((rental, targetTab = workspaceTab) => {
     if (!targetTab || targetTab === 'all') return true;
@@ -943,6 +1046,37 @@ const Rentals = () => {
     return () => window.removeEventListener('resize', updateViewport);
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (quickDayBounceTimeoutRef.current) {
+        window.clearTimeout(quickDayBounceTimeoutRef.current);
+      }
+      if (dateFocusLauncherBounceTimeoutRef.current) {
+        window.clearTimeout(dateFocusLauncherBounceTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const triggerQuickDayBounce = useCallback((key) => {
+    setBouncingWeekDayKey(key);
+    if (quickDayBounceTimeoutRef.current) {
+      window.clearTimeout(quickDayBounceTimeoutRef.current);
+    }
+    quickDayBounceTimeoutRef.current = window.setTimeout(() => {
+      setBouncingWeekDayKey((current) => (current === key ? null : current));
+    }, 340);
+  }, []);
+
+  const triggerDateFocusLauncherBounce = useCallback(() => {
+    setBouncingDateFocusLauncher(true);
+    if (dateFocusLauncherBounceTimeoutRef.current) {
+      window.clearTimeout(dateFocusLauncherBounceTimeoutRef.current);
+    }
+    dateFocusLauncherBounceTimeoutRef.current = window.setTimeout(() => {
+      setBouncingDateFocusLauncher(false);
+    }, 340);
+  }, []);
+
   const vehicleAvailabilitySummary = useMemo(() => {
     const safeVehicles = Array.isArray(vehicles) ? vehicles : [];
     const activeVehicleIds = new Set((rentalOverviewSnapshot.activeVehicleIds || []).map(String));
@@ -983,6 +1117,84 @@ const Rentals = () => {
 
     return summary;
   }, [vehicles, rentalOverviewSnapshot]);
+
+  const applyQuickRange = useCallback((mode, payloadDate = new Date()) => {
+    const todayBase = new Date();
+    todayBase.setHours(12, 0, 0, 0);
+    const base = new Date(payloadDate);
+    base.setHours(12, 0, 0, 0);
+
+    let nextAnchor = new Date(base);
+    if (mode === 'today') {
+      nextAnchor = new Date(todayBase);
+      setDateFocusFilter('day');
+    } else if (mode === 'yesterday') {
+      nextAnchor = new Date(todayBase);
+      nextAnchor.setDate(nextAnchor.getDate() - 1);
+      setDateFocusFilter('day');
+    } else if (mode === 'week') {
+      setDateFocusFilter('week');
+    } else if (mode === 'last7') {
+      setDateFocusFilter('last7');
+    } else if (mode === 'month') {
+      setDateFocusFilter('month');
+    } else if (mode === 'day') {
+      setDateFocusFilter('day');
+    }
+
+    setCustomDateRange(null);
+    setDateFocusAnchor(toDateInputValue(nextAnchor));
+  }, []);
+
+  const shiftWeek = useCallback((direction) => {
+    const nextAnchor = new Date(dateFocusAnchorDate);
+    nextAnchor.setDate(nextAnchor.getDate() + direction * 7);
+    applyQuickRange('week', nextAnchor);
+  }, [applyQuickRange, dateFocusAnchorDate]);
+
+  const clearCustomDateRange = useCallback(() => {
+    lastQuickDateTapRef.current = { key: null, timestamp: 0 };
+    setCustomDateRange(null);
+    applyQuickRange('day', new Date());
+  }, [applyQuickRange]);
+
+  const handleQuickDayPress = useCallback((day) => {
+    const targetDate = day instanceof Date ? new Date(day) : new Date(day);
+    if (Number.isNaN(targetDate.getTime())) return;
+
+    const nextKey = toDateInputValue(targetDate);
+    triggerQuickDayBounce(nextKey);
+    const now = Date.now();
+    const lastTap = lastQuickDateTapRef.current;
+    const isDoubleTap = lastTap.key === nextKey && now - lastTap.timestamp <= 350;
+
+    if (customDateRange?.start) {
+      if (!customDateRange.end) {
+        const normalizedRange = normalizeDateRange(customDateRange.start, targetDate);
+        setCustomDateRange(normalizedRange);
+        setDateFocusFilter('custom');
+        setDateFocusAnchor(toDateInputValue(normalizedRange.end));
+        lastQuickDateTapRef.current = { key: nextKey, timestamp: now };
+        return;
+      }
+
+      setCustomDateRange(null);
+      applyQuickRange('day', targetDate);
+      lastQuickDateTapRef.current = { key: nextKey, timestamp: now };
+      return;
+    }
+
+    if (isDoubleTap) {
+      const normalizedStart = new Date(targetDate);
+      normalizedStart.setHours(12, 0, 0, 0);
+      setCustomDateRange({ start: normalizedStart, end: null });
+      lastQuickDateTapRef.current = { key: nextKey, timestamp: now };
+      return;
+    }
+
+    applyQuickRange('day', targetDate);
+    lastQuickDateTapRef.current = { key: nextKey, timestamp: now };
+  }, [applyQuickRange, customDateRange, triggerQuickDayBounce]);
   
   const [videoContractModal, setVideoContractModal] = useState({
     isOpen: false,
@@ -2158,13 +2370,28 @@ const Rentals = () => {
       return true;
     }
 
-    const now = new Date();
-    const window = getDateFocusWindow(focus, workspaceTab, now);
+    const anchorDate = focus === dateFocusFilter ? dateFocusAnchorDate : new Date();
+    const window = getDateFocusWindow(
+      focus,
+      workspaceTab,
+      anchorDate,
+      focus === 'custom' || focus === dateFocusFilter ? customDateRange : null
+    );
 
     return window ? doesRentalIntersectWindow(rental, window.start, window.end) : true;
-  }, [dateFocusFilter, workspaceTab]);
+  }, [customDateRange, dateFocusAnchorDate, dateFocusFilter, workspaceTab]);
 
   const isDateFocusScoped = Boolean(dateFocusFilter && dateFocusFilter !== 'all');
+  const hasDateFocusOverride = useMemo(() => {
+    const defaultDateFocus = getDefaultDateFocusForWorkspace(workspaceTab);
+    const todayAnchor = toDateInputValue(new Date());
+    const isNonDefaultDayAnchor =
+      defaultDateFocus === 'day' &&
+      dateFocusFilter === 'day' &&
+      dateFocusAnchor !== todayAnchor;
+
+    return Boolean(customDateRange?.start) || Boolean(isNonDefaultDayAnchor) || (dateFocusFilter && dateFocusFilter !== defaultDateFocus);
+  }, [customDateRange, dateFocusAnchor, dateFocusFilter, workspaceTab]);
 
   const dateFocusRentalSource = useMemo(
     () => (isDateFocusScoped && rentalUniverse.length > 0 ? rentalUniverse : rentals),
@@ -2180,7 +2407,7 @@ const Rentals = () => {
     const normalizedPhoneSearch = normalizePhone(normalizedSearch);
 
     return searchSource.filter((rental) => {
-      if (!isBroadSearch && !matchesWorkspaceTab(rental)) {
+      if (!isBroadSearch && !hasDateFocusOverride && !matchesWorkspaceTab(rental)) {
         return false;
       }
 
@@ -2227,7 +2454,7 @@ const Rentals = () => {
 
       return textMatches || phoneMatches;
     });
-  }, [dateFocusRentalSource, deferredSearchTerm, matchesDateFocusFilter, matchesWorkspaceTab, rentalUniverse]);
+  }, [dateFocusRentalSource, deferredSearchTerm, hasDateFocusOverride, matchesDateFocusFilter, matchesWorkspaceTab, rentalUniverse]);
 
   const filteredRentals = useMemo(() => {
     const normalizedStatus = String(statusFilter || 'all').toLowerCase();
@@ -2319,6 +2546,241 @@ const Rentals = () => {
     const weekCount = workspaceRentals.filter((rental) => matchesDateFocusFilter(rental, 'week')).length;
     return { day: dayCount, week: weekCount };
   }, [matchesDateFocusFilter, matchesWorkspaceTab, rentalUniverse, rentals]);
+
+  const activeQuickRangeLabel = useMemo(() => {
+    const todayBase = new Date();
+    todayBase.setHours(12, 0, 0, 0);
+    const yesterdayBase = new Date(todayBase);
+    yesterdayBase.setDate(yesterdayBase.getDate() - 1);
+    const last7Start = new Date(dateFocusAnchorDate);
+    last7Start.setDate(last7Start.getDate() - 6);
+
+    if (customDateRange?.start && customDateRange?.end) {
+      return `${tr('Custom Range', 'Plage personnalisée')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - ${customDateRange.end.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    if (customDateRange?.start) {
+      return `${tr('Custom Range Start', 'Début plage personnalisée')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    if (dateFocusFilter === 'day' && isSameCalendarDay(dateFocusAnchorDate, todayBase)) {
+      return `${tr('Today', "Aujourd'hui")} • ${todayBase.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    if (dateFocusFilter === 'day' && isSameCalendarDay(dateFocusAnchorDate, yesterdayBase)) {
+      return `${tr('Yesterday', 'Hier')} • ${yesterdayBase.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    if (dateFocusFilter === 'day') {
+      return `${tr('Selected Date', 'Date sélectionnée')} • ${dateFocusAnchorDate.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    if (dateFocusFilter === 'week') {
+      return `${tr('Week focus', 'Focus semaine')} • ${weekStart.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - ${weekEnd.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    if (dateFocusFilter === 'month') {
+      return `${tr('Month focus', 'Focus mois')} • ${dateFocusAnchorDate.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'long', year: 'numeric' })}`;
+    }
+    if (dateFocusFilter === 'last7') {
+      return `${tr('Last 7 Days', '7 derniers jours')} • ${last7Start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - ${dateFocusAnchorDate.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`;
+    }
+    return tr('All rentals', 'Toutes les locations');
+  }, [customDateRange, dateFocusAnchorDate, dateFocusFilter, isFrench, weekEnd, weekStart]);
+
+  const formatPreviewDate = useCallback((value) => {
+    if (!value) return '';
+    return fromDateInputValue(value).toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', {
+      month: 'short',
+      day: 'numeric',
+    });
+  }, [isFrench]);
+
+  const collapsedDateFocusLabel = customDateRange?.start
+    ? customDateRange.end
+      ? `${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} → ${customDateRange.end.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`
+      : `${tr('Start', 'Début')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`
+    : activeQuickRangeLabel;
+
+  const collapsedDateFocusMeta = customDateRange?.start
+    ? customDateRange.end
+      ? tr('Custom range active', 'Plage personnalisée active')
+      : tr('Choose the end date', 'Choisissez la date de fin')
+    : dateFocusFilter === 'all'
+      ? tr('Showing every rental', 'Toutes les locations affichées')
+      : dateFocusFilter === 'day'
+        ? formatPreviewDate(dateFocusAnchor)
+        : dateFocusFilter === 'week'
+          ? `${formatPreviewDate(toDateInputValue(weekStart))} → ${formatPreviewDate(toDateInputValue(weekEnd))}`
+          : dateFocusFilter === 'month'
+            ? dateFocusAnchorDate.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'long', year: 'numeric' })
+            : dateFocusFilter === 'last7'
+              ? tr('Rolling 7-day window', 'Fenêtre glissante de 7 jours')
+              : tr('Date focus active', 'Focus date actif');
+
+  const renderDateFocusControls = () => (
+    <div className={`rounded-[20px] border p-3 shadow-sm transition-all ${
+      showDateFocusPanel
+        ? 'border-violet-200 bg-gradient-to-br from-violet-100 via-[#f5f0ff] to-indigo-100 shadow-[0_18px_42px_rgba(79,70,229,0.14)]'
+        : 'border-violet-100 bg-slate-50/70'
+    }`}>
+      <button
+        type="button"
+        onClick={() => {
+          triggerDateFocusLauncherBounce();
+          setShowDateFocusPanel((value) => !value);
+        }}
+        className={`group w-full rounded-[1.25rem] border px-4 py-3 text-left transition-all ${bouncingDateFocusLauncher ? 'quick-date-tap-bounce' : ''} ${
+          showDateFocusPanel
+            ? 'border-violet-300 bg-white shadow-[0_16px_36px_rgba(79,70,229,0.14)]'
+            : 'border-violet-200 bg-white shadow-[0_12px_28px_rgba(15,23,42,0.06)] hover:border-violet-300 hover:shadow-[0_16px_34px_rgba(79,70,229,0.10)]'
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-100 text-violet-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]">
+            <Calendar className="h-5 w-5" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-semibold tracking-[0.02em] text-slate-950">{tr('Fast Date Focus', 'Focus date rapide')}</p>
+              <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-700">
+                {collapsedDateFocusLabel}
+              </span>
+            </div>
+            <p className="mt-1 truncate text-xs font-medium text-slate-500">{collapsedDateFocusMeta}</p>
+          </div>
+
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.14)] transition-all duration-150 ease-out ${showDateFocusPanel ? 'rotate-180' : 'group-hover:scale-[1.03] group-hover:bg-violet-600 group-hover:text-white group-hover:shadow-[0_14px_32px_rgba(124,58,237,0.22)]'}`}>
+            <ChevronDown className="h-4 w-4" />
+          </div>
+        </div>
+      </button>
+
+      <div className={showDateFocusPanel ? 'mt-3 block' : 'hidden'}>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: 'today', label: tr('Today', "Aujourd'hui") },
+            { key: 'yesterday', label: tr('Yesterday', 'Hier') },
+            { key: 'week', label: tr('This Week', 'Cette semaine') },
+            { key: 'last7', label: tr('Last 7 Days', '7 derniers jours') },
+            { key: 'month', label: tr('This Month', 'Ce mois') },
+          ].map((chip) => {
+            const isActive =
+              (chip.key === 'today' && dateFocusFilter === 'day' && isSameCalendarDay(dateFocusAnchorDate, new Date())) ||
+              (chip.key === 'yesterday' && (() => {
+                const yesterday = new Date();
+                yesterday.setDate(yesterday.getDate() - 1);
+                return dateFocusFilter === 'day' && isSameCalendarDay(dateFocusAnchorDate, yesterday);
+              })()) ||
+              (chip.key !== 'today' && chip.key !== 'yesterday' && dateFocusFilter === chip.key);
+
+            return (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={() => applyQuickRange(chip.key, new Date())}
+                className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                  isActive
+                    ? 'border-violet-300 bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_10px_22px_rgba(79,70,229,0.20)]'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:bg-white hover:text-violet-700'
+                }`}
+              >
+                {chip.label}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => setDateFocusFilter('all')}
+            className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+              dateFocusFilter === 'all'
+                ? 'border-violet-300 bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_10px_22px_rgba(79,70,229,0.20)]'
+                : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:bg-white hover:text-violet-700'
+            }`}
+          >
+            {tr('All rentals', 'Toutes')}
+          </button>
+        </div>
+
+        {customDateRange?.start ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700">
+              <span>
+                {customDateRange.end
+                  ? `${tr('Custom range', 'Plage personnalisée')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - ${customDateRange.end.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`
+                  : `${tr('Custom range start', 'Début plage personnalisée')} • ${customDateRange.start.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}`}
+              </span>
+              <span className="text-violet-300">•</span>
+              <button
+                type="button"
+                onClick={clearCustomDateRange}
+                className="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.14em] text-violet-700 transition hover:bg-violet-100"
+              >
+                {tr('Clear', 'Effacer')}
+              </button>
+            </div>
+            {!customDateRange.end ? (
+              <p className="text-[11px] font-medium text-slate-500">
+                {tr('Tap another date to complete the range.', 'Touchez une autre date pour terminer la plage.')}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="mt-3 rounded-[18px] border border-slate-200 bg-white p-2.5">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => shiftWeek(-1)}
+              className="inline-flex items-center gap-1 rounded-xl border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.12)] transition duration-150 ease-out hover:-translate-x-0.5 hover:bg-violet-600 hover:text-white hover:shadow-[0_14px_32px_rgba(124,58,237,0.22)]"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              {tr('Prev Week', 'Semaine préc.')}
+            </button>
+            <p className="text-xs font-semibold text-slate-900 sm:text-sm">
+              {weekStart.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })} - {weekEnd.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { month: 'short', day: 'numeric' })}
+            </p>
+            <button
+              type="button"
+              onClick={() => shiftWeek(1)}
+              className="inline-flex items-center gap-1 rounded-xl border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 shadow-[0_10px_24px_rgba(124,58,237,0.12)] transition duration-150 ease-out hover:translate-x-0.5 hover:bg-violet-600 hover:text-white hover:shadow-[0_14px_32px_rgba(124,58,237,0.22)]"
+            >
+              {tr('Next Week', 'Semaine suiv.')}
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-7 gap-2">
+            {weekDays.map((day) => {
+              const dayValue = toDateInputValue(day);
+              const isSelectedDay = dateFocusFilter === 'day' && dayValue === dateFocusAnchor;
+              const isWeekActive = dateFocusFilter === 'week' && isDateWithinInclusiveRange(day, weekStart, weekEnd);
+              const isCustomStart = Boolean(customDateRange?.start) && isSameCalendarDay(customDateRange.start, day);
+              const isCustomEnd = Boolean(customDateRange?.end) && isSameCalendarDay(customDateRange.end, day);
+              const isInsideCustomRange = Boolean(customDateRange?.start && customDateRange?.end) && isDateWithinInclusiveRange(day, customDateRange.start, customDateRange.end);
+              const isRangePreview = Boolean(customDateRange?.start && !customDateRange?.end) && isCustomStart;
+              const isBouncing = bouncingWeekDayKey === dayValue;
+
+              return (
+                <button
+                  key={dayValue}
+                  type="button"
+                  onClick={() => handleQuickDayPress(day)}
+                  className={`rounded-2xl border px-2 py-3 text-center transition-all ${
+                    isSelectedDay || isCustomStart || isCustomEnd
+                      ? 'border-violet-500 bg-violet-600 text-white shadow-[0_12px_26px_rgba(79,70,229,0.22)]'
+                      : isInsideCustomRange || isWeekActive || isRangePreview
+                        ? 'border-violet-200 bg-violet-50 text-violet-700'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700'
+                  } ${isBouncing ? 'quick-date-tap-bounce' : ''}`}
+                >
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em]">
+                    {day.toLocaleDateString(isFrench ? 'fr-FR' : 'en-US', { weekday: 'short' })}
+                  </p>
+                  <p className="mt-1 text-base font-bold">{day.getDate()}</p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   const hasActiveUiFilters = useMemo(() => {
     const defaultDateFocus = getDefaultDateFocusForWorkspace(workspaceTab);
@@ -2956,31 +3418,6 @@ const Rentals = () => {
                 )}
                 </div>
 
-                <div className="inline-flex items-center rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
-                  {[
-                    { key: 'day', label: isFrench ? 'Jour' : 'Day', count: localDateFocusCounts.day },
-                    { key: 'week', label: isFrench ? 'Semaine' : 'Week', count: localDateFocusCounts.week },
-                  ].map(({ key, label, count }) => (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => setDateFocusFilter(key)}
-                      className={`rounded-xl px-3 py-2 text-sm font-semibold transition-all ${
-                        dateFocusFilter === key
-                          ? 'bg-violet-600 text-white shadow-[0_10px_20px_rgba(79,70,229,0.18)]'
-                          : 'text-slate-600 hover:bg-slate-50'
-                      }`}
-                    >
-                      {label}
-                      <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] ${
-                        dateFocusFilter === key ? 'bg-white/15 text-white' : 'bg-violet-50 text-violet-600'
-                      }`}>
-                        {count}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-
                 <button
                   onClick={() => setShowFilters(!showFilters)}
                   className="flex items-center gap-2 rounded-xl border border-violet-100 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-violet-50"
@@ -2988,6 +3425,10 @@ const Rentals = () => {
                   <span>{isFrench ? 'Plus' : 'More'}</span>
                 </button>
               </div>
+            </div>
+
+            <div className="mt-4">
+              {renderDateFocusControls()}
             </div>
 
             <div className="flex flex-wrap items-center gap-2 overflow-x-auto pb-1">
@@ -3697,7 +4138,7 @@ const Rentals = () => {
 
                           {renderFuelProgressBar(rental, true)}
 
-                          <div className={`grid grid-cols-2 gap-2 rounded-xl border border-slate-100 bg-slate-50/90 ${isCompactMobileCard ? 'mt-1 p-2' : 'mt-2 p-2.5'}`}>
+                          <div className={`grid grid-cols-3 gap-2 rounded-xl border border-slate-100 bg-slate-50/90 ${isCompactMobileCard ? 'mt-1 p-2' : 'mt-2 p-2.5'}`}>
                             <div>
                               <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                                 {tr('Paid', 'Payé')}
@@ -3714,20 +4155,28 @@ const Rentals = () => {
                                 {paymentSnapshot.balanceDue.toFixed(0)} MAD
                               </div>
                             </div>
+                            <div className="text-right">
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                {tr('Total', 'Total')}
+                              </div>
+                              <div className={`${isCompactMobileCard ? 'text-[12px]' : 'text-sm'} font-bold text-slate-900`}>
+                                {paymentSnapshot.grandTotal.toFixed(0)} MAD
+                              </div>
+                            </div>
                           </div>
 
                           <div className="flex items-center justify-between gap-2">
                             <span className={`${paymentSnapshot.className} ${isCompactMobileCard ? 'text-[10px]' : ''}`}>
                               {paymentLabel}
                             </span>
-                            <div className={`${isCompactMobileCard ? 'text-[11px]' : 'text-xs'} font-bold text-slate-900 whitespace-nowrap`}>
+                            <div className={`${isCompactMobileCard ? 'text-[10px]' : 'text-xs'} font-medium text-slate-500 whitespace-nowrap`}>
                               {rental.pending_total_request ? (
                                   <div className="flex items-center gap-1">
-                                    <span className="text-yellow-600">{rental.pending_total_request} MAD</span>
+                                    <span className="text-yellow-600">{tr('Requested', 'Demandé')} {rental.pending_total_request} MAD</span>
                                     <span className="text-[8px] text-gray-400 line-through">{paymentSnapshot.grandTotal.toFixed(0)} MAD</span>
                                   </div>
                                 ) : (
-                                  <span>{paymentSnapshot.grandTotal.toFixed(0)} MAD</span>
+                                  <span>{tr('Payment status', 'Statut paiement')}</span>
                                 )}
                             </div>
                           </div>

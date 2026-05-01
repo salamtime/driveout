@@ -20,15 +20,19 @@ CREATE INDEX IF NOT EXISTS idx_maintenance_parts_item_id ON app_687f658e98_maint
 ALTER TABLE app_687f658e98_maintenance_parts ENABLE ROW LEVEL SECURITY;
 
 -- Create RLS policies for authenticated users
+DROP POLICY IF EXISTS "Allow authenticated read access" ON app_687f658e98_maintenance_parts;
 CREATE POLICY "Allow authenticated read access" ON app_687f658e98_maintenance_parts
   FOR SELECT TO authenticated USING (true);
 
+DROP POLICY IF EXISTS "Allow authenticated insert access" ON app_687f658e98_maintenance_parts;
 CREATE POLICY "Allow authenticated insert access" ON app_687f658e98_maintenance_parts
   FOR INSERT TO authenticated WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow authenticated update access" ON app_687f658e98_maintenance_parts;
 CREATE POLICY "Allow authenticated update access" ON app_687f658e98_maintenance_parts
   FOR UPDATE TO authenticated USING (true);
 
+DROP POLICY IF EXISTS "Allow authenticated delete access" ON app_687f658e98_maintenance_parts;
 CREATE POLICY "Allow authenticated delete access" ON app_687f658e98_maintenance_parts
   FOR DELETE TO authenticated USING (true);
 
@@ -40,6 +44,8 @@ BEGIN
   RETURN NEW;
 END;
 $$ language 'plpgsql';
+
+DROP TRIGGER IF EXISTS update_maintenance_parts_updated_at ON app_687f658e98_maintenance_parts;
 
 CREATE TRIGGER update_maintenance_parts_updated_at
   BEFORE UPDATE ON app_687f658e98_maintenance_parts

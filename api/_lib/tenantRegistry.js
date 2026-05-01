@@ -50,15 +50,65 @@ export const normalizePlanType = (value, fallback = 'starter') => {
   return fallback;
 };
 
-export const buildTenantSlug = ({ email = '', userId = '', companyName = '' }) => {
-  const base = String(companyName || email || userId || 'tenant')
+export const getTenantTrialDays = () => {
+  const raw = Number(process.env.TENANT_TRIAL_DAYS || 30);
+  return Number.isFinite(raw) && raw > 0 ? Math.max(1, Math.floor(raw)) : 30;
+};
+
+export const getTenantDeletionRetentionDays = () => {
+  const raw = Number(process.env.TENANT_DELETION_RETENTION_DAYS || 90);
+  return Number.isFinite(raw) && raw > 0 ? Math.max(1, Math.floor(raw)) : 90;
+};
+
+export const buildTrialWindow = ({ startAt = new Date(), trialDays = getTenantTrialDays() } = {}) => {
+  const startedAt = startAt instanceof Date ? startAt : new Date(startAt);
+  const safeStartedAt = Number.isNaN(startedAt.getTime()) ? new Date() : startedAt;
+  const endsAt = new Date(safeStartedAt.getTime() + trialDays * 24 * 60 * 60 * 1000);
+
+  return {
+    trialStartedAt: safeStartedAt.toISOString(),
+    trialEndsAt: endsAt.toISOString(),
+    trialDays,
+  };
+};
+
+export const resolveEffectiveSubscriptionStatus = (subscription = {}, now = new Date()) => {
+  const explicitStatus = normalizeSubscriptionStatus(subscription?.subscription_status || 'trial');
+  if (['expired', 'cancelled', 'suspended'].includes(explicitStatus)) {
+    return explicitStatus;
+  }
+
+  const trialEndsAt = String(subscription?.trial_ends_at || '').trim();
+  if (explicitStatus === 'trial' && trialEndsAt) {
+    const expiry = new Date(trialEndsAt);
+    if (!Number.isNaN(expiry.getTime()) && expiry.getTime() <= now.getTime()) {
+      return 'expired';
+    }
+  }
+
+  return explicitStatus;
+};
+
+export const sanitizeTenantSlug = (value = '', fallback = 'tenant') => {
+  const normalized = String(value || '')
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
 
-  const suffix = String(userId || '').replace(/-/g, '').slice(0, 8);
-  return `biz-${base.slice(0, 40) || 'tenant'}${suffix ? `-${suffix}` : ''}`;
+  return normalized || fallback;
+};
+
+export const buildTenantSlug = ({ email = '', userId = '', companyName = '' }) => {
+  const emailLocalPart = String(email || '').split('@')[0] || '';
+  return sanitizeTenantSlug(companyName || emailLocalPart || userId || 'tenant');
+};
+
+export const buildTenantAppUrl = (tenantSlug, rootDomain = process.env.TENANT_ROOT_DOMAIN || 'driveout.io') => {
+  const slug = sanitizeTenantSlug(tenantSlug);
+  const domain = String(rootDomain || 'driveout.io').trim().toLowerCase().replace(/^\*\./, '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  return `https://${slug}.${domain}`;
 };
 
 export const PLATFORM_TENANT_REGISTRY_TABLES = {

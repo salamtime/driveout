@@ -11,8 +11,22 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import { Loader2, ArrowLeft, Save } from 'lucide-react';
+import {
+  applyTelegramAdminSettingsToPreferences,
+  buildDefaultTelegramEventTypes,
+  getTelegramAlertSettingsFromPreferences,
+} from '../../../utils/telegramAlertPreferences';
 
 const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
+const TELEGRAM_ALERT_EVENT_OPTIONS = [
+  { key: 'rental_created', label: 'Rental created' },
+  { key: 'rental_started', label: 'Rental started' },
+  { key: 'rental_completed', label: 'Rental completed' },
+  { key: 'payment_received', label: 'Payment received' },
+  { key: 'rental_overdue', label: 'Rental overdue' },
+  { key: 'rental_cancelled', label: 'Rental cancelled' },
+  { key: 'deposit_returned', label: 'Deposit returned' },
+];
 
 const EditUser = () => {
   const { id } = useParams();
@@ -29,6 +43,9 @@ const EditUser = () => {
     role: 'employee',
     phone_number: '',
     whatsapp_notifications: false,
+    telegram_alerts_allowed: false,
+    telegram_allowed_event_types: buildDefaultTelegramEventTypes(false),
+    preferences: {},
     password: '',
     confirmPassword: '',
   });
@@ -37,6 +54,7 @@ const EditUser = () => {
     // If user data was passed via navigation state, use it directly
     const stateUser = location.state?.user;
     if (stateUser) {
+      const telegramSettings = getTelegramAlertSettingsFromPreferences(stateUser.preferences);
       setUserData(stateUser);
       setForm({
         email: stateUser.email || '',
@@ -44,6 +62,9 @@ const EditUser = () => {
         role: stateUser.role || 'employee',
         phone_number: stateUser.phone_number || '',
         whatsapp_notifications: stateUser.whatsapp_notifications || false,
+        telegram_alerts_allowed: telegramSettings.allowed,
+        telegram_allowed_event_types: telegramSettings.allowed_event_types,
+        preferences: stateUser.preferences || {},
         password: '',
         confirmPassword: '',
       });
@@ -54,11 +75,12 @@ const EditUser = () => {
         try {
           const { data, error } = await supabase
             .from(TABLE_NAMES.USERS)
-            .select('id, email, full_name, role, phone_number, whatsapp_notifications')
+            .select('id, email, full_name, role, phone_number, whatsapp_notifications, preferences')
             .eq('id', id)
             .single();
 
           if (error) throw error;
+          const telegramSettings = getTelegramAlertSettingsFromPreferences(data.preferences);
 
           const user = {
             id: data.id,
@@ -67,6 +89,7 @@ const EditUser = () => {
             role: data.role,
             phone_number: data.phone_number,
             whatsapp_notifications: data.whatsapp_notifications,
+            preferences: data.preferences || {},
           };
           setUserData(user);
           setForm({
@@ -75,6 +98,9 @@ const EditUser = () => {
             role: user.role || 'employee',
             phone_number: user.phone_number || '',
             whatsapp_notifications: user.whatsapp_notifications || false,
+            telegram_alerts_allowed: telegramSettings.allowed,
+            telegram_allowed_event_types: telegramSettings.allowed_event_types,
+            preferences: user.preferences || {},
             password: '',
             confirmPassword: '',
           });
@@ -128,6 +154,12 @@ const EditUser = () => {
         email: form.email,
         name: form.name,
         role: form.role.toLowerCase(),
+        phone_number: form.phone_number || null,
+        whatsapp_notifications: form.whatsapp_notifications || false,
+        preferences: applyTelegramAdminSettingsToPreferences(form.preferences || userData?.preferences || {}, {
+          allowed: form.telegram_alerts_allowed,
+          allowed_event_types: form.telegram_allowed_event_types,
+        }),
       };
       if (form.password && form.password.trim() !== '') {
         updates.password = form.password;
@@ -143,6 +175,7 @@ const EditUser = () => {
           role: form.role.toLowerCase(),
           phone_number: form.phone_number || null,
           whatsapp_notifications: form.whatsapp_notifications || false,
+          preferences: updates.preferences,
           updated_at: new Date().toISOString(),
         })
         .eq('id', id);
@@ -247,6 +280,48 @@ const EditUser = () => {
             <p className="text-xs text-muted-foreground mt-0.5">
               Staff will receive rental alerts &amp; updates via WhatsApp on their phone number above
             </p>
+          </div>
+        </div>
+
+        <div className="space-y-3 rounded-lg border border-violet-100 bg-violet-50/30 p-4">
+          <div className="flex items-start space-x-3">
+            <Checkbox
+              id="telegram-enabled"
+              checked={form.telegram_alerts_allowed}
+              onCheckedChange={(checked) => setForm((current) => ({
+                ...current,
+                telegram_alerts_allowed: checked === true,
+                telegram_allowed_event_types: checked === true
+                  ? current.telegram_allowed_event_types
+                  : buildDefaultTelegramEventTypes(false),
+              }))}
+              className="mt-0.5"
+            />
+            <div>
+              <Label htmlFor="telegram-enabled" className="font-normal">Allow Telegram alerts for this staff member</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Admin decides which rental alerts this staff member may receive in Telegram.
+              </p>
+            </div>
+          </div>
+
+          <div className={`grid gap-2 rounded-lg border p-3 ${form.telegram_alerts_allowed ? 'border-violet-200 bg-white' : 'border-slate-200 bg-slate-50 opacity-70'}`}>
+            {TELEGRAM_ALERT_EVENT_OPTIONS.map((option) => (
+              <label key={option.key} className="flex items-center justify-between gap-3 rounded-md bg-white/70 px-3 py-2 text-sm text-slate-700">
+                <span>{option.label}</span>
+                <Checkbox
+                  checked={form.telegram_allowed_event_types?.[option.key] === true}
+                  disabled={!form.telegram_alerts_allowed}
+                  onCheckedChange={(checked) => setForm((current) => ({
+                    ...current,
+                    telegram_allowed_event_types: {
+                      ...current.telegram_allowed_event_types,
+                      [option.key]: checked === true,
+                    },
+                  }))}
+                />
+              </label>
+            ))}
           </div>
         </div>
 

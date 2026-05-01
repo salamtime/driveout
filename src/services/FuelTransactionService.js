@@ -50,6 +50,10 @@ class FuelTransactionService {
     this.vehicleFuelStatesCacheTimestamp = 0;
     this.vehicleFuelStatesPromise = null;
     this.vehicleModelTankCapacitySupport = null;
+    this.clientChangeSubscribers = new Set();
+    this.broadcastChannel = null;
+    this.broadcastChannelListenerBound = false;
+    this.clientInstanceId = `fuel-client-${Math.random().toString(36).slice(2, 10)}`;
 
     if (typeof window !== 'undefined') {
       const cachedSupport = window.sessionStorage.getItem('fuel:vehicle-models:tank-capacity-support');
@@ -58,7 +62,78 @@ class FuelTransactionService {
       } else if (cachedSupport === 'false') {
         this.vehicleModelTankCapacitySupport = false;
       }
+
+      if (typeof window.BroadcastChannel === 'function') {
+        this.broadcastChannel = new window.BroadcastChannel('driveout-fuel-sync');
+        if (!this.broadcastChannelListenerBound) {
+          this.broadcastChannel.onmessage = (event) => {
+            const payload = event?.data || null;
+            if (!payload || payload.originClientId === this.clientInstanceId) {
+              return;
+            }
+
+            this.handleExternalFuelChange(payload);
+          };
+          this.broadcastChannelListenerBound = true;
+        }
+      }
     }
+  }
+
+  notifyClientChange(payload = {}) {
+    const normalizedPayload = {
+      timestamp: Date.now(),
+      ...payload,
+      originClientId: payload.originClientId || this.clientInstanceId,
+    };
+
+    this.clientChangeSubscribers.forEach((callback) => {
+      try {
+        callback(normalizedPayload);
+      } catch (error) {
+        console.error('Error in fuel client change subscriber:', error);
+      }
+    });
+
+    if (this.broadcastChannel) {
+      try {
+        this.broadcastChannel.postMessage(normalizedPayload);
+      } catch (error) {
+        console.warn('Unable to broadcast fuel change to sibling tabs:', error);
+      }
+    }
+  }
+
+  handleExternalFuelChange(payload = {}) {
+    this.clearTransactionCaches();
+    this.clientChangeSubscribers.forEach((callback) => {
+      try {
+        callback({
+          ...payload,
+          source: payload.source || 'broadcast',
+          isExternal: true,
+        });
+      } catch (error) {
+        console.error('Error handling external fuel change:', error);
+      }
+    });
+  }
+
+  invalidateFuelCaches(change = {}) {
+    this.clearTransactionCaches();
+    this.notifyClientChange(change);
+  }
+
+  subscribeToClientChanges(callback) {
+    if (typeof callback !== 'function') {
+      return () => {};
+    }
+
+    this.clientChangeSubscribers.add(callback);
+
+    return () => {
+      this.clientChangeSubscribers.delete(callback);
+    };
   }
 
   async tableExists(tableName) {
@@ -476,6 +551,12 @@ class FuelTransactionService {
       return logResult;
     }
 
+    this.invalidateFuelCaches({
+      entity: 'fuel_tank',
+      reason: 'manual_tank_adjustment',
+      transactionType: 'manual_tank_adjustment',
+    });
+
     return {
       success: true,
       tank: {
@@ -621,6 +702,11 @@ class FuelTransactionService {
     if (error) {
       return { success: false, error: error.message };
     }
+
+    this.invalidateFuelCaches({
+      entity: 'fuel_tank',
+      reason: 'tank_settings_updated',
+    });
 
     return { success: true, tank: data };
   }
@@ -1183,6 +1269,17 @@ class FuelTransactionService {
     );
   }
 
+  isTransactionalVehicleFuelSource(source) {
+    const normalizedSource = String(source || '').toLowerCase();
+    return [
+      'vehicle_refill',
+      'direct_station',
+      'withdrawal',
+      'tank_transfer',
+      'manual_adjustment',
+    ].includes(normalizedSource);
+  }
+
   pickBestVehicleFuelState(...candidates) {
     const validCandidates = candidates.filter(Boolean);
     if (!validCandidates.length) {
@@ -1508,6 +1605,37 @@ class FuelTransactionService {
       return { success: false, error: error.message };
     }
 
+    if (Array.isArray(this.vehicleFuelStatesCache)) {
+      const normalizedState = {
+        ...(data || payload),
+        id: vehicleId,
+        vehicle_id: vehicleId,
+        current_fuel_liters: normalized.liters,
+        current_fuel_lines: normalized.lines,
+        max_fuel_lines: normalized.maxLines,
+        tank_capacity_liters: normalized.tankCapacityLiters,
+        last_fuel_source: payload.last_source,
+        last_fuel_update_at: payload.last_updated_at,
+      };
+
+      let replaced = false;
+      this.vehicleFuelStatesCache = this.vehicleFuelStatesCache.map((state) => {
+        if (String(state.id) === String(vehicleId) || String(state.vehicle_id) === String(vehicleId)) {
+          replaced = true;
+          return {
+            ...state,
+            ...normalizedState,
+          };
+        }
+        return state;
+      });
+
+      if (!replaced) {
+        this.vehicleFuelStatesCache.push(normalizedState);
+      }
+      this.vehicleFuelStatesCacheTimestamp = Date.now();
+    }
+
     return { success: true, state: data || payload };
   }
 
@@ -1748,33 +1876,62 @@ class FuelTransactionService {
     const vehicleKey = String(vehicleId);
     const rentalSnapshots = await this.getLatestRentalFuelSnapshots();
     const derivedStateMap = await this.getDerivedVehicleFuelStateMap(rentalSnapshots);
+    let storedState = null;
+
+    if (await this.tableExists(this.vehicleFuelStateTable)) {
+      const { data } = await supabase
+        .from(this.vehicleFuelStateTable)
+        .select('vehicle_id, current_fuel_liters, current_fuel_lines, max_fuel_lines, tank_capacity_liters, last_source, last_transaction_id, last_rental_id, last_updated_at')
+        .eq('vehicle_id', vehicleId)
+        .maybeSingle();
+      storedState = data || null;
+    }
+
     const latestState =
-      derivedStateMap.get(vehicleKey) ||
-      derivedStateMap.get(vehicleId) ||
-      rentalSnapshots.get(vehicleKey) ||
-      rentalSnapshots.get(vehicleId) ||
+      this.pickBestVehicleFuelState(
+        derivedStateMap.get(vehicleKey) || derivedStateMap.get(vehicleId),
+        storedState,
+        rentalSnapshots.get(vehicleKey) || rentalSnapshots.get(vehicleId),
+      ) ||
       {
-      vehicle_id: vehicleId,
-      current_fuel_liters: 0,
-      current_fuel_lines: 0,
-      last_source: 'history_rebuild',
-      last_rental_id: null,
-    };
+        vehicle_id: vehicleId,
+        current_fuel_liters: 0,
+        current_fuel_lines: 0,
+        last_source: 'history_rebuild',
+        last_rental_id: null,
+      };
+
+    const storedTimestamp = storedState?.last_updated_at ? new Date(storedState.last_updated_at).getTime() : 0;
+    const latestTimestamp = latestState?.last_updated_at ? new Date(latestState.last_updated_at).getTime() : 0;
+    const shouldPreserveStoredTransactionalState =
+      Boolean(storedState) &&
+      this.isTransactionalVehicleFuelSource(storedState?.last_source) &&
+      storedTimestamp > 0 &&
+      (
+        latestTimestamp <= 0 ||
+        latestTimestamp <= storedTimestamp
+      ) &&
+      !this.isTransactionalVehicleFuelSource(latestState?.last_source);
+
+    const effectiveLatestState = shouldPreserveStoredTransactionalState
+      ? storedState
+      : latestState;
 
     const syncResult = await this.syncVehicleFuelState({
       vehicleId,
-      liters: latestState.current_fuel_liters,
-      lines: latestState.current_fuel_lines,
-      source: latestState.last_source || 'history_rebuild',
-      rentalId: latestState.last_rental_id || null,
-      tankCapacityLiters: latestState.tank_capacity_liters || null,
+      liters: effectiveLatestState.current_fuel_liters,
+      lines: effectiveLatestState.current_fuel_lines,
+      source: effectiveLatestState.last_source || 'history_rebuild',
+      transactionId: effectiveLatestState.last_transaction_id || null,
+      rentalId: effectiveLatestState.last_rental_id || null,
+      tankCapacityLiters: effectiveLatestState.tank_capacity_liters || null,
     });
 
     const summaryResult = await this.getVehicleFuelUsageSummary(vehicleId, { persist: true });
 
     return {
       success: true,
-      state: syncResult.state || latestState,
+      state: syncResult.state || effectiveLatestState,
       summary: summaryResult.summary || null,
     };
   }
@@ -2539,7 +2696,11 @@ class FuelTransactionService {
       });
 
       await this.adjustTankCurrentVolume(amount);
-      this.clearTransactionCaches();
+      this.invalidateFuelCaches({
+        entity: 'fuel_transaction',
+        reason: 'tank_refill_created',
+        transactionType,
+      });
 
       return { success: true, transaction: data };
     }
@@ -2651,8 +2812,13 @@ class FuelTransactionService {
       });
 
       await this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading);
-      await this.refreshVehicleFuelTracking(transactionData.vehicle_id);
-      this.clearTransactionCaches();
+      await this.getVehicleFuelUsageSummary(transactionData.vehicle_id, { persist: true });
+      this.invalidateFuelCaches({
+        entity: 'fuel_transaction',
+        reason: 'vehicle_refill_created',
+        transactionType,
+        vehicleId: transactionData.vehicle_id,
+      });
 
       return { success: true, transaction: data };
     }
@@ -2752,7 +2918,7 @@ class FuelTransactionService {
         });
 
         await this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading);
-        await this.refreshVehicleFuelTracking(transactionData.vehicle_id);
+        await this.getVehicleFuelUsageSummary(transactionData.vehicle_id, { persist: true });
       } else {
         await this.adjustTankCurrentVolume(-amount);
 
@@ -2767,7 +2933,12 @@ class FuelTransactionService {
         });
       }
 
-      this.clearTransactionCaches();
+      this.invalidateFuelCaches({
+        entity: 'fuel_transaction',
+        reason: transactionType === 'withdrawal' ? 'vehicle_withdrawal_created' : 'tank_out_created',
+        transactionType,
+        vehicleId: transactionType === 'withdrawal' ? transactionData.vehicle_id : null,
+      });
 
       return { success: true, transaction: data };
     }
@@ -2830,7 +3001,11 @@ class FuelTransactionService {
 
       const previousAmount = Number(previousTankRefill?.liters_added || 0);
       await this.adjustTankCurrentVolume(amount - previousAmount);
-      this.clearTransactionCaches();
+      this.invalidateFuelCaches({
+        entity: 'fuel_transaction',
+        reason: 'tank_refill_updated',
+        transactionType,
+      });
 
       return { success: true, transaction: data };
     }
@@ -2916,7 +3091,12 @@ class FuelTransactionService {
       if (previousVehicleRefill?.vehicle_id && String(previousVehicleRefill.vehicle_id) !== String(transactionData.vehicle_id)) {
         await this.refreshVehicleFuelTracking(previousVehicleRefill.vehicle_id);
       }
-      this.clearTransactionCaches();
+      this.invalidateFuelCaches({
+        entity: 'fuel_transaction',
+        reason: 'vehicle_refill_updated',
+        transactionType,
+        vehicleId: transactionData.vehicle_id,
+      });
 
       return { success: true, transaction: data };
     }
@@ -3003,7 +3183,12 @@ class FuelTransactionService {
         }
       }
 
-      this.clearTransactionCaches();
+      this.invalidateFuelCaches({
+        entity: 'fuel_transaction',
+        reason: transactionType === 'withdrawal' ? 'vehicle_withdrawal_updated' : 'tank_out_updated',
+        transactionType,
+        vehicleId: transactionType === 'withdrawal' ? transactionData.vehicle_id : null,
+      });
 
       return { success: true, transaction: data };
     }
@@ -3069,7 +3254,11 @@ class FuelTransactionService {
             await this.adjustTankCurrentVolume(-previousAmount);
           }
 
-          this.clearTransactionCaches();
+          this.invalidateFuelCaches({
+            entity: 'fuel_transaction',
+            reason: 'tank_refill_deleted',
+            transactionType: 'tank_refill',
+          });
           return { success: true };
         }
       } else if (data?.transaction_type === 'withdrawal' || data?.transaction_type === 'tank_out') {
@@ -3113,7 +3302,12 @@ class FuelTransactionService {
             await this.refreshVehicleFuelTracking(affectedVehicleId);
           }
 
-          this.clearTransactionCaches();
+          this.invalidateFuelCaches({
+            entity: 'fuel_transaction',
+            reason: withdrawalRow.transaction_type === 'withdrawal' ? 'vehicle_withdrawal_deleted' : 'tank_out_deleted',
+            transactionType: withdrawalRow.transaction_type,
+            vehicleId: affectedVehicleId,
+          });
           return { success: true };
         }
       } else if (data?.transaction_type === 'vehicle_refill') {
@@ -3145,7 +3339,12 @@ class FuelTransactionService {
               await this.refreshVehicleFuelTracking(vehicleRefillRow.vehicle_id);
             }
 
-            this.clearTransactionCaches();
+            this.invalidateFuelCaches({
+              entity: 'fuel_transaction',
+              reason: 'vehicle_refill_deleted',
+              transactionType: 'vehicle_refill',
+              vehicleId: vehicleRefillRow.vehicle_id,
+            });
             return { success: true };
           }
         }
@@ -3289,7 +3488,12 @@ class FuelTransactionService {
       await this.refreshVehicleFuelTracking(affectedVehicleId);
     }
 
-    this.clearTransactionCaches();
+    this.invalidateFuelCaches({
+      entity: 'fuel_transaction',
+      reason: `${type}_deleted`,
+      transactionType: type,
+      vehicleId: affectedVehicleId,
+    });
 
     return { success: true };
   }
@@ -3517,6 +3721,13 @@ class FuelTransactionService {
 
     await this.getVehicleFuelUsageSummary(vehicleId, { persist: true });
     await this.syncRentalFuelSnapshot(rentalId);
+    this.invalidateFuelCaches({
+      entity: 'rental_fuel_snapshot',
+      reason: stage,
+      transactionType: stage,
+      vehicleId,
+      rentalId,
+    });
 
     return {
       success: true,
@@ -3617,6 +3828,12 @@ class FuelTransactionService {
     }
 
     await this.getVehicleFuelUsageSummary(vehicleId, { persist: true });
+    this.invalidateFuelCaches({
+      entity: 'vehicle_fuel_state',
+      reason: 'manual_adjustment',
+      transactionType: 'manual_adjustment',
+      vehicleId,
+    });
 
     return {
       success: true,

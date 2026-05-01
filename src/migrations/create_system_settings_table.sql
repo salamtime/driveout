@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS public.saharax_0u4w4d_settings (
   allow_employee_settings_view boolean DEFAULT true,
   write_audit_logs boolean DEFAULT true,
   allow_live_tracking_retry boolean DEFAULT true,
+  auto_send_contract_email_after_creation boolean DEFAULT false,
   tour_departure_buffer_minutes numeric(10,2) DEFAULT 15,
   tour_auto_receipt_required boolean DEFAULT true,
   tour_default_license_policy text DEFAULT 'route_based',
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS public.saharax_0u4w4d_settings (
   messaging_photo_retention_days numeric(10,2) DEFAULT 7,
   messaging_draft_retention_hours numeric(10,2) DEFAULT 24,
   messaging_allow_camera_capture boolean DEFAULT true,
+  rental_details_default_view text DEFAULT 'standard',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );

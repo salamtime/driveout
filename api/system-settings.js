@@ -11,6 +11,11 @@ import {
 const SETTINGS_TABLE = 'saharax_0u4w4d_settings';
 const SETTINGS_ROW_ID = 1;
 const APP_SETTINGS_TABLE = 'app_settings';
+const OPTIONAL_SETTINGS_COLUMNS = new Set([
+  'auto_send_contract_email_after_creation',
+  'rental_details_default_view',
+  'tenant_deletion_retention_days',
+]);
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -158,6 +163,8 @@ const getDefaultSettings = () => ({
   messagingPhotoRetentionDays: 7,
   messagingDraftRetentionHours: 24,
   messagingAllowCameraCapture: true,
+  rentalDetailsDefaultView: 'standard',
+  tenantDeletionRetentionDays: 90,
   updatedAt: new Date().toISOString(),
 });
 
@@ -235,6 +242,11 @@ const normalizeSettings = (value = {}) => {
   merged.messagingMaxPhotosPerMessage = Math.max(1, Math.min(10, merged.messagingMaxPhotosPerMessage || defaults.messagingMaxPhotosPerMessage));
   merged.messagingPhotoRetentionDays = Math.max(1, Math.min(30, merged.messagingPhotoRetentionDays || defaults.messagingPhotoRetentionDays));
   merged.messagingDraftRetentionHours = Math.max(1, Math.min(168, merged.messagingDraftRetentionHours || defaults.messagingDraftRetentionHours));
+  merged.tenantDeletionRetentionDays = Math.max(1, Math.min(365, Number(merged.tenantDeletionRetentionDays ?? defaults.tenantDeletionRetentionDays) || defaults.tenantDeletionRetentionDays));
+  merged.rentalDetailsDefaultView =
+    String(merged.rentalDetailsDefaultView || '').toLowerCase() === 'light'
+      ? 'light'
+      : 'standard';
 
   merged.updatedAt = new Date().toISOString();
   return merged;
@@ -326,6 +338,8 @@ const toTableRow = (settings = {}) => {
     messaging_photo_retention_days: normalized.messagingPhotoRetentionDays,
     messaging_draft_retention_hours: normalized.messagingDraftRetentionHours,
     messaging_allow_camera_capture: normalized.messagingAllowCameraCapture,
+    rental_details_default_view: normalized.rentalDetailsDefaultView,
+    tenant_deletion_retention_days: normalized.tenantDeletionRetentionDays,
     updated_at: normalized.updatedAt,
   };
 };
@@ -401,8 +415,22 @@ const fromTableRow = (row = {}) => normalizeSettings({
   messagingPhotoRetentionDays: row.messaging_photo_retention_days,
   messagingDraftRetentionHours: row.messaging_draft_retention_hours,
   messagingAllowCameraCapture: row.messaging_allow_camera_capture,
+  rentalDetailsDefaultView: row.rental_details_default_view,
+  tenantDeletionRetentionDays: row.tenant_deletion_retention_days,
   updatedAt: row.updated_at,
 });
+
+const extractMissingColumnName = (error) => {
+  const message = String(error?.message || error?.details || '');
+  const match = message.match(/column "([^"]+)"/i) || message.match(/'([^']+)'\s+column/i);
+  return match?.[1] || null;
+};
+
+const isMissingOptionalSettingsColumnError = (error, payload = {}) => {
+  const missingColumn = extractMissingColumnName(error);
+  if (!missingColumn) return false;
+  return OPTIONAL_SETTINGS_COLUMNS.has(missingColumn) && Object.prototype.hasOwnProperty.call(payload, missingColumn);
+};
 
 const readBrandingFromAppSettings = async (adminClient) => {
   const { data, error } = await adminClient
@@ -450,13 +478,35 @@ const readSettingsFromTable = async (adminClient) => {
 };
 
 const writeSettingsToTable = async (adminClient, settings) => {
-  const { data, error } = await adminClient
-    .from(SETTINGS_TABLE)
-    .upsert(toTableRow(settings), { onConflict: 'id' })
-    .select('*')
-    .single();
+  let compatiblePayload = toTableRow(settings);
+  let data = null;
 
-  if (error) throw error;
+  for (let attempt = 0; attempt < OPTIONAL_SETTINGS_COLUMNS.size + 1; attempt += 1) {
+    const response = await adminClient
+      .from(SETTINGS_TABLE)
+      .upsert(compatiblePayload, { onConflict: 'id' })
+      .select('*')
+      .single();
+
+    if (!response.error) {
+      data = response.data;
+      break;
+    }
+
+    if (isMissingOptionalSettingsColumnError(response.error, compatiblePayload)) {
+      const missingColumn = extractMissingColumnName(response.error);
+      const { [missingColumn]: _removed, ...nextPayload } = compatiblePayload;
+      compatiblePayload = nextPayload;
+      continue;
+    }
+
+    throw response.error;
+  }
+
+  if (!data) {
+    throw new Error('Unable to save system settings with the current schema.');
+  }
+
   try {
     await writeBrandingToAppSettings(adminClient, settings);
   } catch (brandingError) {
@@ -741,10 +791,16 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { adminClient } = auth;
+    const { adminClient, role } = auth;
     const existing = await readSettingsFromTable(adminClient);
     const body = parseBody(req.body);
-    const nextSettings = normalizeSettings({ ...existing, ...(body || {}) });
+    const sanitizedBody = { ...(body || {}) };
+
+    if (role !== 'owner' && Object.prototype.hasOwnProperty.call(sanitizedBody, 'tenantDeletionRetentionDays')) {
+      delete sanitizedBody.tenantDeletionRetentionDays;
+    }
+
+    const nextSettings = normalizeSettings({ ...existing, ...sanitizedBody });
     const saved = await writeSettingsToTable(adminClient, nextSettings);
     return json(res, 200, { success: true, settings: saved });
   } catch (error) {

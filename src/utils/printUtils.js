@@ -1,5 +1,6 @@
 // Utility functions for printing receipts and contracts
 // This approach generates fresh HTML content in a new window (same pattern as WhatsApp sharing)
+import { normalizePaymentStatus } from '../config/statusColors';
 
 /**
  * Format currency for display
@@ -35,6 +36,9 @@ const calculateTotal = (rentalData) => {
     ext?.status === 'approved' ? sum + (ext?.extension_price || 0) : sum, 0) || 0;
   return basePrice + overage + extensions;
 };
+
+const getNormalizedPrintPaymentStatus = (rentalData) =>
+  normalizePaymentStatus(rentalData?.payment_status, rentalData?.remaining_amount);
 
 /**
  * Generate receipt HTML for printing
@@ -256,9 +260,9 @@ export const generateReceiptHTML = (rentalData, logoUrl, stampUrl) => {
         </div>
 
         <!-- Payment Status -->
-        <div class="status-box ${rentalData?.payment_status === 'paid' ? 'status-paid' : 'status-pending'}">
+        <div class="status-box ${getNormalizedPrintPaymentStatus(rentalData) === 'paid' ? 'status-paid' : 'status-pending'}">
           <h3 style="margin-bottom: 15px;">
-            ${rentalData?.payment_status === 'paid' ? '✅ PAYMENT STATUS: PAID IN FULL' : '⚠️ PAYMENT STATUS: BALANCE DUE'}
+            ${getNormalizedPrintPaymentStatus(rentalData) === 'paid' ? '✅ PAYMENT STATUS: PAID IN FULL' : '⚠️ PAYMENT STATUS: BALANCE DUE'}
           </h3>
           <div class="grid">
             <div>
@@ -274,7 +278,7 @@ export const generateReceiptHTML = (rentalData, logoUrl, stampUrl) => {
               </div>
             </div>
           </div>
-          ${rentalData?.payment_status === 'paid' ? `
+          ${getNormalizedPrintPaymentStatus(rentalData) === 'paid' ? `
           <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ccc;">
             <p style="font-size: 12px;">Payment completed on: ${new Date().toLocaleDateString()}</p>
           </div>

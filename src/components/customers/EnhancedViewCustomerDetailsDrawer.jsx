@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, User, Phone, Mail, Calendar, CreditCard, Eye, FileImage, Trash2, Download, MapPin, Car, Clock } from 'lucide-react';
 import unifiedCustomerService from '../../services/UnifiedCustomerService.js';
 import enhancedUnifiedCustomerService from '../../services/EnhancedUnifiedCustomerService.js';
+import { normalizePaymentStatus } from '../../config/statusColors';
 import i18n from '../../i18n';
 
 /**
@@ -504,10 +505,10 @@ const EnhancedViewCustomerDetailsDrawer = ({
                                         {r.rental_status || 'inconnu'}
                                       </span>
                                       <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase font-semibold ${
-                                        r.payment_status === 'paid' ? 'bg-green-100 text-green-800' :
+                                        normalizePaymentStatus(r.payment_status, r.remaining_amount) === 'paid' ? 'bg-green-100 text-green-800' :
                                         'bg-red-100 text-red-800'
                                       }`}>
-                                        {r.payment_status || 'impayé'}
+                                        {normalizePaymentStatus(r.payment_status, r.remaining_amount) || 'impayé'}
                                       </span>
                                     </div>
                                   </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
@@ -26,6 +26,7 @@ import FleetLocationService from '../services/FleetLocationService';
 import WebsiteBookingLifecycleService from '../services/WebsiteBookingLifecycleService';
 import VehicleDispositionService from '../services/VehicleDispositionService';
 import useAdminModalFocus from '../hooks/useAdminModalFocus';
+import useFuelRealtimeSync from '../hooks/useFuelRealtimeSync';
 
 const scheduleBackgroundTask = (callback: () => void) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -757,6 +758,33 @@ const VehicleManagement: React.FC = () => {
       setLoading(false);
     }
   };
+
+  const refreshVehicleFuelOverlay = useCallback(() => {
+    if (!vehicles.length) {
+      return;
+    }
+
+    void FuelTransactionService.getVehicleFuelStates()
+      .then((fuelStates) => {
+        const nextFuelStateMap: Record<string, any> = {};
+        (fuelStates || []).forEach((state: any) => {
+          const stateKey = String(state?.vehicle_id || state?.id || '');
+          if (stateKey) {
+            nextFuelStateMap[stateKey] = state;
+          }
+        });
+        setVehicleFuelStateMap(nextFuelStateMap);
+      })
+      .catch((fuelError) => {
+        console.error('Fuel overlay realtime refresh failed:', fuelError);
+      });
+  }, [vehicles.length]);
+
+  useFuelRealtimeSync(() => {
+    refreshVehicleFuelOverlay();
+  }, {
+    enabled: vehicles.length > 0,
+  });
 
   const updateVehicleStatus = async (vehicleId: number, status: string) => {
     try {

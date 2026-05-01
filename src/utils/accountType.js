@@ -69,6 +69,11 @@ export const getBusinessOwnerAccessState = (metadata = {}) => {
     metadata?.subscriptionStatus ||
     ''
   ).trim().toLowerCase();
+  const billingStatus = String(
+    metadata?.billing_status ||
+    metadata?.billingStatus ||
+    ''
+  ).trim().toLowerCase();
 
   if (verificationStatus === 'rejected') {
     return 'rejected';
@@ -90,6 +95,14 @@ export const getBusinessOwnerAccessState = (metadata = {}) => {
     return 'expired';
   }
 
+  if (subscriptionStatus === 'cancelled') {
+    return 'cancelled';
+  }
+
+  if (billingStatus === 'failed') {
+    return 'billing_issue';
+  }
+
   return 'approved';
 };
 
@@ -100,7 +113,7 @@ export const getBusinessOwnerFreezeRedirect = (metadata = {}) => {
     return null;
   }
 
-  if (accessState === 'expired') {
+  if (accessState === 'expired' || accessState === 'cancelled' || accessState === 'billing_issue') {
     return '/choose-plan';
   }
 

@@ -23,8 +23,11 @@ const pageMeta = {
   },
   '/workspace-error': {
     icon: AlertCircle,
-    title: ['We couldn’t prepare your workspace', "Nous n'avons pas pu préparer votre espace"],
-    subtitle: ['Our team is working on it. Please contact support if this stays blocked.', 'Notre équipe travaille dessus. Contactez le support si cela reste bloqué.'],
+    title: ['We couldn’t prepare your workspace yet', "Nous n'avons pas encore pu préparer votre espace"],
+    subtitle: [
+      'Your private tenant workspace could not be created because the current infrastructure account has reached its active project capacity. Your signup is still saved and we can retry as soon as capacity is available.',
+      "Votre espace tenant privé n'a pas pu être créé car le compte d'infrastructure actuel a atteint sa capacité de projets actifs. Votre inscription est bien enregistrée et nous pourrons relancer le provisionnement dès qu'une capacité sera disponible.",
+    ],
   },
   '/workspace-suspended': {
     icon: ShieldAlert,
@@ -57,8 +60,8 @@ const WorkspaceStatusPage = ({ status = 'preparing' }) => {
             </div>
             <p className="mx-auto max-w-md text-sm font-medium leading-6 text-slate-600">
               {isFrench
-                ? "Votre compte ne sera jamais envoyé vers l'admin principal SaharaX tant que l'espace isolé n'est pas prêt."
-                : 'Your account will not be sent into the main SaharaX admin while the isolated workspace is not ready.'}
+                ? "Votre compte ne sera pas envoyé vers l'admin principal SaharaX tant que l'espace isolé n'est pas prêt. Aucune donnée n'a été perdue pendant l'échec de provisionnement."
+                : 'Your account will not be sent into the main SaharaX admin while the isolated workspace is not ready. No signup data was lost during this provisioning failure.'}
             </p>
             <div className="flex flex-col justify-center gap-3 sm:flex-row">
               <Link to="/website" className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-bold text-white transition hover:bg-violet-800">

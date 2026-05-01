@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { formatMaintenanceReference } from '../utils/maintenanceReference';
-import { calculateSimpleRentalPricing } from '../utils/simpleRentalPricing';
+import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../utils/simpleRentalPricing';
 import i18n from '../i18n';
 
 const DEFAULT_BOOKING_GRACE_MINUTES = 120;
@@ -28,6 +28,7 @@ const RECEIPT_BANKING_DETAILS = {
 };
 
 const getRentalKilometerPackage = (rental) => {
+  if (!isPackagePricingEnabled(rental)) return null;
   const pkg = rental?.package;
   if (!pkg) return null;
 
@@ -124,8 +125,13 @@ const getAmountDueResolutionMeta = (rental = {}) => {
     const customerFacingNote = String(parsed?.customerFacingNote || '').trim();
     const previousAmount = Math.max(0, Number(rental?.amount_due_override_previous_amount || 0) || 0);
     const newAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
+    const expectedNewAmount = Math.max(0, previousAmount - paymentReceivedNow - companyDiscount);
 
     if (paymentReceivedNow <= 0 && companyDiscount <= 0 && !note && !customerFacingNote && previousAmount <= 0 && newAmount <= 0) {
+      return null;
+    }
+
+    if (previousAmount > 0 && Math.abs(expectedNewAmount - newAmount) > 1) {
       return null;
     }
 
@@ -184,6 +190,23 @@ const normalizeReceiptPackageCandidate = (pkg = {}) => ({
     0
   ) || 0,
 });
+
+const isUnlimitedReceiptPackage = (pkg = {}) => {
+  const kind = String(pkg?.kind ?? pkg?.package_type ?? pkg?.type ?? '').toLowerCase();
+  const name = String(
+    pkg?.name ??
+    pkg?.package_name ??
+    pkg?.display_name ??
+    pkg?.displayName ??
+    ''
+  ).toLowerCase();
+
+  return (
+    kind.includes('unlimited') ||
+    name.includes('unlimited') ||
+    name.includes('illimité')
+  );
+};
 
 const formatReceiptDurationLabel = (minutes, billedHours, tr) => {
   const safeMinutes = Number(minutes || 0);
@@ -527,7 +550,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     const ratePerUnit = pkg ? (parseFloat(pkg.fixed_amount) || rental.unit_price || 0) : (rental.unit_price || 0);
     const duration = getRentalDurationUnits(rental);
     const basePrice = isFlatHourlyTierRental(rental, hasPackage) ? ratePerUnit : ratePerUnit * duration;
-    const overage = pkg ? (rental.overage_charge || overageAmount || 0) : 0;
+    const overage = pkg ? (overageAmount || 0) : 0;
     const extensions = rental.extensions?.reduce((sum, ext) => 
       ext.status === 'approved' ? sum + (ext.extension_price || 0) : sum, 0) || 0;
     const fuel = effectiveFuelCharge; // applies to both hourly and daily
@@ -581,10 +604,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   };
 
   const overageDetails = calculateOverageDetails();
-  const totalAmount = calculateTotal(overageDetails.overageCharge);
+  const effectiveOverageCharge = Math.max(0, Number(overageDetails.overageCharge || 0) || 0);
+  const totalAmount = calculateTotal(effectiveOverageCharge);
 
-  const isPaid = rental.payment_status === 'paid';
-  const hasOverage = hasPackage && (rental.overage_charge > 0 || overageDetails.hasOverage);
+  const hasOverage = hasPackage && effectiveOverageCharge > 0;
   const hasFuelCharge = effectiveFuelCharge > 0;
   const damageDeposit = parseFloat(rental?.damage_deposit || 0);
   const receiptDamageDeposit = Math.max(0, damageDeposit);
@@ -649,6 +672,11 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     0,
     displayedTotalAmount - remainingBalanceAfterDepositSeizure - amountDueDiscountAmount - autoDepositSeizedAmount
   );
+  const normalizedPaymentStatus = remainingBalanceAfterDepositSeizure <= 0
+    ? 'paid'
+    : displayedCustomerPaidAmount > 0
+      ? 'partial'
+      : 'pending';
   const weekendEstimateMessage = impoundIsEstimate
     ? (
         impoundExtraDailyChargeWaived
@@ -719,10 +747,45 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   const packageExtraKmCostWithoutUpgrade = packageExtraKmWithoutUpgrade * packageExtraKmRate;
   const packageCostWithoutUpgrade = packageOriginalPrice + packageExtraKmCostWithoutUpgrade;
   const smartUpgradeSavings = Math.max(0, packageCostWithoutUpgrade - packageAppliedPrice);
-  const smartPricingSavings = hasPackage
+  const smartPricingMode = hasPackage
+    ? (receiptDistanceUpgrade ? 'upgrade' : 'package')
+    : (tierPricingBreakdown?.isDiscounted ? 'tier' : 'standard');
+  const packageUpgradeTarget =
+    receiptDistanceUpgrade?.finalPackage ||
+    receiptSimplePricing?.selectedPackage ||
+    kilometerPackage ||
+    null;
+  const verifiedPackageUpgradeSavings = (
+    hasPackage &&
+    smartPricingMode === 'upgrade' &&
+    !isUnlimitedReceiptPackage(packageUpgradeTarget) &&
+    packageOriginalLimitKm > 0 &&
+    Number(receiptDistanceUpgrade?.appliedPackageLimitKm || receiptDistanceUpgrade?.finalLimit || 0) > packageOriginalLimitKm &&
+    packageOriginalPrice > 0 &&
+    packageAppliedPrice > 0 &&
+    packageCostWithoutUpgrade > packageAppliedPrice
+  )
     ? smartUpgradeSavings
-    : Math.max(0, Number(tierPricingBreakdown?.savings || 0));
-  const pricingSummaryStatus = String(rental?.payment_status || '').toLowerCase();
+    : 0;
+  const verifiedTierSavings = !hasPackage
+    ? Math.max(0, Number(tierPricingBreakdown?.savings || 0))
+    : 0;
+  const effectiveSavingsAmount = amountDueDiscountAmount > 0
+    ? amountDueDiscountAmount
+    : verifiedPackageUpgradeSavings > 0
+      ? verifiedPackageUpgradeSavings
+      : verifiedTierSavings;
+  const effectiveSavingsKind = amountDueDiscountAmount > 0
+    ? 'discount'
+    : verifiedPackageUpgradeSavings > 0
+      ? 'package_upgrade'
+      : verifiedTierSavings > 0
+        ? 'tier'
+        : 'none';
+  const savingsLabel = effectiveSavingsKind === 'discount'
+    ? tr('Discount applied', 'Remise appliquée')
+    : tr('Savings', 'Économies');
+  const pricingSummaryStatus = String(normalizedPaymentStatus || rental?.payment_status || '').toLowerCase();
   const paymentStatusLabel = pricingSummaryStatus === 'paid'
     ? tr('Paid', 'Payé')
     : pricingSummaryStatus === 'partial'
@@ -735,9 +798,6 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     : pricingSummaryStatus === 'partial'
       ? { bg: '#fef3c7', fg: '#92400e' }
       : { bg: '#fee2e2', fg: '#b91c1c' };
-  const smartPricingMode = hasPackage
-    ? (receiptDistanceUpgrade ? 'upgrade' : 'package')
-    : (tierPricingBreakdown?.isDiscounted ? 'tier' : 'standard');
 
   const PricingStoryDisplay = () => {
     const detailsRows = [
@@ -754,8 +814,8 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         value: packageUsedLabel,
       },
       {
-        label: tr('Savings', 'Économies'),
-        value: smartPricingSavings > 0 ? `${formatCurrency(smartPricingSavings)} MAD` : tr('None', 'Aucune'),
+        label: savingsLabel,
+        value: effectiveSavingsAmount > 0 ? `${formatCurrency(effectiveSavingsAmount)} MAD` : tr('None', 'Aucune'),
       },
       {
         label: tr('Deposit', 'Caution'),
@@ -927,19 +987,21 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               minWidth: '160px',
               padding: '14px 16px',
               borderRadius: '14px',
-              backgroundColor: smartPricingSavings > 0 ? '#ffffff' : '#f8fafc',
-              border: `1px solid ${smartPricingSavings > 0 ? '#86efac' : '#e2e8f0'}`,
+              backgroundColor: effectiveSavingsAmount > 0 ? '#ffffff' : '#f8fafc',
+              border: `1px solid ${effectiveSavingsAmount > 0 ? '#86efac' : '#e2e8f0'}`,
               textAlign: 'center'
             }}>
-              <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.55px', color: smartPricingSavings > 0 ? '#15803d' : '#64748b', marginBottom: '8px' }}>
-                {tr('Savings', 'Économies')}
+              <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.55px', color: effectiveSavingsAmount > 0 ? '#15803d' : '#64748b', marginBottom: '8px' }}>
+                {savingsLabel}
               </div>
-              <div style={{ fontSize: '22px', fontWeight: 700, color: smartPricingSavings > 0 ? '#15803d' : '#0f172a', lineHeight: 1.15 }}>
-                {smartPricingSavings > 0 ? `${formatCurrency(smartPricingSavings)} MAD` : '0 MAD'}
+              <div style={{ fontSize: '22px', fontWeight: 700, color: effectiveSavingsAmount > 0 ? '#15803d' : '#0f172a', lineHeight: 1.15 }}>
+                {effectiveSavingsAmount > 0 ? `${formatCurrency(effectiveSavingsAmount)} MAD` : '0 MAD'}
               </div>
               <div style={{ fontSize: '13px', color: '#475569', marginTop: '8px', lineHeight: 1.45 }}>
-                {smartPricingSavings > 0
-                  ? tr('You saved money', 'Vous avez économisé')
+                {effectiveSavingsKind === 'discount'
+                  ? tr('Company discount applied', 'Remise entreprise appliquée')
+                  : effectiveSavingsAmount > 0
+                    ? tr('You saved money', 'Vous avez économisé')
                   : tr('No extra savings applied', 'Aucune économie supplémentaire')}
               </div>
             </div>
@@ -1020,7 +1082,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               ))}
             </div>
 
-            {smartPricingMode === 'upgrade' && (
+            {effectiveSavingsKind === 'package_upgrade' && (
               <div style={{ marginBottom: '16px', padding: '14px', borderRadius: '12px', backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0' }}>
                 <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#15803d', marginBottom: '8px' }}>
                   {tr('Smart pricing math', 'Calcul tarif intelligent')}
@@ -1031,12 +1093,12 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                   <div>{tr('Extra km without upgrade:', 'Km supplémentaires sans surclassement :')} {formatReceiptKilometers(packageExtraKmWithoutUpgrade)} km × {formatCurrency(packageExtraKmRate)} MAD = {formatCurrency(packageExtraKmCostWithoutUpgrade)} MAD</div>
                   <div>{tr('Cost without upgrade:', 'Coût sans surclassement :')} {formatCurrency(packageOriginalPrice)} + {formatCurrency(packageExtraKmCostWithoutUpgrade)} = {formatCurrency(packageCostWithoutUpgrade)} MAD</div>
                   <div>{tr('Upgraded package:', 'Forfait surclassé :')} {receiptDistanceUpgrade?.appliedPackageName || packageUsedLabel} • {formatReceiptKilometers(receiptDistanceUpgrade?.appliedPackageLimitKm || 0)} km • {formatCurrency(packageAppliedPrice)} MAD</div>
-                  <div style={{ fontWeight: 800, color: '#15803d' }}>{tr('You saved:', 'Économie :')} {formatCurrency(smartPricingSavings)} MAD</div>
+                  <div style={{ fontWeight: 800, color: '#15803d' }}>{tr('You saved:', 'Économie :')} {formatCurrency(effectiveSavingsAmount)} MAD</div>
                 </div>
               </div>
             )}
 
-            {smartPricingMode === 'tier' && (
+            {effectiveSavingsKind === 'tier' && (
               <div style={{ marginBottom: '16px', padding: '14px', borderRadius: '12px', backgroundColor: '#eef2ff', border: '1px solid #c7d2fe' }}>
                 <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#4338ca', marginBottom: '8px' }}>
                   {tr('Savings math', 'Calcul des économies')}
@@ -1044,7 +1106,22 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 <div style={{ fontSize: '13px', color: '#334155', lineHeight: 1.7 }}>
                   <div>{tr('Standard total:', 'Total standard :')} {formatCurrency(tierPricingBreakdown?.standardTotal || 0)} MAD</div>
                   <div>{tr('Applied total:', 'Total appliqué :')} {formatCurrency(tierPricingBreakdown?.tierTotal || 0)} MAD</div>
-                  <div style={{ fontWeight: 800, color: '#15803d' }}>{tr('You saved:', 'Économie :')} {formatCurrency(smartPricingSavings)} MAD</div>
+                  <div style={{ fontWeight: 800, color: '#15803d' }}>{tr('You saved:', 'Économie :')} {formatCurrency(effectiveSavingsAmount)} MAD</div>
+                </div>
+              </div>
+            )}
+
+            {effectiveSavingsKind === 'discount' && (
+              <div style={{ marginBottom: '16px', padding: '14px', borderRadius: '12px', backgroundColor: '#faf5ff', border: '1px solid #d8b4fe' }}>
+                <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#7c3aed', marginBottom: '8px' }}>
+                  {tr('Discount math', 'Calcul de la remise')}
+                </div>
+                <div style={{ fontSize: '13px', color: '#334155', lineHeight: 1.7 }}>
+                  <div>{tr('Company discount applied:', 'Remise entreprise appliquée :')} {formatCurrency(amountDueDiscountAmount)} MAD</div>
+                  {amountDueResolutionMeta?.paymentReceivedNow > 0 && (
+                    <div>{tr('Additional payment received:', 'Paiement complémentaire reçu :')} {formatCurrency(amountDueResolutionMeta.paymentReceivedNow)} MAD</div>
+                  )}
+                  <div style={{ fontWeight: 800, color: '#7c3aed' }}>{tr('Customer saving:', 'Économie client :')} {formatCurrency(effectiveSavingsAmount)} MAD</div>
                 </div>
               </div>
             )}
@@ -1056,7 +1133,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               <div>{tr('Rental type:', 'Type de location :')} {rental?.rental_type || '-'}</div>
               <div>{tr('Displayed duration:', 'Durée affichée :')} {formatRentalDurationSummary(rental, tr)}</div>
               <div>{tr('Base unit price:', 'Prix unitaire de base :')} {formatCurrency(rental?.unit_price || 0)} MAD</div>
-              <div>{tr('Overage charge:', 'Frais de dépassement :')} {formatCurrency(rental?.overage_charge || overageDetails.overageCharge || 0)} MAD</div>
+              <div>{tr('Overage charge:', 'Frais de dépassement :')} {formatCurrency(effectiveOverageCharge)} MAD</div>
               <div>{tr('Fuel charge:', 'Frais carburant :')} {formatCurrency(effectiveFuelCharge)} MAD</div>
               <div>{tr('Payment status:', 'Statut du paiement :')} {paymentStatusLabel}</div>
               {amountDueResolutionMeta && (
@@ -2378,7 +2455,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                   </div>
                 </td>
                 <td style={{ padding: '12px', textAlign: 'right', color: '#c53030', fontWeight: '600' }}>
-                  +{formatCurrency(rental.overage_charge || overageDetails.overageCharge)}
+                  +{formatCurrency(effectiveOverageCharge)}
                 </td>
               </tr>
             )}
@@ -2465,7 +2542,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
             {hasOverage && (
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', color: '#c53030' }}>
                 <span>{tr('Overage Charge:', 'Frais de dépassement :')}</span>
-                <span style={{ fontWeight: '600' }}>+{formatCurrency(rental.overage_charge || overageDetails.overageCharge)} MAD</span>
+                <span style={{ fontWeight: '600' }}>+{formatCurrency(effectiveOverageCharge)} MAD</span>
               </div>
             )}
             

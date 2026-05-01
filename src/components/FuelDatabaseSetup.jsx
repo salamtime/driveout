@@ -62,6 +62,12 @@ ALTER TABLE fuel_tank ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_refills ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_withdrawals ENABLE ROW LEVEL SECURITY;
 
+-- Grant table access
+GRANT USAGE ON SCHEMA public TO authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE fuel_tank TO authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE fuel_refills TO authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE fuel_withdrawals TO authenticated, service_role;
+
 -- Create policies to allow authenticated users to access data
 CREATE POLICY "Allow authenticated users to view fuel_tank" ON fuel_tank FOR SELECT TO authenticated USING (true);
 CREATE POLICY "Allow authenticated users to update fuel_tank" ON fuel_tank FOR UPDATE TO authenticated USING (true);

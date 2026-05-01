@@ -1439,7 +1439,7 @@ const KilometerPricingTab: React.FC = () => {
                                     y={isDensePrintPage ? '20' : '22'}
                                     textAnchor="middle"
                                     dominantBaseline="middle"
-                                    fontSize={isDensePrintPage ? '16' : '17'}
+                                    fontSize={isDensePrintPage ? '18' : '19'}
                                     fontWeight="900"
                                     fill="#6D28D9"
                                     letterSpacing="2.2"
@@ -1478,7 +1478,7 @@ const KilometerPricingTab: React.FC = () => {
                                 y={isDensePrintPage ? '49' : '54'}
                                 textAnchor="middle"
                                 dominantBaseline="middle"
-                                fontSize={isDensePrintPage ? '22' : '24'}
+                                fontSize={isDensePrintPage ? '24' : '26'}
                                 fontWeight="900"
                                 fill="#7C3AED"
                               >
@@ -1502,6 +1502,8 @@ const KilometerPricingTab: React.FC = () => {
                           const isUnlimited = (pkg.included_kilometers === null || pkg.included_kilometers === undefined) && (!pkg.extra_km_rate || pkg.extra_km_rate === 0);
                           const isFeaturedOnPrint = isPrintSelected(pkg);
                           const packageDisplayNumber = getPackageDisplayNumber(pkg);
+                          const printBadgeLabel = getPrintPreviewBadge(pkg);
+                          const printBadgeWidth = isUnlimited ? 190 : 112;
                           const packageName = translatePrintPackageText(pkg.name);
                           const packageDescription = getMarketingPrintDescription(pkg);
                           const printPrice = formatPrintPrice(pkg.fixed_amount);
@@ -1553,25 +1555,25 @@ const KilometerPricingTab: React.FC = () => {
                                     </div>
                                     <div className="overflow-hidden rounded-full">
                                       <svg
-                                        width="112"
+                                        width={String(printBadgeWidth)}
                                         height="38"
-                                        viewBox="0 0 112 38"
+                                        viewBox={`0 0 ${printBadgeWidth} 38`}
                                         xmlns="http://www.w3.org/2000/svg"
                                         role="img"
-                                        aria-label={getPrintPreviewBadge(pkg)}
+                                        aria-label={printBadgeLabel}
                                         className="block"
                                       >
-                                        <rect width="112" height="38" rx="19" fill="#EDE9FE" />
+                                        <rect width={String(printBadgeWidth)} height="38" rx="19" fill="#EDE9FE" />
                                         <text
-                                          x="56"
+                                          x={String(printBadgeWidth / 2)}
                                           y="22"
                                           textAnchor="middle"
                                           dominantBaseline="middle"
-                                          fontSize="18"
+                                          fontSize="20"
                                           fontWeight="900"
                                           fill="#6D28D9"
                                         >
-                                          {getPrintPreviewBadge(pkg)}
+                                          {printBadgeLabel}
                                         </text>
                                       </svg>
                                     </div>
@@ -1594,7 +1596,7 @@ const KilometerPricingTab: React.FC = () => {
                                             y="18"
                                             textAnchor="middle"
                                             dominantBaseline="middle"
-                                            fontSize="12"
+                                            fontSize="14"
                                             fontWeight="900"
                                             letterSpacing="2.2"
                                             fill="#047857"
@@ -1605,26 +1607,26 @@ const KilometerPricingTab: React.FC = () => {
                                       </div>
                                     )}
                                   </div>
-                                  <h2 className={`font-black leading-tight text-slate-950 ${isDensePrintPage ? 'mt-1 text-[21px]' : 'mt-1.5 text-[28px]'}`}>{packageName}</h2>
+                                  <h2 className={`font-black leading-tight text-slate-950 ${isDensePrintPage ? 'mt-1 text-[24px]' : 'mt-1.5 text-[31px]'}`}>{packageName}</h2>
                                   {packageDescription && (
-                                    <p className={`max-w-2xl font-medium leading-snug text-slate-500 ${isDensePrintPage ? 'mt-0.5 text-[10px]' : 'mt-1 text-[12px]'}`}>{packageDescription}</p>
+                                    <p className={`max-w-2xl font-medium leading-snug text-slate-500 ${isDensePrintPage ? 'mt-0.5 text-[11px]' : 'mt-1 text-[13px]'}`}>{packageDescription}</p>
                                   )}
-                                  <p className={`font-bold text-slate-700 ${isDensePrintPage ? 'mt-1 text-[12px]' : 'mt-1.5 text-sm'}`}>
+                                  <p className={`font-bold text-slate-700 ${isDensePrintPage ? 'mt-1 text-[14px]' : 'mt-1.5 text-[16px]'}`}>
                                     {tr('Extra km', 'Km supp.')}:
                                     {' '}
                                     <span className="text-slate-950">
                                       {isUnlimited || !pkg.extra_km_rate ? tr('Included', 'Inclus') : `${pkg.extra_km_rate} MAD/km`}
                                     </span>
                                   </p>
-                                  <p className={`font-semibold ${isDensePrintPage ? 'mt-0.5 text-[12px]' : 'mt-1 text-sm'} ${hasSeparateFuelCharge ? 'text-amber-700' : 'text-emerald-700'}`}>
+                                  <p className={`font-semibold ${isDensePrintPage ? 'mt-0.5 text-[14px]' : 'mt-1 text-[16px]'} ${hasSeparateFuelCharge ? 'text-amber-700' : 'text-emerald-700'}`}>
                                     {tr('Fuel', 'Carburant')}: {hasSeparateFuelCharge ? tr('Not included', 'Non inclus') : tr('Included', 'Inclus')}
                                   </p>
                                 </div>
 
                                 <div className={`flex items-center ${isDensePrintPage ? 'min-w-[158px] max-w-[158px]' : 'min-w-[180px] max-w-[180px]'}`}>
                                   <div className={`marketing-print-price w-full rounded-[20px] bg-violet-600 text-right text-white shadow-lg shadow-violet-200 ${isDensePrintPage ? 'px-3 py-2' : 'px-4 py-3'}`}>
-                                    <p className={`font-semibold uppercase tracking-[0.18em] text-violet-100 ${isDensePrintPage ? 'text-[9px]' : 'text-[10px]'}`}>{tr('Price', 'Prix')}</p>
-                                    <p className={`flex flex-col items-end font-black leading-none ${isDensePrintPage ? 'mt-0.5 text-[22px]' : 'mt-1 text-[28px]'}`}>
+                                    <p className={`font-semibold uppercase tracking-[0.18em] text-violet-100 ${isDensePrintPage ? 'text-[10px]' : 'text-[11px]'}`}>{tr('Price', 'Prix')}</p>
+                                    <p className={`flex flex-col items-end font-black leading-none ${isDensePrintPage ? 'mt-0.5 text-[25px]' : 'mt-1 text-[31px]'}`}>
                                       <span>{printPrice.value}</span>
                                       <span className="mt-0.5">MAD</span>
                                     </p>

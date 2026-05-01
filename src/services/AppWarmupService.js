@@ -5,6 +5,7 @@ import criticalModuleCacheService from './CriticalModuleCacheService';
 import rentalSummaryService from './RentalSummaryService';
 import sharedQueryCacheService from './SharedQueryCacheService';
 import { supabase } from '../lib/supabase';
+import { getHostContext } from '../utils/hostContext';
 
 const WARM_RENTALS_SNAPSHOT_KEY = 'app:warm-rentals:default';
 const WARM_RENTALS_TTL_MS = 60 * 1000;
@@ -45,6 +46,16 @@ class AppWarmupService {
     this.lastWarmupAt = 0;
     this.activeWarmupPromise = null;
     this.intentPrefetchTimestamps = new Map();
+  }
+
+  getAllowedWarmModules() {
+    const host = getHostContext();
+
+    if (host.kind === 'tenant') {
+      return [];
+    }
+
+    return ['fuel', 'rentals', 'finance', 'maintenance'];
   }
 
   getWarmRentalsSnapshot() {
@@ -224,6 +235,10 @@ class AppWarmupService {
   }
 
   rewarmModule(moduleName) {
+    if (!this.getAllowedWarmModules().includes(moduleName)) {
+      return Promise.resolve();
+    }
+
     switch (moduleName) {
       case 'fuel':
         return this.warmFuelManagement();
@@ -270,7 +285,7 @@ class AppWarmupService {
       return;
     }
 
-    const supportedModules = new Set(['rentals', 'fuel', 'finance', 'maintenance']);
+    const supportedModules = new Set(this.getAllowedWarmModules());
     if (!supportedModules.has(moduleName)) {
       return;
     }
@@ -300,13 +315,16 @@ class AppWarmupService {
           return;
         }
 
+        const allowedModules = this.getAllowedWarmModules();
+        if (allowedModules.length === 0) {
+          this.lastWarmupAt = Date.now();
+          return;
+        }
+
         this.markWarmupStarted();
-        await Promise.allSettled([
-          this.warmFuelManagement(),
-          this.warmRentalManagement(),
-          this.warmFinanceManagement(),
-          this.warmMaintenanceManagement(),
-        ]);
+        await Promise.allSettled(
+          allowedModules.map((moduleName) => this.rewarmModule(moduleName))
+        );
         this.lastWarmupAt = Date.now();
       } finally {
         this.activeWarmupPromise = null;

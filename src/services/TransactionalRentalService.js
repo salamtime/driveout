@@ -1,8 +1,11 @@
 import { supabase } from '../lib/supabase.js';
 import MaintenanceService from './MaintenanceService.js';
+import { dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService.js';
 import {
+  mergeUniqueCustomersById,
   normalizeCustomerIdentityFields,
   pickBestExistingCustomerMatch,
+  pickMostCompleteCustomerProfile,
 } from '../utils/customerIdentity.js';
 
 const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
@@ -171,30 +174,27 @@ class TransactionalRentalService {
         const idNumber = sanitizedCustomerData.id_number?.trim();
         const phoneNumber = sanitizedCustomerData.phone?.trim();
         const fullName = sanitizedCustomerData.full_name?.trim();
+        const runLookup = async (builder) => {
+          const { data } = await builder;
+          return data || [];
+        };
 
-        if (licenceNumber) {
-          const { data } = await customerTable
-            .select('*')
-            .eq('licence_number', licenceNumber)
-            .limit(1);
-          if (data?.[0]) return data[0];
-        }
+        const exactMatchGroups = await Promise.all([
+          licenceNumber
+            ? runLookup(customerTable.select('*').eq('licence_number', licenceNumber).limit(10))
+            : Promise.resolve([]),
+          idNumber
+            ? runLookup(customerTable.select('*').eq('id_number', idNumber).limit(10))
+            : Promise.resolve([]),
+          phoneNumber
+            ? runLookup(customerTable.select('*').eq('phone', phoneNumber).limit(10))
+            : Promise.resolve([]),
+        ]);
 
-        if (idNumber) {
-          const { data } = await customerTable
-            .select('*')
-            .eq('id_number', idNumber)
-            .limit(1);
-          if (data?.[0]) return data[0];
-        }
-
-        if (phoneNumber) {
-          const { data } = await customerTable
-            .select('*')
-            .eq('phone', phoneNumber)
-            .limit(1);
-          if (data?.[0]) return data[0];
-        }
+        const exactMatch = pickMostCompleteCustomerProfile(
+          mergeUniqueCustomersById(...exactMatchGroups)
+        );
+        if (exactMatch?.id) return exactMatch;
 
         if (fullName) {
           const { data } = await customerTable
@@ -994,6 +994,27 @@ class TransactionalRentalService {
           console.log('✅ HEALING FIX: Master customer record updated successfully');
         }
       }
+
+      const alertVehicleLabel = [
+        finalSanitizedData.selected_vehicle_model_snapshot,
+        finalSanitizedData.vehicle_plate_number,
+      ]
+        .filter(Boolean)
+        .join(' • ') || `Vehicle #${rental.vehicle_id}`;
+
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'rental_created',
+        actor: 'admin',
+        rental: {
+        id: rental.id,
+        reference: rental.rental_id || finalSanitizedData.rental_id || '',
+        vehicle: alertVehicleLabel,
+        customer: rental.customer_name || finalSanitizedData.customer_name,
+        start: rental.rental_start_date || finalSanitizedData.rental_start_date,
+        end: rental.rental_end_date || finalSanitizedData.rental_end_date,
+        total: rental.total_amount ?? finalSanitizedData.total_amount ?? 0,
+        },
+      });
       
       return {
         success: true,

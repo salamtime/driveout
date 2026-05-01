@@ -19,7 +19,7 @@ const FuelLevelModal = ({
   description = "Select the current fuel level",
   variant = 'standard',
 }) => {
-  const [selectedLevel, setSelectedLevel] = useState(currentLevel || 8);
+  const [selectedLevel, setSelectedLevel] = useState(currentLevel ?? 8);
   const [isSaving, setIsSaving] = useState(false);
   const isLightVariant = variant === 'light';
 

@@ -509,7 +509,6 @@ class ReceiveFundsService {
 
     const organizationId = getScopedOrganizationId(userProfile);
     const workspaceId = buildWorkspaceId(userProfile, organizationId);
-    const actorName = buildRecorderDisplay(userProfile);
     const amount = roundCurrency(payload.amount);
 
     if (!(amount > 0)) {
@@ -529,7 +528,6 @@ class ReceiveFundsService {
       invoice_url: String(payload.receiptImageUrl || '').trim() || null,
       notes: expenseNote || null,
       created_by: userProfile?.id || null,
-      created_by_display_name: actorName,
       reference_type: 'receive_funds_drawer',
       status: 'active',
     };
@@ -542,6 +540,8 @@ class ReceiveFundsService {
 
     if (result.error) {
       const fallbackPayload = {
+        organization_id: basePayload.organization_id,
+        workspace_id: basePayload.workspace_id,
         category: basePayload.category,
         subcategory: basePayload.subcategory,
         description: basePayload.description,

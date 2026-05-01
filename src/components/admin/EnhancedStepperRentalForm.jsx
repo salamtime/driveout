@@ -35,8 +35,10 @@ import i18n from '../../i18n';
 import { fetchSystemSettings } from '../../services/systemSettingsApi';
 import { getUsers } from '../../services/UserService';
 import {
+  mergeUniqueCustomersById,
   normalizeCustomerIdentityFields,
   pickBestExistingCustomerMatch,
+  pickMostCompleteCustomerProfile,
 } from '../../utils/customerIdentity';
 
 const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
@@ -204,6 +206,15 @@ const getSelectedPackageDisplayLabel = (data = {}, tr) => {
 
   const durationLabel = formatRentalDurationLabel(data.rental_type, durationUnits, tr);
   return [data.selected_package_name, durationLabel].filter(Boolean).join(' • ');
+};
+
+const isPackagePricingEnabledForRentalDraft = (data = {}) => {
+  const value = data?.use_package_pricing;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
 };
 
 const getPackageDurationUnits = (pkg = {}) => {
@@ -939,6 +950,95 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
   };
 
   // ==================== SAVE CUSTOMER FROM SCAN ====================
+  const resolveExistingCustomerFromScan = async (incomingData = {}) => {
+    try {
+      const normalizedIdentity = normalizeCustomerIdentityFields({
+        licenceNumber:
+          incomingData.customer_licence_number ||
+          incomingData.licence_number ||
+          incomingData.license_number ||
+          incomingData.idNumber ||
+          incomingData.id_number ||
+          incomingData.document_number ||
+          '',
+        idNumber:
+          incomingData.customer_id_number ||
+          incomingData.id_number ||
+          incomingData.idNumber ||
+          incomingData.document_number ||
+          '',
+      });
+
+      const fullName = String(
+        incomingData.customer_name ||
+          incomingData.full_name ||
+          incomingData.fullName ||
+          incomingData.name ||
+          incomingData.raw_name ||
+          ''
+      ).trim();
+      const phone = String(incomingData.customer_phone || incomingData.phone || '').trim();
+      const email = String(incomingData.customer_email || incomingData.email || '').trim();
+      const lookupCandidate = {
+        full_name: fullName,
+        phone,
+        email,
+        licence_number: normalizedIdentity.licenceNumber || '',
+        id_number: normalizedIdentity.idNumber || '',
+      };
+      const lookupTable = supabase.from('app_4c3a7a6153_customers');
+      const runLookup = async (builder) => {
+        const { data, error } = await builder;
+        if (error) throw error;
+        return data || [];
+      };
+
+      const exactMatchGroups = await Promise.all([
+        lookupCandidate.id_number
+          ? runLookup(lookupTable.select('*').eq('id_number', lookupCandidate.id_number).limit(10))
+          : Promise.resolve([]),
+        lookupCandidate.licence_number
+          ? runLookup(lookupTable.select('*').eq('licence_number', lookupCandidate.licence_number).limit(10))
+          : Promise.resolve([]),
+        lookupCandidate.phone
+          ? runLookup(lookupTable.select('*').eq('phone', lookupCandidate.phone).limit(10))
+          : Promise.resolve([]),
+        lookupCandidate.email
+          ? runLookup(lookupTable.select('*').eq('email', lookupCandidate.email).limit(10))
+          : Promise.resolve([]),
+      ]);
+
+      const exactMatch = pickMostCompleteCustomerProfile(
+        mergeUniqueCustomersById(...exactMatchGroups)
+      );
+
+      if (exactMatch) return exactMatch;
+
+      if (fullName) {
+        const { data, error } = await lookupTable
+          .select('*')
+          .ilike('full_name', fullName)
+          .limit(5);
+
+        if (error) throw error;
+
+        const bestMatch = pickBestExistingCustomerMatch({
+          incomingCustomer: lookupCandidate,
+          candidates: data || [],
+        });
+
+        if (bestMatch?.id) {
+          return bestMatch;
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error('❌ Failed to resolve existing customer from scanned identity:', error);
+      return null;
+    }
+  };
+
   const saveCustomerFromScan = async (scannedData, imageFile = null) => {
     try {
       const customerId = generateCustomerId();
@@ -975,51 +1075,10 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
         customer_type: 'primary'
       };
 
-      const findExistingCustomerFromScan = async () => {
-        const lookupTable = supabase.from('app_4c3a7a6153_customers');
-        const idNumber = String(customerData.id_number || '').trim();
-        const licenceNumber = String(customerData.licence_number || '').trim();
-        const phone = String(customerData.phone || '').trim();
-        const fullName = String(customerData.full_name || '').trim();
-
-        if (idNumber) {
-          const { data } = await lookupTable
-            .select('*')
-            .eq('id_number', idNumber)
-            .limit(1);
-          if (data?.[0]) return data[0];
-        }
-
-        if (licenceNumber) {
-          const { data } = await lookupTable
-            .select('*')
-            .eq('licence_number', licenceNumber)
-            .limit(1);
-          if (data?.[0]) return data[0];
-        }
-
-        if (phone) {
-          const { data } = await lookupTable
-            .select('*')
-            .eq('phone', phone)
-            .limit(1);
-          if (data?.[0]) return data[0];
-        }
-
-        if (fullName) {
-          const { data } = await lookupTable
-            .select('*')
-            .ilike('full_name', fullName)
-            .limit(5);
-          const bestMatch = pickBestExistingCustomerMatch({
-            incomingCustomer: customerData,
-            candidates: data || [],
-          });
-          if (bestMatch?.id) return bestMatch;
-        }
-
-        return null;
-      };
+      const existingCustomer = await resolveExistingCustomerFromScan(customerData);
+      if (existingCustomer?.id) {
+        return existingCustomer;
+      }
       
       const { data: savedCustomer, error } = await supabase
         .from('app_4c3a7a6153_customers')
@@ -1029,7 +1088,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       
       if (error) {
         if (error.code === '23505') {
-          const existingCustomer = await findExistingCustomerFromScan();
+          const existingCustomer = await resolveExistingCustomerFromScan(customerData);
           
           if (existingCustomer) {
             return existingCustomer;
@@ -1087,7 +1146,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       Number(data.package_extra_rate) ||
       Number(linkedPackage?.extra_km_rate) ||
       0;
-    const resolvedUsePackagePricing = Boolean(data.use_package_pricing || resolvedPackageId);
+    const resolvedUsePackagePricing = isPackagePricingEnabledForRentalDraft(data);
     const resolvedMinimumDuration = data.rental_type === 'hourly' ? 0.5 : 1;
     const resolvedDuration = Math.max(
       resolvedMinimumDuration,
@@ -1137,20 +1196,22 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
         data.remaining_amount === null || data.remaining_amount === undefined || data.remaining_amount === ''
           ? Math.max(0, resolvedStoredTotal - (Number(resolvedDepositAmount) || 0))
           : Number(data.remaining_amount) || 0,
-      selected_package_id: resolvedPackageId,
-      selected_package_name: resolvedPackageName,
-      selected_package_fixed_amount: Number(data.selected_package_fixed_amount) || resolvedPackageRate,
-      selected_package_rate_per_unit: resolvedPackageRate,
-      selected_package_included_km: Number(data.selected_package_included_km) || resolvedIncludedKmPerUnit,
-      selected_package_included_km_per_unit: resolvedIncludedKmPerUnit,
-      selected_package_total_included_km: resolvedTotalIncludedKm,
-      selected_package_extra_rate: resolvedExtraRate,
-      selected_package_fuel_charge_enabled: Boolean(
-        data.selected_package_fuel_charge_enabled ??
-        data.package_fuel_charge_enabled ??
-        linkedPackage?.fuel_charge_enabled
-      ),
-      selected_package_description: data.selected_package_description || data.package_description || linkedPackage?.description || '',
+      selected_package_id: resolvedUsePackagePricing ? resolvedPackageId : null,
+      selected_package_name: resolvedUsePackagePricing ? resolvedPackageName : '',
+      selected_package_fixed_amount: resolvedUsePackagePricing ? (Number(data.selected_package_fixed_amount) || resolvedPackageRate) : 0,
+      selected_package_rate_per_unit: resolvedUsePackagePricing ? resolvedPackageRate : 0,
+      selected_package_included_km: resolvedUsePackagePricing ? (Number(data.selected_package_included_km) || resolvedIncludedKmPerUnit) : null,
+      selected_package_included_km_per_unit: resolvedUsePackagePricing ? resolvedIncludedKmPerUnit : null,
+      selected_package_total_included_km: resolvedUsePackagePricing ? resolvedTotalIncludedKm : null,
+      selected_package_extra_rate: resolvedUsePackagePricing ? resolvedExtraRate : 0,
+      selected_package_fuel_charge_enabled: resolvedUsePackagePricing
+        ? Boolean(
+            data.selected_package_fuel_charge_enabled ??
+            data.package_fuel_charge_enabled ??
+            linkedPackage?.fuel_charge_enabled
+          )
+        : false,
+      selected_package_description: resolvedUsePackagePricing ? (data.selected_package_description || data.package_description || linkedPackage?.description || '') : '',
       use_package_pricing: resolvedUsePackagePricing,
     };
 
@@ -2533,24 +2594,87 @@ const calculateFinancials = () => {
       setIsEmailDirty(false);
       setIsPhoneDirty(false);
       isProgrammaticChange.current = true;
+      const resolvedCustomer = savedCustomer || await resolveExistingCustomerFromScan(scannedData);
       
       setFormData(prev => {
         const newState = {
           ...prev,
-          customer_name: scannedData.fullName || scannedData.full_name || scannedData.name || scannedData.customer_name || scannedData.raw_name || prev.customer_name,
-          customer_email: scannedData.email || scannedData.customer_email || prev.customer_email,
-          customer_phone: scannedData.phone || scannedData.customer_phone || prev.customer_phone,
-          customer_licence_number: scannedData.idNumber || scannedData.document_number || scannedData.licence_number || scannedData.license_number || scannedData.customer_licence_number || prev.customer_licence_number,
-          customer_id_number: scannedData.idNumber || scannedData.id_number || scannedData.customer_id_number || scannedData.document_number || prev.customer_id_number,
-          customer_dob: scannedData.dateOfBirth || scannedData.date_of_birth || scannedData.dob || scannedData.customer_dob || prev.customer_dob,
-          customer_place_of_birth: scannedData.placeOfBirth || scannedData.place_of_birth || scannedData.customer_place_of_birth || prev.customer_place_of_birth,
-          customer_nationality: scannedData.nationality || scannedData.customer_nationality || prev.customer_nationality,
-          customer_issue_date: scannedData.issueDate || scannedData.issue_date || scannedData.customer_issue_date || prev.customer_issue_date,
-          customer_id_image: scannedData.imageUrl || scannedData.id_scan_url || scannedData.publicUrl || imageFile || scannedData.customer_id_image || prev.customer_id_image,
+          customer_name:
+            resolvedCustomer?.full_name ||
+            resolvedCustomer?.customer_name ||
+            scannedData.fullName ||
+            scannedData.full_name ||
+            scannedData.name ||
+            scannedData.customer_name ||
+            scannedData.raw_name ||
+            prev.customer_name,
+          customer_email:
+            resolvedCustomer?.email ||
+            resolvedCustomer?.customer_email ||
+            scannedData.email ||
+            scannedData.customer_email ||
+            prev.customer_email,
+          customer_phone:
+            resolvedCustomer?.phone ||
+            resolvedCustomer?.customer_phone ||
+            scannedData.phone ||
+            scannedData.customer_phone ||
+            prev.customer_phone,
+          customer_licence_number:
+            resolvedCustomer?.licence_number ||
+            resolvedCustomer?.document_number ||
+            scannedData.idNumber ||
+            scannedData.document_number ||
+            scannedData.licence_number ||
+            scannedData.license_number ||
+            scannedData.customer_licence_number ||
+            prev.customer_licence_number,
+          customer_id_number:
+            resolvedCustomer?.id_number ||
+            resolvedCustomer?.document_number ||
+            scannedData.idNumber ||
+            scannedData.id_number ||
+            scannedData.customer_id_number ||
+            scannedData.document_number ||
+            prev.customer_id_number,
+          customer_dob:
+            resolvedCustomer?.date_of_birth ||
+            scannedData.dateOfBirth ||
+            scannedData.date_of_birth ||
+            scannedData.dob ||
+            scannedData.customer_dob ||
+            prev.customer_dob,
+          customer_place_of_birth:
+            resolvedCustomer?.place_of_birth ||
+            scannedData.placeOfBirth ||
+            scannedData.place_of_birth ||
+            scannedData.customer_place_of_birth ||
+            prev.customer_place_of_birth,
+          customer_nationality:
+            resolvedCustomer?.nationality ||
+            scannedData.nationality ||
+            scannedData.customer_nationality ||
+            prev.customer_nationality,
+          customer_issue_date:
+            resolvedCustomer?.issue_date ||
+            resolvedCustomer?.licence_issue_date ||
+            scannedData.issueDate ||
+            scannedData.issue_date ||
+            scannedData.customer_issue_date ||
+            prev.customer_issue_date,
+          customer_id_image:
+            resolvedCustomer?.customer_id_image ||
+            resolvedCustomer?.id_scan_url ||
+            scannedData.imageUrl ||
+            scannedData.id_scan_url ||
+            scannedData.publicUrl ||
+            imageFile ||
+            scannedData.customer_id_image ||
+            prev.customer_id_image,
           customer_id_capture_method: captureMethod,
-          customer_id: savedCustomer?.id || scannedData.customer_id || prev.customer_id,
-          customer_id_scan_history: Array.isArray(savedCustomer?.scan_metadata?.id_scan_history)
-            ? savedCustomer.scan_metadata.id_scan_history
+          customer_id: resolvedCustomer?.id || scannedData.customer_id || prev.customer_id,
+          customer_id_scan_history: Array.isArray(resolvedCustomer?.scan_metadata?.id_scan_history)
+            ? resolvedCustomer.scan_metadata.id_scan_history
             : prev.customer_id_scan_history,
         };
         
@@ -2747,32 +2871,34 @@ const calculateFinancials = () => {
         const licenceNumber = normalizedIdentity.licenceNumber?.trim();
         const idNumber = normalizedIdentity.idNumber?.trim();
         const phoneNumber = submissionReadyFormData.customer_phone?.trim();
+        const emailAddress = emailToSubmit?.trim();
         const customerName = submissionReadyFormData.customer_name?.trim();
         const customerDob = submissionReadyFormData.customer_dob?.trim();
 
-        if (licenceNumber) {
-          const { data } = await customerTable
-            .select('*')
-            .eq('licence_number', licenceNumber)
-            .limit(1);
-          if (data?.[0]?.id) return data[0];
-        }
+        const runLookup = async (builder) => {
+          const { data } = await builder;
+          return data || [];
+        };
 
-        if (idNumber) {
-          const { data } = await customerTable
-            .select('*')
-            .eq('id_number', idNumber)
-            .limit(1);
-          if (data?.[0]?.id) return data[0];
-        }
+        const exactMatchGroups = await Promise.all([
+          licenceNumber
+            ? runLookup(customerTable.select('*').eq('licence_number', licenceNumber).limit(10))
+            : Promise.resolve([]),
+          idNumber
+            ? runLookup(customerTable.select('*').eq('id_number', idNumber).limit(10))
+            : Promise.resolve([]),
+          phoneNumber
+            ? runLookup(customerTable.select('*').eq('phone', phoneNumber).limit(10))
+            : Promise.resolve([]),
+          emailAddress
+            ? runLookup(customerTable.select('*').eq('email', emailAddress).limit(10))
+            : Promise.resolve([]),
+        ]);
 
-        if (phoneNumber) {
-          const { data } = await customerTable
-            .select('*')
-            .eq('phone', phoneNumber)
-            .limit(1);
-          if (data?.[0]?.id) return data[0];
-        }
+        const exactMatch = pickMostCompleteCustomerProfile(
+          mergeUniqueCustomersById(...exactMatchGroups)
+        );
+        if (exactMatch?.id) return exactMatch;
 
         if (customerName) {
           const { data } = await customerTable
@@ -2795,6 +2921,13 @@ const calculateFinancials = () => {
         }
 
         return null;
+      };
+
+      const findExistingCustomerForVerificationUpdate = async (currentCustomerId) => {
+        const matchedCustomer = await findExistingCustomerForSubmission();
+        if (!matchedCustomer?.id) return null;
+        if (String(matchedCustomer.id) === String(currentCustomerId || '')) return null;
+        return matchedCustomer;
       };
       
       if (!finalCustomerId) {
@@ -2955,6 +3088,11 @@ const calculateFinancials = () => {
       }
 
       if (isCustomerVerificationOnlyMode && initialData?.id) {
+        const conflictingExistingCustomer = await findExistingCustomerForVerificationUpdate(finalCustomerId);
+        if (conflictingExistingCustomer?.id) {
+          finalCustomerId = conflictingExistingCustomer.id;
+        }
+
         const verificationCustomerPayload = {
           full_name: submissionReadyFormData.customer_name,
           phone: submissionReadyFormData.customer_phone,
@@ -2979,6 +3117,51 @@ const calculateFinancials = () => {
           .eq('id', finalCustomerId);
 
         if (verificationCustomerError) {
+          if (verificationCustomerError.code === '23505') {
+            const conflictingRetryCustomer = await findExistingCustomerForVerificationUpdate(finalCustomerId);
+            if (conflictingRetryCustomer?.id) {
+              finalCustomerId = conflictingRetryCustomer.id;
+
+              const { error: retryVerificationCustomerError } = await supabase
+                .from('app_4c3a7a6153_customers')
+                .update(verificationCustomerPayload)
+                .eq('id', finalCustomerId);
+
+              if (!retryVerificationCustomerError) {
+                const verificationRentalPayload = {
+                  customer_id: finalCustomerId,
+                  customer_name: submissionReadyFormData.customer_name,
+                  customer_email: emailToSubmit,
+                  customer_phone: submissionReadyFormData.customer_phone,
+                  customer_licence_number: submissionReadyFormData.customer_licence_number || null,
+                  customer_id_number: submissionReadyFormData.customer_id_number || null,
+                  customer_dob: submissionReadyFormData.customer_dob || null,
+                  customer_place_of_birth: submissionReadyFormData.customer_place_of_birth || null,
+                  customer_nationality: submissionReadyFormData.customer_nationality || null,
+                  customer_issue_date: submissionReadyFormData.customer_issue_date || null,
+                  customer_id_image: submissionReadyFormData.customer_id_image || null,
+                };
+
+                const { data: verifiedRental, error: verificationRentalError } = await supabase
+                  .from('app_4c3a7a6153_rentals')
+                  .update(verificationRentalPayload)
+                  .eq('id', initialData.id)
+                  .select('*')
+                  .single();
+
+                if (verificationRentalError) {
+                  throw new Error(`${tr('Failed to save customer verification to the rental:', 'Impossible d’enregistrer la vérification du client sur la location :')} ${verificationRentalError.message}`);
+                }
+
+                setSuccessfullySubmitted(true);
+                setErrors({});
+                toast.success(tr('Customer verification saved successfully.', 'Vérification du client enregistrée avec succès.'));
+
+                return { result: verifiedRental, rentalId: verifiedRental.id };
+              }
+            }
+          }
+
           throw new Error(`${tr('Failed to update customer verification data:', 'Impossible de mettre à jour les données de vérification du client :')} ${verificationCustomerError.message}`);
         }
 
@@ -7957,15 +8140,31 @@ const SimplifiedRentalWizard = ({
       const tryFindCustomer = async (builder) => {
         const { data, error } = await builder;
         if (error) throw error;
-        return data?.[0] || null;
+        return data || [];
       };
 
-      persistedCustomer =
-        (licenceNumber ? await tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata').eq('licence_number', licenceNumber).limit(1)) : null) ||
-        (idNumber ? await tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata').eq('id_number', idNumber).limit(1)) : null) ||
-        (phoneNumber ? await tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata').eq('phone', phoneNumber).limit(1)) : null) ||
-        (customerName ? await tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata').ilike('full_name', customerName).limit(1)) : null) ||
-        null;
+      const exactPersistedGroups = await Promise.all([
+        licenceNumber
+          ? tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata, phone, email, date_of_birth, place_of_birth, nationality, issue_date, updated_at, created_at').eq('licence_number', licenceNumber).limit(10))
+          : Promise.resolve([]),
+        idNumber
+          ? tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata, phone, email, date_of_birth, place_of_birth, nationality, issue_date, updated_at, created_at').eq('id_number', idNumber).limit(10))
+          : Promise.resolve([]),
+        phoneNumber
+          ? tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata, phone, email, date_of_birth, place_of_birth, nationality, issue_date, updated_at, created_at').eq('phone', phoneNumber).limit(10))
+          : Promise.resolve([]),
+      ]);
+
+      persistedCustomer = pickMostCompleteCustomerProfile(
+        mergeUniqueCustomersById(...exactPersistedGroups)
+      );
+
+      if (!persistedCustomer?.id && customerName) {
+        const nameMatches = await tryFindCustomer(
+          customerTable.select('id, id_scan_url, scan_metadata, phone, email, date_of_birth, place_of_birth, nationality, issue_date, updated_at, created_at').ilike('full_name', customerName).limit(5)
+        );
+        persistedCustomer = pickMostCompleteCustomerProfile(nameMatches) || null;
+      }
 
       if (persistedCustomer?.id) {
         resolvedCustomerId = String(persistedCustomer.id).trim();

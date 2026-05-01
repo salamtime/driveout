@@ -16,7 +16,7 @@ const AdminModuleHero = ({
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="flex items-center gap-3">
               {icon ? (
-                <div className={`rounded-[1.35rem] border border-violet-100 bg-violet-50/70 p-3 shadow-[0_12px_30px_rgba(79,70,229,0.08)] ${iconContainerClassName}`}>
+                <div className={`rounded-[1.35rem] border border-violet-500/70 bg-gradient-to-br from-violet-600 via-violet-600 to-indigo-700 p-3 text-white shadow-[0_18px_38px_rgba(79,70,229,0.22)] [&_svg]:text-white ${iconContainerClassName}`}>
                   {icon}
                 </div>
               ) : null}

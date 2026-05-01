@@ -43,6 +43,7 @@ export const adminApiRequest = async (path, options = {}) => {
 
   const response = await fetch(path, {
     ...options,
+    cache: options.cache || 'no-store',
     headers,
   });
 

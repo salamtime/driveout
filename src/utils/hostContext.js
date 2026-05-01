@@ -4,7 +4,45 @@ export const PUBLIC_HOSTS = new Set(['driveout.io', 'www.driveout.io', 'saharax.
 export const ADMIN_HOSTS = new Set(['admin.driveout.io', 'admin.saharax.co']);
 export const APP_SHELL_HOSTS = new Set(['app.driveout.io']);
 export const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
+export const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 const LOCAL_TENANT_SESSION_KEY = 'driveout.localTenantSlug';
+const FIRST_PARTY_STOREFRONT_PATHS = new Set([
+  '/',
+  '/website',
+  '/login',
+  '/register',
+  '/reset-password',
+  '/rent',
+  '/rentals',
+  '/marketplace',
+  '/tours',
+  '/tour-booking',
+  '/rental-booking',
+  '/camera-test',
+]);
+
+const FIRST_PARTY_DYNAMIC_PREFIXES = [
+  '/rent/',
+  '/marketplace/',
+  '/s/',
+  '/d/',
+  '/view/',
+  '/share/',
+];
+
+const FIRST_PARTY_ACCOUNT_PATHS = new Set([
+  '/unauthorized',
+  '/pending-approval',
+  '/choose-plan',
+  '/business/workspace',
+  '/profile',
+]);
+
+const FIRST_PARTY_ACCOUNT_PREFIXES = [
+  '/account',
+  '/customer',
+  '/business',
+];
 
 export const getCurrentHostname = () => {
   if (typeof window === 'undefined') return '';
@@ -80,3 +118,28 @@ export const buildHostUrl = ({
 
 export const isTenantWorkspaceHost = (hostname = getCurrentHostname()) =>
   getHostContext(hostname).kind === 'tenant';
+
+export const isFirstPartyTenantSlug = (tenantSlug = '') =>
+  FIRST_PARTY_TENANT_SLUGS.has(String(tenantSlug || '').trim().toLowerCase());
+
+export const isFirstPartyTenantHost = (host = {}) =>
+  host?.kind === 'tenant' && isFirstPartyTenantSlug(host?.tenantSlug);
+
+export const isFirstPartyStorefrontPath = (pathname = '') => {
+  const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
+
+  return (
+    FIRST_PARTY_STOREFRONT_PATHS.has(normalizedPath)
+    || FIRST_PARTY_DYNAMIC_PREFIXES.some((prefix) => normalizedPath.startsWith(prefix))
+  );
+};
+
+export const isFirstPartyUnifiedPath = (pathname = '') => {
+  const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
+
+  return (
+    isFirstPartyStorefrontPath(normalizedPath)
+    || FIRST_PARTY_ACCOUNT_PATHS.has(normalizedPath)
+    || FIRST_PARTY_ACCOUNT_PREFIXES.some((prefix) => normalizedPath.startsWith(prefix))
+  );
+};

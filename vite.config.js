@@ -227,6 +227,26 @@ const createLocalApiPlugin = () => ({
           return `/public-links?${nextQuery.toString()}`
         }
 
+        if (normalizedPath === '/telegram-alerts') {
+          nextQuery.set('action', 'telegram-alerts')
+          return `/messages?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/telegram-overdue-reminders') {
+          nextQuery.set('action', 'telegram-overdue-reminders')
+          return `/messages?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/tenant-audit') {
+          nextQuery.set('resource', 'audit')
+          return `/tenants?${nextQuery.toString()}`
+        }
+
+        if (normalizedPath === '/message-media-maintenance') {
+          nextQuery.set('action', 'cleanup-media')
+          return `/messages?${nextQuery.toString()}`
+        }
+
         if (normalizedPath === '/document-shares/create') {
           nextQuery.set('action', 'create')
           return `/document-shares?${nextQuery.toString()}`

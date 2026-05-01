@@ -11,6 +11,7 @@ export const SHARED_MESSAGE_MEDIA_TABLE = 'shared_message_media';
 export const ORGANIZATIONS_TABLE = 'app_organizations';
 export const ORGANIZATION_MEMBERS_TABLE = 'app_organization_members';
 export const PLATFORM_BUSINESS_ACCOUNTS_TABLE = 'platform_business_accounts';
+export const PLATFORM_ADMIN_ACCOUNTS_TABLE = 'platform_admin_accounts';
 export const PLATFORM_TENANTS_TABLE = 'platform_tenants';
 export const PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE = 'platform_business_subscriptions';
 export const PLATFORM_TENANT_PROVISIONING_JOBS_TABLE = 'platform_tenant_provisioning_jobs';

@@ -8,6 +8,7 @@ const normalizeActor = (value) => {
 
 const normalizeEventType = (value) => String(value || '').trim().toLowerCase();
 const normalizeMetadata = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
+const normalizeDispatchKey = (value) => String(value || '').trim();
 
 export const insertRentalEvent = async (adminClient, {
   rentalId,
@@ -15,18 +16,26 @@ export const insertRentalEvent = async (adminClient, {
   actor = 'system',
   metadata = {},
   createdAt = null,
+  dispatchKey = '',
 }) => {
   const normalizedRentalId = String(rentalId || '').trim();
   const normalizedEventType = normalizeEventType(eventType);
+  const normalizedDispatchKey = normalizeDispatchKey(dispatchKey);
   if (!adminClient || !normalizedRentalId || !normalizedEventType) return null;
 
   const payload = {
     rental_id: normalizedRentalId,
     event_type: normalizedEventType,
     actor: normalizeActor(actor),
-    metadata: normalizeMetadata(metadata),
+    metadata: {
+      ...normalizeMetadata(metadata),
+      ...(normalizedDispatchKey ? { dispatchKey: normalizedDispatchKey } : {}),
+    },
     ...(createdAt ? { created_at: createdAt } : {}),
   };
+  if (normalizedDispatchKey) {
+    payload.dispatch_key = normalizedDispatchKey;
+  }
 
   const { data, error } = await adminClient
     .from(RENTAL_EVENTS_TABLE)

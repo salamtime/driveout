@@ -1,5 +1,7 @@
 import { authenticateRequest } from './_lib/auth.js';
 import { APP_USERS_TABLE, SHARED_MESSAGE_MEDIA_TABLE } from './_lib/supabase.js';
+import { handleTelegramAlertsRequest } from './_lib/telegramAlertsHandler.js';
+import { handleTelegramOverdueRemindersRequest } from './_lib/telegramOverdueRemindersHandler.js';
 import {
   buildThreadKey,
   decorateMessages,
@@ -1654,6 +1656,9 @@ const handlePatch = async (req, res) => {
 
 export default async function handler(req, res) {
   try {
+    const action = getAction(req);
+    if (action === 'telegram-alerts') return handleTelegramAlertsRequest(req, res);
+    if (action === 'telegram-overdue-reminders') return handleTelegramOverdueRemindersRequest(req, res);
     if (req.method === 'GET') return handleGet(req, res);
     if (req.method === 'POST') return handlePost(req, res);
     if (req.method === 'PATCH') return handlePatch(req, res);

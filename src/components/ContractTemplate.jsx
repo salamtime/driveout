@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from '../lib/supabase';
-import { calculateSimpleRentalPricing } from '../utils/simpleRentalPricing';
+import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../utils/simpleRentalPricing';
 import i18n from '../i18n';
 
 const getRentalDurationUnits = (rental) =>
@@ -109,7 +109,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
   const endDate = rental.actual_end_date || rental.end_date || rental.rental_end_date;
   
   // Check if rental has a package
-  const hasPackage = !!(rental.package || rental.package_id);
+  const hasPackage = isPackagePricingEnabled(rental) && !!(rental.package || rental.package_id);
   
   // Odometer values
   const startOdo = rental.start_odometer || "N/A";

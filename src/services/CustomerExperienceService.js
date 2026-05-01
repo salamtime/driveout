@@ -1,7 +1,8 @@
 import { supabase } from '../lib/supabase';
 import { adminApiRequest } from './adminApi';
 import { deriveEffectiveRentalStatus } from '../utils/rentalLifecycle';
-import { calculateSimpleRentalPricing } from '../utils/simpleRentalPricing';
+import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../utils/simpleRentalPricing';
+import { normalizePaymentStatus } from '../config/statusColors';
 import { createTimedRequestCache } from '../utils/requestCache';
 import {
   calculateMarketplaceCommission,
@@ -138,6 +139,7 @@ const normalizeRentalRecord = (row = {}) => {
   const modelName = [vehicle.name, vehicle.model].filter(Boolean).join(' ').trim() || 'Vehicle';
   const quantityHours = Number(row.quantity_hours || 0) || 0;
   const quantityDays = Number(row.quantity_days || 0) || 0;
+  const packagePricingEnabled = isPackagePricingEnabled(row);
   const packageName =
     cleanOptionalValue(row.selected_package_name) ||
     cleanOptionalValue(linkedPackage?.name) ||
@@ -227,7 +229,9 @@ const normalizeRentalRecord = (row = {}) => {
     hourlyRate: Number(vehicle.hourly_rate || row.unit_price || 0),
     totalKmUsed: Math.max(0, toNumber(row.total_kilometers_driven || row.total_distance)),
     packages: [linkedPackage].filter(Boolean),
+    usePackagePricing: packagePricingEnabled,
   });
+  const normalizedPaymentStatus = normalizePaymentStatus(row.payment_status, outstanding);
   const normalizeEvidencePhotos = (photos = []) =>
     (Array.isArray(photos) ? photos : [])
       .map((photo, index) => ({
@@ -260,7 +264,7 @@ const normalizeRentalRecord = (row = {}) => {
     sourceType,
     bookingSource: row.booking_source || row.inventory_source || row.booking_mode || '',
     isWebsiteBooking: isWebsiteCustomerBooking(row),
-    paymentStatus: String(row.payment_status || 'unpaid'),
+    paymentStatus: normalizedPaymentStatus,
     total,
     paid,
     outstanding,
@@ -285,7 +289,7 @@ const normalizeRentalRecord = (row = {}) => {
     fuelCharge: Math.max(0, toNumber(row.fuel_charge)),
     fuelChargeEnabled: row.fuel_charge_enabled !== false,
     contractSigned: Boolean(row.contract_signed || row.signature_url),
-    receiptIssued: Boolean(row.receipt_issued || String(row.payment_status || '').toLowerCase() === 'paid'),
+    receiptIssued: Boolean(row.receipt_issued || normalizedPaymentStatus === 'paid'),
     rentalType: String(row.rental_type || (quantityDays > 0 ? 'daily' : 'hourly')),
     quantityHours,
     quantityDays,
@@ -294,16 +298,16 @@ const normalizeRentalRecord = (row = {}) => {
     billedHours: simplePricingSummary.billedHours,
     hourlyRateApplied: simplePricingSummary.hourlyRate,
     calculatedTimePrice: simplePricingSummary.totalPrice,
-    packageId: cleanOptionalValue(row.selected_package_id) || cleanOptionalValue(row.package_id) || linkedPackage?.id || null,
-    selectedPackageName: packageName,
-    packageName,
-    packageFixedAmount,
-    includedKilometers: packageIncludedKilometers,
-    extraKmRate: packageExtraRate,
+    packageId: packagePricingEnabled ? (cleanOptionalValue(row.selected_package_id) || cleanOptionalValue(row.package_id) || linkedPackage?.id || null) : null,
+    selectedPackageName: packagePricingEnabled ? packageName : '',
+    packageName: packagePricingEnabled ? packageName : '',
+    packageFixedAmount: packagePricingEnabled ? packageFixedAmount : 0,
+    includedKilometers: packagePricingEnabled ? packageIncludedKilometers : null,
+    extraKmRate: packagePricingEnabled ? packageExtraRate : 0,
     totalKilometersDriven: Math.max(0, toNumber(row.total_kilometers_driven)),
-    extraKilometers,
-    extraKmRateApplied,
-    overageCharge,
+    extraKilometers: packagePricingEnabled ? extraKilometers : 0,
+    extraKmRateApplied: packagePricingEnabled ? extraKmRateApplied : 0,
+    overageCharge: packagePricingEnabled ? overageCharge : 0,
     depositMode,
     depositStatus: depositMode === 'external'
       ? (depositAmount > 0 ? 'external' : 'none')
@@ -321,7 +325,7 @@ const normalizeRentalRecord = (row = {}) => {
     maintenanceDiscountAmount,
     maintenanceCustomerChargeTotal,
     vehicle,
-    package: linkedPackage,
+    package: packagePricingEnabled ? linkedPackage : null,
     ownerExecution,
     owner_execution: ownerExecution,
     raw: row,

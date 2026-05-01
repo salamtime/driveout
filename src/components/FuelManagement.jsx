@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { 
@@ -24,6 +24,7 @@ import AddFuelTransactionModal from './fuel/AddFuelTransactionModal';
 import TransactionDetailsModal from './fuel/TransactionDetailsModal';
 import FuelTransactionService from '../services/FuelTransactionService';
 import appWarmupService from '../services/AppWarmupService';
+import useFuelRealtimeSync from '../hooks/useFuelRealtimeSync';
 import { roundTo } from '../utils/fuelMath';
 import { formatLiters, roundFuelLitersForDisplay } from '../utils/formatters';
 import { formatVehicleLabel, formatVehicleNameWithModel } from '../utils/vehicleLabels';
@@ -285,14 +286,13 @@ const FuelManagement = () => {
   };
 
   const loadVehicleBoard = async () => {
+    const seededFromCache = cachedOverviewSummary?.vehicleStates?.length > 0;
     if (cachedOverviewSummary?.vehicleStates?.length) {
       setVehicleStates(cachedOverviewSummary.vehicleStates);
       writeCachedVehicleBoardSnapshot(cachedOverviewSummary.vehicleStates);
-      setVehicleBoardLoading(false);
-      return;
     }
 
-    setVehicleBoardLoading((current) => current && vehicleStates.length === 0);
+    setVehicleBoardLoading((current) => current && vehicleStates.length === 0 && !seededFromCache);
     try {
       FuelTransactionService.resetFuelStateAvailability();
       const initialVehicleStates = await FuelTransactionService.getVehicleFuelStatesFast().catch(() => []);
@@ -302,6 +302,16 @@ const FuelManagement = () => {
 
       setVehicleStates(resolvedVehicleStates || []);
       writeCachedVehicleBoardSnapshot(resolvedVehicleStates || []);
+      appWarmupService.setWarmFuelSnapshot({
+        ...warmFuelSnapshot,
+        vehicleStates: resolvedVehicleStates || [],
+        overviewSummary: cachedOverviewSummary
+          ? {
+              ...cachedOverviewSummary,
+              vehicleStates: resolvedVehicleStates || [],
+            }
+          : cachedOverviewSummary,
+      });
     } catch (error) {
       console.error('Error loading vehicle fuel board:', error);
       if (!vehicleStates.length) {
@@ -325,8 +335,6 @@ const FuelManagement = () => {
         refills: summary?.refills || [],
         withdrawals: summary?.withdrawals || [],
       });
-      setVehicleStates(Array.isArray(summary?.vehicleStates) ? summary.vehicleStates : []);
-      writeCachedVehicleBoardSnapshot(summary?.vehicleStates || []);
       setRecentOverviewTransactions(summary?.recentTransactions || []);
       setPrefetchedTransactionPage(
         summary?.recentTransactions?.length
@@ -461,6 +469,25 @@ const FuelManagement = () => {
     if (percentage <= 30) return 'bg-yellow-500';
     return 'bg-green-500';
   };
+
+  const refreshFuelWorkspace = useCallback(async () => {
+    await Promise.allSettled([
+      loadFuelData(),
+      loadVehicleBoard(),
+      activeTab === 'transactions' || activeTab === 'fuel-tank'
+        ? hydrateMergedFuelHistory()
+        : Promise.resolve(),
+      activeTab === 'fuel-tank'
+        ? loadTankHistoryData()
+        : Promise.resolve(),
+    ]);
+  }, [activeTab]);
+
+  useFuelRealtimeSync(() => {
+    void refreshFuelWorkspace();
+  }, {
+    enabled: tablesExist !== false,
+  });
 
   const renderTankManagementPanel = () => (
     <div className="space-y-6">

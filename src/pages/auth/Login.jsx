@@ -125,14 +125,25 @@ const Login = () => {
   useEffect(() => {
     if (initialized && user && !authLoading) {
       const normalizedRole = String(user?.role || '').trim().toLowerCase();
-      const accountType = String(user?.accountType || user?.account_type || '').trim().toLowerCase();
+      const accountType = String(
+        user?.accountType ||
+        user?.account_type ||
+        session?.user?.user_metadata?.account_type ||
+        session?.user?.app_metadata?.account_type ||
+        ''
+      ).trim().toLowerCase();
+      const tenantBusinessOwnerLike = hasBusinessOwnerRequest({
+        account_type: accountType,
+        verification_status: user?.verificationStatus || session?.user?.user_metadata?.verification_status || session?.user?.app_metadata?.verification_status,
+        certification_request_status: session?.user?.user_metadata?.certification_request_status || session?.user?.app_metadata?.certification_request_status,
+      });
       const approvedBusinessOwner = isApprovedBusinessOwnerAccount({
         account_type: accountType,
         verification_status: user?.verificationStatus || session?.user?.user_metadata?.verification_status || session?.user?.app_metadata?.verification_status,
         certification_request_status: session?.user?.user_metadata?.certification_request_status || session?.user?.app_metadata?.certification_request_status,
       });
 
-      if (host.kind === 'tenant' && normalizedRole === 'customer' && !approvedBusinessOwner) {
+      if (host.kind === 'tenant' && normalizedRole === 'customer' && !approvedBusinessOwner && !tenantBusinessOwnerLike) {
         const marketplaceRedirect = buildMarketplaceLoginRedirect({
           email: user?.email || formData.email,
           redirect: redirectQuery || '/customer/dashboard',

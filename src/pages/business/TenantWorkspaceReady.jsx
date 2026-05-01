@@ -35,7 +35,7 @@ const TenantWorkspaceReady = () => {
         }
 
         if (session.workspaceState !== 'tenant_ready') {
-          if (session.workspaceState === 'expired') {
+          if (session.workspaceState === 'expired' || session.workspaceState === 'billing_issue') {
             navigate('/choose-plan', { replace: true });
             return;
           }

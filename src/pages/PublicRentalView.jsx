@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import ContractTemplate from '../components/ContractTemplate';
 import ReceiptTemplate from '../components/ReceiptTemplate';
+import { normalizePaymentStatus } from '../config/statusColors';
 import { decodePublicSharePayload } from '../utils/publicSharePayload';
 import DynamicPricingService from '../services/DynamicPricingService';
 import i18n from '../i18n';
@@ -415,10 +416,11 @@ export default function PublicRentalView() {
       rental?.sharedLinks && typeof rental.sharedLinks === 'object'
         ? rental.sharedLinks
         : {};
+    const normalizedPaymentStatus = normalizePaymentStatus(rental?.payment_status, rental?.remaining_amount);
 
     const available = {
       contract: decodedBundle.contract ?? Boolean(rental?.signature_url),
-      receipt: decodedBundle.receipt ?? Boolean(String(rental?.payment_status || '').toLowerCase() === 'paid'),
+      receipt: decodedBundle.receipt ?? Boolean(normalizedPaymentStatus === 'paid'),
       openingMedia: decodedBundle.openingMedia ?? galleryMedia.some((item) => item.phase === 'out'),
       closingMedia: decodedBundle.closingMedia ?? galleryMedia.some((item) => item.phase === 'in'),
     };

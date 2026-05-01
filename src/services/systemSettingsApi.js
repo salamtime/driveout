@@ -5,6 +5,11 @@ import { TABLE_NAMES } from '../config/tableNames';
 const SETTINGS_TABLE = 'saharax_0u4w4d_settings';
 const SETTINGS_ROW_ID = 1;
 export const SYSTEM_SETTINGS_UPDATED_EVENT = 'system-settings-updated';
+const OPTIONAL_SETTINGS_COLUMNS = new Set([
+  'auto_send_contract_email_after_creation',
+  'rental_details_default_view',
+  'tenant_deletion_retention_days',
+]);
 
 export const defaultSystemSettings = {
   companyName: 'QuadVenture',
@@ -80,6 +85,7 @@ export const defaultSystemSettings = {
   messagingDraftRetentionHours: 24,
   messagingAllowCameraCapture: true,
   rentalDetailsDefaultView: 'standard',
+  tenantDeletionRetentionDays: 90,
   };
 
 const normalizeSettings = (value = {}) => {
@@ -99,6 +105,7 @@ const normalizeSettings = (value = {}) => {
   merged.messagingPhotoRetentionDays = Math.max(1, Math.min(30, Number(merged.messagingPhotoRetentionDays ?? defaultSystemSettings.messagingPhotoRetentionDays) || defaultSystemSettings.messagingPhotoRetentionDays));
   merged.messagingDraftRetentionHours = Math.max(1, Math.min(168, Number(merged.messagingDraftRetentionHours ?? defaultSystemSettings.messagingDraftRetentionHours) || defaultSystemSettings.messagingDraftRetentionHours));
   merged.extraHourThresholdMinutes = Math.max(0, Math.min(120, Number(merged.extraHourThresholdMinutes ?? defaultSystemSettings.extraHourThresholdMinutes) || defaultSystemSettings.extraHourThresholdMinutes));
+  merged.tenantDeletionRetentionDays = Math.max(1, Math.min(365, Number(merged.tenantDeletionRetentionDays ?? defaultSystemSettings.tenantDeletionRetentionDays) || defaultSystemSettings.tenantDeletionRetentionDays));
   merged.messagingPhotoSharingEnabled = Boolean(merged.messagingPhotoSharingEnabled);
   merged.messagingAllowCameraCapture = Boolean(merged.messagingAllowCameraCapture);
   merged.autoSendContractEmailAfterCreation = Boolean(merged.autoSendContractEmailAfterCreation);
@@ -184,6 +191,7 @@ const fromTableRow = (row = {}) => normalizeSettings({
   messagingDraftRetentionHours: row.messaging_draft_retention_hours,
   messagingAllowCameraCapture: row.messaging_allow_camera_capture,
   rentalDetailsDefaultView: row.rental_details_default_view,
+  tenantDeletionRetentionDays: row.tenant_deletion_retention_days,
 });
 
 const toTableRow = (settings = {}) => {
@@ -263,7 +271,20 @@ const toTableRow = (settings = {}) => {
     messaging_draft_retention_hours: normalized.messagingDraftRetentionHours,
     messaging_allow_camera_capture: normalized.messagingAllowCameraCapture,
     rental_details_default_view: normalized.rentalDetailsDefaultView,
+    tenant_deletion_retention_days: normalized.tenantDeletionRetentionDays,
   };
+};
+
+const extractMissingColumnName = (error) => {
+  const message = String(error?.message || error?.details || '');
+  const match = message.match(/column "([^"]+)"/i) || message.match(/'([^']+)'\s+column/i);
+  return match?.[1] || null;
+};
+
+const isMissingOptionalSettingsColumnError = (error, payload = {}) => {
+  const missingColumn = extractMissingColumnName(error);
+  if (!missingColumn) return false;
+  return OPTIONAL_SETTINGS_COLUMNS.has(missingColumn) && Object.prototype.hasOwnProperty.call(payload, missingColumn);
 };
 
 const requireAdminRoleForFallback = async () => {
@@ -301,15 +322,30 @@ const saveSystemSettingsFallback = async (settingsPatch) => {
   await requireAdminRoleForFallback();
   const existing = await fetchSystemSettingsFallback();
   const nextSettings = normalizeSettings({ ...existing, ...(settingsPatch || {}) });
+  let compatiblePayload = toTableRow(nextSettings);
 
-  const { data, error } = await supabase
-    .from(SETTINGS_TABLE)
-    .upsert(toTableRow(nextSettings), { onConflict: 'id' })
-    .select('*')
-    .single();
+  for (let attempt = 0; attempt < OPTIONAL_SETTINGS_COLUMNS.size + 1; attempt += 1) {
+    const { data, error } = await supabase
+      .from(SETTINGS_TABLE)
+      .upsert(compatiblePayload, { onConflict: 'id' })
+      .select('*')
+      .single();
 
-  if (error) throw error;
-  return normalizeSettings(data ? fromTableRow(data) : nextSettings);
+    if (!error) {
+      return normalizeSettings(data ? fromTableRow(data) : nextSettings);
+    }
+
+    if (isMissingOptionalSettingsColumnError(error, compatiblePayload)) {
+      const missingColumn = extractMissingColumnName(error);
+      const { [missingColumn]: _removed, ...nextPayload } = compatiblePayload;
+      compatiblePayload = nextPayload;
+      continue;
+    }
+
+    throw error;
+  }
+
+  throw new Error('Unable to save system settings with the current schema.');
 };
 
 export const fetchSystemSettings = async () => {

@@ -1,4 +1,5 @@
 import { PLATFORM_TENANTS_TABLE, createSupabaseClients } from './supabase.js';
+import { getCachedWorkspaceReadiness, resolveWorkspaceReadiness } from './tenantWorkspaceReadiness.js';
 
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
@@ -207,6 +208,34 @@ export default async function handler(req, res) {
         code: 'master_project_config_rejected',
       });
       return;
+    }
+
+    if (!tenant.first_party) {
+      let workspaceReadiness = getCachedWorkspaceReadiness(tenant);
+      try {
+        workspaceReadiness = await resolveWorkspaceReadiness({
+          tenant,
+          adminClient,
+          forceFresh: !workspaceReadiness?.fresh,
+          persist: true,
+        });
+      } catch (readinessError) {
+        res.status(409).json({
+          error: 'Workspace readiness could not be verified',
+          code: 'workspace_readiness_unverified',
+          reason: readinessError?.message || 'Unknown workspace readiness verification error',
+        });
+        return;
+      }
+
+      if (workspaceReadiness?.ready !== true) {
+        res.status(409).json({
+          error: 'Workspace schema is not ready',
+          code: 'workspace_schema_incomplete',
+          readiness: workspaceReadiness,
+        });
+        return;
+      }
     }
 
     res.status(200).json({

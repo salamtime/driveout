@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase.js';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, ArrowDownToLine, Activity, Fuel, WalletCards, ChevronDown, ClipboardList, RefreshCw, Download, FileText, Banknote, Landmark, Loader2, X } from 'lucide-react';
+import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, ArrowDownToLine, Activity, Fuel, WalletCards, ChevronDown, ClipboardList, RefreshCw, Download, FileText, Banknote, Landmark, Loader2, X, CheckCircle2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
@@ -19,6 +19,7 @@ import PhotoCapture from '../../components/video/PhotoCapture';
 import i18n from '../../i18n';
 import { isBusinessOwnerAccountType, isPlatformAdminEmail, isPlatformOwnerEmail } from '../../utils/accountType';
 import { canAccessOwnerBankMethods, canRecordReceiveFunds, canUseBankDepositMethod } from '../../utils/permissionHelpers';
+import { normalizePaymentStatus } from '../../config/statusColors';
 import { receiveFundsService } from '../../services/receiveFundsService';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 
@@ -26,6 +27,26 @@ const TOUR_BOOKING_MARKER = '[tour_booking]';
 const DASHBOARD_CACHE_TTL_MS = 15000;
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+const EXPENSE_SAVE_NOTICE_STYLES = {
+  saving: {
+    container: 'border-amber-200 bg-amber-50 text-amber-800',
+    iconClass: 'text-amber-600',
+    icon: Loader2,
+    spin: true,
+  },
+  success: {
+    container: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+    iconClass: 'text-emerald-600',
+    icon: CheckCircle2,
+    spin: false,
+  },
+  error: {
+    container: 'border-rose-200 bg-rose-50 text-rose-800',
+    iconClass: 'text-rose-600',
+    icon: AlertTriangle,
+    spin: false,
+  },
+};
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -1293,6 +1314,9 @@ const RecentBookings = ({ bookings, loading, collapsed, onToggle }) => {
 
   // Mobile Card View - Now clickable
   const MobileBookingCard = ({ booking }) => (
+    (() => {
+      const normalizedPaymentStatus = normalizePaymentStatus(booking?.payment_status, booking?.remaining_amount);
+      return (
     <div
       onClick={() => handleBookingClick(booking.id)}
       className="bg-white p-4 rounded-lg border border-gray-200 shadow-sm mb-3 cursor-pointer hover:shadow-md hover:border-blue-300 transition-all duration-200 active:scale-[0.98]"
@@ -1302,8 +1326,8 @@ const RecentBookings = ({ bookings, loading, collapsed, onToggle }) => {
           <p className="font-medium text-gray-900">{booking.customer_name}</p>
           <p className="text-sm text-gray-500">{booking.vehicle?.vehicle_type || 'N/A'}</p>
         </div>
-        <span className={`px-2 py-1 text-xs font-semibold rounded-full bg-${booking.payment_status === 'paid' ? 'green' : 'yellow'}-100 text-${booking.payment_status === 'paid' ? 'green' : 'yellow'}-800`}>
-          {booking.payment_status}
+        <span className={`px-2 py-1 text-xs font-semibold rounded-full bg-${normalizedPaymentStatus === 'paid' ? 'green' : 'yellow'}-100 text-${normalizedPaymentStatus === 'paid' ? 'green' : 'yellow'}-800`}>
+          {normalizedPaymentStatus}
         </span>
       </div>
       <div className="flex justify-between items-center">
@@ -1316,6 +1340,8 @@ const RecentBookings = ({ bookings, loading, collapsed, onToggle }) => {
         </div>
       </div>
     </div>
+      );
+    })()
   );
 
   return (
@@ -1363,6 +1389,9 @@ const RecentBookings = ({ bookings, loading, collapsed, onToggle }) => {
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {bookings.map(booking => (
+              (() => {
+                const normalizedPaymentStatus = normalizePaymentStatus(booking?.payment_status, booking?.remaining_amount);
+                return (
               <tr
                 key={booking.id}
                 onClick={() => handleBookingClick(booking.id)}
@@ -1385,8 +1414,8 @@ const RecentBookings = ({ bookings, loading, collapsed, onToggle }) => {
                   {booking.total_amount} MAD
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-${booking.payment_status === 'paid' ? 'green' : 'yellow'}-100 text-${booking.payment_status === 'paid' ? 'green' : 'yellow'}-800`}>
-                    {booking.payment_status}
+                  <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-${normalizedPaymentStatus === 'paid' ? 'green' : 'yellow'}-100 text-${normalizedPaymentStatus === 'paid' ? 'green' : 'yellow'}-800`}>
+                    {normalizedPaymentStatus}
                   </span>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -1401,6 +1430,8 @@ const RecentBookings = ({ bookings, loading, collapsed, onToggle }) => {
                   <ChevronRight className="w-5 h-5 text-gray-400" />
                 </td>
               </tr>
+                );
+              })()
             ))}
           </tbody>
         </table>
@@ -1477,6 +1508,9 @@ const DashboardReceiveFundsDrawer = ({
     'shared'
   ).trim() || 'shared';
   const selectedReceiveMethod = DASHBOARD_RECEIVE_METHODS.find((method) => method.key === form.method) || DASHBOARD_RECEIVE_METHODS[0];
+  const expenseSaveNoticeStyle = expenseSaveFeedback?.status
+    ? EXPENSE_SAVE_NOTICE_STYLES[expenseSaveFeedback.status] || EXPENSE_SAVE_NOTICE_STYLES.success
+    : null;
 
   const resetDrawerForm = (mode = composerMode, recipients = adminRecipients) => {
     setForm({
@@ -1680,6 +1714,11 @@ const DashboardReceiveFundsDrawer = ({
         }
       }
       if (isExpenseMode) {
+        setExpenseSaveFeedback({
+          status: 'saving',
+          title: tr('Saving expense…', 'Enregistrement de la dépense…'),
+          message: tr('Please wait while we save this purchase.', "Veuillez patienter pendant l'enregistrement de cet achat."),
+        });
         await receiveFundsService.recordExpense(
           {
             amount: form.amount,
@@ -1691,6 +1730,9 @@ const DashboardReceiveFundsDrawer = ({
           userProfile
         );
         setExpenseSaveFeedback({
+          status: 'success',
+          title: tr('Expense saved.', 'Dépense enregistrée.'),
+          message: tr('Staff can now find it in purchase expenses and finance history.', "L'équipe peut maintenant la retrouver dans les dépenses d'achat et l'historique financier."),
           label: selectedExpenseLabels[0] || tr('Expense', 'Dépense'),
           amount: Number(form.amount || 0),
         });
@@ -1715,6 +1757,13 @@ const DashboardReceiveFundsDrawer = ({
       }
       onRecorded?.();
     } catch (error) {
+      if (isExpenseMode) {
+        setExpenseSaveFeedback({
+          status: 'error',
+          title: tr('Expense not saved.', 'Dépense non enregistrée.'),
+          message: error?.message || tr('Please try again before leaving this screen.', "Veuillez réessayer avant de quitter cet écran."),
+        });
+      }
       toast.error(
         error?.message ||
           (isExpenseMode
@@ -2165,9 +2214,20 @@ const DashboardReceiveFundsDrawer = ({
             )}
           </div>
 
-          {isExpenseMode && expenseSaveFeedback ? (
-            <div className="mt-6 rounded-[20px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
-              {tr('Saved', 'Enregistré')} • {expenseSaveFeedback.label} • {Number(expenseSaveFeedback.amount || 0).toLocaleString(isFrenchLocale() ? 'fr-FR' : 'en-US')} MAD
+          {isExpenseMode && expenseSaveFeedback && expenseSaveNoticeStyle ? (
+            <div className={`mt-6 rounded-[20px] border px-4 py-3 ${expenseSaveNoticeStyle.container}`}>
+              <div className="flex items-start gap-3">
+                <expenseSaveNoticeStyle.icon className={`mt-0.5 h-4 w-4 shrink-0 ${expenseSaveNoticeStyle.iconClass} ${expenseSaveNoticeStyle.spin ? 'animate-spin' : ''}`} />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">{expenseSaveFeedback.title}</p>
+                  <p className="mt-1 text-sm opacity-90">{expenseSaveFeedback.message}</p>
+                  {expenseSaveFeedback.status === 'success' ? (
+                    <p className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] opacity-80">
+                      {expenseSaveFeedback.label} • {Number(expenseSaveFeedback.amount || 0).toLocaleString(isFrenchLocale() ? 'fr-FR' : 'en-US')} MAD
+                    </p>
+                  ) : null}
+                </div>
+              </div>
             </div>
           ) : null}
 

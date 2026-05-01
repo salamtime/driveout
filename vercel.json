@@ -39,6 +39,14 @@
     {
       "path": "/api/growth-links?resource=leaderboard&action=distribute",
       "schedule": "0 0 * * 1"
+    },
+    {
+      "path": "/api/telegram-overdue-reminders",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/tenants?resource=lifecycle",
+      "schedule": "0 2 * * *"
     }
   ],
   "redirects": [
@@ -62,6 +70,8 @@
     { "source": "/api/public-rentals/:id", "destination": "/api/public-links?resource=public-rental&id=:id" },
     { "source": "/api/boost", "destination": "/api/growth-links?resource=boost" },
     { "source": "/api/message-media-maintenance", "destination": "/api/messages?action=cleanup-media" },
+    { "source": "/api/telegram-alerts", "destination": "/api/messages?action=telegram-alerts" },
+    { "source": "/api/telegram-overdue-reminders", "destination": "/api/messages?action=telegram-overdue-reminders" },
     { "source": "/api/tour-packages", "destination": "/api/tour-bookings?resource=packages" },
     { "source": "/api/tour-tracking", "destination": "/api/tour-bookings?resource=tracking" },
     { "source": "/api/admin/users", "destination": "/api/admin-users" },

@@ -5,6 +5,7 @@ export const TENANT_ENTRY_ROUTES = Object.freeze({
   provisioning: '/workspace-preparing',
   failed: '/workspace-error',
   suspended: '/workspace-suspended',
+  choosePlan: '/choose-plan',
 });
 
 export const isExternalUrl = (value = '') => /^https?:\/\//i.test(String(value || '').trim());
@@ -40,6 +41,10 @@ export const resolveUserEntry = ({ approved = false, tenantSession = null } = {}
 
   if (tenantStatus === 'suspended' || workspaceState === 'suspended') {
     return { type: 'route', target: TENANT_ENTRY_ROUTES.suspended };
+  }
+
+  if (workspaceState === 'expired' || workspaceState === 'billing_issue') {
+    return { type: 'route', target: TENANT_ENTRY_ROUTES.choosePlan };
   }
 
   const appUrl = String(tenant?.tenant_app_url || tenantSession?.tenantAppUrl || '').trim();

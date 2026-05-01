@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../../lib/supabase';
 import { 
   X, Upload, Camera, Loader2, CheckCircle, AlertCircle, 
@@ -430,6 +431,8 @@ const EnhancedUnifiedIDScanModal = ({
           // recover against existing customer profiles instead of surfacing raw 409 errors.
           const hasMinimumCustomerIdentity = Boolean(String(customerName || '').trim());
 
+          let resolvedSavedCustomer = null;
+
           if (!skipCustomerSave && hasMinimumCustomerIdentity) {
             try {
               const customerSaveResult = await saveCustomer(
@@ -452,8 +455,20 @@ const EnhancedUnifiedIDScanModal = ({
 
               if (!customerSaveResult?.success) {
                 console.warn('Database save warning:', customerSaveResult?.error || customerSaveResult);
-              } else if (!result.ocrUnavailable) {
-                setSuccess(tr(`Customer saved! ${customerName}`, `Client enregistré ! ${customerName}`));
+              } else {
+                resolvedSavedCustomer = customerSaveResult?.data || null;
+                if (resolvedSavedCustomer && onCustomerSaved) {
+                  onCustomerSaved(
+                    {
+                      ...resolvedSavedCustomer,
+                      customer_id: resolvedSavedCustomer.id || targetCustomerId,
+                    },
+                    result.publicUrl || result.imageUrl || ''
+                  );
+                }
+                if (!result.ocrUnavailable) {
+                  setSuccess(tr(`Customer saved! ${customerName}`, `Client enregistré ! ${customerName}`));
+                }
               }
             } catch (dbError) {
               console.warn('Database save warning:', dbError);
@@ -466,7 +481,17 @@ const EnhancedUnifiedIDScanModal = ({
           if (setFormData) {
             setFormData(prev => ({
               ...prev,
-              ...formCustomerData
+              ...formCustomerData,
+              customer_id: resolvedSavedCustomer?.id || formCustomerData.customer_id,
+              customer_name: resolvedSavedCustomer?.full_name || formCustomerData.customer_name,
+              customer_email: resolvedSavedCustomer?.email || formCustomerData.customer_email,
+              customer_phone: resolvedSavedCustomer?.phone || formCustomerData.customer_phone,
+              customer_dob: resolvedSavedCustomer?.date_of_birth || formCustomerData.customer_dob,
+              customer_id_number: resolvedSavedCustomer?.id_number || formCustomerData.customer_id_number,
+              customer_licence_number: resolvedSavedCustomer?.licence_number || formCustomerData.customer_licence_number,
+              customer_nationality: resolvedSavedCustomer?.nationality || formCustomerData.customer_nationality,
+              customer_place_of_birth: resolvedSavedCustomer?.place_of_birth || prev.customer_place_of_birth,
+              customer_issue_date: resolvedSavedCustomer?.issue_date || prev.customer_issue_date,
             }));
           }
           
@@ -487,12 +512,16 @@ const EnhancedUnifiedIDScanModal = ({
               {
                 ...ocrResult,
                 ...formCustomerData,
+                ...(resolvedSavedCustomer || {}),
                 full_name: customerName,
-                fullName: customerName,
-                name: customerName,
-                id_number: documentNumber,
-                idNumber: documentNumber,
-                document_number: documentNumber,
+                fullName: resolvedSavedCustomer?.full_name || customerName,
+                name: resolvedSavedCustomer?.full_name || customerName,
+                id_number: resolvedSavedCustomer?.id_number || documentNumber,
+                idNumber: resolvedSavedCustomer?.id_number || documentNumber,
+                document_number: resolvedSavedCustomer?.id_number || resolvedSavedCustomer?.licence_number || documentNumber,
+                customer_id: resolvedSavedCustomer?.id || formCustomerData.customer_id,
+                phone: resolvedSavedCustomer?.phone || formCustomerData.customer_phone,
+                email: resolvedSavedCustomer?.email || formCustomerData.customer_email,
                 imageUrl: result.publicUrl || result.imageUrl || '',
                 publicUrl: result.publicUrl || result.imageUrl || '',
                 uploadMethod: uploadMethod || 'camera',
@@ -609,8 +638,13 @@ const EnhancedUnifiedIDScanModal = ({
       )
   );
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4 backdrop-blur-[2px]">
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[10050] flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4 backdrop-blur-[2px]"
+      role="dialog"
+      aria-modal="true"
+      data-admin-modal-open="true"
+    >
       {/* Mobile Bottom Sheet / Desktop Modal */}
       <div className="flex h-[85vh] max-h-[85vh] w-full flex-col overflow-hidden rounded-[32px] border border-violet-100 bg-white shadow-[0_24px_80px_rgba(76,29,149,0.18)] sm:h-auto sm:max-w-md">
         {/* Header */}
@@ -848,7 +882,8 @@ const EnhancedUnifiedIDScanModal = ({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 

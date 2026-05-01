@@ -8,7 +8,14 @@ import ErrorBoundary from './components/ErrorBoundary';
 import AuthTransitionScreen from './components/auth/AuthTransitionScreen';
 import { isApprovedBusinessOwnerAccount, isBusinessAccountType, isBusinessOwnerAccountType, isPlatformOwnerEmail } from './utils/accountType';
 import RouteLoadingFallback from './components/navigation/RouteLoadingFallback';
-import { buildHostUrl, getHostContext, isPreviewHost } from './utils/hostContext';
+import {
+  buildHostUrl,
+  getHostContext,
+  isFirstPartyStorefrontPath,
+  isFirstPartyTenantHost,
+  isFirstPartyUnifiedPath,
+  isPreviewHost,
+} from './utils/hostContext';
 import { configureMasterSupabaseClient, configureSupabaseClient } from './lib/supabase';
 import i18n from './i18n';
 
@@ -67,8 +74,7 @@ const resolveHostAwarePath = (host, pathname = '/') => {
   const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
 
   if (
-    host.kind === 'tenant' &&
-    host.tenantSlug === 'saharax' &&
+    isFirstPartyTenantHost(host) &&
     (normalizedPath.startsWith('/admin') || normalizedPath.startsWith('/guide'))
   ) {
     return buildHostUrl({
@@ -93,61 +99,16 @@ const buildMarketplaceLoginHandoffUrl = ({ email = '', redirect = '/customer/das
   });
 };
 
-const isFirstPartyStorefrontRoute = (host, pathname) => {
-  if (host.kind !== 'tenant' || host.tenantSlug !== 'saharax') {
-    return false;
-  }
+const shouldUseFirstPartyTenantPublicShell = (host, pathname) =>
+  isFirstPartyTenantHost(host) && isFirstPartyStorefrontPath(pathname);
 
-  return (
-    pathname === '/' ||
-    pathname === '/website' ||
-    pathname === '/login' ||
-    pathname === '/register' ||
-    pathname === '/reset-password' ||
-    pathname === '/rent' ||
-    pathname === '/rentals' ||
-    pathname === '/marketplace' ||
-    pathname === '/tours' ||
-    pathname === '/tour-booking' ||
-    pathname === '/rental-booking' ||
-    pathname === '/camera-test' ||
-    pathname.startsWith('/rent/') ||
-    pathname.startsWith('/marketplace/') ||
-    pathname.startsWith('/s/') ||
-    pathname.startsWith('/d/') ||
-    pathname.startsWith('/view/') ||
-    pathname.startsWith('/share/')
-  );
-};
-
-const isUnifiedFirstPartySaharaxRoute = (host, pathname) => {
-  if (isFirstPartyStorefrontRoute(host, pathname)) {
-    return true;
-  }
-
-  if (host.kind !== 'tenant' || host.tenantSlug !== 'saharax') {
-    return false;
-  }
-
-  return (
-    pathname === '/login' ||
-    pathname === '/register' ||
-    pathname === '/reset-password' ||
-    pathname === '/unauthorized' ||
-    pathname === '/pending-approval' ||
-    pathname === '/choose-plan' ||
-    pathname === '/business/workspace' ||
-    pathname === '/profile' ||
-    pathname.startsWith('/account') ||
-    pathname.startsWith('/customer') ||
-    pathname.startsWith('/business')
-  );
-};
+const shouldUseFirstPartyTenantUnifiedShell = (host, pathname) =>
+  isFirstPartyTenantHost(host) && isFirstPartyUnifiedPath(pathname);
 
 const TenantWorkspaceBoot = ({ children }) => {
   const host = getHostContext();
   const location = useLocation();
-  const shouldUsePublicStorefront = isUnifiedFirstPartySaharaxRoute(host, location.pathname);
+  const shouldUsePublicStorefront = shouldUseFirstPartyTenantUnifiedShell(host, location.pathname);
 
   if (host.kind !== 'tenant' || shouldUsePublicStorefront) {
     configureMasterSupabaseClient();
@@ -245,7 +206,8 @@ const ExternalRedirect = ({ to }) => {
 
 const PublicHostRoute = ({ children }) => {
   const host = getHostContext();
-  const isFirstPartyStorefrontTenant = host.kind === 'tenant' && host.tenantSlug === 'saharax';
+  const location = useLocation();
+  const isFirstPartyStorefrontTenant = shouldUseFirstPartyTenantPublicShell(host, location.pathname);
 
   if (host.kind === 'public' || host.kind === 'local' || isFirstPartyStorefrontTenant) {
     return children;
@@ -256,6 +218,24 @@ const PublicHostRoute = ({ children }) => {
   }
 
   return <HostDomainRedirect kind="public" />;
+};
+
+const PrivateWorkspaceHostRoute = ({ children }) => {
+  const host = getHostContext();
+  const location = useLocation();
+  const allowPreviewHost = isPreviewHost(host.hostname);
+
+  if (
+    host.kind === 'tenant'
+    || host.kind === 'app'
+    || host.kind === 'admin'
+    || host.kind === 'local'
+    || allowPreviewHost
+  ) {
+    return children;
+  }
+
+  return <HostDomainRedirect kind="app" pathname={location.pathname} />;
 };
 
 const AdminHostRoute = ({ children }) => {
@@ -321,6 +301,7 @@ const InventoryPage = lazy(() => import('./pages/admin/Inventory'));
 const FinancePage = lazy(() => import('./pages/admin/Finance'));
 const AlertsPage = lazy(() => import('./pages/admin/Alerts'));
 const UserManagement = lazy(() => import('./pages/admin/UserManagement'));
+const PlatformAdminsPage = lazy(() => import('./pages/admin/PlatformAdmins'));
 const AdminCustomerProfilePage = lazy(() => import('./pages/admin/AdminCustomerProfilePage'));
 const VerificationCenterPage = lazy(() => import('./pages/admin/VerificationCenter'));
 const AdminMessagesPage = lazy(() => import('./pages/admin/AdminMessages'));
@@ -348,11 +329,11 @@ const HomeRedirect = () => {
   const { user, userProfile, initialized, session, getBusinessOwnerHomePath } = useAuth();
   const host = getHostContext();
   const location = useLocation();
-  const shouldUsePublicStorefront = isUnifiedFirstPartySaharaxRoute(host, location.pathname);
+  const shouldUsePublicStorefront = shouldUseFirstPartyTenantUnifiedShell(host, location.pathname);
   const isPublicLikeHost = host.kind === 'public' || shouldUsePublicStorefront;
 
   if (!initialized) {
-    return <AuthTransitionScreen title="Preparing your workspace" description="We are checking your SaharaX access and loading the right destination." />;
+    return <AuthTransitionScreen title="Preparing your workspace" description="We are checking your workspace access and loading the right destination." />;
   }
 
   const isAuthenticated = Boolean(session?.user || user);
@@ -371,8 +352,15 @@ const HomeRedirect = () => {
   const role = userProfile?.role;
   const normalizedEmail = String(userProfile?.email || user?.email || '').toLowerCase();
   const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
-  const accountType = session?.user?.user_metadata?.account_type || user?.user_metadata?.account_type || '';
+  const accountType =
+    session?.user?.user_metadata?.account_type ||
+    session?.user?.app_metadata?.account_type ||
+    userProfile?.accountType ||
+    user?.user_metadata?.account_type ||
+    user?.app_metadata?.account_type ||
+    '';
   const approvedBusinessOwner = !platformOwnerOverride && isApprovedBusinessOwnerAccount(session?.user?.user_metadata || user?.user_metadata || {});
+  const tenantBusinessOwnerLike = !platformOwnerOverride && isBusinessOwnerAccountType(accountType);
   const businessOwnerFreezeRedirect = !platformOwnerOverride && isBusinessOwnerAccountType(accountType)
     ? getBusinessOwnerHomePath({
         account_type: accountType,
@@ -381,7 +369,7 @@ const HomeRedirect = () => {
       })
     : null;
 
-  if (host.kind === 'tenant' && role === 'customer' && !approvedBusinessOwner) {
+  if (host.kind === 'tenant' && role === 'customer' && !approvedBusinessOwner && !tenantBusinessOwnerLike) {
     return (
       <ExternalRedirect
         to={buildMarketplaceLoginHandoffUrl({
@@ -621,18 +609,22 @@ function App() {
 
                 {/* Profile Route - Available to all authenticated users */}
                 <Route path="/profile" element={
-                  <ErrorBoundary name="Profile-Page">
-                    <ProtectedRoute>
-                      <ProfilePage />
-                    </ProtectedRoute>
-                  </ErrorBoundary>
+                  <PrivateWorkspaceHostRoute>
+                    <ErrorBoundary name="Profile-Page">
+                      <ProtectedRoute>
+                        <ProfilePage />
+                      </ProtectedRoute>
+                    </ErrorBoundary>
+                  </PrivateWorkspaceHostRoute>
                 } />
                 <Route path="/account/*" element={
-                  <ErrorBoundary name="Account-Workspace">
-                    <ProtectedRoute>
-                      <AccountWorkspaceLayout />
-                    </ProtectedRoute>
-                  </ErrorBoundary>
+                  <PrivateWorkspaceHostRoute>
+                    <ErrorBoundary name="Account-Workspace">
+                      <ProtectedRoute>
+                        <AccountWorkspaceLayout />
+                      </ProtectedRoute>
+                    </ErrorBoundary>
+                  </PrivateWorkspaceHostRoute>
                 }>
                   <Route index element={<Navigate to="/account/overview" replace />} />
                   <Route path="overview" element={<AccountOverview />} />
@@ -697,9 +689,10 @@ function App() {
                   <Route path="finance/*" element={<ErrorBoundary name="Finance-Page"><ProtectedRoute requiredPermissions={['Finance Management']}><FinancePage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="alerts/*" element={<ErrorBoundary name="Alerts-Page"><ProtectedRoute requiredPermissions={['Alerts']}><AlertsPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="users/*" element={<ErrorBoundary name="User-Management-Page"><ProtectedRoute requiredPermissions={['User & Role Management']}><UserManagement /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="platform-admins" element={<ErrorBoundary name="Platform-Admins"><ProtectedRoute requiredPermissions={['Platform Admins']}><PlatformAdminsPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="verification" element={<ErrorBoundary name="Verification-Center"><ProtectedRoute requiredPermissions={['Verification Center']}><VerificationCenterPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="messages" element={<ErrorBoundary name="Admin-Messages"><ProtectedRoute requiredPermissions={['Messages']}><AdminMessagesPage /></ProtectedRoute></ErrorBoundary>} />
-                  <Route path="workspaces" element={<ErrorBoundary name="Workspaces"><ProtectedRoute requiredRoles={['owner', 'admin']} requiredPermissions={['Workspaces']}><WorkspacesPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="workspaces" element={<ErrorBoundary name="Workspaces"><ProtectedRoute requiredPermissions={['Workspaces']}><WorkspacesPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="marketplace" element={<ErrorBoundary name="Marketplace-Control"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Marketplace Review']}><MarketplaceControlWorkspace /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="marketplace/:listingId" element={<ErrorBoundary name="Marketplace-Listing-Detail"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Marketplace Review']}><MarketplaceListingDetail /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="settings/*" element={<ErrorBoundary name="Settings-Page"><ProtectedRoute requiredPermissions={['System Settings']}><SettingsPage /></ProtectedRoute></ErrorBoundary>} />
@@ -723,19 +716,21 @@ function App() {
 
                 {/* Customer Routes */}
                 <Route path="/customer/*" element={
-                  <ErrorBoundary name="Customer-Routes">
-                    <CustomerRoute>
-                      <Routes>
-                        <Route path="dashboard" element={<Navigate to="/account/overview" replace />} />
-                        <Route path="book" element={<div className="p-6"><div className="bg-purple-50 border border-purple-200 rounded-lg p-6"><h2 className="text-lg font-semibold text-purple-900 mb-2">Booking System</h2><p className="text-purple-800">Vehicle booking interface will be implemented here.</p></div></div>} />
-                        <Route path="rentals" element={<Navigate to="/account/rentals" replace />} />
-                        <Route path="profile" element={<Navigate to="/account/verification" replace />} />
-                      </Routes>
-                    </CustomerRoute>
-                  </ErrorBoundary>
+                  <PrivateWorkspaceHostRoute>
+                    <ErrorBoundary name="Customer-Routes">
+                      <CustomerRoute>
+                        <Routes>
+                          <Route path="dashboard" element={<Navigate to="/account/overview" replace />} />
+                          <Route path="book" element={<div className="p-6"><div className="bg-purple-50 border border-purple-200 rounded-lg p-6"><h2 className="text-lg font-semibold text-purple-900 mb-2">Booking System</h2><p className="text-purple-800">Vehicle booking interface will be implemented here.</p></div></div>} />
+                          <Route path="rentals" element={<Navigate to="/account/rentals" replace />} />
+                          <Route path="profile" element={<Navigate to="/account/verification" replace />} />
+                        </Routes>
+                      </CustomerRoute>
+                    </ErrorBoundary>
+                  </PrivateWorkspaceHostRoute>
                 } />
 
-                <Route path="/business/*" element={<Navigate to="/account/overview" replace />} />
+                <Route path="/business/*" element={<PrivateWorkspaceHostRoute><Navigate to="/account/overview" replace /></PrivateWorkspaceHostRoute>} />
 
                 {/* Catch-all redirect to home */}
                 <Route path="*" element={<Navigate to="/" replace />} />

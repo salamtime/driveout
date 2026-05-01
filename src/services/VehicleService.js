@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { assertCanCreateVehicle, clearTenantRuntimeControlsCache } from './TenantLimitService';
 
 const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
 const isExpiredScheduledConflict = (rentalLike, graceMinutes = DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES) => {
@@ -314,6 +315,7 @@ class VehicleService {
   async createVehicle(vehicleData) {
     try {
       console.log('💾 Creating new vehicle...');
+      await assertCanCreateVehicle();
       let compatiblePayload = {
         ...vehicleData,
         created_at: new Date().toISOString(),
@@ -350,6 +352,7 @@ class VehicleService {
 
       // Clear cache
       this.clearCache();
+      clearTenantRuntimeControlsCache();
 
       console.log('✅ Vehicle created successfully');
       return { success: true, vehicle };

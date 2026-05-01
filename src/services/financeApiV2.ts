@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { normalizePaymentStatus } from '../config/statusColors';
 import VehicleDispositionService from './VehicleDispositionService';
 import sharedQueryCacheService from './SharedQueryCacheService';
 import { fetchTourBookings } from './tourBookingService';
@@ -698,7 +699,7 @@ class FinanceApiServiceV2 {
   }
 
   private getRecognizedIncomingAmount(raw: any, totalAmount: number): number {
-    const paymentStatus = String(raw?.payment_status || '').toLowerCase();
+    const paymentStatus = normalizePaymentStatus(raw?.payment_status, raw?.remaining_amount);
     const paidAmount = Math.max(0, this.toNumber(raw?.deposit_amount));
 
     if (!paymentStatus || ['unpaid', 'pending', 'scheduled', 'confirmed', 'active', 'completed', 'cancelled'].includes(paymentStatus)) {
@@ -1568,13 +1569,13 @@ class FinanceApiServiceV2 {
           customerId,
           vehicleId: String(rental.vehicle_id || ''),
           status: rental.rental_status || rental.status || 'scheduled',
-          paymentStatus: rental.payment_status || 'unpaid',
+          paymentStatus: normalizePaymentStatus(rental.payment_status, rental.remaining_amount),
           revenue: Math.round(revenueBreakdown.total),
           revenueBreakdown,
           recognizedAt,
           paidAmount: collectedAmount + depositAppliedAmount,
           remainingAmount: Math.max(0, Math.round(revenueBreakdown.total - (collectedAmount + depositAppliedAmount))),
-          refundAmount: rental.payment_status === 'refunded' ? this.toNumber(rental.total_amount) : 0,
+          refundAmount: normalizePaymentStatus(rental.payment_status, rental.remaining_amount) === 'refunded' ? this.toNumber(rental.total_amount) : 0,
           linkedMaintenanceRevenue: revenueBreakdown.maintenanceRevenue,
           linkedMaintenanceCosts: linkedMaintenance.maintenanceCost,
           linkedPartsConsumedCosts: linkedMaintenance.partsConsumedCost || 0,
@@ -1640,13 +1641,13 @@ class FinanceApiServiceV2 {
             ...(Array.isArray(meta.assignedVehicleIds) ? meta.assignedVehicleIds : [])
           ].filter(Boolean).map((vehicleId: any) => String(vehicleId)))),
           status: row.rental_status || 'scheduled',
-          paymentStatus: row.payment_status || 'unpaid',
+          paymentStatus: normalizePaymentStatus(row.payment_status, row.remaining_amount),
           revenue: recognizedAmount,
           billedAmount,
           recognizedAt: this.getRecognizedIncomingDate(row, meta.scheduledStartAt || row.created_at),
           paidAmount: Math.max(0, this.toNumber(row.deposit_amount)),
           remainingAmount: Math.max(0, this.toNumber(row.remaining_amount) || (billedAmount - recognizedAmount)),
-          refundAmount: row.payment_status === 'refunded' ? this.toNumber(row.total_amount) : 0,
+          refundAmount: normalizePaymentStatus(row.payment_status, row.remaining_amount) === 'refunded' ? this.toNumber(row.total_amount) : 0,
           startAt: meta.scheduledStartAt || row.rental_start_date || row.created_at,
           financeDate:
             meta.completedAt ||

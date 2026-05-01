@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { assertCanCreateVehicle, clearTenantRuntimeControlsCache } from './TenantLimitService';
 
 export class PaginatedVehicleService {
   constructor() {
@@ -105,6 +106,7 @@ export class PaginatedVehicleService {
   async createVehicle(vehicleData) {
     try {
       console.log('➕ Creating new vehicle...');
+      await assertCanCreateVehicle();
       
       const { data: vehicle, error } = await supabase
         .from('saharax_0u4w4d_vehicles')
@@ -119,6 +121,7 @@ export class PaginatedVehicleService {
 
       console.log('✅ Vehicle created successfully:', vehicle.id);
       this.clearCache();
+      clearTenantRuntimeControlsCache();
       return vehicle;
     } catch (error) {
       console.error('❌ Error in createVehicle:', error);

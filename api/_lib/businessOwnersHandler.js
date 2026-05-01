@@ -1,4 +1,4 @@
-import { requireOwnerOrAdmin } from './auth.js';
+import { requirePlatformOwnerOrAdmin } from './auth.js';
 import {
   PLATFORM_BUSINESS_ACCOUNTS_TABLE,
   PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE,
@@ -11,10 +11,12 @@ const BUSINESS_OWNER_ACCOUNT_TYPES = new Set([
   'business_owner',
   'business',
   'rental_business',
+  'private_owner',
 ]);
 
 const BUSINESS_OWNER_REQUEST_STATUSES = new Set([
   'pending',
+  'pending_review',
   'pending_verification',
   'approved',
   'rejected',
@@ -137,7 +139,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const auth = await requireOwnerOrAdmin(req);
+  const auth = await requirePlatformOwnerOrAdmin(req, 'Workspaces');
 
   if (auth.error) {
     res.status(auth.error.status).json(auth.error.body);

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSelector } from 'react-redux';
+import { normalizePaymentStatus } from '../../config/statusColors';
 import { selectRentals } from '../../store/slices/rentalsSlice';
 
 const ScheduledRentalsTable = ({ onViewRental, onCollectPayment, onStartRental }) => {
@@ -21,17 +22,12 @@ const ScheduledRentalsTable = ({ onViewRental, onCollectPayment, onStartRental }
 
   // Calculate financial breakdown with safe math
   const calculateFinancials = (rental) => {
-    const total = parseFloat(rental.total_amount || 0);
-    const deposit = parseFloat(rental.deposit_amount || 0);
-    const isCompleted = rental.rental_status === 'completed';
-    
-    // BUSINESS RULE: Completed rentals must have $0 remaining balance
-    let remaining;
-    if (isCompleted) {
-      remaining = 0; // Force to $0 for completed rentals
-    } else {
-      remaining = Math.max(0, total - deposit); // Normal calculation for non-completed
-    }
+    const total = Math.max(0, parseFloat(rental.total_amount || 0) || 0);
+    const deposit = Math.max(0, parseFloat(rental.deposit_amount || 0) || 0);
+    const storedRemaining = rental?.remaining_amount;
+    const remaining = storedRemaining === null || storedRemaining === undefined
+      ? Math.max(0, total - deposit)
+      : Math.max(0, parseFloat(storedRemaining || 0) || 0);
     
     return {
       total: total.toFixed(2),
@@ -43,18 +39,10 @@ const ScheduledRentalsTable = ({ onViewRental, onCollectPayment, onStartRental }
 
   // Get status based on payment logic with proper floating point comparison
   const getPaymentStatus = (rental) => {
-    const total = parseFloat(rental.total_amount || 0);
-    const deposit = parseFloat(rental.deposit_amount || 0);
-    const tolerance = 0.01;
-    const isCompleted = rental.rental_status === 'completed';
-
-    // BUSINESS RULE: Completed rentals must always show as fully paid
-    if (isCompleted) return 'fully_paid';
-
-    // For non-completed rentals, use normal payment logic
-    if (Math.abs(deposit) < tolerance) return 'pending_payment';
-    if (Math.abs(deposit - total) < tolerance) return 'fully_paid';
-    return 'deposit_paid';
+    const normalized = normalizePaymentStatus(rental?.payment_status, rental?.remaining_amount);
+    if (normalized === 'paid') return 'fully_paid';
+    if (normalized === 'partial') return 'deposit_paid';
+    return 'pending_payment';
   };
 
   const getStatusBadge = (status) => {

@@ -1,4 +1,4 @@
-import { requireOwner } from './auth.js';
+import { requirePlatformOwnerOrAdmin } from './auth.js';
 import {
   PLATFORM_BUSINESS_ACCOUNTS_TABLE,
   PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE,
@@ -7,11 +7,155 @@ import {
   PLATFORM_TENANT_AUDIT_LOG_TABLE,
   PLATFORM_TENANT_WORKSPACE_POOL_TABLE,
 } from './supabase.js';
+import {
+  buildTenantAppUrl,
+  buildTenantSlug,
+  buildTrialWindow,
+  normalizeBillingStatus,
+  normalizePlanType,
+  normalizeSubscriptionStatus,
+  sanitizeTenantSlug,
+} from './tenantRegistry.js';
+import { buildAutomaticTenantWorkspace } from './tenantAutomationWorker.js';
+import {
+  getWorkspaceReadinessFailureMessage,
+  mergeWorkspaceReadinessMetadata,
+  resolveWorkspaceReadiness,
+} from './tenantWorkspaceReadiness.js';
+import { applyLegacyBusinessWorkspaceBootstrap } from './tenantWorkspaceBootstrap.js';
 
 const createHttpError = (status, message) => {
   const error = new Error(message);
   error.status = status;
   return error;
+};
+
+const isAutomaticSignupModeEnabled = () => {
+  const signupMode = String(process.env.TENANT_SIGNUP_MODE || 'automatic').trim().toLowerCase();
+  const autoProvisioningEnabled = String(process.env.TENANT_AUTO_PROVISIONING_ENABLED || 'true').trim().toLowerCase();
+  return signupMode !== 'manual' && autoProvisioningEnabled !== 'false';
+};
+
+const BUSINESS_OWNER_ACCOUNT_TYPES = new Set([
+  'operator',
+  'business_owner',
+  'business',
+  'rental_business',
+  'private_owner',
+]);
+
+const BUSINESS_OWNER_REQUEST_STATUSES = new Set([
+  'pending',
+  'pending_review',
+  'pending_verification',
+  'approved',
+  'rejected',
+  'needs_info',
+  'suspended',
+]);
+
+const normalizeStatus = (value, fallback = 'pending') => {
+  const status = String(value || '').trim().toLowerCase();
+  if (status === 'pending_verification') return 'pending';
+  return BUSINESS_OWNER_REQUEST_STATUSES.has(status) ? status : fallback;
+};
+
+const getBusinessOwnerMetadata = (user = {}) => ({
+  ...(user.app_metadata || {}),
+  ...(user.user_metadata || {}),
+});
+
+const hasLegacyBusinessOwnerRequest = (user = {}) => {
+  const metadata = getBusinessOwnerMetadata(user);
+  const accountType = String(metadata.account_type || metadata.accountType || '').trim().toLowerCase();
+  const certificationStatus = String(metadata.certification_request_status || '').trim().toLowerCase();
+  const verificationStatus = String(metadata.verification_status || '').trim().toLowerCase();
+
+  return (
+    BUSINESS_OWNER_ACCOUNT_TYPES.has(accountType) ||
+    BUSINESS_OWNER_REQUEST_STATUSES.has(certificationStatus) ||
+    BUSINESS_OWNER_REQUEST_STATUSES.has(verificationStatus)
+  );
+};
+
+const isPermissionDenied = (error) => (
+  String(error?.code || '') === '42501' ||
+  String(error?.message || '').toLowerCase().includes('permission denied')
+);
+
+const buildLegacyBusinessOwnerEntry = (user = {}) => {
+  const metadata = getBusinessOwnerMetadata(user);
+  const applicationStatus = normalizeStatus(
+    metadata.certification_request_status || metadata.verification_status,
+    'pending'
+  );
+  const businessAccountId = `legacy_${user.id}`;
+  const fullName = metadata.full_name || metadata.name || [metadata.first_name, metadata.last_name].filter(Boolean).join(' ');
+  const companyName = metadata.company_name || metadata.business_name || metadata.organization_name || fullName || user.email;
+
+  return {
+    business_account: {
+      id: businessAccountId,
+      auth_user_id: user.id,
+      full_name: fullName || user.email,
+      email: user.email,
+      company_name: companyName,
+      phone: metadata.phone || metadata.phone_number || '',
+      account_type: metadata.account_type || 'business_owner',
+      application_status: applicationStatus,
+      approval_status: applicationStatus,
+      approved_at: metadata.approved_at || null,
+      approved_by: metadata.approved_by || null,
+      rejection_reason: metadata.rejection_reason || '',
+      metadata: {
+        source: 'legacy_auth_metadata',
+        app_metadata: user.app_metadata || {},
+        user_metadata: user.user_metadata || {},
+      },
+      created_at: user.created_at || null,
+      updated_at: user.updated_at || user.last_sign_in_at || user.created_at || null,
+    },
+    subscription: {
+      id: `${businessAccountId}_subscription`,
+      business_account_id: businessAccountId,
+      plan_type: metadata.plan_type || metadata.subscription_plan || 'starter',
+      subscription_status: metadata.subscription_status || (applicationStatus === 'approved' ? 'trial' : 'pending'),
+      billing_status: metadata.billing_status || 'none',
+      trial_started_at: metadata.trial_started_at || null,
+      trial_ends_at: metadata.trial_ends_at || null,
+      subscription_started_at: metadata.subscription_started_at || null,
+      suspended_at: metadata.suspended_at || null,
+      plan_limits: {},
+      metadata: {
+        source: 'legacy_auth_metadata',
+      },
+    },
+    tenant: null,
+    provisioning_job: null,
+  };
+};
+
+const loadLegacyBusinessOwnersFromAuth = async (adminClient) => {
+  const users = [];
+  let page = 1;
+  const perPage = 1000;
+
+  while (page <= 10) {
+    const { data, error } = await adminClient.auth.admin.listUsers({ page, perPage });
+    if (error) throw error;
+
+    const batch = Array.isArray(data?.users) ? data.users : [];
+    users.push(...batch);
+
+    if (batch.length < perPage) break;
+    page += 1;
+  }
+
+  return users
+    .filter(hasLegacyBusinessOwnerRequest)
+    .sort((first, second) => new Date(second.created_at || 0) - new Date(first.created_at || 0))
+    .slice(0, 200)
+    .map(buildLegacyBusinessOwnerEntry);
 };
 
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
@@ -58,6 +202,83 @@ const buildProvisioningResult = (payload = {}) => ({
   schema_version: payload.schema_version || 'v1',
 });
 
+const hasUsableTenantWorkspaceConfig = (payload = {}) => (
+  !getInvalidTenantConfigReason({
+    tenantProjectRef: payload.tenant_project_ref,
+    tenantApiUrl: payload.tenant_api_url,
+    tenantAnonKey: payload.tenant_anon_key,
+  })
+);
+
+const buildWorkspaceConfigFromTenantRecord = (tenant = {}) => ({
+  tenantProjectRef: String(tenant.tenant_project_ref || '').trim(),
+  tenantAppUrl: normalizeUrl(tenant.tenant_app_url || ''),
+  tenantApiUrl: normalizeUrl(tenant.tenant_api_url || ''),
+  tenantAnonKey: String(tenant.tenant_anon_key || '').trim(),
+  tenantServiceRoleSecretRef: String(tenant.tenant_service_role_secret_ref || '').trim() || null,
+  tenantDatabaseName: String(tenant.tenant_database_name || '').trim() || null,
+  schemaVersion: String(tenant.schema_version || 'v1').trim() || 'v1',
+});
+
+const buildWorkspaceConfigFromPoolRecord = (workspace = {}) => ({
+  tenantProjectRef: String(workspace.tenant_project_ref || '').trim(),
+  tenantAppUrl: normalizeUrl(workspace.tenant_app_url || ''),
+  tenantApiUrl: normalizeUrl(workspace.tenant_api_url || ''),
+  tenantAnonKey: String(workspace.tenant_anon_key || '').trim(),
+  tenantServiceRoleSecretRef: String(workspace.tenant_service_role_secret_ref || '').trim() || null,
+  tenantDatabaseName: String(workspace.tenant_database_name || '').trim() || null,
+  schemaVersion: String(workspace.schema_version || 'v1').trim() || 'v1',
+});
+
+const resolvePersistedTenantWorkspace = async ({ adminClient, tenant }) => {
+  const tenantWorkspace = buildWorkspaceConfigFromTenantRecord(tenant);
+  if (hasUsableTenantWorkspaceConfig({
+    tenant_project_ref: tenantWorkspace.tenantProjectRef,
+    tenant_api_url: tenantWorkspace.tenantApiUrl,
+    tenant_anon_key: tenantWorkspace.tenantAnonKey,
+  })) {
+    return {
+      source: 'tenant_record',
+      workspacePoolEntry: null,
+      workspace: tenantWorkspace,
+    };
+  }
+
+  const candidateFilters = [
+    { field: 'assigned_tenant_id', value: tenant.id },
+    { field: 'tenant_project_ref', value: tenantWorkspace.tenantProjectRef },
+    { field: 'tenant_app_url', value: tenantWorkspace.tenantAppUrl },
+  ].filter((entry) => isNonEmptyString(entry.value));
+
+  for (const candidate of candidateFilters) {
+    const { data, error } = await adminClient
+      .from(PLATFORM_TENANT_WORKSPACE_POOL_TABLE)
+      .select('*')
+      .eq(candidate.field, candidate.value)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) continue;
+
+    const workspace = buildWorkspaceConfigFromPoolRecord(data);
+    if (hasUsableTenantWorkspaceConfig({
+      tenant_project_ref: workspace.tenantProjectRef,
+      tenant_api_url: workspace.tenantApiUrl,
+      tenant_anon_key: workspace.tenantAnonKey,
+    })) {
+      return {
+        source: 'workspace_pool',
+        workspacePoolEntry: data,
+        workspace,
+      };
+    }
+  }
+
+  return null;
+};
+
 const syncManualWorkspacePoolEntry = async ({
   adminClient,
   tenant,
@@ -70,6 +291,7 @@ const syncManualWorkspacePoolEntry = async ({
   tenantDatabaseName,
   schemaVersion,
   userId,
+  syncMode = 'manual_activation',
 }) => {
   const nowIso = new Date().toISOString();
   let workspace = null;
@@ -128,7 +350,7 @@ const syncManualWorkspacePoolEntry = async ({
       ...(workspace?.metadata || {}),
       real_config_synced_at: nowIso,
       real_config_synced_by: userId || null,
-      real_config_sync_mode: 'manual_activation',
+      real_config_sync_mode: syncMode,
     },
   };
 
@@ -152,16 +374,6 @@ const syncManualWorkspacePoolEntry = async ({
 
   if (error) throw error;
   return data;
-};
-
-const buildTenantSlug = ({ email = '', companyName = '', businessAccountId = '' } = {}) => {
-  const base = String(companyName || email || businessAccountId || 'workspace')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 42);
-  const suffix = String(businessAccountId || '').replace(/-/g, '').slice(0, 6);
-  return [base || 'workspace', suffix].filter(Boolean).join('-');
 };
 
 const getProvisioningWebhookConfig = () => {
@@ -308,6 +520,412 @@ const dispatchProvisioningAutomation = async ({ job, tenant, businessAccount, us
   };
 };
 
+const runAutomaticProvisioningWorker = async ({
+  adminClient,
+  job,
+  tenant,
+  businessAccount,
+  userId,
+}) => {
+  const nowIso = new Date().toISOString();
+  const persistedWorkspace = await resolvePersistedTenantWorkspace({
+    adminClient,
+    tenant,
+  });
+  const createdAutomatically = !persistedWorkspace;
+  const workspace = persistedWorkspace?.workspace || await buildAutomaticTenantWorkspace({
+    tenantName: tenant.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Business Workspace',
+    tenantSlug: tenant.tenant_slug,
+  });
+
+  const updatedWorkspacePoolEntry = await syncManualWorkspacePoolEntry({
+    adminClient,
+    tenant,
+    job,
+    tenantProjectRef: workspace.tenantProjectRef,
+    tenantAppUrl: workspace.tenantAppUrl,
+    tenantApiUrl: workspace.tenantApiUrl,
+    tenantAnonKey: workspace.tenantAnonKey,
+    tenantServiceRoleSecretRef: workspace.tenantServiceRoleSecretRef || null,
+    tenantDatabaseName: workspace.tenantDatabaseName,
+    schemaVersion: workspace.schemaVersion,
+    userId,
+    syncMode: 'automatic_inline',
+  });
+
+  try {
+    await applyLegacyBusinessWorkspaceBootstrap({
+      projectRef: workspace.tenantProjectRef,
+      tenantName: tenant.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Business Workspace',
+      tenantSlug: tenant.tenant_slug,
+      ownerAuthUserId: businessAccount?.auth_user_id || null,
+      ownerEmail: businessAccount?.email || null,
+      ownerFullName: businessAccount?.full_name || null,
+    });
+  } catch (bootstrapError) {
+    throw createHttpError(
+      502,
+      `Unable to bootstrap tenant workspace schema: ${bootstrapError?.message || bootstrapError}`
+    );
+  }
+
+  let workspaceReadiness;
+  try {
+    workspaceReadiness = await resolveWorkspaceReadiness({
+      tenant: {
+        ...tenant,
+        tenant_project_ref: workspace.tenantProjectRef,
+      },
+      adminClient,
+      forceFresh: true,
+      persist: false,
+    });
+  } catch (readinessError) {
+    const readinessMessage = `Unable to verify workspace schema readiness: ${readinessError?.message || readinessError}`;
+    throw createHttpError(502, readinessMessage);
+  }
+
+  if (workspaceReadiness?.ready !== true) {
+    const readinessMessage = getWorkspaceReadinessFailureMessage(workspaceReadiness);
+    const failedMetadata = mergeWorkspaceReadinessMetadata(tenant, workspaceReadiness);
+
+    await Promise.all([
+      adminClient
+        .from(PLATFORM_TENANTS_TABLE)
+        .update({
+          tenant_status: 'failed',
+          tenant_project_ref: workspace.tenantProjectRef,
+          tenant_app_url: workspace.tenantAppUrl,
+          tenant_api_url: workspace.tenantApiUrl,
+          tenant_anon_key: workspace.tenantAnonKey,
+          tenant_service_role_secret_ref: workspace.tenantServiceRoleSecretRef || null,
+          tenant_database_name: workspace.tenantDatabaseName || null,
+          schema_version: workspace.schemaVersion || 'v1',
+          provisioning_error: readinessMessage,
+          metadata: {
+            ...failedMetadata,
+            provisioning_mode: 'automatic',
+            provisioning_failed_at: nowIso,
+            provisioning_failed_via: 'schema_readiness_guard',
+            workspace_pool_id: updatedWorkspacePoolEntry.id,
+          },
+        })
+        .eq('id', tenant.id),
+      adminClient
+        .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+        .update({
+          job_status: 'failed',
+          started_at: job.started_at || nowIso,
+          finished_at: nowIso,
+          error_message: readinessMessage,
+          result: {
+            ...(job.result || {}),
+            tenant_project_ref: workspace.tenantProjectRef,
+            tenant_app_url: workspace.tenantAppUrl,
+            tenant_api_url: workspace.tenantApiUrl,
+            workspace_pool_id: updatedWorkspacePoolEntry.id,
+            mode: 'automatic_inline',
+            failure_reason: readinessMessage,
+            workspace_readiness: workspaceReadiness,
+          },
+        })
+        .eq('id', job.id),
+    ]);
+
+    await insertProvisioningAuditLog({
+      adminClient,
+      businessAccountId: job.business_account_id,
+      tenantId: tenant.id,
+      performedBy: userId,
+      action: 'tenant_schema_readiness_failed',
+      metadata: {
+        job_id: job.id,
+        tenant_project_ref: workspace.tenantProjectRef,
+        workspace_pool_id: updatedWorkspacePoolEntry.id,
+        workspace_readiness: workspaceReadiness,
+      },
+    });
+
+    throw createHttpError(409, readinessMessage);
+  }
+
+  const tenantMetadata = {
+    ...mergeWorkspaceReadinessMetadata(tenant, workspaceReadiness),
+    provisioning_mode: 'automatic',
+    provisioning_completed_by: userId,
+    provisioning_completed_via: 'inline_worker',
+    provisioning_completed_at: nowIso,
+    automatic_workspace_project_ref: workspace.tenantProjectRef,
+    automatic_workspace_domain_ready: createdAutomatically ? workspace.wildcardDomainReady === true : null,
+    automatic_workspace_organization_slug: createdAutomatically ? workspace.organizationSlug || null : null,
+    automatic_workspace_source: persistedWorkspace?.source || 'supabase_management_api',
+    automatic_workspace_created: createdAutomatically,
+    workspace_pool_id: updatedWorkspacePoolEntry.id,
+  };
+
+  const provisioningResult = buildProvisioningResult({
+    tenant_project_ref: workspace.tenantProjectRef,
+    tenant_app_url: workspace.tenantAppUrl,
+    tenant_api_url: workspace.tenantApiUrl,
+    tenant_database_name: workspace.tenantDatabaseName,
+    schema_version: workspace.schemaVersion,
+  });
+
+  const [{ data: updatedTenant, error: tenantUpdateError }, { data: updatedJob, error: jobUpdateError }] = await Promise.all([
+    adminClient
+      .from(PLATFORM_TENANTS_TABLE)
+      .update({
+        tenant_status: 'active',
+        tenant_project_ref: workspace.tenantProjectRef,
+        tenant_app_url: workspace.tenantAppUrl,
+        tenant_api_url: workspace.tenantApiUrl,
+        tenant_anon_key: workspace.tenantAnonKey,
+        tenant_service_role_secret_ref: workspace.tenantServiceRoleSecretRef || null,
+        tenant_database_name: workspace.tenantDatabaseName || null,
+        schema_version: workspace.schemaVersion || 'v1',
+        provisioned_at: nowIso,
+        provisioning_completed_at: nowIso,
+        provisioning_error: null,
+        metadata: tenantMetadata,
+      })
+      .eq('id', tenant.id)
+      .select('*')
+      .single(),
+    adminClient
+      .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+      .update({
+        job_status: 'completed',
+        started_at: job.started_at || nowIso,
+        finished_at: nowIso,
+        error_message: null,
+        result: {
+          ...(job.result || {}),
+          ...provisioningResult,
+          workspace_pool_id: updatedWorkspacePoolEntry.id,
+          completed_by: userId,
+          mode: 'automatic_inline',
+          workspace_source: persistedWorkspace?.source || 'supabase_management_api',
+        },
+      })
+      .eq('id', job.id)
+      .select('*')
+      .single(),
+  ]);
+
+  if (tenantUpdateError) throw tenantUpdateError;
+  if (jobUpdateError) throw jobUpdateError;
+
+  await insertProvisioningAuditLog({
+    adminClient,
+    businessAccountId: job.business_account_id,
+    tenantId: tenant.id,
+    performedBy: userId,
+    action: 'complete_tenant_provisioning_automatic',
+    metadata: {
+      job_id: job.id,
+      tenant_project_ref: workspace.tenantProjectRef,
+      tenant_app_url: workspace.tenantAppUrl,
+      tenant_api_url: workspace.tenantApiUrl,
+      schema_version: workspace.schemaVersion,
+      workspace_pool_id: updatedWorkspacePoolEntry.id,
+      provisioning_mode: 'automatic_inline',
+      workspace_source: persistedWorkspace?.source || 'supabase_management_api',
+    },
+  });
+
+  await adminClient.from('platform_tenant_events').insert({
+    tenant_id: tenant.id,
+    actor_user_id: userId || null,
+    event_type: 'activated',
+    payload: {
+      job_id: job.id,
+      tenant_project_ref: workspace.tenantProjectRef,
+      tenant_app_url: workspace.tenantAppUrl,
+      workspace_pool_id: updatedWorkspacePoolEntry.id,
+      mode: 'automatic_inline',
+      workspace_source: persistedWorkspace?.source || 'supabase_management_api',
+    },
+  });
+
+  return {
+    dispatched: true,
+    completed: true,
+    mode: 'automatic_inline',
+    workspace,
+    workspace_pool_id: updatedWorkspacePoolEntry.id,
+    job: updatedJob,
+    tenant: updatedTenant,
+  };
+};
+
+const resolveUniqueTenantSlug = async ({ adminClient, requestedSlug = '', businessAccountId = '' }) => {
+  const baseSlug = sanitizeTenantSlug(requestedSlug || 'tenant');
+
+  const { data: existingForAccount, error: existingForAccountError } = await adminClient
+    .from(PLATFORM_TENANTS_TABLE)
+    .select('tenant_slug')
+    .eq('business_account_id', businessAccountId)
+    .maybeSingle();
+
+  if (existingForAccountError) throw existingForAccountError;
+
+  const existingAccountSlug = String(existingForAccount?.tenant_slug || '').trim().toLowerCase();
+  if (existingAccountSlug) {
+    return existingAccountSlug;
+  }
+
+  const { data: collisions, error: collisionsError } = await adminClient
+    .from(PLATFORM_TENANTS_TABLE)
+    .select('tenant_slug')
+    .like('tenant_slug', `${baseSlug}%`)
+    .limit(200);
+
+  if (collisionsError) throw collisionsError;
+
+  const used = new Set((collisions || []).map((entry) => String(entry?.tenant_slug || '').trim().toLowerCase()).filter(Boolean));
+  if (!used.has(baseSlug)) {
+    return baseSlug;
+  }
+
+  for (let index = 2; index <= 200; index += 1) {
+    const candidate = `${baseSlug}-${index}`;
+    if (!used.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw createHttpError(409, `Unable to allocate a unique tenant slug for base "${baseSlug}"`);
+};
+
+const ensureBusinessSubscriptionRecord = async ({
+  adminClient,
+  businessAccountId,
+  existingSubscription = null,
+}) => {
+  const nowIso = new Date().toISOString();
+  const trialWindow = buildTrialWindow({ startAt: nowIso });
+  const metadata = existingSubscription?.metadata && typeof existingSubscription.metadata === 'object'
+    ? existingSubscription.metadata
+    : {};
+
+  const subscriptionPayload = {
+    business_account_id: businessAccountId,
+    plan_type: normalizePlanType(existingSubscription?.plan_type || 'starter'),
+    subscription_status: normalizeSubscriptionStatus(existingSubscription?.subscription_status || 'trial'),
+    billing_status: normalizeBillingStatus(existingSubscription?.billing_status || 'none'),
+    trial_started_at: existingSubscription?.trial_started_at || trialWindow.trialStartedAt,
+    trial_ends_at: existingSubscription?.trial_ends_at || trialWindow.trialEndsAt,
+    subscription_started_at: existingSubscription?.subscription_started_at || null,
+    suspended_at: existingSubscription?.suspended_at || null,
+    metadata: {
+      ...metadata,
+      trial_days: metadata.trial_days || trialWindow.trialDays,
+      onboarding_mode: metadata.onboarding_mode || 'automatic',
+      lifecycle_policy: {
+        ...((metadata.lifecycle_policy && typeof metadata.lifecycle_policy === 'object')
+          ? metadata.lifecycle_policy
+          : {}),
+        trial_days: trialWindow.trialDays,
+        deletion_retention_days: Number(process.env.TENANT_DELETION_RETENTION_DAYS || 90),
+      },
+    },
+  };
+
+  const { data, error } = await adminClient
+    .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
+    .upsert(subscriptionPayload, { onConflict: 'business_account_id' })
+    .select('*')
+    .single();
+
+  if (error) throw error;
+  return data;
+};
+
+const ensureAutomaticBusinessAccountRecord = async ({ adminClient, authUser }) => {
+  const { data: existingBusinessAccount, error: existingBusinessAccountError } = await adminClient
+    .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
+    .select('*')
+    .eq('auth_user_id', authUser.id)
+    .maybeSingle();
+
+  if (existingBusinessAccountError) throw existingBusinessAccountError;
+  if (existingBusinessAccount) {
+    const approvalStatus = String(
+      existingBusinessAccount.approval_status || existingBusinessAccount.application_status || ''
+    )
+      .trim()
+      .toLowerCase();
+
+    if (approvalStatus === 'approved') {
+      return existingBusinessAccount;
+    }
+
+    const nowIso = new Date().toISOString();
+    const { data, error } = await adminClient
+      .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
+      .update({
+        application_status: 'approved',
+        approval_status: 'approved',
+        approved_at: existingBusinessAccount.approved_at || nowIso,
+        approved_by: existingBusinessAccount.approved_by || authUser.id,
+        rejection_reason: null,
+        metadata: {
+          ...(existingBusinessAccount.metadata || {}),
+          source: existingBusinessAccount.metadata?.source || 'automatic_signup_bootstrap',
+          owner_email: authUser.email,
+          onboarding_mode: 'automatic',
+          auto_approved_from_legacy_pending: true,
+        },
+      })
+      .eq('id', existingBusinessAccount.id)
+      .select('*')
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  const metadata = {
+    ...(authUser.app_metadata || {}),
+    ...(authUser.user_metadata || {}),
+  };
+  const nowIso = new Date().toISOString();
+  const fullName =
+    String(metadata.full_name || metadata.name || '').trim() ||
+    authUser.email ||
+    'Business Owner';
+  const companyName =
+    String(metadata.company_name || metadata.business_name || metadata.organization_name || '').trim() ||
+    fullName ||
+    authUser.email ||
+    'Business Workspace';
+
+  const { data, error } = await adminClient
+    .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
+    .insert({
+      auth_user_id: authUser.id,
+      full_name: fullName,
+      email: authUser.email,
+      company_name: companyName,
+      phone: String(metadata.phone || metadata.phone_number || '').trim() || null,
+      account_type: String(metadata.account_type || 'business_owner').trim().toLowerCase() || 'business_owner',
+      application_status: 'approved',
+      approval_status: 'approved',
+      approved_at: nowIso,
+      approved_by: authUser.id,
+      metadata: {
+        source: 'automatic_signup_bootstrap',
+        owner_email: authUser.email,
+        onboarding_mode: 'automatic',
+      },
+    })
+    .select('*')
+    .single();
+
+  if (error) throw error;
+  return data;
+};
+
 const ensureTenantProvisioningRecord = async ({ adminClient, businessAccountId, userId }) => {
   const { data: businessAccount, error: businessAccountError } = await adminClient
     .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
@@ -320,11 +938,30 @@ const ensureTenantProvisioningRecord = async ({ adminClient, businessAccountId, 
     return { error: { status: 404, body: { error: 'Business account not found' } } };
   }
 
-  const tenantSlug = buildTenantSlug({
+  const { data: existingSubscription, error: existingSubscriptionError } = await adminClient
+    .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
+    .select('*')
+    .eq('business_account_id', businessAccountId)
+    .maybeSingle();
+
+  if (existingSubscriptionError) throw existingSubscriptionError;
+  const subscription = await ensureBusinessSubscriptionRecord({
+    adminClient,
+    businessAccountId,
+    existingSubscription,
+  });
+
+  const requestedSlug = buildTenantSlug({
     email: businessAccount.email,
+    userId: businessAccount.auth_user_id || businessAccountId,
     companyName: businessAccount.company_name || businessAccount.full_name,
+  });
+  const tenantSlug = await resolveUniqueTenantSlug({
+    adminClient,
+    requestedSlug,
     businessAccountId,
   });
+  const tenantAppUrl = buildTenantAppUrl(tenantSlug);
 
   const { data: tenant, error: tenantError } = await adminClient
     .from(PLATFORM_TENANTS_TABLE)
@@ -335,12 +972,14 @@ const ensureTenantProvisioningRecord = async ({ adminClient, businessAccountId, 
         tenant_key: `tenant_${String(businessAccount.auth_user_id || businessAccountId).replace(/-/g, '')}`,
         tenant_name: businessAccount.company_name || businessAccount.full_name || businessAccount.email || 'Business Workspace',
         tenant_slug: tenantSlug,
+        tenant_app_url: tenantAppUrl,
         tenant_status: 'pending',
         db_provider: 'supabase',
         schema_version: 'v1',
         metadata: {
           source: 'manual_workspace_provisioning',
           created_by: userId || null,
+          requested_subdomain: tenantSlug,
         },
       },
       { onConflict: 'business_account_id' }
@@ -361,7 +1000,7 @@ const ensureTenantProvisioningRecord = async ({ adminClient, businessAccountId, 
     .maybeSingle();
 
   if (existingJobError) throw existingJobError;
-  if (existingJob?.id) return { businessAccount, tenant, job: existingJob };
+  if (existingJob?.id) return { businessAccount, subscription, tenant, job: existingJob };
 
   const { data: job, error: jobError } = await adminClient
     .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
@@ -385,7 +1024,172 @@ const ensureTenantProvisioningRecord = async ({ adminClient, businessAccountId, 
     payload: { business_account_id: businessAccountId },
   });
 
-  return { businessAccount, tenant, job };
+  return { businessAccount, subscription, tenant, job };
+};
+
+export const bootstrapAutomaticBusinessOwnerProvisioning = async ({
+  adminClient,
+  authUser,
+}) => {
+  if (!authUser?.id || !isAutomaticSignupModeEnabled()) {
+    return null;
+  }
+
+  const normalizedAccountType = String(
+    authUser?.user_metadata?.account_type || authUser?.app_metadata?.account_type || ''
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!BUSINESS_OWNER_ACCOUNT_TYPES.has(normalizedAccountType)) {
+    return null;
+  }
+
+  const businessAccount = await ensureAutomaticBusinessAccountRecord({
+    adminClient,
+    authUser,
+  });
+
+  const provisioning = await ensureTenantProvisioningRecord({
+    adminClient,
+    businessAccountId: businessAccount.id,
+    userId: authUser.id,
+  });
+
+  if (provisioning?.error) {
+    throw createHttpError(provisioning.error.status || 500, provisioning.error.body?.error || 'Provisioning bootstrap failed');
+  }
+
+  const currentTenantStatus = String(provisioning?.tenant?.tenant_status || '').trim().toLowerCase();
+  const currentJobStatus = String(provisioning?.job?.job_status || '').trim().toLowerCase();
+
+  if (currentTenantStatus === 'active' || currentJobStatus === 'completed') {
+    return {
+      businessAccount: provisioning.businessAccount || businessAccount,
+      subscription: provisioning.subscription || null,
+      tenant: provisioning.tenant || null,
+      job: provisioning.job || null,
+    };
+  }
+
+  if (currentJobStatus === 'running') {
+    return {
+      businessAccount: provisioning.businessAccount || businessAccount,
+      subscription: provisioning.subscription || null,
+      tenant: provisioning.tenant || null,
+      job: provisioning.job || null,
+    };
+  }
+
+  const startedAt = new Date().toISOString();
+
+  const [{ data: updatedJob, error: updatedJobError }, { data: updatedTenant, error: updatedTenantError }] = await Promise.all([
+    adminClient
+      .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+      .update({
+        job_status: 'running',
+        started_at: provisioning.job?.started_at || startedAt,
+        finished_at: null,
+        error_message: null,
+      })
+      .eq('id', provisioning.job.id)
+      .select('*')
+      .single(),
+    adminClient
+      .from(PLATFORM_TENANTS_TABLE)
+      .update({
+        tenant_status: 'provisioning',
+        provisioning_started_at: startedAt,
+        provisioning_error: null,
+        metadata: {
+          ...(provisioning.tenant?.metadata || {}),
+          provisioning_mode: 'automatic',
+          provisioning_started_by: authUser.id,
+          onboarding_source: 'public_signup',
+        },
+      })
+      .eq('id', provisioning.tenant.id)
+      .select('*')
+      .single(),
+  ]);
+
+  if (updatedJobError) throw updatedJobError;
+  if (updatedTenantError) throw updatedTenantError;
+
+  let automation = null;
+  try {
+    const webhookConfig = getProvisioningWebhookConfig();
+
+    if (webhookConfig.url) {
+      automation = await dispatchProvisioningAutomation({
+        job: updatedJob,
+        tenant: updatedTenant,
+        businessAccount,
+        userId: authUser.id,
+      });
+
+      await adminClient
+        .from(PLATFORM_TENANTS_TABLE)
+        .update({
+          metadata: {
+            ...(updatedTenant.metadata || {}),
+            provisioning_mode: 'automatic',
+            provisioning_dispatch: automation,
+            provisioning_dispatch_at: new Date().toISOString(),
+          },
+        })
+        .eq('id', updatedTenant.id);
+
+      return {
+        businessAccount,
+        subscription: provisioning.subscription || null,
+        tenant: updatedTenant,
+        job: updatedJob,
+      };
+    }
+
+    automation = await runAutomaticProvisioningWorker({
+      adminClient,
+      job: updatedJob,
+      tenant: updatedTenant,
+      businessAccount,
+      userId: authUser.id,
+    });
+
+    return {
+      businessAccount,
+      subscription: provisioning.subscription || null,
+      tenant: automation.tenant || updatedTenant,
+      job: automation.job || updatedJob,
+    };
+  } catch (automationError) {
+    const errorMessage = automationError?.message || 'Provisioning automation failed';
+
+    await Promise.all([
+      adminClient
+        .from(PLATFORM_TENANTS_TABLE)
+        .update({
+          tenant_status: 'failed',
+          provisioning_error: errorMessage,
+          metadata: {
+            ...(updatedTenant.metadata || {}),
+            provisioning_mode: 'automatic',
+            provisioning_dispatch_failed_at: new Date().toISOString(),
+          },
+        })
+        .eq('id', updatedTenant.id),
+      adminClient
+        .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+        .update({
+          job_status: 'failed',
+          error_message: errorMessage,
+          finished_at: new Date().toISOString(),
+        })
+        .eq('id', updatedJob.id),
+    ]);
+
+    throw automationError;
+  }
 };
 
 export default async function handler(req, res) {
@@ -394,7 +1198,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const auth = await requireOwner(req);
+  const auth = await requirePlatformOwnerOrAdmin(req, 'Workspaces');
 
   if (auth.error) {
     res.status(auth.error.status).json(auth.error.body);
@@ -428,6 +1232,17 @@ export default async function handler(req, res) {
         .limit(200);
 
       if (businessAccountsError) {
+        if (isPermissionDenied(businessAccountsError)) {
+          const businessOwners = await loadLegacyBusinessOwnersFromAuth(adminClient);
+          res.status(200).json({
+            jobs: data || [],
+            business_owners: businessOwners,
+            source: 'legacy_auth_metadata',
+            warning: 'platform_business_accounts grants are not available yet',
+          });
+          return;
+        }
+
         throw businessAccountsError;
       }
 
@@ -435,35 +1250,46 @@ export default async function handler(req, res) {
         ? businessAccounts.map((account) => account?.id).filter(Boolean)
         : [];
 
+      if (!businessAccountIds.length) {
+        const businessOwners = await loadLegacyBusinessOwnersFromAuth(adminClient);
+        res.status(200).json({
+          jobs: data || [],
+          business_owners: businessOwners,
+          source: businessOwners.length > 0 ? 'legacy_auth_metadata' : 'platform_tables',
+          warning: businessOwners.length > 0
+            ? 'platform_business_accounts is empty; showing legacy owner records from auth metadata'
+            : undefined,
+        });
+        return;
+      }
+
       let subscriptions = [];
       let tenants = [];
       let allJobs = data || [];
 
-      if (businessAccountIds.length > 0) {
-        const [subscriptionsResult, tenantsResult, jobsResult] = await Promise.all([
-          adminClient
-            .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
-            .select('*')
-            .in('business_account_id', businessAccountIds),
-          adminClient
-            .from(PLATFORM_TENANTS_TABLE)
-            .select('*')
-            .in('business_account_id', businessAccountIds),
-          adminClient
-            .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
-            .select('*')
-            .in('business_account_id', businessAccountIds)
-            .order('created_at', { ascending: false }),
-        ]);
+      const [subscriptionsResult, tenantsResult, jobsResult] = await Promise.all([
+        adminClient
+          .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
+          .select('*')
+          .in('business_account_id', businessAccountIds),
+        adminClient
+          .from(PLATFORM_TENANTS_TABLE)
+          .select('*')
+          .in('business_account_id', businessAccountIds),
+        adminClient
+          .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+          .select('*')
+          .in('business_account_id', businessAccountIds)
+          .order('created_at', { ascending: false }),
+      ]);
 
-        if (subscriptionsResult.error) throw subscriptionsResult.error;
-        if (tenantsResult.error) throw tenantsResult.error;
-        if (jobsResult.error) throw jobsResult.error;
+      if (subscriptionsResult.error) throw subscriptionsResult.error;
+      if (tenantsResult.error) throw tenantsResult.error;
+      if (jobsResult.error) throw jobsResult.error;
 
-        subscriptions = subscriptionsResult.data || [];
-        tenants = tenantsResult.data || [];
-        allJobs = jobsResult.data || allJobs;
-      }
+      subscriptions = subscriptionsResult.data || [];
+      tenants = tenantsResult.data || [];
+      allJobs = jobsResult.data || allJobs;
 
       const subscriptionMap = new Map(
         subscriptions.map((subscription) => [String(subscription.business_account_id), subscription])
@@ -563,15 +1389,6 @@ export default async function handler(req, res) {
     }
 
     if (action === 'start') {
-      const webhookConfig = getProvisioningWebhookConfig();
-      if (!webhookConfig.url) {
-        res.status(409).json({
-          error: 'Tenant provisioning worker is not configured. Set TENANT_PROVISIONING_WEBHOOK_URL before starting automatic provisioning.',
-          code: 'tenant_provisioning_worker_not_configured',
-        });
-        return;
-      }
-
       const { data: businessAccountForAutomation, error: businessAccountForAutomationError } = await adminClient
         .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
         .select('*')
@@ -629,25 +1446,41 @@ export default async function handler(req, res) {
       });
 
       let automation = null;
+      let responseJob = updatedJob;
+      let responseTenant = updatedTenant;
       try {
-        automation = await dispatchProvisioningAutomation({
-          job: updatedJob,
-          tenant: updatedTenant,
-          businessAccount: businessAccountForAutomation,
-          userId: user.id,
-        });
+        const webhookConfig = getProvisioningWebhookConfig();
 
-        await adminClient
-          .from(PLATFORM_TENANTS_TABLE)
-          .update({
-            metadata: {
-              ...(updatedTenant.metadata || {}),
-              provisioning_mode: 'automatic',
-              provisioning_dispatch: automation,
-              provisioning_dispatch_at: new Date().toISOString(),
-            },
-          })
-          .eq('id', effectiveTenant.id);
+        if (webhookConfig.url) {
+          automation = await dispatchProvisioningAutomation({
+            job: updatedJob,
+            tenant: updatedTenant,
+            businessAccount: businessAccountForAutomation,
+            userId: user.id,
+          });
+
+          await adminClient
+            .from(PLATFORM_TENANTS_TABLE)
+            .update({
+              metadata: {
+                ...(updatedTenant.metadata || {}),
+                provisioning_mode: 'automatic',
+                provisioning_dispatch: automation,
+                provisioning_dispatch_at: new Date().toISOString(),
+              },
+            })
+            .eq('id', effectiveTenant.id);
+        } else {
+          automation = await runAutomaticProvisioningWorker({
+            adminClient,
+            job: updatedJob,
+            tenant: updatedTenant,
+            businessAccount: businessAccountForAutomation,
+            userId: user.id,
+          });
+          responseJob = automation.job || updatedJob;
+          responseTenant = automation.tenant || updatedTenant;
+        }
       } catch (automationError) {
         const errorMessage = automationError?.message || 'Provisioning automation failed';
 
@@ -689,7 +1522,7 @@ export default async function handler(req, res) {
         throw automationError;
       }
 
-      res.status(200).json({ job: updatedJob, tenant: updatedTenant, automation });
+      res.status(200).json({ job: responseJob, tenant: responseTenant, automation });
       return;
     }
 
@@ -816,12 +1649,6 @@ export default async function handler(req, res) {
     }
 
     const nowIso = new Date().toISOString();
-    const tenantMetadata = {
-      ...(tenant.metadata || {}),
-      connection_ready: true,
-      last_provisioned_by: user.id,
-      last_provisioned_at: nowIso,
-    };
 
     const provisioningResult = buildProvisioningResult({
       tenant_project_ref: tenantProjectRef,
@@ -840,10 +1667,126 @@ export default async function handler(req, res) {
       tenantApiUrl: normalizeUrl(tenantApiUrl),
       tenantAnonKey,
       tenantServiceRoleSecretRef,
-      tenantDatabaseName,
-      schemaVersion,
-      userId: user.id,
-    });
+    tenantDatabaseName,
+    schemaVersion,
+    userId: user.id,
+    syncMode: 'manual_activation',
+  });
+
+    try {
+      await applyLegacyBusinessWorkspaceBootstrap({
+        projectRef: tenantProjectRef,
+        tenantName: tenant.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Business Workspace',
+        tenantSlug: tenant.tenant_slug,
+        ownerAuthUserId: businessAccount?.auth_user_id || null,
+        ownerEmail: businessAccount?.email || null,
+        ownerFullName: businessAccount?.full_name || null,
+      });
+    } catch (bootstrapError) {
+      res.status(502).json({
+        error: 'Unable to bootstrap tenant workspace schema',
+        reason: bootstrapError?.message || 'Unknown workspace bootstrap error',
+      });
+      return;
+    }
+
+    let workspaceReadiness;
+    try {
+      workspaceReadiness = await resolveWorkspaceReadiness({
+        tenant: {
+          ...tenant,
+          tenant_project_ref: tenantProjectRef,
+        },
+        adminClient,
+        forceFresh: true,
+        persist: false,
+      });
+    } catch (readinessError) {
+      res.status(502).json({
+        error: 'Unable to verify workspace readiness',
+        reason: readinessError?.message || 'Unknown workspace readiness verification error',
+      });
+      return;
+    }
+
+    if (workspaceReadiness?.ready !== true) {
+      const readinessMessage = getWorkspaceReadinessFailureMessage(workspaceReadiness);
+      const failedMetadata = mergeWorkspaceReadinessMetadata(tenant, workspaceReadiness);
+
+      const [{ data: failedTenant }, { data: failedJob }] = await Promise.all([
+        adminClient
+          .from(PLATFORM_TENANTS_TABLE)
+          .update({
+            tenant_status: 'failed',
+            tenant_project_ref: tenantProjectRef,
+            tenant_app_url: normalizeUrl(tenantAppUrl),
+            tenant_api_url: normalizeUrl(tenantApiUrl),
+            tenant_anon_key: tenantAnonKey,
+            tenant_service_role_secret_ref: tenantServiceRoleSecretRef || null,
+            tenant_database_name: tenantDatabaseName || null,
+            schema_version: schemaVersion || 'v1',
+            provisioning_error: readinessMessage,
+            metadata: {
+              ...failedMetadata,
+              last_provisioned_by: user.id,
+              last_provisioned_at: nowIso,
+              provisioning_failed_at: nowIso,
+              provisioning_failed_via: 'manual_schema_readiness_guard',
+              workspace_pool_id: updatedWorkspacePoolEntry.id,
+            },
+          })
+          .eq('id', tenant.id)
+          .select('*')
+          .single(),
+        adminClient
+          .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+          .update({
+            job_status: 'failed',
+            started_at: job.started_at || nowIso,
+            finished_at: nowIso,
+            error_message: readinessMessage,
+            result: {
+              ...provisioningResult,
+              completed_by: user.id,
+              workspace_pool_id: updatedWorkspacePoolEntry.id,
+              failure_reason: readinessMessage,
+              workspace_readiness: workspaceReadiness,
+            },
+          })
+          .eq('id', jobId)
+          .select('*')
+          .single(),
+      ]);
+
+      await adminClient
+        .from(PLATFORM_TENANT_AUDIT_LOG_TABLE)
+        .insert({
+          business_account_id: job.business_account_id,
+          tenant_id: tenant.id,
+          performed_by: user.id,
+          action: 'tenant_schema_readiness_failed',
+          metadata: {
+            job_id: jobId,
+            tenant_project_ref: tenantProjectRef,
+            workspace_pool_id: updatedWorkspacePoolEntry.id,
+            workspace_readiness: workspaceReadiness,
+          },
+        });
+
+      res.status(409).json({
+        error: readinessMessage,
+        tenant: failedTenant || null,
+        job: failedJob || null,
+        readiness: workspaceReadiness,
+      });
+      return;
+    }
+
+    const tenantMetadata = {
+      ...mergeWorkspaceReadinessMetadata(tenant, workspaceReadiness),
+      last_provisioned_by: user.id,
+      last_provisioned_at: nowIso,
+    };
 
     const [{ data: updatedTenant, error: tenantUpdateError }, { data: updatedJob, error: jobUpdateError }] = await Promise.all([
       adminClient

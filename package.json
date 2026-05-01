@@ -9,6 +9,7 @@
     "qa:rental-thread": "node scripts/run-rental-thread-qa.mjs",
     "qa:rental-live": "playwright test tests/playwright/rental-thread-live.spec.js",
     "deploy:production": "node scripts/deploy-production.mjs",
+    "deploy:preview:hobby": "node scripts/deploy-preview-hobby.mjs",
     "translations:build": "node scripts/build-translation-catalog.mjs",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"

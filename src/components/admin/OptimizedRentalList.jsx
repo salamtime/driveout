@@ -16,6 +16,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { getVehicleField } from '../../config/tables';
+import { normalizePaymentStatus } from '../../config/statusColors';
 import optimizedRentalService from '../../services/OptimizedRentalService';
 
 const OptimizedRentalList = ({ 
@@ -26,6 +27,10 @@ const OptimizedRentalList = ({
   onCloseContract
 }) => {
   const { t } = useTranslation();
+
+  const getNormalizedPaymentStatus = useCallback((rental) => (
+    normalizePaymentStatus(rental?.payment_status, rental?.remaining_amount)
+  ), []);
 
   // =================== STATE MANAGEMENT ===================
   
@@ -214,19 +219,16 @@ const OptimizedRentalList = ({
 
   // =================== UTILITY FUNCTIONS ===================
   
-  // ✅ FIXED: Get display status - prioritize payment_status, fallback to rental_status
+  // Rental status should reflect the contract lifecycle, not the payment badge.
   const getDisplayStatus = (rental) => {
-    // Priority 1: Use payment_status if it exists and is meaningful
-    if (rental.payment_status && rental.payment_status !== 'unknown') {
-      return rental.payment_status;
-    }
-    
-    // Priority 2: Use rental_status if it exists
     if (rental.rental_status) {
       return rental.rental_status;
     }
-    
-    // Priority 3: Default to 'pending' only if both are null/empty
+
+    if (rental.status) {
+      return rental.status;
+    }
+
     return 'pending';
   };
   
@@ -250,6 +252,21 @@ const OptimizedRentalList = ({
         return 'bg-red-100 text-red-800';
       case 'pending':
         return 'bg-yellow-100 text-yellow-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const getPaymentBadgeColor = (status) => {
+    switch (status?.toLowerCase()) {
+      case 'paid':
+        return 'bg-green-100 text-green-800';
+      case 'partial':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'overdue':
+        return 'bg-red-100 text-red-800';
+      case 'refunded':
+        return 'bg-blue-100 text-blue-800';
       default:
         return 'bg-gray-100 text-gray-800';
     }
@@ -553,6 +570,7 @@ const OptimizedRentalList = ({
                 <tbody className="bg-white divide-y divide-gray-200">
                   {rentals.map((rental) => {
                     const displayStatus = getDisplayStatus(rental);
+                    const paymentStatus = getNormalizedPaymentStatus(rental);
                     return (
                       <tr key={rental.id} className="hover:bg-gray-50">
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -594,7 +612,14 @@ const OptimizedRentalList = ({
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {formatCurrency(rental.total_amount)}
+                          <div className="font-medium text-gray-900">
+                            {formatCurrency(rental.total_amount)}
+                          </div>
+                          <div className="mt-1">
+                            <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${getPaymentBadgeColor(paymentStatus)}`}>
+                              {paymentStatus || 'unpaid'}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                           <div className="flex items-center justify-end space-x-2">
@@ -650,6 +675,7 @@ const OptimizedRentalList = ({
             <div className="block lg:hidden space-y-4 p-4">
               {rentals.map((rental) => {
                 const displayStatus = getDisplayStatus(rental);
+                const paymentStatus = getNormalizedPaymentStatus(rental);
                 return (
                   <div key={`mobile-${rental.id}`} className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
                     <div className="flex items-center justify-between mb-3">
@@ -690,12 +716,9 @@ const OptimizedRentalList = ({
                         <div className="flex items-center">
                           <span className="text-xs text-gray-500 mr-2">Payment:</span>
                           <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${
-                            rental.payment_status === 'paid' ? 'bg-green-100 text-green-800' :
-                            rental.payment_status === 'partial' ? 'bg-yellow-100 text-yellow-800' :
-                            rental.payment_status === 'overdue' ? 'bg-red-100 text-red-800' :
-                            'bg-gray-100 text-gray-800'
+                            getPaymentBadgeColor(paymentStatus)
                           }`}>
-                            {rental.payment_status || 'unpaid'}
+                            {paymentStatus || 'unpaid'}
                           </span>
                         </div>
                         {(() => {

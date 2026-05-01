@@ -4,6 +4,7 @@
  */
 
 import { logRentalStart, logRentalComplete, logRentalCancel } from './auditLogService';
+import { normalizePaymentStatus } from '../config/statusColors';
 
 // Rental status constants
 export const RENTAL_STATUS = {
@@ -141,9 +142,8 @@ export const canCompleteRental = (rental) => {
     return { canComplete: false, reason: 'Rental has not been started yet' };
   }
 
-  const paymentStatus = String(rental.payment_status || '').toLowerCase();
-  const remainingAmount = Math.max(0, Number(rental.remaining_amount || 0) || 0);
-  const isPaid = paymentStatus === 'paid' || remainingAmount <= 0;
+  const paymentStatus = normalizePaymentStatus(rental.payment_status, rental.remaining_amount);
+  const isPaid = paymentStatus === 'paid';
 
   if (!isPaid) {
     return { canComplete: false, reason: 'Rental must be fully paid before completion' };

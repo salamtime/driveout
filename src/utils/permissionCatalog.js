@@ -34,6 +34,7 @@ export const PERMISSION_GROUPS = [
   { module: 'Verification Center', extras: [] },
   { module: 'Messages', extras: [] },
   { module: 'Workspaces', extras: [] },
+  { module: 'Platform Admins', extras: [] },
   { module: 'Marketplace Review', extras: [] },
   { module: 'System Settings', extras: [] },
   { module: 'Project Export', extras: [] },
@@ -55,6 +56,8 @@ export const DEFAULT_STAFF_PERMISSION_KEYS = [
 ];
 
 export const BUSINESS_OWNER_DISABLED_PERMISSION_KEYS = [
+  'Workspaces',
+  'Platform Admins',
   'Marketplace Review',
   'Project Export',
 ];
@@ -140,6 +143,8 @@ export const PERMISSION_LOOKUP_ALIASES = {
   'verification center': 'Verification Center',
   messages: 'Messages',
   workspaces: 'Workspaces',
+  'platform admins': 'Platform Admins',
+  'platform admin': 'Platform Admins',
   tenant: 'Workspaces',
   tenants: 'Workspaces',
   marketplace: 'Marketplace Review',
@@ -151,6 +156,12 @@ export const PERMISSION_LOOKUP_ALIASES = {
   export: 'Project Export',
   'project export': 'Project Export',
 };
+
+export const TENANT_FEATURE_MODULE_MAP = Object.freeze({
+  finance_module: ['Finance Management'],
+  ocr_id_scan: ['Verification Center'],
+  whatsapp_tools: ['WhatsApp Alerts'],
+});
 
 export const resolvePermissionKey = (permissionName) => {
   const rawName = String(permissionName || '').trim();
@@ -166,6 +177,26 @@ export const resolvePermissionKey = (permissionName) => {
   );
 
   return exactCatalogHit || rawName;
+};
+
+export const isModuleAllowedByTenantFeatures = (moduleName, featureAccess = {}) => {
+  const normalizedFeatureAccess =
+    featureAccess && typeof featureAccess === 'object' && !Array.isArray(featureAccess)
+      ? featureAccess
+      : {};
+  const resolvedModuleKey = resolvePermissionKey(moduleName);
+
+  if (!resolvedModuleKey) {
+    return true;
+  }
+
+  return Object.entries(TENANT_FEATURE_MODULE_MAP).every(([featureKey, gatedModules]) => {
+    if (!Array.isArray(gatedModules) || !gatedModules.includes(resolvedModuleKey)) {
+      return true;
+    }
+
+    return normalizedFeatureAccess[featureKey] !== false;
+  });
 };
 
 export const normalizePermissionMap = (permissionMap = {}) => {

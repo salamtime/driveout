@@ -40,6 +40,36 @@ export const reactivateTenant = async (jobId) =>
     body: JSON.stringify({ action: 'reactivate', job_id: jobId }),
   });
 
+export const updateTenantControls = async ({ businessAccountId, tenantId, subscriptionPatch, tenantPatch }) =>
+  adminApiRequest('/api/tenants?resource=controls', {
+    method: 'POST',
+    body: JSON.stringify({
+      business_account_id: businessAccountId,
+      tenant_id: tenantId,
+      subscription_patch: subscriptionPatch || {},
+      tenant_patch: tenantPatch || {},
+    }),
+  });
+
+export const listTenantAuditLog = async ({ tenantId, businessAccountId, limit = 12 }) => {
+  const query = new URLSearchParams({ resource: 'audit', limit: String(limit) });
+  if (tenantId) query.set('tenant_id', tenantId);
+  if (businessAccountId) query.set('business_account_id', businessAccountId);
+  const response = await adminApiRequest(`/api/tenants?${query.toString()}`);
+  return response?.items || [];
+};
+
+export const createTenantAuditEvent = async ({ businessAccountId, tenantId, action, metadata }) =>
+  adminApiRequest('/api/tenants?resource=audit', {
+    method: 'POST',
+    body: JSON.stringify({
+      business_account_id: businessAccountId,
+      tenant_id: tenantId,
+      action,
+      metadata: metadata || {},
+    }),
+  });
+
 export const provisionTenant = async (tenantId) => ({
   tenantId,
   mode: 'manual',

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { normalizePaymentStatus } from '../../config/statusColors';
 import { formatMAD } from '../../utils/pricingHelpers';
 
 const PrintBill = ({ rentalData, vehicles, onClose }) => {
@@ -57,6 +58,11 @@ const PrintBill = ({ rentalData, vehicles, onClose }) => {
         return t('admin.rentals.paymentStatus.unpaid');
     }
   };
+
+  const normalizedPaymentStatus = normalizePaymentStatus(
+    rentalData?.payment_status,
+    rentalData?.remaining_amount
+  );
 
   return (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
@@ -275,12 +281,16 @@ const PrintBill = ({ rentalData, vehicles, onClose }) => {
             <div className="bg-gray-50 p-4 rounded-lg">
               <div className="flex items-center">
                 <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                  rentalData.payment_status === 'paid_in_full' ? 'bg-green-100 text-green-800' :
-                  rentalData.payment_status === 'partial' ? 'bg-yellow-100 text-yellow-800' :
-                  rentalData.payment_status === 'refunded' ? 'bg-gray-100 text-gray-800' :
+                  normalizedPaymentStatus === 'paid' ? 'bg-green-100 text-green-800' :
+                  normalizedPaymentStatus === 'partial' ? 'bg-yellow-100 text-yellow-800' :
+                  normalizedPaymentStatus === 'refunded' ? 'bg-gray-100 text-gray-800' :
                   'bg-red-100 text-red-800'
                 }`}>
-                  {getPaymentStatusText(rentalData.payment_status)}
+                  {getPaymentStatusText(
+                    normalizedPaymentStatus === 'paid'
+                      ? 'paid_in_full'
+                      : normalizedPaymentStatus
+                  )}
                 </span>
                 <span className="ml-3 text-gray-600">
                   Status: {rentalData.rental_status || 'Active'}

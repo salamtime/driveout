@@ -1,5 +1,7 @@
 import { supabase } from './supabaseClient';
 import { adminApiRequest } from './adminApi';
+import { assertCanCreateStaffUser, clearTenantRuntimeControlsCache } from './TenantLimitService';
+import { getHostContext } from '../utils/hostContext';
 
 /**
  * Fetches all users from Supabase Auth via a server-side admin endpoint.
@@ -25,6 +27,10 @@ export const addUser = async (email, password, name, role, appProfile = {}) => {
   console.log('Email:', email);
   console.log('Name:', name);
   console.log('Role:', role);
+  const normalizedRole = String(role || '').trim().toLowerCase();
+  if (normalizedRole && normalizedRole !== 'customer') {
+    await assertCanCreateStaffUser();
+  }
 
   const data = await adminApiRequest('/api/admin/users', {
     method: 'POST',
@@ -46,6 +52,7 @@ export const addUser = async (email, password, name, role, appProfile = {}) => {
 
   console.log('Create user response - data:', data);
   console.log('=== addUser END ===');
+  clearTenantRuntimeControlsCache();
 
   return { user: data.user };
 };
@@ -130,6 +137,7 @@ export const updateUserProfile = async (userId, updates) => {
       role: updates.role,
       phone_number: updates.phone_number,
       whatsapp_notifications: updates.whatsapp_notifications,
+      preferences: updates.preferences,
       salary_amount: updates.salary_amount,
       permissions: updates.permissions,
       staff_id_documents: Array.isArray(updates.staff_id_documents) ? updates.staff_id_documents : undefined,
@@ -326,12 +334,21 @@ export const getUserPermissions = async (userId) => {
     return {};
   }
 
+  const host = getHostContext();
+  if (host.kind === 'tenant') {
+    return {};
+  }
+
   try {
     const { data, error } = await supabase.rpc('get_user_effective_permissions', {
       v_user_id: userId,
     });
 
     if (error) {
+      const isMissingRpc = error?.code === 'PGRST202' || String(error?.message || '').includes('get_user_effective_permissions');
+      if (isMissingRpc) {
+        return {};
+      }
       console.error('Error fetching user permissions via RPC:', error);
       return {};
     }

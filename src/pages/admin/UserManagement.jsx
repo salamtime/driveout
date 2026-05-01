@@ -16,6 +16,12 @@ import AdminWorkspaceLoadingShell from '../../components/admin/AdminWorkspaceLoa
 import { ALL_PERMISSION_KEYS, PERMISSION_GROUPS, buildDefaultPermissionsForRole } from '../../utils/permissionCatalog';
 import { normalizePermissionMap as normalizeCatalogPermissionMap } from '../../utils/permissionCatalog';
 import { isPlatformOwnerEmail } from '../../utils/accountType';
+import {
+  applyTelegramAdminSettingsToPreferences,
+  buildDefaultTelegramEventTypes,
+  countEnabledTelegramAlertEvents,
+  getTelegramAlertSettingsFromPreferences,
+} from '../../utils/telegramAlertPreferences';
 import UserProfileService from '../../services/UserProfileService';
 import i18n from '../../i18n';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
@@ -51,6 +57,16 @@ const PERMISSION_ROLE_PRESETS = [
   { key: 'manager', label: 'Manager' },
   { key: 'staff', label: 'Staff' },
   { key: 'mechanic', label: 'Mechanic' },
+];
+
+const TELEGRAM_ALERT_EVENT_OPTIONS = [
+  { key: 'rental_created', label: 'Rental created' },
+  { key: 'rental_started', label: 'Rental started' },
+  { key: 'rental_completed', label: 'Rental completed' },
+  { key: 'payment_received', label: 'Payment received' },
+  { key: 'rental_overdue', label: 'Rental overdue' },
+  { key: 'rental_cancelled', label: 'Rental cancelled' },
+  { key: 'deposit_returned', label: 'Deposit returned' },
 ];
 
 const buildPermissionPreset = (presetKey) => {
@@ -423,6 +439,8 @@ const UserManagement = () => {
     role: 'employee',
     phone_number: '',
     whatsapp_notifications: false,
+    telegram_alerts_allowed: false,
+    telegram_allowed_event_types: buildDefaultTelegramEventTypes(false),
     salary_amount: '',
     staff_id_documents: []
   });
@@ -434,6 +452,9 @@ const UserManagement = () => {
     confirmPassword: '',
     phone_number: '',
     whatsapp_notifications: false,
+    telegram_alerts_allowed: false,
+    telegram_allowed_event_types: buildDefaultTelegramEventTypes(false),
+    preferences: {},
     salary_amount: ''
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -529,20 +550,30 @@ const UserManagement = () => {
       const usersData = await getUsers();
       console.log(`Merged admin users fetched: ${usersData.length}`);
 
-      const transformedUsers = (usersData || []).map((user) => ({
-        ...user,
-        id: user.id,
-        email: user.email || '',
-        name: user.name || user.full_name || user.user_metadata?.full_name || user.user_metadata?.name || 'No Name',
-        role: user.role || user.user_metadata?.role || 'employee',
-        phone_number: user.phone_number || '',
-        whatsapp_notifications: Boolean(user.whatsapp_notifications),
-        permissions: user.permissions && typeof user.permissions === 'object' && !Array.isArray(user.permissions) ? normalizeCatalogPermissionMap(user.permissions) : {},
-        salary_amount: user.salary_amount ?? null,
-        staff_id_documents: normalizeStaffIdDocuments(user.staff_id_documents || user.user_metadata?.staff_id_documents),
-        created_at: user.created_at || null,
-        updated_at: user.updated_at || null,
-      }));
+      const transformedUsers = (usersData || []).map((user) => {
+        const normalizedPreferences = user.preferences && typeof user.preferences === 'object' && !Array.isArray(user.preferences)
+          ? user.preferences
+          : {};
+        const telegramSettings = getTelegramAlertSettingsFromPreferences(normalizedPreferences);
+
+        return {
+          ...user,
+          id: user.id,
+          email: user.email || '',
+          name: user.name || user.full_name || user.user_metadata?.full_name || user.user_metadata?.name || 'No Name',
+          role: user.role || user.user_metadata?.role || 'employee',
+          phone_number: user.phone_number || '',
+          whatsapp_notifications: Boolean(user.whatsapp_notifications),
+          telegram_alerts_allowed: telegramSettings.allowed,
+          telegram_allowed_event_types: telegramSettings.allowed_event_types,
+          preferences: normalizedPreferences,
+          permissions: user.permissions && typeof user.permissions === 'object' && !Array.isArray(user.permissions) ? normalizeCatalogPermissionMap(user.permissions) : {},
+          salary_amount: user.salary_amount ?? null,
+          staff_id_documents: normalizeStaffIdDocuments(user.staff_id_documents || user.user_metadata?.staff_id_documents),
+          created_at: user.created_at || null,
+          updated_at: user.updated_at || null,
+        };
+      });
 
       setUsers(transformedUsers);
     } catch (error) {
@@ -611,9 +642,15 @@ const UserManagement = () => {
           });
         }
 
+        const telegramPreferences = applyTelegramAdminSettingsToPreferences({}, {
+          allowed: newUser.telegram_alerts_allowed,
+          allowed_event_types: newUser.telegram_allowed_event_types,
+        });
+
         const data = await addUser(newUser.email, newUser.password, newUser.name, newUser.role.toLowerCase(), {
           phone_number: newUser.phone_number || null,
           whatsapp_notifications: newUser.whatsapp_notifications || false,
+          preferences: telegramPreferences,
           permissions: completePermissions,
           salary_amount: newUser.salary_amount,
           access_enabled: true,
@@ -639,6 +676,8 @@ const UserManagement = () => {
           role: 'employee',
           phone_number: '',
           whatsapp_notifications: false,
+          telegram_alerts_allowed: false,
+          telegram_allowed_event_types: buildDefaultTelegramEventTypes(false),
           salary_amount: ''
         });
         setNewUserPermissions(buildPermissionsForRole('employee'));
@@ -666,6 +705,7 @@ const UserManagement = () => {
   const openEditPage = async (user) => {
     console.log("=== openEditPage ===");
     console.log("User to edit:", user);
+    const telegramSettings = getTelegramAlertSettingsFromPreferences(user.preferences);
     
     setSelectedUser(user);
 
@@ -678,6 +718,9 @@ const UserManagement = () => {
       confirmPassword: '',
       phone_number: user.phone_number || '', // ✅ Get from user object
       whatsapp_notifications: user.whatsapp_notifications || false,
+      telegram_alerts_allowed: telegramSettings.allowed,
+      telegram_allowed_event_types: telegramSettings.allowed_event_types,
+      preferences: user.preferences || {},
       salary_amount: user.salary_amount ?? '',
       staff_id_documents: normalizeStaffIdDocuments(user.staff_id_documents || user.user_metadata?.staff_id_documents)
     });
@@ -754,6 +797,10 @@ const UserManagement = () => {
             role: editUser.role.toLowerCase(),
             phone_number: editUser.phone_number || null,
             whatsapp_notifications: editUser.whatsapp_notifications || false,
+            preferences: applyTelegramAdminSettingsToPreferences(editUser.preferences || selectedUser?.preferences || {}, {
+              allowed: editUser.telegram_alerts_allowed,
+              allowed_event_types: editUser.telegram_allowed_event_types,
+            }),
             salary_amount: editUser.salary_amount,
             staff_id_documents: normalizeStaffIdDocuments(editUser.staff_id_documents),
         };
@@ -774,6 +821,9 @@ const UserManagement = () => {
           confirmPassword: '',
           phone_number: '',
           whatsapp_notifications: false,
+          telegram_alerts_allowed: false,
+          telegram_allowed_event_types: buildDefaultTelegramEventTypes(false),
+          preferences: {},
           salary_amount: '',
           staff_id_documents: []
         });
@@ -1261,6 +1311,7 @@ const UserManagement = () => {
 
   useEffect(() => {
     if (!activeUser || activeView !== 'edit') return;
+    const telegramSettings = getTelegramAlertSettingsFromPreferences(activeUser.preferences);
 
     setSelectedUser(activeUser);
     setEditUser({
@@ -1271,6 +1322,9 @@ const UserManagement = () => {
       confirmPassword: '',
       phone_number: activeUser.phone_number || '',
       whatsapp_notifications: activeUser.whatsapp_notifications || false,
+      telegram_alerts_allowed: telegramSettings.allowed,
+      telegram_allowed_event_types: telegramSettings.allowed_event_types,
+      preferences: activeUser.preferences || {},
       salary_amount: activeUser.salary_amount ?? '',
       staff_id_documents: normalizeStaffIdDocuments(activeUser.staff_id_documents || activeUser.user_metadata?.staff_id_documents)
     });
@@ -1314,6 +1368,9 @@ const UserManagement = () => {
       confirmPassword: '',
       phone_number: '',
       whatsapp_notifications: false,
+      telegram_alerts_allowed: false,
+      telegram_allowed_event_types: buildDefaultTelegramEventTypes(false),
+      preferences: {},
       salary_amount: '',
       staff_id_documents: []
     });
@@ -1604,6 +1661,17 @@ const UserManagement = () => {
                       <p className="mt-2 text-sm font-semibold text-slate-900">{activeUser.whatsapp_notifications ? tr('Enabled', 'Activé') : tr('Disabled', 'Désactivé')}</p>
                     </div>
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Telegram</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">
+                        {activeUser.telegram_alerts_allowed
+                          ? tr('Allowed by admin', 'Autorisé par admin')
+                          : tr('Disabled', 'Désactivé')}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {countEnabledTelegramAlertEvents(activeUser.telegram_allowed_event_types)} {tr('event types allowed', "types d'alerte autorisés")}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                       <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Created', 'Créé')}</p>
                       <p className="mt-2 text-sm font-semibold text-slate-900">{activeUser.created_at ? new Date(activeUser.created_at).toLocaleString(isFrench ? 'fr-FR' : 'en-US') : tr('Unknown', 'Inconnu')}</p>
                     </div>
@@ -1837,6 +1905,46 @@ const UserManagement = () => {
                   <div>
                     <Label htmlFor="edit-whatsapp-page" className="text-sm font-normal">Enable WhatsApp notifications</Label>
                     <p className="text-xs text-gray-500 mt-0.5">Staff receives rental alerts & updates via WhatsApp</p>
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-4 items-start gap-4">
+                <Label className="text-left sm:text-right text-slate-700">Telegram Alerts</Label>
+                <div className="col-span-1 space-y-3 sm:col-span-3">
+                  <div className="flex items-start space-x-2">
+                    <Checkbox
+                      id="edit-telegram-enabled-page"
+                      checked={editUser.telegram_alerts_allowed}
+                      onCheckedChange={(checked) => setEditUser((current) => ({
+                        ...current,
+                        telegram_alerts_allowed: checked === true,
+                        telegram_allowed_event_types: checked === true
+                          ? current.telegram_allowed_event_types
+                          : buildDefaultTelegramEventTypes(false),
+                      }))}
+                    />
+                    <div>
+                      <Label htmlFor="edit-telegram-enabled-page" className="text-sm font-normal">Allow this staff member to receive Telegram alerts</Label>
+                      <p className="mt-0.5 text-xs text-gray-500">Staff can only opt into Telegram events that are enabled here by admin.</p>
+                    </div>
+                  </div>
+                  <div className={`grid gap-2 rounded-2xl border p-3 ${editUser.telegram_alerts_allowed ? 'border-violet-200 bg-violet-50/50' : 'border-slate-200 bg-slate-50 opacity-70'}`}>
+                    {TELEGRAM_ALERT_EVENT_OPTIONS.map((option) => (
+                      <label key={option.key} className="flex items-center justify-between gap-3 rounded-xl bg-white/70 px-3 py-2 text-sm text-slate-700">
+                        <span>{option.label}</span>
+                        <Checkbox
+                          checked={editUser.telegram_allowed_event_types?.[option.key] === true}
+                          disabled={!editUser.telegram_alerts_allowed}
+                          onCheckedChange={(checked) => setEditUser((current) => ({
+                            ...current,
+                            telegram_allowed_event_types: {
+                              ...current.telegram_allowed_event_types,
+                              [option.key]: checked === true,
+                            },
+                          }))}
+                        />
+                      </label>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -2084,6 +2192,26 @@ const UserManagement = () => {
                     {user.whatsapp_notifications ? tr('Enabled', 'Activé') : tr('Disabled', 'Désactivé')}
                   </div>
                 </div>
+                <div className={`rounded-xl border px-4 py-3 ${
+                  user.telegram_alerts_allowed
+                    ? 'border-sky-200 bg-sky-50'
+                    : 'border-slate-200 bg-slate-50'
+                }`}>
+                  <div className={`flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] ${
+                    user.telegram_alerts_allowed ? 'text-sky-500' : 'text-slate-400'
+                  }`}>
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    Telegram
+                  </div>
+                  <div className={`mt-2 text-lg font-semibold ${
+                    user.telegram_alerts_allowed ? 'text-sky-700' : 'text-slate-700'
+                  }`}>
+                    {user.telegram_alerts_allowed ? tr('Allowed', 'Autorisé') : tr('Off', 'Off')}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {countEnabledTelegramAlertEvents(user.telegram_allowed_event_types)} {tr('event types', "types d'alerte")}
+                  </p>
+                </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                   <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                     <FileText className="h-3.5 w-3.5" />
@@ -2209,6 +2337,46 @@ const UserManagement = () => {
                 <div>
                   <Label htmlFor="whatsapp_notifications" className="text-sm font-normal">Enable WhatsApp notifications</Label>
                   <p className="text-xs text-gray-500 mt-0.5">Staff will receive rental alerts & updates via WhatsApp on their phone number above</p>
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-4 items-start gap-4">
+              <Label className="text-right">{tr('Telegram Alerts', 'Alertes Telegram')}</Label>
+              <div className="col-span-3 space-y-3">
+                <div className="flex items-start space-x-2">
+                  <Checkbox
+                    id="telegram_alerts_allowed"
+                    checked={newUser.telegram_alerts_allowed}
+                    onCheckedChange={(checked) => setNewUser((current) => ({
+                      ...current,
+                      telegram_alerts_allowed: checked === true,
+                      telegram_allowed_event_types: checked === true
+                        ? current.telegram_allowed_event_types
+                        : buildDefaultTelegramEventTypes(false),
+                    }))}
+                  />
+                  <div>
+                    <Label htmlFor="telegram_alerts_allowed" className="text-sm font-normal">Allow Telegram alerts for this staff member</Label>
+                    <p className="text-xs text-gray-500 mt-0.5">Admin decides which rental events this staff member is allowed to receive in Telegram.</p>
+                  </div>
+                </div>
+                <div className={`grid gap-2 rounded-2xl border p-3 ${newUser.telegram_alerts_allowed ? 'border-violet-200 bg-violet-50/50' : 'border-slate-200 bg-slate-50 opacity-70'}`}>
+                  {TELEGRAM_ALERT_EVENT_OPTIONS.map((option) => (
+                    <label key={option.key} className="flex items-center justify-between gap-3 rounded-xl bg-white/70 px-3 py-2 text-sm text-slate-700">
+                      <span>{option.label}</span>
+                      <Checkbox
+                        checked={newUser.telegram_allowed_event_types?.[option.key] === true}
+                        disabled={!newUser.telegram_alerts_allowed}
+                        onCheckedChange={(checked) => setNewUser((current) => ({
+                          ...current,
+                          telegram_allowed_event_types: {
+                            ...current.telegram_allowed_event_types,
+                            [option.key]: checked === true,
+                          },
+                        }))}
+                      />
+                    </label>
+                  ))}
                 </div>
               </div>
             </div>

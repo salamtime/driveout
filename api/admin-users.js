@@ -2,26 +2,29 @@ import {
   APP_USERS_TABLE,
   ORGANIZATIONS_TABLE,
   ORGANIZATION_MEMBERS_TABLE,
+  PLATFORM_ADMIN_ACCOUNTS_TABLE,
   PLATFORM_BUSINESS_ACCOUNTS_TABLE,
   PLATFORM_TENANTS_TABLE,
   PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE,
   PLATFORM_TENANT_PROVISIONING_JOBS_TABLE,
   PLATFORM_TENANT_AUDIT_LOG_TABLE,
 } from './_lib/supabase.js';
-import { authenticateRequest, requireOwnerOrAdmin } from './_lib/auth.js';
+import { authenticateRequest, requireOwnerOrAdmin, requirePlatformOwner, requirePlatformOwnerOrAdmin } from './_lib/auth.js';
 import {
+  buildTenantAppUrl,
   buildTenantSlug,
   normalizeBillingStatus,
   normalizeBusinessAccountType,
   normalizePlanType,
   normalizeRegistryStatus,
   normalizeSubscriptionStatus,
+  sanitizeTenantSlug,
 } from './_lib/tenantRegistry.js';
 import { buildDefaultPermissionsForRole } from '../src/utils/permissionCatalog.js';
 import crypto from 'crypto';
 
 const BUSINESS_OWNER_ACCOUNT_TYPES = new Set(['business_owner', 'operator', 'business', 'rental_business']);
-const BASE_APP_USER_FIELDS = 'id, email, username, full_name, first_name, last_name, role, phone_number, whatsapp_notifications, permissions, salary_amount, created_at, updated_at, access_enabled, primary_organization_id';
+const BASE_APP_USER_FIELDS = 'id, email, username, full_name, first_name, last_name, role, phone_number, whatsapp_notifications, preferences, permissions, salary_amount, created_at, updated_at, access_enabled, primary_organization_id';
 const BUSINESS_OWNER_APP_USER_FIELDS = `${BASE_APP_USER_FIELDS}, verification_status, approved_at, approved_by, rejection_reason, subscription_plan, subscription_status, trial_started_at, trial_ends_at, subscription_started_at, plan_type, billing_status, suspended_at, suspension_reason, plan_changed_at`;
 
 const buildDisplayName = (...values) =>
@@ -166,6 +169,49 @@ const DEFAULT_PLAN_LIMITS = {
 };
 
 const getPlanLimits = (planType) => DEFAULT_PLAN_LIMITS[planType] || DEFAULT_PLAN_LIMITS.starter;
+
+const resolveUniqueTenantSlug = async ({ adminClient, requestedSlug = '', businessAccountId = '' }) => {
+  const baseSlug = sanitizeTenantSlug(requestedSlug || 'tenant');
+
+  const existingForAccount = await adminClient
+    .from(PLATFORM_TENANTS_TABLE)
+    .select('tenant_slug')
+    .eq('business_account_id', businessAccountId)
+    .maybeSingle();
+
+  if (existingForAccount.error) {
+    throw existingForAccount.error;
+  }
+
+  const existingSlug = String(existingForAccount.data?.tenant_slug || '').trim().toLowerCase();
+  if (existingSlug) {
+    return existingSlug;
+  }
+
+  const collisions = await adminClient
+    .from(PLATFORM_TENANTS_TABLE)
+    .select('tenant_slug')
+    .like('tenant_slug', `${baseSlug}%`)
+    .limit(200);
+
+  if (collisions.error) {
+    throw collisions.error;
+  }
+
+  const used = new Set((collisions.data || []).map((entry) => String(entry?.tenant_slug || '').trim().toLowerCase()).filter(Boolean));
+  if (!used.has(baseSlug)) {
+    return baseSlug;
+  }
+
+  for (let index = 2; index <= 200; index += 1) {
+    const candidate = `${baseSlug}-${index}`;
+    if (!used.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Unable to allocate a unique tenant slug for base "${baseSlug}"`);
+};
 
 const buildBusinessOwnerActivationPayload = ({ action, reason, adminId }) => {
   const nowIso = new Date().toISOString();
@@ -476,7 +522,7 @@ const upsertPlatformTenantRecord = async ({
   organizationContext = {},
   requestedStatus = 'provisioning',
 }) => {
-  const tenantSlug = organizationContext?.organization?.slug || buildTenantSlug({
+  const requestedSlug = organizationContext?.organization?.slug || buildTenantSlug({
     email: authUser?.email,
     userId: authUser?.id,
     companyName:
@@ -485,6 +531,12 @@ const upsertPlatformTenantRecord = async ({
       organizationContext?.organization?.name ||
       '',
   });
+  const tenantSlug = await resolveUniqueTenantSlug({
+    adminClient,
+    requestedSlug,
+    businessAccountId,
+  });
+  const tenantAppUrl = buildTenantAppUrl(tenantSlug);
 
   return adminClient
     .from(PLATFORM_TENANTS_TABLE)
@@ -499,6 +551,7 @@ const upsertPlatformTenantRecord = async ({
           authUser?.email ||
           'Business Workspace',
         tenant_slug: tenantSlug,
+        tenant_app_url: tenantAppUrl,
         tenant_status: requestedStatus,
         db_provider: 'supabase',
         metadata: {
@@ -662,6 +715,9 @@ const mergeAuthUserWithAppUser = (authUser, appUser = {}) => {
     plan_changed_at: authUser?.user_metadata?.plan_changed_at || authUser?.app_metadata?.plan_changed_at || appUser?.plan_changed_at || null,
     phone_number: appUser?.phone_number || '',
     whatsapp_notifications: Boolean(appUser?.whatsapp_notifications),
+    preferences: appUser?.preferences && typeof appUser.preferences === 'object' && !Array.isArray(appUser.preferences)
+      ? appUser.preferences
+      : authUser?.user_metadata?.preferences || {},
     permissions:
       appUser?.permissions && typeof appUser.permissions === 'object' && !Array.isArray(appUser.permissions)
         ? appUser.permissions
@@ -677,6 +733,61 @@ const mergeAuthUserWithAppUser = (authUser, appUser = {}) => {
   };
 };
 
+const PLATFORM_ADMIN_PERMISSION_DEFAULTS = {
+  Workspaces: true,
+  'Platform Admins': false,
+  'Marketplace Review': false,
+  'System Settings': false,
+};
+
+const normalizePlatformAdminPermissions = (value) => {
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    return { ...PLATFORM_ADMIN_PERMISSION_DEFAULTS };
+  }
+
+  return {
+    ...PLATFORM_ADMIN_PERMISSION_DEFAULTS,
+    ...Object.entries(value).reduce((acc, [key, enabled]) => {
+      acc[String(key)] = enabled === true;
+      return acc;
+    }, {}),
+  };
+};
+
+const listAllAuthUsers = async (adminClient) => {
+  const { data, error } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
+
+  if (error) {
+    throw error;
+  }
+
+  return data?.users || [];
+};
+
+const mergePlatformAdminRecord = (record, authUser = null) => ({
+  id: record?.id || null,
+  auth_user_id: record?.auth_user_id || authUser?.id || null,
+  email: record?.email || authUser?.email || null,
+  full_name:
+    record?.full_name ||
+    authUser?.user_metadata?.full_name ||
+    authUser?.user_metadata?.name ||
+    authUser?.email ||
+    'Platform admin',
+  platform_role: record?.platform_role || 'platform_admin',
+  access_enabled: record?.access_enabled !== false,
+  permissions: normalizePlatformAdminPermissions(record?.permissions),
+  notes: record?.notes || '',
+  granted_by: record?.granted_by || null,
+  disabled_by: record?.disabled_by || null,
+  disabled_at: record?.disabled_at || null,
+  metadata: record?.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+    ? record.metadata
+    : {},
+  created_at: record?.created_at || null,
+  updated_at: record?.updated_at || null,
+});
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.status(200).end();
@@ -684,6 +795,193 @@ export default async function handler(req, res) {
   }
 
   const scope = String(req.query?.scope || '').trim().toLowerCase();
+
+  if (scope === 'platform-admins') {
+    const scopedAuth = req.method === 'GET'
+      ? await requirePlatformOwnerOrAdmin(req, 'Platform Admins')
+      : await requirePlatformOwner(req);
+
+    if (scopedAuth.error) {
+      res.status(scopedAuth.error.status).json(scopedAuth.error.body);
+      return;
+    }
+
+    const { adminClient, user } = scopedAuth;
+    const targetAuthUserId = req.query?.userId ? String(req.query.userId) : null;
+
+    try {
+      if (req.method === 'GET') {
+        const [platformAdminsResult, authUsers] = await Promise.all([
+          adminClient
+            .from(PLATFORM_ADMIN_ACCOUNTS_TABLE)
+            .select('*')
+            .order('created_at', { ascending: true }),
+          listAllAuthUsers(adminClient),
+        ]);
+
+        if (platformAdminsResult.error) {
+          throw platformAdminsResult.error;
+        }
+
+        const authUserMap = new Map(authUsers.map((authUser) => [String(authUser.id), authUser]));
+        const admins = (platformAdminsResult.data || []).map((record) =>
+          mergePlatformAdminRecord(record, authUserMap.get(String(record.auth_user_id)) || null)
+        );
+
+        res.status(200).json({ admins });
+        return;
+      }
+
+      if (req.method === 'POST') {
+        const {
+          email,
+          platform_role = 'platform_admin',
+          access_enabled = true,
+          permissions = {},
+          notes = '',
+        } = req.body || {};
+
+        const normalizedEmail = String(email || '').trim().toLowerCase();
+
+        if (!normalizedEmail) {
+          res.status(400).json({ error: 'Email is required' });
+          return;
+        }
+
+        const authUsers = await listAllAuthUsers(adminClient);
+        const authUser = authUsers.find(
+          (candidate) => String(candidate.email || '').trim().toLowerCase() === normalizedEmail
+        );
+
+        if (!authUser?.id) {
+          res.status(404).json({ error: 'User not found in authentication records' });
+          return;
+        }
+
+        const payload = {
+          auth_user_id: authUser.id,
+          email: normalizedEmail,
+          full_name:
+            authUser.user_metadata?.full_name ||
+            authUser.user_metadata?.name ||
+            normalizedEmail,
+          platform_role: String(platform_role || 'platform_admin').trim().toLowerCase() === 'platform_owner'
+            ? 'platform_owner'
+            : 'platform_admin',
+          access_enabled: access_enabled !== false,
+          permissions: normalizePlatformAdminPermissions(permissions),
+          notes: String(notes || '').trim() || null,
+          granted_by: user?.id || null,
+          disabled_by: access_enabled === false ? user?.id || null : null,
+          disabled_at: access_enabled === false ? new Date().toISOString() : null,
+          metadata: { source: 'platform_admins_page' },
+        };
+
+        const { data, error } = await adminClient
+          .from(PLATFORM_ADMIN_ACCOUNTS_TABLE)
+          .upsert(payload, { onConflict: 'auth_user_id' })
+          .select('*')
+          .single();
+
+        if (error) {
+          throw error;
+        }
+
+        res.status(200).json({ admin: mergePlatformAdminRecord(data, authUser) });
+        return;
+      }
+
+      if (req.method === 'PATCH') {
+        if (!targetAuthUserId) {
+          res.status(400).json({ error: 'userId is required' });
+          return;
+        }
+
+        const { platform_role, access_enabled, permissions, notes } = req.body || {};
+        const updatePayload = {
+          updated_at: new Date().toISOString(),
+        };
+
+        if (platform_role) {
+          updatePayload.platform_role =
+            String(platform_role).trim().toLowerCase() === 'platform_owner'
+              ? 'platform_owner'
+              : 'platform_admin';
+        }
+
+        if (typeof access_enabled === 'boolean') {
+          updatePayload.access_enabled = access_enabled;
+          updatePayload.disabled_by = access_enabled ? null : user?.id || null;
+          updatePayload.disabled_at = access_enabled ? null : new Date().toISOString();
+        }
+
+        if (permissions && typeof permissions === 'object' && !Array.isArray(permissions)) {
+          updatePayload.permissions = normalizePlatformAdminPermissions(permissions);
+        }
+
+        if (typeof notes !== 'undefined') {
+          updatePayload.notes = String(notes || '').trim() || null;
+        }
+
+        const { data, error } = await adminClient
+          .from(PLATFORM_ADMIN_ACCOUNTS_TABLE)
+          .update(updatePayload)
+          .eq('auth_user_id', targetAuthUserId)
+          .select('*')
+          .single();
+
+        if (error) {
+          throw error;
+        }
+
+        const authUserResult = await adminClient.auth.admin.getUserById(targetAuthUserId);
+        const authUser = authUserResult?.data?.user || null;
+
+        res.status(200).json({ admin: mergePlatformAdminRecord(data, authUser) });
+        return;
+      }
+
+      if (req.method === 'DELETE') {
+        if (!targetAuthUserId) {
+          res.status(400).json({ error: 'userId is required' });
+          return;
+        }
+
+        const { data, error } = await adminClient
+          .from(PLATFORM_ADMIN_ACCOUNTS_TABLE)
+          .update({
+            access_enabled: false,
+            disabled_by: user?.id || null,
+            disabled_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('auth_user_id', targetAuthUserId)
+          .select('*')
+          .single();
+
+        if (error) {
+          throw error;
+        }
+
+        const authUserResult = await adminClient.auth.admin.getUserById(targetAuthUserId);
+        const authUser = authUserResult?.data?.user || null;
+
+        res.status(200).json({ admin: mergePlatformAdminRecord(data, authUser) });
+        return;
+      }
+
+      res.status(405).json({ error: 'Method not allowed' });
+      return;
+    } catch (error) {
+      console.error('admin-users platform-admins failed:', {
+        message: error?.message,
+        code: error?.code,
+        details: error?.details,
+      });
+      res.status(500).json({ error: error.message || 'Failed to manage platform admins' });
+      return;
+    }
+  }
 
   if (req.method === 'GET' && !req.query?.userId && scope === 'staff-directory') {
     const scopedAuth = await canAccessStaffDirectory(req);
@@ -893,6 +1191,9 @@ export default async function handler(req, res) {
           role: app_profile.role || user_metadata.role || createdUser.user_metadata?.role || 'employee',
           phone_number: app_profile.phone_number || null,
           whatsapp_notifications: Boolean(app_profile.whatsapp_notifications),
+          preferences: app_profile.preferences && typeof app_profile.preferences === 'object' && !Array.isArray(app_profile.preferences)
+            ? app_profile.preferences
+            : {},
           access_enabled: app_profile.access_enabled ?? true,
           permissions: resolveStaffPermissions(
             app_profile.role || user_metadata.role || createdUser.user_metadata?.role || 'employee',
@@ -1256,6 +1557,7 @@ export default async function handler(req, res) {
       if (app_profile.role !== undefined) appUserUpdate.role = app_profile.role;
       if (app_profile.phone_number !== undefined) appUserUpdate.phone_number = app_profile.phone_number || null;
       if (app_profile.whatsapp_notifications !== undefined) appUserUpdate.whatsapp_notifications = Boolean(app_profile.whatsapp_notifications);
+      if (app_profile.preferences && typeof app_profile.preferences === 'object' && !Array.isArray(app_profile.preferences)) appUserUpdate.preferences = app_profile.preferences;
       if (app_profile.access_enabled !== undefined) appUserUpdate.access_enabled = Boolean(app_profile.access_enabled);
       if (app_profile.permissions && typeof app_profile.permissions === 'object') appUserUpdate.permissions = app_profile.permissions;
       if (app_profile.salary_amount !== undefined && app_profile.salary_amount !== '') {

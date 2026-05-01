@@ -1,5 +1,6 @@
 import { forwardRef } from "react";
 import i18n from "../i18n";
+import { isPackagePricingEnabled } from "../utils/simpleRentalPricing";
 
 const loadPdfTools = async () => {
   const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
@@ -11,6 +12,7 @@ const loadPdfTools = async () => {
 };
 
 const getRentalKilometerPackage = (rental) => {
+  if (!isPackagePricingEnabled(rental)) return null;
   const pkg = rental?.package;
   if (!pkg) return null;
 

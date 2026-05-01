@@ -1,10 +1,17 @@
 import {
+  PLATFORM_BUSINESS_ACCOUNTS_TABLE,
   PLATFORM_TENANTS_TABLE,
   PLATFORM_TENANT_AUDIT_LOG_TABLE,
   PLATFORM_TENANT_PROVISIONING_JOBS_TABLE,
   PLATFORM_TENANT_WORKSPACE_POOL_TABLE,
   createSupabaseClients,
 } from './supabase.js';
+import {
+  getWorkspaceReadinessFailureMessage,
+  mergeWorkspaceReadinessMetadata,
+  resolveWorkspaceReadiness,
+} from './tenantWorkspaceReadiness.js';
+import { applyLegacyBusinessWorkspaceBootstrap } from './tenantWorkspaceBootstrap.js';
 
 const sendJson = (res, status, body) => {
   res.status(status).json(body);
@@ -727,6 +734,14 @@ export const handleInternalProvisioningComplete = async (req, res) => {
       return;
     }
 
+    const { data: businessAccount, error: businessAccountError } = await adminClient
+      .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
+      .select('id, auth_user_id, email, full_name, company_name')
+      .eq('id', job.business_account_id)
+      .maybeSingle();
+
+    if (businessAccountError) throw businessAccountError;
+
     const workspace = await getAssignedWorkspace({
       adminClient,
       workspacePoolId,
@@ -779,6 +794,133 @@ export const handleInternalProvisioningComplete = async (req, res) => {
       return;
     }
 
+    try {
+      await applyLegacyBusinessWorkspaceBootstrap({
+        projectRef: tenantProjectRef,
+        tenantName: tenant.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Business Workspace',
+        tenantSlug: tenant.tenant_slug,
+        ownerAuthUserId: businessAccount?.auth_user_id || null,
+        ownerEmail: businessAccount?.email || null,
+        ownerFullName: businessAccount?.full_name || null,
+      });
+    } catch (bootstrapError) {
+      const bootstrapMessage = `Unable to bootstrap tenant workspace schema: ${bootstrapError?.message || bootstrapError}`;
+      await failProvisioning({
+        adminClient,
+        jobId,
+        tenantId,
+        businessAccountId: job.business_account_id,
+        message: bootstrapMessage,
+        metadata: {
+          tenant_project_ref: tenantProjectRef,
+          tenant_app_url: tenantAppUrl,
+          tenant_api_url: tenantApiUrl,
+          workspace_pool_id: workspace.id,
+        },
+      });
+      sendJson(res, 502, { error: bootstrapMessage });
+      return;
+    }
+
+    let workspaceReadiness;
+    try {
+      workspaceReadiness = await resolveWorkspaceReadiness({
+        tenant: {
+          ...tenant,
+          tenant_project_ref: tenantProjectRef,
+        },
+        adminClient,
+        forceFresh: true,
+        persist: false,
+      });
+    } catch (readinessError) {
+      const readinessMessage = `Unable to verify workspace schema readiness: ${readinessError?.message || readinessError}`;
+      await failProvisioning({
+        adminClient,
+        jobId,
+        tenantId,
+        businessAccountId: job.business_account_id,
+        message: readinessMessage,
+        metadata: {
+          tenant_project_ref: tenantProjectRef,
+          tenant_app_url: tenantAppUrl,
+          tenant_api_url: tenantApiUrl,
+          workspace_pool_id: workspace.id,
+        },
+      });
+      sendJson(res, 502, { error: readinessMessage });
+      return;
+    }
+
+    if (workspaceReadiness?.ready !== true) {
+      const readinessMessage = getWorkspaceReadinessFailureMessage(workspaceReadiness);
+      const failedMetadata = mergeWorkspaceReadinessMetadata(tenant, workspaceReadiness);
+      const nowIso = new Date().toISOString();
+
+      await Promise.all([
+        adminClient
+          .from(PLATFORM_TENANTS_TABLE)
+          .update({
+            tenant_status: 'failed',
+            tenant_project_ref: tenantProjectRef,
+            tenant_app_url: tenantAppUrl,
+            tenant_api_url: tenantApiUrl,
+            tenant_anon_key: tenantAnonKey,
+            tenant_service_role_secret_ref: tenantServiceRoleSecretRef || null,
+            tenant_database_name: tenantDatabaseName || null,
+            schema_version: schemaVersion,
+            provisioning_error: readinessMessage,
+            metadata: {
+              ...failedMetadata,
+              provisioning_completed_by: 'provisioning_worker',
+              provisioning_failed_at: nowIso,
+              provisioning_failed_via: 'internal_callback_schema_readiness_guard',
+              workspace_pool_id: workspace.id,
+            },
+          })
+          .eq('id', tenant.id),
+        adminClient
+          .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+          .update({
+            job_status: 'failed',
+            started_at: job.started_at || nowIso,
+            finished_at: nowIso,
+            error_message: readinessMessage,
+            result: {
+              ...(job.result || {}),
+              tenant_project_ref: tenantProjectRef,
+              tenant_app_url: tenantAppUrl,
+              tenant_api_url: tenantApiUrl,
+              tenant_database_name: tenantDatabaseName || null,
+              schema_version: schemaVersion,
+              workspace_pool_id: workspace.id,
+              failure_reason: readinessMessage,
+              workspace_readiness: workspaceReadiness,
+            },
+          })
+          .eq('id', job.id),
+      ]);
+
+      await insertAuditLog({
+        adminClient,
+        businessAccountId: job.business_account_id,
+        tenantId,
+        action: 'tenant_schema_readiness_failed',
+        metadata: {
+          job_id: job.id,
+          tenant_project_ref: tenantProjectRef,
+          workspace_pool_id: workspace.id,
+          workspace_readiness: workspaceReadiness,
+        },
+      });
+
+      sendJson(res, 409, {
+        error: readinessMessage,
+        readiness: workspaceReadiness,
+      });
+      return;
+    }
+
     const [{ data: updatedTenant, error: tenantUpdateError }, { data: updatedJob, error: jobUpdateError }] = await Promise.all([
       adminClient
         .from(PLATFORM_TENANTS_TABLE)
@@ -795,8 +937,7 @@ export const handleInternalProvisioningComplete = async (req, res) => {
           provisioning_completed_at: nowIso,
           provisioning_error: null,
           metadata: {
-            ...(tenant.metadata || {}),
-            connection_ready: true,
+            ...mergeWorkspaceReadinessMetadata(tenant, workspaceReadiness),
             provisioning_completed_by: 'provisioning_worker',
             provisioning_completed_via: 'internal_callback',
             provisioning_completed_at: nowIso,
@@ -821,6 +962,7 @@ export const handleInternalProvisioningComplete = async (req, res) => {
             schema_version: schemaVersion,
             workspace_pool_id: workspace.id,
             completed_by: 'provisioning_worker',
+            workspace_readiness: workspaceReadiness,
           },
         })
         .eq('id', job.id)

@@ -109,6 +109,27 @@ const STATUS_STYLES = {
   },
 };
 
+const EXPENSE_SAVE_NOTICE_STYLES = {
+  saving: {
+    container: 'border-amber-200 bg-amber-50 text-amber-800',
+    iconClass: 'text-amber-600',
+    icon: Loader2,
+    spin: true,
+  },
+  success: {
+    container: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+    iconClass: 'text-emerald-600',
+    icon: CheckCircle2,
+    spin: false,
+  },
+  error: {
+    container: 'border-rose-200 bg-rose-50 text-rose-800',
+    iconClass: 'text-rose-600',
+    icon: AlertTriangle,
+    spin: false,
+  },
+};
+
 const getEntryVisual = (entry) => {
   if (entry.entryType === 'expense' || entry.method === 'expense') {
     return {
@@ -483,6 +504,11 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
 
       if (isEditing) {
         if (isExpenseMode) {
+          setExpenseSaveFeedback({
+            status: 'saving',
+            title: tr('Saving expense…', 'Enregistrement de la dépense…'),
+            message: tr('Please wait while we save this purchase.', "Veuillez patienter pendant l'enregistrement de cet achat."),
+          });
           await receiveFundsService.updateExpense(
             editingEntry.id,
             {
@@ -494,6 +520,11 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
             },
             userProfile
           );
+          setExpenseSaveFeedback({
+            status: 'success',
+            title: tr('Expense updated.', 'Dépense mise à jour.'),
+            message: tr('The purchase expense was saved successfully.', "La dépense d'achat a bien été enregistrée."),
+          });
           toast.success(tr('Expense updated.', 'Dépense mise à jour.'));
         } else {
           await receiveFundsService.updateEntry(
@@ -522,6 +553,11 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
       }
 
       if (isExpenseMode) {
+        setExpenseSaveFeedback({
+          status: 'saving',
+          title: tr('Saving expense…', 'Enregistrement de la dépense…'),
+          message: tr('Please wait while we save this purchase.', "Veuillez patienter pendant l'enregistrement de cet achat."),
+        });
         await receiveFundsService.recordExpense(
           {
             amount: form.amount,
@@ -533,6 +569,9 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
           userProfile
         );
         setExpenseSaveFeedback({
+          status: 'success',
+          title: tr('Expense saved.', 'Dépense enregistrée.'),
+          message: tr('Staff can now find it in purchase expenses and finance history.', "L'équipe peut maintenant la retrouver dans les dépenses d'achat et l'historique financier."),
           label: selectedExpenseLabels[0] || tr('Expense', 'Dépense'),
           amount: Number(form.amount || 0),
         });
@@ -561,6 +600,13 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
       });
     } catch (saveError) {
       console.error('Failed to save drawer entry:', saveError);
+      if (isExpenseMode) {
+        setExpenseSaveFeedback({
+          status: 'error',
+          title: tr('Expense not saved.', 'Dépense non enregistrée.'),
+          message: saveError.message || tr('Please try again before leaving this screen.', "Veuillez réessayer avant de quitter cet écran."),
+        });
+      }
       toast.error(
         saveError.message ||
           (isExpenseMode
@@ -623,6 +669,9 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
     () => buildExpenseNote(form.note, selectedExpenseLabels),
     [form.note, selectedExpenseLabels]
   );
+  const expenseSaveNoticeStyle = expenseSaveFeedback?.status
+    ? EXPENSE_SAVE_NOTICE_STYLES[expenseSaveFeedback.status] || EXPENSE_SAVE_NOTICE_STYLES.success
+    : null;
   const compactExpenseDateLabel = useMemo(() => {
     const baseLabel = formatDateLabel(form.receivedDate, { month: 'short', day: 'numeric' });
     if (form.receivedDate === todayKey()) {
@@ -1401,6 +1450,23 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                   ) : null}
                 </div>
               </div>
+
+              {isExpenseMode && expenseSaveFeedback && expenseSaveNoticeStyle ? (
+                <div className={`mx-5 mb-4 rounded-[20px] border px-4 py-3 ${expenseSaveNoticeStyle.container}`}>
+                  <div className="flex items-start gap-3">
+                    <expenseSaveNoticeStyle.icon className={`mt-0.5 h-4 w-4 shrink-0 ${expenseSaveNoticeStyle.iconClass} ${expenseSaveNoticeStyle.spin ? 'animate-spin' : ''}`} />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold">{expenseSaveFeedback.title}</p>
+                      <p className="mt-1 text-sm opacity-90">{expenseSaveFeedback.message}</p>
+                      {expenseSaveFeedback.status === 'success' ? (
+                        <p className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] opacity-80">
+                          {expenseSaveFeedback.label} • {Number(expenseSaveFeedback.amount || 0).toLocaleString(isFrenchLocale() ? 'fr-FR' : 'en-US')} MAD
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               <div className="sticky bottom-0 z-10 border-t border-violet-100 bg-white/92 px-5 py-4 backdrop-blur-xl">
                 <div className="flex flex-col gap-3 sm:flex-row">
