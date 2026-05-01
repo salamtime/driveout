@@ -525,6 +525,7 @@ class EnhancedTransactionalRentalService {
             start: newRental.rental_start_date || finalSanitizedData.rental_start_date || sanitizedData.start_date,
             end: newRental.rental_end_date || finalSanitizedData.rental_end_date || sanitizedData.end_date,
             total: newRental.total_amount ?? finalSanitizedData.total_amount ?? 0,
+            createdBy: finalSanitizedData.created_by_name || newRental.created_by_name || '',
           },
         });
       } catch (telegramDispatchError) {

@@ -171,6 +171,12 @@ const buildClosedAtLine = (value) => {
   return `Closed at: ${formatted}`;
 };
 
+const buildOpenedByLine = (value) => {
+  const normalized = safeText(value);
+  if (!normalized) return '';
+  return `Opened by: ${normalized}`;
+};
+
 const buildOverdueAge = (endValue) => {
   const end = endValue ? new Date(endValue) : null;
   if (!(end instanceof Date) || Number.isNaN(end?.getTime?.())) return '';
@@ -210,6 +216,12 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
     data.completedAt ||
     data.rental_completed_at ||
     data.closed_at
+  );
+  const openedByLine = buildOpenedByLine(
+    data.openedBy ||
+    data.createdBy ||
+    data.created_by_name ||
+    data.actorName
   );
   const linkLine = ['👉 Open rental', rentalUrl].join('\n');
   const isStaffLayout = recipientLayout === 'staff';
@@ -337,26 +349,28 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
     case 'rental_created':
     default:
       if (isStaffLayout) {
-        return [
-          '🚨 New Rental',
-          '',
-          vehicle,
-          ...(customerLine ? [customerLine] : []),
-          ...windowLines,
-          '',
-          linkLine,
-        ].join('\n');
-      }
       return [
         '🚨 New Rental',
         '',
         vehicle,
         ...(customerLine ? [customerLine] : []),
         ...windowLines,
-        `${total} MAD`,
-        ...(rentalIdentityLine ? [rentalIdentityLine] : []),
+        ...(openedByLine ? [openedByLine] : []),
         '',
         linkLine,
+      ].join('\n');
+    }
+    return [
+      '🚨 New Rental',
+      '',
+      vehicle,
+      ...(customerLine ? [customerLine] : []),
+      ...windowLines,
+      ...(openedByLine ? [openedByLine] : []),
+      `${total} MAD`,
+      ...(rentalIdentityLine ? [rentalIdentityLine] : []),
+      '',
+      linkLine,
       ].join('\n');
   }
 };

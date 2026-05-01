@@ -1014,6 +1014,7 @@ class TransactionalRentalService {
             start: rental.rental_start_date || finalSanitizedData.rental_start_date,
             end: rental.rental_end_date || finalSanitizedData.rental_end_date,
             total: rental.total_amount ?? finalSanitizedData.total_amount ?? 0,
+            createdBy: finalSanitizedData.created_by_name || rental.created_by_name || '',
           },
         });
       } catch (telegramDispatchError) {

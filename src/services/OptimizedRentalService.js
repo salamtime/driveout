@@ -280,6 +280,7 @@ class OptimizedRentalService {
             start: rental.rental_start_date || rental.start_date,
             end: rental.rental_end_date || rental.end_date,
             total: rental.total_amount ?? 0,
+            createdBy: rental.created_by_name || rental.created_by || '',
           },
         });
       } catch (telegramDispatchError) {
