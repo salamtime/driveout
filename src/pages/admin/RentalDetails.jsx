@@ -2906,6 +2906,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [priceOverrideReason, setPriceOverrideReason] = useState('');
   const [isSavingPrice, setIsSavingPrice] = useState(false);
   const [isEditingAmountDue, setIsEditingAmountDue] = useState(false);
+  const [isPayingDueBalance, setIsPayingDueBalance] = useState(false);
   const [manualAmountDue, setManualAmountDue] = useState('');
   const [amountDuePaymentReceivedNow, setAmountDuePaymentReceivedNow] = useState('');
   const [amountDueCompanyDiscount, setAmountDueCompanyDiscount] = useState('');
@@ -8253,7 +8254,13 @@ const handleFuelChargeToggle = async (enabled) => {
       );
       const currentRemainingAmount = Math.max(0, Number(effectiveCompletionRental?.remaining_amount || 0) || 0);
       if (currentPaymentStatus !== 'paid' && currentRemainingAmount > 0) {
-        toast.error('Rental must be fully paid before completion.');
+        handlePayDueBalance();
+        toast.error(
+          tr(
+            'Payment required before closing. Record the due balance first.',
+            "Paiement requis avant la clôture. Enregistrez d'abord le solde restant dû."
+          )
+        );
         return;
       }
 
@@ -10688,7 +10695,13 @@ useEffect(() => {
       );
       const currentRemainingAmount = Math.max(0, Number(effectiveCompletionRental?.remaining_amount || 0) || 0);
       if (currentPaymentStatus !== 'paid' && currentRemainingAmount > 0) {
-        toast.error('Rental must be fully paid before completion.');
+        handlePayDueBalance();
+        toast.error(
+          tr(
+            'Payment required before closing. Record the due balance first.',
+            "Paiement requis avant la clôture. Enregistrez d'abord le solde restant dû."
+          )
+        );
         return;
       }
       const { error } = await supabase
@@ -11454,6 +11467,7 @@ useEffect(() => {
       0,
       Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
     );
+    setIsPayingDueBalance(false);
     setManualAmountDue(currentAmountDue.toString());
     setAmountDuePaymentReceivedNow('');
     setAmountDueCompanyDiscount('');
@@ -11461,8 +11475,44 @@ useEffect(() => {
     setIsEditingAmountDue(true);
   };
 
+  const handlePayDueBalance = () => {
+    const currentAmountDue = Math.max(
+      0,
+      Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
+    );
+
+    if (currentAmountDue <= 0) {
+      toast.success(tr('No due balance remains on this contract.', 'Aucun solde restant dû sur ce contrat.'));
+      return;
+    }
+
+    const actingUser = resolvedCurrentUser || currentUser || userProfile;
+    if (!canEditRentalPrice(actingUser)) {
+      toast.error(
+        tr(
+          'You do not have permission to record the due balance payment.',
+          "Vous n'avez pas l'autorisation d'enregistrer le paiement du solde restant."
+        )
+      );
+      return;
+    }
+
+    setIsPayingDueBalance(true);
+    setAmountDuePaymentReceivedNow(currentAmountDue.toString());
+    setAmountDueCompanyDiscount('');
+    setManualAmountDue('0');
+    setAmountDueOverrideReason(
+      tr(
+        'Collected the full remaining balance before closing the rental.',
+        'Solde restant encaissé en totalité avant la clôture de la location.'
+      )
+    );
+    setIsEditingAmountDue(true);
+  };
+
   const handleCancelEditAmountDue = () => {
     setIsEditingAmountDue(false);
+    setIsPayingDueBalance(false);
     setManualAmountDue('');
     setAmountDuePaymentReceivedNow('');
     setAmountDueCompanyDiscount('');
@@ -11715,11 +11765,16 @@ useEffect(() => {
         editedAt: overrideMeta.editedAt,
       });
       setIsEditingAmountDue(false);
+      setIsPayingDueBalance(false);
       setManualAmountDue('');
       setAmountDuePaymentReceivedNow('');
       setAmountDueCompanyDiscount('');
       setAmountDueOverrideReason('');
-      toast.success(tr('Amount due updated successfully.', 'Montant restant dû mis à jour avec succès.'));
+      toast.success(
+        isPayingDueBalance
+          ? tr('Due balance paid successfully.', 'Solde restant dû payé avec succès.')
+          : tr('Amount due updated successfully.', 'Montant restant dû mis à jour avec succès.')
+      );
     } catch (error) {
       console.error('❌ Error saving amount due:', error);
       toast.error(
@@ -16740,6 +16795,17 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Financial Information', 'Informations financières')}</h3>
             {!isEditingPrice && canEditLifecycleRentalPrice && (
               <div className="mb-4 flex flex-wrap justify-end gap-2">
+                {currentAmountDueForEdit > 0 && (
+                  <Button
+                    type="button"
+                    onClick={handlePayDueBalance}
+                    size="sm"
+                    className={PRIMARY_ACTION_BUTTON_CLASS}
+                  >
+                    <CreditCard className="mr-2 h-4 w-4" />
+                    {tr('Pay Due Balance', 'Payer le solde restant dû')} · {formatCurrency(currentAmountDueForEdit)} MAD
+                  </Button>
+                )}
                 <Button
                   type="button"
                   onClick={handleEditAmountDue}
@@ -16748,7 +16814,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   className="border-violet-200 text-violet-700 hover:bg-violet-50"
                 >
                   <DollarSign className="mr-2 h-4 w-4" />
-                  {tr('Edit Amount Due', 'Modifier le montant restant dû')}
+                  {tr('Adjust Balance', 'Ajuster le solde')}
                 </Button>
                 <Button
                   type="button"
@@ -17766,16 +17832,25 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
-                {tr('Balance Resolution', 'Résolution du solde')}
+                {isPayingDueBalance
+                  ? tr('Due Balance Payment', 'Paiement du solde restant dû')
+                  : tr('Balance Resolution', 'Résolution du solde')}
               </p>
               <h4 className="mt-1 text-lg font-semibold text-slate-900">
-                {tr('Edit Amount Due', 'Modifier le montant restant dû')}
+                {isPayingDueBalance
+                  ? tr('Pay Due Balance', 'Payer le solde restant dû')
+                  : tr('Edit Amount Due', 'Modifier le montant restant dû')}
               </h4>
               <p className="mt-1 text-sm text-slate-500">
-                {tr(
-                  'Record what the customer paid, what we discounted, and confirm the final balance.',
-                  'Enregistrez ce que le client a payé, ce que nous avons remisé, puis confirmez le solde final.'
-                )}
+                {isPayingDueBalance
+                  ? tr(
+                      'Confirm the amount collected now so the contract can be closed safely without editing the rental price.',
+                      "Confirmez le montant encaissé maintenant afin de clôturer le contrat sans modifier le prix de location."
+                    )
+                  : tr(
+                      'Record what the customer paid, what we discounted, and confirm the final balance.',
+                      'Enregistrez ce que le client a payé, ce que nous avons remisé, puis confirmez le solde final.'
+                    )}
               </p>
             </div>
             <div className="rounded-full border border-violet-200 bg-white px-4 py-2 text-right shadow-sm">
@@ -17812,9 +17887,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {tr('Customer paid', 'Client payé')}
               </span>
               <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-3 py-3">
-                <label className="mb-2 block text-xs font-medium text-slate-500">
-                  {tr('Payment received now', 'Paiement reçu maintenant')}
-                </label>
+              <label className="mb-2 block text-xs font-medium text-slate-500">
+                  {isPayingDueBalance
+                    ? tr('Amount collected now', 'Montant encaissé maintenant')
+                    : tr('Payment received now', 'Paiement reçu maintenant')}
+              </label>
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-semibold text-emerald-600">MAD</span>
                   <input
@@ -17845,9 +17922,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {tr('We discounted', 'Nous avons remisé')}
               </span>
               <div className="mt-3 rounded-2xl border border-violet-200 bg-white px-3 py-3">
-                <label className="mb-2 block text-xs font-medium text-slate-500">
+              <label className="mb-2 block text-xs font-medium text-slate-500">
                   {tr('Company discount', 'Remise entreprise')}
-                </label>
+              </label>
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-semibold text-violet-600">MAD</span>
                   <input
@@ -17890,7 +17967,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
               <div className="mt-4 rounded-2xl border border-blue-200 bg-white px-3 py-3">
                 <label className="mb-2 block text-xs font-medium text-slate-500">
-                  {tr('New amount due', 'Nouveau montant restant dû')}
+                  {isPayingDueBalance
+                    ? tr('Remaining after payment', 'Restant après paiement')
+                    : tr('New amount due', 'Nouveau montant restant dû')}
                 </label>
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-semibold text-blue-600">MAD</span>
@@ -17932,7 +18011,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               ) : (
                 <Save className="w-4 h-4 mr-2" />
               )}
-              {isSavingAmountDue ? tr('Saving...', 'Enregistrement...') : tr('Resolve Balance', 'Valider le solde')}
+              {isSavingAmountDue
+                ? tr('Saving...', 'Enregistrement...')
+                : isPayingDueBalance
+                  ? tr('Confirm Due Payment', 'Confirmer le paiement du solde')
+                  : tr('Resolve Balance', 'Valider le solde')}
             </Button>
             <Button
               onClick={handleCancelEditAmountDue}
