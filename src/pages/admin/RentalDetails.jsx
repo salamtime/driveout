@@ -3240,6 +3240,7 @@ const receiptUrlRef = useRef(null);
 const shortContractUrlRef = useRef(null);
 const shortReceiptUrlRef = useRef(null);
 const maintenanceChargeSectionRef = useRef(null);
+const amountDueEditorRef = useRef(null);
 const impoundReceiptInputRef = useRef(null);
 const impoundReceiptCameraInputRef = useRef(null);
 const releaseImpoundReceiptInputRef = useRef(null);
@@ -11508,6 +11509,16 @@ useEffect(() => {
       )
     );
     setIsEditingAmountDue(true);
+    toast(
+      tr(
+        'Due balance payment opened below. Confirm the collected amount to finish the contract.',
+        'Le paiement du solde est ouvert plus bas. Confirmez le montant encaissé pour terminer le contrat.'
+      ),
+      {
+        icon: '💳',
+        duration: 3500,
+      }
+    );
   };
 
   const handleCancelEditAmountDue = () => {
@@ -11518,6 +11529,19 @@ useEffect(() => {
     setAmountDueCompanyDiscount('');
     setAmountDueOverrideReason('');
   };
+
+  useEffect(() => {
+    if (!isEditingAmountDue) return;
+
+    const timeoutId = window.setTimeout(() => {
+      amountDueEditorRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }, 40);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isEditingAmountDue]);
 
   const handleSaveManualPrice = async () => {
   if (RENTAL_DEBUG) {
@@ -17828,7 +17852,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
   ) : canEditRentalPriceOverride ? (
     <div className="space-y-3">
       {isEditingAmountDue && (
-        <div className="space-y-4 rounded-[28px] border border-violet-200 bg-[linear-gradient(180deg,rgba(250,245,255,0.96),rgba(255,255,255,0.98))] p-5 shadow-[0_20px_60px_rgba(109,40,217,0.10)]">
+        <div
+          ref={amountDueEditorRef}
+          className="space-y-4 rounded-[28px] border border-violet-200 bg-[linear-gradient(180deg,rgba(250,245,255,0.96),rgba(255,255,255,0.98))] p-5 shadow-[0_20px_60px_rgba(109,40,217,0.10)]"
+        >
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
