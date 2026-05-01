@@ -2687,6 +2687,7 @@ const AdminDashboard = () => {
     ? Number(revenueData[revenueData.length - 1]?.revenue || 0)
     : 0;
   const canOpenRecordFunds = canRecordReceiveFunds(userProfile);
+  const canSeeMyPurchaseExpenses = Boolean(userProfile?.id || user?.id);
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
     pathname: location.pathname,
     isTransitionFlow: loading && !hasLoadedOnce,
@@ -3403,7 +3404,8 @@ const AdminDashboard = () => {
       onClick: () => {
         handleOpenRecordFunds();
       },
-    }, {
+    }] : []),
+    ...(canSeeMyPurchaseExpenses ? [{
       title: tr('My Purchase Expenses', 'Mes dépenses d’achat'),
       href: '#',
       description: tr('View only the purchase expenses you submitted.', 'Consultez uniquement les dépenses d’achat que vous avez ajoutées.'),
@@ -3465,6 +3467,16 @@ const AdminDashboard = () => {
                   >
                     <DollarSign className="h-4 w-4" />
                     {recordFundsRefreshing ? tr('Refreshing…', 'Actualisation…') : tr('Cashflow', 'Cashflow')}
+                  </button>
+                ) : null}
+                {canSeeMyPurchaseExpenses ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowMyPurchaseExpensesDrawer(true)}
+                    className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 shadow-sm transition-all hover:scale-[1.01] hover:border-rose-300 hover:bg-rose-100"
+                  >
+                    <ClipboardList className="h-4 w-4" />
+                    {tr('My Purchase Expenses', 'Mes dépenses d’achat')}
                   </button>
                 ) : null}
                 <button
