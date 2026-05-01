@@ -798,6 +798,7 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
     case 'telegram_test':
       parts.push(
         safeText(payload?.testScope),
+        safeText(payload?.testNonce),
         safeText(payload?.tenant_id),
         safeText(payload?.business_account_id),
         safeText(payload?.tenant_slug),

@@ -1,6 +1,9 @@
 import { supabase } from './supabaseClient';
+import { getTenantSession } from './TenantRegistryService';
+import { getHostContext } from '../utils/hostContext';
 
 const inFlightTelegramAlerts = new Map();
+let tenantSessionPromise = null;
 
 const buildTelegramAlertRequestKey = (eventType, rental = {}) => {
   const normalizedEventType = String(eventType || '').trim().toLowerCase();
@@ -30,6 +33,50 @@ export async function notifyRentalTelegramEvent(eventType, rental, options = {})
 
   const requestPromise = (async () => {
     try {
+    let tenantAwareRental = { ...(rental || {}) };
+    const hasTenantIdentity =
+      Boolean(String(tenantAwareRental?.tenant_id || '').trim()) ||
+      Boolean(String(tenantAwareRental?.business_account_id || '').trim()) ||
+      Boolean(String(tenantAwareRental?.tenant_slug || '').trim());
+
+    if (!hasTenantIdentity) {
+      const hostContext = getHostContext();
+      const shouldLoadTenantSession =
+        hostContext.kind !== 'tenant' ||
+        !String(hostContext.tenantSlug || '').trim();
+
+      if (shouldLoadTenantSession) {
+        tenantSessionPromise = tenantSessionPromise || getTenantSession()
+          .catch(() => null)
+          .finally(() => {
+            tenantSessionPromise = null;
+          });
+
+        const tenantSession = await tenantSessionPromise;
+        if (tenantSession) {
+          tenantAwareRental = {
+            ...tenantAwareRental,
+            tenant_id: tenantAwareRental.tenant_id || tenantSession.tenantId || tenantSession.tenant?.id || '',
+            business_account_id:
+              tenantAwareRental.business_account_id
+              || tenantSession.businessAccountId
+              || tenantSession.businessAccount?.id
+              || '',
+            tenant_slug:
+              tenantAwareRental.tenant_slug
+              || tenantSession.tenantSlug
+              || tenantSession.tenant?.tenant_slug
+              || '',
+          };
+        }
+      } else if (hostContext.tenantSlug) {
+        tenantAwareRental = {
+          ...tenantAwareRental,
+          tenant_slug: tenantAwareRental.tenant_slug || hostContext.tenantSlug,
+        };
+      }
+    }
+
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) {
       throw new Error('No active session for Telegram alert request');
@@ -46,7 +93,7 @@ export async function notifyRentalTelegramEvent(eventType, rental, options = {})
         rental: {
           eventType,
           hostname: typeof window !== 'undefined' ? window.location.hostname : '',
-          ...rental,
+          ...tenantAwareRental,
         },
       }),
     });
@@ -94,11 +141,13 @@ export async function sendTelegramTestAlert({
   tenantBaseUrl = '',
   telegramConfigOverride = null,
 } = {}) {
+  const testNonce = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   return notifyRentalTelegramEvent('telegram_test', {
     id: `telegram-test-${scope}`,
     tenantName,
     customer: actorName,
     testScope: scope,
+    testNonce,
     tenant_id: tenantId,
     business_account_id: businessAccountId,
     tenant_slug: tenantSlug,
