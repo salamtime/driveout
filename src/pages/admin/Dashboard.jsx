@@ -2700,15 +2700,6 @@ const AdminDashboard = () => {
     setShowReceiveFundsDrawer(true);
   }, [canOpenRecordFunds]);
 
-  const handleRecordFundsSaved = useCallback(async () => {
-    setRecordFundsRefreshing(true);
-    try {
-      await fetchData();
-    } finally {
-      setRecordFundsRefreshing(false);
-    }
-  }, [fetchData]);
-
   const applyDashboardCoreData = useCallback((coreData) => {
     if (!coreData) return;
     setFleetSnapshot(coreData.fleetSnapshot);
@@ -3162,6 +3153,15 @@ const AdminDashboard = () => {
       setLoading(false);
     }
   }, [applyDashboardCoreData, fetchUrgentRentals, hasLoadedOnce]);
+
+  const handleRecordFundsSaved = useCallback(async () => {
+    setRecordFundsRefreshing(true);
+    try {
+      await fetchData();
+    } finally {
+      setRecordFundsRefreshing(false);
+    }
+  }, [fetchData]);
 
   // Real-time updates for urgent rentals
   useEffect(() => {
