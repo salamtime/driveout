@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { TBL } from '../config/tables';
+import { dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
 
 /**
  * Optimized Rental Service - High-performance rental data management
@@ -259,6 +260,31 @@ class OptimizedRentalService {
       // Clear relevant caches
       this.clearCache('rentals');
       this.clearCache('stats');
+
+      const alertVehicleLabel = [
+        rental?.vehicle?.model || rental?.vehicle?.name,
+        rental?.vehicle_plate_number || rental?.vehicle?.plate_number,
+      ]
+        .filter(Boolean)
+        .join(' • ') || `Vehicle #${rental?.vehicle_id}`;
+
+      try {
+        await dispatchRentalLifecycleTelegramEvent({
+          eventType: 'rental_created',
+          actor: 'admin',
+          rental: {
+            id: rental.id,
+            reference: rental.rental_id || rental.reference || '',
+            vehicle: alertVehicleLabel,
+            customer: rental.customer_name,
+            start: rental.rental_start_date || rental.start_date,
+            end: rental.rental_end_date || rental.end_date,
+            total: rental.total_amount ?? 0,
+          },
+        });
+      } catch (telegramDispatchError) {
+        console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);
+      }
 
       return { success: true, rental };
     } catch (error) {

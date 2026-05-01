@@ -12,6 +12,7 @@
 
 import { supabase } from '../lib/supabase';
 import TransactionalRentalService from './TransactionalRentalService';
+import { dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
 
 const getRawStorageValue = (value) => {
   if (!value) return '';
@@ -503,6 +504,31 @@ class EnhancedTransactionalRentalService {
 
       if (!newRental.customer_id) {
         throw new Error('CRITICAL ERROR: Customer ID was not saved to rental record!');
+      }
+
+      const alertVehicleLabel = [
+        finalSanitizedData.selected_vehicle_model_snapshot,
+        finalSanitizedData.vehicle_plate_number,
+      ]
+        .filter(Boolean)
+        .join(' • ') || `Vehicle #${newRental.vehicle_id}`;
+
+      try {
+        await dispatchRentalLifecycleTelegramEvent({
+          eventType: 'rental_created',
+          actor: 'admin',
+          rental: {
+            id: newRental.id,
+            reference: newRental.rental_id || finalSanitizedData.rental_id || '',
+            vehicle: alertVehicleLabel,
+            customer: newRental.customer_name || finalSanitizedData.customer_name,
+            start: newRental.rental_start_date || finalSanitizedData.rental_start_date || sanitizedData.start_date,
+            end: newRental.rental_end_date || finalSanitizedData.rental_end_date || sanitizedData.end_date,
+            total: newRental.total_amount ?? finalSanitizedData.total_amount ?? 0,
+          },
+        });
+      } catch (telegramDispatchError) {
+        console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);
       }
 
       console.log('✅ RENTAL CREATED SUCCESSFULLY (TWO-STEP COMPLETE):', newRental.id);

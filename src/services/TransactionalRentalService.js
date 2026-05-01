@@ -1002,19 +1002,23 @@ class TransactionalRentalService {
         .filter(Boolean)
         .join(' • ') || `Vehicle #${rental.vehicle_id}`;
 
-      void dispatchRentalLifecycleTelegramEvent({
-        eventType: 'rental_created',
-        actor: 'admin',
-        rental: {
-        id: rental.id,
-        reference: rental.rental_id || finalSanitizedData.rental_id || '',
-        vehicle: alertVehicleLabel,
-        customer: rental.customer_name || finalSanitizedData.customer_name,
-        start: rental.rental_start_date || finalSanitizedData.rental_start_date,
-        end: rental.rental_end_date || finalSanitizedData.rental_end_date,
-        total: rental.total_amount ?? finalSanitizedData.total_amount ?? 0,
-        },
-      });
+      try {
+        await dispatchRentalLifecycleTelegramEvent({
+          eventType: 'rental_created',
+          actor: 'admin',
+          rental: {
+            id: rental.id,
+            reference: rental.rental_id || finalSanitizedData.rental_id || '',
+            vehicle: alertVehicleLabel,
+            customer: rental.customer_name || finalSanitizedData.customer_name,
+            start: rental.rental_start_date || finalSanitizedData.rental_start_date,
+            end: rental.rental_end_date || finalSanitizedData.rental_end_date,
+            total: rental.total_amount ?? finalSanitizedData.total_amount ?? 0,
+          },
+        });
+      } catch (telegramDispatchError) {
+        console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);
+      }
       
       return {
         success: true,
