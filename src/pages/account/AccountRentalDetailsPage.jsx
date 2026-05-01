@@ -11,11 +11,12 @@ import MessageWidget from '../../components/messages/MessageWidget';
 import AccountWorkspaceLoadingShell from '../../components/navigation/AccountWorkspaceLoadingShell';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { resolveReturnPath } from '../../utils/navigationReturn';
+import { getHostContext } from '../../utils/hostContext';
 
 const AccountRentalDetailsPage = () => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
-  const { user } = useAuth();
+  const { user, userProfile, session } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const { rentalId } = useParams();
@@ -36,15 +37,41 @@ const AccountRentalDetailsPage = () => {
     isTransitionFlow: loading,
   });
   const backLink = resolveReturnPath(location, '/account/rentals');
+  const hostContext = useMemo(() => getHostContext(), []);
+  const normalizedRole = String(
+    userProfile?.role ||
+    session?.user?.user_metadata?.role ||
+    session?.user?.app_metadata?.role ||
+    ''
+  ).trim().toLowerCase();
+  const shouldRedirectToAdminRental =
+    Boolean(rentalId) &&
+    hostContext.kind === 'tenant' &&
+    ['owner', 'admin', 'employee', 'guide'].includes(normalizedRole);
   const normalizedRentalTimelineEvents = useMemo(
     () => RentalThreadTimelineService.buildTimeline(rental),
     [rental]
   );
 
   useEffect(() => {
+    if (!shouldRedirectToAdminRental) {
+      return;
+    }
+
+    navigate(`/admin/rentals/${encodeURIComponent(String(rentalId))}`, {
+      replace: true,
+      state: { from: location.pathname + location.search + location.hash },
+    });
+  }, [location.hash, location.pathname, location.search, navigate, rentalId, shouldRedirectToAdminRental]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const load = async () => {
+      if (shouldRedirectToAdminRental) {
+        return;
+      }
+
       if (!user || !rentalId) {
         setLoading(false);
         return;
@@ -155,7 +182,7 @@ const AccountRentalDetailsPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [user?.id, rentalId, isFrench]);
+  }, [user?.id, rentalId, isFrench, shouldRedirectToAdminRental]);
 
   if (loading && suppressBlockingLoader) {
     return <AccountWorkspaceLoadingShell cardCount={1} showStatsRow={false} />;
