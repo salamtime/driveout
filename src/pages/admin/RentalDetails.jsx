@@ -42,6 +42,7 @@ import VerificationService from '../../services/VerificationService';
 import { formatMaintenanceReference } from '../../utils/maintenanceReference';
 import { getCompressedVideoRecorderOptions } from '../../utils/videoRecording';
 import { uploadFile } from '../../utils/storageUpload';
+import { captureElementToCanvas } from '../../utils/pdfCapture';
 import i18n from '../../i18n';
 import { fetchSystemSettings } from '../../services/systemSettingsApi';
 import { adminApiRequest } from '../../services/adminApi';
@@ -140,7 +141,7 @@ const loadMediaProcessor = async () => {
 
 const renderElementToCanvas = async (element) => {
   const { html2canvas } = await loadPdfTools();
-  return await html2canvas(element, {
+  return await captureElementToCanvas(html2canvas, element, {
     scale: PDF_CAPTURE_SCALE,
     useCORS: true,
     backgroundColor: '#ffffff',
@@ -4895,7 +4896,7 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
       }
 
       const { jsPDF, html2canvas } = await loadPdfTools();
-      const canvas = await html2canvas(invoiceElement, { scale: 2, useCORS: true });
+      const canvas = await captureElementToCanvas(html2canvas, invoiceElement, { scale: 2, useCORS: true });
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF({
         orientation: 'p',

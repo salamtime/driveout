@@ -1,5 +1,6 @@
 import { forwardRef } from "react";
 import i18n from "../i18n";
+import { captureElementToCanvas } from "../utils/pdfCapture";
 import { isPackagePricingEnabled } from "../utils/simpleRentalPricing";
 
 const loadPdfTools = async () => {
@@ -195,7 +196,7 @@ const InvoiceTemplate = forwardRef(({ rental, logoUrl, stampUrl }, ref) => {
     const input = document.getElementById("rental-contract-to-print");
     const { jsPDF, html2canvas } = await loadPdfTools();
 
-    html2canvas(input, {
+    captureElementToCanvas(html2canvas, input, {
       scale: 2,
       useCORS: true,
       scrollY: -window.scrollY,
