@@ -7274,6 +7274,28 @@ const FuelChargeToggle = ({
       deposit_amount: rentalGrandTotal,
       remaining_amount: 0
     }));
+
+    const previousPaidAmount = Math.max(0, Number(rental?.deposit_amount || 0) || 0);
+    const paymentReceivedNow = Math.max(0, rentalGrandTotal - previousPaidAmount);
+    if (paymentReceivedNow > 0) {
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'payment_received',
+        actor: 'admin',
+        rental: {
+          id: rental.id,
+          reference: rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(rental),
+          customer: rental.customer_name,
+          start: rental.rental_start_date,
+          end: rental.rental_end_date,
+          total: rentalGrandTotal,
+          amountPaid: rentalGrandTotal,
+          remaining: 0,
+          paymentReceivedNow,
+          companyDiscount: 0,
+        },
+      });
+    }
     
     // Force a refresh of all data
     await loadRentalData(true);
@@ -12903,6 +12925,8 @@ useEffect(() => {
     finishRentalSteps.endOdometerComplete &&
     finishRentalSteps.endFuelComplete &&
     !isFinishWorkflowSoftLocked;
+  const completedVehicleMediaCount = closingMedia.length;
+  const hasCompletedVehicleMedia = completedVehicleMediaCount > 0;
   const lightReadyToStartCardsByKey = {
     customer_verification: {
       key: 'customer_verification',
@@ -13579,18 +13603,20 @@ useEffect(() => {
                           {step.extra}
                         </p>
                       ) : null}
-                      <button
-                        type="button"
-                        onClick={step.onAction}
-                        disabled={isFinishWorkflowSoftLocked}
-                        className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
-                          isFinishWorkflowSoftLocked
-                            ? 'cursor-not-allowed bg-slate-200 text-slate-500'
-                            : 'bg-violet-600 text-white'
-                        }`}
-                      >
-                        {step.actionLabel}
-                      </button>
+                      {!step.complete && (
+                        <button
+                          type="button"
+                          onClick={step.onAction}
+                          disabled={isFinishWorkflowSoftLocked}
+                          className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
+                            isFinishWorkflowSoftLocked
+                              ? 'cursor-not-allowed bg-slate-200 text-slate-500'
+                              : 'bg-violet-600 text-white'
+                          }`}
+                        >
+                          {step.actionLabel}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -16084,18 +16110,30 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)] sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <h3 className="text-base font-semibold text-slate-900">{tr('Vehicle Media', 'Médias véhicule')}</h3>
-                <p className="mt-1 text-sm text-slate-500">
-                  {tr('Add extra photos or videos after the rental is completed. They will appear in the vehicle media area below.', 'Ajoutez des photos ou vidéos supplémentaires après la fin de la location. Elles apparaîtront dans la zone médias véhicule ci-dessous.')}
+                <p className={`mt-1 text-sm ${isLightRentalDetailsMode && hasCompletedVehicleMedia ? 'text-emerald-700' : 'text-slate-500'}`}>
+                  {isLightRentalDetailsMode && hasCompletedVehicleMedia
+                    ? tr('Vehicle media saved successfully. It appears in the media area below.', 'Les médias du véhicule ont été enregistrés avec succès. Ils apparaissent dans la zone ci-dessous.')
+                    : tr('Add extra photos or videos after the rental is completed. They will appear in the vehicle media area below.', 'Ajoutez des photos ou vidéos supplémentaires après la fin de la location. Elles apparaîtront dans la zone médias véhicule ci-dessous.')}
                 </p>
               </div>
-              <Button
-                type="button"
-                onClick={handleOpenVehicleMediaModal}
-                className="rounded-xl bg-violet-700 text-white hover:bg-violet-800"
-              >
-                <Camera className="mr-2 h-4 w-4" />
-                {tr('Add Vehicle Media', 'Ajouter des médias véhicule')}
-              </Button>
+              {isLightRentalDetailsMode && hasCompletedVehicleMedia ? (
+                <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+                  <CheckCircle className="h-4 w-4" />
+                  {tr('Done', 'Terminé')}
+                  <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-700 shadow-sm">
+                    {completedVehicleMediaCount}
+                  </span>
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  onClick={handleOpenVehicleMediaModal}
+                  className="rounded-xl bg-violet-700 text-white hover:bg-violet-800"
+                >
+                  <Camera className="mr-2 h-4 w-4" />
+                  {tr('Add Vehicle Media', 'Ajouter des médias véhicule')}
+                </Button>
+              )}
             </div>
           )}
           <RentalVideos 
