@@ -251,7 +251,9 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
     setSelectedExpenseLabels([]);
     setNewExpenseLabel('');
     setShowExpenseNote(false);
-    setExpenseSaveFeedback(null);
+    if (options.clearExpenseFeedback !== false) {
+      setExpenseSaveFeedback(null);
+    }
   };
 
   useEffect(() => {
@@ -520,6 +522,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
             },
             userProfile
           );
+          resetComposerForm('expense', adminRecipients, { clearExpenseFeedback: false });
           setExpenseSaveFeedback({
             status: 'success',
             title: tr('Expense updated.', 'Dépense mise à jour.'),
@@ -568,14 +571,17 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
           },
           userProfile
         );
+        const savedLabel = selectedExpenseLabels[0] || tr('Expense', 'Dépense');
+        const savedAmount = Number(form.amount || 0);
+        resetComposerForm('expense', adminRecipients, { clearExpenseFeedback: false });
         setExpenseSaveFeedback({
           status: 'success',
           title: tr('Expense saved.', 'Dépense enregistrée.'),
           message: tr('Staff can now find it in purchase expenses and finance history.', "L'équipe peut maintenant la retrouver dans les dépenses d'achat et l'historique financier."),
-          label: selectedExpenseLabels[0] || tr('Expense', 'Dépense'),
-          amount: Number(form.amount || 0),
+          label: savedLabel,
+          amount: savedAmount,
         });
-        resetComposerForm('expense');
+        toast.success(tr('Expense saved.', 'Dépense enregistrée.'));
         setComposerMode('expense');
       } else {
         await receiveFundsService.recordEntry(

@@ -1512,7 +1512,7 @@ const DashboardReceiveFundsDrawer = ({
     ? EXPENSE_SAVE_NOTICE_STYLES[expenseSaveFeedback.status] || EXPENSE_SAVE_NOTICE_STYLES.success
     : null;
 
-  const resetDrawerForm = (mode = composerMode, recipients = adminRecipients) => {
+  const resetDrawerForm = (mode = composerMode, recipients = adminRecipients, options = {}) => {
     setForm({
       method: 'cash',
       amount: '',
@@ -1527,7 +1527,9 @@ const DashboardReceiveFundsDrawer = ({
     setSelectedExpenseLabels([]);
     setNewExpenseLabel('');
     setShowExpenseNote(false);
-    setExpenseSaveFeedback(null);
+    if (options.clearExpenseFeedback !== false) {
+      setExpenseSaveFeedback(null);
+    }
   };
 
   const handleReceiptImport = (event) => {
@@ -1729,14 +1731,17 @@ const DashboardReceiveFundsDrawer = ({
           },
           userProfile
         );
+        const savedLabel = selectedExpenseLabels[0] || tr('Expense', 'Dépense');
+        const savedAmount = Number(form.amount || 0);
+        resetDrawerForm('expense', adminRecipients, { clearExpenseFeedback: false });
         setExpenseSaveFeedback({
           status: 'success',
           title: tr('Expense saved.', 'Dépense enregistrée.'),
           message: tr('Staff can now find it in purchase expenses and finance history.', "L'équipe peut maintenant la retrouver dans les dépenses d'achat et l'historique financier."),
-          label: selectedExpenseLabels[0] || tr('Expense', 'Dépense'),
-          amount: Number(form.amount || 0),
+          label: savedLabel,
+          amount: savedAmount,
         });
-        resetDrawerForm('expense');
+        toast.success(tr('Expense saved.', 'Dépense enregistrée.'));
         setComposerMode('expense');
       } else {
         await receiveFundsService.recordEntry(
@@ -2535,14 +2540,11 @@ const AdminDashboard = () => {
   const handleRecordFundsSaved = useCallback(async () => {
     setRecordFundsRefreshing(true);
     try {
-      await Promise.all([
-        fetchData(),
-        fetchRevenueData(),
-      ]);
+      await fetchData();
     } finally {
       setRecordFundsRefreshing(false);
     }
-  }, []);
+  }, [fetchData]);
 
   const applyDashboardCoreData = useCallback((coreData) => {
     if (!coreData) return;
