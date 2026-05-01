@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CalendarDays, ClipboardList, Loader2, Pencil, Plus, Receipt, Tag, User } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { CalendarDays, ClipboardList, Loader2, Pencil, Plus, Receipt, Tag, Trash2, User } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { receiveFundsService } from '../../services/receiveFundsService';
 import { getStaffDirectory } from '../../services/UserService';
-import { canRecordReceiveFunds } from '../../utils/permissionHelpers';
+import { canDeleteFinanceRecords, canRecordReceiveFunds } from '../../utils/permissionHelpers';
 import { buildStaffDisplayMap, buildStaffDisplayName } from '../../utils/receiveFundsUi';
 import i18n from '../../i18n';
 
@@ -35,9 +36,11 @@ const isEmbeddableImage = (url) =>
 const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense, onEditExpense }) => {
   const { userProfile } = useAuth();
   const canRecord = canRecordReceiveFunds(userProfile);
+  const canDelete = canDeleteFinanceRecords(userProfile);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [entries, setEntries] = useState([]);
+  const [deletingId, setDeletingId] = useState(null);
   const [receiptPreview, setReceiptPreview] = useState(null);
   const [staffDisplayMap, setStaffDisplayMap] = useState({});
 
@@ -62,9 +65,9 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense, onEditExp
       try {
         setLoading(true);
         setError('');
-        const payload = await receiveFundsService.listEntries(filters, userProfile);
+        const payload = await receiveFundsService.listExpenses(filters, userProfile);
         if (!isActive) return;
-        setEntries((payload?.entries || []).filter((entry) => entry.entryType === 'expense'));
+        setEntries(payload?.entries || []);
       } catch (loadError) {
         console.error('Failed to load finance expenses:', loadError);
         if (!isActive) return;
@@ -94,6 +97,33 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense, onEditExp
       (recordedById && currentUserId && recordedById === currentUserId ? buildStaffDisplayName(userProfile, '') : '') ||
       tr('Team', 'Équipe')
     );
+  };
+
+  const handleDeleteExpense = async (entry) => {
+    if (!canDelete || !entry?.id) {
+      toast.error(tr('Only the owner can delete purchase expenses.', 'Seul le propriétaire peut supprimer les dépenses d’achat.'));
+      return;
+    }
+
+    const confirmed = window.confirm(
+      tr(
+        `Delete this purchase expense for ${formatMoney(entry.amount)}? This cannot be undone.`,
+        `Supprimer cette dépense d’achat de ${formatMoney(entry.amount)} ? Cette action est définitive.`
+      )
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingId(entry.id);
+      await receiveFundsService.deleteExpense(entry.id, userProfile);
+      setEntries((current) => current.filter((item) => item.id !== entry.id));
+      toast.success(tr('Purchase expense deleted.', 'Dépense d’achat supprimée.'));
+    } catch (deleteError) {
+      console.error('Failed to delete purchase expense:', deleteError);
+      toast.error(deleteError?.message || tr('Could not delete this purchase expense.', 'Impossible de supprimer cette dépense d’achat.'));
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const summary = useMemo(() => {
@@ -200,6 +230,17 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense, onEditExp
                         >
                           <Pencil className="h-3.5 w-3.5" />
                           {tr('Edit', 'Modifier')}
+                        </button>
+                      ) : null}
+                      {canDelete && entry.status === 'active' ? (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteExpense(entry)}
+                          disabled={deletingId === entry.id}
+                          className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {deletingId === entry.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                          {tr('Delete', 'Supprimer')}
                         </button>
                       ) : null}
                     </div>

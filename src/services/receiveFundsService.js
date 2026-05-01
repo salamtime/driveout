@@ -2,6 +2,7 @@ import { supabase } from '../lib/supabase';
 import { financeApiV2 } from './financeApiV2';
 import { getScopedOrganizationId } from './OrganizationService';
 import { buildExpenseDescription, buildExpenseNote, parseExpenseNote } from '../utils/expenseLabels';
+import { isBusinessOwnerAccountType, isPlatformOwnerEmail } from '../utils/accountType';
 
 const RECEIVE_FUNDS_TABLE = 'app_4c3a7a6153_receive_funds_entries';
 const FINANCE_EXPENSES_TABLE = 'finance_expenses';
@@ -72,6 +73,25 @@ const buildWorkspaceId = (profile, organizationId) =>
       organizationId ||
       ''
   ).trim() || null;
+
+const assertOwnerDeleteAccess = (profile) => {
+  const role = String(profile?.role || '').toLowerCase();
+  const accountType = String(profile?.accountType || profile?.account_type || '').toLowerCase();
+  const organizationRole = String(profile?.organizationRole || profile?.organization_role || '').toLowerCase();
+  const email = String(profile?.email || '').toLowerCase();
+  const isOwner =
+    role === 'owner' ||
+    role === 'business_owner' ||
+    organizationRole === 'org_owner' ||
+    organizationRole === 'owner' ||
+    accountType === 'owner' ||
+    isBusinessOwnerAccountType(accountType) ||
+    isPlatformOwnerEmail(email);
+
+  if (!isOwner) {
+    throw new Error('Only the owner can delete finance records.');
+  }
+};
 
 const mapReceiveFundsRow = (row) => ({
   id: row.id,
@@ -270,68 +290,71 @@ class ReceiveFundsService {
   async listEntries(filters, userProfile) {
     const tableReady = await this.checkTableExists();
     const organizationId = getScopedOrganizationId(userProfile);
-    const expensesTableReady = await this.checkExpensesTableExists();
 
-    const [fundsResult, expensesResult] = await Promise.all([
-      (async () => {
-        if (!tableReady) return [];
-        let query = supabase
-          .from(RECEIVE_FUNDS_TABLE)
-          .select('*')
-          .gte('received_date', filters.startDate)
-          .lte('received_date', filters.endDate)
-          .order('received_date', { ascending: false })
-          .order('created_at', { ascending: false });
+    if (!tableReady) {
+      return { tableReady: false, entries: [] };
+    }
 
-        if (organizationId) {
-          query = query.eq('organization_id', organizationId);
-        }
+    let query = supabase
+      .from(RECEIVE_FUNDS_TABLE)
+      .select('*')
+      .gte('received_date', filters.startDate)
+      .lte('received_date', filters.endDate)
+      .order('received_date', { ascending: false })
+      .order('created_at', { ascending: false });
 
-        const { data, error } = await query;
-        if (error) throw error;
-        return (data || []).map(mapReceiveFundsRow);
-      })(),
-      (async () => {
-        if (!expensesTableReady) return [];
-        let query = supabase
-          .from(FINANCE_EXPENSES_TABLE)
-          .select('*')
-          .eq('subcategory', 'purchase_expense')
-          .gte('expense_date', filters.startDate)
-          .lte('expense_date', filters.endDate)
-          .order('expense_date', { ascending: false })
-          .order('created_at', { ascending: false });
+    if (organizationId) {
+      query = query.eq('organization_id', organizationId);
+    }
 
-        if (organizationId) {
-          query = query.eq('organization_id', organizationId);
-        }
+    const { data, error } = await query;
+    if (error) throw error;
 
-        const { data, error } = await query;
-        if (error) {
-          const fallbackQuery = supabase
-            .from(FINANCE_EXPENSES_TABLE)
-            .select('*')
-            .eq('subcategory', 'purchase_expense')
-            .gte('expense_date', filters.startDate)
-            .lte('expense_date', filters.endDate)
-            .order('expense_date', { ascending: false })
-            .order('created_at', { ascending: false });
-          const fallback = await fallbackQuery;
-          if (fallback.error) throw fallback.error;
-          return (fallback.data || []).map(mapExpenseRow);
-        }
-
-        return (data || []).map(mapExpenseRow);
-      })(),
-    ]);
-
-    const entries = [...fundsResult, ...expensesResult].sort(
+    const entries = (data || []).map(mapReceiveFundsRow).sort(
       (left, right) =>
         new Date(right.createdAt || right.receivedDate || 0).getTime() -
         new Date(left.createdAt || left.receivedDate || 0).getTime()
     );
 
-    return { tableReady: tableReady || expensesTableReady, entries };
+    return { tableReady, entries };
+  }
+
+  async listExpenses(filters, userProfile) {
+    const tableReady = await this.checkExpensesTableExists();
+    const organizationId = getScopedOrganizationId(userProfile);
+
+    if (!tableReady) {
+      return { tableReady: false, entries: [] };
+    }
+
+    let query = supabase
+      .from(FINANCE_EXPENSES_TABLE)
+      .select('*')
+      .eq('subcategory', 'purchase_expense')
+      .gte('expense_date', filters.startDate)
+      .lte('expense_date', filters.endDate)
+      .order('expense_date', { ascending: false })
+      .order('created_at', { ascending: false });
+
+    if (organizationId) {
+      query = query.eq('organization_id', organizationId);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      const fallback = await supabase
+        .from(FINANCE_EXPENSES_TABLE)
+        .select('*')
+        .eq('subcategory', 'purchase_expense')
+        .gte('expense_date', filters.startDate)
+        .lte('expense_date', filters.endDate)
+        .order('expense_date', { ascending: false })
+        .order('created_at', { ascending: false });
+      if (fallback.error) throw fallback.error;
+      return { tableReady, entries: (fallback.data || []).map(mapExpenseRow) };
+    }
+
+    return { tableReady, entries: (data || []).map(mapExpenseRow) };
   }
 
   async getDashboardData(filters, userProfile) {
@@ -458,6 +481,26 @@ class ReceiveFundsService {
     }
 
     return data;
+  }
+
+  async deleteEntry(entryId, userProfile) {
+    assertOwnerDeleteAccess(userProfile);
+
+    const tableReady = await this.checkTableExists();
+    if (!tableReady) {
+      throw new Error('Receive Funds table is not ready yet. Please run the SQL migration first.');
+    }
+
+    const { error } = await supabase
+      .from(RECEIVE_FUNDS_TABLE)
+      .delete()
+      .eq('id', entryId);
+
+    if (error) {
+      throw error;
+    }
+
+    return true;
   }
 
   async updateEntry(entryId, payload, userProfile) {
@@ -611,6 +654,27 @@ class ReceiveFundsService {
     }
 
     return data;
+  }
+
+  async deleteExpense(entryId, userProfile) {
+    assertOwnerDeleteAccess(userProfile);
+
+    const tableReady = await this.checkExpensesTableExists();
+    if (!tableReady) {
+      throw new Error('Finance expenses table is not ready yet. Please run the SQL migration first.');
+    }
+
+    const expenseId = normalizeExpenseId(entryId);
+    const { error } = await supabase
+      .from(FINANCE_EXPENSES_TABLE)
+      .delete()
+      .eq('id', expenseId);
+
+    if (error) {
+      throw error;
+    }
+
+    return true;
   }
 }
 

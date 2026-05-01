@@ -293,6 +293,23 @@ export const canReviewReceiveFunds = (user) => {
   );
 };
 
+export const canDeleteFinanceRecords = (user) => {
+  const userProfile = user || getCurrentUser();
+  const role = String(userProfile?.role || '').toLowerCase();
+  const email = String(userProfile?.email || '').toLowerCase();
+  const accountType = String(userProfile?.accountType || userProfile?.account_type || '').toLowerCase();
+  const organizationRole = String(userProfile?.organizationRole || userProfile?.organization_role || '').toLowerCase();
+
+  return (
+    role === 'owner' ||
+    role === 'business_owner' ||
+    organizationRole === 'org_owner' ||
+    organizationRole === 'owner' ||
+    isBusinessOwnerAccountType(accountType) ||
+    isPlatformOwnerEmail(email)
+  );
+};
+
 export const canAccessOwnerBankMethods = (user) => {
   const userProfile = user || getCurrentUser();
   return canRecordReceiveFunds(userProfile);

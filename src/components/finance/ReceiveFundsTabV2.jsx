@@ -14,10 +14,12 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Trash2,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   canAccessOwnerBankMethods,
+  canDeleteFinanceRecords,
   canRecordReceiveFunds,
   canReviewReceiveFunds,
   canUseBankDepositMethod,
@@ -171,6 +173,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [reversingId, setReversingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
   const [error, setError] = useState('');
   const [expandedEntryId, setExpandedEntryId] = useState(null);
   const [dashboard, setDashboard] = useState({
@@ -220,6 +223,7 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
 
   const canRecord = canRecordReceiveFunds(userProfile);
   const canReview = canReviewReceiveFunds(userProfile);
+  const canDelete = canDeleteFinanceRecords(userProfile);
   const canUseOwnerBankMethods = canAccessOwnerBankMethods(userProfile);
   const canUseBankDeposit = canUseBankDepositMethod(userProfile);
   const selectedMethodOption = METHOD_OPTIONS.find((option) => option.key === form.method) || METHOD_OPTIONS[0];
@@ -710,6 +714,33 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
     }
   };
 
+  const handleDeleteEntry = async (entry) => {
+    if (!canDelete || !entry?.id) {
+      toast.error(tr('Only the owner can delete receive funds records.', 'Seul le propriétaire peut supprimer les fonds reçus.'));
+      return;
+    }
+
+    const confirmed = window.confirm(
+      tr(
+        `Delete this receive funds record for ${formatMoney(entry.amount)}? This cannot be undone.`,
+        `Supprimer ce fonds reçu de ${formatMoney(entry.amount)} ? Cette action est définitive.`
+      )
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingId(entry.id);
+      await receiveFundsService.deleteEntry(entry.id, userProfile);
+      toast.success(tr('Receive funds record deleted.', 'Fonds reçu supprimé.'));
+      await loadDashboard();
+    } catch (deleteError) {
+      console.error('Failed to delete receive funds entry:', deleteError);
+      toast.error(deleteError?.message || tr('Could not delete this receive funds record.', 'Impossible de supprimer ce fonds reçu.'));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const statusStyle = STATUS_STYLES[dashboard.summary.reconciliationStatus] || STATUS_STYLES.idle;
   const differencePrefix = dashboard.summary.variance > 0 ? '+' : dashboard.summary.variance < 0 ? '−' : '';
   const selectedDateLabel = useMemo(() => {
@@ -792,17 +823,6 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
             >
               <Plus className="h-4 w-4" />
               {tr('Record Funds', 'Enregistrer des fonds')}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void openExpenseMode(true);
-              }}
-              disabled={!canRecord}
-              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Plus className="h-4 w-4" />
-              {tr('Add Expense', 'Ajouter une dépense')}
             </button>
           </div>
         </div>
@@ -993,6 +1013,17 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                           {reversingId === entry.id ? <Loader2 className="h-4 w-4 animate-spin" /> : tr('Reverse', 'Annuler')}
                         </button>
                       ) : null}
+                      {canDelete && entry.status === 'active' && entry.entryType !== 'expense' ? (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteEntry(entry)}
+                          disabled={deletingId === entry.id}
+                          className="inline-flex items-center justify-center gap-2 rounded-full border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {deletingId === entry.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                          {tr('Delete', 'Supprimer')}
+                        </button>
+                      ) : null}
                     </div>
                   </div>
 
@@ -1092,41 +1123,6 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                   </button>
                 </div>
 
-                <div className="mt-4 rounded-[22px] border border-slate-200 bg-slate-50 p-1.5">
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (isEditing) return;
-                        setComposerMode('funds');
-                        resetComposerForm('funds');
-                      }}
-                      disabled={isEditing}
-                      className={`rounded-[18px] px-4 py-3 text-left transition ${
-                        !isExpenseMode
-                          ? 'bg-white text-violet-700 shadow-sm'
-                          : 'text-slate-600 hover:bg-white/70'
-                      } ${isEditing ? 'cursor-not-allowed opacity-60' : ''}`}
-                    >
-                      <p className="text-sm font-semibold">{tr('Record Funds', 'Enregistrer des fonds')}</p>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (isEditing) return;
-                        void openExpenseMode();
-                      }}
-                      disabled={isEditing}
-                      className={`rounded-[18px] px-4 py-3 text-left transition ${
-                        isExpenseMode
-                          ? 'bg-white text-slate-800 shadow-sm'
-                          : 'text-slate-600 hover:bg-white/70'
-                      } ${isEditing ? 'cursor-not-allowed opacity-60' : ''}`}
-                    >
-                      <p className="text-sm font-semibold">{tr('Add Expense', 'Ajouter une dépense')}</p>
-                    </button>
-                  </div>
-                </div>
               </div>
 
               <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5 pb-32">
