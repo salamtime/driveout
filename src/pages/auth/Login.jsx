@@ -111,7 +111,7 @@ const Login = () => {
 
   // Redirect if user is already logged in and auth is fully loaded
   useEffect(() => {
-    if (initialized && user && !authLoading) {
+    if (initialized && session?.user && !authLoading) {
       const normalizedRole = String(user?.role || '').trim().toLowerCase();
       const accountType = String(
         user?.accountType ||
@@ -154,7 +154,7 @@ const Login = () => {
       }
       navigate(finalRedirectTo, { replace: true });
     }
-  }, [authLoading, formData.email, host.kind, initialized, location.state, navigate, redirectQuery, session?.user?.app_metadata?.certification_request_status, session?.user?.app_metadata?.verification_status, session?.user?.user_metadata?.certification_request_status, session?.user?.user_metadata?.verification_status, user]);
+  }, [authLoading, formData.email, host.kind, initialized, location.state, navigate, redirectQuery, session?.user, session?.user?.app_metadata?.certification_request_status, session?.user?.app_metadata?.verification_status, session?.user?.user_metadata?.certification_request_status, session?.user?.user_metadata?.verification_status, user]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;

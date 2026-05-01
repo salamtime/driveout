@@ -488,9 +488,9 @@ const GlobalStatePersistence = () => {
 
 const AppGlobalMessageLauncher = () => {
   const location = useLocation();
-  const { user, userProfile } = useAuth();
+  const { user, userProfile, session } = useAuth();
 
-  if (!user) {
+  if (!user || !session?.access_token || location.pathname === '/login' || location.pathname === '/register' || location.pathname === '/reset-password') {
     return null;
   }
 
