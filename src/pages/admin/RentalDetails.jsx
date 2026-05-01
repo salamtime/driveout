@@ -8255,7 +8255,7 @@ const handleFuelChargeToggle = async (enabled) => {
       );
       const currentRemainingAmount = Math.max(0, Number(effectiveCompletionRental?.remaining_amount || 0) || 0);
       if (currentPaymentStatus !== 'paid' && currentRemainingAmount > 0) {
-        handlePayDueBalance();
+        openDueBalancePaymentEditor();
         toast.error(
           tr(
             'Payment required before closing. Record the due balance first.',
@@ -10696,7 +10696,7 @@ useEffect(() => {
       );
       const currentRemainingAmount = Math.max(0, Number(effectiveCompletionRental?.remaining_amount || 0) || 0);
       if (currentPaymentStatus !== 'paid' && currentRemainingAmount > 0) {
-        handlePayDueBalance();
+        openDueBalancePaymentEditor();
         toast.error(
           tr(
             'Payment required before closing. Record the due balance first.',
@@ -11476,7 +11476,7 @@ useEffect(() => {
     setIsEditingAmountDue(true);
   };
 
-  const handlePayDueBalance = () => {
+  const openDueBalancePaymentEditor = () => {
     const currentAmountDue = Math.max(
       0,
       Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
@@ -11659,12 +11659,13 @@ useEffect(() => {
   }
 };
 
-  const handleSaveAmountDue = async () => {
-    if (!manualAmountDue || Number(manualAmountDue) < 0) {
-      toast.error(tr('Please enter a valid amount due.', 'Veuillez saisir un montant restant dû valide.'));
-      return;
-    }
-
+  const saveAmountDueResolution = async ({
+    nextAmountDue,
+    paymentReceivedNow,
+    companyDiscount,
+    reason,
+    isShortcutPayment = false,
+  }) => {
     const actingUser = resolvedCurrentUser || currentUser || userProfile;
     if (!canEditRentalPrice(actingUser)) {
       toast.error(
@@ -11673,23 +11674,20 @@ useEffect(() => {
           "Vous n'avez pas l'autorisation de modifier le montant restant dû."
         )
       );
-      return;
+      return false;
     }
 
     setIsSavingAmountDue(true);
     try {
-      const nextAmountDue = Math.max(0, Number(manualAmountDue) || 0);
       const previousAmountDue = Math.max(
         0,
         Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
       );
-      const paymentReceivedNow = Math.max(0, Number(amountDuePaymentReceivedNow) || 0);
-      const companyDiscount = Math.max(0, Number(amountDueCompanyDiscount) || 0);
       const depositPaid = Math.max(0, parseFloat(rental?.deposit_amount || 0) || 0);
       const updatedDepositPaid = depositPaid + paymentReceivedNow;
       const nextPaymentStatus = nextAmountDue <= 0 ? 'paid' : (depositPaid > 0 ? 'partial' : 'unpaid');
       const overrideMeta = buildAmountDueEditMeta({
-        note: amountDueOverrideReason || '',
+        note: reason || '',
         currentUser: actingUser,
         previousAmount: previousAmountDue,
         newAmount: nextAmountDue,
@@ -11795,10 +11793,11 @@ useEffect(() => {
       setAmountDueCompanyDiscount('');
       setAmountDueOverrideReason('');
       toast.success(
-        isPayingDueBalance
+        isShortcutPayment || isPayingDueBalance
           ? tr('Due balance paid successfully.', 'Solde restant dû payé avec succès.')
           : tr('Amount due updated successfully.', 'Montant restant dû mis à jour avec succès.')
       );
+      return true;
     } catch (error) {
       console.error('❌ Error saving amount due:', error);
       toast.error(
@@ -11807,9 +11806,48 @@ useEffect(() => {
           `Impossible d'enregistrer le montant restant dû. Erreur : ${error.message}`
         )
       );
+      return false;
     } finally {
       setIsSavingAmountDue(false);
     }
+  };
+
+  const handlePayDueBalance = async () => {
+    const currentAmountDue = Math.max(
+      0,
+      Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
+    );
+
+    if (currentAmountDue <= 0) {
+      toast.success(tr('No due balance remains on this contract.', 'Aucun solde restant dû sur ce contrat.'));
+      return;
+    }
+
+    await saveAmountDueResolution({
+      nextAmountDue: 0,
+      paymentReceivedNow: currentAmountDue,
+      companyDiscount: 0,
+      reason: tr(
+        'Collected the full remaining balance before closing the rental.',
+        'Solde restant encaissé en totalité avant la clôture de la location.'
+      ),
+      isShortcutPayment: true,
+    });
+  };
+
+  const handleSaveAmountDue = async () => {
+    if (!manualAmountDue || Number(manualAmountDue) < 0) {
+      toast.error(tr('Please enter a valid amount due.', 'Veuillez saisir un montant restant dû valide.'));
+      return;
+    }
+
+    await saveAmountDueResolution({
+      nextAmountDue: Math.max(0, Number(manualAmountDue) || 0),
+      paymentReceivedNow: Math.max(0, Number(amountDuePaymentReceivedNow) || 0),
+      companyDiscount: Math.max(0, Number(amountDueCompanyDiscount) || 0),
+      reason: amountDueOverrideReason || '',
+      isShortcutPayment: false,
+    });
   };
 
   useEffect(() => {
@@ -16825,9 +16863,16 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     onClick={handlePayDueBalance}
                     size="sm"
                     className={PRIMARY_ACTION_BUTTON_CLASS}
+                    disabled={isSavingAmountDue}
                   >
-                    <CreditCard className="mr-2 h-4 w-4" />
-                    {tr('Pay Due Balance', 'Payer le solde restant dû')} · {formatCurrency(currentAmountDueForEdit)} MAD
+                    {isSavingAmountDue ? (
+                      <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    ) : (
+                      <CreditCard className="mr-2 h-4 w-4" />
+                    )}
+                    {isSavingAmountDue
+                      ? tr('Paying Due Balance...', 'Paiement du solde...')
+                      : `${tr('Pay Due Balance', 'Payer le solde restant dû')} · ${formatCurrency(currentAmountDueForEdit)} MAD`}
                   </Button>
                 )}
                 <Button
