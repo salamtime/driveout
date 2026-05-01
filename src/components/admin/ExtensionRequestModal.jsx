@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Alert, AlertDescription } from '../ui/alert';
 import { AlertTriangle, Clock, CheckCircle, Check, Calendar, Package, Calculator, ChevronUp, ChevronDown } from 'lucide-react';
@@ -512,16 +512,21 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open) onClose?.();
+      }}
+    >
       <DialogContent className="max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-0 shadow-xl sm:max-w-2xl">
         <DialogHeader className="border-b border-slate-200 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 px-5 py-5 sm:px-6">
           <DialogTitle className="flex items-center gap-2 text-lg font-semibold text-slate-900 sm:text-xl">
             <Clock className="h-5 w-5 text-violet-600" />
             {isEditing ? 'Edit Extension' : 'Request Extension'}
           </DialogTitle>
-          <p className="mt-1 text-sm font-medium text-slate-500">
+          <DialogDescription className="mt-1 text-sm font-medium text-slate-500">
             {isEditing ? 'Adjust the saved extension without leaving rental details.' : 'Keep the extension flow quick and easy for the team.'}
-          </p>
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5 px-5 py-5 sm:px-6">

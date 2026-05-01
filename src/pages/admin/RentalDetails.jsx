@@ -9834,12 +9834,20 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
     }
   }, [dynamicPaymentState.isPaid, rental?.id, rental?.signature_url]);
 
-  // Auto-close extension modal when closing video is uploaded
+  const previousClosingMediaCountRef = useRef(closingMedia.length);
+
+  // Auto-close extension modal only when new closing media is uploaded during the modal session.
+  // Existing return media should not block staff from adding a late extension in the finish flow.
   useEffect(() => {
-    if (closingMedia.length > 0 && extensionModalOpen) {
+    const previousCount = previousClosingMediaCountRef.current;
+    const hasNewClosingMedia = closingMedia.length > previousCount;
+
+    if (hasNewClosingMedia && extensionModalOpen) {
       setExtensionModalOpen(false);
     }
-  }, [closingMedia, extensionModalOpen]);
+
+    previousClosingMediaCountRef.current = closingMedia.length;
+  }, [closingMedia.length, extensionModalOpen]);
   // Update finish steps when closing video is uploaded
   useEffect(() => {
     if (!finishRentalSteps.showWorkflow) return;
