@@ -195,6 +195,20 @@ export const AuthProvider = ({ children }) => {
   const recordedAuthActivityRef = useRef(new Set());
   const syncedCustomerAccountsRef = useRef(new Set());
 
+  const waitForActiveProfileLoad = useCallback(() => new Promise((resolve) => {
+    const startedAt = Date.now();
+    const wait = () => {
+      if (!isLoadingProfile.current || Date.now() - startedAt > 5000) {
+        resolve();
+        return;
+      }
+
+      window.setTimeout(wait, 50);
+    };
+
+    wait();
+  }), []);
+
   // Update refs whenever state changes
   useEffect(() => {
     sessionRef.current = session;
@@ -314,6 +328,7 @@ export const AuthProvider = ({ children }) => {
   const loadUserProfile = useCallback(async (authUser, session) => {
     // Prevent duplicate profile loads
     if (isLoadingProfile.current) {
+      await waitForActiveProfileLoad();
       return;
     }
 
@@ -630,7 +645,7 @@ export const AuthProvider = ({ children }) => {
       setInitialized(true);
       isLoadingProfile.current = false;
     }
-  }, []);
+  }, [waitForActiveProfileLoad]);
 
   const recordAuthActivity = useCallback(async (authUser, currentSession, actionType = 'user_login') => {
     if (!authUser?.id || !currentSession?.access_token) {
@@ -813,9 +828,14 @@ export const AuthProvider = ({ children }) => {
     setLoading(true);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (!error && data?.session) {
-      setSession(data.session);
-      await loadUserProfile(data.session.user, data.session);
-      void recordAuthActivity(data.session.user, data.session, 'user_login');
+      const hydratedUser = await applyPendingAccountIntent(data.session.user);
+      const hydratedSession = hydratedUser === data.session.user
+        ? data.session
+        : { ...data.session, user: hydratedUser };
+      setSession(hydratedSession);
+      void appWarmupService.warmCriticalModules();
+      await loadUserProfile(hydratedUser, hydratedSession);
+      void recordAuthActivity(hydratedUser, hydratedSession, 'user_login');
     }
     if (error) {
       setLoading(false);

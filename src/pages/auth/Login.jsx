@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { Eye, EyeOff, Lock, Mail, AlertCircle, CheckCircle, ShieldCheck, ArrowRight, ChevronLeft } from 'lucide-react';
@@ -7,7 +7,6 @@ import { hasBusinessOwnerRequest, isApprovedBusinessOwnerAccount, isPlatformOwne
 import { supabase } from '../../lib/supabase';
 import { requestPasswordResetEmail } from '../../services/emailApi';
 import { buildHostUrl, getHostContext } from '../../utils/hostContext';
-import AuthTransitionScreen from '../../components/auth/AuthTransitionScreen';
 
 const getSafeRedirectPath = (value = '') => {
   const normalized = String(value || '').trim();
@@ -48,6 +47,7 @@ const Login = () => {
   const tr = (en, fr) => (isFrench ? fr : en);
   const navigate = useNavigate();
   const location = useLocation();
+  const hasRedirectedRef = useRef(false);
   const host = getHostContext();
   const queryParams = new URLSearchParams(location.search);
   const redirectQuery = getSafeRedirectPath(queryParams.get('redirect'));
@@ -101,7 +101,8 @@ const Login = () => {
   const [resetEmail, setResetEmail] = useState('');
   const [resetSending, setResetSending] = useState(false);
   const [resetSuccess, setResetSuccess] = useState('');
-  const isTransitioning = !initialized || (authLoading && !!(user || session?.user));
+  const showInlineTransition = Boolean(session?.user) && (!initialized || authLoading);
+  const isBusy = authLoading || showInlineTransition;
   const marketplaceTenantNotice = tenantAccessNotice === 'marketplace-customer'
     ? tr(
         'This email signs in on Driveout marketplace, not inside the SaharaX private workspace. Continue below and we will take you to the right place.',
@@ -111,7 +112,8 @@ const Login = () => {
 
   // Redirect if user is already logged in and auth is fully loaded
   useEffect(() => {
-    if (initialized && session?.user && !authLoading) {
+    if (initialized && session?.user && !authLoading && !hasRedirectedRef.current) {
+      hasRedirectedRef.current = true;
       const normalizedRole = String(user?.role || '').trim().toLowerCase();
       const accountType = String(
         user?.accountType ||
@@ -155,6 +157,26 @@ const Login = () => {
       navigate(finalRedirectTo, { replace: true });
     }
   }, [authLoading, formData.email, host.kind, initialized, location.state, navigate, redirectQuery, session?.user, session?.user?.app_metadata?.certification_request_status, session?.user?.app_metadata?.verification_status, session?.user?.user_metadata?.certification_request_status, session?.user?.user_metadata?.verification_status, user]);
+
+  useEffect(() => {
+    const preloadDashboard = () => {
+      void import('../admin/Dashboard');
+    };
+
+    const currentParams = new URLSearchParams(location.search);
+    if (currentParams.has('code') || currentParams.has('token_hash')) {
+      preloadDashboard();
+      return undefined;
+    }
+
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      const preloadId = window.requestIdleCallback(preloadDashboard, { timeout: 1200 });
+      return () => window.cancelIdleCallback?.(preloadId);
+    }
+
+    const preloadId = window.setTimeout(preloadDashboard, 300);
+    return () => window.clearTimeout(preloadId);
+  }, [location.search]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -236,23 +258,6 @@ const Login = () => {
     }
   };
 
-  if (isTransitioning) {
-    return (
-      <AuthTransitionScreen
-        title={
-          !initialized
-            ? tr('Preparing secure access', 'Préparation de l’accès sécurisé')
-            : tr('Signing you in', 'Connexion en cours')
-        }
-        description={
-          !initialized
-            ? tr('We are preparing the SaharaX login experience.', "Nous préparons l'expérience de connexion SaharaX.")
-            : tr('Your account is ready. Taking you to the right workspace now.', 'Votre compte est prêt. Nous vous dirigeons vers le bon espace.')
-        }
-      />
-    );
-  }
-
   return (
     <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(139,92,246,0.18),_transparent_32%),radial-gradient(circle_at_bottom_right,_rgba(59,130,246,0.16),_transparent_30%),linear-gradient(180deg,_#f8f7ff_0%,_#eef2ff_100%)]">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl items-center px-4 py-8 sm:px-6 lg:px-8">
@@ -303,11 +308,32 @@ const Login = () => {
                 </p>
               </div>
 
+              {showInlineTransition && (
+                <div className="mb-6 rounded-2xl border border-violet-100 bg-violet-50/80 px-4 py-4 shadow-sm">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white shadow-inner shadow-violet-100">
+                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-violet-200 border-t-violet-600" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">
+                        {tr('Opening your workspace', 'Ouverture de votre espace')}
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        {tr(
+                          'One moment while we confirm your access and take you straight to the dashboard.',
+                          'Un instant pendant que nous confirmons votre accès et vous amenons directement au tableau de bord.'
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-4">
                 <button
                   type="button"
                   onClick={handleGoogleContinue}
-                  disabled={authLoading}
+                  disabled={isBusy}
                   className="inline-flex w-full items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:bg-violet-50/60 disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   <GoogleMark />
@@ -336,7 +362,11 @@ const Login = () => {
                       id="email"
                       name="email"
                       type="email"
+                      autoComplete="username"
+                      inputMode="email"
+                      autoCapitalize="none"
                       required
+                      disabled={isBusy}
                       value={formData.email}
                       onChange={handleChange}
                       className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 py-3.5 pl-12 pr-4 text-slate-900 outline-none transition-all placeholder:text-slate-400 focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
@@ -359,6 +389,7 @@ const Login = () => {
                     type={showPassword ? 'text' : 'password'}
                     autoComplete="current-password"
                     required
+                    disabled={isBusy}
                     value={formData.password}
                       onChange={handleChange}
                       className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 py-3.5 pl-12 pr-14 text-slate-900 outline-none transition-all placeholder:text-slate-400 focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
@@ -389,13 +420,17 @@ const Login = () => {
                       <input
                         value={resetEmail}
                         onChange={(e) => setResetEmail(e.target.value)}
+                        autoComplete="email"
+                        inputMode="email"
+                        autoCapitalize="none"
+                        disabled={isBusy}
                         className="w-full flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
                         placeholder={tr('Email for reset link', 'E-mail pour le lien')}
                       />
                       <button
                         type="button"
                         onClick={handleSendReset}
-                        disabled={resetSending}
+                        disabled={resetSending || isBusy}
                         className="inline-flex items-center justify-center rounded-xl bg-violet-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-70"
                       >
                         {resetSending ? tr('Sending...', 'Envoi...') : tr('Send link', 'Envoyer')}
@@ -430,13 +465,15 @@ const Login = () => {
 
                 <button
                   type="submit"
-                  disabled={authLoading}
+                  disabled={isBusy}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-5 py-3.5 text-sm font-semibold text-white shadow-[0_16px_36px_rgba(79,70,229,0.24)] transition-all hover:from-violet-700 hover:to-indigo-800 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {authLoading ? (
+                  {isBusy ? (
                     <>
                       <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                      {tr('Signing in...', 'Connexion...')}
+                      {showInlineTransition
+                        ? tr('Opening workspace...', 'Ouverture de l’espace...')
+                        : tr('Signing in...', 'Connexion...')}
                     </>
                   ) : (
                     <>
@@ -450,7 +487,7 @@ const Login = () => {
                   <button
                     type="button"
                     onClick={handleForgotPassword}
-                    disabled={authLoading}
+                    disabled={isBusy}
                     className="text-sm font-medium text-violet-600 transition-colors hover:text-violet-700 disabled:text-violet-300"
                   >
                     {tr('Forgot your password?', 'Mot de passe oublié ?')}
