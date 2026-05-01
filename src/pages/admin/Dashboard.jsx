@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase.js';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, ArrowDownToLine, Activity, Fuel, WalletCards, ChevronDown, ClipboardList, RefreshCw, Download, FileText, Banknote, Landmark, Loader2, X, CheckCircle2 } from 'lucide-react';
+import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, ArrowDownToLine, Activity, Fuel, WalletCards, ChevronDown, ClipboardList, RefreshCw, Download, FileText, Banknote, Landmark, Loader2, X, CheckCircle2, Receipt, Tag } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
@@ -206,6 +206,17 @@ const formatDashboardDateTime = (value) => {
     hour: '2-digit',
     minute: '2-digit',
     hour12: true,
+  });
+};
+
+const formatDashboardDateOnly = (value) => {
+  if (!value) return tr('No date', 'Sans date');
+  const date = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return tr('No date', 'Sans date');
+  return date.toLocaleDateString(isFrenchLocale() ? 'fr-FR' : 'en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
   });
 };
 
@@ -2253,6 +2264,157 @@ const DashboardReceiveFundsDrawer = ({
   );
 };
 
+const DashboardMyPurchaseExpensesDrawer = ({
+  open,
+  onClose,
+  userProfile,
+}) => {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [entries, setEntries] = useState([]);
+
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadMyExpenses = async () => {
+      if (!open) return;
+      try {
+        setLoading(true);
+        setError('');
+        const payload = await receiveFundsService.listMyExpenses(userProfile);
+        if (!isActive) return;
+        setEntries(payload?.entries || []);
+      } catch (loadError) {
+        console.error('Failed to load my purchase expenses:', loadError);
+        if (!isActive) return;
+        setEntries([]);
+        setError(loadError?.message || tr('Failed to load your purchase expenses.', 'Impossible de charger vos dépenses d’achat.'));
+      } finally {
+        if (isActive) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadMyExpenses();
+    return () => {
+      isActive = false;
+    };
+  }, [open, userProfile]);
+
+  if (!open) return null;
+
+  const totalAmount = entries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+
+  return (
+    <div className="fixed inset-0 z-[90] flex justify-end">
+      <button
+        type="button"
+        aria-label={tr('Close My Purchase Expenses', 'Fermer mes dépenses d’achat')}
+        className="absolute inset-0 bg-slate-950/35 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
+
+      <aside className="relative flex h-full w-full max-w-[620px] flex-col border-l border-slate-200 bg-white shadow-[-24px_0_60px_rgba(15,23,42,0.16)]">
+        <div className="border-b border-slate-200 bg-white px-5 py-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">
+                {tr('My Purchase Expenses', 'Mes dépenses d’achat')}
+              </p>
+              <h3 className="mt-2 text-2xl font-bold tracking-[-0.04em] text-slate-950">
+                {tr('My total added expenses', 'Total de mes dépenses ajoutées')}: {formatCurrency(totalAmount)}
+              </h3>
+              <p className="mt-2 text-sm font-medium text-slate-500">
+                {tr(`${entries.length} expense rows submitted by you`, `${entries.length} lignes de dépense ajoutées par vous`)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:border-violet-200 hover:text-violet-700"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto bg-slate-50 px-5 py-5">
+          {loading ? (
+            <div className="rounded-2xl border border-slate-200 bg-white px-5 py-10 text-center text-sm text-slate-500">
+              <Loader2 className="mx-auto h-5 w-5 animate-spin text-violet-600" />
+            </div>
+          ) : error ? (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-6 text-sm text-rose-700">
+              {error}
+            </div>
+          ) : entries.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-10 text-center">
+              <p className="text-base font-semibold text-slate-900">{tr('No purchase expenses yet', 'Aucune dépense d’achat pour le moment')}</p>
+              <p className="mt-2 text-sm text-slate-500">{tr('Expenses you submit will appear here for your own record.', 'Les dépenses que vous ajoutez apparaîtront ici pour votre suivi.')}</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {entries.map((entry) => {
+                const firstLabel = Array.isArray(entry.labels) && entry.labels.length > 0
+                  ? entry.labels[0]
+                  : tr('Unlabeled', 'Sans label');
+
+                return (
+                  <article key={entry.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xl font-bold tracking-[-0.04em] text-slate-950">{formatCurrency(entry.amount)}</p>
+                        <p className="mt-1 text-sm font-medium text-slate-500">
+                          {formatDashboardDateOnly(entry.receivedDate)}
+                        </p>
+                      </div>
+                      <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+                        <Tag className="h-3.5 w-3.5" />
+                        {firstLabel}
+                      </span>
+                    </div>
+
+                    {entry.note ? (
+                      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                          {tr('Note', 'Note')}
+                        </p>
+                        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">{entry.note}</p>
+                      </div>
+                    ) : null}
+
+                    {entry.receiptImageUrl ? (
+                      <a
+                        href={entry.receiptImageUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-violet-200 hover:text-violet-700"
+                      >
+                        <Receipt className="h-3.5 w-3.5" />
+                        {tr('Open receipt', 'Ouvrir le reçu')}
+                      </a>
+                    ) : null}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+};
+
 const OperationsOverview = ({ cards, loading }) => {
   if (loading) {
     return (
@@ -2498,6 +2660,7 @@ const AdminDashboard = () => {
   const [taskStats, setTaskStats] = useState({ active: 0, my: 0, open: 0, done: 0 });
   const [recentBookingsCollapsed, setRecentBookingsCollapsed] = useState(true);
   const [showReceiveFundsDrawer, setShowReceiveFundsDrawer] = useState(false);
+  const [showMyPurchaseExpensesDrawer, setShowMyPurchaseExpensesDrawer] = useState(false);
   const [recordFundsRefreshing, setRecordFundsRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
@@ -3240,6 +3403,16 @@ const AdminDashboard = () => {
       onClick: () => {
         handleOpenRecordFunds();
       },
+    }, {
+      title: tr('My Purchase Expenses', 'Mes dépenses d’achat'),
+      href: '#',
+      description: tr('View only the purchase expenses you submitted.', 'Consultez uniquement les dépenses d’achat que vous avez ajoutées.'),
+      meta: tr('Personal expense record', 'Historique personnel des dépenses'),
+      icon: <ClipboardList className="h-5 w-5 text-rose-700" />,
+      iconTone: 'bg-rose-50',
+      onClick: () => {
+        setShowMyPurchaseExpensesDrawer(true);
+      },
     }] : []),
     { title: tr('Tours & Booking', 'Tours et réservations'), href: '/admin/tours', description: tr('Live tours and guest bookings.', 'Tours en direct et réservations clients.'), meta: `${tourSnapshot.active} ${tr('live', 'en direct')} • ${tourSnapshot.scheduled} ${tr('queued', 'en attente')}`, stat: `${stats.toursToday} ${tr('today', "aujourd'hui")}`, icon: <Compass className="h-5 w-5 text-violet-700" />, iconTone: 'bg-violet-50' },
     { title: tr('Team Tasks', 'Taches equipe'), href: '/admin/tasks', description: tr('Shared operations tasks.', 'Tâches opérationnelles partagées.'), meta: `${taskStats.my} ${tr('mine', 'a moi')} • ${taskStats.open} ${tr('open', 'ouvertes')}`, stat: `${taskStats.active} ${tr('active', 'actives')}`, icon: <ClipboardList className="h-5 w-5 text-violet-700" />, iconTone: 'bg-violet-50' },
@@ -3422,6 +3595,11 @@ const AdminDashboard = () => {
         open={showReceiveFundsDrawer}
         onClose={() => setShowReceiveFundsDrawer(false)}
         onRecorded={handleRecordFundsSaved}
+        userProfile={userProfile}
+      />
+      <DashboardMyPurchaseExpensesDrawer
+        open={showMyPurchaseExpensesDrawer}
+        onClose={() => setShowMyPurchaseExpensesDrawer(false)}
         userProfile={userProfile}
       />
     </div>

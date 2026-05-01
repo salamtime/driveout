@@ -357,6 +357,39 @@ class ReceiveFundsService {
     return { tableReady, entries: (data || []).map(mapExpenseRow) };
   }
 
+  async listMyExpenses(userProfile) {
+    const tableReady = await this.checkExpensesTableExists();
+    const organizationId = getScopedOrganizationId(userProfile);
+    const userId = String(userProfile?.id || '').trim();
+
+    if (!tableReady) {
+      return { tableReady: false, entries: [] };
+    }
+
+    if (!userId) {
+      return { tableReady, entries: [] };
+    }
+
+    let query = supabase
+      .from(FINANCE_EXPENSES_TABLE)
+      .select('*')
+      .eq('subcategory', 'purchase_expense')
+      .eq('created_by', userId)
+      .order('expense_date', { ascending: false })
+      .order('created_at', { ascending: false });
+
+    if (organizationId) {
+      query = query.eq('organization_id', organizationId);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw error;
+    }
+
+    return { tableReady, entries: (data || []).map(mapExpenseRow) };
+  }
+
   async getDashboardData(filters, userProfile) {
     const [kpiData, entryPayload] = await Promise.all([
       financeApiV2.getKPIData(filters),
