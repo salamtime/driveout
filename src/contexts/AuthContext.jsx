@@ -651,27 +651,33 @@ export const AuthProvider = ({ children }) => {
         'User';
       const isLogout = normalizedAction === 'user_logout';
 
-      const payload = {
-        actor_id: authUser.id,
-        actor_type: 'user',
-        event_type: normalizedAction,
-        entity_type: 'auth',
-        entity_id: authUser.id,
-        user_name: userName,
-        payload: {
+      const legacyPayload = {
+        action: normalizedAction,
+        user_email: authUser.email || userName,
+        details: {
           description: isLogout ? 'User logged out' : 'User logged in',
           reason: isLogout ? `${userName} signed out` : `${userName} signed in successfully`,
           source: 'auth',
-        },
-        metadata: {
-          email: authUser.email || null,
           role: authUser.user_metadata?.role || authUser.app_metadata?.role || null,
+          actor_id: authUser.id,
         },
+        created_at: new Date().toISOString(),
       };
 
-      const { error } = await supabase
+      let { error } = await supabase
         .from(TABLE_NAMES.ACTIVITY_LOG)
-        .insert(payload);
+        .insert(legacyPayload);
+
+      if (error) {
+        const fallbackPayload = {
+          ...legacyPayload,
+          title: normalizedAction,
+        };
+
+        ({ error } = await supabase
+          .from(TABLE_NAMES.ACTIVITY_LOG)
+          .insert(fallbackPayload));
+      }
 
       if (error) {
         console.warn(`⚠️ Failed to record ${normalizedAction} activity:`, error);
