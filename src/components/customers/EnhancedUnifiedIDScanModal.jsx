@@ -12,6 +12,8 @@ import i18n from '../../i18n';
 import useAdminModalFocus from '../../hooks/useAdminModalFocus';
 import { needsImageConversion, processImage as processMediaImage } from '../../utils/mediaProcessor';
 
+const MOBILE_SCAN_MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024;
+
 const EnhancedUnifiedIDScanModal = ({ 
   isOpen, 
   onClose, 
@@ -142,13 +144,6 @@ const EnhancedUnifiedIDScanModal = ({
     return 'image/png';
   }, []);
 
-  const createPreviewObjectUrl = useCallback(async (file) => {
-    const inferredMimeType = inferMimeTypeFromFile(file);
-    const fileBuffer = await file.arrayBuffer();
-    const previewBlob = new Blob([fileBuffer], { type: inferredMimeType });
-    return URL.createObjectURL(previewBlob);
-  }, [inferMimeTypeFromFile]);
-
   const handleFileUpload = useCallback(async (file) => {
     if (!file) return;
 
@@ -159,18 +154,29 @@ const EnhancedUnifiedIDScanModal = ({
 
     try {
       let normalizedFile = file;
-      if (needsImageConversion(file)) {
-        const { blob } = await processMediaImage(file);
-        const normalizedName = String(file.name || 'document')
-          .replace(/\.(heic|heif)$/i, '')
-          .concat('.jpg');
-        normalizedFile = new File([blob], normalizedName, {
-          type: 'image/jpeg',
-          lastModified: Date.now(),
-        });
+      const shouldOptimizeForMobileScan =
+        String(file?.type || '').startsWith('image/') &&
+        (needsImageConversion(file) || Number(file?.size || 0) > MOBILE_SCAN_MAX_FILE_SIZE_BYTES);
+
+      if (shouldOptimizeForMobileScan) {
+        try {
+          const { blob } = await processMediaImage(file);
+          const inferredMimeType = inferMimeTypeFromFile(file);
+          const normalizedName = String(file.name || 'document')
+            .replace(/\.(heic|heif|png|webp|bmp)$/i, '')
+            .concat('.jpg');
+
+          normalizedFile = new File([blob], normalizedName, {
+            type: blob?.type || (needsImageConversion(file) ? 'image/jpeg' : inferredMimeType || 'image/jpeg'),
+            lastModified: Date.now(),
+          });
+        } catch (optimizationError) {
+          console.warn('⚠️ Scan image optimization failed, continuing with original file:', optimizationError);
+          normalizedFile = file;
+        }
       }
 
-      const objectUrl = await createPreviewObjectUrl(normalizedFile);
+      const objectUrl = URL.createObjectURL(normalizedFile);
       previewObjectUrlRef.current = objectUrl;
 
       setSelectedImage(normalizedFile);
@@ -188,7 +194,7 @@ const EnhancedUnifiedIDScanModal = ({
       console.error('❌ File upload failed:', error);
       setError(tr('Upload failed', 'Échec du téléversement'));
     }
-  }, [autoProcessOnSelect, createPreviewObjectUrl, tr]);
+  }, [autoProcessOnSelect, inferMimeTypeFromFile, tr]);
 
   const handlePreviewError = useCallback(() => {
     if (!selectedImage || !imagePreview?.startsWith('blob:')) {

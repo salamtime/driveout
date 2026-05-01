@@ -351,17 +351,9 @@ class EnhancedUnifiedCustomerService {
     const pipelineStartedAt = performance.now();
     const preparedFile = await this.prepareOcrFile(file);
     const preparedAt = performance.now();
-    const ocrFile = new File([preparedFile], preparedFile.name || 'document.webp', {
-      type: preparedFile.type || 'image/webp',
-      lastModified: Date.now(),
-    });
-    const uploadFileClone = new File([preparedFile], preparedFile.name || 'document.webp', {
-      type: preparedFile.type || 'image/webp',
-      lastModified: Date.now(),
-    });
     const [uploadResult, ocrResult] = await Promise.all([
-      this.uploadPreparedOcrSourceImage(uploadFileClone, scanId, folder),
-      this.requestDirectGeminiOCR(ocrFile, prompt, ocrMode),
+      this.uploadPreparedOcrSourceImage(preparedFile, scanId, folder),
+      this.requestDirectGeminiOCR(preparedFile, prompt, ocrMode),
     ]);
     const completedAt = performance.now();
 
@@ -376,7 +368,7 @@ class EnhancedUnifiedCustomerService {
     if (!ocrUnavailable && ocrMode === 'fast' && !this.hasMinimumOcrIdentity(normalizedOcrData)) {
       console.warn('⚠️ [OCR PIPELINE] Fast OCR returned no usable identity. Falling back to full OCR.');
       try {
-        const fallbackResult = await geminiVisionOCR.processIdDocument(ocrFile);
+        const fallbackResult = await geminiVisionOCR.processIdDocument(preparedFile);
         if (fallbackResult?.success && fallbackResult?.data) {
           normalizedOcrData = this.normalizeOcrIdentityPayload(fallbackResult.data);
           ocrData = normalizedOcrData;
