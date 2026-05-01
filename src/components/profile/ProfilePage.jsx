@@ -958,8 +958,8 @@ const ProfilePage = () => {
         <section className="overflow-hidden rounded-[34px] border border-violet-100/70 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
           <div className="relative overflow-hidden border-b border-violet-200/80 bg-[linear-gradient(135deg,rgba(221,214,254,0.98)_0%,rgba(243,244,246,0.98)_42%,rgba(196,181,253,0.96)_100%)] px-5 py-7 text-slate-950 sm:px-7">
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(109,40,217,0.22),transparent_34%),radial-gradient(circle_at_bottom_left,rgba(99,102,241,0.18),transparent_28%)]" />
-            <div className="relative flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+            <div className="relative flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
+              <div className="min-w-0 flex flex-col gap-4 sm:flex-row sm:items-center">
                 <ProfilePictureUpload
                   userId={user.id}
                   fallbackLabel={displayName || user.email}
@@ -969,7 +969,7 @@ const ProfilePage = () => {
                   size="large"
                   showInstructions={false}
                 />
-                <div>
+                <div className="min-w-0 flex-1">
                   <p className="text-xs font-bold uppercase tracking-[0.28em] text-violet-500">
                     {tr('profile.title', 'My Profile')}
                   </p>
@@ -997,7 +997,7 @@ const ProfilePage = () => {
               <button
                 type="button"
                 onClick={() => setShowPasswordModal(true)}
-                className="inline-flex w-full items-center justify-center rounded-2xl border border-violet-200 bg-white px-5 py-3 text-sm font-bold text-slate-900 shadow-[0_12px_30px_rgba(99,102,241,0.12)] transition hover:-translate-y-0.5 hover:bg-violet-50 sm:w-auto"
+                className="inline-flex w-full max-w-full items-center justify-center self-start rounded-2xl border border-violet-200 bg-white px-5 py-3 text-sm font-bold text-slate-900 shadow-[0_12px_30px_rgba(99,102,241,0.12)] transition hover:-translate-y-0.5 hover:bg-violet-50 sm:w-auto xl:ml-6 xl:shrink-0"
               >
                 🔒 {tr('profile.changePassword', 'Change Password')}
               </button>
@@ -1214,16 +1214,16 @@ const ProfilePage = () => {
 
                 <div className="mt-4 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
                   <label className="block text-sm font-bold text-slate-900">
-                    {tr('profile.telegram.personalChatIds', 'My Telegram Chat ID(s)')}
+                    {tr('profile.telegram.personalChatIds', 'My Direct Alert Chat ID(s)')}
                   </label>
                   <p className="mt-1 text-sm text-slate-500">
                     {telegramAdminSettings.allowed
-                      ? tr('profile.telegram.personalChatIdsWorkspaceHint', 'Workspace Telegram is connected. Add your own Telegram chat IDs here if you also want alerts sent directly to you, separated by commas.')
-                      : tr('profile.telegram.personalChatIdsHint', 'Add your own Telegram chat IDs here if you want alerts sent directly to you, separated by commas.')}
+                      ? tr('profile.telegram.personalChatIdsWorkspaceHint', 'Workspace Telegram is already connected. Add your own chat IDs here if you also want direct alerts sent to you, separated by commas.')
+                      : tr('profile.telegram.personalChatIdsHint', 'Add your own chat IDs here if you want direct alerts sent to you, separated by commas.')}
                   </p>
                   {!telegramAdminSettings.allowed ? (
                     <p className="mt-2 text-xs font-semibold text-amber-600">
-                      You can save your chat IDs now, and they will be used once admin enables Telegram for your profile.
+                      You can save your direct chat IDs now, and they will be used once admin enables Telegram for your profile.
                     </p>
                   ) : null}
                   <input

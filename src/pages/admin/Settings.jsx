@@ -2107,15 +2107,15 @@ const SettingsPage = () => {
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div className="max-w-3xl">
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-600">
-                {isFrench ? 'Telegram du tenant' : 'Tenant Telegram'}
+                {isFrench ? 'Telegram de l’espace' : 'Workspace Telegram'}
               </p>
               <h3 className="mt-2 text-lg font-semibold text-slate-950">
-                {isFrench ? 'Bot, chat IDs et événements par défaut' : 'Bot, chat IDs, and default event types'}
+                {isFrench ? 'Bot, livraison partagée et événements par défaut' : 'Bot, shared delivery, and default events'}
               </h3>
               <p className="mt-2 text-sm text-slate-600">
                 {isFrench
-                  ? "Chaque tenant peut enregistrer ici son propre bot Telegram. Les permissions staff et les préférences personnelles viendront ensuite au-dessus de cette configuration."
-                  : 'Each tenant can store its own Telegram bot here. Staff permissions and personal preferences will be layered on top of this configuration next.'}
+                  ? "Configurez ici le bot Telegram de l’espace et les chats partagés ou groupe qui doivent recevoir les alertes de l’entreprise."
+                  : 'Set up the workspace Telegram bot here, plus the shared or group chats that should receive business alerts.'}
               </p>
             </div>
             <button
@@ -2205,13 +2205,13 @@ const SettingsPage = () => {
 
             <div className="rounded-[1.75rem] border border-white/70 bg-white/75 p-5 shadow-sm">
               <p className="text-sm font-semibold text-slate-900">
-                {isFrench ? 'Chemin de livraison' : 'Delivery path'}
+                {isFrench ? 'Fonctionnement' : 'How this works'}
               </p>
               <div className="mt-3 space-y-3 text-sm text-slate-600">
-                <p>{isFrench ? '1. Le tenant active Telegram et choisit ses événements par défaut.' : '1. The tenant enables Telegram and chooses default event types.'}</p>
+                <p>{isFrench ? '1. Les chats ici reçoivent les alertes partagées de l’espace.' : '1. The chat IDs here receive shared workspace alerts.'}</p>
                 <p>{isFrench ? '2. L’admin autorise ensuite les membres du staff concernés.' : '2. Admin then allows the relevant staff members.'}</p>
-                <p>{isFrench ? '3. Chaque membre active ensuite ses propres préférences dans son profil.' : '3. Each staff member then enables their own preferences in their profile.'}</p>
-                <p>{isFrench ? '4. Une alerte n’est envoyée que si ces trois couches sont actives.' : '4. An alert only sends when all three layers are active.'}</p>
+                <p>{isFrench ? '3. Chaque membre peut ajouter ses propres chats dans son profil pour recevoir des alertes directes.' : '3. Each staff member can add their own chats in Profile to receive direct alerts.'}</p>
+                <p>{isFrench ? '4. Les chats partagés et les chats personnels peuvent fonctionner ensemble.' : '4. Shared chats and personal chats can work together.'}</p>
               </div>
             </div>
           </div>
@@ -2239,7 +2239,7 @@ const SettingsPage = () => {
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Chat ID(s)' : 'Chat ID(s)'}</label>
+                <label className="mb-2 block text-sm font-medium text-slate-700">{isFrench ? 'Chat ID(s) de livraison partagée / groupe' : 'Shared / Group Chat ID(s)'}</label>
                 <input
                   className={FIELD_CLASS}
                   placeholder="232312491, 998877665"
@@ -2248,7 +2248,7 @@ const SettingsPage = () => {
                   onChange={(e) => setTenantTelegramForm((current) => ({ ...current, telegram_chat_ids: e.target.value }))}
                 />
                 <p className="mt-2 text-xs text-slate-500">
-                  {isFrench ? 'Séparez plusieurs chats par des virgules.' : 'Separate multiple chat IDs with commas.'}
+                  {isFrench ? 'Utilisez ce champ pour un groupe Telegram, un chat d’équipe ou le chat principal du propriétaire. Séparez plusieurs chats par des virgules.' : 'Use this for a Telegram group, a team chat, or the main owner chat. Separate multiple chat IDs with commas.'}
                 </p>
               </div>
               <div className="md:col-span-2">
