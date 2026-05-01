@@ -207,7 +207,6 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
   const [expenseLabelPresets, setExpenseLabelPresets] = useState([]);
   const [selectedExpenseLabels, setSelectedExpenseLabels] = useState([]);
   const [newExpenseLabel, setNewExpenseLabel] = useState('');
-  const [showExpenseNote, setShowExpenseNote] = useState(false);
   const [expenseSaveFeedback, setExpenseSaveFeedback] = useState(null);
   const receiptCaptureRef = useRef(null);
   const receiptImportInputRef = useRef(null);
@@ -254,7 +253,6 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
     setShowReceiptCapture(false);
     setSelectedExpenseLabels([]);
     setNewExpenseLabel('');
-    setShowExpenseNote(false);
     if (options.clearExpenseFeedback !== false) {
       setExpenseSaveFeedback(null);
     }
@@ -308,7 +306,6 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
     setShowReceiptCapture(false);
     setSelectedExpenseLabels(nextMode === 'expense' && Array.isArray(entry.labels) ? entry.labels : []);
     setNewExpenseLabel('');
-    setShowExpenseNote(false);
     setExpenseSaveFeedback(null);
     setShowComposer(true);
   };
@@ -1256,31 +1253,16 @@ const ReceiveFundsTabV2 = ({ filters, refreshTrigger, openComposerRequest = 0, o
                 ) : null}
 
                 <div className={`rounded-[22px] p-4 ${isExpenseMode ? 'border border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50 shadow-[0_16px_34px_rgba(124,58,237,0.10)]' : 'border border-slate-200 bg-white'}`}>
-                  <div className="flex items-center justify-between gap-3">
-                    <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${isExpenseMode ? 'text-violet-700' : 'text-slate-500'}`}>
-                      {isExpenseMode ? tr('Expense note', 'Note de dépense') : tr('Optional note', 'Note facultative')}
-                    </label>
-                    {isExpenseMode ? (
-                      <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-white/90 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-violet-700 shadow-sm">
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-violet-600 text-white">
-                          +
-                        </span>
-                        {tr('Add detail', 'Ajouter un détail')}
-                      </span>
-                    ) : null}
-                  </div>
-                  {isExpenseMode ? (
-                    <p className="mt-2 text-sm font-medium text-violet-700/80">
-                      {tr('Quick context for this purchase makes the expense easier to track later.', 'Un court contexte pour cet achat facilite le suivi de la dépense ensuite.')}
-                    </p>
-                  ) : null}
+                  <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${isExpenseMode ? 'text-violet-700' : 'text-slate-500'}`}>
+                    {isExpenseMode ? tr('Expense note', 'Note de dépense') : tr('Optional note', 'Note facultative')}
+                  </label>
                   <textarea
                     rows={4}
                     value={form.note}
                     onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))}
                     placeholder={
                       isExpenseMode
-                        ? tr('Add a short note for this purchase.', "Ajoutez une courte note pour cet achat.")
+                        ? tr('Write a note about this purchase...', 'Écrivez une note sur cet achat...')
                         : tr('Add a note if needed.', 'Ajoutez une note si nécessaire.')
                     }
                     className={`mt-3 w-full resize-none rounded-2xl px-4 py-3 text-sm text-slate-700 outline-none transition ${isExpenseMode ? 'border border-violet-200 bg-white shadow-inner focus:border-violet-400 focus:bg-white' : 'border border-slate-200 bg-slate-50 focus:border-violet-300 focus:bg-white'}`}

@@ -689,6 +689,53 @@ class ReceiveFundsService {
     return data;
   }
 
+  async updateMyExpense(entryId, payload, userProfile) {
+    const tableReady = await this.checkExpensesTableExists();
+    if (!tableReady) {
+      throw new Error('Finance expenses table is not ready yet. Please run the SQL migration first.');
+    }
+
+    const expenseId = normalizeExpenseId(entryId);
+    const userId = String(userProfile?.id || '').trim();
+    if (!userId) {
+      throw new Error('No active user is available to update this expense.');
+    }
+
+    const amount = roundCurrency(payload.amount);
+    if (!(amount > 0)) {
+      throw new Error('Enter a valid amount before saving.');
+    }
+
+    const expenseLabels = Array.isArray(payload.labels) ? payload.labels : [];
+    const expenseNote = buildExpenseNote(payload.note, expenseLabels);
+    const updatePayload = {
+      description: buildExpenseDescription(expenseLabels),
+      amount,
+      expense_date: formatDateKey(payload.receivedDate) || formatDateKey(new Date()),
+      notes: expenseNote || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    const organizationId = getScopedOrganizationId(userProfile);
+    let query = supabase
+      .from(FINANCE_EXPENSES_TABLE)
+      .update(updatePayload)
+      .eq('id', expenseId)
+      .eq('created_by', userId)
+      .eq('status', 'active');
+
+    if (organizationId) {
+      query = query.eq('organization_id', organizationId);
+    }
+
+    const { data, error } = await query.select('*').single();
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  }
+
   async deleteExpense(entryId, userProfile) {
     assertOwnerDeleteAccess(userProfile);
 

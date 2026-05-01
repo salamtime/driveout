@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase.js';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, ArrowDownToLine, Activity, Fuel, WalletCards, ChevronDown, ClipboardList, RefreshCw, Download, FileText, Banknote, Landmark, Loader2, X, CheckCircle2, Receipt, Tag } from 'lucide-react';
+import { Car, Users, Wrench, DollarSign, TrendingUp, Clock, Plus, AlertTriangle, Bell, ChevronRight, Smartphone, MessageSquare, Calendar, Zap, Map as MapIcon, Droplets, Settings, Compass, ShieldAlert, ArrowRight, ArrowDownToLine, Activity, Fuel, WalletCards, ChevronDown, ClipboardList, RefreshCw, Download, FileText, Banknote, Landmark, Loader2, X, CheckCircle2, Receipt, Tag, Pencil } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../contexts/AuthContext';
 import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
@@ -1495,7 +1495,6 @@ const DashboardReceiveFundsDrawer = ({
   const [expenseLabelPresets, setExpenseLabelPresets] = useState([]);
   const [selectedExpenseLabels, setSelectedExpenseLabels] = useState([]);
   const [newExpenseLabel, setNewExpenseLabel] = useState('');
-  const [showExpenseNote, setShowExpenseNote] = useState(false);
   const [expenseSaveFeedback, setExpenseSaveFeedback] = useState(null);
   const receiptCaptureRef = useRef(null);
   const receiptImportInputRef = useRef(null);
@@ -1537,7 +1536,6 @@ const DashboardReceiveFundsDrawer = ({
     setShowReceiptCapture(false);
     setSelectedExpenseLabels([]);
     setNewExpenseLabel('');
-    setShowExpenseNote(false);
     if (options.clearExpenseFeedback !== false) {
       setExpenseSaveFeedback(null);
     }
@@ -2164,70 +2162,23 @@ const DashboardReceiveFundsDrawer = ({
           </div>
 
           <div className="mt-6 rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.05)]">
-            {isExpenseMode && !showExpenseNote && !form.note ? (
-              <button
-                type="button"
-                onClick={() => setShowExpenseNote(true)}
-                className="flex w-full items-center justify-between rounded-[20px] border border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50 px-4 py-4 text-left shadow-[0_16px_34px_rgba(124,58,237,0.10)] transition hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-[0_22px_42px_rgba(124,58,237,0.14)]"
-              >
-                <span>
-                  <span className="block text-xs font-semibold uppercase tracking-[0.22em] text-violet-700">
-                    {tr('Expense note', 'Note de dépense')}
-                  </span>
-                  <span className="mt-2 block text-base font-semibold text-slate-900">
-                    {tr('Add a note for this purchase', 'Ajouter une note pour cet achat')}
-                  </span>
-                  <span className="mt-1 block text-sm text-violet-700/75">
-                    {tr('Reason, context, or what was bought', 'Raison, contexte, ou ce qui a été acheté')}
-                  </span>
-                </span>
-                <span className="flex h-11 w-11 items-center justify-center rounded-full bg-violet-600 text-white shadow-[0_14px_28px_rgba(124,58,237,0.28)]">
-                  <Plus className="h-5 w-5" />
-                </span>
-              </button>
-            ) : (
-              <>
-                <div className="flex items-center justify-between gap-3">
-                  <label className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">
-                    {isExpenseMode ? tr('Expense note', 'Note de dépense') : tr('Optional note', 'Note facultative')}
-                  </label>
-                  {isExpenseMode ? (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-violet-700">
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-violet-600 text-white">
-                        +
-                      </span>
-                      {tr('Add detail', 'Ajouter un détail')}
-                    </span>
-                  ) : null}
-                  {isExpenseMode && showExpenseNote ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!form.note) setShowExpenseNote(false);
-                      }}
-                      className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500 transition hover:text-violet-700"
-                    >
-                      {tr('Hide', 'Masquer')}
-                    </button>
-                  ) : null}
-                </div>
-                <textarea
-                  rows={isExpenseMode ? 3 : 4}
-                  value={form.note}
-                  onChange={(event) => {
-                    setForm((current) => ({ ...current, note: event.target.value }));
-                    setExpenseSaveFeedback(null);
-                  }}
-                  onFocus={() => setShowExpenseNote(true)}
-                  placeholder={
-                    isExpenseMode
-                      ? tr('Add a short note for this purchase', 'Ajoutez une courte note pour cet achat')
-                      : tr('Add a quick note if needed', 'Ajoutez une note rapide si nécessaire')
-                  }
-                  className={`mt-3 w-full resize-none rounded-[20px] px-4 py-3 text-sm text-slate-700 outline-none transition ${isExpenseMode ? 'border border-violet-200 bg-violet-50/40 focus:border-violet-400 focus:bg-white' : 'border border-slate-200 bg-slate-50 focus:border-violet-300 focus:bg-white'}`}
-                />
-              </>
-            )}
+            <label className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">
+              {isExpenseMode ? tr('Expense note', 'Note de dépense') : tr('Optional note', 'Note facultative')}
+            </label>
+            <textarea
+              rows={isExpenseMode ? 4 : 4}
+              value={form.note}
+              onChange={(event) => {
+                setForm((current) => ({ ...current, note: event.target.value }));
+                setExpenseSaveFeedback(null);
+              }}
+              placeholder={
+                isExpenseMode
+                  ? tr('Write a note about this purchase...', 'Écrivez une note sur cet achat...')
+                  : tr('Add a quick note if needed', 'Ajoutez une note rapide si nécessaire')
+              }
+              className={`mt-3 w-full resize-none rounded-[20px] px-4 py-3 text-sm text-slate-700 outline-none transition ${isExpenseMode ? 'border border-violet-200 bg-violet-50/40 focus:border-violet-400 focus:bg-white' : 'border border-slate-200 bg-slate-50 focus:border-violet-300 focus:bg-white'}`}
+            />
           </div>
 
           {isExpenseMode && expenseSaveFeedback && expenseSaveNoticeStyle ? (
@@ -2272,6 +2223,35 @@ const DashboardMyPurchaseExpensesDrawer = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [entries, setEntries] = useState([]);
+  const [editingEntryId, setEditingEntryId] = useState('');
+  const [editForm, setEditForm] = useState({
+    amount: '',
+    receivedDate: '',
+    labels: '',
+    note: '',
+  });
+  const [savingEditId, setSavingEditId] = useState('');
+  const [editError, setEditError] = useState('');
+
+  const loadMyExpenses = useCallback(async (showSpinner = true) => {
+    if (!open) return;
+    try {
+      if (showSpinner) {
+        setLoading(true);
+      }
+      setError('');
+      const payload = await receiveFundsService.listMyExpenses(userProfile);
+      setEntries(payload?.entries || []);
+    } catch (loadError) {
+      console.error('Failed to load my purchase expenses:', loadError);
+      setEntries([]);
+      setError(loadError?.message || tr('Failed to load your purchase expenses.', 'Impossible de charger vos dépenses d’achat.'));
+    } finally {
+      if (showSpinner) {
+        setLoading(false);
+      }
+    }
+  }, [open, userProfile]);
 
   useEffect(() => {
     if (!open || typeof document === 'undefined') return undefined;
@@ -2283,37 +2263,76 @@ const DashboardMyPurchaseExpensesDrawer = ({
   }, [open]);
 
   useEffect(() => {
-    let isActive = true;
-
-    const loadMyExpenses = async () => {
-      if (!open) return;
-      try {
-        setLoading(true);
-        setError('');
-        const payload = await receiveFundsService.listMyExpenses(userProfile);
-        if (!isActive) return;
-        setEntries(payload?.entries || []);
-      } catch (loadError) {
-        console.error('Failed to load my purchase expenses:', loadError);
-        if (!isActive) return;
-        setEntries([]);
-        setError(loadError?.message || tr('Failed to load your purchase expenses.', 'Impossible de charger vos dépenses d’achat.'));
-      } finally {
-        if (isActive) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void loadMyExpenses();
-    return () => {
-      isActive = false;
-    };
-  }, [open, userProfile]);
+    if (!open) return;
+    setEditingEntryId('');
+    setEditError('');
+    void loadMyExpenses(true);
+  }, [open, loadMyExpenses]);
 
   if (!open) return null;
 
   const totalAmount = entries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+
+  const startEditingEntry = (entry) => {
+    setEditingEntryId(entry.id);
+    setEditError('');
+    setEditForm({
+      amount: String(entry.amount || ''),
+      receivedDate: entry.receivedDate || todayInputKey(),
+      labels: Array.isArray(entry.labels) ? entry.labels.join(', ') : '',
+      note: entry.note || '',
+    });
+  };
+
+  const cancelEditingEntry = () => {
+    setEditingEntryId('');
+    setEditError('');
+    setEditForm({
+      amount: '',
+      receivedDate: '',
+      labels: '',
+      note: '',
+    });
+  };
+
+  const saveEditingEntry = async () => {
+    if (!editingEntryId) return;
+    const amount = Number(editForm.amount);
+    if (!(amount > 0)) {
+      setEditError(tr('Enter a valid amount before saving.', 'Entrez un montant valide avant d’enregistrer.'));
+      return;
+    }
+
+    const labels = uniqueLabels(
+      String(editForm.labels || '')
+        .split(',')
+        .map((label) => label.trim())
+        .filter(Boolean)
+    );
+
+    try {
+      setSavingEditId(editingEntryId);
+      setEditError('');
+      await receiveFundsService.updateMyExpense(
+        editingEntryId,
+        {
+          amount: editForm.amount,
+          receivedDate: editForm.receivedDate,
+          labels,
+          note: editForm.note,
+        },
+        userProfile
+      );
+      toast.success(tr('Expense updated.', 'Dépense mise à jour.'));
+      cancelEditingEntry();
+      await loadMyExpenses(false);
+    } catch (saveError) {
+      console.error('Failed to update my purchase expense:', saveError);
+      setEditError(saveError?.message || tr('Could not update this expense.', 'Impossible de mettre à jour cette dépense.'));
+    } finally {
+      setSavingEditId('');
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-[90] flex justify-end">
@@ -2368,6 +2387,8 @@ const DashboardMyPurchaseExpensesDrawer = ({
                 const firstLabel = Array.isArray(entry.labels) && entry.labels.length > 0
                   ? entry.labels[0]
                   : tr('Unlabeled', 'Sans label');
+                const isEditing = editingEntryId === entry.id;
+                const isSavingThisEntry = savingEditId === entry.id;
 
                 return (
                   <article key={entry.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -2378,13 +2399,102 @@ const DashboardMyPurchaseExpensesDrawer = ({
                           {formatDashboardDateOnly(entry.receivedDate)}
                         </p>
                       </div>
-                      <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
-                        <Tag className="h-3.5 w-3.5" />
-                        {firstLabel}
-                      </span>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+                          <Tag className="h-3.5 w-3.5" />
+                          {firstLabel}
+                        </span>
+                        {!isEditing ? (
+                          <button
+                            type="button"
+                            onClick={() => startEditingEntry(entry)}
+                            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            {tr('Edit', 'Modifier')}
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
 
-                    {entry.note ? (
+                    {isEditing ? (
+                      <div className="mt-4 rounded-2xl border border-violet-200 bg-violet-50/50 p-4">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block">
+                            <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                              {tr('Amount', 'Montant')}
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={editForm.amount}
+                              onChange={(event) => setEditForm((current) => ({ ...current, amount: event.target.value }))}
+                              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-900 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                              {tr('Date', 'Date')}
+                            </span>
+                            <input
+                              type="date"
+                              value={editForm.receivedDate}
+                              onChange={(event) => setEditForm((current) => ({ ...current, receivedDate: event.target.value }))}
+                              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-900 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                            />
+                          </label>
+                        </div>
+                        <label className="mt-3 block">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                            {tr('Label', 'Label')}
+                          </span>
+                          <input
+                            type="text"
+                            value={editForm.labels}
+                            onChange={(event) => setEditForm((current) => ({ ...current, labels: event.target.value }))}
+                            placeholder={tr('Example: Office, Food', 'Exemple : Bureau, Nourriture')}
+                            className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-900 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                          />
+                        </label>
+                        <label className="mt-3 block">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                            {tr('Note', 'Note')}
+                          </span>
+                          <textarea
+                            rows={3}
+                            value={editForm.note}
+                            onChange={(event) => setEditForm((current) => ({ ...current, note: event.target.value }))}
+                            placeholder={tr('Write a note about this purchase...', 'Écrivez une note sur cet achat...')}
+                            className="mt-2 w-full resize-none rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                          />
+                        </label>
+                        {editError ? (
+                          <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
+                            {editError}
+                          </p>
+                        ) : null}
+                        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
+                          <button
+                            type="button"
+                            onClick={cancelEditingEntry}
+                            disabled={Boolean(savingEditId)}
+                            className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {tr('Cancel', 'Annuler')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={saveEditingEntry}
+                            disabled={Boolean(savingEditId)}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(79,70,229,0.22)] transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isSavingThisEntry ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                            {tr('Save changes', 'Enregistrer')}
+                          </button>
+                        </div>
+                      </div>
+                    ) : entry.note ? (
                       <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
                         <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                           {tr('Note', 'Note')}
