@@ -29,6 +29,7 @@ import AdminWorkspaceLoadingShell from '../../components/admin/AdminWorkspaceLoa
 import i18n from '../../i18n';
 import { supabase } from '../../lib/supabase';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
+import { getHostContext } from '../../utils/hostContext';
 
 const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
 const SAHARAX_DEFAULT_STAMP_URL = '/assets/stamp.png';
@@ -129,6 +130,31 @@ const pickLocalRegistryWorkspaceEntry = (entries = [], userProfile = null) => {
     localRegistryEntries.find((entry) => String(entry?.tenant?.tenant_status || '').trim().toLowerCase() === 'active') ||
     localRegistryEntries[0] ||
     null
+  );
+};
+
+const shouldResolveTenantWorkspaceFromApi = ({
+  userProfile = null,
+  hostContext = null,
+} = {}) => {
+  const normalizedAccountType = String(
+    userProfile?.accountType ||
+    userProfile?.account_type ||
+    ''
+  ).trim().toLowerCase();
+  const normalizedRole = String(
+    userProfile?.role ||
+    userProfile?.user_role ||
+    ''
+  ).trim().toLowerCase();
+
+  if (hostContext?.kind === 'tenant') {
+    return true;
+  }
+
+  return (
+    ['operator', 'business_owner', 'business', 'rental_business'].includes(normalizedAccountType) ||
+    ['business_owner', 'owner', 'admin', 'employee'].includes(normalizedRole)
   );
 };
 
@@ -601,15 +627,11 @@ const SettingsPage = () => {
     }
 
     const brandingContext = getBrandingContext();
-    const normalizedAccountType = String(
-      userProfile?.accountType ||
-      userProfile?.account_type ||
-      ''
-    ).trim().toLowerCase();
+    const hostContext = getHostContext();
 
     let resolvedWorkspace = null;
 
-    if (['operator', 'business_owner', 'business', 'rental_business'].includes(normalizedAccountType)) {
+    if (shouldResolveTenantWorkspaceFromApi({ userProfile, hostContext })) {
       resolvedWorkspace = await getTenantSession().catch(() => null);
     }
 
@@ -748,14 +770,12 @@ const SettingsPage = () => {
   const loadSettingsHub = async () => {
     setLoading(true);
     try {
-      const normalizedAccountType = String(
-        userProfile?.accountType ||
-        userProfile?.account_type ||
-        ''
-      ).trim().toLowerCase();
-      const canResolveTenantSessionFromApi =
-        ['operator', 'business_owner', 'business', 'rental_business'].includes(normalizedAccountType);
       const brandingContext = getBrandingContext();
+      const hostContext = getHostContext();
+      const canResolveTenantSessionFromApi = shouldResolveTenantWorkspaceFromApi({
+        userProfile,
+        hostContext,
+      });
       const effectiveAuthTenantSession = hasUsableTenantWorkspaceSession(tenantSession) ? tenantSession : null;
       const canResolveLocalTenantWorkspace =
         !effectiveAuthTenantSession &&

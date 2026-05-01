@@ -1247,7 +1247,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
               </button>
             </div>
 
-            <div className="mt-4 space-y-3">
+            <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
               {auditRows.length ? auditRows.map((item) => (
                 <div key={item.id} className="rounded-[22px] border border-slate-200 bg-slate-50/70 px-4 py-3">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
