@@ -840,12 +840,27 @@ async function sendTelegramRentalAlert({ config, data }) {
   if (!token || token === 'YOUR_NEW_TOKEN' || activeRecipients.length === 0) {
     return { skipped: true, reason: 'Telegram tenant configuration is incomplete' };
   }
+  const rentalId = encodeURIComponent(String(data.id || ''));
 
-  const rentalUrl = `${baseUrl}/account/rentals/${encodeURIComponent(String(data.id || ''))}`;
+  const buildRentalUrlForRecipient = (recipient) => {
+    const normalizedRole = String(recipient?.role || '').trim().toLowerCase();
+    const shouldUseAdminRoute =
+      recipient?.type === 'workspace' ||
+      ['owner', 'admin', 'employee', 'guide', 'business_owner'].includes(normalizedRole) ||
+      recipient?.layout === 'staff';
+
+    const pathPrefix = shouldUseAdminRoute ? '/admin/rentals/' : '/account/rentals/';
+    return `${baseUrl}${pathPrefix}${rentalId}`;
+  };
 
   const sendToChatWithRetry = async (recipient) => {
     const chatId = String(recipient?.chatId || '').trim();
-    const message = buildTelegramMessage(data.eventType, data, rentalUrl, recipient?.layout || 'owner');
+    const message = buildTelegramMessage(
+      data.eventType,
+      data,
+      buildRentalUrlForRecipient(recipient),
+      recipient?.layout || 'owner'
+    );
     let lastError = null;
 
     for (let attempt = 1; attempt <= 2; attempt += 1) {
