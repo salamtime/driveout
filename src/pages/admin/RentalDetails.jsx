@@ -15641,7 +15641,7 @@ useEffect(() => {
                       </div>
                     </div>
                     
-                    <div className="flex flex-col sm:flex-row justify-center gap-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                       {effectiveReplacementPauseStartedAt ? (
                         <>
                           <Button
@@ -15654,7 +15654,7 @@ useEffect(() => {
                             }}
                             disabled={!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental}
                             title={startWorkflowActionHint}
-                            className={`${!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental ? 'bg-gray-300 cursor-not-allowed' : 'bg-violet-700 hover:bg-violet-800'} text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg`}
+                            className={`${!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental ? 'bg-gray-300 cursor-not-allowed' : 'bg-violet-700 hover:bg-violet-800'} min-w-0 justify-center whitespace-normal text-center text-white px-5 py-4 text-base font-semibold leading-tight shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg sm:py-5 sm:text-lg xl:col-span-1`}
                           >
                             <PlayCircle className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
                             {tr('Resume rental', 'Reprendre la location')}
@@ -15664,7 +15664,7 @@ useEffect(() => {
                             onClick={openReplaceVehicleDialog}
                             disabled={isReplacingVehicle || showReplaceVehicleDialog}
                             variant="outline"
-                            className="border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800 px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 rounded-lg"
+                            className="min-w-0 justify-center whitespace-normal border-amber-200 bg-amber-50 px-5 py-4 text-center text-base font-semibold leading-tight text-amber-700 shadow-sm transition-all duration-200 hover:bg-amber-100 hover:text-amber-800 rounded-lg sm:py-5 sm:text-lg xl:col-span-1"
                           >
                             <Wrench className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
                             {tr('Replace Vehicle', 'Remplacer le véhicule')}
@@ -15674,7 +15674,7 @@ useEffect(() => {
                         <>
                           <Button 
                             onClick={() => { void openFinishWorkflow(); }}
-                            className="bg-violet-700 hover:bg-violet-800 text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg"
+                            className="min-w-0 justify-center whitespace-normal bg-violet-700 px-5 py-4 text-center text-base font-semibold leading-tight text-white shadow-sm transition-all duration-200 hover:scale-[1.01] hover:bg-violet-800 rounded-lg sm:py-5 sm:text-lg"
                           >
                             <StopCircle className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
                             {tr('End Now', 'Terminer maintenant')}
@@ -15684,7 +15684,7 @@ useEffect(() => {
                             <Button 
                               onClick={() => openExtensionFlow(extensionActionHours)}
                               title={extensionActionHelper || undefined}
-                              className={`text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg ${
+                              className={`min-w-0 justify-center whitespace-normal px-5 py-4 text-center text-base font-semibold leading-tight text-white shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg sm:py-5 sm:text-lg ${
                                 lateExtensionSuggestion?.isChargeable
                                   ? 'bg-amber-500 hover:bg-amber-600'
                                   : 'bg-violet-700 hover:bg-violet-800'
@@ -15699,7 +15699,7 @@ useEffect(() => {
                             type="button"
                             onClick={openReplaceVehicleDialog}
                             disabled={isReplacingVehicle || showReplaceVehicleDialog}
-                            className="bg-amber-500 hover:bg-amber-600 text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg"
+                            className="min-w-0 justify-center whitespace-normal bg-amber-500 px-5 py-4 text-center text-base font-semibold leading-tight text-white shadow-sm transition-all duration-200 hover:scale-[1.01] hover:bg-amber-600 rounded-lg"
                           >
                             <Wrench className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
                             {tr('Replace Vehicle', 'Remplacer le véhicule')}
