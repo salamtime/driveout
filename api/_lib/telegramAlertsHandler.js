@@ -57,6 +57,11 @@ const getUrlHostname = (value = '') => {
   }
 };
 
+const isLocalHostname = (value = '') => {
+  const normalized = normalizeHostname(value);
+  return normalized === 'localhost' || normalized === '127.0.0.1';
+};
+
 const getTenantSlugFromHostname = (hostname = '') => {
   const normalizedHostname = normalizeHostname(hostname);
   if (normalizedHostname === 'localhost' || normalizedHostname === '127.0.0.1') {
@@ -480,6 +485,30 @@ const resolveRequestedHostname = (req, payload = {}) =>
     req.headers.host ||
     ''
   );
+
+const normalizeTelegramBaseUrlForRuntime = ({
+  baseUrl = '',
+  tenant = null,
+  requestedHostname = '',
+} = {}) => {
+  const normalizedConfiguredBaseUrl = String(baseUrl || '').trim().replace(/\/$/, '');
+  const configuredHostname = getUrlHostname(normalizedConfiguredBaseUrl);
+  const tenantAppUrl = normalizeUrl(tenant?.tenant_app_url || '');
+  const tenantAppHostname = getUrlHostname(tenantAppUrl);
+  const requestedIsLocal = isLocalHostname(requestedHostname);
+  const configuredIsLocal = isLocalHostname(configuredHostname);
+  const tenantAppIsLocal = isLocalHostname(tenantAppHostname);
+
+  if (!requestedIsLocal && configuredIsLocal && tenantAppUrl && !tenantAppIsLocal) {
+    return tenantAppUrl.replace(/\/$/, '');
+  }
+
+  if (!normalizedConfiguredBaseUrl && tenantAppUrl) {
+    return tenantAppUrl.replace(/\/$/, '');
+  }
+
+  return normalizedConfiguredBaseUrl || tenantAppUrl.replace(/\/$/, '');
+};
 
 const resolveTenantByHostname = async (adminClient, hostname) => {
   const tenantSlug = getTenantSlugFromHostname(hostname);
@@ -960,6 +989,11 @@ export async function processTelegramRentalAlert({
     const telegramConfig = isTestEvent && payload?.telegram_config_override
       ? getTelegramSettingsFromOverride(payload.telegram_config_override)
       : getTelegramSettingsFromTenant(tenant);
+    telegramConfig.baseUrl = normalizeTelegramBaseUrlForRuntime({
+      baseUrl: telegramConfig.baseUrl,
+      tenant,
+      requestedHostname: hostname,
+    });
     if (!telegramConfig.enabled) {
       await writeTelegramAuditLog({
         adminClient,
