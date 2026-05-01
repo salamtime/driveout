@@ -765,6 +765,7 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
   if (!normalizedEventType || !rentalId) return '';
 
   const parts = [normalizedEventType, rentalId];
+  const manualResendNonce = safeText(payload?.manualResendNonce || payload?.manual_resend_nonce);
 
   switch (normalizedEventType) {
     case 'rental_created':
@@ -808,6 +809,10 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
     default:
       parts.push(JSON.stringify(payload || {}));
       break;
+  }
+
+  if (manualResendNonce) {
+    parts.push(`manual-resend:${manualResendNonce}`);
   }
 
   return parts.join('|');

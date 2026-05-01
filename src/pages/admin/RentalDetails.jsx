@@ -50,6 +50,7 @@ import { TABLE_NAMES } from '../../config/tableNames';
 import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../../utils/simpleRentalPricing';
 import { sendRentalDocumentsEmail } from '../../services/emailApi';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
+import { notifyRentalTelegramEvent } from '../../services/TelegramAlertService';
 
 
 // Set to true to enable verbose logging in RentalDetails
@@ -2913,6 +2914,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [amountDueOverrideReason, setAmountDueOverrideReason] = useState('');
   const [isSavingAmountDue, setIsSavingAmountDue] = useState(false);
   const [amountDueAuditMeta, setAmountDueAuditMeta] = useState(null);
+  const [resendingTelegramEvent, setResendingTelegramEvent] = useState('');
 
   // Video refresh trigger
   const [videoRefreshKey, setVideoRefreshKey] = useState(0);
@@ -11538,6 +11540,97 @@ useEffect(() => {
     }
   };
 
+  const buildManualTelegramRentalPayload = (eventType) => {
+    const normalizedEventType = String(eventType || '').trim().toLowerCase();
+    const completedAt =
+      rental?.completed_at ||
+      rental?.rental_completed_at ||
+      rental?.actual_end_date ||
+      rental?.rental_end_date ||
+      '';
+    const startedAt =
+      rental?.started_at ||
+      rental?.actual_start_date ||
+      rental?.rental_start_date ||
+      '';
+
+    const basePayload = {
+      id: rental?.id,
+      reference: rental?.rental_id || '',
+      vehicle: buildRentalTelegramVehicleLabel(rental),
+      customer: rental?.customer_name || '',
+      start: rental?.rental_start_date || startedAt || '',
+      end: rental?.rental_end_date || rental?.actual_end_date || completedAt || '',
+      total: rental?.total_amount || 0,
+      amountPaid: rental?.deposit_amount || 0,
+      remaining: rental?.remaining_amount || 0,
+      manualResend: true,
+      manualResendNonce: `${normalizedEventType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    };
+
+    switch (normalizedEventType) {
+      case 'rental_created':
+        return {
+          ...basePayload,
+          createdBy: rental?.created_by_name || resolvedCurrentUser?.full_name || resolvedCurrentUser?.name || '',
+        };
+      case 'rental_started':
+        return {
+          ...basePayload,
+          start: startedAt || rental?.rental_start_date || '',
+          end: rental?.actual_end_date || rental?.rental_end_date || '',
+        };
+      case 'rental_completed':
+        return {
+          ...basePayload,
+          end: completedAt,
+          completed_at: completedAt,
+        };
+      case 'payment_received':
+        return {
+          ...basePayload,
+          paymentReceivedNow: Math.max(0, Number(rental?.deposit_amount || 0) || 0),
+          companyDiscount: 0,
+        };
+      case 'rental_cancelled':
+        return {
+          ...basePayload,
+          cancellationReason: rental?.cancellation_reason || 'Cancelled by staff',
+        };
+      default:
+        return basePayload;
+    }
+  };
+
+  const handleResendTelegramEvent = async (eventType, label) => {
+    if (!rental?.id) return;
+
+    setResendingTelegramEvent(eventType);
+    try {
+      await notifyRentalTelegramEvent(
+        eventType,
+        buildManualTelegramRentalPayload(eventType),
+        { throwOnError: true }
+      );
+      toast.success(
+        tr(
+          `${label} alert sent to Telegram.`,
+          `Alerte ${label} envoyée sur Telegram.`
+        )
+      );
+    } catch (error) {
+      console.error(`❌ Unable to resend ${eventType} Telegram alert:`, error);
+      toast.error(
+        tr(
+          `Unable to resend ${label} Telegram alert. ${error?.message || ''}`.trim(),
+          `Impossible de renvoyer l'alerte Telegram ${label}. ${error?.message || ''}`.trim()
+        )
+      );
+    } finally {
+      setResendingTelegramEvent('');
+    }
+  };
+
   useEffect(() => {
     if (!isEditingAmountDue) return;
 
@@ -12515,6 +12608,39 @@ useEffect(() => {
     );
   const canOwnerAdjustCompletedRental = currentUserRole === 'owner' && isCompleted;
   const canDeleteScheduledRental = isScheduled && ['owner', 'admin'].includes(resolvedCurrentUser?.role);
+  const canResendTelegramAlerts = canEditLifecycleRentalPrice;
+  const availableTelegramResendActions = useMemo(() => {
+    if (!rental?.id || !canResendTelegramAlerts) return [];
+
+    const actions = [
+      { eventType: 'rental_created', label: tr('New Rental', 'Nouvelle location') },
+    ];
+
+    if (rental?.started_at || ['active', 'completed'].includes(rentalStatusLower)) {
+      actions.push({ eventType: 'rental_started', label: tr('Rental Started', 'Location démarrée') });
+    }
+
+    if (rentalStatusLower === 'completed' || rental?.completed_at) {
+      actions.push({ eventType: 'rental_completed', label: tr('Rental Completed', 'Location terminée') });
+    }
+
+    if (Math.max(0, Number(rental?.deposit_amount || 0) || 0) > 0) {
+      actions.push({ eventType: 'payment_received', label: tr('Payment Received', 'Paiement reçu') });
+    }
+
+    if (rentalStatusLower === 'cancelled') {
+      actions.push({ eventType: 'rental_cancelled', label: tr('Rental Cancelled', 'Location annulée') });
+    }
+
+    return actions;
+  }, [
+    canResendTelegramAlerts,
+    rental?.id,
+    rental?.started_at,
+    rental?.completed_at,
+    rental?.deposit_amount,
+    rentalStatusLower,
+  ]);
   const priceOverrideMeta = parsePriceOverrideMeta(rental?.price_override_reason);
   const effectivePriceOverrideMeta = priceOverrideMeta || priceOverrideAuditMeta;
   const rawPriceOverrideReason =
@@ -16902,6 +17028,46 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <Edit className="mr-2 h-4 w-4" />
                   {tr('Edit Rental Cost', 'Modifier le coût de location')}
                 </Button>
+              </div>
+            )}
+
+            {!isEditingPrice && availableTelegramResendActions.length > 0 && (
+              <div className="mb-4 rounded-[24px] border border-sky-200 bg-sky-50/80 p-4 shadow-[0_12px_30px_rgba(14,165,233,0.08)]">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-sky-900">
+                      {tr('Resend Telegram Alert', 'Renvoyer une alerte Telegram')}
+                    </p>
+                    <p className="mt-1 text-xs text-sky-700">
+                      {tr(
+                        'If one Telegram notification was missed, resend the exact event from here without changing the contract.',
+                        "Si une notification Telegram a été manquée, renvoyez l'événement exact ici sans modifier le contrat."
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {availableTelegramResendActions.map((action) => (
+                      <Button
+                        key={action.eventType}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="border-sky-200 text-sky-800 hover:bg-sky-100"
+                        onClick={() => handleResendTelegramEvent(action.eventType, action.label)}
+                        disabled={Boolean(resendingTelegramEvent)}
+                      >
+                        {resendingTelegramEvent === action.eventType ? (
+                          <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-sky-700 border-t-transparent" />
+                        ) : (
+                          <Share2 className="mr-2 h-4 w-4" />
+                        )}
+                        {resendingTelegramEvent === action.eventType
+                          ? tr('Sending...', 'Envoi...')
+                          : action.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 
