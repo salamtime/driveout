@@ -100,15 +100,18 @@ const mapReceiveFundsRow = (row) => ({
   workspaceId: row.workspace_id || null,
 });
 
-const mapExpenseRow = (row) => ({
-  ...parseExpenseNote(row.notes || row.description || ''),
+const mapExpenseRow = (row) => {
+  const parsedExpenseNote = parseExpenseNote(row.notes || row.note || row.description || '');
+
+  return ({
+  ...parsedExpenseNote,
   id: `expense-${row.id}`,
   entryType: 'expense',
   amount: roundCurrency(row.amount),
   currency: DEFAULT_CURRENCY,
   method: 'expense',
   receivedDate: formatDateKey(row.expense_date),
-  note: parseExpenseNote(row.notes || row.description || '').noteBody,
+  note: parsedExpenseNote.noteBody,
   status: normalizeStatus(row.status),
   recordedByUserId: row.created_by || null,
   recordedByDisplayName: row.created_by_display_name || row.created_by_name || 'Team',
@@ -126,7 +129,8 @@ const mapExpenseRow = (row) => ({
   sourceId: row.reference_id || row.id || null,
   organizationId: row.organization_id || null,
   workspaceId: row.workspace_id || null,
-});
+  });
+};
 
 const normalizeExpenseId = (entryId) =>
   String(entryId || '')

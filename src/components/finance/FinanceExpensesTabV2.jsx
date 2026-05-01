@@ -206,7 +206,12 @@ const FinanceExpensesTabV2 = ({ filters, refreshTrigger, onAddExpense, onEditExp
 
                     <p className="mt-3 text-2xl font-bold tracking-[-0.05em] text-slate-950">{formatMoney(entry.amount)}</p>
                     {entry.note ? (
-                      <p className="mt-2 text-sm leading-6 text-slate-600">{entry.note}</p>
+                      <div className="mt-3 rounded-[18px] border border-slate-200 bg-slate-50 px-3 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                          {tr('Note', 'Note')}
+                        </p>
+                        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">{entry.note}</p>
+                      </div>
                     ) : null}
                   </div>
 
