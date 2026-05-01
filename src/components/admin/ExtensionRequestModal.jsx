@@ -7,7 +7,13 @@ import ExtensionPricingService from '../../services/ExtensionPricingService';
 import { canApproveRentalExtensions, canEditExtensionPrice, requiresExtensionApproval } from '../../utils/permissionHelpers';
 import { supabase } from '../../lib/supabase';
 
-export default function ExtensionRequestModal({ isOpen, onClose, rental, onExtensionCreated, currentUser, editingExtension = null }) {
+const normalizeInitialExtensionHours = (value) => {
+  const parsed = Math.ceil(Number(value || 1));
+  if (!Number.isFinite(parsed) || parsed <= 0) return 1;
+  return Math.min(24, parsed);
+};
+
+export default function ExtensionRequestModal({ isOpen, onClose, rental, onExtensionCreated, currentUser, editingExtension = null, initialExtensionHours = 1 }) {
   const [extensionType, setExtensionType] = useState('hours');
   const [selectedHours, setSelectedHours] = useState(1);
   const [selectedDays, setSelectedDays] = useState(1);
@@ -34,7 +40,10 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
   const canOverrideExtensionPrice = canEditExtensionPrice(currentUser);
   const extensionApprovalRequired = requiresExtensionApproval(currentUser);
   const canAutoApproveExtension = canApproveExtensionPrice || !extensionApprovalRequired;
-  const hourOptions = [1, 2, 3, 4];
+  const normalizedInitialExtensionHours = normalizeInitialExtensionHours(initialExtensionHours);
+  const hourOptions = [...new Set([1, 2, 3, 4, normalizedInitialExtensionHours, selectedHours])]
+    .filter((hours) => Number.isFinite(hours) && hours > 0)
+    .sort((a, b) => a - b);
   const dayOptions = [1, 2, 3, 4];
 
   useEffect(() => {
@@ -82,7 +91,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
       setError(null);
     } else {
       setExtensionType('hours');
-      setSelectedHours(1);
+      setSelectedHours(normalizedInitialExtensionHours);
       setSelectedDays(1);
       setManualPriceOverride(false);
       setCustomPrice('');
@@ -93,7 +102,7 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
       setShowCalculator(false);
       setError(null);
     }
-  }, [editingExtension, isOpen]);
+  }, [editingExtension, isOpen, normalizedInitialExtensionHours]);
 
   useEffect(() => {
     if (!isOpen || !editingExtension || !availablePackages.length) return;

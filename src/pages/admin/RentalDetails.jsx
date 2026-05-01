@@ -1604,6 +1604,58 @@ const getScheduledRentalTimingState = (scheduledStartValue, timingSettings, nowV
   };
 };
 
+const formatLateExtensionDuration = (minutes = 0) => {
+  const safeMinutes = Math.max(0, Math.floor(Number(minutes || 0)));
+  const hours = Math.floor(safeMinutes / 60);
+  const remainingMinutes = safeMinutes % 60;
+  if (hours <= 0) return `${remainingMinutes}m`;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+};
+
+const getLateExtensionSuggestion = (rental, timingSettings, nowValue = Date.now(), plannedEndDate = null) => {
+  const rentalStatus = String(rental?.rental_status || '').toLowerCase();
+  if (!rental || rentalStatus !== 'active') {
+    return {
+      isLate: false,
+      isChargeable: false,
+      minutesLate: 0,
+      thresholdMinutes: Number(timingSettings?.extraHourThresholdMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes),
+      suggestedHours: 1,
+    };
+  }
+
+  const plannedEnd = plannedEndDate instanceof Date
+    ? plannedEndDate
+    : new Date(plannedEndDate || rental?.rental_end_date || rental?.actual_end_date || '');
+  if (Number.isNaN(plannedEnd.getTime())) {
+    return {
+      isLate: false,
+      isChargeable: false,
+      minutesLate: 0,
+      thresholdMinutes: Number(timingSettings?.extraHourThresholdMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes),
+      suggestedHours: 1,
+    };
+  }
+
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  const safeNow = Number.isNaN(now.getTime()) ? new Date() : now;
+  const thresholdMinutes = Math.max(
+    0,
+    Number(timingSettings?.extraHourThresholdMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes) ||
+      DEFAULT_RENTAL_TIMING_SETTINGS.extraHourThresholdMinutes
+  );
+  const minutesLate = Math.max(0, Math.floor((safeNow.getTime() - plannedEnd.getTime()) / 60000));
+  const chargeableMinutes = Math.max(0, minutesLate - thresholdMinutes);
+
+  return {
+    isLate: minutesLate > 0,
+    isChargeable: chargeableMinutes > 0,
+    minutesLate,
+    thresholdMinutes,
+    suggestedHours: Math.max(1, Math.ceil(chargeableMinutes / 60) || 1),
+  };
+};
+
 const WEBSITE_BOOKING_SOURCE_FIELDS = [
   'booking_source',
   'rental_source',
@@ -2924,6 +2976,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
   // Extension state
   const [extensionModalOpen, setExtensionModalOpen] = useState(false);
   const [editingExtension, setEditingExtension] = useState(null);
+  const [initialExtensionHours, setInitialExtensionHours] = useState(1);
   const [extensions, setExtensions] = useState([]);
   const [loadingExtensions, setLoadingExtensions] = useState(false);
   const openExtensionHandledRef = useRef(false);
@@ -3701,6 +3754,7 @@ const calculateDailyTierPricingBreakdown = async () => {
         // Make sure setExtensionModalOpen exists in your component
         if (typeof setExtensionModalOpen === 'function') {
           setEditingExtension(null);
+          setInitialExtensionHours(1);
           setExtensionModalOpen(true);
           
           // Clean up the URL (remove the query parameter)
@@ -5250,6 +5304,13 @@ Click the link above to review and approve the extension.`;
     }, 500); // Wait 500ms before starting generation (debounce)
   };
 
+  const openExtensionFlow = useCallback((suggestedHours = 1) => {
+    const normalizedHours = Math.max(1, Math.min(24, Math.ceil(Number(suggestedHours || 1)) || 1));
+    setEditingExtension(null);
+    setInitialExtensionHours(normalizedHours);
+    setExtensionModalOpen(true);
+  }, []);
+
   // ✅ MODIFIED: Remove auto-WhatsApp trigger from extension creation
   const handleExtensionCreated = async (extensionContext = null) => {
     if (RENTAL_DEBUG) console.log('🔄 Extension created, reloading data...');
@@ -5304,6 +5365,7 @@ Click the link above to review and approve the extension.`;
 
   const handleEditExtension = (extension) => {
     setEditingExtension(extension);
+    setInitialExtensionHours(Math.max(1, Math.ceil(Number(extension?.extension_hours || 1)) || 1));
     setExtensionModalOpen(true);
   };
 
@@ -12642,6 +12704,37 @@ useEffect(() => {
     rental?.deposit_amount,
     rentalStatusLower,
   ]);
+  const lateExtensionSuggestion = useMemo(() => getLateExtensionSuggestion(
+    rental,
+    rentalTimingSettings,
+    currentTimeRef.current || Date.now(),
+    getEffectiveRentalEndDate(rental)
+  ), [
+    elapsedTime,
+    getEffectiveRentalEndDate,
+    rental,
+    rentalTimingSettings,
+    timeRemaining,
+  ]);
+  const canOpenExtensionFlow =
+    isActive &&
+    !effectiveReplacementPauseStartedAt &&
+    !['completed', 'cancelled', 'no_show', 'no_show_review'].includes(rentalStatusLower);
+  const extensionActionHours = lateExtensionSuggestion?.isChargeable
+    ? lateExtensionSuggestion.suggestedHours
+    : 1;
+  const extensionActionLabel = lateExtensionSuggestion?.isChargeable
+    ? tr(
+        `Add late extension · ${lateExtensionSuggestion.suggestedHours}h`,
+        `Ajouter retard · ${lateExtensionSuggestion.suggestedHours}h`
+      )
+    : tr('Extend time', 'Prolonger');
+  const extensionActionHelper = lateExtensionSuggestion?.isChargeable
+    ? tr(
+        `Late by ${formatLateExtensionDuration(lateExtensionSuggestion.minutesLate)}. After ${lateExtensionSuggestion.thresholdMinutes} min, suggested charge is ${lateExtensionSuggestion.suggestedHours} extra hour${lateExtensionSuggestion.suggestedHours > 1 ? 's' : ''}.`,
+        `Retard de ${formatLateExtensionDuration(lateExtensionSuggestion.minutesLate)}. Après ${lateExtensionSuggestion.thresholdMinutes} min, charge suggérée : ${lateExtensionSuggestion.suggestedHours} heure${lateExtensionSuggestion.suggestedHours > 1 ? 's' : ''} en plus.`
+      )
+    : '';
   const priceOverrideMeta = parsePriceOverrideMeta(rental?.price_override_reason);
   const effectivePriceOverrideMeta = priceOverrideMeta || priceOverrideAuditMeta;
   const rawPriceOverrideReason =
@@ -13582,17 +13675,19 @@ useEffect(() => {
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
-          {!effectiveReplacementPauseStartedAt && closingMedia.length === 0 && (
+          {canOpenExtensionFlow && (
             <button
               type="button"
-              onClick={() => {
-                setEditingExtension(null);
-                setExtensionModalOpen(true);
-              }}
-              className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 shadow-sm"
+              onClick={() => openExtensionFlow(extensionActionHours)}
+              title={extensionActionHelper || undefined}
+              className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold shadow-sm ${
+                lateExtensionSuggestion?.isChargeable
+                  ? 'border-amber-200 bg-amber-50 text-amber-700'
+                  : 'border-violet-200 bg-violet-50 text-violet-700'
+              }`}
             >
               <Clock className="h-3.5 w-3.5" />
-              {tr('Extend time', 'Prolonger')}
+              {extensionActionLabel}
             </button>
           )}
           <button
@@ -13605,6 +13700,11 @@ useEffect(() => {
             {tr('Replace vehicle', 'Remplacer le véhicule')}
           </button>
         </div>
+        {canOpenExtensionFlow && extensionActionHelper ? (
+          <p className="mt-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">
+            {extensionActionHelper}
+          </p>
+        ) : null}
       </div>
 
       <div className={LIGHT_RENTAL_ACTION_DOCK_CLASS}>
@@ -13905,6 +14005,41 @@ useEffect(() => {
               </div>
             )}
           </div>
+
+          {canOpenExtensionFlow ? (
+            <div className={`mt-4 rounded-2xl border px-4 py-3 shadow-sm ${
+              lateExtensionSuggestion?.isChargeable
+                ? 'border-amber-200 bg-amber-50'
+                : 'border-violet-100 bg-white/90'
+            }`}>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className={`text-sm font-bold ${
+                    lateExtensionSuggestion?.isChargeable ? 'text-amber-800' : 'text-slate-900'
+                  }`}>
+                    {extensionActionLabel}
+                  </p>
+                  <p className={`mt-1 text-xs ${
+                    lateExtensionSuggestion?.isChargeable ? 'text-amber-700' : 'text-slate-500'
+                  }`}>
+                    {extensionActionHelper || tr('Add time before closing if the customer keeps the vehicle longer.', 'Ajoutez du temps avant la clôture si le client garde le véhicule plus longtemps.')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openExtensionFlow(extensionActionHours)}
+                  className={`inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold shadow-sm ${
+                    lateExtensionSuggestion?.isChargeable
+                      ? 'bg-amber-500 text-white hover:bg-amber-600'
+                      : 'bg-violet-600 text-white hover:bg-violet-700'
+                  }`}
+                >
+                  <Clock className="h-4 w-4" />
+                  {tr('Add extension', 'Ajouter')}
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-4 rounded-2xl border border-violet-100 bg-white/90 px-4 py-3 text-xs text-slate-500 shadow-sm">
             {nextFinishWorkflowStep ? finishWorkflowNextStepHint : tr('All finish steps are complete.', 'Toutes les étapes de clôture sont terminées.')}
@@ -15292,16 +15427,18 @@ useEffect(() => {
                             {tr('End Now', 'Terminer maintenant')}
                           </Button>
                           
-                          {closingMedia.length === 0 && (
+                          {canOpenExtensionFlow && (
                             <Button 
-                              onClick={() => {
-                                setEditingExtension(null);
-                                setExtensionModalOpen(true);
-                              }}
-                              className="bg-violet-700 hover:bg-violet-800 text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg"
+                              onClick={() => openExtensionFlow(extensionActionHours)}
+                              title={extensionActionHelper || undefined}
+                              className={`text-white px-6 sm:px-8 py-4 sm:py-6 text-base sm:text-lg font-semibold shadow-sm transition-all duration-200 hover:scale-[1.01] rounded-lg ${
+                                lateExtensionSuggestion?.isChargeable
+                                  ? 'bg-amber-500 hover:bg-amber-600'
+                                  : 'bg-violet-700 hover:bg-violet-800'
+                              }`}
                             >
                               <Clock className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
-                              {tr('Extend Time', 'Prolonger')}
+                              {extensionActionLabel}
                             </Button>
                           )}
 
@@ -15981,6 +16118,42 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         </select>
                       </div>
                     </div>
+
+                    {canOpenExtensionFlow && (
+                      <div className={`rounded-xl border px-3 py-2.5 shadow-sm ${
+                        lateExtensionSuggestion?.isChargeable
+                          ? 'border-amber-200 bg-amber-50'
+                          : 'border-violet-100 bg-white'
+                      }`}>
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className={`text-xs font-bold ${
+                              lateExtensionSuggestion?.isChargeable ? 'text-amber-800' : 'text-slate-900'
+                            }`}>
+                              {extensionActionLabel}
+                            </p>
+                            <p className={`mt-1 text-xs ${
+                              lateExtensionSuggestion?.isChargeable ? 'text-amber-700' : 'text-slate-500'
+                            }`}>
+                              {extensionActionHelper || tr('Add time before completing the return.', 'Ajoutez du temps avant de terminer le retour.')}
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            onClick={() => openExtensionFlow(extensionActionHours)}
+                            size="sm"
+                            className={`w-full text-xs font-semibold sm:w-auto ${
+                              lateExtensionSuggestion?.isChargeable
+                                ? 'bg-amber-500 text-white hover:bg-amber-600'
+                                : 'bg-violet-700 text-white hover:bg-violet-800'
+                            }`}
+                          >
+                            <Clock className="mr-1.5 h-3.5 w-3.5" />
+                            {tr('Add extension', 'Ajouter')}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Complete Rental — appears inline once all 3 steps done */}
                     {closingInspectionStepComplete &&
@@ -16923,6 +17096,14 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         "Cette location suit le tarif standard du modèle sans forfait kilométrique lié."
                       )}
                     </p>
+                    {String(rental?.rental_type || '').toLowerCase() === 'hourly' ? (
+                      <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                        {tr(
+                          `Late extension rule: after ${lateExtensionSuggestion.thresholdMinutes} minutes past the expected return time, staff should add the next base-price hour. The late extension button suggests the billable hours automatically.`,
+                          `Règle de prolongation retard : après ${lateExtensionSuggestion.thresholdMinutes} minutes au-delà de l’heure de retour prévue, l’équipe doit ajouter l’heure suivante au tarif de base. Le bouton de retard suggère automatiquement les heures facturables.`
+                        )}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -21099,6 +21280,7 @@ Breakdown:
         onExtensionCreated={handleExtensionCreated}
         currentUser={currentUser}
         editingExtension={editingExtension}
+        initialExtensionHours={initialExtensionHours}
       />
 
       <Dialog open={showReplaceVehicleDialog} onOpenChange={(open) => { if (!open) closeReplaceVehicleDialog(); }}>
