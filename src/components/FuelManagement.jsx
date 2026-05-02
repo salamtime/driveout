@@ -170,7 +170,7 @@ const FuelManagement = () => {
   const [showVehicleActionModal, setShowVehicleActionModal] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [editTransaction, setEditTransaction] = useState(null);
-  const [transactionType, setTransactionType] = useState('refill');
+  const [transactionType, setTransactionType] = useState('tank_refill');
   const [prefilledVehicleId, setPrefilledVehicleId] = useState('');
   const [selectedVehicleActionTarget, setSelectedVehicleActionTarget] = useState(null);
   const [isEditingTankCapacity, setIsEditingTankCapacity] = useState(false);
@@ -187,6 +187,9 @@ const FuelManagement = () => {
   const [tankHistoryTransactions, setTankHistoryTransactions] = useState([]);
   const [tankHistoryLoading, setTankHistoryLoading] = useState(false);
   const [tankHistoryPage, setTankHistoryPage] = useState(1);
+  const [fuelHealthReport, setFuelHealthReport] = useState(null);
+  const [fuelHealthLoading, setFuelHealthLoading] = useState(false);
+  const [fuelReconcileLoading, setFuelReconcileLoading] = useState(false);
 
   // Filter states for transactions tab
   const [filters, setFilters] = useState({
@@ -269,7 +272,7 @@ const FuelManagement = () => {
     try {
       const { data, error } = await supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('id, name, plate_number, model, vehicle_type, current_odometer')
+        .select('id, name, plate_number, model, vehicle_type, current_odometer, status')
         .order('name');
 
       if (error) {
@@ -278,7 +281,7 @@ const FuelManagement = () => {
         return;
       }
 
-      setVehicles(data || []);
+      setVehicles((data || []).filter((vehicle) => String(vehicle?.status || '').trim().toLowerCase() !== 'sold'));
     } catch (error) {
       console.error('❌ Error loading vehicles:', error);
       setVehicles([]);
@@ -387,6 +390,27 @@ const FuelManagement = () => {
     }
   };
 
+  const loadFuelHealthReport = useCallback(async () => {
+    if (!['owner', 'admin'].includes(userProfile?.role)) {
+      return;
+    }
+
+    setFuelHealthLoading(true);
+    try {
+      const report = await FuelTransactionService.getFuelSystemHealthReport();
+      setFuelHealthReport(report);
+    } catch (error) {
+      console.error('Error loading fuel health report:', error);
+      toast.error(
+        isFrench
+          ? 'Impossible de charger les diagnostics carburant'
+          : 'Unable to load fuel health diagnostics'
+      );
+    } finally {
+      setFuelHealthLoading(false);
+    }
+  }, [userProfile?.role, isFrench]);
+
   const hydrateMergedFuelHistory = async () => {
     try {
       const recentTransactionsResult = await FuelTransactionService.getAllTransactions({
@@ -402,6 +426,14 @@ const FuelManagement = () => {
       console.error('Error hydrating fuel history:', error);
     }
   };
+
+  useEffect(() => {
+    if (activeTab !== 'overview' || !['owner', 'admin'].includes(userProfile?.role)) {
+      return;
+    }
+
+    loadFuelHealthReport();
+  }, [activeTab, userProfile?.role, loadFuelHealthReport]);
 
   const loadTankHistoryData = async () => {
     setTankHistoryLoading(true);
@@ -483,8 +515,48 @@ const FuelManagement = () => {
     ]);
   }, [activeTab]);
 
+  const refreshFuelWorkspaceFast = useCallback(async () => {
+    const [tankResult, vehicleStatesResult] = await Promise.allSettled([
+      FuelTransactionService.getFuelTankData(),
+      FuelTransactionService.getVehicleFuelStatesFast(),
+    ]);
+
+    if (tankResult.status === 'fulfilled' && tankResult.value) {
+      setFuelData((prev) => ({
+        ...prev,
+        tank: tankResult.value,
+      }));
+      setTankCapacityInput(String(tankResult.value?.capacity || tankResult.value?.capacity_liters || 500));
+    }
+
+    if (vehicleStatesResult.status === 'fulfilled' && Array.isArray(vehicleStatesResult.value)) {
+      setVehicleStates(vehicleStatesResult.value);
+      writeCachedVehicleBoardSnapshot(vehicleStatesResult.value);
+      appWarmupService.setWarmFuelSnapshot({
+        ...warmFuelSnapshot,
+        vehicleStates: vehicleStatesResult.value,
+        overviewSummary: cachedOverviewSummary
+          ? {
+              ...cachedOverviewSummary,
+              tank: tankResult.status === 'fulfilled' && tankResult.value ? tankResult.value : cachedOverviewSummary.tank,
+              vehicleStates: vehicleStatesResult.value,
+            }
+          : cachedOverviewSummary,
+      });
+    }
+  }, [warmFuelSnapshot, cachedOverviewSummary]);
+
+  const repaintFuelWorkspace = useCallback(() => {
+    void refreshFuelWorkspaceFast().catch((error) => {
+      console.error('Fast fuel workspace repaint failed:', error);
+    });
+    void refreshFuelWorkspace().catch((error) => {
+      console.error('Background fuel workspace hydration failed:', error);
+    });
+  }, [refreshFuelWorkspaceFast, refreshFuelWorkspace]);
+
   useFuelRealtimeSync(() => {
-    void refreshFuelWorkspace();
+    repaintFuelWorkspace();
   }, {
     enabled: tablesExist !== false,
   });
@@ -504,14 +576,14 @@ const FuelManagement = () => {
               className="rounded-2xl bg-green-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-green-700"
               title={tr('Add fuel into the main tank', 'Ajouter du carburant dans le reservoir principal')}
             >
-              ⛽ {tr('Tank In', 'Entree reservoir')}
+              ⛽ {tr('Add to Tank', 'Ajouter au réservoir')}
             </button>
             <button
               onClick={() => handleAddTransaction('tank_out')}
               className="rounded-2xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-amber-700"
               title={tr('Remove fuel from the main tank', 'Retirer du carburant du reservoir principal')}
             >
-              🛢️ {tr('Tank Out', 'Sortie reservoir')}
+              🛢️ {tr('Remove from Tank', 'Retirer du réservoir')}
             </button>
             {canEditTankLevel && (
               <button
@@ -1014,8 +1086,8 @@ const FuelManagement = () => {
   };
 
   // Modal handlers
-  const handleAddTransaction = (type = 'refill', transaction = null, vehicleId = '') => {
-    setTransactionType(type === 'refill' ? 'tank_refill' : type);
+  const handleAddTransaction = (type = 'tank_refill', transaction = null, vehicleId = '') => {
+    setTransactionType(type || 'tank_refill');
     setEditTransaction(transaction);
     setPrefilledVehicleId(vehicleId || transaction?.vehicle_id || '');
     setShowAddModal(true);
@@ -1046,11 +1118,55 @@ const FuelManagement = () => {
   const handleTransactionSuccess = (savedTransaction) => {
     appWarmupService.invalidateModule('fuel');
     appWarmupService.invalidateModule('finance');
-    loadFuelData(); // Refresh data after successful transaction
-    if (activeTab === 'fuel-tank') {
-      loadTankHistoryData();
+    repaintFuelWorkspace();
+    if (activeTab === 'overview' && ['owner', 'admin'].includes(userProfile?.role)) {
+      void loadFuelHealthReport();
+    }
+    const transactionType = String(savedTransaction?.transaction_type || '').toLowerCase();
+    if (transactionType === 'staff_fuel_use') {
+      toast.success(
+        tr(
+          'Staff fuel use saved and vehicle fuel level updated',
+          "Utilisation carburant équipe enregistrée et niveau du véhicule mis à jour"
+        )
+      );
+    } else if (transactionType === 'vehicle_refill') {
+      toast.success(tr('Direct Fill saved', 'Remplissage direct enregistré'));
+    } else if (transactionType === 'withdrawal') {
+      toast.success(tr('Tank Transfer saved', 'Transfert réservoir enregistré'));
     }
     handleCloseModal();
+  };
+
+  const handleReconcileFuelStates = async () => {
+    setFuelReconcileLoading(true);
+    try {
+      const result = await FuelTransactionService.reconcileVehicleFuelStates();
+      repaintFuelWorkspace();
+      await loadFuelHealthReport();
+
+      if (result?.failures?.length) {
+        toast.error(
+          tr(
+            `Rebuilt ${result.updated.length}/${result.total} vehicles. Some still need attention.`,
+            `Reconstruction terminee pour ${result.updated.length}/${result.total} vehicules. Certains necessitent encore une verification.`
+          )
+        );
+        return;
+      }
+
+      toast.success(
+        tr(
+          `Rebuilt live fuel state for ${result.updated.length} vehicles`,
+          `Etat carburant reconstruit pour ${result.updated.length} vehicules`
+        )
+      );
+    } catch (error) {
+      console.error('Fuel reconciliation failed:', error);
+      toast.error(tr('Failed to rebuild live fuel state', 'Echec de reconstruction de l etat carburant'));
+    } finally {
+      setFuelReconcileLoading(false);
+    }
   };
 
   const handleSaveTankCapacity = async () => {
@@ -1202,7 +1318,13 @@ const FuelManagement = () => {
     });
   };
 
+  const formatCooldownSeconds = (milliseconds) => {
+    const remainingSeconds = Math.max(0, Math.ceil(Number(milliseconds || 0) / 1000));
+    return `${remainingSeconds}s`;
+  };
+
   const isPrivilegedFuelViewer = ['owner', 'admin'].includes(userProfile?.role);
+  const canManageVehicleFuelBoard = ['owner', 'admin', 'employee'].includes(String(userProfile?.role || '').toLowerCase());
   const canEditTankLevel = canAdjustFuelTankLevel(userProfile);
 
   const safeRefills = getRecentRefills();
@@ -1294,11 +1416,118 @@ const FuelManagement = () => {
                 <div className="flex items-center gap-2">
                   <AlertTriangle className="w-5 h-5 text-yellow-600" />
                   <div>
-                    <h4 className="font-medium text-yellow-800">{isFrench ? 'Configuration de base de données requise' : 'Database Setup Required'}</h4>
+                    <h4 className="font-medium text-yellow-800">{isFrench ? 'Configuration carburant requise' : 'Fuel Setup Required'}</h4>
                     <p className="text-sm text-yellow-700">
-                      {isFrench ? 'Les tables de gestion du carburant sont introuvables. Veuillez exécuter le schéma SQL pour configurer fuel_tank, fuel_refills et fuel_withdrawals.' : 'Fuel management tables not found. Please run the SQL schema to set up fuel_tank, fuel_refills, and fuel_withdrawals tables.'}
+                      {isFrench
+                        ? 'Certaines tables carburant nécessaires sont absentes. Exécutez le schéma SQL pour terminer la configuration de Fuel et Fleet Sync.'
+                        : 'Some required fuel tables are missing. Run the SQL schema to finish setting up Fuel and Fleet Sync.'}
                     </p>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {isPrivilegedFuelViewer && (
+              <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-900">{tr('Fuel Sync Health', 'Santé de synchronisation carburant')}</h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {tr(
+                        'Check whether Fuel and Fleet are staying aligned, and refresh vehicle fuel levels if something drifts.',
+                        "Vérifiez que Carburant et Flotte restent bien synchronisés, puis rafraîchissez les niveaux si un écart apparaît."
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => loadFuelHealthReport()}
+                      disabled={fuelHealthLoading}
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {fuelHealthLoading ? tr('Refreshing...', 'Actualisation...') : tr('Refresh Sync Check', 'Actualiser le contrôle')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleReconcileFuelStates}
+                      disabled={fuelReconcileLoading}
+                      className="rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {fuelReconcileLoading ? tr('Refreshing...', 'Actualisation...') : tr('Refresh Vehicle Fuel Levels', 'Rafraîchir les niveaux carburant')}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{tr('Tracked vehicles', 'Véhicules suivis')}</p>
+                    <p className="mt-2 text-2xl font-semibold text-slate-900">{fuelHealthReport?.totals?.vehicleStates ?? '—'}</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{tr('Vehicles to review', 'Véhicules à vérifier')}</p>
+                    <p className={`mt-2 text-2xl font-semibold ${(fuelHealthReport?.totals?.mismatches || 0) > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                      {fuelHealthReport?.totals?.mismatches ?? '—'}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{tr('Live fuel records', 'Enregistrements carburant')}</p>
+                    <p className={`mt-2 text-sm font-semibold ${fuelHealthReport?.tables?.vehicleFuelState ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {fuelHealthReport?.tables?.vehicleFuelState ? tr('Available', 'Disponible') : tr('Missing', 'Absente')}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{tr('Activity log', "Journal d'activité")}</p>
+                    <p className={`mt-2 text-sm font-semibold ${fuelHealthReport?.cooldowns?.fuelOperationLogs?.active ? 'text-amber-600' : 'text-emerald-600'}`}>
+                      {fuelHealthReport?.cooldowns?.fuelOperationLogs?.active
+                        ? tr(
+                            `Temporarily paused for ${formatCooldownSeconds(fuelHealthReport.cooldowns.fuelOperationLogs.remainingMs)}`,
+                            `Temporairement en pause pendant ${formatCooldownSeconds(fuelHealthReport.cooldowns.fuelOperationLogs.remainingMs)}`
+                          )
+                        : tr('Up to date', 'À jour')}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className={`h-4 w-4 ${(fuelHealthReport?.totals?.mismatches || 0) > 0 ? 'text-amber-500' : 'text-emerald-500'}`} />
+                    <p className="text-sm font-semibold text-slate-900">
+                      {tr('Vehicles needing review', 'Véhicules à vérifier')}
+                    </p>
+                  </div>
+
+                  {fuelHealthLoading ? (
+                    <p className="mt-3 text-sm text-slate-500">{tr('Checking sync status...', 'Vérification de la synchronisation...')}</p>
+                  ) : (fuelHealthReport?.mismatches || []).length === 0 ? (
+                    <p className="mt-3 text-sm text-slate-600">
+                      {tr('Everything looks aligned right now.', 'Tout semble bien aligné pour le moment.')}
+                    </p>
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      {fuelHealthReport.mismatches.slice(0, 6).map((item) => (
+                        <div
+                          key={`fuel-health-${item.vehicle_id}`}
+                          className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-3 md:flex-row md:items-center md:justify-between"
+                        >
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">
+                              {item.vehicle_name}
+                              {item.plate_number ? ` • ${item.plate_number}` : ''}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {tr('Current source:', 'Source actuelle :')} {item.live_source || tr('unknown', 'inconnue')}
+                              {item.rental_source ? ` • ${tr('Latest rental source:', 'Dernière source location :')} ${item.rental_source}` : ''}
+                            </p>
+                          </div>
+                          <div className="text-sm text-slate-700 md:text-right">
+                            <p>{tr('Current level:', 'Niveau actuel :')} <span className="font-semibold">{item.live_lines}/8</span></p>
+                            <p>{tr('Latest rental level:', 'Dernier niveau location :')} <span className="font-semibold">{item.rental_lines ?? '—'}/8</span></p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1311,7 +1540,7 @@ const FuelManagement = () => {
                   className="rounded-2xl bg-green-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-green-700"
                   title={tr('Add fuel into the main tank', 'Ajouter du carburant dans le réservoir principal')}
                 >
-                  {isFrench ? '⛽ Entrée réservoir' : '⛽ Tank In'}
+                  {isFrench ? '⛽ Ajouter au réservoir' : '⛽ Add to Tank'}
                 </button>
                 <button
                   onClick={() => handleAddTransaction('vehicle_refill')}
@@ -1325,7 +1554,7 @@ const FuelManagement = () => {
                   className="rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
                   title={tr('Transfer fuel from the main tank to a vehicle', 'Transférer le carburant du réservoir principal vers un véhicule')}
                 >
-                  {isFrench ? '🔄 Transfert' : '🔄 Transfer'}
+                  {isFrench ? '🔄 Transfert réservoir' : '🔄 Tank Transfer'}
                 </button>
               </div>
 
@@ -1339,7 +1568,7 @@ const FuelManagement = () => {
                     onClick={() => handleAddTransaction('withdrawal')}
                     className="text-blue-600 hover:text-blue-700 text-sm font-medium"
                   >
-                    {tr('Transfer Fuel', 'Transférer du carburant')} →
+                    {tr('Tank Transfer', 'Transfert réservoir')} →
                   </button>
                 </div>
                 <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1376,8 +1605,16 @@ const FuelManagement = () => {
                       <button
                         key={vehicle.id}
                         type="button"
-                        onClick={() => handleOpenVehicleActions(vehicle)}
-                        className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-left transition hover:border-blue-300 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        onClick={() => {
+                          if (canManageVehicleFuelBoard) {
+                            handleOpenVehicleActions(vehicle);
+                          }
+                        }}
+                        className={`rounded-lg border border-gray-200 bg-gray-50 p-4 text-left transition focus:outline-none ${
+                          canManageVehicleFuelBoard
+                            ? 'hover:border-blue-300 hover:bg-blue-50 focus:ring-2 focus:ring-blue-500'
+                            : 'cursor-default'
+                        }`}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div>
@@ -1415,9 +1652,11 @@ const FuelManagement = () => {
                         <p className="mt-2 text-xs text-gray-500">
                           {tr('Last source:', 'Dernière source :')} {vehicle.last_fuel_source || tr('unknown', 'inconnue')}
                         </p>
-                        <p className="mt-3 text-xs font-medium text-blue-700">
-                          {tr('Tap for vehicle fuel actions', 'Appuyez pour les actions carburant du véhicule')}
-                        </p>
+                        {canManageVehicleFuelBoard ? (
+                          <p className="mt-3 text-xs font-medium text-blue-700">
+                            {tr('Tap for vehicle fuel actions', 'Appuyez pour les actions carburant du véhicule')}
+                          </p>
+                        ) : null}
                       </button>
                     ))
                   )}
@@ -1670,7 +1909,7 @@ const FuelManagement = () => {
                   className="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-white transition-colors hover:bg-green-700"
                 >
                   <Plus className="w-4 h-4" />
-                  {isFrench ? '⛽ Entrée réservoir' : '⛽ Tank In'}
+                  {isFrench ? '⛽ Ajouter au réservoir' : '⛽ Add to Tank'}
                 </button>
 
                 <button
@@ -1678,7 +1917,7 @@ const FuelManagement = () => {
                   className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
                 >
                   <Minus className="w-4 h-4" />
-                  {isFrench ? '🔄 Transfert' : '🔄 Transfer'}
+                  {isFrench ? '🔄 Transfert réservoir' : '🔄 Tank Transfer'}
                 </button>
 
                 <button
@@ -1697,9 +1936,12 @@ const FuelManagement = () => {
                 <div className="flex items-center gap-2">
                   <AlertTriangle className="w-5 h-5 text-yellow-600" />
                   <div>
-                    <h4 className="font-medium text-yellow-800">{tr('Database Setup Required', 'Configuration de base de données requise')}</h4>
+                    <h4 className="font-medium text-yellow-800">{tr('Fuel Setup Required', 'Configuration carburant requise')}</h4>
                     <p className="text-sm text-yellow-700">
-                      {tr('Fuel management tables not found. Please run the SQL schema to set up fuel_tank, fuel_refills, and fuel_withdrawals tables.', 'Les tables de gestion du carburant sont introuvables. Veuillez exécuter le schéma SQL pour configurer fuel_tank, fuel_refills et fuel_withdrawals.')}
+                      {tr(
+                        'Some required fuel tables are missing. Run the SQL schema to finish setting up Fuel and Fleet Sync.',
+                        'Certaines tables carburant nécessaires sont absentes. Exécutez le schéma SQL pour terminer la configuration de Fuel et Fleet Sync.'
+                      )}
                     </p>
                   </div>
                 </div>
@@ -1765,7 +2007,7 @@ const FuelManagement = () => {
         />
       )}
 
-      {showVehicleActionModal && selectedVehicleActionTarget && (
+      {showVehicleActionModal && selectedVehicleActionTarget && canManageVehicleFuelBoard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
           <div className="w-full max-w-sm rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_24px_60px_rgba(15,23,42,0.22)]">
             <div className="flex items-start justify-between gap-4">
@@ -1777,6 +2019,12 @@ const FuelManagement = () => {
                 <p className="mt-1 font-mono text-sm font-semibold tracking-wide text-blue-700">
                   {selectedVehicleActionTarget.plate_number || tr('No Plate', 'Aucune plaque')}
                 </p>
+                <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700">
+                  <Fuel className="h-4 w-4 text-slate-500" />
+                  <span>
+                    {tr('Current fuel', 'Carburant actuel')}: {Number(selectedVehicleActionTarget.current_fuel_lines || 0)}/8
+                  </span>
+                </div>
               </div>
               <button
                 type="button"
@@ -1798,15 +2046,23 @@ const FuelManagement = () => {
                 className="rounded-2xl bg-indigo-600 px-4 py-4 text-left text-white transition-colors hover:bg-indigo-700"
               >
                 <div className="text-base font-semibold">{isFrench ? '🚗 Remplissage direct' : '🚗 Direct Fill'}</div>
-                <div className="mt-1 text-sm text-indigo-100">{tr('Refill this vehicle directly', 'Remplir ce véhicule directement')}</div>
+                <div className="mt-1 text-sm text-indigo-100">{tr('Add fuel directly into this vehicle', 'Ajouter du carburant directement dans ce véhicule')}</div>
               </button>
               <button
                 type="button"
                 onClick={() => handleVehicleActionChoice('withdrawal')}
                 className="rounded-2xl bg-blue-600 px-4 py-4 text-left text-white transition-colors hover:bg-blue-700"
               >
-                <div className="text-base font-semibold">{isFrench ? '🔄 Transfert' : '🔄 Transfer'}</div>
-                <div className="mt-1 text-sm text-blue-100">{tr('Move fuel from main tank to this vehicle', 'Déplacer le carburant du réservoir principal vers ce véhicule')}</div>
+                <div className="text-base font-semibold">{isFrench ? '🔄 Transfert réservoir' : '🔄 Tank Transfer'}</div>
+                <div className="mt-1 text-sm text-blue-100">{tr('Move fuel from the main tank into this vehicle', 'Déplacer le carburant du réservoir principal dans ce véhicule')}</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleVehicleActionChoice('staff_fuel_use')}
+                className="rounded-2xl bg-rose-600 px-4 py-4 text-left text-white transition-colors hover:bg-rose-700"
+              >
+                <div className="text-base font-semibold">{isFrench ? '👤 Utilisation carburant équipe' : '👤 Staff Fuel Use'}</div>
+                <div className="mt-1 text-sm text-rose-100">{tr('Record fuel used while staff are driving this vehicle', "Enregistrer le carburant utilisé lorsque l'équipe conduit ce véhicule")}</div>
               </button>
             </div>
           </div>

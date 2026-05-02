@@ -10,6 +10,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const [imageError, setImageError] = useState(false);
+  const isFinancialTransaction = transaction.is_financial_expense !== false && Number(transaction.cost || transaction.total_cost || 0) > 0;
 
   if (!isOpen || !transaction) return null;
 
@@ -89,6 +90,9 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
         return (litersAfter - litersBefore).toFixed(2);
       }
     }
+    if (transaction.transaction_type === 'staff_fuel_use') {
+      return `-${Number(transaction.amount || transaction.liters || 0).toFixed(2)}`;
+    }
     return transaction.amount || transaction.liters || transaction.liters_added || 0;
   };
 
@@ -151,7 +155,11 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
     if (!imageUrl) {
       return (
         <div className="text-gray-500 text-sm">
-          {transaction.transaction_type === 'vehicle_refill' ? 'No receipt or fuel photo uploaded' : 'No invoice image uploaded'}
+          {transaction.transaction_type === 'vehicle_refill'
+            ? 'No receipt or fuel photo uploaded'
+            : transaction.transaction_type === 'staff_fuel_use'
+              ? 'No attachment uploaded'
+              : 'No invoice image uploaded'}
         </div>
       );
     }
@@ -191,16 +199,18 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
 
   // Get modal title based on type
   const getTitle = () => {
-    if (transaction.transaction_type === 'withdrawal') return tr('Transfer Details', 'Détails du transfert');
+    if (transaction.transaction_type === 'withdrawal') return tr('Tank Transfer Details', 'Détails du transfert réservoir');
+    if (transaction.transaction_type === 'staff_fuel_use') return tr('Staff Fuel Use Details', "Détails d'utilisation carburant équipe");
     if (transaction.transaction_type === 'rental_opening_level') return tr('Rental Opening Fuel', "Carburant d'ouverture de location");
     if (transaction.transaction_type === 'rental_closing_level') return tr('Rental Return Fuel', 'Carburant au retour de location');
-    if (transaction.transaction_type === 'manual_adjustment') return tr('Manual Fuel Adjustment', 'Ajustement manuel du carburant');
-    if (modalType === 'tank') return tr('Tank In Details', "Détails d'entrée cuve");
+    if (transaction.transaction_type === 'manual_adjustment') return tr('Manual Fuel Correction', 'Correction manuelle du carburant');
+    if (modalType === 'tank') return tr('Tank Refill Details', 'Détails du remplissage réservoir');
     return tr('Direct Fill Details', 'Détails du remplissage direct');
   };
 
   const getMediaLabel = () => {
-    if (transaction.transaction_type === 'vehicle_refill') return tr('Receipt / Fuel Photo', 'Reçu / photo carburant');
+    if (transaction.transaction_type === 'vehicle_refill') return tr('Receipt / fuel photo', 'Reçu / photo carburant');
+    if (transaction.transaction_type === 'staff_fuel_use') return tr('Attachment', 'Pièce jointe');
     if (transaction.transaction_type === 'tank_refill') return tr('Invoice Image', 'Image de facture');
     return tr('Attachment', 'Pièce jointe');
   };
@@ -289,7 +299,9 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             <DollarSign className="h-5 w-5 text-gray-400 mt-0.5" />
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-700">{tr('Price per Liter', 'Prix par litre')}</p>
-              <p className="text-sm text-gray-900">{calculatePricePerLiter()} MAD</p>
+              <p className="text-sm text-gray-900">
+                {isFinancialTransaction ? `${calculatePricePerLiter()} MAD` : tr('Internal movement', 'Mouvement interne')}
+              </p>
             </div>
           </div>
 
@@ -298,7 +310,9 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             <DollarSign className="h-5 w-5 text-gray-400 mt-0.5" />
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-700">{tr('Total Cost', 'Coût total')}</p>
-              <p className="text-sm text-gray-900 font-semibold">{getTotalCost()} MAD</p>
+              <p className="text-sm text-gray-900 font-semibold">
+                {isFinancialTransaction ? `${getTotalCost()} MAD` : tr('Not charged', 'Non facturé')}
+              </p>
             </div>
           </div>
 

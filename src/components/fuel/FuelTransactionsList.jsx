@@ -336,11 +336,16 @@ const FuelTransactionsList = ({
     const numericAmount = roundFuelLitersForDisplay(transaction.amount || 0) || 0;
     const showSignedAmount =
       transaction.transaction_type === 'rental_closing_level' ||
-      transaction.transaction_type === 'manual_adjustment';
+      transaction.transaction_type === 'manual_adjustment' ||
+      transaction.transaction_type === 'staff_fuel_use';
 
     if (showSignedAmount && Number.isFinite(numericAmount)) {
-      if (numericAmount > 0) return `+${numericAmount.toFixed(1)}L`;
+      if (transaction.transaction_type === 'staff_fuel_use') {
+        if (numericAmount > 0) return `-${numericAmount.toFixed(1)}L`;
+        return '0.0L';
+      }
       if (numericAmount < 0) return `${numericAmount.toFixed(1)}L`;
+      if (numericAmount > 0) return `+${numericAmount.toFixed(1)}L`;
       return '0.0L';
     }
 
@@ -348,6 +353,10 @@ const FuelTransactionsList = ({
   };
 
   const getAmountClassName = (transaction) => {
+    if (transaction.transaction_type === 'staff_fuel_use') {
+      return 'text-rose-600';
+    }
+
     if (!['rental_closing_level', 'manual_adjustment'].includes(transaction.transaction_type)) {
       return 'text-gray-900';
     }
@@ -361,6 +370,10 @@ const FuelTransactionsList = ({
   const handlePageChange = (newPage) => {
     setPagination(prev => ({ ...prev, currentPage: newPage }));
   };
+
+  const canEditTransaction = (transaction) => (
+    ['tank_refill', 'tank_out', 'vehicle_refill', 'withdrawal'].includes(String(transaction?.transaction_type || '').toLowerCase())
+  );
 
   const handleLoadMore = () => {
     if (pagination.currentPage < pagination.totalPages && !refreshing) {
@@ -462,7 +475,7 @@ const FuelTransactionsList = ({
                   {isFrench ? 'Coût' : 'Cost'}
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  {isFrench ? 'Station / Lieu' : 'Station/Location'}
+                  {isFrench ? 'Station / Zone' : 'Station / Area'}
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   {isFrench ? 'Détails' : 'Details'}
@@ -491,14 +504,14 @@ const FuelTransactionsList = ({
                           className="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-white transition-colors hover:bg-green-700"
                         >
                           <Plus className="w-4 h-4" />
-                          {isFrench ? 'Entrée réservoir' : 'Tank In'}
+                          {isFrench ? 'Ajouter au réservoir' : 'Add to Tank'}
                         </button>
                         <button
                           onClick={() => onAddTransaction('withdrawal')}
                           className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
                         >
                           <Minus className="w-4 h-4" />
-                          {isFrench ? 'Transfert' : 'Transfer'}
+                          {isFrench ? 'Transfert réservoir' : 'Tank Transfer'}
                         </button>
                         <button
                           onClick={() => onAddTransaction('vehicle_refill')}
@@ -605,7 +618,11 @@ const FuelTransactionsList = ({
                           </div>
                         )}
                         {transaction.receipt_media && (
-                          <div className="text-xs text-blue-600">{isFrench ? 'Reçu joint' : 'Receipt attached'}</div>
+                          <div className="text-xs text-blue-600">
+                            {transaction.transaction_type === 'staff_fuel_use'
+                              ? (isFrench ? 'Pièce jointe' : 'Attachment added')
+                              : (isFrench ? 'Reçu joint' : 'Receipt attached')}
+                          </div>
                         )}
                         {!transaction.fuel_station && !transaction.location && (
                           <span className="text-gray-400">—</span>
@@ -650,16 +667,18 @@ const FuelTransactionsList = ({
                         >
                           <Eye className="w-4 h-4" />
                         </button>
-                        <button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onAddTransaction(transaction.transaction_type, transaction);
-                          }}
-                          className="text-gray-600 hover:text-gray-900 p-1 rounded"
-                          title={isFrench ? 'Modifier la transaction' : 'Edit Transaction'}
-                        >
-                          <Edit className="w-4 h-4" />
-                        </button>
+                        {canEditTransaction(transaction) && (
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onAddTransaction(transaction.transaction_type, transaction);
+                            }}
+                            className="text-gray-600 hover:text-gray-900 p-1 rounded"
+                            title={isFrench ? 'Modifier la transaction' : 'Edit Transaction'}
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                        )}
                         {canDeleteTransaction(transaction) && (
                           <button
                             onClick={(event) => {

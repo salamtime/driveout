@@ -33,6 +33,45 @@ const scheduleBackgroundTask = (callback) => {
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 const FLEET_LOCATIONS_TABLE = 'saharax_0u4w4d_locations';
+const VEHICLE_PROFILE_CACHE_PREFIX = 'vehicle-profile:core:';
+
+const isTransientSupabaseFailure = (error) => {
+  const normalized = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
+  return (
+    normalized.includes('503') ||
+    normalized.includes('504') ||
+    normalized.includes('520') ||
+    normalized.includes('service unavailable') ||
+    normalized.includes('gateway timeout') ||
+    normalized.includes('timeout') ||
+    normalized.includes('failed to fetch') ||
+    normalized.includes('fetch failed') ||
+    normalized.includes('err_failed') ||
+    normalized.includes('network error') ||
+    normalized.includes('networkerror') ||
+    normalized.includes('pgrst002') ||
+    normalized.includes('schema cache')
+  );
+};
+
+const readCachedVehicleProfile = (vehicleId) => {
+  if (typeof window === 'undefined' || !vehicleId) return null;
+  try {
+    const raw = window.sessionStorage.getItem(`${VEHICLE_PROFILE_CACHE_PREFIX}${vehicleId}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_error) {
+    return null;
+  }
+};
+
+const writeCachedVehicleProfile = (vehicleId, vehicleData) => {
+  if (typeof window === 'undefined' || !vehicleId || !vehicleData) return;
+  try {
+    window.sessionStorage.setItem(`${VEHICLE_PROFILE_CACHE_PREFIX}${vehicleId}`, JSON.stringify(vehicleData));
+  } catch (_error) {
+    // Ignore storage failures
+  }
+};
 
 const formatDate = (value) => {
   if (!value) return tr('Not set', 'Non défini');
@@ -93,6 +132,7 @@ const formatFuelEventLabel = (record) => {
   if (type === 'vehicle_refill') return tr('Direct refill', 'Remplissage direct');
   if (type === 'tank_refill') return tr('Tank refill', 'Remplissage cuve');
   if (type === 'withdrawal') return tr('Tank transfer', 'Transfert cuve');
+  if (type === 'staff_fuel_use') return tr('Staff fuel use', 'Utilisation carburant équipe');
   if (type === 'manual_adjustment') return tr('Manual fuel adjustment', 'Ajustement manuel carburant');
   return formatStatus(record?.transaction_type || tr('fuel event', 'événement carburant'));
 };
@@ -416,16 +456,28 @@ const VehicleProfile = () => {
 
       setLoading(true);
       setError(null);
+      const cachedVehicleProfile = readCachedVehicleProfile(vehicleId);
 
       try {
-        const { data: locationRows } = await supabase
-          .from(FLEET_LOCATIONS_TABLE)
-          .select('id, name, is_active, display_order')
-          .eq('is_active', true)
-          .order('display_order', { ascending: true })
-          .order('name', { ascending: true });
+        try {
+          const { data: locationRows, error: locationError } = await supabase
+            .from(FLEET_LOCATIONS_TABLE)
+            .select('id, name, is_active, display_order')
+            .eq('is_active', true)
+            .order('display_order', { ascending: true })
+            .order('name', { ascending: true });
 
-        setFleetLocations(Array.isArray(locationRows) ? locationRows : []);
+          if (locationError) {
+            throw locationError;
+          }
+
+          setFleetLocations(Array.isArray(locationRows) ? locationRows : []);
+        } catch (locationLoadError) {
+          if (!isTransientSupabaseFailure(locationLoadError)) {
+            console.error('Failed to load fleet locations for vehicle profile:', locationLoadError);
+          }
+          setFleetLocations([]);
+        }
 
         const { data: vehicleData, error: vehicleError } = await supabase
           .from(TBL.VEHICLES)
@@ -434,16 +486,47 @@ const VehicleProfile = () => {
           .single();
 
         if (vehicleError) {
+          if (cachedVehicleProfile && isTransientSupabaseFailure(vehicleError)) {
+            setVehicle(cachedVehicleProfile);
+            syncFormData(cachedVehicleProfile);
+            setVehicleDocuments(cachedVehicleProfile?.documents || []);
+            syncDispositionForm(VehicleDispositionService.getVehicleDisposition(vehicleId));
+            setAnnualTaxRecords([]);
+            setVehicleFinanceLoading(true);
+            setLoading(false);
+            toast.error(
+              tr(
+                'Live vehicle data is temporarily unavailable. Showing the last loaded profile.',
+                'Les données véhicule en direct sont temporairement indisponibles. Affichage du dernier profil chargé.'
+              )
+            );
+            return;
+          }
           throw vehicleError;
         }
 
-        const enrichedVehicleData = await attachLocationName(vehicleData);
+        let enrichedVehicleData = vehicleData;
+        try {
+          enrichedVehicleData = await attachLocationName(vehicleData);
+        } catch (locationAttachError) {
+          console.error('Failed to attach location name to vehicle profile:', locationAttachError);
+          enrichedVehicleData = {
+            ...vehicleData,
+            location_name: null,
+          };
+        }
 
         setVehicle(enrichedVehicleData);
+        writeCachedVehicleProfile(vehicleId, enrichedVehicleData);
         syncFormData(enrichedVehicleData);
         setVehicleDocuments(enrichedVehicleData?.documents || []);
         syncDispositionForm(VehicleDispositionService.getVehicleDisposition(vehicleId));
-        setAnnualTaxRecords(await VehicleAnnualTaxService.listForVehicle(vehicleId));
+        try {
+          setAnnualTaxRecords(await VehicleAnnualTaxService.listForVehicle(vehicleId));
+        } catch (annualTaxError) {
+          console.error('Failed to load annual tax records for vehicle profile:', annualTaxError);
+          setAnnualTaxRecords([]);
+        }
         setVehicleFinanceLoading(true);
         setLoading(false);
 
@@ -497,7 +580,7 @@ const VehicleProfile = () => {
                 .eq('vehicle_id', vehicleId)
                 .order('updated_at', { ascending: false }),
               FuelTransactionService.getAllTransactions({ limit: 200, offset: 0, vehicleId }),
-              FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: true }),
+              FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: false }),
               VehicleReportService.getReportsForVehicle(vehicleId),
               supabase
                 .from('app_4c3a7a6153_rentals')
@@ -588,7 +671,20 @@ const VehicleProfile = () => {
         });
       } catch (loadError) {
         console.error('Failed to load vehicle profile:', loadError);
-        setError(loadError.message || 'Failed to load vehicle profile');
+        if (cachedVehicleProfile && isTransientSupabaseFailure(loadError)) {
+          setVehicle(cachedVehicleProfile);
+          syncFormData(cachedVehicleProfile);
+          setVehicleDocuments(cachedVehicleProfile?.documents || []);
+          setError(null);
+          toast.error(
+            tr(
+              'Vehicle services are temporarily unavailable. Showing the last loaded profile.',
+              'Les services véhicule sont temporairement indisponibles. Affichage du dernier profil chargé.'
+            )
+          );
+        } else {
+          setError(loadError.message || 'Failed to load vehicle profile');
+        }
       } finally {
         setLoading(false);
       }
@@ -604,30 +700,46 @@ const VehicleProfile = () => {
     }));
   }, [vehicleFuelState?.current_fuel_lines]);
 
+  const repaintFuelPanelFast = useCallback(async () => {
+    if (!vehicleId) return;
+    const latestState = await FuelTransactionService.getVehicleFuelState(vehicleId);
+    setVehicleFuelState(latestState || null);
+  }, [vehicleId]);
+
   const refreshFuelPanel = async () => {
     if (!vehicleId) return;
 
-    const [fuelResult, fuelSummaryResult, rentalRows] = await Promise.all([
+    const [fuelResult, fuelSummaryResult, rentalRows, latestFuelStateResult] = await Promise.allSettled([
       FuelTransactionService.getAllTransactions({ limit: 200, offset: 0, vehicleId }),
-      FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: true }),
+      FuelTransactionService.getVehicleFuelUsageSummary(vehicleId, { persist: false }),
       supabase
         .from('app_4c3a7a6153_rentals')
         .select('id, rental_id, customer_name, vehicle_id, rental_start_date, rental_end_date, started_at, updated_at, completed_at, start_fuel_level, end_fuel_level, rental_status')
         .eq('vehicle_id', vehicleId)
         .order('created_at', { ascending: false }),
+      FuelTransactionService.getVehicleFuelState(vehicleId),
     ]);
 
-    const rentalData = Array.isArray(rentalRows?.data) ? rentalRows.data : [];
-    setFuelHistory(buildVehicleFuelHistory(fuelResult?.transactions || [], rentalData, vehicleId));
-    setVehicleFuelState(await FuelTransactionService.getVehicleFuelState(vehicleId));
-    setVehicleFuelSummary(fuelSummaryResult?.summary || null);
+    const rentalData = rentalRows.status === 'fulfilled' && Array.isArray(rentalRows.value?.data) ? rentalRows.value.data : [];
+    const transactions = fuelResult.status === 'fulfilled' ? fuelResult.value?.transactions || [] : [];
+
+    setFuelHistory(buildVehicleFuelHistory(transactions, rentalData, vehicleId));
+    if (latestFuelStateResult.status === 'fulfilled') {
+      setVehicleFuelState(latestFuelStateResult.value || null);
+    }
+    if (fuelSummaryResult.status === 'fulfilled') {
+      setVehicleFuelSummary(fuelSummaryResult.value?.summary || null);
+    }
   };
 
   const refreshFuelPanelRealtime = useCallback(() => {
+    void repaintFuelPanelFast().catch((refreshError) => {
+      console.error('Failed to fast-refresh vehicle fuel state from realtime sync:', refreshError);
+    });
     void refreshFuelPanel().catch((refreshError) => {
       console.error('Failed to refresh vehicle fuel panel from realtime sync:', refreshError);
     });
-  }, [vehicleId, rentalHistory.length]);
+  }, [repaintFuelPanelFast, refreshFuelPanel]);
 
   useFuelRealtimeSync(() => {
     if (vehicleId) {
@@ -2209,7 +2321,20 @@ const VehicleProfile = () => {
                   <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">{tr('New fuel level', 'Nouveau niveau de carburant')}</p>
                     <div className="mt-3">
-                      <label className="text-sm font-medium text-slate-700">{tr('Fuel lines', 'Barres de carburant')}</label>
+                      <label className="text-sm font-medium text-slate-700">{tr('Fuel level (0/8 to 8/8)', 'Niveau de carburant (0/8 à 8/8)')}</label>
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() => handleFuelAdjustChange('fuel_lines', 0)}
+                          className={`w-full rounded-2xl border px-4 py-3 text-center text-sm font-bold transition-all ${
+                            Number(fuelAdjustForm.fuel_lines) === 0
+                              ? 'border-emerald-500 bg-emerald-500 text-white shadow-[0_10px_24px_rgba(16,185,129,0.24)]'
+                              : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {tr('Empty', 'Vide')}
+                        </button>
+                      </div>
                       <div className="mt-2 grid grid-cols-4 gap-2 lg:flex lg:flex-wrap">
                         {Array.from({ length: 8 }, (_, index) => {
                           const lineValue = index + 1;
@@ -2247,7 +2372,7 @@ const VehicleProfile = () => {
                       onChange={(event) => handleFuelAdjustChange('reason', event.target.value)}
                       className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none focus:border-emerald-400"
                     >
-                      <option value="Manual correction">{tr('Manual correction', 'Correction manuelle')}</option>
+                      <option value="Manual correction">{tr('Manual fuel correction', 'Correction manuelle du carburant')}</option>
                       <option value="Inspection update">{tr('Inspection update', "Mise à jour d'inspection")}</option>
                       <option value="After external fuel use">{tr('After external fuel use', 'Après utilisation externe du carburant')}</option>
                       <option value="Staff correction">{tr('Staff correction', "Correction de l'équipe")}</option>

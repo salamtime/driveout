@@ -3,8 +3,8 @@ export const getFuelTransactionVisual = (type) => {
     case 'tank_refill':
       return {
         emoji: '⛽',
-        shortLabel: 'Tank In',
-        label: 'Tank In',
+        shortLabel: 'Add to Tank',
+        label: 'Add to Tank',
         badgeClass: 'bg-green-100 text-green-800',
       };
     case 'vehicle_refill':
@@ -17,16 +17,23 @@ export const getFuelTransactionVisual = (type) => {
     case 'withdrawal':
       return {
         emoji: '🔄',
-        shortLabel: 'Transfer',
-        label: 'Transfer',
+        shortLabel: 'Tank Transfer',
+        label: 'Tank Transfer',
         badgeClass: 'bg-blue-100 text-blue-800',
       };
     case 'tank_out':
       return {
         emoji: '🛢️',
-        shortLabel: 'Tank Out',
-        label: 'Tank Out',
+        shortLabel: 'Remove from Tank',
+        label: 'Remove from Tank',
         badgeClass: 'bg-amber-100 text-amber-800',
+      };
+    case 'staff_fuel_use':
+      return {
+        emoji: '👤',
+        shortLabel: 'Staff Fuel Use',
+        label: 'Staff Fuel Use',
+        badgeClass: 'bg-rose-100 text-rose-800',
       };
     case 'rental_opening_level':
       return {

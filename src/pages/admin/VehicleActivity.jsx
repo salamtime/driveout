@@ -37,6 +37,7 @@ const formatFuelEventLabel = (record) => {
   if (type === 'vehicle_refill') return 'Remplissage direct';
   if (type === 'tank_refill') return 'Remplissage cuve';
   if (type === 'withdrawal') return 'Transfert cuve';
+  if (type === 'staff_fuel_use') return 'Utilisation carburant équipe';
   if (type === 'manual_adjustment') return 'Ajustement manuel carburant';
   return formatStatus(record?.transaction_type || 'fuel event');
 };

@@ -192,10 +192,11 @@ const FuelFiltersPanel = ({
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               >
                 <option value="">{tr('All types', 'Tous les types')}</option>
-                <option value="tank_refill">{tr('⛽ Tank In', '⛽ Entrée cuve')}</option>
-                <option value="tank_out">{tr('🛢️ Tank Out', '🛢️ Sortie cuve')}</option>
+                <option value="tank_refill">{tr('⛽ Add to Tank', '⛽ Ajouter au réservoir')}</option>
+                <option value="tank_out">{tr('🛢️ Remove from Tank', '🛢️ Retirer du réservoir')}</option>
                 <option value="vehicle_refill">{tr('🚗 Direct Fill', '🚗 Remplissage direct')}</option>
-                <option value="withdrawal">{tr('🔄 Transfer', '🔄 Transfert')}</option>
+                <option value="withdrawal">{tr('🔄 Tank Transfer', '🔄 Transfert réservoir')}</option>
+                <option value="staff_fuel_use">{tr('👤 Staff Fuel Use', '👤 Utilisation carburant équipe')}</option>
                 <option value="rental_opening_level">{tr('Rental Opening Fuel', 'Carburant départ location')}</option>
                 <option value="rental_closing_level">{tr('Rental Return Fuel', 'Carburant retour location')}</option>
                 <option value="manual_adjustment">{tr('Manual Adjustment', 'Ajustement manuel')}</option>
@@ -288,7 +289,7 @@ const FuelFiltersPanel = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-blue-800 mb-2">
-                {tr('Fuel station', 'Station-service')}
+                {tr('Station name', 'Nom de la station')}
               </label>
               <div className="relative">
                 <Fuel className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -304,7 +305,7 @@ const FuelFiltersPanel = ({
 
             <div>
               <label className="block text-sm font-medium text-blue-800 mb-2">
-                {tr('Location', 'Lieu')}
+                {tr('Area / location', 'Zone / lieu')}
               </label>
               <div className="relative">
                 <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />

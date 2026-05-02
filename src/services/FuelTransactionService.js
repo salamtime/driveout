@@ -15,7 +15,10 @@ const RENTALS_TABLE = 'app_4c3a7a6153_rentals';
 const FUEL_OVERVIEW_CACHE_TTL_MS = 2 * 60 * 1000;
 const VEHICLE_FUEL_STATES_CACHE_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_TRANSACTIONS_CACHE_TTL_MS = 2 * 60 * 1000;
+const FUEL_OPERATION_LOGS_FAILURE_COOLDOWN_MS = 60 * 1000;
+const FUEL_HEALTH_REQUEST_TIMEOUT_MS = 8000;
 const roundToHalfLiter = (value) => roundTo(Math.round((Number(value) || 0) * 2) / 2, 1);
+const isSoldVehicleRecord = (vehicle = {}) => String(vehicle?.status || '').trim().toLowerCase() === 'sold';
 
 class FuelTransactionService {
   constructor() {
@@ -50,6 +53,7 @@ class FuelTransactionService {
     this.vehicleFuelStatesCacheTimestamp = 0;
     this.vehicleFuelStatesPromise = null;
     this.vehicleModelTankCapacitySupport = null;
+    this.tableFailureCooldowns = new Map();
     this.clientChangeSubscribers = new Set();
     this.broadcastChannel = null;
     this.broadcastChannelListenerBound = false;
@@ -121,7 +125,24 @@ class FuelTransactionService {
 
   invalidateFuelCaches(change = {}) {
     this.clearTransactionCaches();
+    sharedQueryCacheService.invalidateNamespace('fuel-overview-summary');
     this.notifyClientChange(change);
+  }
+
+  runBackgroundFuelTasks(tasks = [], label = 'fuel follow-up') {
+    const pendingTasks = tasks.filter(Boolean);
+    if (pendingTasks.length === 0) {
+      return;
+    }
+
+    Promise.allSettled(pendingTasks).then((results) => {
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length > 0) {
+        console.warn(`Non-blocking ${label} completed with failures:`, failures.map((failure) => failure.reason));
+      }
+    }).catch((error) => {
+      console.warn(`Non-blocking ${label} failed unexpectedly:`, error);
+    });
   }
 
   subscribeToClientChanges(callback) {
@@ -183,6 +204,7 @@ class FuelTransactionService {
   clearTableExistsCache(tableName) {
     this.tableAvailabilityCache.delete(tableName);
     this.tableAvailabilityPromiseCache.delete(tableName);
+    this.tableFailureCooldowns.delete(tableName);
 
     if (typeof window !== 'undefined') {
       window.sessionStorage.removeItem(`fuel-table-exists:${tableName}`);
@@ -192,6 +214,7 @@ class FuelTransactionService {
   markTableUnavailable(tableName) {
     this.tableAvailabilityCache.set(tableName, false);
     this.tableAvailabilityPromiseCache.delete(tableName);
+    this.tableFailureCooldowns.delete(tableName);
 
     if (typeof window !== 'undefined') {
       window.sessionStorage.setItem(`fuel-table-exists:${tableName}`, 'false');
@@ -273,6 +296,57 @@ class FuelTransactionService {
     );
   }
 
+  isTransientServiceError(error) {
+    const normalizedError = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
+    return (
+      normalizedError.includes('service unavailable') ||
+      normalizedError.includes('failed to fetch') ||
+      normalizedError.includes('fetch failed') ||
+      normalizedError.includes('networkerror') ||
+      normalizedError.includes('network error') ||
+      normalizedError.includes('err_failed') ||
+      normalizedError.includes('cors') ||
+      normalizedError.includes('schema cache') ||
+      normalizedError.includes('pgrst002') ||
+      normalizedError.includes('503') ||
+      normalizedError.includes('520') ||
+      normalizedError.includes('500')
+    );
+  }
+
+  isTableInFailureCooldown(tableName) {
+    const cooldownUntil = this.tableFailureCooldowns.get(tableName) || 0;
+    if (!cooldownUntil) {
+      return false;
+    }
+    if (Date.now() >= cooldownUntil) {
+      this.tableFailureCooldowns.delete(tableName);
+      return false;
+    }
+    return true;
+  }
+
+  markTableFailureCooldown(tableName, durationMs = FUEL_OPERATION_LOGS_FAILURE_COOLDOWN_MS) {
+    this.tableFailureCooldowns.set(tableName, Date.now() + durationMs);
+  }
+
+  withTimeout(promise, fallbackValue, timeoutMs = FUEL_HEALTH_REQUEST_TIMEOUT_MS) {
+    let timeoutId = null;
+
+    const timeoutPromise = new Promise((resolve) => {
+      timeoutId = setTimeout(() => resolve(fallbackValue), timeoutMs);
+    });
+
+    return Promise.race([
+      Promise.resolve(promise).finally(() => {
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+        }
+      }),
+      timeoutPromise,
+    ]);
+  }
+
   async refreshTableExists(tableName) {
     this.clearTableExistsCache(tableName);
     return this.tableExists(tableName);
@@ -293,21 +367,23 @@ class FuelTransactionService {
   getTransactionTypeLabel(type) {
     switch (type) {
       case 'tank_refill':
-        return 'Tank In';
+        return 'Add to Tank';
       case 'vehicle_refill':
         return 'Direct Fill';
       case 'tank_out':
-        return 'Tank Out';
+        return 'Remove from Tank';
       case 'withdrawal':
-        return 'Transfer';
+        return 'Tank Transfer';
+      case 'staff_fuel_use':
+        return 'Staff Fuel Use';
       case 'rental_opening_level':
         return 'Rental Opening Fuel';
       case 'rental_closing_level':
         return 'Rental Return Fuel';
       case 'manual_adjustment':
-        return 'Manual Fuel Adjustment';
+        return 'Manual Fuel Correction';
       case 'manual_tank_adjustment':
-        return 'Manual Tank Adjustment';
+        return 'Manual Tank Correction';
       default:
         return type;
     }
@@ -934,19 +1010,33 @@ class FuelTransactionService {
     if (!(await this.tableExists(this.fuelRefillsTable))) {
       return [];
     }
-    let query = supabase
-      .from(this.fuelRefillsTable)
-      .select('id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url, cost_per_liter')
-      .is('vehicle_id', null)
-      .order('refill_date', { ascending: false });
-    if (limit) {
-      query = query.limit(limit);
-    }
+    const configureQuery = (baseQuery) => {
+      let nextQuery = baseQuery
+        .is('vehicle_id', null)
+        .order('refill_date', { ascending: false });
+      if (limit) {
+        nextQuery = nextQuery.limit(limit);
+      }
+      return nextQuery;
+    };
 
-    const { data, error } = await query;
+    const { data, error } = await this.runSelectWithFallbacks(
+      this.fuelRefillsTable,
+      [
+        'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url, cost_per_liter',
+        'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url',
+        'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location',
+        'id, vehicle_id, liters_added, total_cost, refill_date, refilled_by, notes, created_at',
+      ],
+      configureQuery,
+    );
 
     if (error) {
-      this.markTableUnavailable(this.fuelRefillsTable);
+      if (this.isRetryableSchemaError(error)) {
+        console.warn('Fuel refill schema mismatch detected; returning empty tank refills:', error);
+      } else {
+        this.markTableUnavailable(this.fuelRefillsTable);
+      }
       return [];
     }
 
@@ -1006,19 +1096,33 @@ class FuelTransactionService {
     // Legacy/live-db compatibility: many environments still store direct vehicle refills
     // in fuel_refills with vehicle_id populated instead of using vehicle_fuel_refills.
     if (await this.tableExists(this.fuelRefillsTable)) {
-      let query = supabase
-        .from(this.fuelRefillsTable)
-        .select('id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url, cost_per_liter')
-        .not('vehicle_id', 'is', null)
-        .order('refill_date', { ascending: false });
-      if (limit) {
-        query = query.limit(limit);
-      }
+      const configureQuery = (baseQuery) => {
+        let nextQuery = baseQuery
+          .not('vehicle_id', 'is', null)
+          .order('refill_date', { ascending: false });
+        if (limit) {
+          nextQuery = nextQuery.limit(limit);
+        }
+        return nextQuery;
+      };
 
-      const { data, error } = await query;
+      const { data, error } = await this.runSelectWithFallbacks(
+        this.fuelRefillsTable,
+        [
+          'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url, cost_per_liter',
+          'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location, invoice_url',
+          'id, vehicle_id, liters_added, unit_price, total_cost, refill_date, refilled_by, invoice_photo_url, notes, created_at, invoice_image, fuel_station, fuel_type, location',
+          'id, vehicle_id, liters_added, total_cost, refill_date, refilled_by, notes, created_at',
+        ],
+        configureQuery,
+      );
 
       if (error) {
-        this.markTableUnavailable(this.fuelRefillsTable);
+        if (this.isRetryableSchemaError(error)) {
+          console.warn('Vehicle refill schema mismatch detected; skipping legacy fuel_refills rows:', error);
+        } else {
+          this.markTableUnavailable(this.fuelRefillsTable);
+        }
       } else {
         results.push(
           ...(data || []).map((row) => ({
@@ -1118,6 +1222,9 @@ class FuelTransactionService {
     if (!(await this.tableExists(this.fuelOperationLogsTable))) {
       return [];
     }
+    if (this.isTableInFailureCooldown(this.fuelOperationLogsTable)) {
+      return [];
+    }
 
     let query = supabase
       .from(this.fuelOperationLogsTable)
@@ -1131,6 +1238,10 @@ class FuelTransactionService {
     const { data, error } = await query;
 
     if (error) {
+      if (this.isRetryableSchemaError(error) || this.isTransientServiceError(error)) {
+        this.markTableFailureCooldown(this.fuelOperationLogsTable);
+        console.warn('Fuel operation logs temporarily unavailable; using fallback fuel UI data:', error);
+      }
       return [];
     }
 
@@ -1164,6 +1275,9 @@ class FuelTransactionService {
 
   async logFuelOperation(logData = {}) {
     if (!(await this.tableExists(this.fuelOperationLogsTable))) {
+      return { success: true, skipped: true };
+    }
+    if (this.isTableInFailureCooldown(this.fuelOperationLogsTable)) {
       return { success: true, skipped: true };
     }
 
@@ -1203,6 +1317,11 @@ class FuelTransactionService {
       .maybeSingle();
 
     if (error) {
+      if (this.isRetryableSchemaError(error) || this.isTransientServiceError(error)) {
+        this.markTableFailureCooldown(this.fuelOperationLogsTable);
+        console.warn('Fuel operation log write skipped because the logs table is temporarily unavailable:', error);
+        return { success: true, skipped: true };
+      }
       return { success: false, error: error.message };
     }
 
@@ -1425,14 +1544,13 @@ class FuelTransactionService {
       stateMap = new Map((data || []).map((row) => [String(row.vehicle_id), row]));
     }
 
-    const derivedStateMap = await this.getDerivedVehicleFuelStateMap(rentalSnapshots);
-
-    const states = (vehiclesResult.data || []).map((vehicle) => {
+    const states = (vehiclesResult.data || [])
+      .filter((vehicle) => !isSoldVehicleRecord(vehicle))
+      .map((vehicle) => {
       const vehicleKey = String(vehicle.id);
       const storedState = stateMap.get(vehicleKey);
       const rentalState = rentalSnapshots.get(vehicleKey);
-      const derivedState = derivedStateMap.get(vehicleKey);
-      const rawState = this.pickBestVehicleFuelState(derivedState, storedState, rentalState) || {};
+      const rawState = this.pickBestVehicleFuelState(storedState, rentalState) || {};
       const vehicleModel = vehicleModelMap.get(String(vehicle.vehicle_model_id || ''));
       const resolvedTankCapacityLiters = resolveTankCapacityLiters(
         rawState.tank_capacity_liters,
@@ -1513,7 +1631,9 @@ class FuelTransactionService {
         }
       }
 
-      const states = (vehiclesResult.data || []).map((vehicle) => {
+    const states = (vehiclesResult.data || [])
+      .filter((vehicle) => !isSoldVehicleRecord(vehicle))
+      .map((vehicle) => {
         const vehicleKey = String(vehicle.id);
         const rawState = stateMap.get(vehicleKey) || {};
         const resolvedTankCapacityLiters = resolveTankCapacityLiters(
@@ -1764,6 +1884,13 @@ class FuelTransactionService {
       const timestamp = log.created_at || log.transaction_date || null;
       touchLastActivity(timestamp);
 
+      if (log.transaction_type === 'staff_fuel_use') {
+        const litersUsed = Number(log.liters || 0);
+        if (litersUsed > 0) {
+          totalFuelUsedLiters += litersUsed;
+        }
+      }
+
       if ((log.transaction_type === 'rental_opening_level' || log.transaction_type === 'rental_closing_level') && log.rental_id) {
         const current = rentalSnapshots.get(String(log.rental_id)) || {};
         if (log.transaction_type === 'rental_opening_level') {
@@ -1933,6 +2060,141 @@ class FuelTransactionService {
       success: true,
       state: syncResult.state || effectiveLatestState,
       summary: summaryResult.summary || null,
+    };
+  }
+
+  async getFuelSystemHealthReport() {
+    const [
+      vehicleFuelStateTableExists,
+      fuelOperationLogsTableExists,
+      liveVehicleStates,
+      rentalSnapshots,
+    ] = await Promise.all([
+      this.withTimeout(this.tableExists(this.vehicleFuelStateTable), true),
+      this.withTimeout(this.tableExists(this.fuelOperationLogsTable), true),
+      this.withTimeout(this.getVehicleFuelStatesFast().catch(() => []), []),
+      this.withTimeout(this.getLatestRentalFuelSnapshots().catch(() => new Map()), new Map()),
+    ]);
+
+    const mismatches = (liveVehicleStates || [])
+      .map((vehicle) => {
+        const vehicleKey = String(vehicle.id || vehicle.vehicle_id || '');
+        const rentalSnapshot = rentalSnapshots.get(vehicleKey) || null;
+        const liveLines = Number(vehicle?.current_fuel_lines || 0);
+        const rentalLines =
+          rentalSnapshot?.current_fuel_lines !== undefined && rentalSnapshot?.current_fuel_lines !== null
+            ? Number(rentalSnapshot.current_fuel_lines)
+            : null;
+        const liveSource = String(vehicle?.last_fuel_source || 'unknown').toLowerCase();
+        const liveSourceIsFallback = !liveSource || liveSource === 'unknown' || liveSource === 'history_rebuild';
+        const lineDelta = rentalLines === null ? null : Math.abs(liveLines - rentalLines);
+        const shouldFlag =
+          (lineDelta !== null && lineDelta >= 2) ||
+          Boolean(rentalSnapshot && liveSourceIsFallback);
+
+        if (!shouldFlag) {
+          return null;
+        }
+
+        return {
+          vehicle_id: vehicle.id || vehicle.vehicle_id,
+          vehicle_name: vehicle.name || vehicle.model || `Vehicle ${vehicle.id}`,
+          plate_number: vehicle.plate_number || null,
+          live_lines: liveLines,
+          rental_lines: rentalLines,
+          delta_lines: lineDelta,
+          live_source: vehicle?.last_fuel_source || 'unknown',
+          rental_source: rentalSnapshot?.last_source || null,
+          live_updated_at: vehicle?.last_fuel_update_at || null,
+          rental_updated_at: rentalSnapshot?.last_updated_at || null,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => {
+        const rightDelta = Number(right?.delta_lines ?? -1);
+        const leftDelta = Number(left?.delta_lines ?? -1);
+        if (rightDelta !== leftDelta) {
+          return rightDelta - leftDelta;
+        }
+
+        return new Date(right?.rental_updated_at || right?.live_updated_at || 0).getTime() -
+          new Date(left?.rental_updated_at || left?.live_updated_at || 0).getTime();
+      });
+
+    const cooldownUntil = this.tableFailureCooldowns.get(this.fuelOperationLogsTable) || 0;
+    const cooldownRemainingMs = Math.max(0, cooldownUntil - Date.now());
+
+    return {
+      success: true,
+      generatedAt: new Date().toISOString(),
+      tables: {
+        vehicleFuelState: vehicleFuelStateTableExists,
+        fuelOperationLogs: fuelOperationLogsTableExists,
+      },
+      cooldowns: {
+        fuelOperationLogs: {
+          active: cooldownRemainingMs > 0,
+          remainingMs: cooldownRemainingMs,
+        },
+      },
+      totals: {
+        vehicleStates: Array.isArray(liveVehicleStates) ? liveVehicleStates.length : 0,
+        mismatches: mismatches.length,
+      },
+      mismatches,
+    };
+  }
+
+  async reconcileVehicleFuelStates({ vehicleIds = [] } = {}) {
+    const normalizedRequestedIds = Array.isArray(vehicleIds)
+      ? vehicleIds.filter(Boolean).map((vehicleId) => String(vehicleId))
+      : [];
+
+    const targetVehicleIds = normalizedRequestedIds.length > 0
+      ? normalizedRequestedIds
+      : Array.from(new Set([
+          ...(await this.withTimeout(this.getVehicleFuelStatesFast().catch(() => []), [])).map((vehicle) => String(vehicle.id || vehicle.vehicle_id || '')),
+          ...Array.from((await this.withTimeout(this.getLatestRentalFuelSnapshots().catch(() => new Map()), new Map())).values())
+            .map((snapshot) => String(snapshot?.vehicle_id || '')),
+        ].filter(Boolean)));
+
+    if (targetVehicleIds.length === 0) {
+      return { success: true, updated: [], failures: [], total: 0, skipped: true };
+    }
+
+    const updated = [];
+    const failures = [];
+
+    for (const vehicleId of targetVehicleIds) {
+      try {
+        const result = await this.refreshVehicleFuelTracking(vehicleId);
+        if (result?.success) {
+          updated.push(vehicleId);
+        } else {
+          failures.push({
+            vehicleId,
+            error: result?.error || 'Reconciliation failed',
+          });
+        }
+      } catch (error) {
+        failures.push({
+          vehicleId,
+          error: error?.message || 'Reconciliation failed',
+        });
+      }
+    }
+
+    this.invalidateFuelCaches({
+      entity: 'vehicle_fuel_state',
+      reason: 'manual_reconciliation',
+      transactionType: 'manual_reconciliation',
+    });
+
+    return {
+      success: failures.length === 0,
+      updated,
+      failures,
+      total: targetVehicleIds.length,
     };
   }
 
@@ -2630,6 +2892,10 @@ class FuelTransactionService {
       return 'Main Tank';
     }
 
+    if (refill.transaction_type === 'staff_fuel_use') {
+      return 'Staff Fuel Use';
+    }
+
     return 'Main Station';
   }
 
@@ -2654,6 +2920,102 @@ class FuelTransactionService {
         : unitPrice > 0 && amount > 0
           ? roundTo(unitPrice * amount, 2)
           : 0;
+
+    if (transactionType === 'staff_fuel_use') {
+      const vehicleId = transactionData.vehicle_id;
+      if (!vehicleId) {
+        return { success: false, error: 'Vehicle is required for staff fuel use.' };
+      }
+
+      const currentState = await this.getVehicleFuelState(vehicleId);
+      const resolvedTankCapacity = resolveTankCapacityLiters(
+        transactionData.tank_capacity_liters,
+        currentState?.tank_capacity_liters,
+        DEFAULT_VEHICLE_TANK_LITERS,
+      );
+      const requestedRemainingLines = Number(transactionData.fuel_lines_after);
+      const normalizedRemainingState = normalizeFuelState({
+        lines: requestedRemainingLines,
+        tankCapacityLiters: resolvedTankCapacity,
+      });
+      const consumedLiters = roundTo(
+        Math.max(0, Number(currentState?.current_fuel_liters || 0) - Number(normalizedRemainingState.liters || 0)),
+        2
+      );
+
+      if (consumedLiters <= 0) {
+        return { success: false, error: 'Select a lower remaining fuel level to record staff fuel use.' };
+      }
+
+      const syncResult = await this.syncVehicleFuelState({
+        vehicleId,
+        lines: normalizedRemainingState.lines,
+        liters: normalizedRemainingState.liters,
+        source: 'staff_fuel_use',
+        tankCapacityLiters: resolvedTankCapacity,
+      });
+
+      if (!syncResult.success) {
+        return syncResult;
+      }
+
+      const composedNotes = [transactionData.purpose, transactionData.notes]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .join(' • ');
+
+      const logResult = await this.logFuelOperation({
+        transaction_type: 'staff_fuel_use',
+        source: 'staff_fuel_use',
+        vehicle_id: vehicleId,
+        liters: consumedLiters,
+        liters_before: currentState.current_fuel_liters,
+        liters_after: normalizedRemainingState.liters,
+        fuel_lines_before: currentState.current_fuel_lines,
+        fuel_lines_after: normalizedRemainingState.lines,
+        odometer_reading: transactionData.odometer_reading ? parseInt(transactionData.odometer_reading, 10) : null,
+        actor,
+        notes: composedNotes || 'Staff fuel use',
+        is_financial_expense: false,
+        created_at: actionTimestamp,
+      });
+
+      this.invalidateFuelCaches({
+        entity: 'fuel_transaction',
+        reason: 'staff_fuel_use_created',
+        transactionType,
+        vehicleId,
+      });
+
+      this.runBackgroundFuelTasks([
+        this.syncVehicleCurrentOdometer(vehicleId, transactionData.odometer_reading ? parseInt(transactionData.odometer_reading, 10) : null),
+        this.getVehicleFuelUsageSummary(vehicleId, { persist: true }),
+      ], 'staff fuel use follow-up');
+
+      return {
+        success: true,
+        transaction: this.mapTransactionRecord({
+          ...(logResult.log || {}),
+          id: logResult.log?.id ? `log-${logResult.log.id}` : `staff-fuel-use-${Date.now()}`,
+          transaction_type: 'staff_fuel_use',
+          source: 'staff_fuel_use',
+          vehicle_id: vehicleId,
+          liters: consumedLiters,
+          amount: consumedLiters,
+          liters_before: currentState.current_fuel_liters,
+          liters_after: normalizedRemainingState.liters,
+          fuel_lines_before: currentState.current_fuel_lines,
+          fuel_lines_after: normalizedRemainingState.lines,
+          created_at: actionTimestamp,
+          transaction_date: actionTimestamp,
+          notes: composedNotes || 'Staff fuel use',
+          performed_by_name: actor.performed_by_name,
+          performed_by_user_id: actor.performed_by_user_id,
+          odometer_reading: transactionData.odometer_reading ? parseInt(transactionData.odometer_reading, 10) : null,
+          is_financial_expense: false,
+        }),
+      };
+    }
 
     if (transactionType === 'tank_refill') {
       const payload = {
@@ -2706,6 +3068,25 @@ class FuelTransactionService {
     }
 
     if (transactionType === 'vehicle_refill') {
+      let previousVehicleRefill = null;
+      if (await this.tableExists(this.vehicleFuelRefillsTable)) {
+        const { data } = await supabase
+          .from(this.vehicleFuelRefillsTable)
+          .select('id, vehicle_id')
+          .eq('id', id)
+          .maybeSingle();
+        previousVehicleRefill = data || null;
+      }
+
+      if (!previousVehicleRefill) {
+        const { data } = await supabase
+          .from(this.fuelRefillsTable)
+          .select('id, vehicle_id')
+          .eq('id', id)
+          .maybeSingle();
+        previousVehicleRefill = data || null;
+      }
+
       const payload = {
         vehicle_id: transactionData.vehicle_id,
         liters_added: amount,
@@ -2789,35 +3170,39 @@ class FuelTransactionService {
         tankCapacityLiters: currentState.tank_capacity_liters,
       });
 
-      await this.logFuelOperation({
-        transaction_type: 'vehicle_refill',
-        source: 'direct_station',
-        vehicle_id: transactionData.vehicle_id,
-        liters: amount,
-        liters_before: currentState.current_fuel_liters,
-        liters_after: syncedState.state?.current_fuel_liters ?? nextLiters,
-        fuel_lines_before: currentState.current_fuel_lines,
-        fuel_lines_after: syncedState.state?.current_fuel_lines,
-        unit_price: unitPrice,
-        total_cost: totalCost,
-        fuel_type: payload.fuel_type,
-        fuel_station: payload.fuel_station,
-        location: payload.location,
-        odometer_reading: payload.odometer_reading,
-        receipt_media: receiptMedia,
-        actor,
-        notes: payload.notes,
-        is_financial_expense: true,
-        created_at: actionTimestamp,
-      });
-
-      await this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading);
-      await this.getVehicleFuelUsageSummary(transactionData.vehicle_id, { persist: true });
       this.invalidateFuelCaches({
         entity: 'fuel_transaction',
         reason: 'vehicle_refill_created',
         transactionType,
         vehicleId: transactionData.vehicle_id,
+      });
+
+      Promise.allSettled([
+        this.logFuelOperation({
+          transaction_type: 'vehicle_refill',
+          source: 'direct_station',
+          vehicle_id: transactionData.vehicle_id,
+          liters: amount,
+          liters_before: currentState.current_fuel_liters,
+          liters_after: syncedState.state?.current_fuel_liters ?? nextLiters,
+          fuel_lines_before: currentState.current_fuel_lines,
+          fuel_lines_after: syncedState.state?.current_fuel_lines,
+          unit_price: unitPrice,
+          total_cost: totalCost,
+          fuel_type: payload.fuel_type,
+          fuel_station: payload.fuel_station,
+          location: payload.location,
+          odometer_reading: payload.odometer_reading,
+          receipt_media: receiptMedia,
+          actor,
+          notes: payload.notes,
+          is_financial_expense: true,
+          created_at: actionTimestamp,
+        }),
+        this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading),
+        this.getVehicleFuelUsageSummary(transactionData.vehicle_id, { persist: true }),
+      ]).catch((backgroundError) => {
+        console.warn('Non-blocking vehicle refill follow-up failed:', backgroundError);
       });
 
       return { success: true, transaction: data };
@@ -2899,38 +3284,40 @@ class FuelTransactionService {
           tankCapacityLiters: currentState.tank_capacity_liters,
         });
 
-        await this.logFuelOperation({
-          transaction_type: 'withdrawal',
-          source: 'tank_transfer',
-          vehicle_id: transactionData.vehicle_id,
-          liters: amount,
-          liters_before: currentState.current_fuel_liters,
-          liters_after: syncedState.state?.current_fuel_liters ?? nextLiters,
-          fuel_lines_before: currentState.current_fuel_lines,
-          fuel_lines_after: syncedState.state?.current_fuel_lines,
-          unit_price: transferUnitPrice,
-          total_cost: transferTotalCost,
-          odometer_reading: payload.odometer_reading,
-          actor,
-          notes: payload.notes,
-          is_financial_expense: false,
-          created_at: actionTimestamp,
-        });
-
-        await this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading);
-        await this.getVehicleFuelUsageSummary(transactionData.vehicle_id, { persist: true });
+        this.runBackgroundFuelTasks([
+          this.logFuelOperation({
+            transaction_type: 'withdrawal',
+            source: 'tank_transfer',
+            vehicle_id: transactionData.vehicle_id,
+            liters: amount,
+            liters_before: currentState.current_fuel_liters,
+            liters_after: syncedState.state?.current_fuel_liters ?? nextLiters,
+            fuel_lines_before: currentState.current_fuel_lines,
+            fuel_lines_after: syncedState.state?.current_fuel_lines,
+            unit_price: transferUnitPrice,
+            total_cost: transferTotalCost,
+            odometer_reading: payload.odometer_reading,
+            actor,
+            notes: payload.notes,
+            is_financial_expense: false,
+            created_at: actionTimestamp,
+          }),
+          this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading),
+          this.getVehicleFuelUsageSummary(transactionData.vehicle_id, { persist: true }),
+        ], 'withdrawal follow-up');
       } else {
         await this.adjustTankCurrentVolume(-amount);
-
-        await this.logFuelOperation({
-          transaction_type: 'tank_out',
-          source: 'tank_out',
-          liters: amount,
-          actor,
-          notes: payload.notes,
-          is_financial_expense: false,
-          created_at: actionTimestamp,
-        });
+        this.runBackgroundFuelTasks([
+          this.logFuelOperation({
+            transaction_type: 'tank_out',
+            source: 'tank_out',
+            liters: amount,
+            actor,
+            notes: payload.notes,
+            is_financial_expense: false,
+            created_at: actionTimestamp,
+          }),
+        ], 'tank-out follow-up');
       }
 
       this.invalidateFuelCaches({
@@ -3086,17 +3473,19 @@ class FuelTransactionService {
         return { success: false, error: error.message };
       }
 
-      await this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading);
-      await this.refreshVehicleFuelTracking(transactionData.vehicle_id);
-      if (previousVehicleRefill?.vehicle_id && String(previousVehicleRefill.vehicle_id) !== String(transactionData.vehicle_id)) {
-        await this.refreshVehicleFuelTracking(previousVehicleRefill.vehicle_id);
-      }
       this.invalidateFuelCaches({
         entity: 'fuel_transaction',
         reason: 'vehicle_refill_updated',
         transactionType,
         vehicleId: transactionData.vehicle_id,
       });
+      this.runBackgroundFuelTasks([
+        this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading),
+        this.refreshVehicleFuelTracking(transactionData.vehicle_id),
+        previousVehicleRefill?.vehicle_id && String(previousVehicleRefill.vehicle_id) !== String(transactionData.vehicle_id)
+          ? this.refreshVehicleFuelTracking(previousVehicleRefill.vehicle_id)
+          : null,
+      ], 'vehicle refill update follow-up');
 
       return { success: true, transaction: data };
     }
@@ -3175,20 +3564,22 @@ class FuelTransactionService {
       const previousAmount = Number(previousWithdrawal?.liters_taken || 0);
       await this.adjustTankCurrentVolume(-(amount - previousAmount));
 
-      if (transactionType === 'withdrawal') {
-        await this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading);
-        await this.refreshVehicleFuelTracking(transactionData.vehicle_id);
-        if (previousWithdrawal?.vehicle_id && String(previousWithdrawal.vehicle_id) !== String(transactionData.vehicle_id)) {
-          await this.refreshVehicleFuelTracking(previousWithdrawal.vehicle_id);
-        }
-      }
-
       this.invalidateFuelCaches({
         entity: 'fuel_transaction',
         reason: transactionType === 'withdrawal' ? 'vehicle_withdrawal_updated' : 'tank_out_updated',
         transactionType,
         vehicleId: transactionType === 'withdrawal' ? transactionData.vehicle_id : null,
       });
+
+      if (transactionType === 'withdrawal') {
+        this.runBackgroundFuelTasks([
+          this.syncVehicleCurrentOdometer(transactionData.vehicle_id, payload.odometer_reading),
+          this.refreshVehicleFuelTracking(transactionData.vehicle_id),
+          previousWithdrawal?.vehicle_id && String(previousWithdrawal.vehicle_id) !== String(transactionData.vehicle_id)
+            ? this.refreshVehicleFuelTracking(previousWithdrawal.vehicle_id)
+            : null,
+        ], 'withdrawal update follow-up');
+      }
 
       return { success: true, transaction: data };
     }
@@ -3574,26 +3965,6 @@ class FuelTransactionService {
         .maybeSingle();
 
       if (!directError && directState) {
-        const source = String(directState.last_source || '').toLowerCase();
-        const isFallbackState = !source || source === 'unknown' || source === 'history_rebuild';
-        if (isFallbackState) {
-          const transactionResult = await this.getAllTransactions({
-            vehicleId,
-            limit: 200,
-            offset: 0,
-          });
-          const scopedTransactions = (transactionResult?.transactions || [])
-            .filter((transaction) => String(transaction.vehicle_id) === String(vehicleId));
-
-          if (scopedTransactions.length > 0) {
-            const states = await this.getVehicleFuelStates();
-            const matchedState = states.find((state) => String(state.id) === String(vehicleId) || String(state.vehicle_id) === String(vehicleId));
-            if (matchedState) {
-              return matchedState;
-            }
-          }
-        }
-
         return {
           ...directState,
           id: vehicleId,
@@ -3608,73 +3979,8 @@ class FuelTransactionService {
     const states = await this.getVehicleFuelStates();
     const matchedState = states.find((state) => String(state.id) === String(vehicleId) || String(state.vehicle_id) === String(vehicleId));
 
-    if (
-      matchedState &&
-      (
-        Number(matchedState.current_fuel_liters || 0) > 0 ||
-        Number(matchedState.current_fuel_lines || 0) > 0 ||
-        (matchedState.last_fuel_source && matchedState.last_fuel_source !== 'unknown') ||
-        (matchedState.last_source && matchedState.last_source !== 'unknown')
-      )
-    ) {
+    if (matchedState) {
       return matchedState;
-    }
-
-    const transactionResult = await this.getAllTransactions({
-      vehicleId,
-      limit: 200,
-      offset: 0,
-    });
-
-    const scopedTransactions = (transactionResult?.transactions || [])
-      .filter((transaction) => String(transaction.vehicle_id) === String(vehicleId))
-      .sort((a, b) => new Date(this.getTransactionTimestamp(a) || 0) - new Date(this.getTransactionTimestamp(b) || 0));
-
-    if (scopedTransactions.length > 0) {
-      let liters = 0;
-      let lastSource = matchedState?.last_fuel_source || matchedState?.last_source || 'history_rebuild';
-      let lastUpdatedAt = null;
-      const tankCapacityLiters = Number(matchedState?.tank_capacity_liters || DEFAULT_VEHICLE_TANK_LITERS);
-
-      for (const transaction of scopedTransactions) {
-        const type = String(transaction.transaction_type || '').toLowerCase();
-        const timestamp = this.getTransactionTimestamp(transaction);
-
-        if (type === 'withdrawal' || type === 'vehicle_refill') {
-          liters = roundTo(liters + Number(transaction.amount || transaction.liters_added || transaction.liters_taken || transaction.liters || 0), 3);
-        } else if (
-          type === 'manual_adjustment' ||
-          type === 'rental_opening_level' ||
-          type === 'rental_closing_level'
-        ) {
-          if (transaction.liters_after !== null && transaction.liters_after !== undefined) {
-            liters = Number(transaction.liters_after);
-          }
-        }
-
-        if (timestamp) {
-          lastUpdatedAt = timestamp;
-        }
-        lastSource = transaction.source || transaction.transaction_type || lastSource;
-      }
-
-      const normalized = normalizeFuelState({
-        liters,
-        tankCapacityLiters,
-      });
-
-      return {
-        ...(matchedState || {}),
-        vehicle_id: vehicleId,
-        current_fuel_liters: normalized.liters,
-        current_fuel_lines: normalized.lines,
-        tank_capacity_liters: tankCapacityLiters,
-        max_fuel_lines: normalized.maxLines,
-        last_fuel_source: lastSource,
-        last_source: lastSource,
-        last_fuel_update_at: lastUpdatedAt,
-        last_updated_at: lastUpdatedAt,
-      };
     }
 
     return matchedState || {
@@ -3760,13 +4066,6 @@ class FuelTransactionService {
       };
     }
 
-    if (!hasFuelLogTable) {
-      return {
-        success: false,
-        error: 'Fuel operation logs table is not available. Please finish the SQL setup and refresh the page.',
-      };
-    }
-
     const currentState = await this.getVehicleFuelState(vehicleId);
     const resolvedTankCapacity = resolveTankCapacityLiters(
       tankCapacityLiters,
@@ -3803,42 +4102,47 @@ class FuelTransactionService {
       .filter(Boolean)
       .join(' • ');
 
-    const logResult = await this.logFuelOperation({
-      transaction_type: 'manual_adjustment',
-      source: 'manual_adjustment',
-      vehicle_id: vehicleId,
-      liters_before: currentState.current_fuel_liters,
-      liters_after: normalized.liters,
-      fuel_lines_before: currentState.current_fuel_lines,
-      fuel_lines_after: normalized.lines,
-      actor,
-      notes: composedNotes || 'Manual fuel adjustment',
-      is_financial_expense: false,
-    });
+    let logResult = { success: true, skipped: true, log: null };
+    let warning = null;
 
-    if (!logResult.success) {
-      return logResult;
+    if (hasFuelLogTable) {
+      logResult = await this.logFuelOperation({
+        transaction_type: 'manual_adjustment',
+        source: 'manual_adjustment',
+        vehicle_id: vehicleId,
+        liters_before: currentState.current_fuel_liters,
+        liters_after: normalized.liters,
+        fuel_lines_before: currentState.current_fuel_lines,
+        fuel_lines_after: normalized.lines,
+        actor,
+        notes: composedNotes || 'Manual fuel adjustment',
+        is_financial_expense: false,
+      });
+
+      if (!logResult.success) {
+        warning = logResult.error || 'Fuel activity log could not be written.';
+      } else if (logResult.skipped) {
+        warning = 'Fuel activity log was skipped, but the fuel level was updated successfully.';
+      }
+    } else {
+      warning = 'Fuel activity log table is unavailable, but the fuel level was updated successfully.';
     }
 
-    if (logResult.skipped) {
-      return {
-        success: false,
-        error: 'Fuel activity log was not written. Please refresh and try again.',
-      };
-    }
-
-    await this.getVehicleFuelUsageSummary(vehicleId, { persist: true });
     this.invalidateFuelCaches({
       entity: 'vehicle_fuel_state',
       reason: 'manual_adjustment',
       transactionType: 'manual_adjustment',
       vehicleId,
     });
+    this.runBackgroundFuelTasks([
+      this.getVehicleFuelUsageSummary(vehicleId, { persist: true }),
+    ], 'manual fuel adjustment follow-up');
 
     return {
       success: true,
       state: syncResult.state || normalized,
       log: logResult.log || null,
+      warning,
     };
   }
 
