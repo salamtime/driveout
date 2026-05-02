@@ -5,6 +5,26 @@ const normalizeEventType = (value) => String(value || '').trim().toLowerCase();
 const safeText = (value) => String(value || '').trim();
 const inFlightLifecycleDispatches = new Map();
 
+const resolveDistanceValue = (rental = {}) => {
+  const directDistance =
+    rental?.total_kilometers_driven ??
+    rental?.total_distance ??
+    rental?.totalDistance ??
+    rental?.distance_km;
+  const numericDirectDistance = Number(directDistance);
+  if (Number.isFinite(numericDirectDistance) && numericDirectDistance > 0) {
+    return numericDirectDistance;
+  }
+
+  const startOdometer = Number(rental?.start_odometer ?? rental?.startOdometer ?? rental?.odometer_start);
+  const endOdometer = Number(rental?.ending_odometer ?? rental?.end_odometer ?? rental?.endOdometer ?? rental?.odometer_end);
+  if (Number.isFinite(startOdometer) && Number.isFinite(endOdometer) && endOdometer >= startOdometer) {
+    return endOdometer - startOdometer;
+  }
+
+  return 0;
+};
+
 export const buildRentalLifecycleDispatchKey = (eventType, rental = {}) => {
   const normalizedEventType = normalizeEventType(eventType);
   const rentalId = safeText(rental?.id);
@@ -25,6 +45,7 @@ export const buildRentalLifecycleDispatchKey = (eventType, rental = {}) => {
         safeText(rental?.total),
         safeText(rental?.amountPaid),
         safeText(rental?.remaining),
+        safeText(resolveDistanceValue(rental)),
       );
       break;
     case 'payment_received':

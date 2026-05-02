@@ -1800,6 +1800,7 @@ function StartWorkflowEffects({
   hasCustomerVerification,
   hasOpeningInspectionCompleted,
   hasOdometerReading,
+  hasStartEngineHoursRecorded,
   hasStartFuelRecorded,
   hasEffectiveContractSignature,
   paymentStatus,
@@ -1851,6 +1852,7 @@ function StartWorkflowEffects({
     hasCustomerVerification,
     hasOpeningInspectionCompleted,
     hasOdometerReading,
+    hasStartEngineHoursRecorded,
     hasStartFuelRecorded,
     hasEffectiveContractSignature,
     paymentStatus,
@@ -1875,6 +1877,13 @@ function StartWorkflowEffects({
     previousActiveStartStepKeyRef,
     startStepRefs,
   ]);
+
+  useEffect(() => {
+    if (showStartChecklistWorkflow || typeof window === 'undefined' || !startWorkflowStorageKey) return;
+
+    window.localStorage.removeItem(startWorkflowStorageKey);
+    setStartWorkflowPendingSync(false);
+  }, [showStartChecklistWorkflow, startWorkflowStorageKey, setStartWorkflowPendingSync]);
 
   return null;
 }
@@ -2322,6 +2331,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
     opening_video_url: null,
     opening_video_thumbnail: null,
     start_odometer: null,
+    start_engine_hours: null,
     start_fuel_level: null,
     updated_at: new Date().toISOString(),
   });
@@ -2332,6 +2342,11 @@ const openReplacementResumeWorkflow = useCallback(() => {
     clearCapturedMediaState();
     setOpeningMedia([]);
     setStartFuelLevel(null);
+    if (rental?.vehicle?.engine_hours !== null && rental?.vehicle?.engine_hours !== undefined) {
+      setStartEngineHours(String(rental.vehicle.engine_hours));
+    } else {
+      setStartEngineHours('');
+    }
     if (rental?.vehicle?.current_odometer) {
       setStartOdometer(String(rental.vehicle.current_odometer));
     } else {
@@ -2393,6 +2408,35 @@ const openReplacementResumeWorkflow = useCallback(() => {
     } catch (err) {
       console.error('❌ Error resetting start odometer:', err);
       toast.error(`Failed to reset starting odometer: ${err.message}`);
+    }
+  };
+
+  const handleResetStartEngineHours = async () => {
+    try {
+      const { error } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update({
+          ...getWorkflowResetFields(),
+          start_engine_hours: null,
+        })
+        .eq('id', rental.id)
+        .select('id')
+        .single();
+
+      if (error) throw error;
+
+      setIsEditingStartEngineHours(false);
+      setShowLightStartEngineHoursModal(false);
+      if (rental?.vehicle?.engine_hours !== null && rental?.vehicle?.engine_hours !== undefined) {
+        setStartEngineHours(String(rental.vehicle.engine_hours));
+      } else {
+        setStartEngineHours('');
+      }
+      await loadRentalData(true);
+      toast.success('Starting engine hours reset');
+    } catch (err) {
+      console.error('❌ Error resetting start engine hours:', err);
+      toast.error(`Failed to reset starting engine hours: ${err.message}`);
     }
   };
 
@@ -3009,6 +3053,17 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [startOdometerEditValue, setStartOdometerEditValue] = useState('');
   const [endOdometerEditValue, setEndOdometerEditValue] = useState('');
 
+  // Engine hours state
+  const [startEngineHours, setStartEngineHours] = useState('');
+  const [showLightStartEngineHoursModal, setShowLightStartEngineHoursModal] = useState(false);
+  const [isEditingStartEngineHours, setIsEditingStartEngineHours] = useState(false);
+  const [isSavingStartEngineHours, setIsSavingStartEngineHours] = useState(false);
+  const [endEngineHours, setEndEngineHours] = useState('');
+  const [showEndEngineHoursPrompt, setShowEndEngineHoursPrompt] = useState(false);
+  const [isProcessingEndEngineHours, setIsProcessingEndEngineHours] = useState(false);
+  const [isEditingEndEngineHours, setIsEditingEndEngineHours] = useState(false);
+  const [endEngineHoursEditValue, setEndEngineHoursEditValue] = useState('');
+
   // Fuel level state
   const [startFuelLevel, setStartFuelLevel] = useState(null);
   const [endFuelLevel, setEndFuelLevel] = useState(null);
@@ -3049,6 +3104,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
     closingVideoComplete: false,
     closingDocumentComplete: true,
     endOdometerComplete: false,
+    endEngineHoursComplete: false,
     endFuelComplete: false
   }));
   const [returnWorkflowBillingResult, setReturnWorkflowBillingResult] = useState(() => {
@@ -3314,6 +3370,8 @@ const contractUrlRef = useRef(null);
 const receiptUrlRef = useRef(null);
 const shortContractUrlRef = useRef(null);
 const shortReceiptUrlRef = useRef(null);
+const documentGenerationTimersRef = useRef(new Set());
+const rentalDetailsMountedRef = useRef(true);
 const maintenanceChargeSectionRef = useRef(null);
 const amountDueEditorRef = useRef(null);
 const impoundReceiptInputRef = useRef(null);
@@ -3326,15 +3384,40 @@ if (typeof window !== 'undefined') {
   window.__pdfGenerating = {};
 }
 
+useEffect(() => {
+  rentalDetailsMountedRef.current = true;
+
+  return () => {
+    rentalDetailsMountedRef.current = false;
+    documentGenerationTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    documentGenerationTimersRef.current.clear();
+  };
+}, []);
+
+const scheduleDocumentGeneration = useCallback((callback, delay = 0) => {
+  if (typeof window === 'undefined') return null;
+
+  const timerId = window.setTimeout(async () => {
+    documentGenerationTimersRef.current.delete(timerId);
+    if (!rentalDetailsMountedRef.current) return;
+    await callback();
+  }, delay);
+
+  documentGenerationTimersRef.current.add(timerId);
+  return timerId;
+}, []);
+
 // Capture template as high-res image using same method as handlePrintContract/Receipt
 // but upload to Supabase instead of saving/opening
 // Public view URLs — perfect quality, works on all devices, no upload needed
-const handlePrintContract = async ({ shareOnly = false } = {}) => {
+const handlePrintContract = async ({ shareOnly = false, silentMissingTemplate = false } = {}) => {
   try {
     await sleep(0);
     const contractRoot = contractPdfRef.current || contractTemplateRef.current || contractShareRef.current;
     if (!contractRoot) {
-      toast.error('Contract template not found');
+      if (!silentMissingTemplate) {
+        toast.error('Contract template not found');
+      }
       return null;
     }
     const pdfBlob = await generatePdfBlobFromContainers(contractRoot);
@@ -3366,12 +3449,14 @@ const handlePrintContract = async ({ shareOnly = false } = {}) => {
   }
 };
 
-const handlePrintReceipt = async ({ shareOnly = false } = {}) => {
+const handlePrintReceipt = async ({ shareOnly = false, silentMissingTemplate = false } = {}) => {
   try {
     await sleep(0);
     const receiptRoot = receiptPdfRef.current || receiptTemplateRef.current || receiptShareRef.current;
     if (!receiptRoot) {
-      toast.error('Receipt template not found');
+      if (!silentMissingTemplate) {
+        toast.error('Receipt template not found');
+      }
       return null;
     }
     const pdfBlobReceipt = await generatePdfBlobFromContainers(receiptRoot);
@@ -3417,13 +3502,15 @@ const generateAndCacheContractPDF = async () => {
 
   setPdfCache((prev) => ({ ...prev, contractGenerating: true }));
   try {
-    const contractUrl = await handlePrintContract({ shareOnly: true });
+    const contractUrl = await handlePrintContract({ shareOnly: true, silentMissingTemplate: true });
     if (contractUrl) {
       setPdfCache((prev) => ({ ...prev, contractUrl }));
     }
     return contractUrl;
   } finally {
-    setPdfCache((prev) => ({ ...prev, contractGenerating: false }));
+    if (rentalDetailsMountedRef.current) {
+      setPdfCache((prev) => ({ ...prev, contractGenerating: false }));
+    }
   }
 };
 
@@ -3432,13 +3519,15 @@ const generateAndCacheReceiptPDF = async () => {
 
   setPdfCache((prev) => ({ ...prev, receiptGenerating: true }));
   try {
-    const receiptUrl = await handlePrintReceipt({ shareOnly: true });
+    const receiptUrl = await handlePrintReceipt({ shareOnly: true, silentMissingTemplate: true });
     if (receiptUrl) {
       setPdfCache((prev) => ({ ...prev, receiptUrl }));
     }
     return receiptUrl;
   } finally {
-    setPdfCache((prev) => ({ ...prev, receiptGenerating: false }));
+    if (rentalDetailsMountedRef.current) {
+      setPdfCache((prev) => ({ ...prev, receiptGenerating: false }));
+    }
   }
 };
 
@@ -4249,6 +4338,20 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
 
       
       // Set existing fuel levels if available
+      if (rentalData.start_engine_hours !== null && rentalData.start_engine_hours !== undefined) {
+        setStartEngineHours(String(rentalData.start_engine_hours));
+      } else if (rentalData?.vehicle?.engine_hours !== null && rentalData?.vehicle?.engine_hours !== undefined) {
+        setStartEngineHours(String(rentalData.vehicle.engine_hours));
+      } else {
+        setStartEngineHours('');
+      }
+      if (rentalData.end_engine_hours !== null && rentalData.end_engine_hours !== undefined) {
+        setEndEngineHours(String(rentalData.end_engine_hours));
+        setEndEngineHoursEditValue(String(rentalData.end_engine_hours));
+      } else {
+        setEndEngineHours('');
+        setEndEngineHoursEditValue('');
+      }
       if (rentalData.start_fuel_level !== null) {
         setStartFuelLevel(rentalData.start_fuel_level);
       }
@@ -4397,6 +4500,47 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
 
     const subscription = channel
       .on(
+        'broadcast',
+        { event: 'status_updated' },
+        ({ payload }) => {
+          if (payload?.rental_id !== rental.id) {
+            return;
+          }
+
+          setRental((prev) => ({
+            ...(prev || {}),
+            ...normalizeRentalLifecycleStatus({
+              ...(prev || {}),
+              rental_status: payload?.rental_status || prev?.rental_status,
+              status: payload?.status || payload?.rental_status || prev?.status,
+              started_at: payload?.started_at ?? prev?.started_at,
+              completed_at: payload?.completed_at ?? prev?.completed_at,
+              updated_at: payload?.updated_at ?? prev?.updated_at,
+            }, rentalTimingSettings),
+            vehicle: prev?.vehicle,
+            package: prev?.package,
+          }));
+
+          if (payload?.started_at || payload?.rental_status === 'active') {
+            setStartWorkflowPendingSync(false);
+            setStartWorkflowTakeover(false);
+            setStartWorkflowPresence([]);
+            if (typeof window !== 'undefined' && startWorkflowStorageKey) {
+              window.localStorage.removeItem(startWorkflowStorageKey);
+            }
+          }
+
+          if (realtimeReloadTimerRef.current) {
+            clearTimeout(realtimeReloadTimerRef.current);
+          }
+
+          realtimeReloadTimerRef.current = setTimeout(() => {
+            if (RENTAL_DEBUG) console.log('📡 Broadcast status update: debounced reload triggered');
+            loadRentalData(true);
+          }, 100);
+        }
+      )
+      .on(
         'postgres_changes',
         {
           event: 'UPDATE',
@@ -4434,7 +4578,9 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
             'completed_by_name',
             'signature_url',
             'start_odometer',
+            'start_engine_hours',
             'start_fuel_level',
+            'end_engine_hours',
             'end_fuel_level',
             'fuel_charge',
             'opening_video_url',
@@ -4462,6 +4608,15 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
             vehicle: prev?.vehicle,
             package: prev?.package,
           }));
+
+          if (payload.new?.started_at || payload.new?.rental_status === 'active') {
+            setStartWorkflowPendingSync(false);
+            setStartWorkflowTakeover(false);
+            setStartWorkflowPresence([]);
+            if (typeof window !== 'undefined' && startWorkflowStorageKey) {
+              window.localStorage.removeItem(startWorkflowStorageKey);
+            }
+          }
 
           if (realtimeReloadTimerRef.current) {
             clearTimeout(realtimeReloadTimerRef.current);
@@ -4523,6 +4678,7 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
               closingVideoComplete: payload?.steps?.closingVideoComplete ?? prev.closingVideoComplete,
               closingDocumentComplete: payload?.steps?.closingDocumentComplete ?? prev.closingDocumentComplete,
               endOdometerComplete: payload?.steps?.endOdometerComplete ?? prev.endOdometerComplete,
+              endEngineHoursComplete: payload?.steps?.endEngineHoursComplete ?? prev.endEngineHoursComplete,
               endFuelComplete: payload?.steps?.endFuelComplete ?? prev.endFuelComplete,
             }));
           }
@@ -7404,9 +7560,7 @@ const FuelChargeToggle = ({
     }
     
     // Generate receipt in background
-    setTimeout(() => {
-      generateAndCacheReceiptPDF();
-    }, 500);
+    scheduleDocumentGeneration(generateAndCacheReceiptPDF, 500);
     
     toast.success(`Rental payment marked as PAID! Total: ${rentalGrandTotal.toFixed(2)} MAD | Damage Deposit: ${rental.damage_deposit?.toFixed(2) || 0} MAD (separate)`);
     
@@ -7723,6 +7877,80 @@ const FuelChargeToggle = ({
     }
   };
 
+  const parseEngineHoursValue = (value) => {
+    const normalizedValue = String(value ?? '').trim();
+    if (!normalizedValue) {
+      return { normalizedValue, parsedValue: NaN };
+    }
+
+    return {
+      normalizedValue,
+      parsedValue: parseFloat(normalizedValue),
+    };
+  };
+
+  const syncVehicleEngineHours = async (nextEngineHours) => {
+    if (!rental?.vehicle_id) return;
+
+    const { error } = await supabase
+      .from('saharax_0u4w4d_vehicles')
+      .update({
+        engine_hours: nextEngineHours,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', rental.vehicle_id);
+
+    if (error) {
+      console.error('Failed to update vehicle engine hours:', error);
+    }
+  };
+
+  const handleSaveStartEngineHours = async () => {
+    const { normalizedValue, parsedValue } = parseEngineHoursValue(startEngineHours);
+    if (!Number.isFinite(parsedValue) || parsedValue < 0) {
+      toast.error(`Please enter valid engine hours. Received: ${normalizedValue || '(empty)'}`);
+      return;
+    }
+
+    setIsSavingStartEngineHours(true);
+    try {
+      const { error } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update({
+          start_engine_hours: parsedValue,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', rental.id);
+
+      if (error) throw error;
+
+      await syncVehicleEngineHours(parsedValue);
+
+      setRental((prev) => prev ? ({
+        ...prev,
+        start_engine_hours: parsedValue,
+        vehicle: prev.vehicle
+          ? {
+              ...prev.vehicle,
+              engine_hours: parsedValue,
+            }
+          : prev.vehicle,
+      }) : prev);
+      setStartEngineHours(String(parsedValue));
+      setIsEditingStartEngineHours(false);
+      setShowLightStartEngineHoursModal(false);
+      await broadcastRentalWorkflowUpdate('start', 'start_engine_hours', {
+        start_engine_hours: parsedValue,
+      });
+      toast.success('Starting engine hours saved successfully!');
+    } catch (err) {
+      console.error('❌ Error saving start engine hours:', err);
+      toast.error(`Failed to save starting engine hours. Error: ${err.message}`);
+    } finally {
+      setIsSavingStartEngineHours(false);
+    }
+  };
+
 
   // Fuel level handlers
   const handleSaveStartFuel = async (fuelLevel) => {
@@ -7841,6 +8069,73 @@ const FuelChargeToggle = ({
     toast.error('Failed to save fuel level');
   }
 };
+
+  const handleSaveEndEngineHours = async (rawValue = null) => {
+    const sourceValue = rawValue ?? endEngineHours;
+    const { normalizedValue, parsedValue } = parseEngineHoursValue(sourceValue);
+    if (!Number.isFinite(parsedValue) || parsedValue < 0) {
+      toast.error(`Please enter valid ending engine hours. Received: ${normalizedValue || '(empty)'}`);
+      return;
+    }
+
+    const startingEngineHours = Number(rental?.start_engine_hours);
+    if (Number.isFinite(startingEngineHours) && parsedValue < startingEngineHours) {
+      toast.error(
+        tr(
+          `Ending engine hours (${parsedValue}) cannot be less than starting engine hours (${startingEngineHours}).`,
+          `Les heures moteur de retour (${parsedValue}) ne peuvent pas être inférieures aux heures moteur de départ (${startingEngineHours}).`
+        )
+      );
+      return;
+    }
+
+    setIsProcessingEndEngineHours(true);
+    try {
+      const { error } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update({
+          end_engine_hours: parsedValue,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', rental.id);
+
+      if (error) throw error;
+
+      await syncVehicleEngineHours(parsedValue);
+
+      setRental((prev) => prev ? ({
+        ...prev,
+        end_engine_hours: parsedValue,
+        vehicle: prev.vehicle
+          ? {
+              ...prev.vehicle,
+              engine_hours: parsedValue,
+            }
+          : prev.vehicle,
+      }) : prev);
+      setEndEngineHours(String(parsedValue));
+      setEndEngineHoursEditValue(String(parsedValue));
+      setShowEndEngineHoursPrompt(false);
+      setIsEditingEndEngineHours(false);
+      setFinishRentalSteps((prev) => ({
+        ...prev,
+        endEngineHoursComplete: true,
+      }));
+      await broadcastRentalWorkflowUpdate('finish', 'end_engine_hours', {
+        showWorkflow: true,
+        steps: {
+          ...buildFinishWorkflowState(),
+          endEngineHoursComplete: true,
+        },
+      });
+      toast.success('Ending engine hours saved successfully!');
+    } catch (err) {
+      console.error('❌ Error saving ending engine hours:', err);
+      toast.error(`Failed to save ending engine hours. Error: ${err.message}`);
+    } finally {
+      setIsProcessingEndEngineHours(false);
+    }
+  };
 
       // Handle manual edit of fuel charge
   const handleEditFuelCharge = async (newCharge) => {
@@ -8051,6 +8346,7 @@ const handleFuelChargeToggle = async (enabled) => {
     closingVideoComplete: closingInspectionStepComplete,
     closingDocumentComplete: true,
     endOdometerComplete: !!rental?.ending_odometer,
+    endEngineHoursComplete: rental?.end_engine_hours !== null && rental?.end_engine_hours !== undefined,
     endFuelComplete: endFuelLevel !== null || rental?.end_fuel_level !== null,
   });
 
@@ -8116,6 +8412,7 @@ const handleFuelChargeToggle = async (enabled) => {
           .from('app_4c3a7a6153_rentals')
           .update({
             ending_odometer: null,
+            end_engine_hours: null,
             end_fuel_level: null,
             fuel_charge: 0,
             updated_at: new Date().toISOString(),
@@ -8127,6 +8424,7 @@ const handleFuelChargeToggle = async (enabled) => {
         setRental((prev) => prev ? ({
           ...prev,
           ending_odometer: null,
+          end_engine_hours: null,
           end_fuel_level: null,
           fuel_charge: 0,
         }) : prev);
@@ -8136,6 +8434,10 @@ const handleFuelChargeToggle = async (enabled) => {
       setEndOdometerEditValue('');
       setIsEditingEndOdometer(false);
       setShowEndOdometerPrompt(false);
+      setEndEngineHours('');
+      setEndEngineHoursEditValue('');
+      setIsEditingEndEngineHours(false);
+      setShowEndEngineHoursPrompt(false);
       setEndFuelLevel(null);
       setFuelCharge(0);
       setShowEndFuelModal(false);
@@ -8147,6 +8449,7 @@ const handleFuelChargeToggle = async (enabled) => {
         closingVideoComplete: false,
         closingDocumentComplete: true,
         endOdometerComplete: false,
+        endEngineHoursComplete: false,
         endFuelComplete: false
       };
       setFinishRentalSteps(nextState);
@@ -8156,6 +8459,7 @@ const handleFuelChargeToggle = async (enabled) => {
         showWorkflow: false,
         steps: nextState,
         ending_odometer: null,
+        end_engine_hours: null,
         end_fuel_level: null,
         fuel_charge: 0,
       });
@@ -8595,6 +8899,18 @@ const handleFuelChargeToggle = async (enabled) => {
           total: (completedRental || effectiveCompletionRental)?.total_amount || rental.total_amount || 0,
           amountPaid: (completedRental || effectiveCompletionRental)?.deposit_amount || rental.deposit_amount || 0,
           remaining: (completedRental || effectiveCompletionRental)?.remaining_amount || rental.remaining_amount || 0,
+          total_kilometers_driven: resolveRentalTelegramDistance(
+            (completedRental || effectiveCompletionRental || rental)
+          ),
+          start_odometer:
+            (completedRental || effectiveCompletionRental)?.start_odometer
+            ?? rental.start_odometer
+            ?? null,
+          ending_odometer:
+            (completedRental || effectiveCompletionRental)?.ending_odometer
+            ?? effectiveEndingOdometer
+            ?? rental.ending_odometer
+            ?? null,
           overtime: overtimeAdjustment
             ? {
                 addedHours: overtimeAdjustment.addedHours,
@@ -8637,6 +8953,7 @@ const handleFuelChargeToggle = async (enabled) => {
           closingVideoComplete: false,
           closingDocumentComplete: true,
           endOdometerComplete: false,
+          endEngineHoursComplete: false,
           endFuelComplete: false
         };
 
@@ -8669,6 +8986,7 @@ const handleFuelChargeToggle = async (enabled) => {
         closingVideoComplete: false,
         closingDocumentComplete: true,
         endOdometerComplete: false,
+        endEngineHoursComplete: false,
         endFuelComplete: false
       });
       clearFinishWorkflowState();
@@ -9345,6 +9663,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
           closingVideoComplete: inspectionComplete,
           closingDocumentComplete: true,
           endOdometerComplete: Boolean(rental.ending_odometer),
+          endEngineHoursComplete: rental?.end_engine_hours !== null && rental?.end_engine_hours !== undefined,
           endFuelComplete: endFuelLevel !== null || rental?.end_fuel_level !== null
         };
         setFinishRentalSteps((prev) => (
@@ -9352,6 +9671,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
           prev.closingVideoComplete === nextSteps.closingVideoComplete &&
           prev.closingDocumentComplete === nextSteps.closingDocumentComplete &&
           prev.endOdometerComplete === nextSteps.endOdometerComplete &&
+          prev.endEngineHoursComplete === nextSteps.endEngineHoursComplete &&
           prev.endFuelComplete === nextSteps.endFuelComplete
         ) ? prev : nextSteps);
       }
@@ -9378,7 +9698,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       console.error('Failed to restore finish rental workflow state:', error);
       clearFinishWorkflowState();
     }
-  }, [finishWorkflowStorageKey, rental, rental?.id, rental?.rental_status, rental?.completed_at, rental?.started_at, rental?.ending_odometer, rental?.end_fuel_level, endFuelLevel, inspectionComplete, vehicleReport?.id, finishRentalSteps.showWorkflow]);
+  }, [finishWorkflowStorageKey, rental, rental?.id, rental?.rental_status, rental?.completed_at, rental?.started_at, rental?.ending_odometer, rental?.end_engine_hours, rental?.end_fuel_level, endFuelLevel, inspectionComplete, vehicleReport?.id, finishRentalSteps.showWorkflow]);
 
   useEffect(() => {
     if (!finishWorkflowStorageKey || typeof window === 'undefined') return;
@@ -10022,10 +10342,10 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       const generatePDFsIfNeeded = () => {
         // Only generate if user has been on page for 3 seconds (page is interactive)
         if (rental.signature_url && !pdfCache.contractUrl && !pdfCache.contractGenerating) {
-          setTimeout(() => generateAndCacheContractPDF(), 3000);
+          scheduleDocumentGeneration(generateAndCacheContractPDF, 3000);
         }
         if (dynamicPaymentState.isPaid && !pdfCache.receiptUrl && !pdfCache.receiptGenerating) {
-          setTimeout(() => generateAndCacheReceiptPDF(), 3500);
+          scheduleDocumentGeneration(generateAndCacheReceiptPDF, 3500);
         }
       };
       
@@ -10034,7 +10354,16 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       
       return () => clearTimeout(timer);
     }
-  }, [dynamicPaymentState.isPaid, rental?.id, rental?.signature_url]);
+  }, [
+    dynamicPaymentState.isPaid,
+    pdfCache.contractGenerating,
+    pdfCache.contractUrl,
+    pdfCache.receiptGenerating,
+    pdfCache.receiptUrl,
+    rental?.id,
+    rental?.signature_url,
+    scheduleDocumentGeneration,
+  ]);
 
   const previousClosingMediaCountRef = useRef(closingMedia.length);
 
@@ -10075,6 +10404,17 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
       ));
     }
   }, [rental?.ending_odometer, finishRentalSteps.showWorkflow]);
+
+  useEffect(() => {
+    if ((rental?.end_engine_hours !== null && rental?.end_engine_hours !== undefined) && finishRentalSteps.showWorkflow) {
+      setFinishRentalSteps(prev => (
+        prev.endEngineHoursComplete ? prev : {
+          ...prev,
+          endEngineHoursComplete: true
+        }
+      ));
+    }
+  }, [rental?.end_engine_hours, finishRentalSteps.showWorkflow]);
 
   // Update finish steps when end fuel is saved
 useEffect(() => {
@@ -10872,7 +11212,7 @@ useEffect(() => {
       } catch (broadcastErr) {
         console.warn('Broadcast failed (non-critical):', broadcastErr);
       }
-      if (rental.signature_url) setTimeout(() => generateAndCacheContractPDF(), 1000);
+      if (rental.signature_url) scheduleDocumentGeneration(generateAndCacheContractPDF, 1000);
       void dispatchRentalLifecycleTelegramEvent({
         eventType: 'rental_started',
         actor: 'admin',
@@ -10946,14 +11286,24 @@ useEffect(() => {
       return;
     }
 
-    // Step 2.5: Check if ending fuel level is recorded (for daily rentals only)
+    if (rental?.end_engine_hours === null || rental?.end_engine_hours === undefined) {
+      setEndEngineHours(
+        rental?.vehicle?.engine_hours !== null && rental?.vehicle?.engine_hours !== undefined
+          ? String(rental.vehicle.engine_hours)
+          : ''
+      );
+      setShowEndEngineHoursPrompt(true);
+      return;
+    }
+
+    // Step 3: Check if ending fuel level is recorded
     if (!endFuelLevel && !rental?.end_fuel_level) { // Fuel level required for all rental types
       if (RENTAL_DEBUG) console.log('⛽ Fuel level not recorded, prompting...');
       setShowEndFuelModal(true);
       return;
     }
 
-    // Step 3: If both closing video and ending odometer exist, complete the rental
+    // Step 4: If all finish readings exist, complete the rental
     try {
       const completedAt = new Date().toISOString();
       const billingCloseTime = getReturnWorkflowCloseTime(completedAt);
@@ -11008,6 +11358,15 @@ useEffect(() => {
           total: effectiveCompletionRental?.total_amount || rental.total_amount || 0,
           amountPaid: effectiveCompletionRental?.deposit_amount || rental.deposit_amount || 0,
           remaining: effectiveCompletionRental?.remaining_amount || rental.remaining_amount || 0,
+          total_kilometers_driven: resolveRentalTelegramDistance(effectiveCompletionRental || rental),
+          start_odometer:
+            effectiveCompletionRental?.start_odometer
+            ?? rental.start_odometer
+            ?? null,
+          ending_odometer:
+            effectiveCompletionRental?.ending_odometer
+            ?? rental.ending_odometer
+            ?? null,
           overtime: overtimeAdjustment
             ? {
                 addedHours: overtimeAdjustment.addedHours,
@@ -11834,6 +12193,24 @@ useEffect(() => {
     }
   };
 
+  const resolveRentalTelegramDistance = (source) => {
+    const directDistance = Number(
+      source?.total_kilometers_driven ??
+      source?.total_distance
+    );
+    if (Number.isFinite(directDistance) && directDistance > 0) {
+      return directDistance;
+    }
+
+    const startOdometer = Number(source?.start_odometer);
+    const endOdometer = Number(source?.ending_odometer);
+    if (Number.isFinite(startOdometer) && Number.isFinite(endOdometer) && endOdometer >= startOdometer) {
+      return endOdometer - startOdometer;
+    }
+
+    return 0;
+  };
+
   const buildManualTelegramRentalPayload = (eventType) => {
     const normalizedEventType = String(eventType || '').trim().toLowerCase();
     const completedAt =
@@ -11858,6 +12235,9 @@ useEffect(() => {
       total: rental?.total_amount || 0,
       amountPaid: rental?.deposit_amount || 0,
       remaining: rental?.remaining_amount || 0,
+      total_kilometers_driven: resolveRentalTelegramDistance(rental),
+      start_odometer: rental?.start_odometer ?? null,
+      ending_odometer: rental?.ending_odometer ?? null,
       manualResend: true,
       manualResendNonce: `${normalizedEventType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     };
@@ -12236,10 +12616,22 @@ useEffect(() => {
       return;
     }
 
+    const paymentReceivedNow = Math.max(0, Number(amountDuePaymentReceivedNow) || 0);
+    const companyDiscount = Math.max(0, Number(amountDueCompanyDiscount) || 0);
+    const requestedNextAmountDue = Math.max(0, Number(manualAmountDue) || 0);
+    const autoResolvedAmountDue = Math.max(
+      0,
+      currentAmountDueForEdit - paymentReceivedNow - companyDiscount
+    );
+    const nextAmountDue =
+      paymentReceivedNow > 0 || companyDiscount > 0
+        ? Math.min(requestedNextAmountDue, autoResolvedAmountDue)
+        : requestedNextAmountDue;
+
     await saveAmountDueResolution({
-      nextAmountDue: Math.max(0, Number(manualAmountDue) || 0),
-      paymentReceivedNow: Math.max(0, Number(amountDuePaymentReceivedNow) || 0),
-      companyDiscount: Math.max(0, Number(amountDueCompanyDiscount) || 0),
+      nextAmountDue,
+      paymentReceivedNow,
+      companyDiscount,
       reason: amountDueOverrideReason || '',
       isShortcutPayment: false,
     });
@@ -12824,6 +13216,12 @@ useEffect(() => {
   const hasOpeningVideo = openingMedia.length > 0;
   const hasOpeningDraftMedia = capturedMedia.length > 0 || showMediaReview;
   const hasOdometerReading = Boolean(rental?.start_odometer);
+  const displayedStartingEngineHours = rental?.start_engine_hours ?? (
+    startEngineHours !== '' && Number.isFinite(parseFloat(startEngineHours))
+      ? parseFloat(startEngineHours)
+      : (rental?.vehicle?.engine_hours ?? null)
+  );
+  const hasStartEngineHoursRecorded = rental?.start_engine_hours !== null && rental?.start_engine_hours !== undefined;
   const hasStartFuelRecorded = startFuelLevel !== null || rental?.start_fuel_level !== null;
   const hasSecondDriver = (rental?.second_drivers && rental?.second_drivers.length > 0) || 
     rental?.second_driver_name || rental?.second_driver_license || rental?.second_driver_id_image;
@@ -12902,7 +13300,7 @@ useEffect(() => {
     );
   const canOwnerAdjustCompletedRental = currentUserRole === 'owner' && isCompleted;
   const canDeleteScheduledRental = isScheduled && ['owner', 'admin'].includes(resolvedCurrentUser?.role);
-  const canResendTelegramAlerts = canEditLifecycleRentalPrice;
+  const canResendTelegramAlerts = ['admin', 'owner'].includes(currentUserRole);
   const availableTelegramResendActions = useMemo(() => {
     if (!rental?.id || !canResendTelegramAlerts) return [];
 
@@ -13073,6 +13471,11 @@ useEffect(() => {
       complete: hasOdometerReading,
     },
     {
+      key: 'start_engine_hours',
+      label: tr('Starting Engine Hours', 'Heures moteur de départ'),
+      complete: hasStartEngineHoursRecorded,
+    },
+    {
       key: 'payment',
       label: tr('Payment', 'Paiement'),
       complete: paymentSatisfied,
@@ -13103,7 +13506,7 @@ useEffect(() => {
   const pinnedStartWorkflowFirstKey = 'customer_verification';
   const pinnedStartWorkflowSecondKey = 'payment';
   const pinnedStartWorkflowLastKey = 'contract_signature';
-  const movableStartWorkflowKeys = ['opening_media', 'start_odometer', 'start_fuel'];
+  const movableStartWorkflowKeys = ['opening_media', 'start_odometer', 'start_engine_hours', 'start_fuel'];
   const orderedMovableCompletedStartWorkflowKeys = movableStartWorkflowKeys.filter(
     (key) => startWorkflowStepMap[key]?.complete
   );
@@ -13124,11 +13527,12 @@ useEffect(() => {
     orderedStartWorkflowStepKeys.map((key, index) => [key, index])
   );
   const getStartWorkflowDisplayNumber = (stepKey) => {
-    if (stepKey === pinnedStartWorkflowLastKey) return 6;
+    if (stepKey === pinnedStartWorkflowLastKey) return orderedStartWorkflowStepKeys.length;
     return (startWorkflowDisplayOrderMap[stepKey] ?? 0) + 1;
   };
   const openingInspectionStepComplete = Boolean(startWorkflowStepMap.opening_media?.complete);
   const startingOdometerStepComplete = Boolean(startWorkflowStepMap.start_odometer?.complete);
+  const startingEngineHoursStepComplete = Boolean(startWorkflowStepMap.start_engine_hours?.complete);
   const paymentStepComplete = Boolean(startWorkflowStepMap.payment?.complete);
   const startFuelStepComplete = Boolean(startWorkflowStepMap.start_fuel?.complete);
   const contractSignatureStepComplete = Boolean(startWorkflowStepMap.contract_signature?.complete);
@@ -13164,6 +13568,8 @@ useEffect(() => {
           : tr('Vehicle & Documents inspection completed', 'Inspection véhicule et documents terminée');
       case 'start_odometer':
         return tr('Starting Odometer completed', 'Kilométrage de départ terminé');
+      case 'start_engine_hours':
+        return tr('Starting Engine Hours completed', 'Heures moteur de départ terminées');
       case 'payment':
         return tr('Payment completed', 'Paiement terminé');
       case 'start_fuel':
@@ -13185,6 +13591,8 @@ useEffect(() => {
         return tr('Vehicle media is optional.', 'Les médias du véhicule sont optionnels.');
       case 'start_odometer':
         return tr('Starting odometer reading is still required.', 'Le kilométrage de départ est encore requis.');
+      case 'start_engine_hours':
+        return tr('Starting engine hours are still required.', 'Les heures moteur de départ sont encore requises.');
       case 'payment':
         return tr('Payment is still required.', 'Le paiement est encore requis.');
       case 'start_fuel':
@@ -13217,6 +13625,11 @@ useEffect(() => {
       complete: finishRentalSteps.endOdometerComplete,
     },
     {
+      key: 'end_engine_hours',
+      label: tr('Ending Engine Hours', 'Heures moteur de retour'),
+      complete: finishRentalSteps.endEngineHoursComplete,
+    },
+    {
       key: 'end_fuel',
       label: tr('Fuel Level', 'Niveau de carburant'),
       complete: finishRentalSteps.endFuelComplete,
@@ -13232,6 +13645,8 @@ useEffect(() => {
         return tr('Review or add return media if needed before continuing.', 'Vérifiez ou ajoutez des médias de retour si nécessaire avant de continuer.');
       case 'end_odometer':
         return tr('Ending odometer reading is still required.', 'Le kilométrage de retour est encore requis.');
+      case 'end_engine_hours':
+        return tr('Ending engine hours are still required.', 'Les heures moteur de retour sont encore requises.');
       case 'end_fuel':
         return tr('Return fuel level is still required.', 'Le niveau de carburant de retour est encore requis.');
       default:
@@ -13267,11 +13682,16 @@ useEffect(() => {
     startWorkflowStepMap.customer_verification?.complete &&
     startWorkflowStepMap.opening_media?.complete &&
     startWorkflowStepMap.start_odometer?.complete &&
+    startWorkflowStepMap.start_engine_hours?.complete &&
     startWorkflowStepMap.payment?.complete &&
     startWorkflowStepMap.start_fuel?.complete &&
     !startWorkflowStepMap.contract_signature?.complete;
   const canEditStartOdometerBeforeSignature =
     hasOdometerReading &&
+    !hasEffectiveContractSignature &&
+    !isStartWorkflowSoftLocked;
+  const canEditStartEngineHoursBeforeSignature =
+    hasStartEngineHoursRecorded &&
     !hasEffectiveContractSignature &&
     !isStartWorkflowSoftLocked;
   const canSendWhatsApp = hasEffectiveContractSignature;
@@ -13331,6 +13751,12 @@ useEffect(() => {
       setShowLightStartOdometerModal(false);
     }
   }, [isEditingOdometer]);
+
+  useEffect(() => {
+    if (!isEditingStartEngineHours) {
+      setShowLightStartEngineHoursModal(false);
+    }
+  }, [isEditingStartEngineHours]);
 
   if (loading) {
     return (
@@ -13455,6 +13881,16 @@ useEffect(() => {
     setShowLightStartOdometerModal(true);
   };
 
+  const openLightStartEngineHoursModal = () => {
+    setStartEngineHours(
+      displayedStartingEngineHours !== null && displayedStartingEngineHours !== undefined
+        ? String(displayedStartingEngineHours)
+        : ''
+    );
+    setIsEditingStartEngineHours(true);
+    setShowLightStartEngineHoursModal(true);
+  };
+
   const lightReadyToStartStartDisabled =
     !canStartRental ||
     isStartWorkflowSoftLocked ||
@@ -13465,6 +13901,15 @@ useEffect(() => {
   const lightStartSummaryRows = [
     { label: tr('Customer', 'Client'), value: rental?.customer_name || tr('Not set', 'Non défini') },
     { label: tr('Schedule', 'Horaire'), value: rental?.rental_start_date ? formatRentalScheduleDateTime(rental.rental_start_date) : tr('Not set', 'Non défini') },
+    {
+      label: tr('Engine Hours', 'Heures moteur'),
+      value:
+        rental?.start_engine_hours !== null && rental?.start_engine_hours !== undefined
+          ? `${Number(rental.start_engine_hours).toFixed(1)} h`
+          : (displayedStartingEngineHours !== null && displayedStartingEngineHours !== undefined
+              ? `${Number(displayedStartingEngineHours).toFixed(1)} h`
+              : tr('Not set', 'Non défini')),
+    },
     { label: tr('Payment', 'Paiement'), value: dynamicPaymentState?.label || tr('Pending', 'En attente') },
     {
       label: tr('Security', 'Caution'),
@@ -13488,6 +13933,13 @@ useEffect(() => {
           ? `${formatRentalScheduleDateTime(rental.rental_start_date)} → ${formatRentalScheduleDateTime(rental.rental_end_date)}`
           : tr('Not set', 'Non défini'),
     },
+    {
+      label: tr('Engine Hours', 'Heures moteur'),
+      value:
+        rental?.start_engine_hours !== null && rental?.start_engine_hours !== undefined
+          ? `${Number(rental.start_engine_hours).toFixed(1)} h`
+          : tr('Not set', 'Non défini'),
+    },
     { label: tr('Payment', 'Paiement'), value: dynamicPaymentState?.label || tr('Pending', 'En attente') },
     {
       label: tr('Security', 'Caution'),
@@ -13499,6 +13951,7 @@ useEffect(() => {
   const lightFinishCanComplete =
     closingInspectionStepComplete &&
     finishRentalSteps.endOdometerComplete &&
+    finishRentalSteps.endEngineHoursComplete &&
     finishRentalSteps.endFuelComplete &&
     !isFinishWorkflowSoftLocked;
   const completedVehicleMediaCount = closingMedia.length;
@@ -13565,6 +14018,26 @@ useEffect(() => {
       onAction: isLightRentalDetailsMode ? openLightStartOdometerModal : () => setIsEditingOdometer(true),
       disabled: isStartWorkflowSoftLocked || (!isStartStepActive('start_odometer') && !canEditStartOdometerBeforeSignature),
       icon: Gauge,
+    },
+    start_engine_hours: {
+      key: 'start_engine_hours',
+      title: tr('Starting engine hours', 'Heures moteur de départ'),
+      complete: startingEngineHoursStepComplete,
+      active: isStartStepActive('start_engine_hours'),
+      detail: startingEngineHoursStepComplete
+        ? `${Number(rental?.start_engine_hours || 0).toFixed(1)} h`
+        : tr('Add the engine-hour reading.', 'Ajoutez le relevé des heures moteur.'),
+      actionLabel: startingEngineHoursStepComplete
+        ? tr('Edit hours', 'Modifier les heures')
+        : tr('Add hours', 'Ajouter les heures'),
+      onAction: isLightRentalDetailsMode
+        ? openLightStartEngineHoursModal
+        : () => {
+            setStartEngineHours(displayedStartingEngineHours !== null && displayedStartingEngineHours !== undefined ? String(displayedStartingEngineHours) : '');
+            setIsEditingStartEngineHours(true);
+          },
+      disabled: isStartWorkflowSoftLocked || (!isStartStepActive('start_engine_hours') && !canEditStartEngineHoursBeforeSignature),
+      icon: Wrench,
     },
     start_fuel: {
       key: 'start_fuel',
@@ -13664,7 +14137,7 @@ useEffect(() => {
 	                      <div className="min-w-0">
 	                        <div className="flex items-center gap-2">
 	                          <p className="text-sm font-bold text-slate-900">{step.title}</p>
-	                          {step.key === 'start_odometer' && canEditStartOdometerBeforeSignature && (
+	                          {(step.key === 'start_odometer' && canEditStartOdometerBeforeSignature) && (
 	                            <button
 	                              type="button"
 	                              onClick={step.onAction}
@@ -13680,7 +14153,7 @@ useEffect(() => {
 	                      </div>
                       <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${step.complete ? 'text-emerald-600' : step.active ? 'text-violet-600' : 'text-slate-400'}`} />
                     </div>
-                    {(!step.complete || (step.key === 'start_odometer' && canEditStartOdometerBeforeSignature)) && (
+                    {(!step.complete || (step.key === 'start_odometer' && canEditStartOdometerBeforeSignature) || (step.key === 'start_engine_hours' && canEditStartEngineHoursBeforeSignature)) && (
                       <button
                         type="button"
                         onClick={step.onAction}
@@ -14009,6 +14482,15 @@ useEffect(() => {
         label: tr('Return location', 'Lieu de retour'),
         value: selectedReturnLocationName || tr('Select location below', 'Sélectionnez un lieu ci-dessous'),
       },
+      {
+        label: tr('Engine Hours', 'Heures moteur'),
+        value:
+          rental?.end_engine_hours !== null && rental?.end_engine_hours !== undefined
+            ? `${Number(rental.end_engine_hours).toFixed(1)} h`
+            : rental?.start_engine_hours !== null && rental?.start_engine_hours !== undefined
+              ? `${Number(rental.start_engine_hours).toFixed(1)} h`
+              : tr('Not set', 'Non défini'),
+      },
       { label: tr('Payment', 'Paiement'), value: dynamicPaymentState?.label || tr('Pending', 'En attente') },
       {
         label: tr('Security', 'Caution'),
@@ -14065,8 +14547,35 @@ useEffect(() => {
         extra: null,
       },
       {
-        key: 'fuel',
+        key: 'engine_hours',
         index: 3,
+        title: tr('Engine hours', 'Heures moteur'),
+        description: finishRentalSteps.endEngineHoursComplete
+          ? `${Number(rental?.end_engine_hours || 0).toFixed(1)} h`
+          : tr('Enter the return engine-hour reading.', 'Saisissez le relevé des heures moteur au retour.'),
+        complete: finishRentalSteps.endEngineHoursComplete,
+        icon: Wrench,
+        actionLabel: finishRentalSteps.endEngineHoursComplete
+          ? tr('Edit hours', 'Modifier les heures')
+          : tr('Add hours', 'Ajouter les heures'),
+        onAction: () => {
+          if (finishRentalSteps.endEngineHoursComplete) {
+            setIsEditingEndEngineHours(true);
+            setEndEngineHoursEditValue(rental?.end_engine_hours?.toString() || '');
+            return;
+          }
+          setEndEngineHours(
+            rental?.vehicle?.engine_hours !== null && rental?.vehicle?.engine_hours !== undefined
+              ? String(rental.vehicle.engine_hours)
+              : ''
+          );
+          setShowEndEngineHoursPrompt(true);
+        },
+        extra: null,
+      },
+      {
+        key: 'fuel',
+        index: 4,
         title: tr('Fuel level', 'Niveau de carburant'),
         description: finishRentalSteps.endFuelComplete
           ? `${endFuelLevel ?? rental?.end_fuel_level ?? 0}/8`
@@ -14352,6 +14861,7 @@ useEffect(() => {
         hasCustomerVerification={hasCustomerVerification}
         hasOpeningInspectionCompleted={hasOpeningInspectionCompleted}
         hasOdometerReading={hasOdometerReading}
+        hasStartEngineHoursRecorded={hasStartEngineHoursRecorded}
         hasStartFuelRecorded={hasStartFuelRecorded}
         hasEffectiveContractSignature={hasEffectiveContractSignature}
         paymentStatus={rental?.payment_status}
@@ -15169,6 +15679,125 @@ useEffect(() => {
                       >
                         <Edit className="w-3 h-3 mr-1.5" />
                         {tr('Edit Reading', 'Modifier le relevé')}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Step 4: Starting Engine Hours */}
+                <div
+                  ref={(node) => { startStepRefs.current.start_engine_hours = node; }}
+                  style={{ order: startWorkflowDisplayOrderMap.start_engine_hours ?? 0 }}
+                  onClick={() => {
+                    if (isStartStepLocked('start_engine_hours')) notifyLockedStartStep();
+                  }}
+                  className={`flex items-start gap-2.5 rounded-2xl p-3 transition-all sm:gap-3 ${getStartStepContainerClass('start_engine_hours', startingEngineHoursStepComplete)} ${startingEngineHoursStepComplete && !isStartStepActive('start_engine_hours') ? 'min-h-[46px] items-center' : ''}`}
+                >
+                  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${startingEngineHoursStepComplete ? 'bg-green-500' : isStartStepActive('start_engine_hours') ? 'bg-violet-600' : 'bg-gray-300'}`}>
+                    {startingEngineHoursStepComplete ? (
+                      <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
+                    ) : (
+                      <span className="text-white font-bold text-xs">{getStartWorkflowDisplayNumber('start_engine_hours')}</span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Starting Engine Hours', 'Heures moteur de départ')}</h4>
+                        {startingEngineHoursStepComplete && !isStartStepActive('start_engine_hours') ? (
+                          <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                            ✓ {getStartStepSummary('start_engine_hours')}
+                          </p>
+                        ) : displayedStartingEngineHours !== null && displayedStartingEngineHours !== undefined ? (
+                          <p className="text-xs text-gray-600 mt-0.5 break-words">
+                            {`✓ ${tr('Starting engine hours:', 'Heures moteur de départ :')} ${Number(displayedStartingEngineHours).toFixed(1)} h`}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="mt-2 sm:mt-0 flex w-full sm:w-auto items-center gap-2">
+                        {!hasStartEngineHoursRecorded && !isEditingStartEngineHours && isStartStepActive('start_engine_hours') && (
+                          <Button
+                            type="button"
+                            onClick={() => {
+                              setStartEngineHours(displayedStartingEngineHours !== null && displayedStartingEngineHours !== undefined ? String(displayedStartingEngineHours) : '');
+                              setIsEditingStartEngineHours(true);
+                            }}
+                            size="sm"
+                            disabled={isStartWorkflowSoftLocked}
+                            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white text-xs h-7 px-2.5 sm:px-3"
+                          >
+                            <Wrench className="w-3 h-3 mr-1.5" />
+                            <span className="whitespace-nowrap">{tr('Add Hours', 'Ajouter les heures')}</span>
+                          </Button>
+                        )}
+                        {hasStartEngineHoursRecorded && !isEditingStartEngineHours && isStartStepActive('start_engine_hours') && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={handleResetStartEngineHours}
+                            disabled={isStartWorkflowSoftLocked}
+                            className="h-7 w-7 shrink-0 border-red-200 p-0 text-red-600 hover:bg-red-50 hover:text-red-700"
+                            title={isStartWorkflowSoftLocked ? startWorkflowLockTitle : tr('Reset starting engine hours', 'Réinitialiser les heures moteur de départ')}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    {isEditingStartEngineHours && (isStartStepActive('start_engine_hours') || canEditStartEngineHoursBeforeSignature) && (
+                      <div className="mt-2 space-y-2">
+                        <input
+                          type="number"
+                          value={startEngineHours}
+                          onChange={(e) => setStartEngineHours(e.target.value)}
+                          placeholder={tr('Enter engine hours', 'Saisissez les heures moteur')}
+                          className="w-full px-3 py-1.5 text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          min="0"
+                          step="0.1"
+                          disabled={isStartWorkflowSoftLocked}
+                        />
+                        <div className="flex gap-1.5">
+                          <Button
+                            type="button"
+                            onClick={handleSaveStartEngineHours}
+                            size="sm"
+                            disabled={isStartWorkflowSoftLocked || isSavingStartEngineHours}
+                            className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs h-7"
+                          >
+                            <Save className="w-3 h-3 mr-1.5" />
+                            {isSavingStartEngineHours ? tr('Saving...', 'Enregistrement...') : tr('Save', 'Enregistrer')}
+                          </Button>
+                          <Button
+                            type="button"
+                            onClick={() => {
+                              setIsEditingStartEngineHours(false);
+                              setStartEngineHours(displayedStartingEngineHours !== null && displayedStartingEngineHours !== undefined ? String(displayedStartingEngineHours) : '');
+                            }}
+                            variant="outline"
+                            size="sm"
+                            className="flex-1 text-xs h-7"
+                          >
+                            <X className="w-3 h-3 mr-1.5" />
+                            {tr('Cancel', 'Annuler')}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                    {hasStartEngineHoursRecorded && !isEditingStartEngineHours && (
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          setStartEngineHours(rental?.start_engine_hours?.toString() || '');
+                          setIsEditingStartEngineHours(true);
+                        }}
+                        size="sm"
+                        variant="ghost"
+                        disabled={!canEditStartEngineHoursBeforeSignature}
+                        className="mt-2 text-xs h-7 px-2"
+                      >
+                        <Edit className="w-3 h-3 mr-1.5" />
+                        {tr('Edit Hours', 'Modifier les heures')}
                       </Button>
                     )}
                   </div>
@@ -16212,7 +16841,109 @@ useEffect(() => {
                   </div>
                 </div>
 
-                    {/* Step 3: Fuel Level - WITH EDIT CAPABILITY */}
+                    {/* Step 3: Ending Engine Hours */}
+                <div className={`flex items-start gap-2.5 sm:gap-3 p-2.5 rounded-lg ${
+                  finishRentalSteps.endEngineHoursComplete ? 'bg-green-50 border border-green-200' : 'bg-gray-50 border border-gray-200'
+                }`}>
+                  <div className={`flex-shrink-0 w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center ${
+                    finishRentalSteps.endEngineHoursComplete ? 'bg-green-500' : 'bg-gray-300'
+                  }`}>
+                    {finishRentalSteps.endEngineHoursComplete ? (
+                      <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
+                    ) : (
+                      <span className="text-white font-bold text-xs">3</span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-medium text-xs sm:text-sm text-gray-900">{tr('Ending Engine Hours', 'Heures moteur de retour')}</h4>
+                        {!isEditingEndEngineHours ? (
+                          <p className="text-xs text-gray-600 mt-0.5 break-words">
+                            {finishRentalSteps.endEngineHoursComplete
+                              ? `✓ ${tr('Ending engine hours:', 'Heures moteur de retour :')} ${Number(rental?.end_engine_hours || 0).toFixed(1)} h`
+                              : tr('Enter ending engine hours', 'Saisissez les heures moteur de retour')}
+                          </p>
+                        ) : (
+                          <div className="mt-2 space-y-2">
+                            <input
+                              type="number"
+                              value={endEngineHoursEditValue}
+                              onChange={(e) => setEndEngineHoursEditValue(e.target.value)}
+                              placeholder={tr('Enter ending engine hours', 'Saisissez les heures moteur de retour')}
+                              className="w-full px-3 py-1.5 text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              min={rental?.start_engine_hours || 0}
+                              step="0.1"
+                              autoFocus
+                            />
+                            <div className="flex gap-1.5">
+                              <Button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleSaveEndEngineHours(endEngineHoursEditValue);
+                                }}
+                                size="sm"
+                                disabled={isFinishWorkflowSoftLocked || isProcessingEndEngineHours}
+                                className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs h-7"
+                              >
+                                {isProcessingEndEngineHours ? tr('Saving...', 'Enregistrement...') : tr('Save', 'Enregistrer')}
+                              </Button>
+                              <Button
+                                type="button"
+                                onClick={() => {
+                                  setIsEditingEndEngineHours(false);
+                                  setEndEngineHoursEditValue('');
+                                }}
+                                variant="outline"
+                                size="sm"
+                                className="flex-1 text-xs h-7"
+                              >
+                                {tr('Cancel', 'Annuler')}
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      {finishRentalSteps.endEngineHoursComplete && !isEditingEndEngineHours && (
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            setIsEditingEndEngineHours(true);
+                            setEndEngineHoursEditValue(rental?.end_engine_hours?.toString() || '');
+                          }}
+                          size="sm"
+                          variant="ghost"
+                          className="mt-2 sm:mt-0 text-xs h-7 px-2"
+                        >
+                          <Edit className="w-3 h-3 mr-1.5" />
+                          {tr('Edit', 'Modifier')}
+                        </Button>
+                      )}
+                      {!finishRentalSteps.endEngineHoursComplete && !isEditingEndEngineHours && (
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            setEndEngineHours(
+                              rental?.vehicle?.engine_hours !== null && rental?.vehicle?.engine_hours !== undefined
+                                ? String(rental.vehicle.engine_hours)
+                                : ''
+                            );
+                            setShowEndEngineHoursPrompt(true);
+                          }}
+                          size="sm"
+                          className="mt-2 sm:mt-0 w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white text-xs h-7 px-2.5 sm:px-3"
+                        >
+                          <Wrench className="w-3 h-3 mr-1.5" />
+                          <span className="whitespace-nowrap">{tr('Add Hours', 'Ajouter les heures')}</span>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                    {/* Step 4: Fuel Level - WITH EDIT CAPABILITY */}
 <div className={`flex items-start gap-2.5 sm:gap-3 p-2.5 rounded-lg ${
   finishRentalSteps.endFuelComplete ? 'bg-green-50 border border-green-200' : 'bg-gray-50 border border-gray-200'
 }`}>
@@ -16222,7 +16953,7 @@ useEffect(() => {
     {finishRentalSteps.endFuelComplete ? (
       <CheckCircle className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
     ) : (
-      <span className="text-white font-bold text-xs">3</span>
+      <span className="text-white font-bold text-xs">4</span>
     )}
   </div>
   <div className="flex-1 min-w-0">
@@ -17081,6 +17812,35 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   )}
                 </div>
               )}
+              {(rental.start_engine_hours !== null && rental.start_engine_hours !== undefined) && (
+                <p>
+                  <strong>{tr('Start Engine Hours:', 'Heures moteur départ :')}</strong>{' '}
+                  {Number(rental.start_engine_hours).toFixed(1)} h
+                </p>
+              )}
+              {(rental.end_engine_hours !== null && rental.end_engine_hours !== undefined) && (
+                <p>
+                  <strong>{tr('End Engine Hours:', 'Heures moteur retour :')}</strong>{' '}
+                  {Number(rental.end_engine_hours).toFixed(1)} h
+                </p>
+              )}
+              {(() => {
+                const startHours = rental.start_engine_hours;
+                const endHours = rental.end_engine_hours;
+                if (startHours === null || startHours === undefined || endHours === null || endHours === undefined) {
+                  return null;
+                }
+
+                const delta = Number(endHours) - Number(startHours);
+                if (!Number.isFinite(delta)) return null;
+
+                return (
+                  <p>
+                    <strong>{tr('Engine Hours Used:', 'Heures moteur utilisées :')}</strong>{' '}
+                    {delta.toFixed(1)} h
+                  </p>
+                );
+              })()}
               {rental.total_kilometers_driven && (
                 <p><strong>{tr('Total Distance:', 'Distance totale :')}</strong> {(rental.total_kilometers_driven || 0).toFixed(2)} km</p>
               )}
@@ -20537,6 +21297,95 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={showLightStartEngineHoursModal}
+        onOpenChange={(open) => {
+          setShowLightStartEngineHoursModal(open);
+          if (!open) {
+            setIsEditingStartEngineHours(false);
+            setStartEngineHours(
+              displayedStartingEngineHours !== null && displayedStartingEngineHours !== undefined
+                ? String(displayedStartingEngineHours)
+                : ''
+            );
+          }
+        }}
+      >
+        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]">
+          <DialogHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/40 to-slate-50 px-5 pb-4 pt-5 text-left">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="rounded-[18px] border border-violet-100 bg-violet-50 p-3 text-violet-700 shadow-sm">
+                  <Wrench className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <DialogTitle className="text-[1.7rem] font-bold tracking-[-0.04em] text-slate-950">
+                    {tr('Starting Engine Hours', 'Heures moteur de départ')}
+                  </DialogTitle>
+                </div>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-4 px-5 pb-5 pt-4">
+            <div className="rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-violet-500">
+                {tr('Current selection', 'Sélection actuelle')}
+              </p>
+              <p className="mt-3 text-[2.25rem] font-extrabold leading-none tracking-[-0.06em] text-slate-950 tabular-nums">
+                {startEngineHours && Number.isFinite(Number(startEngineHours)) ? `${Number(startEngineHours).toFixed(1)} h` : '—'}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                {tr('Engine-hour reading', 'Relevé des heures moteur')}
+              </label>
+              <input
+                type="number"
+                value={startEngineHours}
+                onChange={(e) => setStartEngineHours(e.target.value)}
+                placeholder={tr('Enter engine hours', 'Saisissez les heures moteur')}
+                className="w-full rounded-[22px] border border-slate-200 px-4 py-4 text-xl font-bold tracking-[-0.03em] text-slate-950 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+                min="0"
+                step="0.1"
+                inputMode="decimal"
+                disabled={isStartWorkflowSoftLocked}
+                autoFocus
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowLightStartEngineHoursModal(false);
+                  setIsEditingStartEngineHours(false);
+                  setStartEngineHours(
+                    displayedStartingEngineHours !== null && displayedStartingEngineHours !== undefined
+                      ? String(displayedStartingEngineHours)
+                      : ''
+                  );
+                }}
+                className="h-14 rounded-[20px] border-slate-200 text-base font-semibold"
+              >
+                {tr('Cancel', 'Annuler')}
+              </Button>
+              <Button
+                type="button"
+                onClick={handleSaveStartEngineHours}
+                disabled={isStartWorkflowSoftLocked || isSavingStartEngineHours}
+                className="h-14 rounded-[20px] bg-violet-700 text-base font-bold text-white shadow-[0_14px_34px_rgba(76,29,149,0.24)] hover:bg-violet-800"
+              >
+                <Save className="mr-2 h-4 w-4" />
+                {isSavingStartEngineHours ? tr('Saving...', 'Enregistrement...') : tr('Save hours', 'Enregistrer')}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <FuelLevelModal
           isOpen={showStartFuelModal}
           onClose={() => setShowStartFuelModal(false)}
@@ -20625,6 +21474,90 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <>
                     <Save className="mr-2 h-4 w-4" />
                     {tr('Save Odometer', "Enregistrer l'odomètre")}
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showEndEngineHoursPrompt} onOpenChange={setShowEndEngineHoursPrompt}>
+        <DialogContent className={isLightRentalDetailsMode ? "mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_30px_80px_rgba(76,29,149,0.16)] sm:rounded-[32px]" : "sm:max-w-md"}>
+          <DialogHeader className={isLightRentalDetailsMode ? "border-b border-violet-100 bg-gradient-to-r from-white via-violet-50/40 to-slate-50 px-5 pb-4 pt-5 text-left" : ""}>
+            <DialogTitle className={isLightRentalDetailsMode ? "flex items-center gap-3 text-[1.55rem] font-bold tracking-[-0.04em] text-slate-950" : "flex items-center gap-2 text-lg sm:text-xl"}>
+              <Wrench className={isLightRentalDetailsMode ? "h-6 w-6 text-violet-600" : "w-5 h-5 text-blue-600"} />
+              {tr('Enter Ending Engine Hours', "Saisir les heures moteur d'arrivée")}
+            </DialogTitle>
+            <DialogDescription className={isLightRentalDetailsMode ? "mt-2 text-sm leading-6 text-slate-500" : "text-sm text-gray-600"}>
+              {tr("Please enter the vehicle's engine hours at the end of the rental.", "Veuillez saisir les heures moteur du véhicule à la fin de la location.")}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className={isLightRentalDetailsMode ? "space-y-5 px-5 pb-5 pt-4" : "space-y-4"}>
+            <div className={isLightRentalDetailsMode ? "rounded-[24px] border border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/60 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.06)]" : "rounded-2xl border border-sky-200 bg-sky-50/70 p-4"}>
+              <div className="flex items-start gap-3">
+                <Info className={isLightRentalDetailsMode ? "mt-0.5 h-5 w-5 flex-shrink-0 text-violet-600" : "h-4 w-4 text-blue-600"} />
+                <div>
+                  <p className={isLightRentalDetailsMode ? "text-sm leading-6 text-slate-700" : "text-sm text-blue-800"}>
+                    {tr("Please enter the vehicle's engine hours at the end of the rental.", "Veuillez saisir les heures moteur du véhicule à la fin de la location.")}
+                  </p>
+                  {rental?.start_engine_hours !== null && rental?.start_engine_hours !== undefined && (
+                    <p className={isLightRentalDetailsMode ? "mt-3 text-sm font-semibold text-slate-900" : "mt-2 text-sm text-blue-800"}>
+                      <strong>{tr('Starting engine hours:', 'Heures moteur de départ :')}</strong> {Number(rental.start_engine_hours).toFixed(1)} h
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className={isLightRentalDetailsMode ? "block text-sm font-semibold text-slate-900" : "mb-2 block text-sm font-medium text-gray-700"}>
+                {tr('Ending Engine Hours', "Heures moteur d'arrivée")}
+              </label>
+              <input
+                type="number"
+                value={endEngineHours}
+                onChange={(e) => setEndEngineHours(e.target.value)}
+                placeholder={tr('Enter ending engine hours', "Saisissez les heures moteur d'arrivée")}
+                className={isLightRentalDetailsMode ? "mt-3 w-full rounded-[20px] border border-slate-200 bg-white px-4 py-4 text-[2rem] font-extrabold leading-none tracking-[-0.05em] text-slate-950 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100" : "w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"}
+                min={rental?.start_engine_hours || 0}
+                step="0.1"
+                autoFocus
+                inputMode="decimal"
+              />
+            </div>
+
+            <div className={isLightRentalDetailsMode ? "grid grid-cols-1 gap-3 pt-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]" : "flex flex-col gap-2 pt-2 sm:flex-row"}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowEndEngineHoursPrompt(false);
+                  setEndEngineHours('');
+                }}
+                className={isLightRentalDetailsMode ? "h-14 rounded-[20px] border-slate-200 text-base font-semibold text-slate-700 hover:bg-slate-50" : "order-2 w-full sm:order-1 sm:w-auto"}
+              >
+                {tr('Skip for Now', 'Passer pour le moment')}
+              </Button>
+              <Button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleSaveEndEngineHours();
+                }}
+                className={isLightRentalDetailsMode ? "h-14 rounded-[20px] bg-violet-700 text-base font-bold text-white shadow-[0_14px_34px_rgba(76,29,149,0.24)] hover:bg-violet-800" : `order-1 w-full sm:order-2 sm:flex-1 ${PRIMARY_ACTION_BUTTON_CLASS}`}
+              >
+                {isProcessingEndEngineHours ? (
+                  <>
+                    <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    {tr('Saving...', 'Enregistrement...')}
+                  </>
+                ) : (
+                  <>
+                    <Save className="mr-2 h-4 w-4" />
+                    {tr('Save Engine Hours', 'Enregistrer les heures')}
                   </>
                 )}
               </Button>

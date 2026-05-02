@@ -5,6 +5,7 @@ import { APP_USERS_TABLE, PLATFORM_TENANTS_TABLE, PLATFORM_TENANT_AUDIT_LOG_TABL
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
 const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
+const TELEGRAM_TIMEZONE = 'Africa/Casablanca';
 const TELEGRAM_EVENT_KEYS = [
   'rental_created',
   'rental_started',
@@ -85,6 +86,7 @@ const formatDateTime = (value) => {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    timeZone: TELEGRAM_TIMEZONE,
   });
 };
 
@@ -98,6 +100,7 @@ const formatDateOnly = (value) => {
     year: 'numeric',
     month: 'short',
     day: '2-digit',
+    timeZone: TELEGRAM_TIMEZONE,
   });
 };
 
@@ -111,6 +114,7 @@ const formatTimeOnly = (value) => {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
+    timeZone: TELEGRAM_TIMEZONE,
   });
 };
 
@@ -199,6 +203,51 @@ const formatMoney = (value) => {
   return amount.toFixed(0);
 };
 
+const formatDistanceKm = (value) => {
+  const distance = Number(value);
+  if (!Number.isFinite(distance) || distance <= 0) return '';
+  const normalized = Number(distance.toFixed(2));
+  if (!Number.isFinite(normalized) || normalized <= 0) return '';
+  return Number.isInteger(normalized) ? String(normalized) : normalized.toFixed(2).replace(/\.?0+$/, '');
+};
+
+const buildDistanceLine = (value) => {
+  const formatted = formatDistanceKm(value);
+  if (!formatted) return '';
+  return `Distance: ${formatted} km`;
+};
+
+const resolveDistanceValue = (data = {}) => {
+  const directDistance =
+    data.total_kilometers_driven ??
+    data.total_distance ??
+    data.totalDistance ??
+    data.distance_km;
+
+  const numericDirectDistance = Number(directDistance);
+  if (Number.isFinite(numericDirectDistance) && numericDirectDistance > 0) {
+    return numericDirectDistance;
+  }
+
+  const startOdometer = Number(
+    data.start_odometer ??
+    data.startOdometer ??
+    data.odometer_start
+  );
+  const endOdometer = Number(
+    data.ending_odometer ??
+    data.end_odometer ??
+    data.endOdometer ??
+    data.odometer_end
+  );
+
+  if (Number.isFinite(startOdometer) && Number.isFinite(endOdometer) && endOdometer >= startOdometer) {
+    return endOdometer - startOdometer;
+  }
+
+  return 0;
+};
+
 const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'owner') => {
   const vehicle = safeText(data.vehicle || 'Unknown vehicle');
   const customer = safeText(data.customer || 'Unknown customer');
@@ -217,6 +266,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
     data.rental_completed_at ||
     data.closed_at
   );
+  const distanceLine = buildDistanceLine(resolveDistanceValue(data));
   const openedByLine = buildOpenedByLine(
     data.openedBy ||
     data.createdBy ||
@@ -234,6 +284,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         vehicle,
         ...(customerLine ? [customerLine] : []),
         ...windowLines,
+        ...(distanceLine ? [distanceLine] : []),
         ...(closedAtLine ? [closedAtLine] : []),
         `Paid: ${paid} MAD`,
         ...(Number(data.remaining || 0) > 0 ? [`Due: ${remaining} MAD`] : []),
@@ -780,6 +831,13 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
         safeText(payload?.total),
         safeText(payload?.remaining),
         safeText(payload?.amountPaid),
+        safeText(
+          resolveDistanceValue(payload) ||
+          payload?.total_kilometers_driven ||
+          payload?.total_distance ||
+          payload?.totalDistance ||
+          payload?.distance_km
+        ),
       );
       break;
     case 'payment_received':

@@ -25,6 +25,7 @@ import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells'
 
 const TOUR_BOOKING_MARKER = '[tour_booking]';
 const DASHBOARD_CACHE_TTL_MS = 15000;
+const DASHBOARD_REFRESH_TIMEOUT_MS = 12000;
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
 const EXPENSE_SAVE_NOTICE_STYLES = {
@@ -54,6 +55,21 @@ const scheduleBackgroundTask = (callback) => {
   }
 
   return window.setTimeout(callback, 0);
+};
+
+const withTimeout = (promise, ms, label) => {
+  let timeoutId = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  });
 };
 
 const extractTourBookingMeta = (value) => {
@@ -3079,7 +3095,7 @@ const AdminDashboard = () => {
         applyDashboardCoreData(dashboardCoreCache);
       } else {
         if (!dashboardCorePromise) {
-          dashboardCorePromise = (async () => {
+          const coreFetchPromise = (async () => {
             const vehicleTable = await getVehicleTableName();
 
             const [
@@ -3188,6 +3204,12 @@ const AdminDashboard = () => {
               upcomingRentals: normalizedUpcomingRentals,
             };
           })();
+
+          dashboardCorePromise = withTimeout(
+            coreFetchPromise,
+            DASHBOARD_REFRESH_TIMEOUT_MS,
+            'Dashboard core refresh',
+          );
         }
 
         const coreData = await dashboardCorePromise;
@@ -3274,8 +3296,21 @@ const AdminDashboard = () => {
     }
   }, [fetchData]);
 
+  const dashboardRealtimeRefreshTimerRef = useRef(null);
+
   // Real-time updates for urgent rentals
   useEffect(() => {
+    const scheduleDashboardRealtimeRefresh = () => {
+      if (dashboardRealtimeRefreshTimerRef.current) {
+        window.clearTimeout(dashboardRealtimeRefreshTimerRef.current);
+      }
+
+      dashboardRealtimeRefreshTimerRef.current = window.setTimeout(() => {
+        fetchUrgentRentals();
+        fetchData();
+      }, 120);
+    };
+
     const channel = supabase
       .channel('dashboard-urgent-updates')
       .on(
@@ -3286,8 +3321,8 @@ const AdminDashboard = () => {
           table: 'app_4c3a7a6153_rentals'
         },
         () => {
-          console.log('Rental updated, refreshing urgent list...');
-          fetchUrgentRentals();
+          console.log('Rental updated, refreshing dashboard...');
+          scheduleDashboardRealtimeRefresh();
         }
       )
       .on(
@@ -3299,15 +3334,18 @@ const AdminDashboard = () => {
         },
         () => {
           console.log('Extension updated, refreshing...');
-          fetchUrgentRentals();
+          scheduleDashboardRealtimeRefresh();
         }
       )
       .subscribe();
 
     return () => {
+      if (dashboardRealtimeRefreshTimerRef.current) {
+        window.clearTimeout(dashboardRealtimeRefreshTimerRef.current);
+      }
       supabase.removeChannel(channel);
     };
-  }, [fetchUrgentRentals]);
+  }, [fetchData, fetchUrgentRentals]);
 
   useEffect(() => {
     if (!session?.access_token) {
