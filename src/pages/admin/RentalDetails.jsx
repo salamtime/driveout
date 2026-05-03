@@ -67,6 +67,13 @@ const MOBILE_FOOTER_PRIMARY_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border b
 const MOBILE_FOOTER_SUCCESS_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 hover:border-emerald-700`;
 const MOBILE_FOOTER_DISABLED_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-slate-200 bg-slate-100 text-slate-400 shadow-none`;
 const LIGHT_RENTAL_ACTION_DOCK_CLASS = 'pointer-events-auto fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur lg:left-[calc(50vw+9.5rem)] lg:right-auto lg:w-[min(72rem,calc(100vw-21rem))] lg:-translate-x-1/2';
+const scheduleBackgroundTask = (callback) => {
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    return window.requestIdleCallback(callback, { timeout: 800 });
+  }
+
+  return window.setTimeout(callback, 0);
+};
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const buildRentalTelegramVehicleLabel = (rentalLike) => {
   const model =
