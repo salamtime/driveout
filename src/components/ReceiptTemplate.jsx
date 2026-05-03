@@ -148,6 +148,35 @@ const getAmountDueResolutionMeta = (rental = {}) => {
   }
 };
 
+const getPriceOverrideMeta = (rental = {}) => {
+  const rawReason =
+    typeof rental?.price_override_reason === 'string'
+      ? rental.price_override_reason.trim()
+      : '';
+  if (!rawReason || !rawReason.startsWith('{')) return null;
+
+  try {
+    const parsed = JSON.parse(rawReason);
+    const previousPrice = Math.max(0, Number(parsed?.previousPrice || 0) || 0);
+    const newPrice = Math.max(0, Number(parsed?.newPrice || rental?.total_amount || 0) || 0);
+    const note = String(parsed?.note || '').trim();
+
+    if (previousPrice <= 0 && newPrice <= 0 && !note) {
+      return null;
+    }
+
+    return {
+      previousPrice,
+      newPrice,
+      note,
+      editedByName: String(parsed?.editedByName || '').trim(),
+      editedAt: parsed?.editedAt || null,
+    };
+  } catch {
+    return null;
+  }
+};
+
 const translateMaintenanceSummaryItem = (value, tr) => {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return value;
@@ -605,7 +634,17 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
 
   const overageDetails = calculateOverageDetails();
   const effectiveOverageCharge = Math.max(0, Number(overageDetails.overageCharge || 0) || 0);
-  const totalAmount = calculateTotal(effectiveOverageCharge);
+  const recalculatedTotalAmount = calculateTotal(effectiveOverageCharge);
+  const priceOverrideMeta = getPriceOverrideMeta(rental);
+  const hasMeaningfulManualPriceOverride = Boolean(
+    priceOverrideMeta &&
+    priceOverrideMeta.previousPrice > 0 &&
+    priceOverrideMeta.newPrice > 0 &&
+    Math.abs(priceOverrideMeta.previousPrice - priceOverrideMeta.newPrice) > 0.009
+  );
+  const totalAmount = hasMeaningfulManualPriceOverride
+    ? Math.max(0, Number(priceOverrideMeta?.newPrice || rental?.total_amount || 0) || 0)
+    : recalculatedTotalAmount;
 
   const hasOverage = hasPackage && effectiveOverageCharge > 0;
   const hasFuelCharge = effectiveFuelCharge > 0;
@@ -747,9 +786,11 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   const packageExtraKmCostWithoutUpgrade = packageExtraKmWithoutUpgrade * packageExtraKmRate;
   const packageCostWithoutUpgrade = packageOriginalPrice + packageExtraKmCostWithoutUpgrade;
   const smartUpgradeSavings = Math.max(0, packageCostWithoutUpgrade - packageAppliedPrice);
-  const smartPricingMode = hasPackage
-    ? (receiptDistanceUpgrade ? 'upgrade' : 'package')
-    : (tierPricingBreakdown?.isDiscounted ? 'tier' : 'standard');
+  const smartPricingMode = hasMeaningfulManualPriceOverride
+    ? 'manual'
+    : hasPackage
+      ? (receiptDistanceUpgrade ? 'upgrade' : 'package')
+      : (tierPricingBreakdown?.isDiscounted ? 'tier' : 'standard');
   const packageUpgradeTarget =
     receiptDistanceUpgrade?.finalPackage ||
     receiptSimplePricing?.selectedPackage ||
@@ -969,6 +1010,23 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                     )}
                   </div>
                 </>
+              ) : smartPricingMode === 'manual' ? (
+                <>
+                  <div style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.3, marginBottom: '10px', maxWidth: '760px' }}>
+                    {tr('Manual contract price applied', 'Prix manuel du contrat appliqué')}
+                  </div>
+                  <div style={{ fontSize: '14px', color: '#334155', lineHeight: 1.6 }}>
+                    {tr(
+                      `The original calculated price was ${formatCurrency(priceOverrideMeta?.previousPrice || 0)} MAD and the final contract price was adjusted to ${formatCurrency(priceOverrideMeta?.newPrice || totalAmount)} MAD.`,
+                      `Le prix calculé initial était de ${formatCurrency(priceOverrideMeta?.previousPrice || 0)} MAD et le prix final du contrat a été ajusté à ${formatCurrency(priceOverrideMeta?.newPrice || totalAmount)} MAD.`
+                    )}
+                  </div>
+                  {priceOverrideMeta?.note ? (
+                    <div style={{ fontSize: '13px', color: '#475569', lineHeight: 1.6, marginTop: '8px' }}>
+                      {tr('Note:', 'Note :')} {priceOverrideMeta.note}
+                    </div>
+                  ) : null}
+                </>
               ) : (
                 <>
                   <div style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.3, marginBottom: '10px', maxWidth: '760px' }}>
@@ -1126,6 +1184,21 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               </div>
             )}
 
+            {hasMeaningfulManualPriceOverride && (
+              <div style={{ marginBottom: '16px', padding: '14px', borderRadius: '12px', backgroundColor: '#eff6ff', border: '1px solid #bfdbfe' }}>
+                <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#1d4ed8', marginBottom: '8px' }}>
+                  {tr('Manual contract override', 'Modification manuelle du contrat')}
+                </div>
+                <div style={{ fontSize: '13px', color: '#334155', lineHeight: 1.7 }}>
+                  <div>{tr('Original calculated price:', 'Prix calculé initial :')} {formatCurrency(priceOverrideMeta?.previousPrice || 0)} MAD</div>
+                  <div>{tr('Final contract price:', 'Prix final du contrat :')} {formatCurrency(priceOverrideMeta?.newPrice || totalAmount)} MAD</div>
+                  {priceOverrideMeta?.editedByName ? (
+                    <div>{tr('Edited by:', 'Modifié par :')} {priceOverrideMeta.editedByName}</div>
+                  ) : null}
+                </div>
+              </div>
+            )}
+
             <div style={{ padding: '14px', borderRadius: '12px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', fontSize: '13px', color: '#334155', lineHeight: 1.7 }}>
               <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#64748b', marginBottom: '8px' }}>
                 {tr('System audit trail', 'Piste d’audit système')}
@@ -1136,6 +1209,9 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               <div>{tr('Overage charge:', 'Frais de dépassement :')} {formatCurrency(effectiveOverageCharge)} MAD</div>
               <div>{tr('Fuel charge:', 'Frais carburant :')} {formatCurrency(effectiveFuelCharge)} MAD</div>
               <div>{tr('Payment status:', 'Statut du paiement :')} {paymentStatusLabel}</div>
+              {hasMeaningfulManualPriceOverride && (
+                <div>{tr('Manual contract total:', 'Total manuel du contrat :')} {formatCurrency(priceOverrideMeta?.newPrice || totalAmount)} MAD</div>
+              )}
               {amountDueResolutionMeta && (
                 <div>{tr('Balance resolution:', 'Résolution du solde :')} {formatCurrency(amountDueResolutionMeta.paymentReceivedNow)} MAD {tr('paid +', 'payés +')} {formatCurrency(amountDueResolutionMeta.companyDiscount)} MAD {tr('discount', 'de remise')}</div>
               )}
