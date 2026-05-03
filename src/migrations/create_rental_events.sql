@@ -4,6 +4,7 @@ create table if not exists public.rental_events (
   event_type text not null,
   actor text not null check (actor in ('renter', 'owner', 'system', 'admin')),
   metadata jsonb not null default '{}'::jsonb,
+  dispatch_key text,
   created_at timestamptz not null default timezone('utc', now())
 );
 
@@ -12,5 +13,9 @@ create index if not exists rental_events_rental_created_idx
 
 create index if not exists rental_events_type_created_idx
   on public.rental_events(event_type, created_at desc);
+
+create unique index if not exists rental_events_dispatch_key_unique_idx
+  on public.rental_events(rental_id, event_type, dispatch_key)
+  where dispatch_key is not null and btrim(dispatch_key) <> '';
 
 notify pgrst, 'reload schema';

@@ -244,6 +244,8 @@ create table if not exists public.app_4c3a7a6153_rentals (
   total_extension_price numeric(10,2) not null default 0,
   start_odometer integer,
   end_odometer integer,
+  start_engine_hours numeric(12,2),
+  end_engine_hours numeric(12,2),
   start_fuel_level numeric(10,2),
   end_fuel_level numeric(10,2),
   included_kilometers_applied integer,
@@ -297,6 +299,26 @@ create table if not exists public.app_4c3a7a6153_rental_second_drivers (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+create table if not exists public.rental_events (
+  id uuid primary key default gen_random_uuid(),
+  rental_id uuid not null,
+  event_type text not null,
+  actor text not null check (actor in ('renter', 'owner', 'system', 'admin')),
+  metadata jsonb not null default '{}'::jsonb,
+  dispatch_key text,
+  created_at timestamptz not null default timezone('utc', now())
+);
+
+create index if not exists rental_events_rental_created_idx
+  on public.rental_events(rental_id, created_at desc);
+
+create index if not exists rental_events_type_created_idx
+  on public.rental_events(event_type, created_at desc);
+
+create unique index if not exists rental_events_dispatch_key_unique_idx
+  on public.rental_events(rental_id, event_type, dispatch_key)
+  where dispatch_key is not null and btrim(dispatch_key) <> '';
 
 create table if not exists public.app_687f658e98_maintenance (
   id uuid primary key default gen_random_uuid(),

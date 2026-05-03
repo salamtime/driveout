@@ -38,6 +38,37 @@ const normalizeRentalSearchText = (value) =>
     .toLowerCase()
     .trim();
 
+const RENTAL_STATUS_DISPLAY_PRIORITY = {
+  active: 0,
+  scheduled: 1,
+  completed: 2,
+  expired: 3,
+  cancelled: 4,
+};
+
+const getRentalDisplayTimestamp = (rental) => (
+  rental?.updated_at ||
+  rental?.started_at ||
+  rental?.completed_at ||
+  rental?.rental_start_date ||
+  rental?.created_at ||
+  0
+);
+
+const sortRentalsForDisplay = (rentals, getEffectiveRentalStatus) =>
+  [...rentals].sort((left, right) => {
+    const leftStatus = getEffectiveRentalStatus(left);
+    const rightStatus = getEffectiveRentalStatus(right);
+    const leftPriority = RENTAL_STATUS_DISPLAY_PRIORITY[leftStatus] ?? 99;
+    const rightPriority = RENTAL_STATUS_DISPLAY_PRIORITY[rightStatus] ?? 99;
+
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+
+    return new Date(getRentalDisplayTimestamp(right)).getTime() - new Date(getRentalDisplayTimestamp(left)).getTime();
+  });
+
 const openRentalWizard = (setShowStepperForm, setWizardUiVariant, variant = 'default') => () => {
   setWizardUiVariant(variant);
   setShowStepperForm(true);
@@ -1340,7 +1371,10 @@ const Rentals = () => {
           throw error;
         }
 
-        let normalizedRentals = (data || []).map(normalizeRentalLifecycle);
+        let normalizedRentals = sortRentalsForDisplay(
+          (data || []).map(normalizeRentalLifecycle),
+          getEffectiveRentalStatus
+        );
         setRentalUniverse(normalizedRentals);
 
         let nextRentals = normalizedRentals;
@@ -1349,8 +1383,12 @@ const Rentals = () => {
           normalizedStatusFilter && normalizedStatusFilter !== 'all'
             ? workspaceFilteredRentals.filter((rental) => getEffectiveRentalStatus(rental) === normalizedStatusFilter)
             : workspaceFilteredRentals;
-        const nextTotalCount = statusFilteredRentals.length;
-        nextRentals = statusFilteredRentals.slice(from, to + 1);
+        const sortedStatusFilteredRentals = sortRentalsForDisplay(
+          statusFilteredRentals,
+          getEffectiveRentalStatus
+        );
+        const nextTotalCount = sortedStatusFilteredRentals.length;
+        nextRentals = sortedStatusFilteredRentals.slice(from, to + 1);
 
         setTotalCount(nextTotalCount);
         setTotalPages(Math.ceil(nextTotalCount / limit));
@@ -1962,11 +2000,11 @@ const Rentals = () => {
                     ...prev[existingIndex],
                     ...normalizedInsertedRental,
                   };
-                  return next;
+                  return sortRentalsForDisplay(next, getEffectiveRentalStatus);
                 }
 
                 const next = [normalizedInsertedRental, ...prev];
-                return next.slice(0, itemsPerPage);
+                return sortRentalsForDisplay(next, getEffectiveRentalStatus).slice(0, itemsPerPage);
               }
 
               if (existingIndex === -1) {
@@ -1985,7 +2023,7 @@ const Rentals = () => {
 
               const next = [...prev];
               next[existingIndex] = normalizedMergedRental;
-              return next;
+              return sortRentalsForDisplay(next, getEffectiveRentalStatus);
             });
           }
 
@@ -2038,7 +2076,7 @@ const Rentals = () => {
 
             const next = [...prev];
             next[existingIndex] = normalizedMergedRental;
-            return next;
+            return sortRentalsForDisplay(next, getEffectiveRentalStatus);
           });
 
           fetchRentals(statusFilter, paymentStatusFilter, currentPage, itemsPerPage);
@@ -2495,7 +2533,7 @@ const Rentals = () => {
   const filteredRentals = useMemo(() => {
     const normalizedStatus = String(statusFilter || 'all').toLowerCase();
 
-    return baseVisibleRentals.filter((rental) => {
+    const matchingRentals = baseVisibleRentals.filter((rental) => {
       if (normalizedStatus !== 'all') {
         const effectiveStatus = getEffectiveRentalStatus(rental);
         const attentionState = getRentalAttentionState(rental);
@@ -2521,6 +2559,8 @@ const Rentals = () => {
 
       return true;
     });
+
+    return sortRentalsForDisplay(matchingRentals, getEffectiveRentalStatus);
   }, [baseVisibleRentals, getEffectiveRentalStatus, getRentalAttentionState, paymentStatusFilter, statusFilter]);
 
   const statusTabCounts = useMemo(() => {

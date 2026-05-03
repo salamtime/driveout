@@ -863,6 +863,38 @@ const isFlatHourlyTierRental = (rental = {}, packageDetails = null) =>
   String(rental?.rental_type || '').toLowerCase() === 'hourly' &&
   Number(getDisplayRentalDurationUnits(rental)) === 1.5;
 
+const getRentalDetailsSnapshotKey = (rentalId) => `rental_details_snapshot_${String(rentalId || '').trim()}`;
+
+const readRentalDetailsSnapshot = (rentalId) => {
+  if (typeof window === 'undefined' || !rentalId) return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(getRentalDetailsSnapshotKey(rentalId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (error) {
+    console.warn('Unable to read rental details snapshot:', error);
+    return null;
+  }
+};
+
+const writeRentalDetailsSnapshot = (rentalId, snapshot) => {
+  if (typeof window === 'undefined' || !rentalId || !snapshot || typeof snapshot !== 'object') return;
+
+  try {
+    window.sessionStorage.setItem(
+      getRentalDetailsSnapshotKey(rentalId),
+      JSON.stringify({
+        ...snapshot,
+        __cachedAt: new Date().toISOString(),
+      })
+    );
+  } catch (error) {
+    console.warn('Unable to write rental details snapshot:', error);
+  }
+};
+
 const hasRecordedReturnFuel = (rental, endFuelLevel) => {
   return endFuelLevel !== null && endFuelLevel !== undefined ||
     rental?.end_fuel_level !== null && rental?.end_fuel_level !== undefined ||
@@ -4078,6 +4110,7 @@ const calculateDailyTierPricingBreakdown = async () => {
     if (!id) return;
     
     const cacheKey = `rental_${id}`;
+    const cachedSnapshot = readRentalDetailsSnapshot(id);
     
     // Invalidate cache if force refresh
     if (force) {
@@ -4206,9 +4239,6 @@ const calculateDailyTierPricingBreakdown = async () => {
         rental_type: rentalData.rental_type
       });
 
-      await refreshCustomerVerificationState(rentalData);
-
-
       // Only customer website bookings auto-expire automatically.
       let finalRentalData = normalizeRentalLifecycleStatus({ ...rentalData }, rentalTimingSettings);
       if (rentalData.rental_status === 'scheduled' && rentalData.rental_start_date) {
@@ -4226,24 +4256,8 @@ const calculateDailyTierPricingBreakdown = async () => {
       }
       // Set rental state early so secondary fetch failures do not blank the page.
       setRental(finalRentalData);
-
-      // ✅ DYNAMIC: Always load package details if package_id exists
-      try {
-        if (rentalData.package_id) {
-          if (RENTAL_DEBUG) console.log('📦 Package ID found:', rentalData.package_id);
-          await loadPackageDetails(rentalData.package_id);
-        } else {
-          if (RENTAL_DEBUG) console.log('⚠️ No package_id found in rental');
-          setPackageDetails(null);
-          setIncludedKilometers(null);
-          setExtraKmRate(null);
-        }
-      } catch (packageLoadError) {
-        console.error('❌ Non-critical package load failure:', packageLoadError);
-        setPackageDetails(null);
-        setIncludedKilometers(null);
-        setExtraKmRate(null);
-      }
+      writeRentalDetailsSnapshot(id, finalRentalData);
+      setError(null);
 
       // DEBUG: Check dates after loading
 if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
@@ -4258,84 +4272,6 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
     ? Math.round((new Date() - new Date(rentalData.started_at)) / (1000 * 60 * 60)) + ' hours'
     : 'N/A'
 });
-      
-      // ✅ FIXED: Fetch second drivers separately to ensure they're loaded
-      if (rentalData.id) {
-        try {
-          const secondDrivers = await fetchSecondDriversSeparately(rentalData.id);
-          if (RENTAL_DEBUG) console.log('🔄 Rental loaded with second drivers:', {
-            rentalId: rentalData.id,
-            secondDrivers: secondDrivers,
-            secondDriversCount: secondDrivers?.length || 0,
-            rentalStatus: rentalData.rental_status
-          });
-          // DEBUG: Check what dates are actually in the database
-if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
-  rental_id: rentalData.rental_id,
-  rental_end_date_in_db: rentalData.rental_end_date,
-  actual_end_date_in_db: rentalData.actual_end_date,
-  started_at: rentalData.started_at,
-  extensions_count: extensions.length,
-  expected_end_with_extensions: rentalData.started_at 
-    ? new Date(new Date(rentalData.started_at).getTime() + 
-        (1 + (extensions.reduce((sum, ext) => sum + (parseFloat(ext.extension_hours) || 0), 0))) * 60 * 60 * 1000)
-        .toISOString()
-    : 'N/A'
-});
-          if (secondDrivers.length > 0) {
-            finalRentalData.second_drivers = secondDrivers;
-            setRental((prev) => prev ? ({ ...prev, second_drivers: secondDrivers }) : prev);
-          }
-        } catch (secondDriverLoadError) {
-          console.error('❌ Non-critical second driver load failure:', secondDriverLoadError);
-        }
-      }
-
-      // Load fuel pricing for the vehicle model
-      if (rentalData?.vehicle?.vehicle_model?.id) {
-        try {
-          const pricePerLine = await FuelPricingService.getFuelPricingForModel(
-            rentalData.vehicle.vehicle_model.id,
-            rentalData.rental_type || 'daily'
-          );
-          setFuelPricePerLine(pricePerLine);
-          
-          // Calculate fuel charge if both levels exist and normalize any legacy saved value
-          if (rentalData.start_fuel_level !== null && rentalData.end_fuel_level !== null) {
-            const recalculatedCharge = FuelPricingService.calculateFuelCharge(
-              rentalData.start_fuel_level,
-              rentalData.end_fuel_level,
-              pricePerLine,
-              rentalData.rental_type || 'daily'
-            );
-            const storedCharge = parseFloat(rentalData.fuel_charge || 0) || 0;
-            setFuelCharge(recalculatedCharge);
-            setRental(prev => prev ? ({ ...prev, fuel_charge: recalculatedCharge }) : prev);
-
-            if (Math.abs(storedCharge - recalculatedCharge) > 0.009) {
-              try {
-                await supabase
-                  .from('app_4c3a7a6153_rentals')
-                  .update({
-                    fuel_charge: recalculatedCharge,
-                    updated_at: new Date().toISOString(),
-                  })
-                  .eq('id', rentalData.id);
-                if (RENTAL_DEBUG) {
-                  console.log(`⛽ Normalized legacy fuel charge from ${storedCharge.toFixed(2)} to ${recalculatedCharge.toFixed(2)} MAD`);
-                }
-              } catch (syncErr) {
-                console.error('❌ Failed to normalize legacy fuel charge:', syncErr);
-              }
-            } else if (RENTAL_DEBUG) {
-              console.log(`⛽ Fuel charge calculated on load: ${recalculatedCharge.toFixed(2)} MAD`);
-            }
-          }
-        } catch (err) {
-          console.error('❌ Error loading fuel pricing:', err);
-        }
-      }
-
       
       // Set existing fuel levels if available
       if (rentalData.start_engine_hours !== null && rentalData.start_engine_hours !== undefined) {
@@ -4355,19 +4291,7 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
       if (rentalData.start_fuel_level !== null) {
         setStartFuelLevel(rentalData.start_fuel_level);
       }
-      if (rentalData?.vehicle_id) {
-        try {
-          const currentState = await FuelTransactionService.getVehicleFuelState(rentalData.vehicle_id);
-          setCurrentVehicleFuelLevel(
-            currentState?.current_fuel_lines !== null && currentState?.current_fuel_lines !== undefined
-              ? currentState.current_fuel_lines
-              : null
-          );
-        } catch (fuelStateError) {
-          console.error('❌ Error loading current vehicle fuel level:', fuelStateError);
-          setCurrentVehicleFuelLevel(null);
-        }
-      } else {
+      if (!rentalData?.vehicle_id) {
         setCurrentVehicleFuelLevel(null);
       }
       if (rentalData.end_fuel_level !== null) {
@@ -4396,43 +4320,130 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
       });
       const nextDisplayedStartingOdometer = resolveDisplayedStartingOdometer(rentalData);
       setStartOdometer(nextDisplayedStartingOdometer > 0 ? nextDisplayedStartingOdometer.toString() : '');
-      
-      try {
-        await loadRentalMedia(rentalData.id);
-      } catch (mediaLoadError) {
-        console.error('❌ Non-critical rental media load failure:', mediaLoadError);
-      }
 
-      try {
-        await loadVehicleReplacementHistory(rentalData.id);
-      } catch (vehicleHistoryError) {
-        console.error('❌ Non-critical vehicle history load failure:', vehicleHistoryError);
-      }
-
-      try {
-        const latestVehicleReport = await VehicleReportService.getLatestReportForRental(rentalData.id);
-        if (latestVehicleReport) {
-          const hydratedReport = await VehicleReportService.hydrateReportWithMaintenance(latestVehicleReport);
-          setVehicleReport(hydratedReport);
-          setRental(prev => prev ? ({ ...prev, vehicleReport: hydratedReport }) : prev);
-          setVehicleReportDraft({
-            enabled: true,
-            report_type: hydratedReport.report_type || 'damage',
-            severity: hydratedReport.severity || 'minor',
-            description: hydratedReport.description || '',
-            affected_areas: Array.isArray(hydratedReport.affected_areas) ? hydratedReport.affected_areas : [],
-            customer_chargeable: Boolean(hydratedReport.customer_chargeable),
-            customer_charge_amount: hydratedReport.customer_charge_amount ? String(hydratedReport.customer_charge_amount) : '',
-            send_to_maintenance: hydratedReport.send_to_maintenance !== false,
-          });
-        } else {
-          setVehicleReport(null);
-          setRental(prev => prev ? ({ ...prev, vehicleReport: null }) : prev);
+      scheduleBackgroundTask(async () => {
+        try {
+          await refreshCustomerVerificationState(rentalData);
+        } catch (verificationError) {
+          console.error('❌ Non-critical customer verification refresh failure:', verificationError);
         }
-      } catch (reportError) {
-        console.error('Failed to load vehicle report for rental:', reportError);
-        setVehicleReport(null);
-      }
+
+        try {
+          if (rentalData.package_id) {
+            if (RENTAL_DEBUG) console.log('📦 Package ID found:', rentalData.package_id);
+            await loadPackageDetails(rentalData.package_id);
+          } else {
+            setPackageDetails(null);
+            setIncludedKilometers(null);
+            setExtraKmRate(null);
+          }
+        } catch (packageLoadError) {
+          console.error('❌ Non-critical package load failure:', packageLoadError);
+          setPackageDetails(null);
+          setIncludedKilometers(null);
+          setExtraKmRate(null);
+        }
+
+        if (rentalData.id) {
+          try {
+            const secondDrivers = await fetchSecondDriversSeparately(rentalData.id);
+            if (secondDrivers.length > 0) {
+              setRental((prev) => prev ? ({ ...prev, second_drivers: secondDrivers }) : prev);
+            }
+          } catch (secondDriverLoadError) {
+            console.error('❌ Non-critical second driver load failure:', secondDriverLoadError);
+          }
+        }
+
+        if (rentalData?.vehicle?.vehicle_model?.id) {
+          try {
+            const pricePerLine = await FuelPricingService.getFuelPricingForModel(
+              rentalData.vehicle.vehicle_model.id,
+              rentalData.rental_type || 'daily'
+            );
+            setFuelPricePerLine(pricePerLine);
+
+            if (rentalData.start_fuel_level !== null && rentalData.end_fuel_level !== null) {
+              const recalculatedCharge = FuelPricingService.calculateFuelCharge(
+                rentalData.start_fuel_level,
+                rentalData.end_fuel_level,
+                pricePerLine,
+                rentalData.rental_type || 'daily'
+              );
+              const storedCharge = parseFloat(rentalData.fuel_charge || 0) || 0;
+              setFuelCharge(recalculatedCharge);
+              setRental(prev => prev ? ({ ...prev, fuel_charge: recalculatedCharge }) : prev);
+
+              if (Math.abs(storedCharge - recalculatedCharge) > 0.009) {
+                try {
+                  await supabase
+                    .from('app_4c3a7a6153_rentals')
+                    .update({
+                      fuel_charge: recalculatedCharge,
+                      updated_at: new Date().toISOString(),
+                    })
+                    .eq('id', rentalData.id);
+                } catch (syncErr) {
+                  console.error('❌ Failed to normalize legacy fuel charge:', syncErr);
+                }
+              }
+            }
+          } catch (err) {
+            console.error('❌ Error loading fuel pricing:', err);
+          }
+        }
+
+        if (rentalData?.vehicle_id) {
+          try {
+            const currentState = await FuelTransactionService.getVehicleFuelState(rentalData.vehicle_id);
+            setCurrentVehicleFuelLevel(
+              currentState?.current_fuel_lines !== null && currentState?.current_fuel_lines !== undefined
+                ? currentState.current_fuel_lines
+                : null
+            );
+          } catch (fuelStateError) {
+            console.error('❌ Error loading current vehicle fuel level:', fuelStateError);
+            setCurrentVehicleFuelLevel(null);
+          }
+        }
+
+        try {
+          await loadRentalMedia(rentalData.id);
+        } catch (mediaLoadError) {
+          console.error('❌ Non-critical rental media load failure:', mediaLoadError);
+        }
+
+        try {
+          await loadVehicleReplacementHistory(rentalData.id);
+        } catch (vehicleHistoryError) {
+          console.error('❌ Non-critical vehicle history load failure:', vehicleHistoryError);
+        }
+
+        try {
+          const latestVehicleReport = await VehicleReportService.getLatestReportForRental(rentalData.id);
+          if (latestVehicleReport) {
+            const hydratedReport = await VehicleReportService.hydrateReportWithMaintenance(latestVehicleReport);
+            setVehicleReport(hydratedReport);
+            setRental(prev => prev ? ({ ...prev, vehicleReport: hydratedReport }) : prev);
+            setVehicleReportDraft({
+              enabled: true,
+              report_type: hydratedReport.report_type || 'damage',
+              severity: hydratedReport.severity || 'minor',
+              description: hydratedReport.description || '',
+              affected_areas: Array.isArray(hydratedReport.affected_areas) ? hydratedReport.affected_areas : [],
+              customer_chargeable: Boolean(hydratedReport.customer_chargeable),
+              customer_charge_amount: hydratedReport.customer_charge_amount ? String(hydratedReport.customer_charge_amount) : '',
+              send_to_maintenance: hydratedReport.send_to_maintenance !== false,
+            });
+          } else {
+            setVehicleReport(null);
+            setRental(prev => prev ? ({ ...prev, vehicleReport: null }) : prev);
+          }
+        } catch (reportError) {
+          console.error('Failed to load vehicle report for rental:', reportError);
+          setVehicleReport(null);
+        }
+      });
       
     } catch (err) {
       console.error('❌ Error loading rental:', {
@@ -4442,6 +4453,29 @@ if (RENTAL_DEBUG) console.log('📅 DATABASE DATE CHECK:', {
         hint: err?.hint,
         raw: err,
       });
+
+      const isTransientNotReady =
+        String(err?.code || '').trim().toUpperCase() === 'PGRST116' ||
+        String(err?.details || '').toLowerCase().includes('0 rows') ||
+        String(err?.message || '').toLowerCase().includes('rental row not returned yet');
+      const isRateLimited =
+        String(err?.message || '').includes('429') ||
+        String(err?.code || '').trim() === '429' ||
+        Number(err?.status || 0) === 429;
+
+      if (cachedSnapshot) {
+        setRental((prev) => prev || cachedSnapshot);
+        if (isTransientNotReady || isRateLimited) {
+          setError(null);
+          scheduleBackgroundTask(() => {
+            window.setTimeout(() => {
+              void loadRentalData(false);
+            }, isRateLimited ? 2500 : 1200);
+          });
+          return;
+        }
+      }
+
       const errorMsg = err?.message?.includes('429')
         ? 'Too many requests. Please wait a moment and try again.'
         : 'Failed to load rental details';
@@ -12186,10 +12220,28 @@ useEffect(() => {
   };
 
   const dispatchRentalTelegramEventSafely = async (payload, contextLabel = 'rental lifecycle') => {
+    const eventType = String(payload?.eventType || '').trim().toLowerCase();
+    const directFallbackRentalPayload = payload?.rental || null;
+
     try {
-      await dispatchRentalLifecycleTelegramEvent(payload);
+      const lifecycleResult = await dispatchRentalLifecycleTelegramEvent(payload);
+      if (lifecycleResult === false && eventType && directFallbackRentalPayload?.id) {
+        await notifyRentalTelegramEvent(eventType, directFallbackRentalPayload, { throwOnError: true });
+      }
+      return lifecycleResult;
     } catch (telegramDispatchError) {
+      if (eventType && directFallbackRentalPayload?.id) {
+        try {
+          const fallbackResult = await notifyRentalTelegramEvent(eventType, directFallbackRentalPayload, { throwOnError: true });
+          return fallbackResult;
+        } catch (fallbackTelegramDispatchError) {
+          console.warn(`⚠️ ${contextLabel} Telegram dispatch failed (non-blocking):`, fallbackTelegramDispatchError);
+          return false;
+        }
+      }
+
       console.warn(`⚠️ ${contextLabel} Telegram dispatch failed (non-blocking):`, telegramDispatchError);
+      return false;
     }
   };
 

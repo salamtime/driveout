@@ -4,6 +4,7 @@ import { getHostContext } from '../utils/hostContext';
 
 const inFlightTelegramAlerts = new Map();
 let tenantSessionPromise = null;
+const TELEGRAM_ALERT_TIMEOUT_MS = 5000;
 
 const buildTelegramAlertRequestKey = (eventType, rental = {}) => {
   const normalizedEventType = String(eventType || '').trim().toLowerCase();
@@ -82,21 +83,34 @@ export async function notifyRentalTelegramEvent(eventType, rental, options = {})
       throw new Error('No active session for Telegram alert request');
     }
 
-    const response = await fetch('/api/telegram-alerts', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
-      },
-      keepalive: true,
-      body: JSON.stringify({
-        rental: {
-          eventType,
-          hostname: typeof window !== 'undefined' ? window.location.hostname : '',
-          ...tenantAwareRental,
+    const abortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeoutId = abortController
+      ? window.setTimeout(() => abortController.abort(new Error('Telegram alert request timed out')), TELEGRAM_ALERT_TIMEOUT_MS)
+      : null;
+
+    let response;
+    try {
+      response = await fetch('/api/telegram-alerts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
         },
-      }),
-    });
+        keepalive: true,
+        signal: abortController?.signal,
+        body: JSON.stringify({
+          rental: {
+            eventType,
+            hostname: typeof window !== 'undefined' ? window.location.hostname : '',
+            ...tenantAwareRental,
+          },
+        }),
+      });
+    } finally {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    }
 
     if (!response.ok) {
       const responseText = await response.text();
