@@ -11254,7 +11254,7 @@ useEffect(() => {
         console.warn('Broadcast failed (non-critical):', broadcastErr);
       }
       if (rental.signature_url) scheduleDocumentGeneration(generateAndCacheContractPDF, 1000);
-      void dispatchRentalLifecycleTelegramEvent({
+      void dispatchRentalTelegramEventSafely({
         eventType: 'rental_started',
         actor: 'admin',
         rental: {
@@ -11266,7 +11266,7 @@ useEffect(() => {
           end: actualEndTime,
           total: updatedRental?.total_amount || rental.total_amount || 0,
         },
-      });
+      }, 'rental started');
       setRental((prev) => prev ? ({
         ...prev,
         ...updatedRental,
