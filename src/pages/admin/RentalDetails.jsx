@@ -12229,6 +12229,27 @@ useEffect(() => {
   const dispatchRentalTelegramEventSafely = async (payload, contextLabel = 'rental lifecycle') => {
     const eventType = String(payload?.eventType || '').trim().toLowerCase();
     const directFallbackRentalPayload = payload?.rental || null;
+    const shouldDualDispatch = ['rental_started', 'rental_completed'].includes(eventType);
+
+    if (shouldDualDispatch && directFallbackRentalPayload?.id) {
+      const [lifecycleResult, directResult] = await Promise.allSettled([
+        dispatchRentalLifecycleTelegramEvent(payload),
+        notifyRentalTelegramEvent(eventType, directFallbackRentalPayload, { throwOnError: true }),
+      ]);
+
+      const lifecycleSucceeded = lifecycleResult.status === 'fulfilled' && lifecycleResult.value !== false;
+      const directSucceeded = directResult.status === 'fulfilled' && directResult.value !== false;
+
+      if (lifecycleSucceeded || directSucceeded) {
+        return lifecycleSucceeded ? lifecycleResult.value : directResult.value;
+      }
+
+      console.warn(`⚠️ ${contextLabel} Telegram dispatch failed (non-blocking):`, {
+        lifecycle: lifecycleResult.status === 'rejected' ? lifecycleResult.reason : lifecycleResult.value,
+        direct: directResult.status === 'rejected' ? directResult.reason : directResult.value,
+      });
+      return false;
+    }
 
     try {
       const lifecycleResult = await dispatchRentalLifecycleTelegramEvent(payload);
