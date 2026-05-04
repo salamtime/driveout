@@ -18,11 +18,11 @@ class SettingsService {
   getDefaultSettings() {
     return {
       // Company Information
-      companyName: 'QuadVenture',
-      companyEmail: 'info@quadventure.com',
-      companyPhone: '+212 123 456 789',
-      companyAddress: 'Marrakech, Morocco',
-      companyWebsite: 'https://quadventure.com',
+      companyName: '',
+      companyEmail: '',
+      companyPhone: '',
+      companyAddress: '',
+      companyWebsite: '',
       
       // Business Settings
       currency: 'MAD',

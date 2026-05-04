@@ -1,5 +1,6 @@
 // PackageService.js
 import { supabase } from '../lib/supabase';
+import { assertTenantFeatureEnabled } from './TenantLimitService';
 
 const isMissingFuelChargeColumnError = (error) =>
   error?.code === 'PGRST204' &&
@@ -11,6 +12,9 @@ const getMissingFuelChargeColumnMessage = () =>
 const PackageService = {
   async createPackage(packageData) {
     try {
+      await assertTenantFeatureEnabled('pricing_km_packages', {
+        message: 'Kilometer packages are not available on this plan.',
+      });
       console.log('📦 PackageService.createPackage called with:', packageData);
       
       // Ensure all required fields are present and not null
@@ -59,6 +63,9 @@ const PackageService = {
 
   async updatePackage(id, packageData) {
     try {
+      await assertTenantFeatureEnabled('pricing_km_packages', {
+        message: 'Kilometer packages are not available on this plan.',
+      });
       console.log('📦 PackageService.updatePackage called with ID:', id, 'data:', packageData);
       
       const dataToUpdate = {
@@ -154,6 +161,9 @@ const PackageService = {
 
   async deletePackage(id) {
     try {
+      await assertTenantFeatureEnabled('pricing_km_packages', {
+        message: 'Kilometer packages are not available on this plan.',
+      });
       const { error } = await supabase
         .from('app_4c3a7a6153_rental_km_packages')
         .delete()

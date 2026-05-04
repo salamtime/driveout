@@ -113,13 +113,12 @@ const ProfilePictureUpload = ({
 
   return (
     <div className="relative inline-block">
-      {/* Profile Picture Container */}
       <div 
-        className={`${sizeClasses[size]} rounded-full overflow-hidden bg-gray-100 border-2 border-gray-200 flex items-center justify-center cursor-pointer hover:border-gray-300 transition-colors relative`}
+        className={`${sizeClasses[size]} relative flex items-center justify-center overflow-hidden rounded-full border-4 border-white bg-slate-100 shadow-[0_16px_35px_rgba(15,23,42,0.16)] transition-colors ${editable ? 'cursor-pointer hover:border-violet-100' : ''}`}
         onClick={triggerFileInput}
       >
         {loading && (
-          <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-10">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/45">
             <svg className="animate-spin h-6 w-6 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -141,16 +140,15 @@ const ProfilePictureUpload = ({
             }}
           />
         ) : (
-          <div className="w-full h-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center">
-            <span className="text-white font-semibold text-lg">
+          <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#ede9fe_0%,#ddd6fe_45%,#c4b5fd_100%)]">
+            <span className="text-lg font-black text-violet-700">
               {getInitials()}
             </span>
           </div>
         )}
 
-        {/* Upload Overlay */}
         {editable && !loading && (
-          <div className="absolute inset-0 bg-black bg-opacity-0 hover:bg-opacity-30 flex items-center justify-center transition-all duration-200 opacity-0 hover:opacity-100">
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-950/0 opacity-0 transition-all duration-200 hover:bg-slate-950/22 hover:opacity-100">
             <svg className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -159,7 +157,6 @@ const ProfilePictureUpload = ({
         )}
       </div>
 
-      {/* Edit/Delete Actions */}
       {editable && !loading && (size === 'large' || size === 'xlarge') && (
         <div className="absolute -bottom-2 -right-2 flex space-x-1">
           <button
@@ -167,7 +164,7 @@ const ProfilePictureUpload = ({
               e.stopPropagation();
               triggerFileInput();
             }}
-            className="bg-blue-500 hover:bg-blue-600 text-white rounded-full p-2 shadow-lg transition-colors"
+            className="rounded-full border border-violet-200 bg-white p-2 text-violet-700 shadow-lg transition-colors hover:bg-violet-50"
             title={t('profile.picture.change')}
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -182,7 +179,7 @@ const ProfilePictureUpload = ({
                 e.stopPropagation();
                 handleDeletePicture();
               }}
-              className="bg-red-500 hover:bg-red-600 text-white rounded-full p-2 shadow-lg transition-colors"
+              className="rounded-full border border-rose-200 bg-white p-2 text-rose-600 shadow-lg transition-colors hover:bg-rose-50"
               title={t('profile.picture.delete')}
             >
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -193,7 +190,6 @@ const ProfilePictureUpload = ({
         </div>
       )}
 
-      {/* Hidden File Input */}
       <input
         ref={fileInputRef}
         type="file"
@@ -202,20 +198,18 @@ const ProfilePictureUpload = ({
         className="hidden"
       />
 
-      {/* Error Display */}
       {error && (
-        <div className="absolute top-full left-0 right-0 mt-2 p-2 bg-red-50 border border-red-200 rounded-md">
+        <div className="absolute left-0 right-0 top-full mt-2 rounded-xl border border-rose-200 bg-rose-50 p-2">
           <p className="text-xs text-red-600 text-center">{error}</p>
         </div>
       )}
 
-      {/* Upload Instructions */}
       {editable && showInstructions && (size === 'large' || size === 'xlarge') && (
         <div className="absolute top-full left-0 right-0 mt-2">
-          <p className="text-xs text-gray-500 text-center">
+          <p className="text-center text-xs font-medium text-slate-500">
             {t('profile.picture.instructions')}
           </p>
-          <p className="text-xs text-gray-400 text-center mt-1">
+          <p className="mt-1 text-center text-xs text-slate-400">
             {t('profile.picture.formats')}
           </p>
         </div>

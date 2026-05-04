@@ -6,6 +6,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useLanguageContext } from '../../contexts/LanguageContext';
 import i18n from '../../i18n';
 import { isApprovedBusinessOwnerAccount, isBusinessAccountType, isBusinessOwnerAccountType, isPlatformOwnerEmail } from '../../utils/accountType';
+import { useTenantWorkspaceContext } from '../../contexts/TenantWorkspaceContext';
 
 const SAHARAX_LOGO_SRC = '/assets/logo.jpg';
 const ACCOUNT_MENU_PERSIST_KEY = 'saharax_account_menu_open';
@@ -25,9 +26,13 @@ const PublicSiteChrome = ({ current = 'home' }) => {
   const navigate = useNavigate();
   useTranslation();
   const { user, userProfile, signOut, getBusinessOwnerHomePath } = useAuth();
-  const { setLanguage } = useLanguageContext();
+  const { currentLanguage, setLanguage } = useLanguageContext();
+  const { publicFeatures } = useTenantWorkspaceContext();
+  const multilingualStorefrontEnabled = publicFeatures?.multilingual_storefront !== false;
   const isFrench = i18n.resolvedLanguage === 'fr';
-  const activeLanguage = i18n.resolvedLanguage === 'fr' ? 'fr' : 'en';
+  const activeLanguage = multilingualStorefrontEnabled
+    ? (i18n.resolvedLanguage === 'fr' ? 'fr' : 'en')
+    : 'en';
   const tr = (en, fr) => (isFrench ? fr : en);
   const normalizedRole = String(userProfile?.role || '').toLowerCase();
   const normalizedEmail = String(userProfile?.email || user?.email || '').toLowerCase();
@@ -135,6 +140,12 @@ const PublicSiteChrome = ({ current = 'home' }) => {
     setMenuOpen(false);
   }, [location.pathname, location.search, location.hash]);
 
+  useEffect(() => {
+    if (!multilingualStorefrontEnabled && currentLanguage !== 'en') {
+      setLanguage('en');
+    }
+  }, [currentLanguage, multilingualStorefrontEnabled, setLanguage]);
+
   return (
     <>
       <header
@@ -214,33 +225,35 @@ const PublicSiteChrome = ({ current = 'home' }) => {
                 </div>
 
                 <div className="mt-3 space-y-3">
-                  <div className="rounded-2xl border border-violet-100 bg-white/85 px-3 py-3 shadow-sm">
-                    <div className="mt-1 flex justify-center">
-                      <div className="inline-flex rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
-                      {[
-                        { code: 'fr', label: 'FR' },
-                        { code: 'en', label: 'EN' },
-                      ].map((language) => {
-                        const active = activeLanguage === language.code;
-                        return (
-                          <button
-                            key={language.code}
-                            type="button"
-                            onClick={() => setLanguage(language.code)}
-                            className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all ${
-                              active
-                                ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_10px_24px_rgba(79,70,229,0.24)]'
-                                : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'
-                            }`}
-                            aria-pressed={active}
-                          >
-                            {language.label}
-                          </button>
-                        );
-                      })}
+                  {multilingualStorefrontEnabled ? (
+                    <div className="rounded-2xl border border-violet-100 bg-white/85 px-3 py-3 shadow-sm">
+                      <div className="mt-1 flex justify-center">
+                        <div className="inline-flex rounded-2xl border border-violet-100 bg-white p-1 shadow-sm">
+                        {[
+                          { code: 'fr', label: 'FR' },
+                          { code: 'en', label: 'EN' },
+                        ].map((language) => {
+                          const active = activeLanguage === language.code;
+                          return (
+                            <button
+                              key={language.code}
+                              type="button"
+                              onClick={() => setLanguage(language.code)}
+                              className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all ${
+                                active
+                                  ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-[0_10px_24px_rgba(79,70,229,0.24)]'
+                                  : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'
+                              }`}
+                              aria-pressed={active}
+                            >
+                              {language.label}
+                            </button>
+                          );
+                        })}
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  ) : null}
 
                   {hasWorkspaceAccess ? (
                     <button

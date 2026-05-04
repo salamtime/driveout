@@ -1,5 +1,27 @@
 import { adminApiRequest } from './adminApi';
 
+const buildTenantSchemaQuery = ({
+  action,
+  tenantId = '',
+  businessAccountId = '',
+  tenantSlug = '',
+  targetProjectRef = '',
+  allowExtra = false,
+} = {}) => {
+  const query = new URLSearchParams({
+    resource: 'schema',
+    action: String(action || '').trim().toLowerCase(),
+  });
+
+  if (tenantId) query.set('tenant_id', tenantId);
+  if (businessAccountId) query.set('business_account_id', businessAccountId);
+  if (tenantSlug) query.set('tenant_slug', tenantSlug);
+  if (targetProjectRef) query.set('target_project_ref', targetProjectRef);
+  if (allowExtra) query.set('allow_extra', 'true');
+
+  return `/api/tenants?${query.toString()}`;
+};
+
 export const listTenants = async (status = '') => {
   const query = new URLSearchParams({ resource: 'provisioning' });
   if (status) query.set('status', status);
@@ -69,6 +91,83 @@ export const createTenantAuditEvent = async ({ businessAccountId, tenantId, acti
       metadata: metadata || {},
     }),
   });
+
+export const planTenantSchemaUpgrade = async ({
+  tenantId,
+  businessAccountId,
+  tenantSlug,
+  targetProjectRef,
+}) =>
+  adminApiRequest(buildTenantSchemaQuery({
+    action: 'plan',
+    tenantId,
+    businessAccountId,
+    tenantSlug,
+    targetProjectRef,
+  }));
+
+export const applyTenantSchemaUpgrade = async ({
+  tenantId,
+  businessAccountId,
+  tenantSlug,
+  targetProjectRef,
+}) =>
+  adminApiRequest('/api/tenants?resource=schema', {
+    method: 'POST',
+    body: JSON.stringify({
+      action: 'apply',
+      tenant_id: tenantId || '',
+      business_account_id: businessAccountId || '',
+      tenant_slug: tenantSlug || '',
+      target_project_ref: targetProjectRef || '',
+    }),
+  });
+
+export const verifyTenantSchemaRelease = async ({
+  tenantId,
+  businessAccountId,
+  tenantSlug,
+  targetProjectRef,
+  allowExtra = false,
+}) =>
+  adminApiRequest(buildTenantSchemaQuery({
+    action: 'verify',
+    tenantId,
+    businessAccountId,
+    tenantSlug,
+    targetProjectRef,
+    allowExtra,
+  }));
+
+export const getTenantSchemaDrift = async ({
+  tenantId,
+  businessAccountId,
+  tenantSlug,
+  targetProjectRef,
+  allowExtra = true,
+}) =>
+  adminApiRequest(buildTenantSchemaQuery({
+    action: 'drift',
+    tenantId,
+    businessAccountId,
+    tenantSlug,
+    targetProjectRef,
+    allowExtra,
+  }));
+
+export const verifyTenantRuntimeIntegrity = async ({
+  tenantId,
+  businessAccountId,
+  tenantSlug,
+  targetProjectRef,
+}) =>
+  adminApiRequest(buildTenantSchemaQuery({
+    action: 'runtime',
+    tenantId,
+    businessAccountId,
+    tenantSlug,
+    targetProjectRef,
+  }));
 
 export const provisionTenant = async (tenantId) => ({
   tenantId,

@@ -318,6 +318,9 @@ class VehicleService {
       await assertCanCreateVehicle();
       let compatiblePayload = {
         ...vehicleData,
+        current_odometer: Number.isFinite(Number(vehicleData?.current_odometer))
+          ? Number(vehicleData.current_odometer)
+          : 0,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };

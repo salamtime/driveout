@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { assertTenantFeatureEnabled } from './TenantLimitService';
 
 export class PricingService {
   constructor() {
@@ -13,6 +14,10 @@ export class PricingService {
   // ============================================================================
 
   async getBasePrices(page = 1, pageSize = 50, search = '') {
+    await assertTenantFeatureEnabled('pricing_module', {
+      message: 'Pricing management is not available on this plan.',
+    });
+
     const cacheKey = this.getCacheKey('getBasePrices', { page, pageSize, search });
     const cached = this.getFromCache(cacheKey);
     if (cached) return cached;
@@ -81,6 +86,9 @@ export class PricingService {
 
   async createBasePrice(priceData) {
     try {
+      await assertTenantFeatureEnabled('pricing_module', {
+        message: 'Pricing management is not available on this plan.',
+      });
       console.log('➕ Creating base price...');
       
       const result = await this.withRetry(async () => {
@@ -122,6 +130,9 @@ export class PricingService {
 
   async updateBasePrice(id, updateData) {
     try {
+      await assertTenantFeatureEnabled('pricing_module', {
+        message: 'Pricing management is not available on this plan.',
+      });
       console.log('✏️ Updating base price:', id);
       
       const result = await this.withRetry(async () => {
@@ -162,6 +173,9 @@ export class PricingService {
 
   async deleteBasePrice(id) {
     try {
+      await assertTenantFeatureEnabled('pricing_module', {
+        message: 'Pricing management is not available on this plan.',
+      });
       console.log('🗑️ Deleting base price:', id);
       
       const result = await this.withRetry(async () => {
@@ -193,6 +207,10 @@ export class PricingService {
   // ============================================================================
 
   async getTransportFees(page = 1, pageSize = 50, search = '') {
+    await assertTenantFeatureEnabled('pricing_module', {
+      message: 'Pricing management is not available on this plan.',
+    });
+
     const cacheKey = this.getCacheKey('getTransportFees', { page, pageSize, search });
     const cached = this.getFromCache(cacheKey);
     if (cached) return cached;

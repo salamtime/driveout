@@ -1,5 +1,11 @@
-import { PLATFORM_TENANTS_TABLE, createSupabaseClients } from './supabase.js';
+import {
+  PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE,
+  PLATFORM_TENANTS_TABLE,
+  createSupabaseClients,
+} from './supabase.js';
 import { getCachedWorkspaceReadiness, resolveWorkspaceReadiness } from './tenantWorkspaceReadiness.js';
+import { normalizeTenantSchemaVersion } from './tenantSchemaRelease.js';
+import { buildEffectiveTenantFeatureAccess, normalizeTenantPlanType } from '../../src/config/tenantPlans.js';
 
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
@@ -71,6 +77,12 @@ const getProjectRefFromSupabaseUrl = (value = '') => {
   return hostname.endsWith('.supabase.co') ? hostname.split('.')[0] || 'master' : 'master';
 };
 
+const extractTenantPublicFeatures = (featureAccess = {}) => ({
+  public_storefront: featureAccess.public_storefront === true,
+  online_booking: featureAccess.online_booking === true,
+  multilingual_storefront: featureAccess.multilingual_storefront === true,
+});
+
 const getFirstPartyTenantConfig = ({ hostname, tenantSlug }) => {
   const normalizedHostname = normalizeHostname(hostname);
   const normalizedSlug = String(tenantSlug || '').trim().toLowerCase();
@@ -104,7 +116,7 @@ const findTenantByHostname = async ({ adminClient, hostname, tenantSlug }) => {
   if (tenantSlug) {
     const { data, error } = await adminClient
       .from(PLATFORM_TENANTS_TABLE)
-      .select('id, tenant_name, tenant_slug, tenant_status, tenant_project_ref, tenant_app_url, tenant_api_url, tenant_anon_key, schema_version')
+      .select('id, business_account_id, tenant_name, tenant_slug, tenant_status, tenant_project_ref, tenant_app_url, tenant_api_url, tenant_anon_key, schema_version, metadata')
       .eq('tenant_slug', tenantSlug)
       .maybeSingle();
 
@@ -114,7 +126,7 @@ const findTenantByHostname = async ({ adminClient, hostname, tenantSlug }) => {
 
   const { data, error } = await adminClient
     .from(PLATFORM_TENANTS_TABLE)
-    .select('id, tenant_name, tenant_slug, tenant_status, tenant_project_ref, tenant_app_url, tenant_api_url, tenant_anon_key, schema_version')
+    .select('id, business_account_id, tenant_name, tenant_slug, tenant_status, tenant_project_ref, tenant_app_url, tenant_api_url, tenant_anon_key, schema_version, metadata')
     .ilike('tenant_app_url', `%${hostname}%`)
     .limit(10);
 
@@ -216,7 +228,7 @@ export default async function handler(req, res) {
         workspaceReadiness = await resolveWorkspaceReadiness({
           tenant,
           adminClient,
-          forceFresh: !workspaceReadiness?.fresh,
+          forceFresh: !workspaceReadiness?.fresh || workspaceReadiness?.ready !== true,
           persist: true,
         });
       } catch (readinessError) {
@@ -229,13 +241,41 @@ export default async function handler(req, res) {
       }
 
       if (workspaceReadiness?.ready !== true) {
+        const schemaIncomplete = workspaceReadiness?.schema_ready !== true;
         res.status(409).json({
-          error: 'Workspace schema is not ready',
-          code: 'workspace_schema_incomplete',
+          error: schemaIncomplete ? 'Workspace schema is not ready' : 'Workspace runtime is not ready',
+          code: schemaIncomplete ? 'workspace_schema_incomplete' : 'workspace_runtime_incomplete',
           readiness: workspaceReadiness,
         });
         return;
       }
+    }
+
+    let effectivePlanType = 'pro';
+    let publicFeatures = extractTenantPublicFeatures(
+      buildEffectiveTenantFeatureAccess('pro', tenant?.metadata?.feature_access || {})
+    );
+
+    if (!tenant.first_party) {
+      const { data: subscription, error: subscriptionError } = await adminClient
+        .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
+        .select('plan_type')
+        .eq('business_account_id', tenant.business_account_id)
+        .maybeSingle();
+
+      if (subscriptionError) {
+        throw subscriptionError;
+      }
+
+      effectivePlanType = normalizeTenantPlanType(subscription?.plan_type || 'starter');
+      publicFeatures = extractTenantPublicFeatures(
+        buildEffectiveTenantFeatureAccess(
+          effectivePlanType,
+          tenant?.metadata?.feature_access && typeof tenant.metadata.feature_access === 'object'
+            ? tenant.metadata.feature_access
+            : {}
+        )
+      );
     }
 
     res.status(200).json({
@@ -249,7 +289,9 @@ export default async function handler(req, res) {
         appUrl: normalizeUrl(tenant.tenant_app_url),
         apiUrl: normalizeUrl(tenant.tenant_api_url),
         anonKey: tenant.tenant_anon_key,
-        schemaVersion: tenant.schema_version || 'v1',
+        schemaVersion: normalizeTenantSchemaVersion(tenant.schema_version),
+        planType: effectivePlanType,
+        publicFeatures,
       },
     });
   } catch (error) {

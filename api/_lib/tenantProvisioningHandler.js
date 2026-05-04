@@ -22,13 +22,35 @@ import {
   mergeWorkspaceReadinessMetadata,
   resolveWorkspaceReadiness,
 } from './tenantWorkspaceReadiness.js';
-import { applyLegacyBusinessWorkspaceBootstrap } from './tenantWorkspaceBootstrap.js';
+import {
+  applyCanonicalBusinessWorkspaceSchema,
+  seedCanonicalBusinessWorkspaceRuntime,
+} from './tenantWorkspaceBootstrap.js';
+import {
+  CURRENT_TENANT_SCHEMA_RELEASE_ID,
+  normalizeTenantSchemaVersion,
+} from './tenantSchemaRelease.js';
 
 const createHttpError = (status, message) => {
   const error = new Error(message);
   error.status = status;
   return error;
 };
+
+const PROVISIONING_JOB_TYPES = new Set([
+  'create_tenant',
+  'seed_schema',
+  'retry_seed',
+  'suspend_tenant',
+  'archive_tenant',
+]);
+
+const SCHEMA_JOB_TYPES = new Set([
+  'schema_plan',
+  'schema_upgrade',
+  'schema_verify',
+  'schema_drift',
+]);
 
 const isAutomaticSignupModeEnabled = () => {
   const signupMode = String(process.env.TENANT_SIGNUP_MODE || 'automatic').trim().toLowerCase();
@@ -199,8 +221,20 @@ const buildProvisioningResult = (payload = {}) => ({
   tenant_app_url: payload.tenant_app_url || null,
   tenant_api_url: payload.tenant_api_url || null,
   tenant_database_name: payload.tenant_database_name || null,
-  schema_version: payload.schema_version || 'v1',
+  schema_version: normalizeTenantSchemaVersion(payload.schema_version),
 });
+
+const fetchProvisioningSubscription = async ({ adminClient, businessAccountId }) => {
+  if (!businessAccountId) return null;
+  const { data, error } = await adminClient
+    .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
+    .select('trial_started_at, trial_ends_at')
+    .eq('business_account_id', businessAccountId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+};
 
 const hasUsableTenantWorkspaceConfig = (payload = {}) => (
   !getInvalidTenantConfigReason({
@@ -217,7 +251,7 @@ const buildWorkspaceConfigFromTenantRecord = (tenant = {}) => ({
   tenantAnonKey: String(tenant.tenant_anon_key || '').trim(),
   tenantServiceRoleSecretRef: String(tenant.tenant_service_role_secret_ref || '').trim() || null,
   tenantDatabaseName: String(tenant.tenant_database_name || '').trim() || null,
-  schemaVersion: String(tenant.schema_version || 'v1').trim() || 'v1',
+  schemaVersion: normalizeTenantSchemaVersion(tenant.schema_version),
 });
 
 const buildWorkspaceConfigFromPoolRecord = (workspace = {}) => ({
@@ -227,7 +261,7 @@ const buildWorkspaceConfigFromPoolRecord = (workspace = {}) => ({
   tenantAnonKey: String(workspace.tenant_anon_key || '').trim(),
   tenantServiceRoleSecretRef: String(workspace.tenant_service_role_secret_ref || '').trim() || null,
   tenantDatabaseName: String(workspace.tenant_database_name || '').trim() || null,
-  schemaVersion: String(workspace.schema_version || 'v1').trim() || 'v1',
+  schemaVersion: normalizeTenantSchemaVersion(workspace.schema_version),
 });
 
 const resolvePersistedTenantWorkspace = async ({ adminClient, tenant }) => {
@@ -339,7 +373,7 @@ const syncManualWorkspacePoolEntry = async ({
     tenant_anon_key: tenantAnonKey,
     tenant_service_role_secret_ref: tenantServiceRoleSecretRef || null,
     tenant_database_name: tenantDatabaseName || null,
-    schema_version: schemaVersion || 'v1',
+    schema_version: normalizeTenantSchemaVersion(schemaVersion),
     status: 'assigned',
     assigned_tenant_id: tenant.id,
     assigned_business_account_id: job.business_account_id,
@@ -553,14 +587,25 @@ const runAutomaticProvisioningWorker = async ({
     syncMode: 'automatic_inline',
   });
 
+  const subscription = await fetchProvisioningSubscription({
+    adminClient,
+    businessAccountId: job.business_account_id,
+  });
+
   try {
-    await applyLegacyBusinessWorkspaceBootstrap({
+    await applyCanonicalBusinessWorkspaceSchema({
+      projectRef: workspace.tenantProjectRef,
+    });
+
+    await seedCanonicalBusinessWorkspaceRuntime({
       projectRef: workspace.tenantProjectRef,
       tenantName: tenant.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Business Workspace',
       tenantSlug: tenant.tenant_slug,
       ownerAuthUserId: businessAccount?.auth_user_id || null,
       ownerEmail: businessAccount?.email || null,
       ownerFullName: businessAccount?.full_name || null,
+      trialStartedAt: subscription?.trial_started_at || null,
+      trialEndsAt: subscription?.trial_ends_at || null,
     });
   } catch (bootstrapError) {
     throw createHttpError(
@@ -600,7 +645,7 @@ const runAutomaticProvisioningWorker = async ({
           tenant_anon_key: workspace.tenantAnonKey,
           tenant_service_role_secret_ref: workspace.tenantServiceRoleSecretRef || null,
           tenant_database_name: workspace.tenantDatabaseName || null,
-          schema_version: workspace.schemaVersion || 'v1',
+          schema_version: normalizeTenantSchemaVersion(workspace.schemaVersion),
           provisioning_error: readinessMessage,
           metadata: {
             ...failedMetadata,
@@ -682,7 +727,7 @@ const runAutomaticProvisioningWorker = async ({
         tenant_anon_key: workspace.tenantAnonKey,
         tenant_service_role_secret_ref: workspace.tenantServiceRoleSecretRef || null,
         tenant_database_name: workspace.tenantDatabaseName || null,
-        schema_version: workspace.schemaVersion || 'v1',
+        schema_version: normalizeTenantSchemaVersion(workspace.schemaVersion),
         provisioned_at: nowIso,
         provisioning_completed_at: nowIso,
         provisioning_error: null,
@@ -842,6 +887,11 @@ const ensureBusinessSubscriptionRecord = async ({
 };
 
 const ensureAutomaticBusinessAccountRecord = async ({ adminClient, authUser }) => {
+  const metadata = {
+    ...(authUser.app_metadata || {}),
+    ...(authUser.user_metadata || {}),
+  };
+
   const { data: existingBusinessAccount, error: existingBusinessAccountError } = await adminClient
     .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
     .select('*')
@@ -861,6 +911,7 @@ const ensureAutomaticBusinessAccountRecord = async ({ adminClient, authUser }) =
     }
 
     const nowIso = new Date().toISOString();
+    const pendingUpgradeRequirements = ['company_ice_number', 'company_legal_form', 'company_registration_city'];
     const { data, error } = await adminClient
       .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
       .update({
@@ -875,6 +926,12 @@ const ensureAutomaticBusinessAccountRecord = async ({ adminClient, authUser }) =
           owner_email: authUser.email,
           onboarding_mode: 'automatic',
           auto_approved_from_legacy_pending: true,
+          company_ice_number:
+            existingBusinessAccount.metadata?.company_ice_number ||
+            String(metadata.company_ice_number || metadata.company_rc_number || '').trim() ||
+            null,
+          activation_pending_compliance: true,
+          upgrade_requirements: pendingUpgradeRequirements,
         },
       })
       .eq('id', existingBusinessAccount.id)
@@ -885,10 +942,7 @@ const ensureAutomaticBusinessAccountRecord = async ({ adminClient, authUser }) =
     return data;
   }
 
-  const metadata = {
-    ...(authUser.app_metadata || {}),
-    ...(authUser.user_metadata || {}),
-  };
+  const pendingUpgradeRequirements = ['company_ice_number', 'company_legal_form', 'company_registration_city'];
   const nowIso = new Date().toISOString();
   const fullName =
     String(metadata.full_name || metadata.name || '').trim() ||
@@ -917,6 +971,9 @@ const ensureAutomaticBusinessAccountRecord = async ({ adminClient, authUser }) =
         source: 'automatic_signup_bootstrap',
         owner_email: authUser.email,
         onboarding_mode: 'automatic',
+        company_ice_number: String(metadata.company_ice_number || metadata.company_rc_number || '').trim() || null,
+        activation_pending_compliance: true,
+        upgrade_requirements: pendingUpgradeRequirements,
       },
     })
     .select('*')
@@ -975,11 +1032,12 @@ const ensureTenantProvisioningRecord = async ({ adminClient, businessAccountId, 
         tenant_app_url: tenantAppUrl,
         tenant_status: 'pending',
         db_provider: 'supabase',
-        schema_version: 'v1',
+        schema_version: normalizeTenantSchemaVersion(),
         metadata: {
           source: 'manual_workspace_provisioning',
           created_by: userId || null,
           requested_subdomain: tenantSlug,
+          schema_release_id: CURRENT_TENANT_SCHEMA_RELEASE_ID,
         },
       },
       { onConflict: 'business_account_id' }
@@ -1297,12 +1355,20 @@ export default async function handler(req, res) {
       const tenantMap = new Map(
         tenants.map((tenant) => [String(tenant.business_account_id), tenant])
       );
-      const latestJobMap = new Map();
+      const latestProvisioningJobMap = new Map();
+      const latestSchemaJobMap = new Map();
 
       allJobs.forEach((job) => {
         const key = String(job?.business_account_id || '').trim();
-        if (!key || latestJobMap.has(key)) return;
-        latestJobMap.set(key, job);
+        if (!key) return;
+
+        const jobType = String(job?.job_type || '').trim().toLowerCase();
+        if (PROVISIONING_JOB_TYPES.has(jobType) && !latestProvisioningJobMap.has(key)) {
+          latestProvisioningJobMap.set(key, job);
+        }
+        if (SCHEMA_JOB_TYPES.has(jobType) && !latestSchemaJobMap.has(key)) {
+          latestSchemaJobMap.set(key, job);
+        }
       });
 
       const businessAccountMap = new Map(
@@ -1324,7 +1390,8 @@ export default async function handler(req, res) {
           business_account: businessAccount,
           subscription: subscriptionMap.get(businessAccountId) || null,
           tenant: tenantMap.get(businessAccountId) || null,
-          provisioning_job: latestJobMap.get(businessAccountId) || null,
+          provisioning_job: latestProvisioningJobMap.get(businessAccountId) || null,
+          latest_schema_job: latestSchemaJobMap.get(businessAccountId) || null,
         };
       });
 
@@ -1630,7 +1697,7 @@ export default async function handler(req, res) {
     const tenantAnonKey = String(req.body?.tenant_anon_key || '').trim();
     const tenantServiceRoleSecretRef = String(req.body?.tenant_service_role_secret_ref || '').trim();
     const tenantDatabaseName = String(req.body?.tenant_database_name || '').trim();
-    const schemaVersion = String(req.body?.schema_version || 'v1').trim();
+    const schemaVersion = normalizeTenantSchemaVersion(req.body?.schema_version);
 
     if (!isNonEmptyString(tenantProjectRef) || !isNonEmptyString(tenantAppUrl) || !isNonEmptyString(tenantApiUrl) || !isNonEmptyString(tenantAnonKey)) {
       res.status(400).json({
@@ -1673,14 +1740,25 @@ export default async function handler(req, res) {
     syncMode: 'manual_activation',
   });
 
+    const subscription = await fetchProvisioningSubscription({
+      adminClient,
+      businessAccountId: job.business_account_id,
+    });
+
     try {
-      await applyLegacyBusinessWorkspaceBootstrap({
+      await applyCanonicalBusinessWorkspaceSchema({
+        projectRef: tenantProjectRef,
+      });
+
+      await seedCanonicalBusinessWorkspaceRuntime({
         projectRef: tenantProjectRef,
         tenantName: tenant.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Business Workspace',
         tenantSlug: tenant.tenant_slug,
         ownerAuthUserId: businessAccount?.auth_user_id || null,
         ownerEmail: businessAccount?.email || null,
         ownerFullName: businessAccount?.full_name || null,
+        trialStartedAt: subscription?.trial_started_at || null,
+        trialEndsAt: subscription?.trial_ends_at || null,
       });
     } catch (bootstrapError) {
       res.status(502).json({
@@ -1724,7 +1802,7 @@ export default async function handler(req, res) {
             tenant_anon_key: tenantAnonKey,
             tenant_service_role_secret_ref: tenantServiceRoleSecretRef || null,
             tenant_database_name: tenantDatabaseName || null,
-            schema_version: schemaVersion || 'v1',
+            schema_version: normalizeTenantSchemaVersion(schemaVersion),
             provisioning_error: readinessMessage,
             metadata: {
               ...failedMetadata,
@@ -1799,7 +1877,7 @@ export default async function handler(req, res) {
           tenant_anon_key: tenantAnonKey,
           tenant_service_role_secret_ref: tenantServiceRoleSecretRef || null,
           tenant_database_name: tenantDatabaseName || null,
-          schema_version: schemaVersion || 'v1',
+          schema_version: normalizeTenantSchemaVersion(schemaVersion),
           provisioned_at: nowIso,
           provisioning_completed_at: nowIso,
           provisioning_error: null,
@@ -1836,15 +1914,16 @@ export default async function handler(req, res) {
         tenant_id: tenant.id,
         performed_by: user.id,
         action: 'complete_tenant_provisioning',
-      metadata: {
-          job_id: jobId,
-          tenant_project_ref: tenantProjectRef,
-          tenant_app_url: normalizeUrl(tenantAppUrl),
-          tenant_api_url: normalizeUrl(tenantApiUrl),
-          schema_version: schemaVersion,
-          workspace_pool_id: updatedWorkspacePoolEntry.id,
-        },
-      });
+          metadata: {
+            job_id: jobId,
+            tenant_project_ref: tenantProjectRef,
+            tenant_app_url: normalizeUrl(tenantAppUrl),
+            tenant_api_url: normalizeUrl(tenantApiUrl),
+            schema_version: schemaVersion,
+            schema_release_id: CURRENT_TENANT_SCHEMA_RELEASE_ID,
+            workspace_pool_id: updatedWorkspacePoolEntry.id,
+          },
+        });
 
     await adminClient.from('platform_tenant_events').insert({
       tenant_id: tenant.id,

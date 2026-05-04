@@ -1,23 +1,36 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { Building2, CheckCircle2, Clock3, ExternalLink, RefreshCw, Search, ShieldAlert, ShieldCheck, UserRound, X } from 'lucide-react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Building2, CheckCircle2, ChevronLeft, Clock3, ExternalLink, RefreshCw, Search, ShieldAlert, ShieldCheck, UserRound } from 'lucide-react';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
 import { useAuth } from '../../contexts/AuthContext';
 import { PLATFORM_OWNER_EMAILS } from '../../utils/accountType';
 import { buildHostUrl, getHostContext } from '../../utils/hostContext';
 import {
+  applyTenantSchemaUpgrade,
   completeTenantProvisioning,
   createTenantAuditEvent,
   failTenantProvisioning,
+  getTenantSchemaDrift,
   listTenants,
   listTenantAuditLog,
+  planTenantSchemaUpgrade,
   reactivateTenant,
   startTenantProvisioning,
   suspendTenant,
   updateTenantControls,
+  verifyTenantSchemaRelease,
+  verifyTenantRuntimeIntegrity,
 } from '../../services/TenantProvisioningService';
 import i18n from '../../i18n';
+import {
+  TENANT_FEATURE_KEYS,
+  TENANT_PLAN_ORDER,
+  buildEffectiveTenantFeatureAccess,
+  getTenantPlanLimits,
+  normalizeTenantPlanType,
+} from '../../config/tenantPlans';
+import { isTenantModuleEnabled } from '../../utils/tenantFeatureAccess';
 
 const statusTone = {
   pending: 'border-amber-200 bg-amber-50 text-amber-700',
@@ -27,6 +40,8 @@ const statusTone = {
   suspended: 'border-slate-300 bg-slate-100 text-slate-700',
   archived: 'border-slate-300 bg-slate-100 text-slate-700',
 };
+
+const WORKSPACE_DETAIL_TAB_IDS = ['overview', 'owner_identity', 'audit', 'feature_access', 'upgrades'];
 
 const formatDate = (value) => {
   if (!value) return '—';
@@ -79,30 +94,78 @@ const DEFAULT_PLAN_LIMITS = {
   storage_gb: 0,
 };
 
-const FEATURE_ACCESS_KEYS = [
-  'public_storefront',
-  'online_booking',
-  'finance_module',
-  'marketplace_module',
-  'ocr_id_scan',
-  'whatsapp_tools',
-  'advanced_reporting',
-  'multilingual_storefront',
-];
+const TENANT_WORKSPACE_NAVIGATION_ITEMS = Object.freeze([
+  { id: 'dashboard', permission: 'Dashboard' },
+  { id: 'calendar', permission: 'Calendar' },
+  { id: 'tours', permission: 'Tours & Bookings' },
+  { id: 'live-map', permission: 'Live Map' },
+  { id: 'rentals', permission: 'Rental Management' },
+  { id: 'customers', permission: 'Customer Management' },
+  { id: 'fleet', permission: 'Fleet Management' },
+  { id: 'pricing', permission: 'Pricing Management' },
+  { id: 'maintenance', permission: 'Quad Maintenance' },
+  { id: 'fuel', permission: 'Fuel Logs' },
+  { id: 'inventory', permission: 'Inventory' },
+  { id: 'finance', permission: 'Finance Management' },
+  { id: 'alerts', permission: 'Alerts' },
+  { id: 'users', permission: 'User & Role Management' },
+  { id: 'verification', permission: 'Verification Center' },
+  { id: 'messages', permission: 'Messages' },
+  { id: 'marketplace', permission: 'Marketplace Review' },
+  { id: 'settings', permission: 'System Settings' },
+  { id: 'website', permission: 'System Settings', featureKey: 'website_editor' },
+  { id: 'export', permission: 'Project Export' },
+]);
 
-const PLAN_ORDER = ['starter', 'growth', 'pro'];
+const buildTenantWorkspaceModuleAccessSummary = ({ planType = 'starter', featureAccess = {} }) => {
+  const normalizedPlanType = normalizeTenantPlanType(planType);
+  const effectiveFeatureAccess = buildEffectiveTenantFeatureAccess(normalizedPlanType, featureAccess);
+  const eligibleItems = TENANT_WORKSPACE_NAVIGATION_ITEMS.filter((item) => {
+    if (item.featureKey && effectiveFeatureAccess[item.featureKey] !== true) {
+      return false;
+    }
+    return true;
+  });
+  const enabledItems = eligibleItems.filter((item) => (
+    isTenantModuleEnabled(item.permission, effectiveFeatureAccess, normalizedPlanType)
+  ));
 
-const PLAN_BASE_LIMITS = {
-  starter: { vehicles: 10, staff: 3, listings: 5, storage_gb: 10 },
-  growth: { vehicles: 30, staff: 10, listings: 20, storage_gb: 50 },
-  pro: { vehicles: 100, staff: 30, listings: 100, storage_gb: 250 },
+  return {
+    enabledCount: enabledItems.length,
+    eligibleCount: eligibleItems.length,
+    featureCount: Object.values(effectiveFeatureAccess).filter(Boolean).length,
+  };
 };
 
+const FEATURE_ACCESS_KEYS = TENANT_FEATURE_KEYS;
+
 const FEATURE_UPGRADE_RULES = {
+  dashboard_basic: { category: 'core', minPlan: 'free' },
+  calendar_module: { category: 'starter', minPlan: 'starter' },
+  rentals_basic: { category: 'core', minPlan: 'free' },
+  fleet_basic: { category: 'core', minPlan: 'free' },
+  customers_basic: { category: 'core', minPlan: 'free' },
+  documents_basic: { category: 'core', minPlan: 'free' },
+  tours_module: { category: 'growth', minPlan: 'growth' },
+  tasks_module: { category: 'growth', minPlan: 'growth' },
+  live_map_module: { category: 'growth', minPlan: 'growth' },
+  inventory_module: { category: 'growth', minPlan: 'growth' },
+  alerts_module: { category: 'starter', minPlan: 'starter' },
+  verification_module: { category: 'starter', minPlan: 'starter' },
+  workspace_settings_module: { category: 'starter', minPlan: 'starter' },
+  pricing_module: { category: 'core', minPlan: 'free' },
+  fuel_module: { category: 'growth', minPlan: 'growth' },
+  maintenance_module: { category: 'growth', minPlan: 'growth' },
+  messages_module: { category: 'starter', minPlan: 'starter' },
+  website_editor: { category: 'pro', minPlan: 'pro' },
+  advanced_roles_permissions: { category: 'pro', minPlan: 'pro' },
   public_storefront: { category: 'core', minPlan: 'starter' },
-  online_booking: { category: 'growth', minPlan: 'growth' },
+  online_booking: { category: 'starter', minPlan: 'starter' },
   finance_module: { category: 'growth', minPlan: 'growth' },
   marketplace_module: { category: 'growth', minPlan: 'growth' },
+  pricing_km_packages: { category: 'growth', minPlan: 'growth' },
+  pricing_tier_rules: { category: 'growth', minPlan: 'growth' },
+  pricing_fuel_rules: { category: 'growth', minPlan: 'growth' },
   ocr_id_scan: { category: 'addon', minPlan: 'growth' },
   whatsapp_tools: { category: 'addon', minPlan: 'growth' },
   advanced_reporting: { category: 'pro', minPlan: 'pro' },
@@ -144,6 +207,7 @@ const buildWorkspaceRows = (businessOwners = [], currentUser = null, activeTenan
   const businessAccount = entry?.business_account || {};
   const tenant = entry?.tenant || {};
   const provisioningJob = entry?.provisioning_job || {};
+  const latestSchemaJob = entry?.latest_schema_job || null;
   const status = String(tenant?.tenant_status || (tenant?.id ? 'provisioning' : 'pending')).toLowerCase();
   const relationship = resolveWorkspaceRelationship(entry, currentUser, activeTenantSession);
 
@@ -151,7 +215,9 @@ const buildWorkspaceRows = (businessOwners = [], currentUser = null, activeTenan
     id: tenant?.id || businessAccount?.id,
     businessAccount,
     tenant,
+    subscription: entry?.subscription || {},
     provisioningJob,
+    latestSchemaJob,
     ownerName: businessAccount?.full_name || businessAccount?.email || 'Business owner',
     ownerEmail: businessAccount?.email || '',
     name: tenant?.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Tenant',
@@ -193,7 +259,7 @@ const appendFirstPartyTenantFallback = ({ rows = [], currentUser = null, activeT
       plan_type: 'pro',
       subscription_status: 'active',
       billing_status: 'active',
-      plan_limits: PLAN_BASE_LIMITS.pro,
+      plan_limits: getTenantPlanLimits('pro'),
       metadata: {
         source: 'first_party_local_fallback',
       },
@@ -231,6 +297,7 @@ const appendFirstPartyTenantFallback = ({ rows = [], currentUser = null, activeT
         tenant_id: 'first-party-saharax',
       },
     },
+    latest_schema_job: null,
   };
 
   return [
@@ -240,10 +307,204 @@ const appendFirstPartyTenantFallback = ({ rows = [], currentUser = null, activeT
 };
 
 const WorkspaceStatusBadge = ({ status }) => (
-  <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.14em] ${statusTone[status] || statusTone.pending}`}>
+  <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${statusTone[status] || statusTone.pending}`}>
     {status || 'pending'}
   </span>
 );
+
+const workspacePlanToneMap = {
+  free: {
+    badge: 'border-slate-200 bg-slate-50 text-slate-700',
+    button: 'bg-slate-700 text-white hover:bg-slate-800',
+    outlineButton: 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100',
+  },
+  starter: {
+    badge: 'border-blue-200 bg-blue-50 text-blue-700',
+    button: 'bg-blue-600 text-white hover:bg-blue-700',
+    outlineButton: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100',
+  },
+  growth: {
+    badge: 'border-violet-200 bg-violet-50 text-violet-700',
+    button: 'bg-violet-600 text-white hover:bg-violet-700',
+    outlineButton: 'border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100',
+  },
+  pro: {
+    badge: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    button: 'bg-emerald-600 text-white hover:bg-emerald-700',
+    outlineButton: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+  },
+};
+
+const getWorkspacePlanTone = (planType = 'starter') => {
+  const normalizedPlan = normalizeTenantPlanType(planType);
+  return workspacePlanToneMap[normalizedPlan] || workspacePlanToneMap.starter;
+};
+
+const getWorkspacePlanButtonClass = (planType = 'starter', variant = 'solid') => {
+  const tone = getWorkspacePlanTone(planType);
+  const shared = 'inline-flex items-center justify-center rounded-2xl px-5 py-3 text-sm font-semibold transition disabled:opacity-60';
+  if (variant === 'outline') {
+    return `${shared} border ${tone.outlineButton}`;
+  }
+  return `${shared} ${tone.button}`;
+};
+
+const WorkspacePlanBadge = ({ planType = 'starter' }) => {
+  const normalizedPlan = normalizeTenantPlanType(planType);
+  const tone = getWorkspacePlanTone(normalizedPlan);
+
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${tone.badge}`}>
+      {normalizedPlan}
+    </span>
+  );
+};
+
+const getSchemaVerificationTone = (ok = null) => {
+  if (ok === true) return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (ok === false) return 'border-amber-200 bg-amber-50 text-amber-700';
+  return 'border-slate-200 bg-slate-50 text-slate-700';
+};
+
+const getSchemaVerificationLabel = (ok, tr) => {
+  if (ok === true) return tr('Verified', 'Vérifié');
+  if (ok === false) return tr('Needs review', 'À vérifier');
+  return tr('Not verified', 'Non vérifié');
+};
+
+const getRuntimeVerificationTone = (ok = null) => {
+  if (ok === true) return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (ok === false) return 'border-amber-200 bg-amber-50 text-amber-700';
+  return 'border-slate-200 bg-slate-50 text-slate-700';
+};
+
+const getRuntimeVerificationLabel = (ok, tr) => {
+  if (ok === true) return tr('Runtime healthy', 'Runtime sain');
+  if (ok === false) return tr('Runtime needs review', 'Runtime à vérifier');
+  return tr('Runtime not verified', 'Runtime non vérifié');
+};
+
+const formatSchemaReleaseLabel = (value = '') => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return '';
+  if (normalized.length <= 28) return normalized;
+  return `${normalized.slice(0, 18)}...${normalized.slice(-6)}`;
+};
+
+const buildSchemaStatusSummary = (schemaState = {}, tr) => {
+  if (schemaState.verificationOk === true) {
+    return {
+      label: tr('Up to date', 'À jour'),
+      tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    };
+  }
+
+  const drift = schemaState.drift?.drift || schemaState.drift || {};
+  const blockingIssueCount = Array.isArray(schemaState.verification?.blockingIssues)
+    ? schemaState.verification.blockingIssues.length
+    : 0;
+  const driftSignals = [
+    Number(drift.missingTableCount || 0),
+    Number(drift.missingColumnCount || 0),
+    Number(drift.mismatchedColumnCount || 0),
+    Number(drift.missingForeignKeyCount || 0),
+  ].reduce((sum, value) => sum + value, 0);
+
+  if (blockingIssueCount > 0 || driftSignals > 0 || schemaState.verificationOk === false) {
+    return {
+      label: tr('Drift detected', 'Drift détecté'),
+      tone: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+
+  return {
+    label: tr('Needs verify', 'À vérifier'),
+    tone: 'border-slate-200 bg-slate-50 text-slate-700',
+  };
+};
+
+const buildRuntimeStatusSummary = (schemaState = {}, tr) => {
+  if (schemaState.runtimeVerificationOk === true) {
+    return {
+      label: tr('Runtime ready', 'Runtime prêt'),
+      tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    };
+  }
+
+  if (schemaState.runtimeVerificationOk === false) {
+    return {
+      label: tr('Runtime issue', 'Problème runtime'),
+      tone: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+
+  return {
+    label: tr('Runtime unverified', 'Runtime non vérifié'),
+    tone: 'border-slate-200 bg-slate-50 text-slate-700',
+  };
+};
+
+const getSchemaFilterKeyForRow = (row, tr) => {
+  const schemaStatus = buildSchemaStatusSummary(buildSchemaWorkspaceState(row), tr);
+  if (schemaStatus.label === tr('Up to date', 'À jour')) return 'up_to_date';
+  if (schemaStatus.label === tr('Drift detected', 'Drift détecté')) return 'drift_detected';
+  return 'needs_verify';
+};
+
+const buildSchemaWorkspaceState = (workspace = {}) => {
+  const tenant = workspace?.tenant || {};
+  const latestSchemaJob = workspace?.latestSchemaJob && typeof workspace.latestSchemaJob === 'object'
+    ? workspace.latestSchemaJob
+    : null;
+  const metadata = tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {};
+  const verification = metadata.schema_last_verification && typeof metadata.schema_last_verification === 'object'
+    ? metadata.schema_last_verification
+    : null;
+  const drift = metadata.schema_last_drift && typeof metadata.schema_last_drift === 'object'
+    ? metadata.schema_last_drift
+    : verification;
+
+  return {
+    schemaVersion: String(tenant?.schema_version || '').trim() || 'v1',
+    releaseId: String(metadata.schema_release_id || '').trim(),
+    contractVersion: String(metadata.schema_contract_version || '').trim(),
+    lastVerifiedAt: String(metadata.schema_last_verified_at || '').trim(),
+    verificationOk: typeof metadata.schema_verification_ok === 'boolean' ? metadata.schema_verification_ok : null,
+    verification,
+    drift,
+    latestJob: latestSchemaJob,
+    runtimeLastVerifiedAt: String(metadata.runtime_last_verified_at || '').trim(),
+    runtimeVerificationOk: typeof metadata.runtime_verification_ok === 'boolean' ? metadata.runtime_verification_ok : null,
+    runtimeVerification: metadata.runtime_last_verification && typeof metadata.runtime_last_verification === 'object'
+      ? metadata.runtime_last_verification
+      : null,
+  };
+};
+
+const getSchemaJobTypeLabel = (jobType = '', tr) => {
+  switch (String(jobType || '').trim().toLowerCase()) {
+    case 'schema_plan':
+      return tr('Upgrade plan', 'Plan d’upgrade');
+    case 'schema_upgrade':
+      return tr('Upgrade apply', 'Application upgrade');
+    case 'schema_verify':
+      return tr('Release verify', 'Vérification release');
+    case 'schema_drift':
+      return tr('Drift review', 'Revue du drift');
+    case 'schema_runtime':
+      return tr('Runtime verify', 'Vérification runtime');
+    default:
+      return tr('Schema job', 'Job schéma');
+  }
+};
+
+const getSchemaJobStatusTone = (status = '') => {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (normalized === 'failed') return 'border-rose-200 bg-rose-50 text-rose-700';
+  if (normalized === 'running') return 'border-blue-200 bg-blue-50 text-blue-700';
+  return 'border-slate-200 bg-slate-50 text-slate-700';
+};
 
 const getHealthSeverityTone = (severity = 'warning') => {
   if (severity === 'healthy') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
@@ -394,7 +655,7 @@ const WorkspaceRelationshipBadge = ({ relationship }) => {
   const Icon = key === 'platform_admin' ? ShieldCheck : UserRound;
 
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.14em] ${toneMap[key] || toneMap.platform_admin}`}>
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${toneMap[key] || toneMap.platform_admin}`}>
       <Icon className="h-3.5 w-3.5" />
       {labelMap[key] || labelMap.platform_admin}
     </span>
@@ -440,13 +701,13 @@ const resolveWorkspaceAccessMode = (relationship, isFrench) => {
 };
 
 const getPlanRank = (planType = 'starter') => {
-  const index = PLAN_ORDER.indexOf(String(planType || '').trim().toLowerCase());
+  const index = TENANT_PLAN_ORDER.indexOf(String(planType || '').trim().toLowerCase());
   return index >= 0 ? index : 0;
 };
 
 const getNextPlan = (planType = 'starter') => {
   const rank = getPlanRank(planType);
-  return PLAN_ORDER[Math.min(rank + 1, PLAN_ORDER.length - 1)];
+  return TENANT_PLAN_ORDER[Math.min(rank + 1, TENANT_PLAN_ORDER.length - 1)];
 };
 
 const buildUpgradeRecommendations = ({ controlsDraft, tr, featureDefinitions }) => {
@@ -454,8 +715,8 @@ const buildUpgradeRecommendations = ({ controlsDraft, tr, featureDefinitions }) 
   const currentRank = getPlanRank(currentPlan);
   const nextPlan = getNextPlan(currentPlan);
   const nextPlanDifferent = nextPlan !== currentPlan;
-  const currentBaseLimits = PLAN_BASE_LIMITS[currentPlan] || PLAN_BASE_LIMITS.starter;
-  const nextBaseLimits = PLAN_BASE_LIMITS[nextPlan] || currentBaseLimits;
+  const currentBaseLimits = getTenantPlanLimits(currentPlan);
+  const nextBaseLimits = getTenantPlanLimits(nextPlan);
 
   const limitAlerts = Object.entries(controlsDraft?.plan_limits || {}).flatMap(([key, value]) => {
     const numericValue = Number(value);
@@ -542,10 +803,12 @@ const areWorkspaceDrawerDraftsEqual = (left, right) => {
 const buildControlsDraft = (workspace = {}) => {
   const subscription = workspace?.subscription || {};
   const tenant = workspace?.tenant || {};
+  const planType = normalizeTenantPlanType(subscription?.plan_type || 'starter');
+  const defaultPlanLimits = getTenantPlanLimits(planType);
   const planLimits = subscription?.plan_limits && typeof subscription.plan_limits === 'object'
     ? subscription.plan_limits
     : {};
-  const featureAccess = tenant?.metadata?.feature_access && typeof tenant.metadata.feature_access === 'object'
+  const featureAccessOverrides = tenant?.metadata?.feature_access && typeof tenant.metadata.feature_access === 'object'
     ? tenant.metadata.feature_access
     : {};
   const billingEngine = subscription?.metadata?.billing_engine && typeof subscription.metadata.billing_engine === 'object'
@@ -556,19 +819,16 @@ const buildControlsDraft = (workspace = {}) => {
     : {};
 
   return {
-    plan_type: String(subscription?.plan_type || 'starter').trim().toLowerCase() || 'starter',
+    plan_type: planType,
     subscription_status: String(subscription?.subscription_status || 'trial').trim().toLowerCase() || 'trial',
     billing_status: String(subscription?.billing_status || 'none').trim().toLowerCase() || 'none',
     plan_limits: {
-      vehicles: Number(planLimits.vehicles ?? DEFAULT_PLAN_LIMITS.vehicles) || 0,
-      staff: Number(planLimits.staff ?? DEFAULT_PLAN_LIMITS.staff) || 0,
-      listings: Number(planLimits.listings ?? DEFAULT_PLAN_LIMITS.listings) || 0,
-      storage_gb: Number(planLimits.storage_gb ?? DEFAULT_PLAN_LIMITS.storage_gb) || 0,
+      vehicles: Number(planLimits.vehicles ?? defaultPlanLimits.vehicles ?? DEFAULT_PLAN_LIMITS.vehicles) || 0,
+      staff: Number(planLimits.staff ?? planLimits.staff_users ?? defaultPlanLimits.staff ?? DEFAULT_PLAN_LIMITS.staff) || 0,
+      listings: Number(planLimits.listings ?? defaultPlanLimits.listings ?? DEFAULT_PLAN_LIMITS.listings) || 0,
+      storage_gb: Number(planLimits.storage_gb ?? defaultPlanLimits.storage_gb ?? DEFAULT_PLAN_LIMITS.storage_gb) || 0,
     },
-    feature_access: FEATURE_ACCESS_KEYS.reduce((acc, key) => {
-      acc[key] = Boolean(featureAccess[key]);
-      return acc;
-    }, {}),
+    feature_access: buildEffectiveTenantFeatureAccess(planType, featureAccessOverrides),
     billing_engine: {
       billing_cycle: ['monthly', 'quarterly', 'yearly', 'custom'].includes(String(billingEngine.billing_cycle || '').trim().toLowerCase())
         ? String(billingEngine.billing_cycle).trim().toLowerCase()
@@ -618,6 +878,11 @@ const buildSettingsDraft = (workspace = {}) => {
 const WorkspaceContextCard = ({ hostContext, tenantSession, currentUser, platformAccess }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
+  const lightEyebrowClass = 'text-xs font-semibold uppercase tracking-[0.18em] text-slate-500';
+  const lightSectionTitleClass = 'mt-1 text-lg font-semibold text-slate-900';
+  const lightBodyClass = 'mt-1 text-sm text-slate-500';
+  const lightCardEyebrowClass = 'text-xs font-semibold uppercase tracking-[0.18em] text-slate-500';
+  const lightCardTitleClass = 'mt-2 text-2xl font-semibold leading-tight text-slate-900';
   const tenant = tenantSession?.tenant || null;
   const workspaceState = String(tenantSession?.workspaceState || tenantSession?.workspace_state || '').trim().toLowerCase();
   const currentEmail = String(currentUser?.email || '').trim();
@@ -656,28 +921,23 @@ const WorkspaceContextCard = ({ hostContext, tenantSession, currentUser, platfor
         );
 
   return (
-    <section className="rounded-[30px] border border-violet-100 bg-white p-5 shadow-[0_18px_50px_rgba(15,23,42,0.05)]">
+    <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-6">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div className="max-w-2xl">
-          <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-500">{tr('Current context', 'Contexte actuel')}</p>
-          <h3 className="mt-2 text-2xl font-black text-slate-950">{tr('Platform and tenant visibility', 'Visibilité plateforme et tenant')}</h3>
-          <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
-            {tr(
-              'This view separates your platform authority from your tenant membership so your own tenant can appear as linked while other companies remain platform-managed only.',
-              'Cette vue sépare votre autorité plateforme de votre appartenance tenant afin que votre propre tenant apparaisse comme lié tandis que les autres sociétés restent gérées seulement depuis la plateforme.'
-            )}
-          </p>
+          <p className={lightEyebrowClass}>{tr('Current context', 'Contexte actuel')}</p>
+          <h3 className={lightSectionTitleClass}>{tr('Platform and tenant visibility', 'Visibilité plateforme et tenant')}</h3>
+          <p className={lightBodyClass}>{tr('Platform and tenant visibility in one place.', 'Visibilité plateforme et tenant au même endroit.')}</p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[420px]">
-          <div className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
-            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">{tr('Platform view', 'Vue plateforme')}</p>
-            <p className="mt-2 text-lg font-black text-slate-950">{platformContextLabel}</p>
-            <p className="mt-1 text-xs font-semibold text-slate-500">{hostContext.hostname || tr('Current domain', 'Domaine actuel')}</p>
+          <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{tr('Platform view', 'Vue plateforme')}</p>
+            <p className={lightCardTitleClass}>{platformContextLabel}</p>
+            <p className="mt-2 text-sm text-slate-500">{hostContext.hostname || tr('Current domain', 'Domaine actuel')}</p>
           </div>
-          <div className="rounded-[24px] border border-violet-100 bg-violet-50/70 p-4">
-            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-violet-500">{tr('Tenant view', 'Vue tenant')}</p>
-            <p className="mt-2 text-lg font-black text-slate-950">{tenantContextLabel}</p>
-            <p className="mt-1 text-xs font-semibold text-slate-500">
+          <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+            <p className={lightCardEyebrowClass}>{tr('Tenant view', 'Vue tenant')}</p>
+            <p className={lightCardTitleClass}>{tenantContextLabel}</p>
+            <p className="mt-2 text-sm text-slate-500">
               {tenant?.tenant_app_url || tenantSession?.tenantAppUrl || workspaceState || tr('Not active yet', 'Pas encore actif')}
             </p>
           </div>
@@ -685,34 +945,35 @@ const WorkspaceContextCard = ({ hostContext, tenantSession, currentUser, platfor
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-slate-700">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.14em] text-slate-700">
           <ShieldCheck className="h-3.5 w-3.5" />
           {platformContextLabel}
         </span>
         {tenant ? (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-violet-700">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
             <UserRound className="h-3.5 w-3.5" />
             {tr('Signed in as tenant owner', 'Connecté comme propriétaire tenant')}
           </span>
         ) : null}
         {currentEmail ? (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">
             <Building2 className="h-3.5 w-3.5" />
             {currentEmail}
           </span>
         ) : null}
       </div>
 
-      <p className="mt-3 text-xs font-semibold text-slate-500">{tenantRoleLabel}</p>
-      <p className="mt-2 text-xs font-semibold text-slate-500">{platformAbilityLabel}</p>
+      <p className="mt-4 text-sm leading-6 text-slate-500">{tenantRoleLabel}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-500">{platformAbilityLabel}</p>
     </section>
   );
 };
 
-const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
+const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const hostContext = useMemo(() => getHostContext(), []);
+  const [searchParams, setSearchParams] = useSearchParams();
   const tenant = workspace?.tenant || {};
   const job = workspace?.provisioningJob || {};
   const status = workspace?.status || 'pending';
@@ -733,6 +994,8 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
   const [settingsDraft, setSettingsDraft] = useState(() => buildSettingsDraft(workspace));
   const [auditRows, setAuditRows] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [schemaActionResult, setSchemaActionResult] = useState(null);
+  const [confirmSchemaApply, setConfirmSchemaApply] = useState(false);
 
   useEffect(() => {
     const nextDraft = {
@@ -755,6 +1018,32 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
   useEffect(() => {
     const nextDraft = buildSettingsDraft(workspace);
     setSettingsDraft((prev) => (areWorkspaceDrawerDraftsEqual(prev, nextDraft) ? prev : nextDraft));
+  }, [workspace]);
+
+  const applySavedControlsSnapshot = useCallback((response) => {
+    if (!response || (!response.subscription && !response.tenant_metadata)) return;
+
+    const nextWorkspace = {
+      ...workspace,
+      subscription: {
+        ...(workspace?.subscription || {}),
+        ...(response.subscription || {}),
+      },
+      tenant: {
+        ...(workspace?.tenant || {}),
+        metadata: {
+          ...(((workspace?.tenant?.metadata) && typeof workspace.tenant.metadata === 'object')
+            ? workspace.tenant.metadata
+            : {}),
+          ...((response.tenant_metadata && typeof response.tenant_metadata === 'object')
+            ? response.tenant_metadata
+            : {}),
+        },
+      },
+    };
+
+    setControlsDraft(buildControlsDraft(nextWorkspace));
+    setSettingsDraft(buildSettingsDraft(nextWorkspace));
   }, [workspace]);
 
   const loadAuditRows = useCallback(async () => {
@@ -782,29 +1071,6 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
     loadAuditRows();
   }, [loadAuditRows]);
 
-  useEffect(() => {
-    if (!workspace || typeof window === 'undefined' || typeof document === 'undefined') return undefined;
-
-    const openEvent = new CustomEvent('admin:modal-open');
-    window.dispatchEvent(openEvent);
-
-    const previousOverflow = document.body.style.overflow;
-    const previousWorkspaceDrawerFlag = document.body.dataset.workspaceDrawerOpen;
-    document.body.style.overflow = 'hidden';
-    document.body.dataset.workspaceDrawerOpen = 'true';
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      if (previousWorkspaceDrawerFlag) {
-        document.body.dataset.workspaceDrawerOpen = previousWorkspaceDrawerFlag;
-      } else {
-        delete document.body.dataset.workspaceDrawerOpen;
-      }
-      const closeEvent = new CustomEvent('admin:modal-close');
-      window.dispatchEvent(closeEvent);
-    };
-  }, [workspace]);
-
   const effectiveConnectionConfig = useMemo(() => ({
     ...(workspace?.tenant || {}),
     tenant_project_ref: draft.tenant_project_ref,
@@ -831,8 +1097,83 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
     }),
     [controlsDraft, draft, hostContext.isLocal, hostContext.kind, storefrontUrl, workspace, workspaceUrl, tr]
   );
+  const schemaState = useMemo(() => buildSchemaWorkspaceState(workspace), [workspace]);
+  const isSchemaBusy = busy.startsWith('schema-');
+  const latestSchemaOutcome = schemaActionResult?.result || null;
+  const latestSchemaOk =
+    latestSchemaOutcome?.verification?.ok
+    ?? latestSchemaOutcome?.ok
+    ?? null;
+  const latestRuntimeOk =
+    latestSchemaOutcome?.runtimeVerification?.ok
+    ?? latestSchemaOutcome?.ok
+    ?? null;
+  const shouldShowSchemaSuccessBanner = Boolean(
+    !isSchemaBusy
+    && !schemaActionResult?.error
+    && schemaActionResult?.action
+    && (
+      schemaActionResult.action === 'plan'
+      || latestSchemaOk !== null
+      || latestRuntimeOk !== null
+    )
+  );
 
   if (!workspace) return null;
+
+  const lightSectionClass = 'rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]';
+  const lightInsetCardClass = 'rounded-3xl border border-slate-200 bg-slate-50/70';
+  const lightInsetSoftClass = 'rounded-2xl border border-slate-200 bg-white';
+  const lightInputClass = 'mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100';
+  const lightPrimaryButtonClass = 'inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60';
+  const lightSecondaryButtonClass = 'inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60';
+  const lightDangerButtonClass = 'inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-rose-50 hover:text-rose-700 disabled:opacity-60';
+  const lightEyebrowClass = 'text-xs font-semibold uppercase tracking-[0.18em] text-slate-500';
+  const lightLabelClass = 'text-xs font-semibold uppercase tracking-wide text-slate-500';
+  const lightSectionHeadingClass = 'mt-1 text-lg font-semibold text-slate-900';
+  const lightCardValueClass = 'mt-2 text-base font-semibold text-slate-900';
+  const lightSupportingTextClass = 'mt-1 text-sm text-slate-500';
+
+  const detailTabs = useMemo(() => ([
+    {
+      id: 'overview',
+      label: tr('Overview', 'Aperçu'),
+      description: tr('Provisioning, health, schema, and workspace actions.', 'Provisionnement, santé, schéma et actions workspace.'),
+    },
+    {
+      id: 'owner_identity',
+      label: tr('Owner identity', 'Identité propriétaire'),
+      description: tr('Owner linkage, runtime links, and tenant identity settings.', 'Lien propriétaire, liens runtime et paramètres d’identité tenant.'),
+    },
+    {
+      id: 'audit',
+      label: tr('Audit', 'Audit'),
+      description: tr('Recent admin and access events for this tenant.', 'Événements admin et accès récents pour ce tenant.'),
+    },
+    {
+      id: 'feature_access',
+      label: tr('Feature access', 'Accès fonctionnalités'),
+      description: tr('Plan, billing, and workspace feature access controls.', 'Contrôles du plan, de la facturation et de l’accès aux fonctionnalités du workspace.'),
+    },
+    {
+      id: 'upgrades',
+      label: tr('Upgrades', 'Montées en gamme'),
+      description: tr('Monetization path, billing controls, and upsells.', 'Parcours de monétisation, contrôles de facturation et upsells.'),
+    },
+  ]), [tr]);
+
+  const rawDetailTab = String(searchParams.get('tab') || '').trim().toLowerCase();
+  const detailTab = WORKSPACE_DETAIL_TAB_IDS.includes(rawDetailTab) ? rawDetailTab : 'overview';
+  const setDetailTab = (nextTab) => {
+    const normalizedTab = WORKSPACE_DETAIL_TAB_IDS.includes(nextTab) ? nextTab : 'overview';
+    const nextParams = new URLSearchParams(searchParams);
+    if (normalizedTab === 'overview') {
+      nextParams.delete('tab');
+    } else {
+      nextParams.set('tab', normalizedTab);
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
 
   const runAction = async (action) => {
     if (!job?.id && !(action === 'start' && workspace?.businessAccount?.id)) {
@@ -883,22 +1224,55 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
     tenant?.provisioning_started_at;
   const accessMode = resolveWorkspaceAccessMode(workspace.relationship, isFrench);
   const enabledFeatureCount = Object.values(controlsDraft.feature_access || {}).filter(Boolean).length;
-  const featureDefinitions = [
-    ['public_storefront', tr('Public storefront', 'Vitrine publique')],
-    ['online_booking', tr('Online booking', 'Réservation en ligne')],
+  const moduleFeatureDefinitions = [
+    ['dashboard_basic', tr('Dashboard', 'Tableau de bord')],
+    ['calendar_module', tr('Calendar', 'Calendrier')],
+    ['rentals_basic', tr('Rental workspace', 'Espace locations')],
+    ['fleet_basic', tr('Fleet workspace', 'Espace flotte')],
+    ['customers_basic', tr('Customer workspace', 'Espace clients')],
+    ['documents_basic', tr('Basic documents', 'Documents de base')],
+    ['tours_module', tr('Tours & bookings', 'Tours & réservations')],
+    ['tasks_module', tr('Team tasks', 'Tâches équipe')],
+    ['live_map_module', tr('Live map', 'Carte live')],
+    ['inventory_module', tr('Inventory module', 'Module inventaire')],
+    ['alerts_module', tr('Alerts module', 'Module alertes')],
+    ['verification_module', tr('Verification center', 'Centre de vérification')],
+    ['workspace_settings_module', tr('System settings', 'Paramètres système')],
+    ['messages_module', tr('Messaging center', 'Centre messages')],
+    ['pricing_module', tr('Pricing module', 'Module tarification')],
     ['finance_module', tr('Finance module', 'Module finance')],
+    ['fuel_module', tr('Fuel module', 'Module carburant')],
+    ['maintenance_module', tr('Maintenance module', 'Module maintenance')],
     ['marketplace_module', tr('Marketplace module', 'Module marketplace')],
+  ];
+  const advancedFeatureDefinitions = [
+    ['pricing_km_packages', tr('KM packages', 'Forfaits KM')],
+    ['pricing_tier_rules', tr('Tier pricing', 'Tarification par paliers')],
+    ['pricing_fuel_rules', tr('Fuel pricing rules', 'Règles prix carburant')],
+    ['website_editor', tr('Website editor', 'Éditeur site web')],
+    ['advanced_roles_permissions', tr('Advanced staff roles', 'Rôles équipe avancés')],
+    ['project_export', tr('Project export', 'Export projet')],
     ['ocr_id_scan', tr('OCR / ID scan', 'OCR / scan ID')],
     ['whatsapp_tools', tr('WhatsApp tools', 'Outils WhatsApp')],
+    ['public_storefront', tr('Public storefront', 'Vitrine publique')],
+    ['online_booking', tr('Online booking', 'Réservation en ligne')],
     ['advanced_reporting', tr('Advanced reporting', 'Rapports avancés')],
     ['multilingual_storefront', tr('Multilingual storefront', 'Vitrine multilingue')],
   ];
+  const featureDefinitions = [...moduleFeatureDefinitions, ...advancedFeatureDefinitions];
   const upgradeRecommendations = buildUpgradeRecommendations({ controlsDraft, tr, featureDefinitions });
+  const tenantWorkspaceModuleAccessSummary = useMemo(
+    () => buildTenantWorkspaceModuleAccessSummary({
+      planType: controlsDraft.plan_type,
+      featureAccess: controlsDraft.feature_access,
+    }),
+    [controlsDraft.feature_access, controlsDraft.plan_type]
+  );
 
   const saveControls = async () => {
     try {
       setBusy('controls');
-      await updateTenantControls({
+      const response = await updateTenantControls({
         businessAccountId: workspace?.businessAccount?.id,
         tenantId: tenant?.id,
         subscriptionPatch: controlsDraft,
@@ -908,6 +1282,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
           commercial_settings: controlsDraft.commercial_settings,
         },
       });
+      applySavedControlsSnapshot(response);
       await loadAuditRows();
       await onUpdated?.();
     } catch (error) {
@@ -918,7 +1293,13 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
   };
 
   const applySuggestedPlan = (planType) => {
-    setControlsDraft((prev) => ({ ...prev, plan_type: planType }));
+    const normalizedPlan = normalizeTenantPlanType(planType);
+    setControlsDraft((prev) => ({
+      ...prev,
+      plan_type: normalizedPlan,
+      plan_limits: getTenantPlanLimits(normalizedPlan),
+      feature_access: buildEffectiveTenantFeatureAccess(normalizedPlan, {}),
+    }));
   };
 
   const enableFeatureDraft = (key) => {
@@ -965,9 +1346,14 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
   };
 
   const formatAuditAction = (action = '') => {
-    const labels = {
-      tenant_controls_updated: tr('Tenant controls updated', 'Contrôles tenant mis à jour'),
-      tenant_storefront_opened: tr('Storefront opened', 'Vitrine ouverte'),
+      const labels = {
+        tenant_controls_updated: tr('Tenant controls updated', 'Contrôles tenant mis à jour'),
+        schema_plan: tr('Schema upgrade planned', 'Upgrade schéma planifié'),
+        schema_apply: tr('Schema upgrade applied', 'Upgrade schéma appliqué'),
+        schema_verify: tr('Schema release verified', 'Release schéma vérifiée'),
+        schema_drift: tr('Schema drift inspected', 'Drift schéma inspecté'),
+        schema_runtime: tr('Tenant runtime verified', 'Runtime tenant vérifié'),
+        tenant_storefront_opened: tr('Storefront opened', 'Vitrine ouverte'),
       tenant_workspace_opened: tr('Workspace opened', 'Espace admin ouvert'),
       start_tenant_provisioning: tr('Automatic provisioning started', 'Provisionnement automatique démarré'),
       complete_tenant_provisioning: tr('Tenant provisioning completed', 'Provisionnement tenant terminé'),
@@ -979,6 +1365,125 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
       tenant_provisioning_completion_rejected: tr('Provisioning callback rejected', 'Callback de provisionnement rejeté'),
     };
     return labels[action] || action || tr('Unknown action', 'Action inconnue');
+  };
+
+  const formatAuditDetails = (item) => {
+    if (!item) return [];
+    const metadata = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+    const details = [];
+
+    if (String(item.action || '').startsWith('schema_')) {
+      if (metadata.release_id) {
+        details.push(`${tr('Release', 'Release')}: ${formatSchemaReleaseLabel(metadata.release_id)}`);
+      }
+      if (typeof metadata.verification_ok === 'boolean') {
+        details.push(
+          metadata.verification_ok
+            ? tr('Verification passed', 'Vérification réussie')
+            : tr('Verification needs review', 'Vérification à revoir')
+        );
+      }
+      if (typeof metadata.runtime_ok === 'boolean') {
+        details.push(
+          metadata.runtime_ok
+            ? tr('Runtime verification passed', 'Vérification runtime réussie')
+            : tr('Runtime verification needs review', 'Vérification runtime à revoir')
+        );
+      }
+      if (typeof metadata.applied_statement_count === 'number') {
+        details.push(`${tr('Applied statements', 'Instructions appliquées')}: ${metadata.applied_statement_count}`);
+      }
+      if (Array.isArray(metadata.explicit_migration_ids) && metadata.explicit_migration_ids.length) {
+        details.push(`${tr('Explicit migrations', 'Migrations explicites')}: ${metadata.explicit_migration_ids.join(', ')}`);
+      }
+      if (metadata.safe_plan && typeof metadata.safe_plan === 'object') {
+        details.push(
+          tr(
+            `Plan: ${metadata.safe_plan.statementCount || 0} statements, ${metadata.safe_plan.missingTableCount || 0} missing tables, ${metadata.safe_plan.missingColumnCount || 0} missing columns.`,
+            `Plan : ${metadata.safe_plan.statementCount || 0} instructions, ${metadata.safe_plan.missingTableCount || 0} tables manquantes, ${metadata.safe_plan.missingColumnCount || 0} colonnes manquantes.`
+          )
+        );
+      }
+      if (Array.isArray(metadata.blocking_issues) && metadata.blocking_issues.length) {
+        details.push(`${tr('Blocking issues', 'Problèmes bloquants')}: ${metadata.blocking_issues.join(', ')}`);
+      }
+      if (metadata.drift && typeof metadata.drift === 'object') {
+        details.push(
+          tr(
+            `Drift: ${metadata.drift.missingTableCount || 0} missing tables, ${metadata.drift.missingColumnCount || 0} missing columns, ${metadata.drift.mismatchedColumnCount || 0} mismatched columns.`,
+            `Drift : ${metadata.drift.missingTableCount || 0} tables manquantes, ${metadata.drift.missingColumnCount || 0} colonnes manquantes, ${metadata.drift.mismatchedColumnCount || 0} colonnes divergentes.`
+          )
+        );
+      }
+      if (metadata.runtime_blocking_issues && Array.isArray(metadata.runtime_blocking_issues) && metadata.runtime_blocking_issues.length) {
+        details.push(`${tr('Runtime issues', 'Problèmes runtime')}: ${metadata.runtime_blocking_issues.join(', ')}`);
+      }
+      return details;
+    }
+
+    if (metadata.target) {
+      details.push(`${tr('Target', 'Cible')}: ${metadata.target}`);
+    }
+
+    if (metadata.changed_fields) {
+      const changed = [
+        ...(metadata.changed_fields.core_controls || []),
+        ...(metadata.changed_fields.plan_limits || []),
+        ...(metadata.changed_fields.billing_engine || []),
+        ...(metadata.changed_fields.feature_access || []),
+        ...(metadata.changed_fields.tenant_settings || []),
+        ...(metadata.changed_fields.commercial_settings || []),
+      ];
+      if (changed.length) {
+        details.push(`${tr('Updated', 'Mis à jour')}: ${changed.join(', ')}`);
+      }
+    }
+
+    return details;
+  };
+
+  const runSchemaAction = async (action) => {
+    try {
+      setBusy(`schema-${action}`);
+      setSchemaActionResult(null);
+
+      const payload = {
+        tenantId: tenant?.id,
+        businessAccountId: workspace?.businessAccount?.id,
+        tenantSlug: workspace?.slug || tenant?.tenant_slug || '',
+        targetProjectRef: tenant?.tenant_project_ref || '',
+      };
+
+      let result = null;
+      if (action === 'plan') {
+        result = await planTenantSchemaUpgrade(payload);
+      } else if (action === 'apply') {
+        result = await applyTenantSchemaUpgrade(payload);
+      } else if (action === 'verify') {
+        result = await verifyTenantSchemaRelease(payload);
+      } else if (action === 'runtime') {
+        result = await verifyTenantRuntimeIntegrity(payload);
+      } else if (action === 'drift') {
+        result = await getTenantSchemaDrift(payload);
+      } else {
+        return;
+      }
+
+      setSchemaActionResult({ action, result, error: '' });
+      if (action === 'apply') {
+        setConfirmSchemaApply(false);
+      }
+      await loadAuditRows();
+      await onUpdated?.();
+    } catch (error) {
+      setSchemaActionResult({
+        action,
+        result: null,
+        error: error?.message || tr('Schema action failed.', 'Action schéma échouée.'),
+      });
+    } finally {
+      setBusy('');
+    }
   };
 
   const openTrackedLink = async ({ url, action, target }) => {
@@ -1004,69 +1509,100 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
     }
   };
 
-  if (typeof document === 'undefined') return null;
+  return (
+    <div className="min-h-screen bg-slate-50/80">
+      <main className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
+        <AdminModuleHero
+          flush
+          icon={<Building2 className="h-7 w-7" />}
+          eyebrow={tr('Tenant workspace', 'Workspace tenant')}
+          title={workspace.name}
+          description={tr(
+            'Review provisioning, access, branding, and commercial controls for this tenant from one admin page.',
+            'Vérifiez le provisionnement, l’accès, le branding et les contrôles commerciaux de ce tenant depuis une seule page admin.'
+          )}
+          actions={(
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={onBack}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                {tr('Back to workspaces', 'Retour aux workspaces')}
+              </button>
+              <WorkspacePlanBadge planType={controlsDraft.plan_type} />
+              <WorkspaceRelationshipBadge relationship={workspace.relationship} />
+              <WorkspaceStatusBadge status={status} />
+            </div>
+          )}
+        />
 
-  return createPortal((
-    <div
-      className="fixed inset-0 isolate"
-      style={{ zIndex: 2147483647 }}
-      data-admin-modal-open="true"
-    >
-      <div
-        className="absolute inset-0 bg-slate-950/35 backdrop-blur-sm"
-        style={{ zIndex: 2147483646 }}
-        onClick={onClose}
-      />
-      <aside
-        className="absolute inset-y-0 right-0 h-screen w-full max-w-xl overflow-y-auto bg-slate-50 shadow-[0_30px_90px_rgba(15,23,42,0.28)]"
-        style={{ zIndex: 2147483647 }}
-        role="dialog"
-        aria-modal="true"
-        aria-label={tr('Tenant workspace details', 'Détails de l’espace tenant')}
-      >
-        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-6 py-5 backdrop-blur">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-500">{tr('Tenant', 'Tenant')}</p>
-              <h2 className="mt-1 text-2xl font-black text-slate-950">{workspace.name}</h2>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-violet-700">
-                  {tr('Slug', 'Slug')}: {workspace.slug || tr('Not assigned', 'Non attribué')}
-                </span>
-                <WorkspaceRelationshipBadge relationship={workspace.relationship} />
+        <section className={`${lightSectionClass} p-3`}>
+          <div className="flex flex-wrap items-stretch gap-2">
+            {detailTabs.map((item) => {
+              const active = item.id === detailTab;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setDetailTab(item.id)}
+                  className={`inline-flex min-h-[46px] items-center justify-center rounded-2xl border px-4 py-2 text-sm font-semibold transition ${
+                    active
+                      ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <div className="space-y-4">
+          {detailTab === 'overview' ? (
+          <section className={`${lightSectionClass} p-5`}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <p className={lightLabelClass}>{tr('Owner', 'Propriétaire')}</p>
+                <p className={lightCardValueClass}>{workspace.ownerName || '—'}</p>
+                <p className="mt-1 text-sm text-slate-500">{workspace.ownerEmail || '—'}</p>
+              </div>
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <p className={lightLabelClass}>{tr('Access', 'Accès')}</p>
+                <p className={lightCardValueClass}>{accessMode.label}</p>
+                <p className="mt-1 text-sm text-slate-500">{tr('Current role and workspace context', 'Rôle actuel et contexte workspace')}</p>
               </div>
             </div>
-            <button type="button" onClick={onClose} className="rounded-2xl border border-slate-200 p-2 text-slate-500 hover:text-slate-950">
-              <X className="h-5 w-5" />
-            </button>
-          </div>
-        </div>
+          </section>
+          ) : null}
 
-        <div className="space-y-4 p-4 sm:p-6">
-          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+          {detailTab === 'overview' ? (
+          <section className={`${lightSectionClass} p-5`}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Access mode', 'Mode d’accès')}</p>
-                <h3 className="mt-1 text-lg font-black text-slate-950">{tr('Platform execution context', 'Contexte d’exécution plateforme')}</h3>
-                <p className="mt-1 text-sm font-medium text-slate-500">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{tr('Access mode', 'Mode d’accès')}</p>
+                <h3 className={lightSectionHeadingClass}>{tr('Platform execution context', 'Contexte d’exécution plateforme')}</h3>
+                <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
                   {isPlatformOwner
                     ? tr(
-                        'Changes from this drawer use platform-owner authority.',
+                        'Changes from this page use platform-owner authority.',
                         'Les changements depuis ce panneau utilisent l’autorité du propriétaire plateforme.'
                       )
                     : isPlatformAdmin
                       ? tr(
-                          'Changes from this drawer use your delegated platform-admin access.',
+                          'Changes from this page use your delegated platform-admin access.',
                           'Les changements depuis ce panneau utilisent votre accès admin plateforme délégué.'
                         )
                       : tr(
-                          'Changes from this drawer follow the permissions attached to the current session.',
+                          'Changes from this page follow the permissions attached to the current session.',
                           'Les changements depuis ce panneau suivent les permissions attachées à la session actuelle.'
                         )}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <span className={`inline-flex items-center rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] ${
+                <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${
                   isPlatformOwner
                     ? 'border border-violet-200 bg-violet-50 text-violet-700'
                     : isPlatformAdmin
@@ -1079,7 +1615,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                       ? tr('Platform admin', 'Admin plateforme')
                       : tr('Session user', 'Utilisateur session')}
                 </span>
-                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-slate-700">
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
                   {workspace?.relationship?.isTenantOwner
                     ? tr('Linked tenant owner', 'Propriétaire tenant lié')
                     : tr('Platform-managed workspace', 'Workspace géré plateforme')}
@@ -1087,36 +1623,39 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
               </div>
             </div>
           </section>
+          ) : null}
 
-          <section className="rounded-[28px] border border-violet-100 bg-white p-5 shadow-sm">
+          {detailTab === 'overview' ? (
+          <section className={`${lightSectionClass} p-5`}>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Overview', 'Aperçu')}</p>
-                <p className="mt-2 text-xl font-black text-slate-950">{workspace.name}</p>
-                <p className="mt-1 text-sm font-semibold text-slate-500">{tr('Tenant workspace summary', 'Résumé de l’espace tenant')}</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{tr('Overview', 'Aperçu')}</p>
+                <p className="mt-2 text-lg font-semibold text-slate-900">{workspace.name}</p>
+                <p className="mt-1 text-sm text-slate-500">{tr('Tenant workspace summary', 'Résumé de l’espace tenant')}</p>
               </div>
               <WorkspaceStatusBadge status={status} />
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Tenant name', 'Nom du tenant')}</p>
-                <p className="mt-1 text-sm font-black text-slate-950">{workspace.name}</p>
+              <div className="rounded-2xl border border-white bg-slate-50/70 px-4 py-3">
+                <p className={lightLabelClass}>{tr('Tenant name', 'Nom du tenant')}</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">{workspace.name}</p>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Tenant slug', 'Slug du tenant')}</p>
-                <p className="mt-1 text-sm font-black text-slate-950">{workspace.slug || tr('Slug not assigned yet', 'Slug pas encore assigné')}</p>
+              <div className="rounded-2xl border border-white bg-slate-50/70 px-4 py-3">
+                <p className={lightLabelClass}>{tr('Tenant slug', 'Slug du tenant')}</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">{workspace.slug || tr('Slug not assigned yet', 'Slug pas encore assigné')}</p>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Owner name', 'Nom du propriétaire')}</p>
-                <p className="mt-1 text-sm font-black text-slate-950">{workspace.ownerName || '—'}</p>
+              <div className="rounded-2xl border border-white bg-slate-50/70 px-4 py-3">
+                <p className={lightLabelClass}>{tr('Owner name', 'Nom du propriétaire')}</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">{workspace.ownerName || '—'}</p>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Owner email', 'Email du propriétaire')}</p>
-                <p className="mt-1 break-all text-sm font-black text-slate-950">{workspace.ownerEmail || '—'}</p>
+              <div className="rounded-2xl border border-white bg-slate-50/70 px-4 py-3">
+                <p className={lightLabelClass}>{tr('Owner email', 'Email du propriétaire')}</p>
+                <p className="mt-2 break-all text-base font-semibold text-slate-900">{workspace.ownerEmail || '—'}</p>
               </div>
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Your role', 'Votre rôle')}</span>
+              <WorkspacePlanBadge planType={controlsDraft.plan_type} />
               <WorkspaceRelationshipBadge relationship={workspace.relationship} />
               {workspace.relationship?.isCurrentTenant ? (
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-violet-700">
@@ -1126,41 +1665,54 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
               ) : null}
             </div>
           </section>
+          ) : null}
 
-          <section className="grid gap-3 rounded-[28px] border border-slate-200 bg-white p-5 text-sm shadow-sm">
-            <div className="flex justify-between gap-3">
-              <span className="font-bold text-slate-500">{tr('Owner identity', 'Identité propriétaire')}</span>
-              <span className="font-semibold text-slate-950">
-                {workspace.relationship?.isTenantOwner ? tr('Linked to your signed-in account', 'Lié à votre compte connecté') : tr('Managed from platform admin', 'Géré depuis admin plateforme')}
+          {detailTab === 'owner_identity' ? (
+          <section className={`${lightSectionClass} p-5`}>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className={lightEyebrowClass}>{tr('Owner identity', 'Identité propriétaire')}</p>
+                <h3 className={lightSectionHeadingClass}>{tr('Access and runtime context', 'Accès et contexte runtime')}</h3>
+                <p className="mt-1 text-sm leading-6 text-slate-500">
+                  {tr(
+                    'This section shows how the tenant is being managed from the platform side and which runtime links are currently available.',
+                    'Cette section montre comment le tenant est géré côté plateforme et quels liens runtime sont actuellement disponibles.'
+                  )}
+                </p>
+              </div>
+              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                {workspace.relationship?.isTenantOwner ? tr('Linked owner', 'Propriétaire lié') : tr('Platform managed', 'Géré plateforme')}
               </span>
             </div>
-            <div className="flex justify-between gap-3">
-              <span className="font-bold text-slate-500">{tr('Access mode', 'Mode d’accès')}</span>
-              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.14em] ${accessMode.tone}`}>
-                {accessMode.label}
-              </span>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <p className={lightLabelClass}>{tr('Owner identity', 'Identité propriétaire')}</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">
+                  {workspace.relationship?.isTenantOwner ? tr('Linked to your signed-in account', 'Lié à votre compte connecté') : tr('Managed from platform admin', 'Géré depuis admin plateforme')}
+                </p>
+              </div>
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <p className={lightLabelClass}>{tr('Access mode', 'Mode d’accès')}</p>
+                <div className="mt-2">
+                  <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${accessMode.tone}`}>
+                    {accessMode.label}
+                  </span>
+                </div>
+              </div>
+              {[
+                [tr('Started', 'Démarré'), formatDate(tenant?.provisioning_started_at || job?.started_at)],
+                [tr('Completed', 'Terminé'), formatDate(tenant?.provisioning_completed_at || tenant?.provisioned_at || job?.finished_at)],
+                [tr('Storefront URL', 'URL vitrine'), storefrontUrl || '—'],
+                [tr('Workspace URL', 'URL espace admin'), workspaceUrl || '—'],
+                [tr('Last update', 'Dernière mise à jour'), formatDateTime(lastProvisioningUpdate)],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                  <p className={lightLabelClass}>{label}</p>
+                  <p className="mt-2 break-all text-sm font-semibold text-slate-900">{value}</p>
+                </div>
+              ))}
             </div>
-            <div className="flex justify-between gap-3">
-              <span className="font-bold text-slate-500">{tr('Started', 'Démarré')}</span>
-              <span className="font-semibold text-slate-950">{formatDate(tenant?.provisioning_started_at || job?.started_at)}</span>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span className="font-bold text-slate-500">{tr('Completed', 'Terminé')}</span>
-              <span className="font-semibold text-slate-950">{formatDate(tenant?.provisioning_completed_at || tenant?.provisioned_at || job?.finished_at)}</span>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span className="font-bold text-slate-500">{tr('Storefront URL', 'URL vitrine')}</span>
-              <span className="truncate text-right font-semibold text-slate-950">{storefrontUrl || '—'}</span>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span className="font-bold text-slate-500">{tr('Workspace URL', 'URL espace admin')}</span>
-              <span className="truncate text-right font-semibold text-slate-950">{workspaceUrl || '—'}</span>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span className="font-bold text-slate-500">{tr('Last update', 'Dernière mise à jour')}</span>
-              <span className="font-semibold text-slate-950">{formatDateTime(lastProvisioningUpdate)}</span>
-            </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-semibold leading-6 text-slate-600">
+            <div className={`${lightInsetSoftClass} px-3 py-3 text-sm font-semibold leading-6 text-slate-600`}>
               {accessMode.note}
             </div>
           {(tenant?.provisioning_error || job?.error_message) ? (
@@ -1169,20 +1721,17 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
               </div>
             ) : null}
           </section>
+          ) : null}
 
-          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+          {detailTab === 'overview' ? (
+          <section className={`${lightSectionClass} p-5`}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Tenant health', 'Santé du tenant')}</p>
-                <h3 className="mt-1 text-lg font-black text-slate-950">{healthReport.summary}</h3>
-                <p className="mt-1 text-sm font-medium text-slate-500">
-                  {tr(
-                    'A registry-side diagnostic based on provisioning status, runtime configuration, owner linkage, and commercial access state.',
-                    'Un diagnostic côté registre basé sur le statut de provisionnement, la configuration runtime, le lien propriétaire et l’état d’accès commercial.'
-                  )}
-                </p>
+                <p className={lightEyebrowClass}>{tr('Tenant health', 'Santé du tenant')}</p>
+                <h3 className={lightSectionHeadingClass}>{healthReport.summary}</h3>
+                <p className="mt-1 text-sm text-slate-500">{tr('Registry health summary.', 'Résumé de santé du registre.')}</p>
               </div>
-              <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] ${getHealthSeverityTone(healthReport.severity)}`}>
+              <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getHealthSeverityTone(healthReport.severity)}`}>
                 {healthReport.severity === 'healthy' ? <CheckCircle2 className="h-3.5 w-3.5" /> : healthReport.severity === 'critical' ? <ShieldAlert className="h-3.5 w-3.5" /> : <Clock3 className="h-3.5 w-3.5" />}
                 {healthReport.severity === 'healthy'
                   ? tr('Healthy', 'Sain')
@@ -1194,13 +1743,13 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
 
             <div className="mt-4 grid gap-3">
               {healthReport.checks.map((item) => (
-                <div key={item.key} className="rounded-[22px] border border-slate-200 bg-slate-50/70 px-4 py-3">
+                <div key={item.key} className={`${lightInsetSoftClass} px-4 py-3`}>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <p className="text-sm font-black text-slate-950">{item.label}</p>
-                      <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">{item.detail}</p>
+                      <p className="text-sm font-semibold text-slate-900">{item.label}</p>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">{item.detail}</p>
                     </div>
-                    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] ${getHealthSeverityTone(item.state)}`}>
+                    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${getHealthSeverityTone(item.state)}`}>
                       {item.state === 'healthy' ? <CheckCircle2 className="h-3.5 w-3.5" /> : item.state === 'critical' ? <ShieldAlert className="h-3.5 w-3.5" /> : <Clock3 className="h-3.5 w-3.5" />}
                       {item.state === 'healthy'
                         ? tr('Healthy', 'Sain')
@@ -1213,34 +1762,439 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
               ))}
             </div>
 
-            <div className="mt-5 rounded-[22px] border border-violet-100 bg-violet-50/60 px-4 py-4">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-violet-500">{tr('Recovery guidance', 'Guide de reprise')}</p>
+            <div className={`mt-5 ${lightInsetSoftClass} px-4 py-4`}>
+              <p className={lightEyebrowClass}>{tr('Recovery guidance', 'Guide de reprise')}</p>
               <div className="mt-3 space-y-2">
                 {healthReport.recommendations.map((item, index) => (
-                  <p key={`${index}-${item}`} className="text-sm font-semibold leading-6 text-slate-700">
+                  <p key={`${index}-${item}`} className="text-sm leading-6 text-slate-700">
                     {index + 1}. {item}
                   </p>
                 ))}
               </div>
             </div>
           </section>
+          ) : null}
 
-          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
+          {detailTab === 'overview' ? (
+          <section className={`${lightSectionClass} p-5`}>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Audit log', 'Journal d’audit')}</p>
-                <h3 className="mt-1 text-lg font-black text-slate-950">{tr('Recent tenant activity', 'Activité tenant récente')}</h3>
-                <p className="mt-1 text-sm font-medium text-slate-500">
+                <p className={lightEyebrowClass}>{tr('Schema release', 'Release schéma')}</p>
+                <h3 className={lightSectionHeadingClass}>{tr('Canonical tenant upgrade state', 'État d’upgrade canonique du tenant')}</h3>
+                <p className="mt-1 text-sm text-slate-500">{tr('Schema and runtime release controls.', 'Contrôles de release schéma et runtime.')}</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getSchemaVerificationTone(schemaState.verificationOk)}`}>
+                  {schemaState.verificationOk === true
+                    ? <CheckCircle2 className="h-3.5 w-3.5" />
+                    : schemaState.verificationOk === false
+                      ? <ShieldAlert className="h-3.5 w-3.5" />
+                      : <Clock3 className="h-3.5 w-3.5" />}
+                  {getSchemaVerificationLabel(schemaState.verificationOk, tr)}
+                </span>
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getRuntimeVerificationTone(schemaState.runtimeVerificationOk)}`}>
+                  {schemaState.runtimeVerificationOk === true
+                    ? <CheckCircle2 className="h-3.5 w-3.5" />
+                    : schemaState.runtimeVerificationOk === false
+                      ? <ShieldAlert className="h-3.5 w-3.5" />
+                      : <Clock3 className="h-3.5 w-3.5" />}
+                  {getRuntimeVerificationLabel(schemaState.runtimeVerificationOk, tr)}
+                </span>
+                {schemaState.releaseId ? (
+                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                    {formatSchemaReleaseLabel(schemaState.releaseId)}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {[
+                [tr('Schema version', 'Version schéma'), schemaState.schemaVersion || 'v1'],
+                [tr('Recorded release', 'Release enregistrée'), schemaState.releaseId ? formatSchemaReleaseLabel(schemaState.releaseId) : tr('Not set yet', 'Pas encore définie')],
+                [tr('Contract version', 'Version contrat'), schemaState.contractVersion || tr('Not set yet', 'Pas encore définie')],
+                [tr('Last verified', 'Dernière vérification'), schemaState.lastVerifiedAt ? formatDateTime(schemaState.lastVerifiedAt) : tr('Never verified', 'Jamais vérifié')],
+                [tr('Runtime verified', 'Runtime vérifié'), schemaState.runtimeLastVerifiedAt ? formatDateTime(schemaState.runtimeLastVerifiedAt) : tr('Never verified', 'Jamais vérifié')],
+                [
+                  tr('Module access', 'Accès modules'),
+                  (() => {
+                    const runtimeVerification = schemaActionResult?.result?.runtimeVerification || schemaState.runtimeVerification || {};
+                    const enabledCount = Number(runtimeVerification.enabledModuleCount || runtimeVerification.moduleAccessCount || 0);
+                    const expectedCount = Number(runtimeVerification.expectedModuleCount || enabledCount || 0);
+                    return expectedCount ? `${enabledCount}/${expectedCount}` : tr('Not recorded yet', 'Pas encore enregistré');
+                  })(),
+                ],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                  <p className={lightLabelClass}>{label}</p>
+                  <p className="mt-2 text-sm font-semibold break-words text-slate-900">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            {schemaState.latestJob ? (
+              <div className="mt-4 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className={lightLabelClass}>{tr('Latest schema job', 'Dernier job schéma')}</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-900">
+                      {getSchemaJobTypeLabel(schemaState.latestJob.job_type, tr)}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${getSchemaJobStatusTone(schemaState.latestJob.job_status)}`}>
+                      {String(schemaState.latestJob.job_status || 'queued').trim().toLowerCase()}
+                    </span>
+                    <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">
+                      {formatDateTime(schemaState.latestJob.finished_at || schemaState.latestJob.started_at || schemaState.latestJob.created_at)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <button
+                type="button"
+                disabled={isSchemaBusy}
+                onClick={() => runSchemaAction('plan')}
+                className={lightSecondaryButtonClass}
+              >
+                {busy === 'schema-plan' ? tr('Planning...', 'Planification...') : tr('Plan upgrade', 'Planifier l’upgrade')}
+              </button>
+              <button
+                type="button"
+                disabled={isSchemaBusy}
+                onClick={() => setConfirmSchemaApply(true)}
+                className={lightPrimaryButtonClass}
+              >
+                {busy === 'schema-apply' ? tr('Applying...', 'Application...') : tr('Apply upgrade', 'Appliquer l’upgrade')}
+              </button>
+              <button
+                type="button"
+                disabled={isSchemaBusy}
+                onClick={() => runSchemaAction('verify')}
+                className={lightSecondaryButtonClass}
+              >
+                {busy === 'schema-verify' ? tr('Verifying...', 'Vérification...') : tr('Verify release', 'Vérifier la release')}
+              </button>
+              <button
+                type="button"
+                disabled={isSchemaBusy}
+                onClick={() => runSchemaAction('runtime')}
+                className={lightSecondaryButtonClass}
+              >
+                {busy === 'schema-runtime' ? tr('Checking runtime...', 'Vérification runtime...') : tr('Verify runtime', 'Vérifier le runtime')}
+              </button>
+              <button
+                type="button"
+                disabled={isSchemaBusy}
+                onClick={() => runSchemaAction('drift')}
+                className={lightSecondaryButtonClass}
+              >
+                {busy === 'schema-drift' ? tr('Loading drift...', 'Chargement drift...') : tr('View drift', 'Voir le drift')}
+              </button>
+            </div>
+
+            {isSchemaBusy ? (
+              <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-800">
+                {busy === 'schema-plan'
+                  ? tr('Planning the canonical schema release for this tenant...', 'Planification de la release schéma canonique pour ce tenant...')
+                  : busy === 'schema-apply'
+                    ? tr('Applying the guarded canonical upgrade and verifying the tenant afterward...', 'Application de l’upgrade canonique protégé puis vérification du tenant...')
+                    : busy === 'schema-verify'
+                      ? tr('Verifying this tenant against the approved canonical release...', 'Vérification de ce tenant par rapport à la release canonique approuvée...')
+                      : busy === 'schema-runtime'
+                        ? tr('Verifying runtime integrity, owner access, and module access readiness...', 'Vérification de l’intégrité runtime, des accès propriétaire et des modules...')
+                      : tr('Loading the latest schema drift snapshot...', 'Chargement du dernier instantané de drift schéma...')}
+              </div>
+            ) : null}
+
+            {!isSchemaBusy && schemaActionResult?.error ? (
+              <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                {schemaActionResult.error}
+              </div>
+            ) : null}
+
+            {shouldShowSchemaSuccessBanner ? (
+              <div className={`mt-4 rounded-2xl border px-4 py-3 text-sm font-semibold ${
+                schemaActionResult.action === 'plan' || latestSchemaOk
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-800'
+              }`}>
+                {(schemaActionResult.action === 'plan' || latestSchemaOk)
+                  ? (
+                    schemaActionResult.action === 'apply'
+                      ? tr('Canonical upgrade applied and verification passed for this tenant.', 'Upgrade canonique appliqué et vérification réussie pour ce tenant.')
+                      : schemaActionResult.action === 'verify'
+                        ? tr('This tenant matches the approved canonical release.', 'Ce tenant correspond à la release canonique approuvée.')
+                        : schemaActionResult.action === 'runtime'
+                          ? tr('Runtime integrity checks passed for this tenant.', 'Les contrôles d’intégrité runtime ont réussi pour ce tenant.')
+                        : schemaActionResult.action === 'plan'
+                          ? tr('Upgrade plan generated successfully for this tenant.', 'Plan d’upgrade généré avec succès pour ce tenant.')
+                          : tr('Schema drift loaded successfully for this tenant.', 'Le drift schéma a été chargé avec succès pour ce tenant.')
+                  )
+                  : (
+                    schemaActionResult.action === 'drift'
+                      ? tr('Schema drift was loaded. Review the blocking issues and drift summary below.', 'Le drift schéma a été chargé. Vérifiez les problèmes bloquants et le résumé ci-dessous.')
+                      : schemaActionResult.action === 'runtime'
+                        ? tr('Runtime verification completed, but this tenant still needs review.', 'La vérification runtime est terminée, mais ce tenant nécessite encore une revue.')
+                      : tr('The schema action completed, but this tenant still needs review.', 'L’action schéma est terminée, mais ce tenant nécessite encore une vérification.')
+                  )}
+              </div>
+            ) : null}
+
+            {confirmSchemaApply ? (
+              <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/80 p-4">
+                <p className={lightEyebrowClass}>{tr('Confirm apply', 'Confirmer l’application')}</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">{tr('Apply the approved canonical schema release to this tenant?', 'Appliquer la release schéma canonique approuvée à ce tenant ?')}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
                   {tr(
-                    'Tracks access events and admin control changes for this tenant.',
-                    'Suit les accès et les changements de contrôles admin pour ce tenant.'
+                    'This runs the guarded tenant upgrade flow against the selected tenant project, then verifies the release state immediately after apply.',
+                    'Cela exécute le flux protégé d’upgrade tenant contre le projet sélectionné, puis vérifie immédiatement l’état de la release après application.'
                   )}
                 </p>
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                    <p className={lightLabelClass}>{tr('Tenant', 'Tenant')}</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-900">{workspace.name}</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                    <p className={lightLabelClass}>{tr('Project ref', 'Référence projet')}</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-900">{tenant?.tenant_project_ref || '—'}</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                    <p className={lightLabelClass}>{tr('Release id', 'Release id')}</p>
+                    <p className="mt-2 break-words text-sm font-semibold text-slate-900">
+                      {schemaState.releaseId ? formatSchemaReleaseLabel(schemaState.releaseId) : tr('Current approved release', 'Release approuvée actuelle')}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmSchemaApply(false)}
+                    className={lightSecondaryButtonClass}
+                  >
+                    {tr('Cancel', 'Annuler')}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSchemaBusy}
+                    onClick={() => runSchemaAction('apply')}
+                    className={lightPrimaryButtonClass}
+                  >
+                    {busy === 'schema-apply' ? tr('Applying...', 'Application...') : tr('Confirm apply upgrade', 'Confirmer l’upgrade')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {(schemaActionResult?.result || schemaActionResult?.error || schemaState.verification || schemaState.runtimeVerification) ? (
+              <div className={`mt-5 ${lightInsetSoftClass} px-4 py-4`}>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className={lightEyebrowClass}>{tr('Latest schema result', 'Dernier résultat schéma')}</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900">
+                      {schemaActionResult?.action
+                        ? tr(`Action: ${schemaActionResult.action}`, `Action : ${schemaActionResult.action}`)
+                        : tr('Stored verification snapshot', 'Instantané de vérification enregistré')}
+                    </p>
+                  </div>
+                  {(schemaActionResult?.result?.verification?.ok ?? schemaActionResult?.result?.runtimeVerification?.ok ?? schemaActionResult?.result?.ok ?? schemaState.verificationOk ?? schemaState.runtimeVerificationOk) !== null ? (
+                    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${getSchemaVerificationTone(
+                      schemaActionResult?.result?.verification?.ok ?? schemaActionResult?.result?.runtimeVerification?.ok ?? schemaActionResult?.result?.ok ?? schemaState.verificationOk ?? schemaState.runtimeVerificationOk
+                    )}`}>
+                      {getSchemaVerificationLabel(
+                        schemaActionResult?.result?.verification?.ok ?? schemaActionResult?.result?.runtimeVerification?.ok ?? schemaActionResult?.result?.ok ?? schemaState.verificationOk ?? schemaState.runtimeVerificationOk,
+                        tr
+                      )}
+                    </span>
+                  ) : null}
+                </div>
+
+                {schemaActionResult?.error ? (
+                  <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                    {schemaActionResult.error}
+                  </div>
+                ) : null}
+
+                {(() => {
+                  const latestVerification =
+                    schemaActionResult?.result?.verification
+                    || schemaActionResult?.result
+                    || schemaState.verification;
+                  const latestRuntimeVerification =
+                    schemaActionResult?.result?.runtimeVerification
+                    || schemaState.runtimeVerification
+                    || null;
+                  const latestPlan = schemaActionResult?.result?.plan || null;
+                  const latestApply = schemaActionResult?.result?.apply || null;
+                  const safePlan = latestPlan?.safePlan || null;
+                  const drift = latestVerification?.drift || schemaState.drift?.drift || schemaState.drift || null;
+                  const blockingIssues = latestVerification?.blockingIssues || [];
+                  const schemaStatusSummary = buildSchemaStatusSummary(schemaState, tr);
+                  const runtimeStatusSummary = buildRuntimeStatusSummary({
+                    runtimeVerificationOk: latestRuntimeVerification?.ok ?? schemaState.runtimeVerificationOk,
+                  }, tr);
+                  const runtimeBlockingIssues = latestRuntimeVerification?.blockingIssues || [];
+                  const runtimeCards = [
+                    [tr('Owner runtime', 'Runtime propriétaire'), latestRuntimeVerification?.ownerRuntimeReady],
+                    [tr('Organization membership', 'Appartenance organisation'), latestRuntimeVerification?.ownerMembershipReady],
+                    [tr('Module access', 'Accès modules'), latestRuntimeVerification?.ownerModuleAccessReady],
+                    [tr('Tenant settings row', 'Ligne paramètres tenant'), latestRuntimeVerification?.tenantSettingsRowReady],
+                    [tr('Workspace config', 'Config workspace'), latestRuntimeVerification?.workspaceConfigReady],
+                    [tr('Dashboard shell', 'Shell dashboard'), latestRuntimeVerification?.dashboardShellReady],
+                  ];
+
+                  return (
+                    <div className="mt-4 space-y-4">
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                          <p className={lightLabelClass}>{tr('Schema state', 'État du schéma')}</p>
+                          <div className="mt-3">
+                            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${schemaStatusSummary.tone}`}>
+                              {schemaStatusSummary.label}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                          <p className={lightLabelClass}>{tr('Runtime state', 'État runtime')}</p>
+                          <div className="mt-3">
+                            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${runtimeStatusSummary.tone}`}>
+                              {runtimeStatusSummary.label}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                          <p className={lightLabelClass}>{tr('Missing tables', 'Tables manquantes')}</p>
+                          <p className="mt-3 text-2xl font-semibold tabular-nums text-slate-900">{Number(drift?.missingTableCount || 0)}</p>
+                        </div>
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                          <p className={lightLabelClass}>{tr('Missing columns', 'Colonnes manquantes')}</p>
+                          <p className="mt-3 text-2xl font-semibold tabular-nums text-slate-900">{Number(drift?.missingColumnCount || 0)}</p>
+                        </div>
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                          <p className={lightLabelClass}>{tr('Blocking issues', 'Problèmes bloquants')}</p>
+                          <p className="mt-3 text-2xl font-semibold tabular-nums text-slate-900">{blockingIssues.length}</p>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 lg:grid-cols-2">
+                      {safePlan ? (
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                          <p className={lightLabelClass}>{tr('Upgrade plan summary', 'Résumé du plan d’upgrade')}</p>
+                          <div className="mt-3 space-y-2 text-sm text-slate-700">
+                            <p><span className="font-semibold text-slate-900">{tr('Explicit migrations', 'Migrations explicites')}:</span> {safePlan.explicitMigrationCount || 0}</p>
+                            <p><span className="font-semibold text-slate-900">{tr('Missing tables', 'Tables manquantes')}:</span> {safePlan.missingTableCount || 0}</p>
+                            <p><span className="font-semibold text-slate-900">{tr('Missing columns', 'Colonnes manquantes')}:</span> {safePlan.missingColumnCount || 0}</p>
+                            <p><span className="font-semibold text-slate-900">{tr('Statements to apply', 'Instructions à appliquer')}:</span> {safePlan.statementCount || 0}</p>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {drift ? (
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                          <p className={lightLabelClass}>{tr('Drift summary', 'Résumé du drift')}</p>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                            {[
+                              [tr('Missing tables', 'Tables manquantes'), drift.missingTableCount || 0],
+                              [tr('Missing columns', 'Colonnes manquantes'), drift.missingColumnCount || 0],
+                              [tr('Mismatched columns', 'Colonnes divergentes'), drift.mismatchedColumnCount || 0],
+                              [tr('Missing foreign keys', 'Clés étrangères manquantes'), drift.missingForeignKeyCount || 0],
+                            ].map(([label, value]) => (
+                              <div key={label} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                                <p className={lightLabelClass}>{label}</p>
+                                <p className="mt-2 text-xl font-semibold tabular-nums text-slate-900">{value}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {latestApply ? (
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                          <p className={lightLabelClass}>{tr('Latest apply summary', 'Résumé de la dernière application')}</p>
+                          <div className="mt-3 space-y-2 text-sm text-slate-700">
+                            <p><span className="font-semibold text-slate-900">{tr('Release id', 'Release id')}:</span> {formatSchemaReleaseLabel(latestApply.releaseId || schemaState.releaseId || '—')}</p>
+                            <p><span className="font-semibold text-slate-900">{tr('Applied statements', 'Instructions appliquées')}:</span> {latestApply.appliedStatementCount || 0}</p>
+                            <p><span className="font-semibold text-slate-900">{tr('Explicit migrations', 'Migrations explicites')}:</span> {(latestApply.explicitMigrationIds || []).join(', ') || '—'}</p>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {blockingIssues.length ? (
+                        <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4">
+                          <p className={lightLabelClass}>{tr('Blocking issues', 'Problèmes bloquants')}</p>
+                          <div className="mt-3 grid gap-2">
+                            {blockingIssues.map((item) => (
+                              <div key={item} className="rounded-2xl border border-amber-200 bg-white/70 px-3 py-2 text-sm font-semibold text-amber-900">
+                                {item}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {latestRuntimeVerification ? (
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4 lg:col-span-2">
+                          <p className={lightLabelClass}>{tr('Runtime checks', 'Contrôles runtime')}</p>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                            {runtimeCards.map(([label, ok]) => (
+                              <div key={label} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                                <p className={lightLabelClass}>{label}</p>
+                                <div className="mt-2">
+                                  <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${getRuntimeVerificationTone(typeof ok === 'boolean' ? ok : null)}`}>
+                                    {typeof ok === 'boolean' ? getRuntimeVerificationLabel(ok, tr) : tr('Not checked', 'Non vérifié')}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {(latestRuntimeVerification.enabledModuleCount || latestRuntimeVerification.expectedModuleCount || latestRuntimeVerification.moduleAccessCount) ? (
+                            <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+                              <span className="font-semibold text-slate-900">{tr('Module access coverage', 'Couverture accès modules')}:</span>{' '}
+                              {Number(latestRuntimeVerification.enabledModuleCount || latestRuntimeVerification.moduleAccessCount || 0)}
+                              /
+                              {Number(latestRuntimeVerification.expectedModuleCount || latestRuntimeVerification.enabledModuleCount || latestRuntimeVerification.moduleAccessCount || 0)}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {runtimeBlockingIssues.length ? (
+                        <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 lg:col-span-2">
+                          <p className={lightLabelClass}>{tr('Runtime issues', 'Problèmes runtime')}</p>
+                          <div className="mt-3 grid gap-2">
+                            {runtimeBlockingIssues.map((item) => (
+                              <div key={item} className="rounded-2xl border border-amber-200 bg-white/70 px-3 py-2 text-sm font-semibold text-amber-900">
+                                {item}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            ) : null}
+          </section>
+          ) : null}
+
+          {detailTab === 'audit' ? (
+          <section className={`${lightSectionClass} p-5`}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className={lightEyebrowClass}>{tr('Audit log', 'Journal d’audit')}</p>
+                <h3 className={lightSectionHeadingClass}>{tr('Recent tenant activity', 'Activité tenant récente')}</h3>
+                <p className="mt-1 text-sm text-slate-500">{tr('Recent admin and access events.', 'Événements admin et accès récents.')}</p>
               </div>
               <button
                 type="button"
                 onClick={loadAuditRows}
-                className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-black uppercase tracking-[0.14em] text-slate-600 hover:border-violet-200 hover:text-violet-700"
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
               >
                 <RefreshCw className={`mr-2 h-3.5 w-3.5 ${auditLoading ? 'animate-spin' : ''}`} />
                 {tr('Refresh', 'Rafraîchir')}
@@ -1249,37 +2203,32 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
 
             <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
               {auditRows.length ? auditRows.map((item) => (
-                <div key={item.id} className="rounded-[22px] border border-slate-200 bg-slate-50/70 px-4 py-3">
+                <div key={item.id} className={`${lightInsetSoftClass} px-4 py-3`}>
+                  {(() => {
+                    const auditDetails = formatAuditDetails(item);
+                    return (
+                      <>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <p className="text-sm font-black text-slate-950">{formatAuditAction(item.action)}</p>
+                      <p className="text-sm font-semibold text-slate-900">{formatAuditAction(item.action)}</p>
                       <p className="mt-1 text-xs font-semibold text-slate-500">
                         {item?.metadata?.performed_by_email || tr('System', 'Système')}
                       </p>
                     </div>
-                    <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
                       {formatDateTime(item.created_at)}
                     </p>
                   </div>
-                  {(item?.metadata?.target || item?.metadata?.changed_fields) ? (
+                  {auditDetails.length ? (
                     <div className="mt-2 text-xs font-semibold leading-5 text-slate-600">
-                      {item?.metadata?.target ? (
-                        <p>{tr('Target', 'Cible')}: {item.metadata.target}</p>
-                      ) : null}
-                      {item?.metadata?.changed_fields ? (
-                        <p>
-                          {tr('Updated', 'Mis à jour')}: {[
-                            ...(item.metadata.changed_fields.core_controls || []),
-                            ...(item.metadata.changed_fields.plan_limits || []),
-                            ...(item.metadata.changed_fields.billing_engine || []),
-                            ...(item.metadata.changed_fields.feature_access || []),
-                            ...(item.metadata.changed_fields.tenant_settings || []),
-                            ...(item.metadata.changed_fields.commercial_settings || []),
-                          ].join(', ') || tr('No field summary', 'Aucun résumé de champ')}
-                        </p>
-                      ) : null}
+                      {auditDetails.map((detail) => (
+                        <p key={detail}>{detail}</p>
+                      ))}
                     </div>
                   ) : null}
+                      </>
+                    );
+                  })()}
                 </div>
               )) : (
                 <div className="rounded-[22px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-semibold text-slate-500">
@@ -1288,76 +2237,73 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
               )}
             </div>
           </section>
+          ) : null}
 
-          <section className="rounded-[28px] border border-violet-100 bg-white p-5 shadow-sm">
+          {detailTab === 'owner_identity' ? (
+          <section className={`${lightSectionClass} p-5`}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-violet-500">{tr('Tenant settings', 'Paramètres tenant')}</p>
-                <h3 className="mt-1 text-lg font-black text-slate-950">{tr('Branding, language, and business identity', 'Branding, langue et identité business')}</h3>
-                <p className="mt-1 text-sm font-medium text-slate-500">
-                  {tr(
-                    'These settings define how this tenant should present itself across its storefront and workspace.',
-                    'Ces paramètres définissent comment ce tenant doit se présenter sur sa vitrine et dans son espace.'
-                  )}
-                </p>
+                <p className={lightEyebrowClass}>{tr('Tenant settings', 'Paramètres tenant')}</p>
+                <h3 className={lightSectionHeadingClass}>{tr('Branding, language, and business identity', 'Branding, langue et identité business')}</h3>
+                <p className="mt-3 text-sm text-slate-500">{tr('Workspace identity settings.', 'Paramètres d’identité du workspace.')}</p>
               </div>
-              <span className="inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-violet-700">
+              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
                 {tr('Saved in tenant metadata', 'Enregistré dans les métadonnées tenant')}
               </span>
             </div>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Brand name', 'Nom de marque')}</span>
+                <span className={lightLabelClass}>{tr('Brand name', 'Nom de marque')}</span>
                 <input
                   value={settingsDraft.brand_name}
                   onChange={(event) => setSettingsDraft((prev) => ({ ...prev, brand_name: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 />
               </label>
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Public display name', 'Nom public affiché')}</span>
+                <span className={lightLabelClass}>{tr('Public display name', 'Nom public affiché')}</span>
                 <input
                   value={settingsDraft.public_display_name}
                   onChange={(event) => setSettingsDraft((prev) => ({ ...prev, public_display_name: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 />
               </label>
               <label className="block sm:col-span-2">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Legal business name', 'Nom légal de l’entreprise')}</span>
+                <span className={lightLabelClass}>{tr('Legal business name', 'Nom légal de l’entreprise')}</span>
                 <input
                   value={settingsDraft.legal_business_name}
                   onChange={(event) => setSettingsDraft((prev) => ({ ...prev, legal_business_name: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 />
               </label>
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Support email', 'Email support')}</span>
+                <span className={lightLabelClass}>{tr('Support email', 'Email support')}</span>
                 <input
                   type="email"
                   value={settingsDraft.support_email}
                   onChange={(event) => setSettingsDraft((prev) => ({ ...prev, support_email: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 />
               </label>
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Custom domain', 'Domaine personnalisé')}</span>
+                <span className={lightLabelClass}>{tr('Custom domain', 'Domaine personnalisé')}</span>
                 <input
                   value={settingsDraft.custom_domain}
                   onChange={(event) => setSettingsDraft((prev) => ({ ...prev, custom_domain: event.target.value }))}
                   placeholder={tr('Optional custom domain', 'Domaine personnalisé optionnel')}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 />
               </label>
             </div>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Default language', 'Langue par défaut')}</span>
+                <span className={lightLabelClass}>{tr('Default language', 'Langue par défaut')}</span>
                 <select
                   value={settingsDraft.default_language}
                   onChange={(event) => setSettingsDraft((prev) => ({ ...prev, default_language: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 >
                   {[
                     ['en', 'English'],
@@ -1369,68 +2315,75 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                 </select>
               </label>
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Currency', 'Devise')}</span>
+                <span className={lightLabelClass}>{tr('Currency', 'Devise')}</span>
                 <input
                   value={settingsDraft.currency}
                   onChange={(event) => setSettingsDraft((prev) => ({ ...prev, currency: event.target.value.toUpperCase() }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 />
               </label>
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Timezone', 'Fuseau horaire')}</span>
+                <span className={lightLabelClass}>{tr('Timezone', 'Fuseau horaire')}</span>
                 <input
                   value={settingsDraft.timezone}
                   onChange={(event) => setSettingsDraft((prev) => ({ ...prev, timezone: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 />
               </label>
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Country', 'Pays')}</span>
+                <span className={lightLabelClass}>{tr('Country', 'Pays')}</span>
                 <input
                   value={settingsDraft.country}
                   onChange={(event) => setSettingsDraft((prev) => ({ ...prev, country: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 />
               </label>
             </div>
-          </section>
 
-          <section className="rounded-[28px] border border-violet-100 bg-white p-5 shadow-sm">
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                disabled={busy === 'controls'}
+                onClick={saveControls}
+                className={lightPrimaryButtonClass}
+              >
+                {busy === 'controls' ? tr('Saving identity...', 'Enregistrement identité...') : tr('Save tenant identity', 'Enregistrer l’identité tenant')}
+              </button>
+            </div>
+          </section>
+          ) : null}
+
+          {detailTab === 'feature_access' ? (
+          <section className={`${lightSectionClass} p-5`}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-violet-500">{tr('Tenant controls', 'Contrôles tenant')}</p>
-                <h3 className="mt-1 text-lg font-black text-slate-950">{tr('Plan, limits, and feature access', 'Plan, limites et accès fonctionnalités')}</h3>
-                <p className="mt-1 text-sm font-medium text-slate-500">
-                  {tr(
-                    'Use this panel to decide what this tenant can access and how large the workspace can grow.',
-                    'Utilisez ce panneau pour décider à quoi ce tenant peut accéder et jusqu’où l’espace peut grandir.'
-                  )}
-                </p>
+                <p className={lightEyebrowClass}>{tr('Feature access', 'Accès fonctionnalités')}</p>
+                <h3 className={lightSectionHeadingClass}>{tr('Plan, billing, and workspace features', 'Plan, facturation et fonctionnalités du workspace')}</h3>
               </div>
-              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">
-                {enabledFeatureCount} {tr('features enabled', 'fonctionnalités actives')}
+              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                {enabledFeatureCount} {tr('enabled', 'actifs')}
               </span>
             </div>
 
             <div className="mt-5 grid gap-3 md:grid-cols-3">
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Plan', 'Plan')}</span>
+                <span className={lightLabelClass}>{tr('Plan', 'Plan')}</span>
                 <select
                   value={controlsDraft.plan_type}
-                  onChange={(event) => setControlsDraft((prev) => ({ ...prev, plan_type: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  onChange={(event) => applySuggestedPlan(event.target.value)}
+                  className={lightInputClass}
                 >
-                  {['starter', 'growth', 'pro'].map((item) => (
+                  {TENANT_PLAN_ORDER.map((item) => (
                     <option key={item} value={item}>{item}</option>
                   ))}
                 </select>
               </label>
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Subscription', 'Abonnement')}</span>
+                <span className={lightLabelClass}>{tr('Subscription', 'Abonnement')}</span>
                 <select
                   value={controlsDraft.subscription_status}
                   onChange={(event) => setControlsDraft((prev) => ({ ...prev, subscription_status: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 >
                   {['trial', 'active', 'expired', 'cancelled', 'suspended'].map((item) => (
                     <option key={item} value={item}>{item}</option>
@@ -1438,11 +2391,11 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                 </select>
               </label>
               <label className="block">
-                <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Billing', 'Facturation')}</span>
+                <span className={lightLabelClass}>{tr('Billing', 'Facturation')}</span>
                 <select
                   value={controlsDraft.billing_status}
                   onChange={(event) => setControlsDraft((prev) => ({ ...prev, billing_status: event.target.value }))}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                  className={lightInputClass}
                 >
                   {['none', 'active', 'failed'].map((item) => (
                     <option key={item} value={item}>{item}</option>
@@ -1451,41 +2404,20 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
               </label>
             </div>
 
-            <div className="mt-5">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Plan limits', 'Limites du plan')}</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {[
-                  ['vehicles', tr('Vehicles', 'Véhicules')],
-                  ['staff', tr('Staff accounts', 'Comptes équipe')],
-                  ['listings', tr('Listings', 'Annonces')],
-                  ['storage_gb', tr('Storage (GB)', 'Stockage (Go)')],
-                ].map(([key, label]) => (
-                  <label key={key} className="block">
-                    <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{label}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={controlsDraft.plan_limits[key]}
-                      onChange={(event) => setControlsDraft((prev) => ({
-                        ...prev,
-                        plan_limits: {
-                          ...prev.plan_limits,
-                          [key]: Math.max(0, Number(event.target.value || 0)),
-                        },
-                      }))}
-                      className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
-                    />
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="mt-5">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Feature access', 'Accès fonctionnalités')}</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {featureDefinitions.map(([key, label]) => (
-                  <label key={key} className="flex items-center justify-between gap-3 rounded-[22px] border border-slate-200 bg-slate-50 px-4 py-3">
-                    <span className="text-sm font-bold text-slate-800">{label}</span>
+            <div className={`mt-5 ${lightInsetCardClass} p-4`}>
+              <p className={lightEyebrowClass}>{tr('Module access', 'Accès modules')}</p>
+              <p className="mt-2 text-sm text-slate-500">
+                {tr(
+                  'These switches control the core workspace modules that appear across the tenant admin.',
+                  'Ces bascules contrôlent les modules principaux du workspace visibles dans l’admin du tenant.'
+                )}
+              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {moduleFeatureDefinitions.map(([key, label]) => (
+                  <label
+                    key={key}
+                    className="flex items-start gap-3 rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-4"
+                  >
                     <input
                       type="checkbox"
                       checked={Boolean(controlsDraft.feature_access[key])}
@@ -1496,8 +2428,55 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                           [key]: event.target.checked,
                         },
                       }))}
-                      className="h-5 w-5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
                     />
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-800">{label}</span>
+                      <span className="block text-xs text-slate-500">
+                        {controlsDraft.feature_access[key]
+                          ? tr('Enabled for this tenant', 'Activé pour ce tenant')
+                          : tr('Disabled for this tenant', 'Désactivé pour ce tenant')}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className={`mt-5 ${lightInsetCardClass} p-4`}>
+              <p className={lightEyebrowClass}>{tr('Advanced and add-on access', 'Accès avancé et add-ons')}</p>
+              <p className="mt-2 text-sm text-slate-500">
+                {tr(
+                  'Use these switches for premium capabilities, public booking surfaces, and upsell-ready add-ons.',
+                  'Utilisez ces bascules pour les capacités premium, les surfaces de réservation publiques et les add-ons monétisables.'
+                )}
+              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {advancedFeatureDefinitions.map(([key, label]) => (
+                  <label
+                    key={key}
+                    className="flex items-start gap-3 rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-4"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={Boolean(controlsDraft.feature_access[key])}
+                      onChange={(event) => setControlsDraft((prev) => ({
+                        ...prev,
+                        feature_access: {
+                          ...prev.feature_access,
+                          [key]: event.target.checked,
+                        },
+                      }))}
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                    />
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-800">{label}</span>
+                      <span className="block text-xs text-slate-500">
+                        {controlsDraft.feature_access[key]
+                          ? tr('Enabled for this tenant', 'Activé pour ce tenant')
+                          : tr('Disabled for this tenant', 'Désactivé pour ce tenant')}
+                      </span>
+                    </span>
                   </label>
                 ))}
               </div>
@@ -1508,36 +2487,33 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                 type="button"
                 disabled={busy === 'controls'}
                 onClick={saveControls}
-                className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white hover:bg-violet-800 disabled:opacity-60"
+                className={lightPrimaryButtonClass}
               >
-                {busy === 'controls' ? tr('Saving controls...', 'Enregistrement...') : tr('Save tenant controls', 'Enregistrer les contrôles')}
+                {busy === 'controls' ? tr('Saving access controls...', 'Enregistrement accès...') : tr('Save access controls', 'Enregistrer les contrôles d’accès')}
               </button>
             </div>
           </section>
+          ) : null}
 
-          <section className="rounded-[28px] border border-emerald-100 bg-white p-5 shadow-sm">
+          {detailTab === 'upgrades' ? (
+          <section className={`${lightSectionClass} p-5`}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-600">{tr('Upgrades', 'Montées en gamme')}</p>
-                <h3 className="mt-1 text-lg font-black text-slate-950">{tr('Monetization and add-ons', 'Monétisation et add-ons')}</h3>
-                <p className="mt-1 text-sm font-medium text-slate-500">
-                  {tr(
-                    'Use these suggestions to decide what should stay included, what should become a higher plan, and what can be sold as an add-on.',
-                    'Utilisez ces suggestions pour décider ce qui reste inclus, ce qui doit passer sur un plan supérieur et ce qui peut être vendu en add-on.'
-                  )}
-                </p>
+                <p className={lightEyebrowClass}>{tr('Upgrades', 'Montées en gamme')}</p>
+                <h3 className={lightSectionHeadingClass}>{tr('Monetization and add-ons', 'Monétisation et add-ons')}</h3>
+                <p className="mt-3 text-sm text-slate-500">{tr('Upgrade recommendations and billing controls.', 'Recommandations d’upgrade et contrôles de facturation.')}</p>
               </div>
-              <span className="inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-violet-700">
+              <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getWorkspacePlanTone(controlsDraft.plan_type).badge}`}>
                 {tr('Current plan', 'Plan actuel')}: {controlsDraft.plan_type}
               </span>
             </div>
 
-            <div className="mt-5 rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+            <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Suggested next plan', 'Plan suivant conseillé')}</p>
-                  <p className="mt-1 text-xl font-black text-slate-950">{upgradeRecommendations.nextPlan}</p>
-                  <p className="mt-1 text-sm font-medium text-slate-500">
+                  <p className={lightLabelClass}>{tr('Suggested next plan', 'Plan suivant conseillé')}</p>
+                  <p className="mt-1 text-xl font-semibold text-slate-900">{upgradeRecommendations.nextPlan}</p>
+                  <p className="mt-1 text-sm text-slate-500">
                     {tr(
                       `Includes up to ${upgradeRecommendations.nextBaseLimits.vehicles} vehicles, ${upgradeRecommendations.nextBaseLimits.staff} staff, ${upgradeRecommendations.nextBaseLimits.listings} listings, and ${upgradeRecommendations.nextBaseLimits.storage_gb} GB storage by default.`,
                       `Inclut jusqu’à ${upgradeRecommendations.nextBaseLimits.vehicles} véhicules, ${upgradeRecommendations.nextBaseLimits.staff} comptes équipe, ${upgradeRecommendations.nextBaseLimits.listings} annonces et ${upgradeRecommendations.nextBaseLimits.storage_gb} Go de stockage par défaut.`
@@ -1548,7 +2524,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                   <button
                     type="button"
                     onClick={() => applySuggestedPlan(upgradeRecommendations.nextPlan)}
-                    className="inline-flex items-center justify-center rounded-2xl border border-emerald-200 bg-white px-4 py-2.5 text-sm font-black text-emerald-700 hover:bg-emerald-50"
+                    className={getWorkspacePlanButtonClass(upgradeRecommendations.nextPlan)}
                   >
                     {tr('Apply suggested plan', 'Appliquer le plan conseillé')}
                   </button>
@@ -1556,9 +2532,9 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
               </div>
             </div>
 
-            <div className="mt-5 rounded-[24px] border border-slate-200 bg-white p-4">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Billing engine', 'Moteur de facturation')}</p>
-              <p className="mt-1 text-sm font-medium text-slate-500">
+            <div className={`mt-5 ${lightInsetCardClass} p-4`}>
+              <p className={lightEyebrowClass}>{tr('Billing engine', 'Moteur de facturation')}</p>
+              <p className="mt-3 text-sm text-slate-500">
                 {tr(
                   'Store the commercial rules that make this upgrade path operational for the tenant.',
                   'Enregistrez les règles commerciales qui rendent ce parcours d’upgrade opérationnel pour le tenant.'
@@ -1567,7 +2543,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
 
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <label className="block">
-                  <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Billing cycle', 'Cycle de facturation')}</span>
+                  <span className={lightLabelClass}>{tr('Billing cycle', 'Cycle de facturation')}</span>
                   <select
                     value={controlsDraft.billing_engine.billing_cycle}
                     onChange={(event) => setControlsDraft((prev) => ({
@@ -1577,7 +2553,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                         billing_cycle: event.target.value,
                       },
                     }))}
-                    className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-emerald-300 focus:ring-4 focus:ring-emerald-100"
+                    className={lightInputClass}
                   >
                     <option value="monthly">{tr('Monthly', 'Mensuel')}</option>
                     <option value="quarterly">{tr('Quarterly', 'Trimestriel')}</option>
@@ -1587,7 +2563,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                 </label>
 
                 <label className="block">
-                  <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Invoicing mode', 'Mode de facturation')}</span>
+                  <span className={lightLabelClass}>{tr('Invoicing mode', 'Mode de facturation')}</span>
                   <select
                     value={controlsDraft.billing_engine.invoicing_mode}
                     onChange={(event) => setControlsDraft((prev) => ({
@@ -1597,7 +2573,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                         invoicing_mode: event.target.value,
                       },
                     }))}
-                    className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-emerald-300 focus:ring-4 focus:ring-emerald-100"
+                    className={lightInputClass}
                   >
                     <option value="automatic">{tr('Automatic charge', 'Prélèvement automatique')}</option>
                     <option value="manual">{tr('Manual billing', 'Facturation manuelle')}</option>
@@ -1606,7 +2582,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                 </label>
 
                 <label className="block">
-                  <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Trial ends on', 'Fin d’essai')}</span>
+                  <span className={lightLabelClass}>{tr('Trial ends on', 'Fin d’essai')}</span>
                   <input
                     type="date"
                     value={controlsDraft.billing_engine.trial_ends_at}
@@ -1617,12 +2593,12 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                         trial_ends_at: event.target.value,
                       },
                     }))}
-                    className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-emerald-300 focus:ring-4 focus:ring-emerald-100"
+                    className={lightInputClass}
                   />
                 </label>
 
                 <label className="block">
-                  <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Next renewal', 'Prochain renouvellement')}</span>
+                  <span className={lightLabelClass}>{tr('Next renewal', 'Prochain renouvellement')}</span>
                   <input
                     type="date"
                     value={controlsDraft.billing_engine.renews_at}
@@ -1633,14 +2609,14 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                         renews_at: event.target.value,
                       },
                     }))}
-                    className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-emerald-300 focus:ring-4 focus:ring-emerald-100"
+                    className={lightInputClass}
                   />
                 </label>
               </div>
 
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <label className="block">
-                  <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Billing note', 'Note de facturation')}</span>
+                  <span className={lightLabelClass}>{tr('Billing note', 'Note de facturation')}</span>
                   <textarea
                     value={controlsDraft.billing_engine.admin_note}
                     onChange={(event) => setControlsDraft((prev) => ({
@@ -1652,12 +2628,12 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                     }))}
                     rows={4}
                     placeholder={tr('Example: annual commitment with manual invoice.', 'Exemple : engagement annuel avec facture manuelle.')}
-                    className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-emerald-300 focus:ring-4 focus:ring-emerald-100"
+                    className={lightInputClass}
                   />
                 </label>
 
                 <label className="block">
-                  <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Commercial note', 'Note commerciale')}</span>
+                  <span className={lightLabelClass}>{tr('Commercial note', 'Note commerciale')}</span>
                   <textarea
                     value={controlsDraft.commercial_settings.admin_note}
                     onChange={(event) => setControlsDraft((prev) => ({
@@ -1669,7 +2645,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                     }))}
                     rows={4}
                     placeholder={tr('Example: OCR bundled as launch add-on for 3 months.', 'Exemple : OCR offert comme add-on de lancement pendant 3 mois.')}
-                    className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-emerald-300 focus:ring-4 focus:ring-emerald-100"
+                    className={lightInputClass}
                   />
                 </label>
               </div>
@@ -1677,12 +2653,12 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
 
             {upgradeRecommendations.limitAlerts.length ? (
               <div className="mt-5">
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Limit warnings', 'Alertes limites')}</p>
+                <p className={lightEyebrowClass}>{tr('Limit warnings', 'Alertes limites')}</p>
                 <div className="mt-3 grid gap-3">
                   {upgradeRecommendations.limitAlerts.map((item) => (
-                    <div key={item.key} className="rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-4">
-                      <p className="text-sm font-black text-amber-900">{item.title}</p>
-                      <p className="mt-1 text-sm font-semibold leading-6 text-amber-800">{item.body}</p>
+                    <div key={item.key} className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4">
+                      <p className="text-base font-semibold text-amber-900">{item.title}</p>
+                      <p className="mt-2 text-sm leading-6 text-amber-800">{item.body}</p>
                     </div>
                   ))}
                 </div>
@@ -1690,23 +2666,23 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
             ) : null}
 
             <div className="mt-5">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Feature upsells', 'Upsells fonctionnalités')}</p>
+              <p className={lightEyebrowClass}>{tr('Feature upsells', 'Upsells fonctionnalités')}</p>
               <div className="mt-3 grid gap-3">
                 {upgradeRecommendations.featureUpsells.map((item) => (
-                  <div key={item.key} className="rounded-[22px] border border-slate-200 bg-white px-4 py-4">
+                  <div key={item.key} className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm font-black text-slate-950">{item.title}</p>
-                          <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] ${
+                          <p className="text-base font-semibold text-slate-900">{item.title}</p>
+                          <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${
                             item.requiresPlanUpgrade
-                              ? 'border-violet-200 bg-violet-50 text-violet-700'
+                              ? 'border-slate-200 bg-slate-100 text-slate-700'
                               : 'border-emerald-200 bg-emerald-50 text-emerald-700'
                           }`}>
                             {item.requiresPlanUpgrade ? tr('Plan upgrade', 'Plan supérieur') : tr('Add-on ready', 'Add-on prêt')}
                           </span>
                           {item.featureSource ? (
-                            <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-slate-600">
+                            <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">
                               {item.featureSource === 'add_on'
                                 ? tr('Marked as add-on', 'Marqué add-on')
                                 : item.featureSource === 'plan_upgrade'
@@ -1717,14 +2693,14 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                             </span>
                           ) : null}
                         </div>
-                        <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{item.body}</p>
+                        <p className="mt-2 text-sm text-slate-500">{item.body}</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {item.requiresPlanUpgrade && item.suggestedPlan !== controlsDraft.plan_type ? (
                           <button
                             type="button"
                             onClick={() => applySuggestedPlan(item.suggestedPlan)}
-                            className="inline-flex items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-black text-violet-700 hover:bg-violet-100"
+                            className={getWorkspacePlanButtonClass(item.suggestedPlan, 'outline')}
                           >
                             {tr('Switch to', 'Passer à')} {item.suggestedPlan}
                           </button>
@@ -1732,21 +2708,21 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                         <button
                           type="button"
                           onClick={() => setFeatureCommercialSource(item.key, 'plan_upgrade')}
-                          className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 hover:bg-slate-50"
+                          className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                         >
                           {tr('Mark upgrade-only', 'Marquer upgrade')}
                         </button>
                         <button
                           type="button"
                           onClick={() => setFeatureCommercialSource(item.key, 'add_on')}
-                          className="inline-flex items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-black text-emerald-700 hover:bg-emerald-100"
+                          className="inline-flex items-center justify-center rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
                         >
                           {item.addonSelected ? tr('Add-on selected', 'Add-on sélectionné') : tr('Sell as add-on', 'Vendre en add-on')}
                         </button>
                         <button
                           type="button"
                           onClick={() => enableFeatureDraft(item.key)}
-                          className="inline-flex items-center justify-center rounded-2xl border border-emerald-200 bg-white px-4 py-2.5 text-sm font-black text-emerald-700 hover:bg-emerald-50"
+                          className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                         >
                           {tr('Enable in draft', 'Activer en brouillon')}
                         </button>
@@ -1755,29 +2731,41 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                   </div>
                 ))}
                 {!upgradeRecommendations.featureUpsells.length ? (
-                  <div className="rounded-[22px] border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm font-semibold text-emerald-800">
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm font-semibold leading-6 text-emerald-800">
                     {tr('All tracked premium features are already enabled for this tenant.', 'Toutes les fonctionnalités premium suivies sont déjà activées pour ce tenant.')}
                   </div>
                 ) : null}
               </div>
             </div>
-          </section>
 
-          {status !== 'active' && status !== 'suspended' ? (
-            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                disabled={busy === 'controls'}
+                onClick={saveControls}
+                className={lightPrimaryButtonClass}
+              >
+                {busy === 'controls' ? tr('Saving upgrades...', 'Enregistrement upgrades...') : tr('Save upgrade settings', 'Enregistrer les paramètres d’upgrade')}
+              </button>
+            </div>
+          </section>
+          ) : null}
+
+          {detailTab === 'overview' && status !== 'active' && status !== 'suspended' ? (
+            <section className={`${lightSectionClass} p-5`}>
               <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Provisioning pipeline', 'Pipeline de provisionnement')}</p>
               <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
                 {status === 'pending'
                   ? tr('Start the automatic provisioning job. The backend worker will create and connect the private tenant.', 'Démarrez le job automatique. Le worker backend créera et connectera le tenant privé.')
                   : automationWasDispatched
-                    ? tr('The worker has been notified. This drawer refreshes automatically; when it finishes, status changes to Active and Open Tenant appears.', 'Le worker a été notifié. Ce panneau se rafraîchit automatiquement; quand il termine, le statut passe à Actif et Ouvrir le tenant apparaît.')
+                    ? tr('The worker has been notified. This page refreshes automatically; when it finishes, status changes to Active and Open Tenant appears.', 'Le worker a été notifié. Cette page se rafraîchit automatiquement; quand il termine, le statut passe à Actif et Ouvrir le tenant apparaît.')
                     : tr('The tenant is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'Le tenant est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')}
               </p>
 
               <button
                 type="button"
                 onClick={() => setShowManualConfig((value) => !value)}
-                className="mt-4 text-xs font-black uppercase tracking-[0.16em] text-slate-400 underline-offset-4 hover:text-slate-700 hover:underline"
+                className="mt-4 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500 underline-offset-4 hover:text-slate-700 hover:underline"
               >
                 {showManualConfig ? tr('Hide emergency activation', 'Masquer l’activation d’urgence') : tr('Emergency manual activation', 'Activation manuelle d’urgence')}
               </button>
@@ -1800,7 +2788,7 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
                       <input
                         value={draft[key]}
                         onChange={(event) => setDraft((prev) => ({ ...prev, [key]: event.target.value }))}
-                        className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                        className={lightInputClass}
                       />
                     </label>
                   ))}
@@ -1809,38 +2797,39 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
             </section>
           ) : null}
 
-          {(status === 'failed' || status === 'active') ? (
+          {detailTab === 'overview' && (status === 'failed' || status === 'active') ? (
             <label className="block">
               <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Admin note', 'Note admin')}</span>
               <textarea
                 value={draft.error_message}
                 onChange={(event) => setDraft((prev) => ({ ...prev, error_message: event.target.value }))}
                 rows={3}
-                className="mt-2 w-full rounded-[22px] border border-slate-200 px-4 py-3 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100"
+                className={lightInputClass}
               />
             </label>
           ) : null}
 
-          <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+          {detailTab === 'overview' ? (
+          <div className={`${lightSectionClass} p-4`}>
             {status === 'pending' || status === 'failed' ? (
-              <button type="button" disabled={!!busy} onClick={() => runAction('start')} className="inline-flex w-full items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white hover:bg-violet-800 disabled:opacity-60">
+              <button type="button" disabled={!!busy} onClick={() => runAction('start')} className={`w-full ${lightPrimaryButtonClass}`}>
                 <Clock3 className="mr-2 h-4 w-4" />
                 {busy ? tr('Starting...', 'Démarrage...') : status === 'failed' ? tr('Retry automatic provisioning', 'Relancer le provisionnement automatique') : tr('Start automatic provisioning', 'Démarrer le provisionnement automatique')}
               </button>
             ) : null}
             {status === 'provisioning' ? (
-              <div className="inline-flex w-full items-center justify-center rounded-2xl border border-violet-100 bg-violet-50 px-5 py-3 text-sm font-black text-violet-700">
+              <div className="inline-flex w-full items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-5 py-3 text-sm font-semibold text-slate-700">
                 <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
                 {tr('Provisioning in progress', 'Provisionnement en cours')}
               </div>
             ) : null}
             {(status === 'provisioning' || status === 'failed') && showManualConfig ? (
               <div className="grid gap-3 sm:grid-cols-2">
-                <button type="button" disabled={!!busy} onClick={() => runAction('complete')} className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white hover:bg-violet-800 disabled:opacity-60">
+                <button type="button" disabled={!!busy} onClick={() => runAction('complete')} className={lightPrimaryButtonClass}>
                   <CheckCircle2 className="mr-2 h-4 w-4" />
                   {tr('Manual activate', 'Activer manuellement')}
                 </button>
-                <button type="button" disabled={!!busy} onClick={() => runAction('fail')} className="inline-flex items-center justify-center rounded-2xl border border-rose-200 bg-white px-5 py-3 text-sm font-black text-rose-700 hover:bg-rose-50 disabled:opacity-60">
+                <button type="button" disabled={!!busy} onClick={() => runAction('fail')} className={lightDangerButtonClass}>
                   <ShieldAlert className="mr-2 h-4 w-4" />
                   {tr('Mark as failed', 'Marquer échoué')}
                 </button>
@@ -1848,42 +2837,45 @@ const WorkspaceDrawer = ({ workspace, onClose, onUpdated, platformAccess }) => {
             ) : null}
             {status === 'active' ? (
               <div className="grid gap-3 sm:grid-cols-3">
-                <button type="button" onClick={() => openTrackedLink({ url: storefrontUrl, action: 'tenant_storefront_opened', target: storefrontUrl })} className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700 hover:border-violet-200 hover:text-violet-700">
+                <button type="button" onClick={() => openTrackedLink({ url: storefrontUrl, action: 'tenant_storefront_opened', target: storefrontUrl })} className={lightSecondaryButtonClass}>
                   <ExternalLink className="mr-2 h-4 w-4" />
                   {tr('Open Storefront', 'Ouvrir la vitrine')}
                 </button>
-                <button type="button" onClick={() => openTrackedLink({ url: workspaceUrl, action: 'tenant_workspace_opened', target: workspaceUrl })} className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white hover:bg-violet-800">
+                <button type="button" onClick={() => openTrackedLink({ url: workspaceUrl, action: 'tenant_workspace_opened', target: workspaceUrl })} className={lightPrimaryButtonClass}>
                   <ExternalLink className="mr-2 h-4 w-4" />
                   {accessMode.buttonLabel}
                 </button>
-                <button type="button" disabled={!!busy} onClick={() => runAction('suspend')} className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700 hover:border-rose-200 hover:text-rose-700 disabled:opacity-60">
+                <button type="button" disabled={!!busy} onClick={() => runAction('suspend')} className={lightDangerButtonClass}>
                   {tr('Suspend', 'Suspendre')}
                 </button>
               </div>
             ) : null}
             {status === 'suspended' ? (
-              <button type="button" disabled={!!busy} onClick={() => runAction('reactivate')} className="inline-flex w-full items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white hover:bg-violet-800 disabled:opacity-60">
+              <button type="button" disabled={!!busy} onClick={() => runAction('reactivate')} className={`w-full ${lightPrimaryButtonClass}`}>
                 {tr('Reactivate', 'Réactiver')}
               </button>
             ) : null}
           </div>
+          ) : null}
         </div>
-      </aside>
+      </main>
     </div>
-  ), document.body);
+  );
 };
 
 const Workspaces = () => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const { session, userProfile, tenantSession, platformAccess } = useAuth();
+  const navigate = useNavigate();
+  const { workspaceId } = useParams();
   const hostContext = useMemo(() => getHostContext(), []);
   const [rows, setRows] = useState([]);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
+  const [schemaFilter, setSchemaFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [selectedWorkspace, setSelectedWorkspace] = useState(null);
   const platformWorkspaceUrl = useMemo(
     () => buildHostUrl({ kind: 'admin', pathname: '/admin/workspaces' }),
     []
@@ -1927,6 +2919,7 @@ const Workspaces = () => {
   }, [load]);
 
   useEffect(() => {
+    if (workspaceId) return undefined;
     if (!rows.some((row) => row.status === 'provisioning')) return undefined;
 
     const intervalId = window.setInterval(() => {
@@ -1934,24 +2927,17 @@ const Workspaces = () => {
     }, 10000);
 
     return () => window.clearInterval(intervalId);
-  }, [load, rows]);
-
-  useEffect(() => {
-    if (!selectedWorkspace) return;
-    const nextSelectedWorkspace = rows.find((row) => row.id === selectedWorkspace.id);
-    if (nextSelectedWorkspace && nextSelectedWorkspace !== selectedWorkspace) {
-      setSelectedWorkspace(nextSelectedWorkspace);
-    }
-  }, [rows, selectedWorkspace]);
+  }, [load, rows, workspaceId]);
 
   const filteredRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return rows.filter((row) => {
       if (status !== 'all' && row.status !== status) return false;
+      if (schemaFilter !== 'all' && getSchemaFilterKeyForRow(row, tr) !== schemaFilter) return false;
       if (!needle) return true;
       return [row.name, row.ownerName, row.ownerEmail, row.slug, row.status].filter(Boolean).join(' ').toLowerCase().includes(needle);
     });
-  }, [rows, search, status]);
+  }, [rows, schemaFilter, search, status, tr]);
 
   const kpis = useMemo(() => rows.reduce((acc, row) => {
     acc[row.status] = (acc[row.status] || 0) + 1;
@@ -1959,23 +2945,99 @@ const Workspaces = () => {
   }, {}), [rows]);
 
   const tenantHostRegistryMessage = hostContext.kind === 'tenant' && !hostContext.isLocal;
+  const activeWorkspace = useMemo(
+    () => (workspaceId ? rows.find((row) => row.id === workspaceId) || null : null),
+    [rows, workspaceId]
+  );
+
+  if (workspaceId) {
+    if (loading && !activeWorkspace) {
+      return (
+        <div className="min-h-screen bg-slate-50/80">
+          <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+            <section className="rounded-[28px] border border-slate-200 bg-white p-8 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+              <div className="animate-pulse space-y-4">
+                <div className="h-10 w-48 rounded-2xl bg-slate-100" />
+                <div className="h-8 w-72 rounded-2xl bg-slate-100" />
+                <div className="h-5 w-full max-w-2xl rounded-2xl bg-slate-100" />
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="h-24 rounded-[24px] bg-slate-100" />
+                  <div className="h-24 rounded-[24px] bg-slate-100" />
+                </div>
+              </div>
+            </section>
+          </main>
+        </div>
+      );
+    }
+
+    if (!activeWorkspace) {
+      return (
+        <div className="min-h-screen bg-slate-50/80">
+          <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+            <section className="rounded-[28px] border border-slate-200 bg-white p-8 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+              <button
+                type="button"
+                onClick={() => navigate('/admin/workspaces')}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                {tr('Back to workspaces', 'Retour aux workspaces')}
+              </button>
+              <p className="mt-6 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Workspace detail', 'Détail workspace')}</p>
+              <h1 className="mt-2 text-2xl font-semibold text-slate-900">{tr('Workspace not found', 'Workspace introuvable')}</h1>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+                {tenantHostRegistryMessage
+                  ? tr(
+                      'This tenant detail needs to be opened from the platform workspaces registry, not from inside an isolated tenant host.',
+                      'Ce détail tenant doit être ouvert depuis le registre des workspaces plateforme, pas depuis un hôte tenant isolé.'
+                    )
+                  : tr(
+                      'This workspace could not be found in the current registry snapshot. Refresh the registry list and try again.',
+                      'Ce workspace est introuvable dans l’instantané actuel du registre. Rafraîchissez la liste puis réessayez.'
+                    )}
+              </p>
+            </section>
+          </main>
+        </div>
+      );
+    }
+
+    return (
+      <WorkspaceDetailPage
+        workspace={activeWorkspace}
+        platformAccess={platformAccess}
+        onBack={() => navigate('/admin/workspaces')}
+        onUpdated={load}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50/80">
-      <AdminModuleHero
-        icon={<Building2 className="h-6 w-6 text-white" />}
-        eyebrow={tr('Platform operations', 'Opérations plateforme')}
-        title={tr('Tenant', 'Tenant')}
-        description={tr('Provision and monitor isolated business tenant workspaces.', 'Provisionnez et surveillez les espaces tenant business isolés.')}
-        actions={(
-          <button type="button" onClick={load} disabled={loading} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60">
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            {tr('Refresh', 'Actualiser')}
-          </button>
-        )}
-      />
-
       <main className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
+        <AdminModuleHero
+          flush
+          icon={<Building2 className="h-7 w-7" />}
+          eyebrow={tr('Platform operations', 'Opérations plateforme')}
+          title={tr('Tenant Workspaces', 'Workspaces tenants')}
+          description={tr(
+            'Provision and manage isolated tenant workspaces.',
+            'Provisionnez et gérez les workspaces tenants isolés.'
+          )}
+          actions={(
+            <button
+              type="button"
+              onClick={() => void load()}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:opacity-60"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              {tr('Refresh registry', 'Actualiser le registre')}
+            </button>
+          )}
+        />
+
         <WorkspaceContextCard
           hostContext={hostContext}
           tenantSession={tenantSession}
@@ -1986,46 +3048,79 @@ const Workspaces = () => {
           }}
         />
 
-        <AdminMobileStatsRow>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
             ['pending', tr('Pending', 'En attente')],
             ['provisioning', tr('Provisioning', 'Provisionnement')],
             ['active', tr('Active', 'Actifs')],
             ['failed', tr('Failed', 'Échoués')],
           ].map(([key, label]) => (
-            <div key={key} className="rounded-[28px] border border-violet-100/80 bg-white p-5 shadow-[0_18px_50px_rgba(15,23,42,0.05)]">
-              <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">{label}</p>
-              <p className="mt-3 text-3xl font-black text-slate-950">{kpis[key] || 0}</p>
-              <p className="mt-1 text-xs font-semibold text-slate-500">{tr('Tenant workspaces', 'Espaces tenant')}</p>
-            </div>
-          ))}
-        </AdminMobileStatsRow>
+              <div key={key} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+                <p className="mt-3 text-3xl font-semibold text-slate-900 tabular-nums">{kpis[key] || 0}</p>
+                <p className="mt-2 text-sm text-slate-500">{tr('Tenant workspaces', 'Espaces tenant')}</p>
+              </div>
+            ))}
+        </div>
 
-        <section className="rounded-[34px] border border-violet-100 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.06)] sm:p-5">
+        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <p className="text-xs font-black uppercase tracking-[0.22em] text-violet-500">{tr('Provisioning control', 'Contrôle provisionnement')}</p>
-              <h2 className="mt-1 text-2xl font-black text-slate-950">{tr('Tenant workspaces', 'Espaces tenant')}</h2>
-              <p className="mt-1 text-sm font-medium text-slate-500">{tr('Click a row to manage its isolated workspace.', 'Cliquez une ligne pour gérer son espace isolé.')}</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Provisioning control', 'Contrôle du provisionnement')}</p>
+              <h2 className="text-lg font-semibold text-slate-900">{tr('Tenant workspace registry', 'Registre des workspaces tenants')}</h2>
+              <p className="mt-1 max-w-3xl text-sm text-slate-500">{tr('Open any tenant to manage it directly.', 'Ouvrez un tenant pour le gérer directement.')}</p>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-3">
               <label className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tr('Search workspaces...', 'Rechercher...')} className="w-full rounded-2xl border border-slate-200 py-2.5 pl-9 pr-4 text-sm font-semibold outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100" />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tr('Search workspaces...', 'Rechercher...')} className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-9 pr-4 text-sm font-semibold text-slate-700 outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100" />
               </label>
-              <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100">
+              <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100">
                 {['all', 'pending', 'provisioning', 'active', 'failed', 'suspended'].map((item) => (
                   <option key={item} value={item}>{item === 'all' ? tr('All statuses', 'Tous les statuts') : item}</option>
                 ))}
               </select>
+              <select value={schemaFilter} onChange={(event) => setSchemaFilter(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100">
+                {[
+                  ['all', tr('All schema states', 'Tous les états schéma')],
+                  ['up_to_date', tr('Up to date', 'À jour')],
+                  ['drift_detected', tr('Drift detected', 'Drift détecté')],
+                  ['needs_verify', tr('Needs verify', 'À vérifier')],
+                ].map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="mt-5">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_repeat(3,minmax(0,0.6fr))]">
+            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Registry overview', 'Vue du registre')}</p>
+              <p className="mt-2 text-base font-semibold text-slate-900">{tr('Platform-managed tenant inventory', 'Inventaire des tenants gérés')}</p>
+              <p className="mt-2 text-sm text-slate-500">{tr('Search, filter, and open tenant workspaces.', 'Recherchez, filtrez et ouvrez les workspaces tenants.')}</p>
+            </div>
+            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Visible now', 'Visibles')}</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-900 tabular-nums">{filteredRows.length}</p>
+              <p className="mt-1 text-sm text-slate-500">{tr('Matching workspaces', 'Workspaces correspondants')}</p>
+            </div>
+            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Live tenants', 'Tenants actifs')}</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-900 tabular-nums">{kpis.active || 0}</p>
+              <p className="mt-1 text-sm text-slate-500">{tr('Ready now', 'Prêts maintenant')}</p>
+            </div>
+            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Needs attention', 'À surveiller')}</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-900 tabular-nums">{(kpis.provisioning || 0) + (kpis.failed || 0) + (kpis.suspended || 0)}</p>
+              <p className="mt-1 text-sm text-slate-500">{tr('Provisioning or blocked', 'Provisionnement ou bloqué')}</p>
             </div>
           </div>
 
           {tenantHostRegistryMessage ? (
             <div className="mt-5 rounded-[28px] border border-amber-200 bg-amber-50/80 p-5">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-amber-700">{tr('Platform registry', 'Registre plateforme')}</p>
-              <h3 className="mt-2 text-xl font-black text-slate-950">{tr('Open this from the platform workspace', 'Ouvrez ceci depuis le workspace plateforme')}</h3>
-              <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-slate-600">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">{tr('Platform registry', 'Registre plateforme')}</p>
+              <h3 className="mt-2 text-lg font-semibold text-slate-900">{tr('Open this from the platform workspace', 'Ouvrez ceci depuis le workspace plateforme')}</h3>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
                 {tr(
                   'The tenant registry is managed from the platform admin host, not from inside an isolated tenant workspace. That is why this page looked empty here even though SaharaX and owner1 exist in the registry.',
                   'Le registre des tenants est géré depuis l’hôte admin plateforme, pas depuis un workspace tenant isolé. C’est pourquoi cette page semblait vide ici alors que SaharaX et owner1 existent bien dans le registre.'
@@ -2034,7 +3129,7 @@ const Workspaces = () => {
               <div className="mt-4">
                 <a
                   href={platformWorkspaceUrl}
-                  className="inline-flex items-center rounded-2xl bg-slate-950 px-4 py-2.5 text-sm font-black text-white hover:bg-violet-800"
+                  className="inline-flex items-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
                 >
                   <ExternalLink className="mr-2 h-4 w-4" />
                   {tr('Open Platform Workspaces', 'Ouvrir les workspaces plateforme')}
@@ -2045,17 +3140,17 @@ const Workspaces = () => {
 
           {loadError ? (
             <div className="mt-5 rounded-[28px] border border-rose-200 bg-rose-50/80 p-5">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-rose-600">{tr('Load error', 'Erreur de chargement')}</p>
-              <p className="mt-2 text-sm font-semibold leading-6 text-rose-700">{loadError}</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-rose-600">{tr('Load error', 'Erreur de chargement')}</p>
+              <p className="mt-3 text-sm leading-6 text-rose-700">{loadError}</p>
             </div>
           ) : null}
 
-          <div className="mt-5 overflow-hidden rounded-[28px] border border-slate-200">
+          <div className="mt-5 overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
             <table className="min-w-full divide-y divide-slate-200 text-left">
-              <thead className="bg-slate-50">
+              <thead className="bg-slate-50/80">
                 <tr>
                   {[tr('Workspace', 'Espace'), tr('Owner', 'Propriétaire'), tr('Your role', 'Votre rôle'), tr('Created', 'Créé'), tr('Status', 'Statut')].map((heading) => (
-                    <th key={heading} className="px-4 py-3 text-xs font-black uppercase tracking-[0.18em] text-slate-400">{heading}</th>
+                    <th key={heading} className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{heading}</th>
                   ))}
                 </tr>
               </thead>
@@ -2070,55 +3165,98 @@ const Workspaces = () => {
                   </tr>
                 )) : null}
                 {!loading && filteredRows.map((row) => (
-                  <tr key={row.id} tabIndex={0} role="button" onClick={() => setSelectedWorkspace(row)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedWorkspace(row); }} className="cursor-pointer transition hover:bg-violet-50/60 focus:bg-violet-50/70 focus:outline-none">
+                  <tr key={row.id} tabIndex={0} role="button" onClick={() => navigate(`/admin/workspaces/${row.id}`)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') navigate(`/admin/workspaces/${row.id}`); }} className="cursor-pointer transition hover:bg-slate-50 focus:bg-slate-50 focus:outline-none">
                     <td className="px-4 py-4">
-                      <p className="text-sm font-black text-slate-950">{row.name}</p>
-                      <p className="mt-1 text-xs font-semibold text-slate-500">{row.slug || '—'}</p>
+                      {(() => {
+                        const rowSchemaState = buildSchemaWorkspaceState(row);
+                        const rowSchemaStatus = buildSchemaStatusSummary(rowSchemaState, tr);
+                        const rowRuntimeStatus = buildRuntimeStatusSummary(rowSchemaState, tr);
+                        return (
+                          <>
+                      <p className="text-base font-semibold text-slate-900">{row.name}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <p className="text-sm text-slate-500">{row.slug || '—'}</p>
+                        <WorkspacePlanBadge planType={row.subscription?.plan_type} />
+                        <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">
+                          {rowSchemaState.schemaVersion}
+                        </span>
+                        {rowSchemaState.releaseId ? (
+                          <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">
+                            {formatSchemaReleaseLabel(rowSchemaState.releaseId)}
+                          </span>
+                        ) : null}
+                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${rowSchemaStatus.tone}`}>
+                          {rowSchemaStatus.label}
+                        </span>
+                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${rowRuntimeStatus.tone}`}>
+                          {rowRuntimeStatus.label}
+                        </span>
+                        {row.latestSchemaJob ? (
+                          <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${getSchemaJobStatusTone(row.latestSchemaJob.job_status)}`}>
+                            {getSchemaJobTypeLabel(row.latestSchemaJob.job_type, tr)}
+                          </span>
+                        ) : null}
+                      </div>
+                          </>
+                        );
+                      })()}
                     </td>
                     <td className="px-4 py-4">
-                      <p className="text-sm font-bold text-slate-800">{row.ownerName}</p>
-                      <p className="mt-1 text-xs font-semibold text-slate-500">{row.ownerEmail}</p>
+                      <p className="text-base font-semibold text-slate-900">{row.ownerName}</p>
+                      <p className="mt-2 text-sm text-slate-500">{row.ownerEmail}</p>
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex flex-wrap items-center gap-2">
                         <WorkspaceRelationshipBadge relationship={row.relationship} />
                         {row.relationship?.isCurrentTenant ? (
-                          <span className="text-[11px] font-black uppercase tracking-[0.14em] text-violet-600">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
                             {tr('Current', 'Actuel')}
                           </span>
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-4 py-4 text-sm font-semibold text-slate-600">{formatDate(row.createdAt)}</td>
-                    <td className="px-4 py-4"><WorkspaceStatusBadge status={row.status} /></td>
+                    <td className="px-4 py-4 text-sm text-slate-500">{formatDate(row.createdAt)}</td>
+                    <td className="px-4 py-4">
+                      {(() => {
+                        const rowSchemaState = buildSchemaWorkspaceState(row);
+                        const rowSchemaStatus = buildSchemaStatusSummary(rowSchemaState, tr);
+                        const rowRuntimeStatus = buildRuntimeStatusSummary(rowSchemaState, tr);
+                        return (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <WorkspaceStatusBadge status={row.status} />
+                            <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+                              {String(row.subscription?.subscription_status || 'trial').trim().toLowerCase()}
+                            </span>
+                            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${rowSchemaStatus.tone}`}>
+                              {rowSchemaStatus.label}
+                            </span>
+                            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${rowRuntimeStatus.tone}`}>
+                              {rowRuntimeStatus.label}
+                            </span>
+                          </div>
+                        );
+                      })()}
+                    </td>
                   </tr>
                 ))}
                 {!loading && !filteredRows.length && !loadError && !tenantHostRegistryMessage ? (
                   <tr>
                     <td colSpan="5" className="px-4 py-16 text-center">
-                      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[22px] bg-violet-50 text-violet-700">
+                      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[22px] bg-slate-100 text-slate-500">
                         <Building2 className="h-6 w-6" />
                       </div>
-                      <p className="mt-4 text-base font-black text-slate-900">{tr('No workspaces yet.', 'Aucun espace pour le moment.')}</p>
-                      <p className="mt-1 text-sm font-medium text-slate-500">{tr('Approved business owners will appear here once a tenant record exists.', 'Les propriétaires business approuvés apparaîtront ici après création du tenant.')}</p>
+                      <p className="mt-4 text-lg font-semibold text-slate-900">{tr('No workspaces yet.', 'Aucun espace pour le moment.')}</p>
+                      <p className="mt-3 text-sm leading-6 text-slate-500">{tr('Approved business owners will appear here once a tenant record exists.', 'Les propriétaires business approuvés apparaîtront ici après création du tenant.')}</p>
                     </td>
                   </tr>
                 ) : null}
               </tbody>
             </table>
           </div>
+          </div>
         </section>
       </main>
 
-      <WorkspaceDrawer
-        workspace={selectedWorkspace}
-        platformAccess={platformAccess}
-        onClose={() => setSelectedWorkspace(null)}
-        onUpdated={async () => {
-          setSelectedWorkspace(null);
-          await load();
-        }}
-      />
     </div>
   );
 };

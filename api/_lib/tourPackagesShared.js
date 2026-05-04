@@ -1,10 +1,14 @@
-import { APP_USERS_TABLE, createSupabaseClients } from './supabase.js';
-import { authenticateRequest } from './auth.js';
+import { createClient } from '@supabase/supabase-js';
+import { APP_USERS_TABLE, PLATFORM_TENANTS_TABLE, createSupabaseClients } from './supabase.js';
+import { authenticateRequest, getBearerToken, getServiceRoleKeyForProject } from './auth.js';
 
 export const TOUR_PACKAGES_TABLE = 'app_687f658e98_tour_packages';
 export const TOUR_PACKAGE_MODEL_PRICES_TABLE = 'app_687f658e98_tour_package_model_prices';
 export const VEHICLE_MODELS_TABLE = 'saharax_0u4w4d_vehicle_models';
 const TOUR_PACKAGE_RULES_MARKER = '[tour_package_rules]';
+const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
+const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
+const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 
 const safeJsonParse = (value) => {
   try {
@@ -35,6 +39,79 @@ const appendMarkedJson = (text, marker, payload) => {
   const cleanedText = stripMarkedJson(text, marker);
   const serialized = `${marker}${JSON.stringify(payload)}`;
   return cleanedText ? `${cleanedText}\n\n${serialized}` : serialized;
+};
+
+const normalizeHostname = (value = '') => {
+  const trimmed = String(value || '').trim().toLowerCase();
+  if (!trimmed) return '';
+
+  try {
+    return new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).hostname.toLowerCase();
+  } catch {
+    return trimmed.split('/')[0].split(':')[0].toLowerCase();
+  }
+};
+
+const getTenantSlugFromHostname = (hostname = '') => {
+  const normalizedHostname = normalizeHostname(hostname);
+  if (!normalizedHostname.endsWith(`.${DRIVEOUT_BASE_DOMAIN}`)) return '';
+
+  const slug = normalizedHostname.slice(0, -(`.${DRIVEOUT_BASE_DOMAIN}`.length));
+  return slug && !RESERVED_SUBDOMAINS.has(slug) ? slug : '';
+};
+
+const normalizeUrl = (value = '') => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+};
+
+const createTenantAdminClientFromRecord = async (tenant = {}) => {
+  const projectRef = String(tenant?.tenant_project_ref || '').trim();
+  const apiUrl = normalizeUrl(tenant?.tenant_api_url || '');
+
+  if (!projectRef || !apiUrl) {
+    throw new Error('Tenant workspace is missing API configuration');
+  }
+
+  const serviceRoleKey = await getServiceRoleKeyForProject(projectRef);
+  return createClient(apiUrl, serviceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+  });
+};
+
+const resolveAdminClientForPublicTenantRequest = async (req) => {
+  const requestedHostname = normalizeHostname(
+    req.headers['x-forwarded-host'] ||
+    req.headers.host ||
+    ''
+  );
+  const tenantSlug = getTenantSlugFromHostname(requestedHostname);
+  const { adminClient: masterAdminClient } = createSupabaseClients();
+
+  if (!tenantSlug || FIRST_PARTY_TENANT_SLUGS.has(tenantSlug)) {
+    return masterAdminClient;
+  }
+
+  const { data: tenant, error } = await masterAdminClient
+    .from(PLATFORM_TENANTS_TABLE)
+    .select('tenant_slug, tenant_status, tenant_project_ref, tenant_api_url')
+    .eq('tenant_slug', tenantSlug)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!tenant || String(tenant.tenant_status || '').trim().toLowerCase() !== 'active') {
+    throw new Error(`Tenant workspace ${tenantSlug} is not active`);
+  }
+
+  return createTenantAdminClientFromRecord(tenant);
 };
 
 const STORAGE_URL_MARKER = '/storage/v1/object/public/';
@@ -700,7 +777,19 @@ export const handleTourPackages = async (req, res, json) => {
 
   if (req.method === 'GET') {
     try {
-      const { adminClient } = createSupabaseClients();
+      let adminClient = null;
+      const bearerToken = getBearerToken(req);
+
+      if (bearerToken) {
+        const auth = await authenticateRequest(req);
+        if (auth.error) {
+          return json(res, auth.error.status, auth.error.body);
+        }
+        adminClient = auth.adminClient;
+      } else {
+        adminClient = await resolveAdminClientForPublicTenantRequest(req);
+      }
+
       const [packages, pricingContext] = await Promise.all([
         readPackagesFromTable(adminClient),
         readTourPackagePricingContext(adminClient).catch((pricingError) => {

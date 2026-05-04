@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { APP_USERS_TABLE, PLATFORM_ADMIN_ACCOUNTS_TABLE, createSupabaseClients } from './supabase.js';
+import { APP_USERS_TABLE, PLATFORM_ADMIN_ACCOUNTS_TABLE, PLATFORM_TENANTS_TABLE, createSupabaseClients } from './supabase.js';
 
 const PLATFORM_OWNER_EMAILS = new Set(['salamtime2016@gmail.com']);
 const PLATFORM_ADMIN_EMAILS = new Set([]);
@@ -95,7 +95,14 @@ const extractProjectRefFromJwt = (token) => {
     if (!payload) return null;
     const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
     const json = JSON.parse(Buffer.from(normalized, 'base64').toString('utf8'));
-    return json?.ref || null;
+    if (json?.ref) return json.ref;
+
+    const issuer = String(json?.iss || '').trim();
+    if (!issuer) return null;
+
+    const hostname = new URL(issuer).hostname;
+    const [projectRef] = hostname.split('.');
+    return projectRef || null;
   } catch {
     return null;
   }
@@ -118,6 +125,94 @@ const getProjectUrlFromJwt = (token) => {
   return projectRef ? `https://${projectRef}.supabase.co` : null;
 };
 
+const tenantServiceRoleKeyCache = new Map();
+
+export const getServiceRoleKeyForProject = async (projectRef) => {
+  const normalizedProjectRef = String(projectRef || '').trim();
+  if (!normalizedProjectRef) return null;
+
+  if (tenantServiceRoleKeyCache.has(normalizedProjectRef)) {
+    return tenantServiceRoleKeyCache.get(normalizedProjectRef);
+  }
+
+  const managementToken = process.env.SUPABASE_MANAGEMENT_TOKEN;
+  if (!managementToken) {
+    throw new Error('Missing SUPABASE_MANAGEMENT_TOKEN for tenant API authentication');
+  }
+
+  const response = await fetch(`https://api.supabase.com/v1/projects/${normalizedProjectRef}/api-keys?reveal=true`, {
+    headers: {
+      authorization: `Bearer ${managementToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to load tenant service key for ${normalizedProjectRef}: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const candidates = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.api_keys)
+      ? payload.api_keys
+      : Array.isArray(payload?.keys)
+        ? payload.keys
+        : Object.values(payload || {});
+
+  const serviceRole = candidates.find((entry) => {
+    const name = String(entry?.name || entry?.type || entry?.role || entry?.key || '').trim().toLowerCase();
+    return name === 'service_role' || name === 'service-role' || name.includes('service');
+  });
+
+  const key = serviceRole?.api_key || serviceRole?.key || serviceRole?.value || serviceRole?.token || null;
+  if (!key) {
+    throw new Error(`Tenant service key for ${normalizedProjectRef} was not present in Supabase Management response`);
+  }
+
+  tenantServiceRoleKeyCache.set(normalizedProjectRef, key);
+  return key;
+};
+
+const resolveTenantRuntimeFromToken = async (masterAdminClient, token) => {
+  const projectRef = extractProjectRefFromJwt(token);
+  if (!projectRef) return null;
+
+  const serviceProjectRef = extractProjectRefFromJwt(process.env.SUPABASE_SERVICE_ROLE_KEY);
+  if (serviceProjectRef && projectRef === serviceProjectRef) {
+    return null;
+  }
+
+  const { data: tenant, error } = await masterAdminClient
+    .from(PLATFORM_TENANTS_TABLE)
+    .select('id, tenant_slug, tenant_status, tenant_project_ref, tenant_api_url, tenant_anon_key')
+    .eq('tenant_project_ref', projectRef)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!tenant || String(tenant.tenant_status || '').trim().toLowerCase() !== 'active') {
+    return null;
+  }
+
+  const apiUrl = String(tenant.tenant_api_url || `https://${projectRef}.supabase.co`).trim();
+  const anonKey = String(tenant.tenant_anon_key || '').trim();
+  if (!apiUrl || !anonKey) {
+    throw new Error(`Tenant ${tenant.tenant_slug || projectRef} is missing API URL or anon key`);
+  }
+
+  const serviceRoleKey = await getServiceRoleKeyForProject(projectRef);
+
+  return {
+    tenant,
+    projectRef,
+    apiUrl,
+    anonKey,
+    serviceRoleKey,
+  };
+};
+
 export const getBearerToken = (req) => {
   const authHeader = getAuthHeader(req);
 
@@ -138,13 +233,25 @@ export const authenticateRequest = async (req) => {
   }
 
   try {
-    const { anonClient, adminClient } = createSupabaseClients();
+    const { adminClient: masterAdminClient } = createSupabaseClients();
     const publicSupabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
     const publicSupabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+    const tenantRuntime = await resolveTenantRuntimeFromToken(masterAdminClient, token);
+    const effectiveSupabaseUrl = tenantRuntime?.apiUrl || publicSupabaseUrl;
+    const effectiveSupabaseAnonKey = tenantRuntime?.anonKey || publicSupabaseAnonKey;
+    const effectiveAdminClient = tenantRuntime
+      ? createClient(tenantRuntime.apiUrl, tenantRuntime.serviceRoleKey, {
+          auth: {
+            autoRefreshToken: false,
+            persistSession: false,
+            detectSessionInUrl: false,
+          },
+        })
+      : masterAdminClient;
 
     const authUrls = [
-      publicSupabaseUrl,
-      getProjectUrlFromJwt(token),
+      effectiveSupabaseUrl,
+      tenantRuntime ? null : getProjectUrlFromJwt(token),
     ].filter(Boolean);
 
     const uniqueAuthUrls = [...new Set(authUrls)];
@@ -152,7 +259,7 @@ export const authenticateRequest = async (req) => {
     let error = null;
 
     for (const authUrl of uniqueAuthUrls) {
-      const authClient = createClient(authUrl, publicSupabaseAnonKey, {
+      const authClient = createClient(authUrl, effectiveSupabaseAnonKey, {
         auth: {
           autoRefreshToken: false,
           persistSession: false,
@@ -188,13 +295,13 @@ export const authenticateRequest = async (req) => {
       const tokenProjectRef = tokenPayload?.ref || null;
       const serviceProjectRef = extractProjectRefFromJwt(process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-      if (tokenProjectRef && serviceProjectRef && tokenProjectRef !== serviceProjectRef) {
+      if (!tenantRuntime && tokenProjectRef && serviceProjectRef && tokenProjectRef !== serviceProjectRef) {
         return {
           error: { status: 401, body: { error: 'Session does not belong to this Supabase project' } },
         };
       }
 
-      const adminUserResult = await adminClient.auth.admin.getUserById(tokenPayload.sub);
+      const adminUserResult = await effectiveAdminClient.auth.admin.getUserById(tokenPayload.sub);
 
       if (adminUserResult.error || !adminUserResult.data?.user) {
         return {
@@ -205,7 +312,7 @@ export const authenticateRequest = async (req) => {
       data = { user: adminUserResult.data.user };
     }
 
-    const userClient = createClient(publicSupabaseUrl, publicSupabaseAnonKey, {
+    const userClient = createClient(effectiveSupabaseUrl, effectiveSupabaseAnonKey, {
       auth: {
         autoRefreshToken: false,
         persistSession: false,
@@ -218,7 +325,13 @@ export const authenticateRequest = async (req) => {
       },
     });
 
-    return { user: data.user, adminClient, userClient };
+    return {
+      user: data.user,
+      adminClient: effectiveAdminClient,
+      userClient,
+      tenantRuntime: tenantRuntime?.tenant || null,
+      masterAdminClient,
+    };
   } catch (error) {
     return {
       error: { status: 500, body: { error: error.message } },

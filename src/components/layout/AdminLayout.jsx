@@ -13,9 +13,10 @@ import { getTaskStats } from '../../services/TaskService';
 import { fetchSystemSettings, SYSTEM_SETTINGS_UPDATED_EVENT } from '../../services/systemSettingsApi';
 import { prefetchAdminModuleChunk, prewarmAdminModuleChunks } from '../../utils/adminModulePreloader';
 import { isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../../utils/accountType';
-import { getHostContext } from '../../utils/hostContext';
+import { getHostContext, isSaharaXBrandingHost } from '../../utils/hostContext';
 import OptimizedAvatar from '../common/OptimizedAvatar';
 import MessageService from '../../services/MessageService';
+import { APP_VERSION_LABEL } from '../../config/appVersion';
 import {
   LayoutDashboard,
   CalendarDays,
@@ -49,15 +50,7 @@ const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
 
 const getTenantLogoFallback = () => {
   if (typeof window === 'undefined') return '';
-  const hostname = String(window.location.hostname || '').toLowerCase();
-  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
-  const isSaharaXTenant =
-    isLocal ||
-    hostname === 'saharax.driveout.io' ||
-    hostname === 'saharax.co' ||
-    hostname === 'www.saharax.co';
-
-  return isSaharaXTenant ? SAHARAX_DEFAULT_LOGO_URL : '';
+  return isSaharaXBrandingHost() ? SAHARAX_DEFAULT_LOGO_URL : '';
 };
 
 const scheduleBackgroundTask = (callback) => {
@@ -101,7 +94,7 @@ const AdminLayout = () => {
   const [tenantLogoUrl, setTenantLogoUrl] = useState('');
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, userProfile, signOut, hasPermission } = useAuth();
+  const { user, userProfile, signOut, hasPermission, hasFeature, platformAccess, tenantSession } = useAuth();
   const { i18n } = useTranslation();
   const { setLanguage } = useLanguageContext();
   const profileMenuRef = useRef(null);
@@ -110,6 +103,7 @@ const AdminLayout = () => {
   const activeLanguage = isFrench ? 'fr' : 'en';
   const inheritedTenantLogoUrl = getTenantLogoFallback();
   const hostContext = getHostContext();
+  const isIsolatedTenantWorkspace = hostContext.kind === 'tenant' && !isSaharaXBrandingHost(hostContext);
   const personalProfileImage =
     userProfile?.profile_picture_url ||
     userProfile?.avatar_url ||
@@ -121,11 +115,20 @@ const AdminLayout = () => {
   const resolvedProfileImage = personalProfileImage || tenantLogoUrl || inheritedTenantLogoUrl || '';
   const normalizedEmail = String(userProfile?.email || user?.email || '').toLowerCase();
   const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
+  const hasPlatformControlAccess =
+    platformOwnerOverride ||
+    platformAccess?.is_platform_owner === true ||
+    platformAccess?.is_platform_admin === true;
+  const normalizedWorkspaceRole = String(userProfile?.role || '').toLowerCase();
+  const isInternalTenantWorkspaceRole = ['owner', 'admin', 'employee', 'guide'].includes(normalizedWorkspaceRole);
   const isBusinessOwnerWorkspace =
-    (!platformOwnerOverride && String(userProfile?.role || '').toLowerCase() === 'business_owner') ||
+    !platformOwnerOverride &&
     (
-      !platformOwnerOverride &&
-      isApprovedBusinessOwnerAccount(user?.user_metadata || user?.app_metadata || {})
+      normalizedWorkspaceRole === 'business_owner' ||
+      (
+        !isInternalTenantWorkspaceRole &&
+        isApprovedBusinessOwnerAccount(user?.user_metadata || user?.app_metadata || {})
+      )
     );
 
   // Navigation modules with permissions
@@ -288,7 +291,8 @@ const AdminLayout = () => {
       icon: Globe,
       accent: 'from-sky-500 to-indigo-600',
       path: '/admin/website',
-      moduleName: 'System Settings'
+      moduleName: 'System Settings',
+      featureKey: 'website_editor',
     },
     {
       id: 'export',
@@ -308,8 +312,12 @@ const AdminLayout = () => {
     }
   ];
 
-  const visibleNavigationModules = navigationModules.filter((module) => {
-    if (hostContext.kind === 'tenant' && ['workspaces', 'platform-admins'].includes(module.id)) {
+  const workspaceEligibleNavigationModules = navigationModules.filter((module) => {
+    if (
+      hostContext.kind === 'tenant' &&
+      ['workspaces', 'platform-admins'].includes(module.id) &&
+      !hasPlatformControlAccess
+    ) {
       return false;
     }
 
@@ -317,6 +325,14 @@ const AdminLayout = () => {
       return false;
     }
 
+    if (module.featureKey && !hasFeature(module.featureKey)) {
+      return false;
+    }
+
+    return true;
+  });
+
+  const visibleNavigationModules = workspaceEligibleNavigationModules.filter((module) => {
     return hasPermission(module.moduleName);
   });
 
@@ -438,6 +454,17 @@ const AdminLayout = () => {
     let cancelled = false;
 
     const loadTenantBranding = async () => {
+      if (isIsolatedTenantWorkspace) {
+        const tenantSettings =
+          tenantSession?.tenantSettings && typeof tenantSession.tenantSettings === 'object'
+            ? tenantSession.tenantSettings
+            : {};
+        if (!cancelled) {
+          setTenantLogoUrl(String(tenantSettings.logo_url || '').trim());
+        }
+        return;
+      }
+
       try {
         const tenantSettings = await fetchSystemSettings();
         if (!cancelled) {
@@ -463,7 +490,7 @@ const AdminLayout = () => {
       cancelled = true;
       window.removeEventListener(SYSTEM_SETTINGS_UPDATED_EVENT, handleBrandingUpdate);
     };
-  }, []);
+  }, [isIsolatedTenantWorkspace, tenantSession]);
 
   useEffect(() => {
     setProfileMenuOpen(false);
@@ -991,12 +1018,12 @@ const AdminLayout = () => {
               <>
                 <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
                   <span>Module access</span>
-                  <span>{visibleNavigationModules.length}/{navigationModules.length}</span>
+                  <span>{visibleNavigationModules.length}/{workspaceEligibleNavigationModules.length}</span>
                 </div>
                 <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100">
                   <div
                     className="h-full rounded-full bg-gradient-to-r from-violet-600 to-indigo-700"
-                    style={{ width: `${(visibleNavigationModules.length / navigationModules.length) * 100}%` }}
+                    style={{ width: `${workspaceEligibleNavigationModules.length > 0 ? (visibleNavigationModules.length / workspaceEligibleNavigationModules.length) * 100 : 0}%` }}
                   />
                 </div>
                 <div className="mt-4">
@@ -1119,7 +1146,12 @@ const AdminLayout = () => {
                     >
                       <div className="border-b border-slate-100 px-4 py-3.5">
                         <p className="truncate text-sm font-semibold text-slate-900">{user?.email}</p>
-                        <p className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-500">{userProfile?.role || 'Administrator'}</p>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <p className="text-xs uppercase tracking-[0.16em] text-slate-500">{userProfile?.role || 'Administrator'}</p>
+                          <span className="inline-flex items-center rounded-full border border-violet-200/80 bg-violet-50 px-2.5 py-1 text-[10px] font-black tracking-[0.18em] text-violet-700 shadow-sm">
+                            {APP_VERSION_LABEL}
+                          </span>
+                        </div>
                       </div>
 
                       <div className="space-y-1.5 px-1 py-2" role="menu">

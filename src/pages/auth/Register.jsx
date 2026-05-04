@@ -54,10 +54,10 @@ const ACCOUNT_TYPES = [
     icon: Building2,
     title: { en: 'I Run a Rental Business', fr: 'Je gère une activité de location' },
     description: {
-      en: 'For companies managing fleet, staff, bookings, finance, and marketplace visibility.',
-      fr: 'Pour les entreprises qui gèrent flotte, équipe, réservations, finance et visibilité marketplace.'
+      en: 'Start a 30-day demo with your company name, ICE number, fleet size, and phone.',
+      fr: 'Démarrez un essai de 30 jours avec le nom de société, le numéro ICE, la taille de flotte et le téléphone.'
     },
-    badge: { en: 'Business onboarding', fr: 'Onboarding business' }
+    badge: { en: '30-day demo', fr: 'Démo 30 jours' }
   }
 ];
 
@@ -65,6 +65,7 @@ const ACTIVE_CITY_OPTIONS = ['Tangier'];
 const DEFAULT_ACTIVE_CITY = ACTIVE_CITY_OPTIONS[0] || 'Tangier';
 const PENDING_ACCOUNT_INTENT_KEY = 'saharax_pending_account_type';
 const SHARE_ATTRIBUTION_KEY = 'saharax_share_attribution';
+const OPERATOR_FLEET_SIZE_OPTIONS = ['1-5', '6-20', '21-50', '50+'];
 
 const getSafeRedirectPath = (value = '') => {
   const normalized = String(value || '').trim();
@@ -109,6 +110,7 @@ const Register = () => {
     city: DEFAULT_ACTIVE_CITY,
     country: 'Morocco',
     companyName: '',
+    companyIceNumber: '',
     serviceArea: '',
     vehicleCountHint: '',
     preferredLanguage: i18n.resolvedLanguage || 'en',
@@ -154,13 +156,35 @@ const Register = () => {
     }
 
     if (step === 3) {
-      if (!formData.phone.trim() || !formData.city.trim()) {
-        setError(tr('Phone and city are required to continue.', 'Le téléphone et la ville sont requis pour continuer.'));
+      if (!formData.phone.trim()) {
+        setError(tr('Phone is required to continue.', 'Le téléphone est requis pour continuer.'));
         return false;
       }
 
       if (formData.accountType === 'operator' && !formData.companyName.trim()) {
         setError(tr('Company name is required for operators.', "Le nom de l'entreprise est requis pour les opérateurs."));
+        return false;
+      }
+
+      const normalizedIceNumber = formData.companyIceNumber.replace(/\D/g, '');
+
+      if (formData.accountType === 'operator' && !normalizedIceNumber) {
+        setError(tr('ICE number is required for the 30-day demo.', 'Le numéro ICE est requis pour la démo de 30 jours.'));
+        return false;
+      }
+
+      if (formData.accountType === 'operator' && normalizedIceNumber.length !== 15) {
+        setError(tr('ICE number must contain exactly 15 digits.', 'Le numéro ICE doit contenir exactement 15 chiffres.'));
+        return false;
+      }
+
+      if (formData.accountType === 'operator' && !formData.vehicleCountHint.trim()) {
+        setError(tr('Please choose your fleet size.', 'Veuillez choisir la taille de votre flotte.'));
+        return false;
+      }
+
+      if (formData.accountType !== 'operator' && !formData.city.trim()) {
+        setError(tr('City is required to continue.', 'La ville est requise pour continuer.'));
         return false;
       }
     }
@@ -191,6 +215,7 @@ const Register = () => {
       city: formData.city.trim(),
       country: formData.country.trim(),
       company_name: formData.companyName.trim(),
+      company_ice_number: formData.companyIceNumber.replace(/\D/g, ''),
       service_area: formData.serviceArea.trim(),
       vehicle_count_hint: formData.vehicleCountHint.trim(),
       categories_interest: formData.categoriesInterest,
@@ -245,6 +270,7 @@ const Register = () => {
             city: formData.city.trim(),
             country: formData.country.trim(),
             company_name: formData.companyName.trim(),
+            company_ice_number: formData.companyIceNumber.replace(/\D/g, ''),
             service_area: formData.serviceArea.trim(),
             vehicle_count_hint: formData.vehicleCountHint.trim(),
             categories_interest: formData.categoriesInterest,
@@ -384,6 +410,7 @@ const Register = () => {
                         <input
                           value={formData.fullName}
                           onChange={(e) => updateField('fullName', e.target.value)}
+                          autoComplete="name"
                           className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3.5 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
                           placeholder={tr('Enter the main contact name', 'Entrez le nom du contact principal')}
                         />
@@ -397,6 +424,7 @@ const Register = () => {
                             type="email"
                             value={formData.email}
                             onChange={(e) => updateField('email', e.target.value)}
+                            autoComplete="email"
                             className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 py-3.5 pl-11 pr-4 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
                             placeholder={tr('Enter your email', 'Entrez votre e-mail')}
                           />
@@ -410,6 +438,7 @@ const Register = () => {
                             type={showPassword ? 'text' : 'password'}
                             value={formData.password}
                             onChange={(e) => updateField('password', e.target.value)}
+                            autoComplete="new-password"
                             className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 py-3.5 pl-4 pr-12 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
                             placeholder={tr('At least 6 characters', 'Au moins 6 caractères')}
                           />
@@ -431,6 +460,7 @@ const Register = () => {
                             type={showConfirmPassword ? 'text' : 'password'}
                             value={formData.confirmPassword}
                             onChange={(e) => updateField('confirmPassword', e.target.value)}
+                            autoComplete="new-password"
                             className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 py-3.5 pl-4 pr-12 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
                             placeholder={tr('Repeat the password', 'Répétez le mot de passe')}
                           />
@@ -451,79 +481,114 @@ const Register = () => {
                 {step === 3 && (
                   <div className="space-y-5">
                     <div className="grid gap-5 sm:grid-cols-2">
-                      <PhoneInputWithCountryCode
-                        value={formData.phone}
-                        onChange={(value) => updateField('phone', value)}
-                        tr={tr}
-                      />
-
-                      <div>
-                        <label className="mb-2 block text-sm font-medium text-slate-700">{tr('Preferred language', 'Langue préférée')}</label>
-                        <select
-                          value={formData.preferredLanguage}
-                          onChange={(e) => updateField('preferredLanguage', e.target.value)}
-                          className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3.5 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
-                        >
-                          <option value="en">English</option>
-                          <option value="fr">Français</option>
-                          <option value="ar">العربية</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="mb-2 block text-sm font-medium text-slate-700">{tr('City', 'Ville')}</label>
-                        <div className="relative">
-                          <MapPin className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                          <select
-                            value={formData.city}
-                            onChange={(e) => updateField('city', e.target.value)}
-                            className="block w-full appearance-none rounded-2xl border border-slate-200 bg-slate-50/80 py-3.5 pl-11 pr-4 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
-                          >
-                            {cityOptions.map((city) => (
-                              <option key={city} value={city}>
-                                {city}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="mb-2 block text-sm font-medium text-slate-700">{tr('Country', 'Pays')}</label>
-                        <input
-                          value={formData.country}
-                          onChange={(e) => updateField('country', e.target.value)}
-                          className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3.5 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
+                      <div className="sm:col-span-2">
+                        <PhoneInputWithCountryCode
+                          value={formData.phone}
+                          onChange={(value) => updateField('phone', value)}
+                          tr={tr}
                         />
                       </div>
 
                       {formData.accountType === 'operator' && (
                         <>
+                          <div className="sm:col-span-2 rounded-[1.5rem] border border-emerald-200 bg-emerald-50/80 p-4">
+                            <p className="text-sm font-semibold text-emerald-900">
+                              {tr('Start your 30-day demo', 'Commencez votre démo de 30 jours')}
+                            </p>
+                            <p className="mt-1 text-sm leading-6 text-emerald-800">
+                              {tr(
+                                'For the demo, we only ask for your company name, ICE number, fleet size, and phone. You can complete the rest later when you upgrade.',
+                                'Pour la démo, nous demandons seulement le nom de la société, le numéro ICE, la taille de flotte et le téléphone. Vous pourrez compléter le reste plus tard lors de la mise à niveau.'
+                              )}
+                            </p>
+                          </div>
                           <div className="sm:col-span-2">
                             <label className="mb-2 block text-sm font-medium text-slate-700">{tr('Company name', "Nom de l'entreprise")}</label>
                             <input
                               value={formData.companyName}
                               onChange={(e) => updateField('companyName', e.target.value)}
+                              autoComplete="organization"
                               className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3.5 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
                               placeholder={tr('SaharaX Tangier', 'SaharaX Tanger')}
                             />
                           </div>
+
                           <div>
-                            <label className="mb-2 block text-sm font-medium text-slate-700">{tr('Service area', 'Zone de service')}</label>
+                            <label className="mb-2 block text-sm font-medium text-slate-700">{tr('ICE number', 'Numéro ICE')}</label>
                             <input
-                              value={formData.serviceArea}
-                              onChange={(e) => updateField('serviceArea', e.target.value)}
+                              value={formData.companyIceNumber}
+                              onChange={(e) => updateField('companyIceNumber', e.target.value.replace(/\D/g, '').slice(0, 15))}
                               className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3.5 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
-                              placeholder={tr('Tangier / Playa / Cap Spartel', 'Tanger / Playa / Cap Spartel')}
+                              inputMode="numeric"
+                              placeholder={tr('Enter your 15-digit Moroccan ICE number', 'Entrez votre numéro ICE marocain à 15 chiffres')}
                             />
+                            <p className="mt-2 text-sm text-slate-500">{tr('ICE format: 15 digits', 'Format ICE : 15 chiffres')}</p>
                           </div>
-                          <div>
+
+                          <div className="sm:col-span-2">
                             <label className="mb-2 block text-sm font-medium text-slate-700">{tr('Fleet size hint', 'Taille de flotte')}</label>
-                            <input
-                              value={formData.vehicleCountHint}
-                              onChange={(e) => updateField('vehicleCountHint', e.target.value)}
+                            <div className="flex flex-wrap gap-2">
+                              {OPERATOR_FLEET_SIZE_OPTIONS.map((option) => {
+                                const selected = formData.vehicleCountHint === option;
+                                return (
+                                  <button
+                                    key={option}
+                                    type="button"
+                                    onClick={() => updateField('vehicleCountHint', option)}
+                                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                                      selected
+                                        ? 'bg-violet-600 text-white'
+                                        : 'border border-slate-200 bg-white text-slate-600 hover:border-violet-200 hover:text-violet-700'
+                                    }`}
+                                  >
+                                    {option}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      {formData.accountType !== 'operator' && (
+                        <>
+                          <div>
+                            <label className="mb-2 block text-sm font-medium text-slate-700">{tr('Preferred language', 'Langue préférée')}</label>
+                            <select
+                              value={formData.preferredLanguage}
+                              onChange={(e) => updateField('preferredLanguage', e.target.value)}
                               className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3.5 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
-                              placeholder={tr('Example: 15 vehicles', 'Exemple : 15 véhicules')}
+                            >
+                              <option value="en">English</option>
+                              <option value="fr">Français</option>
+                              <option value="ar">العربية</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="mb-2 block text-sm font-medium text-slate-700">{tr('City', 'Ville')}</label>
+                            <div className="relative">
+                              <MapPin className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                              <select
+                                value={formData.city}
+                                onChange={(e) => updateField('city', e.target.value)}
+                                className="block w-full appearance-none rounded-2xl border border-slate-200 bg-slate-50/80 py-3.5 pl-11 pr-4 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
+                              >
+                                {cityOptions.map((city) => (
+                                  <option key={city} value={city}>
+                                    {city}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="mb-2 block text-sm font-medium text-slate-700">{tr('Country', 'Pays')}</label>
+                            <input
+                              value={formData.country}
+                              onChange={(e) => updateField('country', e.target.value)}
+                              className="block w-full rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3.5 text-slate-900 outline-none transition focus:border-violet-400 focus:bg-white focus:ring-4 focus:ring-violet-100"
                             />
                           </div>
                         </>

@@ -10,11 +10,12 @@ import {
   normalizePermissionMap as normalizeCatalogPermissionMap,
   buildBusinessOwnerPermissionMap,
   resolvePermissionKey,
-  isModuleAllowedByTenantFeatures,
 } from '../utils/permissionCatalog';
 import { getBusinessOwnerFreezeRedirect, hasBusinessOwnerRequest, isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../utils/accountType';
 import { resolveUserEntry } from '../utils/tenantEntryResolver';
 import { getHostContext } from '../utils/hostContext';
+import { buildEffectiveTenantFeatureAccess, normalizeTenantPlanType } from '../config/tenantPlans';
+import { isTenantFeatureEnabled, isTenantModuleEnabled } from '../utils/tenantFeatureAccess';
 
 const GLOBAL_AUTH_CONTEXT_KEY = '__SAHARAX_AUTH_CONTEXT__';
 const AuthContext = globalThis[GLOBAL_AUTH_CONTEXT_KEY] || createContext(null);
@@ -61,10 +62,11 @@ const getPreferredOAuthRedirectTo = () => {
   if (typeof window === 'undefined') return undefined;
   const origin = String(window.location.origin || '').trim();
   const hostname = String(window.location.hostname || '').toLowerCase();
+  const port = String(window.location.port || '').trim();
   const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
 
   if (import.meta.env.DEV && isLocalHost) {
-    return 'http://localhost:5173/login';
+    return `http://${hostname}${port ? `:${port}` : ''}/login`;
   }
 
   if (!origin) return undefined;
@@ -138,6 +140,13 @@ const buildApprovedBusinessOwnerProfile = (authUser, appUserRecord, fullName) =>
     profile_picture_url: profilePictureUrl,
     avatar_url: profilePictureUrl,
     accountType: authUser.user_metadata?.account_type || authUser.app_metadata?.account_type || 'operator',
+    companyName: authUser.user_metadata?.company_name || authUser.app_metadata?.company_name || '',
+    companyIceNumber:
+      authUser.user_metadata?.company_ice_number ||
+      authUser.app_metadata?.company_ice_number ||
+      authUser.user_metadata?.company_rc_number ||
+      authUser.app_metadata?.company_rc_number ||
+      '',
     permissions: Object.entries(businessOwnerPermissions).map(([module_name, has_access]) => ({
       module_name,
       has_access,
@@ -151,6 +160,13 @@ const buildApprovedBusinessOwnerProfile = (authUser, appUserRecord, fullName) =>
     subscriptionStatus: appUserRecord?.subscription_status || authUser.user_metadata?.subscription_status || 'trial',
     planType: appUserRecord?.plan_type || authUser.user_metadata?.plan_type || 'starter',
     billingStatus: appUserRecord?.billing_status || authUser.user_metadata?.billing_status || 'none',
+    activationPendingCompliance: Boolean(
+      authUser.user_metadata?.activation_pending_compliance ||
+      authUser.app_metadata?.activation_pending_compliance
+    ),
+    upgradeRequirements: Array.isArray(authUser.user_metadata?.upgrade_requirements)
+      ? authUser.user_metadata.upgrade_requirements
+      : (Array.isArray(authUser.app_metadata?.upgrade_requirements) ? authUser.app_metadata.upgrade_requirements : []),
     trialStartedAt: appUserRecord?.trial_started_at || authUser.user_metadata?.trial_started_at || null,
     trialEndsAt: appUserRecord?.trial_ends_at || authUser.user_metadata?.trial_ends_at || null,
     subscriptionStartedAt: appUserRecord?.subscription_started_at || authUser.user_metadata?.subscription_started_at || null,
@@ -172,11 +188,42 @@ export const useAuth = () => {
   return context;
 };
 
+const getProfileStorageContextKey = () => {
+  if (typeof window === 'undefined') {
+    return 'server';
+  }
+
+  const host = getHostContext();
+  return [
+    host.kind || 'unknown',
+    host.hostname || window.location.hostname || '',
+    host.tenantSlug || '',
+  ].join('|');
+};
+
 export const AuthProvider = ({ children }) => {
   const [userProfile, setUserProfile] = useState(() => {
     try {
       const storedProfile = localStorage.getItem('userProfile');
-      return storedProfile ? JSON.parse(storedProfile) : null;
+      if (!storedProfile) return null;
+
+      const parsed = JSON.parse(storedProfile);
+      const currentContextKey = getProfileStorageContextKey();
+      const host = getHostContext();
+      const storedRole = String(parsed?.profile?.role || '').trim().toLowerCase();
+
+      if (
+        host.kind === 'tenant' &&
+        storedRole === 'business_owner'
+      ) {
+        return null;
+      }
+
+      if (parsed?.profile && parsed?.contextKey === currentContextKey) {
+        return parsed.profile;
+      }
+
+      return null;
     } catch (error) {
       console.warn('Failed to read persisted user profile:', error);
       return null;
@@ -246,7 +293,10 @@ export const AuthProvider = ({ children }) => {
 
     if (userProfile) {
       try {
-        localStorage.setItem('userProfile', JSON.stringify(userProfile));
+        localStorage.setItem('userProfile', JSON.stringify({
+          contextKey: getProfileStorageContextKey(),
+          profile: userProfile,
+        }));
       } catch (error) {
         console.warn('Failed to persist user profile locally:', error);
       }
@@ -293,6 +343,7 @@ export const AuthProvider = ({ children }) => {
       ['city', pendingIntent.city],
       ['country', pendingIntent.country],
       ['company_name', pendingIntent.company_name],
+      ['company_ice_number', pendingIntent.company_ice_number || pendingIntent.company_rc_number],
       ['service_area', pendingIntent.service_area],
       ['vehicle_count_hint', pendingIntent.vehicle_count_hint],
       ['categories_interest', pendingIntent.categories_interest],
@@ -379,6 +430,30 @@ export const AuthProvider = ({ children }) => {
         console.warn('Failed to load app user record, falling back to auth metadata:', appUserError);
       }
 
+      const hostContext = getHostContext();
+      const internalTenantRoles = new Set(['owner', 'admin', 'employee', 'guide']);
+      const appRecordIndicatesInternalTenantRole = internalTenantRoles.has(appRecordRole || '');
+      const normalizedOrganizationRole = String(
+        appUserRecord?.organization_role ||
+        authUser.user_metadata?.organization_role ||
+        authUser.app_metadata?.organization_role ||
+        ''
+      ).trim().toLowerCase();
+      const tenantHostRoleOverride =
+        hostContext.kind === 'tenant'
+          ? (
+            appRecordIndicatesInternalTenantRole
+              ? (appRecordRole || null)
+              : (
+                ['org_owner', 'owner'].includes(normalizedOrganizationRole)
+                  ? 'owner'
+                  : ['org_admin', 'admin'].includes(normalizedOrganizationRole)
+                    ? 'admin'
+                    : null
+              )
+          )
+          : null;
+
       const storedPermissionsMap = normalizeCatalogPermissionMap(
         appUserRecord?.permissions && typeof appUserRecord.permissions === 'object' && !Array.isArray(appUserRecord.permissions)
           ? appUserRecord.permissions
@@ -389,10 +464,13 @@ export const AuthProvider = ({ children }) => {
         ...rpcPermissionsMap,
       };
       const privilegedOwnerOverride = isPlatformOwnerEmail(authUser.email);
-      const businessOwnerLikeAccount = !privilegedOwnerOverride && hasBusinessOwnerRequest({
+      const businessOwnerRequestMetadata = {
         ...(authUser.app_metadata || {}),
         ...(authUser.user_metadata || {}),
-      });
+      };
+      const businessOwnerLikeAccount = !privilegedOwnerOverride
+        && hostContext.kind !== 'tenant'
+        && hasBusinessOwnerRequest(businessOwnerRequestMetadata);
       const approvedBusinessOwner = businessOwnerLikeAccount && isApprovedBusinessOwnerAccount({
         ...(authUser.app_metadata || {}),
         ...(authUser.user_metadata || {}),
@@ -412,9 +490,10 @@ export const AuthProvider = ({ children }) => {
 
       const inferredRole = inferRoleFromPermissions(userPermissionsMap);
       const userRole =
-        businessOwnerLikeAccount
+        tenantHostRoleOverride ||
+        (businessOwnerLikeAccount
           ? 'business_owner'
-          : appRecordRole ||
+          : appRecordRole) ||
         (normalizedMetadataRole && normalizedMetadataRole !== 'customer' ? normalizedMetadataRole : null) ||
         (inferredRole !== 'customer' ? inferredRole : null) ||
         (privilegedOwnerOverride ? 'owner' : null) ||
@@ -544,10 +623,15 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error('Failed to load user profile and permissions:', error);
       const privilegedOwnerOverride = isPlatformOwnerEmail(authUser.email);
-      const fallbackBusinessOwnerLikeAccount = !privilegedOwnerOverride && hasBusinessOwnerRequest({
-        ...(authUser.app_metadata || {}),
-        ...(authUser.user_metadata || {}),
-      });
+      const hostContext = getHostContext();
+      const fallbackAuthRole = String(authUser.user_metadata?.role || authUser.app_metadata?.role || '').trim().toLowerCase();
+      const fallbackInternalTenantRole = ['owner', 'admin', 'employee', 'guide'].includes(fallbackAuthRole);
+      const fallbackBusinessOwnerLikeAccount = !privilegedOwnerOverride
+        && !(hostContext.kind === 'tenant' && fallbackInternalTenantRole)
+        && hasBusinessOwnerRequest({
+          ...(authUser.app_metadata || {}),
+          ...(authUser.user_metadata || {}),
+        });
       const fallbackApprovedBusinessOwner = fallbackBusinessOwnerLikeAccount && isApprovedBusinessOwnerAccount({
         ...(authUser.app_metadata || {}),
         ...(authUser.user_metadata || {}),
@@ -901,6 +985,7 @@ export const AuthProvider = ({ children }) => {
         city: userData.city || '',
         country: userData.country || '',
         company_name: userData.company_name || '',
+        company_ice_number: userData.company_ice_number || userData.company_rc_number || '',
         service_area: userData.service_area || '',
         vehicle_count_hint: userData.vehicle_count_hint || '',
         categories_interest: userData.categories_interest || [],
@@ -922,9 +1007,9 @@ export const AuthProvider = ({ children }) => {
         return { user: null, error };
       }
 
-      if (data?.user?.id) {
+      if (data?.user?.id && data?.session) {
         try {
-          await supabase
+          const { error: profileSeedError } = await supabase
             .from('app_b30c02e74da644baad4668e3587d86b1_users')
             .upsert({
               id: data.user.id,
@@ -933,6 +1018,9 @@ export const AuthProvider = ({ children }) => {
               role: 'customer',
               phone_number: metadata.phone || null,
             }, { onConflict: 'id' });
+          if (profileSeedError) {
+            console.warn('Unable to seed app user profile during signup:', profileSeedError);
+          }
         } catch (profileError) {
           console.warn('Unable to seed app user profile during signup:', profileError);
         }
@@ -1016,10 +1104,23 @@ export const AuthProvider = ({ children }) => {
     const normalizedEmail = (userProfile.email || '').toLowerCase();
     const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
     const hostContext = getHostContext();
-    const tenantFeatureAccess =
-      tenantSession?.tenant?.metadata?.feature_access && typeof tenantSession.tenant.metadata.feature_access === 'object'
-        ? tenantSession.tenant.metadata.feature_access
-        : {};
+    const rawTenantFeatureAccess =
+      tenantSession?.tenant?.metadata?.effective_feature_access && typeof tenantSession.tenant.metadata.effective_feature_access === 'object'
+        ? tenantSession.tenant.metadata.effective_feature_access
+        : (
+          tenantSession?.tenant?.metadata?.feature_access && typeof tenantSession.tenant.metadata.feature_access === 'object'
+            ? tenantSession.tenant.metadata.feature_access
+            : {}
+        );
+    const tenantPlanType = normalizeTenantPlanType(
+      tenantSession?.subscription?.plan_type ||
+      tenantSession?.planType ||
+      userProfile?.planType ||
+      session?.user?.user_metadata?.plan_type ||
+      session?.user?.app_metadata?.plan_type ||
+      'starter'
+    );
+    const tenantFeatureAccess = buildEffectiveTenantFeatureAccess(tenantPlanType, rawTenantFeatureAccess);
     const enforceTenantFeatureAccess =
       String(userProfile.role || '').toLowerCase() === 'business_owner'
       || hostContext.kind === 'tenant';
@@ -1043,7 +1144,7 @@ export const AuthProvider = ({ children }) => {
 
     if (String(userProfile.role || '').toLowerCase() === 'owner' || platformOwnerOverride) {
       return enforceTenantFeatureAccess
-        ? isModuleAllowedByTenantFeatures(moduleName, tenantFeatureAccess)
+        ? isTenantModuleEnabled(moduleName, tenantFeatureAccess, tenantPlanType)
         : true;
     }
 
@@ -1063,8 +1164,55 @@ export const AuthProvider = ({ children }) => {
       return true;
     }
 
-    return isModuleAllowedByTenantFeatures(moduleName, tenantFeatureAccess);
-  }, [platformAccess?.access_enabled, platformAccess?.permissions, tenantSession?.tenant?.metadata?.feature_access, userProfile]);
+    return isTenantModuleEnabled(moduleName, tenantFeatureAccess, tenantPlanType);
+  }, [
+    platformAccess?.access_enabled,
+    platformAccess?.permissions,
+    session?.user?.app_metadata?.plan_type,
+    session?.user?.user_metadata?.plan_type,
+    tenantSession?.planType,
+    tenantSession?.subscription?.plan_type,
+    tenantSession?.tenant?.metadata?.effective_feature_access,
+    tenantSession?.tenant?.metadata?.feature_access,
+    userProfile,
+  ]);
+
+  const hasFeature = useCallback((featureKey) => {
+    if (!userProfile) return false;
+
+    const normalizedEmail = (userProfile.email || '').toLowerCase();
+    if (isPlatformOwnerEmail(normalizedEmail)) {
+      return true;
+    }
+
+    const tenantPlanType = normalizeTenantPlanType(
+      tenantSession?.subscription?.plan_type ||
+      tenantSession?.planType ||
+      userProfile?.planType ||
+      session?.user?.user_metadata?.plan_type ||
+      session?.user?.app_metadata?.plan_type ||
+      'starter'
+    );
+    const rawTenantFeatureAccess =
+      tenantSession?.tenant?.metadata?.effective_feature_access && typeof tenantSession.tenant.metadata.effective_feature_access === 'object'
+        ? tenantSession.tenant.metadata.effective_feature_access
+        : (
+          tenantSession?.tenant?.metadata?.feature_access && typeof tenantSession.tenant.metadata.feature_access === 'object'
+            ? tenantSession.tenant.metadata.feature_access
+            : {}
+        );
+    const tenantFeatureAccess = buildEffectiveTenantFeatureAccess(tenantPlanType, rawTenantFeatureAccess);
+
+    return isTenantFeatureEnabled(featureKey, tenantFeatureAccess, tenantPlanType);
+  }, [
+    session?.user?.app_metadata?.plan_type,
+    session?.user?.user_metadata?.plan_type,
+    tenantSession?.planType,
+    tenantSession?.subscription?.plan_type,
+    tenantSession?.tenant?.metadata?.effective_feature_access,
+    tenantSession?.tenant?.metadata?.feature_access,
+    userProfile,
+  ]);
 
   const refreshPermissions = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -1118,7 +1266,7 @@ export const AuthProvider = ({ children }) => {
             const targetHostname = String(targetUrl.hostname || '').trim().toLowerCase();
 
             if (currentHostname && currentHostname === targetHostname) {
-              return '/admin/dashboard';
+              return null;
             }
           } catch (error) {
             console.warn('Unable to normalize tenant workspace redirect target:', error);
@@ -1279,6 +1427,7 @@ export const AuthProvider = ({ children }) => {
     signUp,
     signOut,
     hasPermission,
+    hasFeature,
     refreshPermissions,
     getUserRole,
     tenantSession,

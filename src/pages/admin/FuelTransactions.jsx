@@ -18,6 +18,7 @@ import FuelFiltersPanel from '../../components/fuel/FuelFiltersPanel';
 import AddFuelTransactionModal from '../../components/fuel/AddFuelTransactionModal';
 import TransactionDetailsModal from '../../components/fuel/TransactionDetailsModal';
 import FuelTransactionService from '../../services/FuelTransactionService';
+import appWarmupService from '../../services/AppWarmupService';
 import i18n from '../../i18n';
 
 const FuelTransactions = () => {
@@ -41,11 +42,34 @@ const FuelTransactions = () => {
     location: ''
   });
   const [tablesExist, setTablesExist] = useState(false);
+  const warmFuelSnapshot = appWarmupService.getWarmFuelSnapshot();
+  const cachedPrefetchedTransactionPage =
+    FuelTransactionService.getCachedDefaultTransactions(20, 0) ||
+    warmFuelSnapshot?.prefetchedTransactions ||
+    null;
+  const [initialTransactionPage, setInitialTransactionPage] = useState(cachedPrefetchedTransactionPage);
 
   useEffect(() => {
     loadVehicles();
     checkDatabaseSetup();
+    hydrateInitialTransactions();
   }, []);
+
+  const hydrateInitialTransactions = async () => {
+    if (cachedPrefetchedTransactionPage?.success) {
+      setInitialTransactionPage(cachedPrefetchedTransactionPage);
+      return;
+    }
+
+    try {
+      const prefetchedPage = await FuelTransactionService.prefetchDefaultTransactions();
+      if (prefetchedPage?.success) {
+        setInitialTransactionPage(prefetchedPage);
+      }
+    } catch (_error) {
+      // Ignore initial hydration failures and let the list fetch normally.
+    }
+  };
 
   const checkDatabaseSetup = async () => {
     try {
@@ -229,6 +253,7 @@ const FuelTransactions = () => {
           vehicles={vehicles}
           onAddTransaction={handleAddTransaction}
           onViewDetails={handleViewDetails}
+          initialPageData={initialTransactionPage}
         />
       </div>
 

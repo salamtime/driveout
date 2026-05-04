@@ -4,6 +4,7 @@ import {
   PLATFORM_TENANTS_TABLE,
 } from './supabase.js';
 import { insertTenantAuditLog } from './tenantAuditLog.js';
+import { TENANT_FEATURE_KEYS, TENANT_PLAN_ORDER } from '../../src/config/tenantPlans.js';
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -19,18 +20,7 @@ const sanitizePlanLimits = (limits = {}) => {
 
 const sanitizeFeatureAccess = (features = {}) => {
   const source = features && typeof features === 'object' ? features : {};
-  const allowedKeys = [
-    'public_storefront',
-    'online_booking',
-    'finance_module',
-    'marketplace_module',
-    'ocr_id_scan',
-    'whatsapp_tools',
-    'advanced_reporting',
-    'multilingual_storefront',
-  ];
-
-  return allowedKeys.reduce((acc, key) => {
+  return TENANT_FEATURE_KEYS.reduce((acc, key) => {
     if (typeof source[key] === 'boolean') acc[key] = source[key];
     return acc;
   }, {});
@@ -46,6 +36,11 @@ const sanitizeTenantSettings = (settings = {}) => {
     'legal_business_name',
     'support_email',
     'custom_domain',
+    'company_phone',
+    'company_address',
+    'company_website',
+    'logo_url',
+    'stamp_url',
     'currency',
     'timezone',
     'country',
@@ -126,16 +121,7 @@ const sanitizeBillingEngine = (billingEngine = {}) => {
 const sanitizeCommercialSettings = (settings = {}) => {
   const source = settings && typeof settings === 'object' ? settings : {};
   const normalized = {};
-  const allowedFeatureKeys = [
-    'public_storefront',
-    'online_booking',
-    'finance_module',
-    'marketplace_module',
-    'ocr_id_scan',
-    'whatsapp_tools',
-    'advanced_reporting',
-    'multilingual_storefront',
-  ];
+  const allowedFeatureKeys = TENANT_FEATURE_KEYS;
   const allowedSources = ['included', 'add_on', 'plan_upgrade', 'custom'];
 
   if (Array.isArray(source.enabled_addons)) {
@@ -231,7 +217,7 @@ export default async function tenantControlsHandler(req, res) {
 
     const subscriptionPayload = {
       business_account_id: businessAccountId,
-      plan_type: ['starter', 'growth', 'pro'].includes(nextPlanType)
+      plan_type: TENANT_PLAN_ORDER.includes(nextPlanType)
         ? nextPlanType
         : (existingSubscription?.plan_type || 'starter'),
       subscription_status: ['trial', 'active', 'expired', 'cancelled', 'suspended'].includes(nextSubscriptionStatus)

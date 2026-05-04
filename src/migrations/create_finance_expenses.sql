@@ -29,3 +29,37 @@ create index if not exists idx_finance_expenses_organization_id
 
 create index if not exists idx_finance_expenses_reference
   on public.finance_expenses (reference_type, reference_id);
+
+alter table public.finance_expenses enable row level security;
+
+drop policy if exists "authenticated read finance expenses" on public.finance_expenses;
+create policy "authenticated read finance expenses"
+on public.finance_expenses
+for select
+to authenticated
+using (true);
+
+drop policy if exists "authenticated insert finance expenses" on public.finance_expenses;
+create policy "authenticated insert finance expenses"
+on public.finance_expenses
+for insert
+to authenticated
+with check (true);
+
+drop policy if exists "authenticated update finance expenses" on public.finance_expenses;
+create policy "authenticated update finance expenses"
+on public.finance_expenses
+for update
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "authenticated delete finance expenses" on public.finance_expenses;
+create policy "authenticated delete finance expenses"
+on public.finance_expenses
+for delete
+to authenticated
+using (true);
+
+grant select, insert, update, delete on public.finance_expenses to authenticated;
+grant select, insert, update, delete on public.finance_expenses to service_role;

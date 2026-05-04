@@ -1,6 +1,6 @@
 import packageJson from '../../package.json';
 
-const REPO_BASELINE_VERSION = '9.1';
+const REPO_BASELINE_VERSION = '9.3';
 
 const normalizeVersion = (value) => {
   const raw = String(value || '').trim();

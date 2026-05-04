@@ -99,6 +99,34 @@ const safeSelect = async (label, query, fallback = []) => {
   }
 };
 
+const safeSelectWithFallback = async ({
+  label,
+  primary,
+  fallbackQuery,
+  fallback = [],
+  shouldFallback,
+}) => {
+  try {
+    const { data, error } = await primary;
+    if (!error) return data || fallback;
+
+    const message = error.message || String(error || '');
+    if (fallbackQuery && (!shouldFallback || shouldFallback(message, error))) {
+      console.warn(`${label} primary query unavailable, retrying fallback:`, message);
+      const { data: fallbackData, error: fallbackError } = await fallbackQuery();
+      if (!fallbackError) return fallbackData || fallback;
+      console.warn(`${label} fallback unavailable:`, fallbackError.message || fallbackError);
+      return fallback;
+    }
+
+    console.warn(`${label} unavailable:`, message);
+    return fallback;
+  } catch (error) {
+    console.warn(`${label} unavailable:`, error.message || error);
+    return fallback;
+  }
+};
+
 const eventTypes = {
   rental: {
     emoji: '📄',
@@ -487,16 +515,34 @@ const CalendarPage = () => {
         .select('id,rental_id,customer_name,rental_status,status,rental_start_date,rental_end_date,started_at,completed_at,actual_end_date,vehicle_id,vehicle_plate_number,total_amount,created_at,updated_at')
         .order('rental_start_date', { ascending: false })
         .limit(500)),
-      safeSelect('Tours', supabase
-        .from(TABLE_NAMES.TOUR_BOOKINGS)
-        .select('id,tour_id,customer_name,booking_date,status,total_amount,created_at,booking_payload,booking_status,scheduled_for,updated_at,rental_status,package_name,route_type,guide_name,scheduled_date,scheduled_time,scheduled_end_at,started_at,completed_at,cancelled_at,quad_count,total_amount_mad,notes,vehicle_id')
-        .order('scheduled_for', { ascending: false })
-        .limit(500)),
-      safeSelect('Maintenance', supabase
-        .from('app_687f658e98_maintenance')
-        .select('id,vehicle_id,vehicle_name,type,maintenance_type,date,scheduled_date,service_date,status,cost,created_at,updated_at')
-        .order('created_at', { ascending: false })
-        .limit(500)),
+      safeSelectWithFallback({
+        label: 'Tours',
+        primary: supabase
+          .from(TABLE_NAMES.TOUR_BOOKINGS)
+          .select('id,tour_id,customer_name,booking_date,status,total_amount,created_at,booking_payload,booking_status,scheduled_for,updated_at,rental_status,package_name,route_type,guide_name,scheduled_date,scheduled_time,scheduled_end_at,started_at,completed_at,cancelled_at,quad_count,total_amount_mad,notes,vehicle_id')
+          .order('scheduled_for', { ascending: false })
+          .limit(500),
+        fallbackQuery: () => supabase
+          .from(TABLE_NAMES.TOUR_BOOKINGS)
+          .select('id,tour_id,customer_name,booking_date,status,total_amount,created_at,booking_payload,booking_status,scheduled_for,updated_at,rental_status,package_name,route_type,guide_name,scheduled_date,scheduled_time,scheduled_end_at,started_at,completed_at,cancelled_at,quad_count,total_amount_mad,notes')
+          .order('scheduled_for', { ascending: false })
+          .limit(500),
+        shouldFallback: (message) => /vehicle_id/i.test(message) && /does not exist/i.test(message),
+      }),
+      safeSelectWithFallback({
+        label: 'Maintenance',
+        primary: supabase
+          .from('app_687f658e98_maintenance')
+          .select('id,vehicle_id,vehicle_name,type,maintenance_type,date,scheduled_date,service_date,status,cost,created_at,updated_at')
+          .order('created_at', { ascending: false })
+          .limit(500),
+        fallbackQuery: () => supabase
+          .from('app_687f658e98_maintenance')
+          .select('id,vehicle_id,type,maintenance_type,date,scheduled_date,service_date,status,cost,created_at,updated_at')
+          .order('created_at', { ascending: false })
+          .limit(500),
+        shouldFallback: (message) => /vehicle_name/i.test(message) && /does not exist/i.test(message),
+      }),
       getTasks().catch((error) => {
         console.warn('Tasks unavailable:', error.message || error);
         return [];

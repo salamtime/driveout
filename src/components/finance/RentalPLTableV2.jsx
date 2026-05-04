@@ -3,7 +3,7 @@ import { Search, Download, ChevronLeft, ChevronRight, ArrowUpDown, ArrowUp, Arro
 import { financeApiV2 } from '../../services/financeApiV2';
 import { Link } from 'react-router-dom';
 
-const RentalPLTableV2 = ({ filters, refreshTrigger }) => {
+const RentalPLTableV2 = ({ filters, refreshTrigger, exportEnabled = true }) => {
   const [rentalData, setRentalData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -314,27 +314,29 @@ const RentalPLTableV2 = ({ filters, refreshTrigger }) => {
             </div>
           </div>
           
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={handleExportSelected}
-              disabled={!selectedRental}
-              className={`flex items-center px-4 py-2 rounded-lg transition-colors duration-200 ${
-                selectedRental
-                  ? 'bg-slate-900 hover:bg-slate-800 text-white'
-                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-              }`}
-            >
-              <Download className="w-4 h-4 mr-2" />
-              Export selected CSV
-            </button>
-            <button
-              onClick={handleExport}
-              className="flex items-center px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg transition-colors duration-200"
-            >
-              <Download className="w-4 h-4 mr-2" />
-              Export CSV
-            </button>
-          </div>
+          {exportEnabled ? (
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={handleExportSelected}
+                disabled={!selectedRental}
+                className={`flex items-center px-4 py-2 rounded-lg transition-colors duration-200 ${
+                  selectedRental
+                    ? 'bg-slate-900 hover:bg-slate-800 text-white'
+                    : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                }`}
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Export selected CSV
+              </button>
+              <button
+                onClick={handleExport}
+                className="flex items-center px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg transition-colors duration-200"
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Export CSV
+              </button>
+            </div>
+          ) : null}
         </div>
         
         {/* Search and Summary */}

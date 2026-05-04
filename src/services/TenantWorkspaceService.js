@@ -1,3 +1,8 @@
+import {
+  getTenantPlanLimits,
+  normalizeTenantPlanType,
+} from '../config/tenantPlans';
+
 export const TENANT_WORKSPACE_TABLES = Object.freeze({
   WORKSPACE_METADATA: 'tenant_workspace_metadata',
   USERS: 'tenant_users',
@@ -38,31 +43,13 @@ export const TENANT_WORKSPACE_MODULES = Object.freeze([
   'staff',
 ]);
 
-export const DEFAULT_TENANT_PLAN_LIMITS = Object.freeze({
-  starter: {
-    vehicles: 10,
-    staffUsers: 3,
-    marketplaceDistribution: false,
-  },
-  growth: {
-    vehicles: 30,
-    staffUsers: 8,
-    marketplaceDistribution: true,
-  },
-  pro: {
-    vehicles: 9999,
-    staffUsers: 25,
-    marketplaceDistribution: true,
-  },
-});
-
 export const buildTenantWorkspaceBootstrap = ({
   tenant = null,
   subscription = null,
   businessAccount = null,
 } = {}) => {
-  const planType = String(subscription?.plan_type || subscription?.planType || 'starter').trim().toLowerCase();
-  const limits = DEFAULT_TENANT_PLAN_LIMITS[planType] || DEFAULT_TENANT_PLAN_LIMITS.starter;
+  const planType = normalizeTenantPlanType(subscription?.plan_type || subscription?.planType || 'starter');
+  const limits = getTenantPlanLimits(planType);
 
   return {
     tenantId: tenant?.id || null,

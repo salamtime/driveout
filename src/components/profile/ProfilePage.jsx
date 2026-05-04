@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../../contexts/AuthContext';
 import { getTenantSession } from '../../services/TenantRegistryService';
@@ -24,6 +25,8 @@ import ProfileVerificationCard from '../verification/ProfileVerificationCard';
 import LoadingSpinner from '../common/LoadingSpinner';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { APP_VERSION_LABEL } from '../../config/appVersion';
+import AdminModuleHero from '../admin/AdminModuleHero';
+import { getHostContext, isSaharaXBrandingHost } from '../../utils/hostContext';
 
 const roleClassName = {
   owner: 'border-emerald-200 bg-emerald-50 text-emerald-700',
@@ -47,15 +50,7 @@ const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
 
 const getTenantLogoFallback = () => {
   if (typeof window === 'undefined') return '';
-  const hostname = String(window.location.hostname || '').toLowerCase();
-  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
-  const isSaharaXTenant =
-    isLocal ||
-    hostname === 'saharax.driveout.io' ||
-    hostname === 'saharax.co' ||
-    hostname === 'www.saharax.co';
-
-  return isSaharaXTenant ? SAHARAX_DEFAULT_LOGO_URL : '';
+  return isSaharaXBrandingHost() ? SAHARAX_DEFAULT_LOGO_URL : '';
 };
 
 const isLocalHost = () => {
@@ -273,16 +268,16 @@ const BusinessOwnerSubscriptionCard = ({
     : tr('profile.subscription.actions.change', 'Change Plan');
 
   return (
-    <div className="mb-5 rounded-[28px] border border-violet-100 bg-[linear-gradient(135deg,rgba(245,243,255,0.9)_0%,rgba(255,255,255,1)_55%,rgba(238,242,255,0.95)_100%)] p-5 shadow-[0_20px_60px_rgba(79,70,229,0.10)]">
+    <div className="mb-5 rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-500">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
             {tr('profile.subscription.title', 'Subscription')}
           </p>
-          <h3 className="mt-2 text-xl font-bold text-slate-950">
+          <h2 className="mt-2 text-lg font-semibold text-slate-900">
             {tr('profile.subscription.heading', 'Business Owner Activation')}
-          </h3>
-          <p className="mt-2 text-sm font-medium text-slate-500">
+          </h2>
+          <p className="mt-2 text-sm text-slate-500">
             {planMeta.summary}
           </p>
         </div>
@@ -296,7 +291,7 @@ const BusinessOwnerSubscriptionCard = ({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 md:grid-cols-3">
+      <div className="mt-5 grid gap-3 md:grid-cols-3">
         <div className="rounded-2xl border border-slate-200 bg-white/90 px-4 py-3">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
             {tr('profile.subscription.currentPlan', 'Current plan')}
@@ -342,10 +337,10 @@ const BusinessOwnerSubscriptionCard = ({
         ) : null}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-3">
+      <div className="mt-5 flex flex-wrap items-center gap-3">
         <a
           href="/choose-plan"
-          className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-bold text-white transition hover:bg-violet-800"
+          className="inline-flex items-center justify-center rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
         >
           {planActionLabel}
         </a>
@@ -384,6 +379,8 @@ const ProfilePage = () => {
   const [activityLog, setActivityLog] = useState([]);
   const [tenantLogoUrl, setTenantLogoUrl] = useState('');
   const inheritedTenantLogoUrl = getTenantLogoFallback();
+  const hostContext = useMemo(() => getHostContext(), []);
+  const isIsolatedTenantWorkspace = hostContext.kind === 'tenant' && !isSaharaXBrandingHost(hostContext);
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
     pathname: location.pathname,
     isTransitionFlow: loading && !profile,
@@ -459,6 +456,10 @@ const ProfilePage = () => {
     displayProfile?.full_name ||
     user?.email ||
     tr('profile.title', 'My Profile');
+  const workspaceDisplayName =
+    String(effectiveTenantWorkspaceSession?.tenant?.tenant_name || '').trim() ||
+    String(userProfile?.companyName || '').trim() ||
+    displayName;
   const roleLabel = String(userRole || 'user').toUpperCase();
   const staffIdDocumentCount = normalizeStaffIdDocuments(displayProfile?.staff_id_documents || user?.user_metadata?.staff_id_documents).length;
   const normalizedAccountType = String(
@@ -696,6 +697,17 @@ const ProfilePage = () => {
     let cancelled = false;
 
     const loadTenantBranding = async () => {
+      if (isIsolatedTenantWorkspace) {
+        const tenantSettings =
+          effectiveTenantWorkspaceSession?.tenantSettings && typeof effectiveTenantWorkspaceSession.tenantSettings === 'object'
+            ? effectiveTenantWorkspaceSession.tenantSettings
+            : {};
+        if (!cancelled) {
+          setTenantLogoUrl(String(tenantSettings.logo_url || '').trim());
+        }
+        return;
+      }
+
       try {
         const tenantSettings = await fetchSystemSettings();
         if (!cancelled) {
@@ -721,7 +733,7 @@ const ProfilePage = () => {
       cancelled = true;
       window.removeEventListener(SYSTEM_SETTINGS_UPDATED_EVENT, handleBrandingUpdate);
     };
-  }, []);
+  }, [effectiveTenantWorkspaceSession, isIsolatedTenantWorkspace]);
 
   const handleProfileUpdate = async (updatedData) => {
     try {
@@ -954,80 +966,104 @@ const ProfilePage = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,#eef2ff_0,#f8fafc_36%,#f8fafc_100%)] px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-6xl space-y-5">
-        <section className="overflow-hidden rounded-[34px] border border-violet-100/70 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
-          <div className="relative overflow-hidden border-b border-violet-200/80 bg-[linear-gradient(135deg,rgba(221,214,254,0.98)_0%,rgba(243,244,246,0.98)_42%,rgba(196,181,253,0.96)_100%)] px-5 py-7 text-slate-950 sm:px-7">
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(109,40,217,0.22),transparent_34%),radial-gradient(circle_at_bottom_left,rgba(99,102,241,0.18),transparent_28%)]" />
-            <div className="absolute right-5 top-5 z-10 sm:right-7">
-              <span className="inline-flex items-center rounded-full border border-violet-200/80 bg-white/90 px-3 py-1 text-[11px] font-black tracking-[0.2em] text-violet-700 shadow-sm backdrop-blur">
-                {APP_VERSION_LABEL}
-              </span>
-            </div>
-            <div className="relative flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
-              <div className="min-w-0 flex flex-col gap-4 sm:flex-row sm:items-center">
-                <ProfilePictureUpload
-                  userId={user.id}
-                  fallbackLabel={displayName || user.email}
-                  currentPictureUrl={displayProfile?.profile_picture_url}
-                  fallbackImageUrl={tenantLogoUrl || inheritedTenantLogoUrl}
-                  onPictureUpdate={handleProfilePictureUpdate}
-                  size="large"
-                  showInstructions={false}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-bold uppercase tracking-[0.28em] text-violet-500">
-                    {tr('profile.title', 'My Profile')}
-                  </p>
-                  <h1 className="mt-2 break-words text-3xl font-black tracking-tight sm:text-4xl">
-                    {displayName}
-                  </h1>
-                  <p className="mt-2 max-w-2xl text-sm font-medium text-slate-500">
-                    {tr('profile.roleBasedAccess', 'Role-based access')}
-                  </p>
-                  <div className="mt-4 flex flex-wrap items-center gap-2.5">
-                    <span className={`rounded-full border px-3.5 py-1.5 text-xs font-black tracking-[0.14em] shadow-sm ${roleClassName[userRole] || roleClassName.customer}`}>
-                      {roleLabel}
-                    </span>
-                    {userRole !== 'customer' && (
-                      <span className="rounded-full border border-violet-200 bg-white/90 px-3.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm backdrop-blur">
+    <div className="pb-10">
+      <AdminModuleHero
+        icon={<Shield className="h-7 w-7" />}
+        eyebrow={tr('profile.title', 'My Profile')}
+        title={workspaceDisplayName}
+        description={tr('profile.roleBasedAccess', 'Role-based access')}
+        titleClassName="text-[1.85rem] sm:text-[2.15rem] lg:text-[2.5rem]"
+        descriptionClassName="max-w-2xl text-base sm:text-lg"
+        actions={(
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-black tracking-[0.2em] text-violet-700">
+              {APP_VERSION_LABEL}
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowPasswordModal(true)}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+            >
+              🔒 {tr('profile.changePassword', 'Change Password')}
+            </button>
+          </div>
+        )}
+      />
+
+      <div className="mt-6 space-y-6 px-4 sm:px-6 lg:px-8">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+              <ProfilePictureUpload
+                userId={user.id}
+                fallbackLabel={displayName || user.email}
+                currentPictureUrl={displayProfile?.profile_picture_url}
+                fallbackImageUrl={tenantLogoUrl || inheritedTenantLogoUrl}
+                onPictureUpdate={handleProfilePictureUpdate}
+                size="large"
+                showInstructions={false}
+              />
+              <div className="min-w-0 flex-1">
+                <h2 className="break-all text-lg font-semibold tracking-[-0.02em] text-slate-900 sm:text-xl lg:text-[1.65rem] lg:leading-[1.12]">
+                  {displayName}
+                </h2>
+                <p className="mt-1 text-base text-slate-500 sm:text-lg lg:text-[1.1rem] lg:leading-[1.35]">
+                  {workspaceDisplayName} workspace
+                </p>
+                <div className="mt-4 flex flex-wrap items-center gap-2.5">
+                  <span className={`rounded-full border px-3.5 py-1.5 text-xs font-black tracking-[0.14em] shadow-sm ${roleClassName[userRole] || roleClassName.customer}`}>
+                    {roleLabel}
+                  </span>
+                  {userRole !== 'customer' && (
+                    <span className="rounded-full border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm">
                         {staffIdDocumentCount} {staffIdDocumentCount === 1 ? tr('profile.idFile', 'ID file') : tr('profile.idFiles', 'ID files')}
-                      </span>
-                    )}
-                    <span className="rounded-full border border-violet-200 bg-white/90 px-3.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm backdrop-blur">
-                      {user.email}
                     </span>
-                  </div>
+                  )}
+                  <span className="max-w-full break-all rounded-full border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm">
+                    {user.email}
+                  </span>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowPasswordModal(true)}
-                className="inline-flex w-full max-w-full items-center justify-center self-start rounded-2xl border border-violet-200 bg-white px-5 py-3 text-sm font-bold text-slate-900 shadow-[0_12px_30px_rgba(99,102,241,0.12)] transition hover:-translate-y-0.5 hover:bg-violet-50 sm:w-auto xl:ml-6 xl:shrink-0"
-              >
-                🔒 {tr('profile.changePassword', 'Change Password')}
-              </button>
             </div>
-          </div>
+          </section>
 
-          <div className="bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] px-4 py-3.5 sm:px-6">
-            <div className="flex gap-2 overflow-x-auto rounded-2xl border border-slate-200/80 bg-slate-50/90 p-1.5 shadow-inner">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`inline-flex min-w-fit items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition ${
-                    activeTab === tab.id
-                      ? 'bg-white text-violet-700 shadow-[0_8px_18px_rgba(79,70,229,0.12)]'
-                      : 'text-slate-500 hover:bg-white hover:text-slate-900'
-                  }`}
-                >
-                  <span>{tab.icon}</span>
-                  {tab.label}
-                </button>
-              ))}
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <p className="text-sm font-semibold text-slate-800">{tr('profile.title', 'Profile')}</p>
+                <p className="mt-4 text-[1.9rem] font-bold tracking-tight text-slate-950 sm:text-[2.05rem] lg:text-[1.95rem] lg:leading-none">{roleLabel}</p>
+                <p className="mt-2 text-sm text-slate-500 lg:text-[0.95rem]">{tr('profile.roleBasedAccess', 'Role-based access')}</p>
+              </div>
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <p className="text-sm font-semibold text-slate-800">{tr('profile.subscription.currentPlan', 'Current plan')}</p>
+                <p className="mt-4 text-[1.9rem] font-bold tracking-tight text-slate-950 capitalize sm:text-[2.05rem] lg:text-[1.95rem] lg:leading-none">
+                  {String(userProfile?.planType || userProfile?.subscriptionPlan || 'trial').replace(/_/g, ' ')}
+                </p>
+                <p className="mt-2 text-sm text-slate-500 capitalize lg:text-[0.95rem]">
+                  {String(userProfile?.subscriptionStatus || 'trial')}
+                </p>
+              </div>
             </div>
+          </section>
+        </div>
+
+        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <div className="flex gap-2 overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-1.5">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`inline-flex min-w-fit items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-bold transition sm:px-4 sm:py-2.5 sm:text-sm ${
+                  activeTab === tab.id
+                    ? 'bg-white text-violet-700 shadow-sm'
+                    : 'text-slate-500 hover:bg-white hover:text-slate-900'
+                }`}
+              >
+                <span>{tab.icon}</span>
+                {tab.label}
+              </button>
+            ))}
           </div>
         </section>
 
@@ -1041,7 +1077,7 @@ const ProfilePage = () => {
           </div>
         )}
 
-        <section className="rounded-[34px] border border-violet-100/70 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.06)] sm:p-5">
+        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
           {activeTab === 'profile' && (
             <>
               <BusinessOwnerSubscriptionCard
@@ -1067,8 +1103,8 @@ const ProfilePage = () => {
 
           {activeTab === 'security' && (
             <div className="space-y-4">
-              <div className="rounded-[28px] border border-violet-100 bg-[linear-gradient(135deg,rgba(245,243,255,0.9)_0%,rgba(255,255,255,1)_70%)] p-5 shadow-sm">
-                <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-500">
+              <div className="rounded-[28px] border border-slate-200 bg-slate-50/90 p-5 shadow-sm">
+                <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500">
                   {tr('profile.tabs.security', 'Security')}
                 </p>
                 <h2 className="mt-1 text-xl font-bold text-slate-950">
@@ -1105,8 +1141,8 @@ const ProfilePage = () => {
 
           {activeTab === 'preferences' && (
             <div className="space-y-4">
-              <div className="rounded-[28px] border border-violet-100 bg-[linear-gradient(135deg,rgba(245,243,255,0.9)_0%,rgba(255,255,255,1)_70%)] p-5 shadow-sm">
-                <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-500">
+              <div className="rounded-[28px] border border-slate-200 bg-slate-50/90 p-5 shadow-sm">
+                <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500">
                   {tr('profile.tabs.preferences', 'Preferences')}
                 </p>
                 <h2 className="mt-1 text-xl font-bold text-slate-950">

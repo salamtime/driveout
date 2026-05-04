@@ -1,6 +1,14 @@
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  CURRENT_TENANT_SCHEMA_CONTRACT_VERSION,
+  CURRENT_TENANT_SCHEMA_RELEASE_ID,
+} from './tenantSchemaRelease.js';
+import {
+  assertTenantTargetProjectRef,
+  getCanonicalProjectRef,
+} from './tenantSchemaMutationGuard.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_ROOT = path.resolve(MODULE_DIR, '..', '..');
@@ -44,6 +52,29 @@ const LEGACY_WORKSPACE_SQL_STEPS = Object.freeze([
     relativePath: 'src/migrations/create_legacy_workspace_foundation.sql',
   },
 ]);
+
+const CANONICAL_WORKSPACE_CONTRACT_VERSION = CURRENT_TENANT_SCHEMA_CONTRACT_VERSION;
+
+const CANONICAL_EXTRA_TABLES_TO_REMOVE = Object.freeze([
+  'app_4c3a7a6153_transport_fees',
+  'app_b30c02e74da644baad4668e3587d86b1_user_module_access',
+]);
+
+const CANONICAL_EXTRA_USER_COLUMNS_TO_REMOVE = Object.freeze([
+  'phone',
+  'avatar_url',
+  'metadata',
+  'user_status',
+  'plan_type',
+  'billing_status',
+  'suspended_at',
+  'suspension_reason',
+  'plan_changed_at',
+]);
+
+const CANONICAL_USERS_TABLE = 'app_b30c02e74da644baad4668e3587d86b1_users';
+
+const quoteIdent = (value) => `"${String(value || '').replace(/"/g, '""')}"`;
 
 const getManagementToken = () => String(process.env.SUPABASE_MANAGEMENT_TOKEN || '').trim();
 
@@ -104,6 +135,154 @@ const runProjectManagementSql = async ({ projectRef, query, readOnly = false }) 
   return payload;
 };
 
+const rowsFromPayload = (payload) => {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.result)) return payload.result;
+  if (Array.isArray(payload?.rows)) return payload.rows;
+  return [];
+};
+
+const fetchPublicForeignKeys = async (projectRef) => {
+  const payload = await runProjectManagementSql({
+    projectRef,
+    readOnly: true,
+    query: `
+      select
+        c.conname as constraint_name,
+        rel.relname as table_name,
+        pg_get_constraintdef(c.oid, true) as constraint_definition
+      from pg_constraint c
+      join pg_class rel on rel.oid = c.conrelid
+      join pg_namespace n on n.oid = rel.relnamespace
+      where n.nspname = 'public'
+        and c.contype = 'f'
+      order by rel.relname, c.conname;
+    `,
+  });
+
+  return rowsFromPayload(payload);
+};
+
+const buildCanonicalWorkspaceNormalizationSql = () => {
+  const dropColumnSql = CANONICAL_EXTRA_USER_COLUMNS_TO_REMOVE.map(
+    (columnName) =>
+      `alter table public.${quoteIdent(CANONICAL_USERS_TABLE)} drop column if exists ${quoteIdent(columnName)};`,
+  ).join('\n');
+
+  const dropTableSql = CANONICAL_EXTRA_TABLES_TO_REMOVE.map(
+    (tableName) => `drop table if exists public.${quoteIdent(tableName)} cascade;`,
+  ).join('\n');
+
+  return `begin;
+${dropColumnSql}
+${dropTableSql}
+
+alter table public.app_4c3a7a6153_rental_km_packages
+  alter column created_at set default now(),
+  alter column updated_at set default now();
+
+alter table public.app_687f658e98_maintenance_parts
+  alter column created_at set default now(),
+  alter column updated_at set default now();
+
+alter table public.saharax_0u4w4d_inventory_items
+  alter column reorder_level set default 0;
+
+alter table public.saharax_0u4w4d_inventory_items
+  alter column id drop identity if exists;
+
+create sequence if not exists public.saharax_0u4w4d_inventory_items_id_seq;
+alter table public.saharax_0u4w4d_inventory_items
+  alter column id set default nextval('public.saharax_0u4w4d_inventory_items_id_seq'::regclass);
+alter sequence public.saharax_0u4w4d_inventory_items_id_seq owned by public.saharax_0u4w4d_inventory_items.id;
+
+alter table public.saharax_0u4w4d_vehicles
+  alter column current_odometer set default 0;
+
+alter table public.vehicle_fuel_refills
+  drop column if exists total_cost;
+
+alter table public.vehicle_fuel_refills
+  add column total_cost numeric(10,2) generated always as (liters * price_per_liter) stored;
+
+alter table public.app_687f658e98_activity_log
+  alter column user_email set not null,
+  alter column action set not null;
+
+alter table public.app_b30c02e74da644baad4668e3587d86b1_users
+  alter column access_enabled set not null,
+  alter column permissions drop not null,
+  alter column profile_verification_status set not null,
+  alter column verification_summary set not null;
+
+notify pgrst, 'reload schema';
+commit;`;
+};
+
+const applyCanonicalWorkspaceForeignKeys = async ({ projectRef }) => {
+  assertTenantTargetProjectRef({
+    targetProjectRef: projectRef,
+    operation: 'workspace-bootstrap-foreign-keys',
+  });
+
+  const canonicalProjectRef = getCanonicalProjectRef();
+  if (canonicalProjectRef === projectRef) {
+    return [];
+  }
+
+  const [sourceForeignKeys, targetForeignKeys] = await Promise.all([
+    fetchPublicForeignKeys(canonicalProjectRef),
+    fetchPublicForeignKeys(projectRef),
+  ]);
+
+  const targetConstraintNames = new Set(targetForeignKeys.map((row) => row.constraint_name));
+  const missingConstraints = sourceForeignKeys.filter((row) => !targetConstraintNames.has(row.constraint_name));
+  const appliedConstraintNames = [];
+
+  for (const row of missingConstraints) {
+    await runProjectManagementSql({
+      projectRef,
+      readOnly: false,
+      query: `alter table public.${quoteIdent(row.table_name)} add constraint ${quoteIdent(row.constraint_name)} ${row.constraint_definition};`,
+    });
+    appliedConstraintNames.push(row.constraint_name);
+  }
+
+  if (appliedConstraintNames.length) {
+    await runProjectManagementSql({
+      projectRef,
+      readOnly: false,
+      query: `notify pgrst, 'reload schema';`,
+    });
+  }
+
+  return appliedConstraintNames;
+};
+
+const applyCanonicalWorkspaceNormalization = async ({ projectRef }) => {
+  assertTenantTargetProjectRef({
+    targetProjectRef: projectRef,
+    operation: 'workspace-bootstrap-normalization',
+  });
+
+  await runProjectManagementSql({
+    projectRef,
+    query: buildCanonicalWorkspaceNormalizationSql(),
+    readOnly: false,
+  });
+
+  const appliedConstraintNames = await applyCanonicalWorkspaceForeignKeys({ projectRef });
+
+  return {
+    removedExtraTables: [...CANONICAL_EXTRA_TABLES_TO_REMOVE],
+    removedExtraUserColumns: [...CANONICAL_EXTRA_USER_COLUMNS_TO_REMOVE],
+    appliedConstraintNames,
+    releaseId: CURRENT_TENANT_SCHEMA_RELEASE_ID,
+    contractVersion: CANONICAL_WORKSPACE_CONTRACT_VERSION,
+  };
+};
+
 const buildOwnerPermissionsSql = () => `jsonb_build_object(
   'Dashboard', true,
   'Fleet', true,
@@ -120,12 +299,14 @@ const buildOwnerPermissionsSql = () => `jsonb_build_object(
   'Settings', true
 )`;
 
-const buildOwnerSeedSql = ({
+const buildWorkspaceRuntimeSeedSql = ({
   tenantName,
   tenantSlug,
   ownerAuthUserId,
   ownerEmail,
   ownerFullName,
+  trialStartedAt,
+  trialEndsAt,
 } = {}) => {
   const ownerId = String(ownerAuthUserId || '').trim();
   const ownerEmailText = String(ownerEmail || '').trim();
@@ -139,6 +320,8 @@ const buildOwnerSeedSql = ({
   const safeOwnerEmail = escapeSqlLiteral(ownerEmailText);
   const safeOwnerName = escapeSqlLiteral(ownerFullName || ownerEmailText);
   const safeOwnerId = escapeSqlLiteral(ownerId);
+  const safeTrialStartedAt = trialStartedAt ? `'${escapeSqlLiteral(trialStartedAt)}'::timestamptz` : 'null';
+  const safeTrialEndsAt = trialEndsAt ? `'${escapeSqlLiteral(trialEndsAt)}'::timestamptz` : 'null';
 
   return `
 do $bootstrap_owner$
@@ -161,8 +344,8 @@ begin
     role,
     permissions,
     verification_status,
-    plan_type,
-    billing_status,
+    trial_started_at,
+    trial_ends_at,
     created_at,
     updated_at
   )
@@ -173,8 +356,8 @@ begin
     'owner'::public.user_role,
     ${buildOwnerPermissionsSql()},
     'approved'::public.driveout_verification_status,
-    'pro'::public.driveout_plan_type,
-    'active'::public.driveout_billing_status,
+    ${safeTrialStartedAt},
+    ${safeTrialEndsAt},
     now(),
     now()
   )
@@ -185,8 +368,8 @@ begin
     role = 'owner'::public.user_role,
     permissions = ${buildOwnerPermissionsSql()} || coalesce(public.app_b30c02e74da644baad4668e3587d86b1_users.permissions, '{}'::jsonb),
     verification_status = 'approved'::public.driveout_verification_status,
-    plan_type = 'pro'::public.driveout_plan_type,
-    billing_status = 'active'::public.driveout_billing_status,
+    trial_started_at = coalesce(public.app_b30c02e74da644baad4668e3587d86b1_users.trial_started_at, ${safeTrialStartedAt}),
+    trial_ends_at = coalesce(public.app_b30c02e74da644baad4668e3587d86b1_users.trial_ends_at, ${safeTrialEndsAt}),
     updated_at = now();
 
   insert into public.app_organizations (
@@ -258,28 +441,28 @@ notify pgrst, 'reload schema';
 `;
 };
 
-export const getLegacyBusinessWorkspaceBootstrapSteps = () => (
+export const getCanonicalBusinessWorkspaceBootstrapSteps = () => (
   LEGACY_WORKSPACE_SQL_STEPS.map((step) => ({
     ...step,
     sql: readSqlFile(step.relativePath),
   }))
 );
 
-export const applyLegacyBusinessWorkspaceBootstrap = async ({
+export const applyCanonicalBusinessWorkspaceSchema = async ({
   projectRef,
-  tenantName,
-  tenantSlug,
-  ownerAuthUserId,
-  ownerEmail,
-  ownerFullName,
 } = {}) => {
   const normalizedProjectRef = String(projectRef || '').trim();
   if (!normalizedProjectRef) {
     throw new Error('Tenant project reference is required for workspace bootstrap');
   }
 
+  assertTenantTargetProjectRef({
+    targetProjectRef: normalizedProjectRef,
+    operation: 'workspace-bootstrap-schema',
+  });
+
   const executedSteps = [];
-  for (const step of getLegacyBusinessWorkspaceBootstrapSteps()) {
+  for (const step of getCanonicalBusinessWorkspaceBootstrapSteps()) {
     await runProjectManagementSql({
       projectRef: normalizedProjectRef,
       query: step.sql,
@@ -288,26 +471,97 @@ export const applyLegacyBusinessWorkspaceBootstrap = async ({
     executedSteps.push(step.name);
   }
 
-  const ownerSeedSql = buildOwnerSeedSql({
+  const normalization = await applyCanonicalWorkspaceNormalization({
+    projectRef: normalizedProjectRef,
+  });
+  executedSteps.push('canonical_workspace_normalization');
+
+  return {
+    projectRef: normalizedProjectRef,
+    bootstrapMode: 'canonical_exact_clone',
+    releaseId: CURRENT_TENANT_SCHEMA_RELEASE_ID,
+    contractVersion: CANONICAL_WORKSPACE_CONTRACT_VERSION,
+    executedSteps,
+    normalization,
+  };
+};
+
+export const seedCanonicalBusinessWorkspaceRuntime = async ({
+  projectRef,
+  tenantName,
+  tenantSlug,
+  ownerAuthUserId,
+  ownerEmail,
+  ownerFullName,
+  trialStartedAt,
+  trialEndsAt,
+} = {}) => {
+  const normalizedProjectRef = String(projectRef || '').trim();
+  if (!normalizedProjectRef) {
+    throw new Error('Tenant project reference is required for workspace bootstrap');
+  }
+
+  assertTenantTargetProjectRef({
+    targetProjectRef: normalizedProjectRef,
+    operation: 'workspace-runtime-seed',
+  });
+
+  const runtimeSeedSql = buildWorkspaceRuntimeSeedSql({
     tenantName,
     tenantSlug,
     ownerAuthUserId,
     ownerEmail,
     ownerFullName,
+    trialStartedAt,
+    trialEndsAt,
   });
 
-  if (ownerSeedSql) {
+  if (runtimeSeedSql) {
     await runProjectManagementSql({
       projectRef: normalizedProjectRef,
-      query: ownerSeedSql,
+      query: runtimeSeedSql,
       readOnly: false,
     });
-    executedSteps.push('legacy_workspace_owner_seed');
   }
 
   return {
     projectRef: normalizedProjectRef,
-    executedSteps,
-    ownerSeeded: Boolean(ownerSeedSql),
+    runtimeSeeded: Boolean(runtimeSeedSql),
+    runtimeSeedMode: 'owner_org_permissions_trial_only',
   };
 };
+
+export const applyCanonicalBusinessWorkspaceBootstrap = async ({
+  projectRef,
+  tenantName,
+  tenantSlug,
+  ownerAuthUserId,
+  ownerEmail,
+  ownerFullName,
+  trialStartedAt,
+  trialEndsAt,
+} = {}) => {
+  const schema = await applyCanonicalBusinessWorkspaceSchema({
+    projectRef,
+  });
+
+  const runtime = await seedCanonicalBusinessWorkspaceRuntime({
+    projectRef,
+    tenantName,
+    tenantSlug,
+    ownerAuthUserId,
+    ownerEmail,
+    ownerFullName,
+    trialStartedAt,
+    trialEndsAt,
+  });
+
+  return {
+    ...schema,
+    ownerSeeded: runtime.runtimeSeeded,
+    runtime,
+  }
+};
+
+export const getLegacyBusinessWorkspaceBootstrapSteps = getCanonicalBusinessWorkspaceBootstrapSteps;
+export const applyLegacyBusinessWorkspaceBootstrap = applyCanonicalBusinessWorkspaceBootstrap;

@@ -319,7 +319,7 @@ const hasEditWorkflowChanges = (nextData = {}, initialData = {}) => {
 
 // ==================== CUSTOM HOOK - ALL BUSINESS LOGIC ====================
 const useRentalWizard = (initialData = null, mode = 'create', navigate, options = {}) => {
-  const { userProfile } = useAuth();
+  const { userProfile, hasFeature } = useAuth();
   const requiresCustomerVerification = Boolean(options.requiresCustomerVerification);
   const isLightVariant = options.variant === 'light';
   
@@ -552,14 +552,16 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
         .from('app_settings')
         .select('damage_deposit_presets, allow_custom_deposit')
         .eq('id', 1)
-        .single();
+        .limit(1);
 
       if (error) throw error;
 
-      if (data) {
+      const row = Array.isArray(data) ? data[0] : null;
+
+      if (row) {
         const config = {
-          vehicleModelPresets: data.damage_deposit_presets || {},
-          allowCustomDeposit: data.allow_custom_deposit ?? true
+          vehicleModelPresets: row.damage_deposit_presets || {},
+          allowCustomDeposit: row.allow_custom_deposit ?? true
         };
         
         setDamageDepositConfig(config);
@@ -672,7 +674,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       return;
     }
 
-    if (mode === 'edit') {
+    if (mode === 'edit' || isLightVariant) {
       return;
     }
 
@@ -695,7 +697,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
         }));
       }
     }
-  }, [formData.vehicle_id, damageDepositConfig, isCustomerVerificationOnlyMode]);
+  }, [formData.vehicle_id, damageDepositConfig, isCustomerVerificationOnlyMode, isLightVariant]);
 
   // ==================== DATA LOADING ====================
   const loadCustomers = async () => {
@@ -2177,6 +2179,12 @@ const calculateFinancials = () => {
       preserveCreateFinancialOverrideRef.current = false;
       manuallyClearedVehicleRef.current = !value;
       newFormData.vehicle_id = value;
+      if (isLightVariant) {
+        newFormData.damage_deposit = 0;
+        newFormData.damage_deposit_source = '';
+        newFormData.damage_deposit_document_url = null;
+        newFormData.damage_deposit_document_name = '';
+      }
 
       if (!value) {
         setSelectedPackageDraft(null);
@@ -4159,6 +4167,7 @@ useEffect(() => {
     setSelectedQuickDuration,
     damageDepositConfig,
     selectedDepositTab,
+    setSelectedDepositTab,
     customDepositAmount,
     setCustomDepositAmount,
     secondDrivers,
@@ -4201,7 +4210,7 @@ useEffect(() => {
 // ==================== SIMPLIFIED UI COMPONENTS ====================
 
 const ProgressStepper = ({ currentStep, steps }) => (
-  <div className="mb-6 sm:mb-8 rounded-2xl border border-violet-100 bg-white px-3 py-4 shadow-[0_12px_30px_-22px_rgba(15,23,42,0.35)] sm:px-5">
+  <div className="mb-6 rounded-2xl border border-violet-100 bg-white px-3 py-4 shadow-[0_12px_30px_-22px_rgba(15,23,42,0.35)] [overflow-anchor:none] sm:mb-8 sm:px-5">
     <div className="flex items-center justify-between gap-2">
       {steps.map((step, index) => (
         <React.Fragment key={step.number}>
@@ -7980,11 +7989,13 @@ const SimplifiedRentalWizard = ({
   uiVariant = 'default',
 }) => {
   const navigate = useNavigate();
+  const { hasFeature } = useAuth();
   const [currentStep, setCurrentStep] = useState(1);
   const [basePrices, setBasePrices] = React.useState([]);
   const [showIDScanModal, setShowIDScanModal] = useState(false);
   const [showSecondDriverScanModal, setShowSecondDriverScanModal] = useState(false);
   const [secondDriverScanEntryMode, setSecondDriverScanEntryMode] = useState('scan');
+  const canUseOcrIdScan = hasFeature('ocr_id_scan');
   const [activeTab, setActiveTab] = useState('basic');
   const [customerScanNote, setCustomerScanNote] = useState(initialCustomerScanNote);
   const [customerScanNoteTone, setCustomerScanNoteTone] = useState(initialCustomerScanNote ? 'warning' : 'neutral');
@@ -8057,6 +8068,7 @@ const SimplifiedRentalWizard = ({
     setSelectedQuickDuration,
     damageDepositConfig,
     selectedDepositTab,
+    setSelectedDepositTab,
     customDepositAmount,
     setCustomDepositAmount,
     secondDrivers,
@@ -8351,22 +8363,31 @@ const SimplifiedRentalWizard = ({
   const isStrictCustomerVerificationCaptureMode = isCustomerVerificationOnlyMode && customerVerificationCaptureOnly;
   const isLightVariant = uiVariant === 'light';
   const wizardTopRef = useRef(null);
+  const lightProgressStepperRef = useRef(null);
   const vehicleStepRef = useRef(null);
+  const lightVehicleBodyRef = useRef(null);
   const lightPackageStepRef = useRef(null);
+  const lightDepositStepRef = useRef(null);
   const lightCustomerNameInputRef = useRef(null);
   const previousVehicleIdRef = useRef(formData.vehicle_id || '');
   const previousLightHasDurationSelectionRef = useRef(false);
   const lightSectionTransitionTimeoutRef = useRef(null);
+  const lightFlowTransitionTimeoutRef = useRef(null);
+  const frozenLightSummaryRef = useRef(null);
   const [lightExpandedSection, setLightExpandedSection] = useState('setup');
+  const [lightFlowTransition, setLightFlowTransition] = useState('idle');
   const [lightShowScheduleEditor, setLightShowScheduleEditor] = useState(false);
   const [lightDurationConfirmed, setLightDurationConfirmed] = useState(false);
   const [lightRentalTypeDraft, setLightRentalTypeDraft] = useState('');
   const [showLightActionsMenu, setShowLightActionsMenu] = useState(false);
   const [lightVehiclePriceMap, setLightVehiclePriceMap] = useState({});
+  const [lightVehicleCollapseHeight, setLightVehicleCollapseHeight] = useState(null);
   const [lightCustomerEditOpen, setLightCustomerEditOpen] = useState(false);
   const [lightCustomerAdditionalOpen, setLightCustomerAdditionalOpen] = useState(false);
   const [lightPaymentDetailsOpen, setLightPaymentDetailsOpen] = useState(false);
   const [lightPaymentSummaryOpen, setLightPaymentSummaryOpen] = useState(false);
+  const [lightDepositConfirmed, setLightDepositConfirmed] = useState(mode === 'edit');
+  const [lightConfirmStage, setLightConfirmStage] = useState('idle');
   const [lightPackageDecisionMode, setLightPackageDecisionMode] = useState(
     formData.use_package_pricing ? 'package' : (formData.vehicle_id ? 'standard' : 'undecided')
   );
@@ -8401,6 +8422,24 @@ const SimplifiedRentalWizard = ({
   };
 
   const selectedVehicle = getSelectedVehicle();
+  const lastLightVehicleTouchSelectRef = useRef({ vehicleId: null, selectedAt: 0 });
+  const lightVehicleScrollerRef = useRef(null);
+  const lightVehicleScrollerStateRef = useRef({ scrollLeft: 0, lastScrolledAt: 0 });
+  const lightVehiclePointerRef = useRef({ vehicleId: null, startX: 0, startY: 0, startScrollLeft: 0, startedAt: 0, moved: false });
+  const suppressNextLightVehicleClickRef = useRef({ vehicleId: null, until: 0 });
+
+  const scrollLightSectionIntoView = useCallback((targetRef) => {
+    if (!targetRef?.current || typeof window === 'undefined') return;
+
+    const isMobile = window.matchMedia?.('(max-width: 639px)').matches ?? window.innerWidth < 640;
+    const topOffset = isMobile ? 140 : 24;
+    const targetTop = targetRef.current.getBoundingClientRect().top + window.scrollY - topOffset;
+
+    window.scrollTo({
+      top: Math.max(0, targetTop),
+      behavior: 'smooth',
+    });
+  }, []);
 
   const animateLightSectionTransition = useCallback((nextSection, targetRef = null) => {
     if (lightSectionTransitionTimeoutRef.current) {
@@ -8416,15 +8455,38 @@ const SimplifiedRentalWizard = ({
 
       if (targetRef?.current) {
         requestAnimationFrame(() => {
-          targetRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          scrollLightSectionIntoView(targetRef);
         });
       }
     }, 180);
+  }, [scrollLightSectionIntoView]);
+
+  const setLightFlowTransitionFor = useCallback((nextTransition, durationMs = 0) => {
+    if (lightFlowTransitionTimeoutRef.current) {
+      window.clearTimeout(lightFlowTransitionTimeoutRef.current);
+      lightFlowTransitionTimeoutRef.current = null;
+    }
+
+    setLightFlowTransition(nextTransition);
+    if (nextTransition === 'idle') {
+      frozenLightSummaryRef.current = null;
+    }
+
+    if (nextTransition !== 'idle' && durationMs > 0) {
+      lightFlowTransitionTimeoutRef.current = window.setTimeout(() => {
+        frozenLightSummaryRef.current = null;
+        setLightFlowTransition('idle');
+        lightFlowTransitionTimeoutRef.current = null;
+      }, durationMs);
+    }
   }, []);
 
   useEffect(() => () => {
     if (lightSectionTransitionTimeoutRef.current) {
       window.clearTimeout(lightSectionTransitionTimeoutRef.current);
+    }
+    if (lightFlowTransitionTimeoutRef.current) {
+      window.clearTimeout(lightFlowTransitionTimeoutRef.current);
     }
   }, []);
   const selectedDurationLabel = (() => {
@@ -8564,6 +8626,118 @@ const SimplifiedRentalWizard = ({
       ? (formData.quantity_hours ?? formData.quantity_days)
       : formData.quantity_days
   ) || 0;
+  const selectLightVehicle = useCallback((vehicle, mappedLightPrice = null) => {
+    const vehicleId = vehicle?.id || '';
+    if (!vehicleId) return;
+
+    if (lightSectionTransitionTimeoutRef.current) {
+      window.clearTimeout(lightSectionTransitionTimeoutRef.current);
+      lightSectionTransitionTimeoutRef.current = null;
+    }
+    const durationUnits = currentLightDurationUnits || 1;
+    const mappedVehicleTotal = Number(mappedLightPrice ?? 0) || 0;
+    const nextUnitPrice = mappedVehicleTotal > 0
+      ? (durationUnits > 1 ? mappedVehicleTotal / durationUnits : mappedVehicleTotal)
+      : null;
+
+    const nextVehicleName = vehicle?.model || vehicle?.name || tr('Vehicle', 'Véhicule');
+    const nextVehiclePriceLabel = mappedVehicleTotal > 0 ? `${formatDynamicMad(mappedVehicleTotal)} MAD` : null;
+    const snapshotDurationLabel = (() => {
+      if (!durationUnits) return null;
+      if (formData.rental_type === 'hourly') {
+        if (durationUnits === 0.5) return tr('30 min', '30 min');
+        if (durationUnits === 1) return tr('1 Hour', '1 Heure');
+        if (durationUnits === 1.5) return tr('1.5 Hours', '1,5 Heures');
+        return tr(`${durationUnits} Hours`, `${durationUnits} Heures`);
+      }
+      if (durationUnits === 1) return tr('1 Day', '1 Jour');
+      return tr(`${durationUnits} Days`, `${durationUnits} Jours`);
+    })();
+    const snapshotSetupSummaryLabel = formData.rental_type
+      ? snapshotDurationLabel
+        ? `${formData.rental_type === 'hourly' ? tr('Hourly', 'Horaire') : tr('Daily', 'Journalier')} • ${snapshotDurationLabel}`
+        : `${formData.rental_type === 'hourly' ? tr('Hourly', 'Horaire') : tr('Daily', 'Journalier')}`
+      : tr('Rental setup', 'Configuration');
+    const shouldRequireExplicitPackageDecision =
+      formData.rental_type === 'hourly' && durationUnits === 0.5;
+    const nextPackageSummaryLabel = shouldRequireExplicitPackageDecision
+      ? tr('Choose package', 'Choisir le forfait')
+      : tr('Standard pricing', 'Tarification standard');
+    const nextVehicleSummaryLabel = [
+      vehicle?.plate_number || null,
+      nextVehicleName,
+      nextVehiclePriceLabel,
+    ].filter(Boolean).join(' • ');
+    const nextStickySummaryLabel = [
+      vehicle?.plate_number || null,
+      nextVehicleName,
+      snapshotDurationLabel,
+      nextVehiclePriceLabel,
+    ].filter(Boolean).join(' • ');
+
+    frozenLightSummaryRef.current = {
+      stickySummaryLabel: nextStickySummaryLabel,
+      setupSummaryLabel: snapshotSetupSummaryLabel,
+      vehicleSummaryLabel: nextVehicleSummaryLabel,
+      packageSummaryLabel: nextPackageSummaryLabel,
+      packageSummaryAccent: null,
+      packageSummaryRestLabel: nextPackageSummaryLabel,
+    };
+    const currentVehicleBodyHeight = lightVehicleBodyRef.current?.scrollHeight || 0;
+    setLightVehicleCollapseHeight(currentVehicleBodyHeight || null);
+    setLightExpandedSection('vehicle');
+    setSelectedDepositTab(null);
+    setCustomDepositAmount('');
+    setLightDepositConfirmed(false);
+    setSelectedPackageDraft(null);
+    if (manuallyClearedVehicleRef?.current !== undefined) {
+      manuallyClearedVehicleRef.current = false;
+    }
+    setFormData((prev) => ({
+      ...prev,
+      vehicle_id: vehicleId,
+      ...(nextUnitPrice !== null ? { unit_price: nextUnitPrice } : {}),
+      selected_package_id: null,
+      selected_package_name: '',
+      selected_package_fixed_amount: 0,
+      selected_package_rate_per_unit: 0,
+      selected_package_included_km: null,
+      selected_package_included_km_per_unit: null,
+      selected_package_total_included_km: null,
+      selected_package_extra_rate: 0,
+      selected_package_fuel_charge_enabled: false,
+      selected_package_description: '',
+      use_package_pricing: false,
+      package_overrides_tier: false,
+      damage_deposit: 0,
+      damage_deposit_source: '',
+      damage_deposit_document_url: null,
+      damage_deposit_document_name: '',
+    }));
+    setLightPackageDecisionMode(shouldRequireExplicitPackageDecision ? 'undecided' : 'standard');
+
+    if (lightSectionTransitionTimeoutRef.current) {
+      window.clearTimeout(lightSectionTransitionTimeoutRef.current);
+      lightSectionTransitionTimeoutRef.current = null;
+    }
+
+    requestAnimationFrame(() => {
+      setLightExpandedSection(shouldRequireExplicitPackageDecision ? 'package' : 'confirm');
+      lightSectionTransitionTimeoutRef.current = window.setTimeout(() => {
+        setLightVehicleCollapseHeight(null);
+        lightSectionTransitionTimeoutRef.current = null;
+      }, 320);
+    });
+  }, [
+    currentLightDurationUnits,
+    formData.rental_type,
+    manuallyClearedVehicleRef,
+    setCustomDepositAmount,
+    setFormData,
+    setSelectedDepositTab,
+    setSelectedPackageDraft,
+    tr,
+  ]);
   const getLightDurationButtonLabel = (value, rentalType = formData.rental_type) => {
     if (rentalType === 'hourly') {
       if (value === 0.5) return tr('30 min', '30 min');
@@ -8797,6 +8971,15 @@ const SimplifiedRentalWizard = ({
     if (!durationLabel) return packageSummaryLabel;
     return `${durationLabel} • ${formatDynamicMad(liveTotalAmount)} MAD`;
   })();
+  const isLightFlowTransitioning = lightFlowTransition !== 'idle';
+  const frozenLightSummary = isLightFlowTransitioning ? frozenLightSummaryRef.current : null;
+  const displayStickySummaryLabel = frozenLightSummary?.stickySummaryLabel ?? stickySummaryLabel;
+  const displaySetupSummaryLabel = frozenLightSummary?.setupSummaryLabel ?? setupSummaryLabel;
+  const displayVehicleSummaryLabel = frozenLightSummary?.vehicleSummaryLabel ?? vehicleSummaryLabel;
+  const displayPackageSummaryLabel = frozenLightSummary?.packageSummaryLabel ?? packageSummaryLabel;
+  const displayPackageSummaryAccent = frozenLightSummary?.packageSummaryAccent ?? packageSummaryAccent;
+  const displayPackageSummaryRestLabel = frozenLightSummary?.packageSummaryRestLabel ?? packageSummaryRestLabel;
+  const shouldShowLightStickySummary = Boolean(displayStickySummaryLabel) && !isLightFlowTransitioning;
   const lightCustomerReady = Boolean(
     formData.customer_name?.trim() ||
     formData.customer_licence_number?.trim() ||
@@ -8830,13 +9013,21 @@ const SimplifiedRentalWizard = ({
     selectedDurationLabel || null,
     getSelectedPackageDisplayLabel(formData, tr),
   ].filter(Boolean).join(' • ');
-  const lightSelectedDepositTab = selectedDepositTab || (
+  const lightDepositHasExistingSelection = mode === 'edit' && Boolean(
+    selectedDepositTab ||
+    Number(formData.damage_deposit || 0) > 0 ||
+    formData.damage_deposit_document_url ||
+    formData.damage_deposit_document_name
+  );
+  const lightDepositReadyToConfirm = !isLightVariant || lightDepositConfirmed || lightDepositHasExistingSelection;
+  const lightConfirmInProgress = lightConfirmStage === 'confirming' || submitting || isSubmitting;
+  const lightSelectedDepositTab = lightDepositReadyToConfirm ? (selectedDepositTab || (
     Number(formData.damage_deposit || 0) === 0 &&
     !formData.damage_deposit_document_url &&
     !formData.damage_deposit_document_name
       ? 'none'
       : null
-  );
+  )) : null;
 
   const handlePhoneChange = (value) => {
     handleInputChange('customer_phone', value);
@@ -9108,6 +9299,9 @@ const SimplifiedRentalWizard = ({
     }
 
     if (formData.vehicle_id) {
+      setSelectedDepositTab(null);
+      setCustomDepositAmount('');
+      setLightDepositConfirmed(false);
       handleInputChange('vehicle_id', '');
       setLightExpandedSection('vehicle');
       setLightPackageDecisionMode('undecided');
@@ -9147,13 +9341,17 @@ const SimplifiedRentalWizard = ({
 
   const handleLightStartOver = useCallback(() => {
     setShowLightActionsMenu(false);
+    setLightFlowTransitionFor('idle');
     setLightExpandedSection('setup');
     setLightShowScheduleEditor(false);
     setLightDurationConfirmed(false);
     setLightRentalTypeDraft('');
     setLightPackageDecisionMode('undecided');
+    setSelectedDepositTab(null);
+    setCustomDepositAmount('');
+    setLightDepositConfirmed(false);
     handleReset();
-  }, [handleReset]);
+  }, [handleReset, setLightFlowTransitionFor]);
 
   const handleLightRentalTypeSelect = useCallback((type) => {
     const startDate = formData.rental_start_date || getMoroccoTodayString();
@@ -9163,6 +9361,7 @@ const SimplifiedRentalWizard = ({
       window.clearTimeout(lightSectionTransitionTimeoutRef.current);
       lightSectionTransitionTimeoutRef.current = null;
     }
+    setLightFlowTransitionFor('idle');
     previousLightHasDurationSelectionRef.current = false;
     setLightExpandedSection('setup');
     setLightShowScheduleEditor(false);
@@ -9573,6 +9772,16 @@ const SimplifiedRentalWizard = ({
   };
 
   useEffect(() => {
+    if (!isLightVariant || mode === 'edit' || currentStep !== 3) return;
+    setLightDepositConfirmed(false);
+  }, [currentStep, isLightVariant, mode]);
+
+  useEffect(() => {
+    if (!isLightVariant || currentStep === 3) return;
+    setLightConfirmStage('idle');
+  }, [currentStep, isLightVariant]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const scrollToTop = () => {
@@ -9592,6 +9801,8 @@ const SimplifiedRentalWizard = ({
     const nextVehicleId = formData.vehicle_id || '';
     previousVehicleIdRef.current = nextVehicleId;
 
+    if (isLightVariant) return;
+
     if (!nextVehicleId || String(previousVehicleId) === String(nextVehicleId)) {
       return;
     }
@@ -9601,7 +9812,7 @@ const SimplifiedRentalWizard = ({
     }, 50);
 
     return () => window.clearTimeout(timeoutId);
-  }, [currentStep, formData.vehicle_id]);
+  }, [currentStep, formData.vehicle_id, isLightVariant, lightFlowTransition]);
 
   useEffect(() => {
     if (!isLightVariant || currentStep !== 2) {
@@ -9633,10 +9844,24 @@ const SimplifiedRentalWizard = ({
     if (currentStep !== 3) {
       return;
     }
+
+    if (isLightVariant && mode !== 'edit' && !lightDepositReadyToConfirm) {
+      scrollLightSectionIntoView(lightDepositStepRef);
+      return;
+    }
+
+    if (isLightVariant) {
+      setLightConfirmStage('confirming');
+    }
     
     try {
       await submitVerificationOnlyFlow();
     } catch (error) {
+      setLightConfirmStage('idle');
+    } finally {
+      if (!successfullySubmitted) {
+        setLightConfirmStage('idle');
+      }
     }
   };
 
@@ -9762,9 +9987,9 @@ const SimplifiedRentalWizard = ({
   ]);
 
   const renderLightStepTwo = () => (
-    <div className="px-4 pb-36 pt-4 sm:px-6">
+    <div className="px-4 pb-60 pt-4 [overflow-anchor:none] sm:px-6 sm:pb-36">
       <div className="space-y-4">
-        {stickySummaryLabel && (
+        {shouldShowLightStickySummary && (
           <button
             type="button"
             onClick={() => {
@@ -9772,13 +9997,13 @@ const SimplifiedRentalWizard = ({
               else if (!formData.vehicle_id) setLightExpandedSection('vehicle');
               else if (!hasPackageDecision) setLightExpandedSection('package');
             }}
-            className="sticky top-3 z-10 flex w-full items-center justify-between rounded-2xl border border-violet-500 bg-violet-50/95 px-4 py-3 text-left shadow-[0_16px_30px_rgba(79,70,229,0.18)] backdrop-blur"
+            className="sticky top-3 z-10 hidden w-full items-center justify-between rounded-2xl border border-violet-500 bg-violet-50/95 px-4 py-3 text-left shadow-[0_16px_30px_rgba(79,70,229,0.18)] backdrop-blur sm:flex"
           >
             <div className="min-w-0">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                 {tr('Current selection', 'Sélection actuelle')}
               </p>
-              <p className="mt-1 truncate text-sm font-bold text-slate-900">{stickySummaryLabel}</p>
+              <p className="mt-1 truncate text-sm font-bold text-slate-900">{displayStickySummaryLabel}</p>
             </div>
             <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-semibold text-violet-700 shadow-sm">
               {liveTotalAmount > 0 ? `${formatDynamicMad(liveTotalAmount)} MAD` : tr('In progress', 'En cours')}
@@ -9823,7 +10048,7 @@ const SimplifiedRentalWizard = ({
                       <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-violet-50 text-violet-600 shadow-sm">
                         <Clock className="h-5 w-5" />
                       </span>
-                      <h3 className="truncate text-lg font-bold text-slate-900">{setupSummaryLabel}</h3>
+                      <h3 className="truncate text-lg font-bold text-slate-900">{displaySetupSummaryLabel}</h3>
                     </div>
                     <span className="inline-flex items-center gap-2">
                       <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
@@ -9949,7 +10174,7 @@ const SimplifiedRentalWizard = ({
                   <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 shadow-sm">
                     <CarIcon className="h-5 w-5" />
                   </span>
-                  <h3 className="truncate text-lg font-bold text-slate-900">{vehicleSummaryLabel}</h3>
+                  <h3 className="truncate text-lg font-bold text-slate-900">{displayVehicleSummaryLabel}</h3>
                 </div>
                 {formData.vehicle_id && (
                   <span className="inline-flex items-center gap-2">
@@ -9971,8 +10196,17 @@ const SimplifiedRentalWizard = ({
             )}
           </button>
 
-            {lightExpandedSection === 'vehicle' && (
-              <div className="space-y-4 border-t border-slate-100 bg-white/70 px-4 pb-4 pt-3 backdrop-blur-[2px]">
+            {(lightExpandedSection === 'vehicle' || lightVehicleCollapseHeight !== null) && (
+              <div
+                ref={lightVehicleBodyRef}
+                style={lightVehicleCollapseHeight !== null ? {
+                  maxHeight: lightExpandedSection === 'vehicle' ? `${lightVehicleCollapseHeight}px` : '0px',
+                } : undefined}
+                className={`overflow-hidden border-t border-slate-100 bg-white/70 backdrop-blur-[2px] transition-[max-height,opacity] duration-300 ease-out [overflow-anchor:none] ${
+                  lightExpandedSection === 'vehicle' ? 'opacity-100' : 'opacity-0'
+                }`}
+              >
+              <div className="space-y-4 px-4 pb-4 pt-3">
                 {activeModels.length > 0 && (
                   <div className="-mx-4 overflow-x-auto px-4 pb-1">
                     <div className="flex min-w-max gap-2">
@@ -9994,25 +10228,123 @@ const SimplifiedRentalWizard = ({
                   </div>
                 )}
 
-                <div className="-mx-4 overflow-x-auto overflow-y-visible px-4 py-3">
+                <div
+                  ref={lightVehicleScrollerRef}
+                  onScroll={(event) => {
+                    const nextScrollLeft = event.currentTarget.scrollLeft;
+                    const previousScrollLeft = Number(lightVehicleScrollerStateRef.current.scrollLeft || 0);
+                    if (Math.abs(nextScrollLeft - previousScrollLeft) > 1) {
+                      lightVehicleScrollerStateRef.current = {
+                        scrollLeft: nextScrollLeft,
+                        lastScrolledAt: Date.now(),
+                      };
+                    }
+                  }}
+                  className="-mx-4 overflow-x-auto overflow-y-hidden px-4 py-3 [-webkit-overflow-scrolling:touch]"
+                >
                   <div className="flex snap-x snap-mandatory items-stretch gap-3">
                     {visibleVehicles.map((vehicle) => {
                       const isSelected = String(formData.vehicle_id || '') === String(vehicle.id || '');
+                      const isConfirmingSelection = isSelected && lightFlowTransition === 'selecting_vehicle';
                       const isAvailable = String(vehicle.status || '').toLowerCase() === 'available' || !vehicle.status;
                       const mappedLightPrice = lightVehiclePriceMap[String(vehicle.id)];
                       return (
                         <button
                           key={vehicle.id}
                           type="button"
+                          tabIndex={-1}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                          }}
+                          onPointerDown={(event) => {
+                            if (event.pointerType === 'mouse') return;
+                            lightVehicleScrollerStateRef.current = {
+                              scrollLeft: lightVehicleScrollerRef.current?.scrollLeft || 0,
+                              lastScrolledAt: lightVehicleScrollerStateRef.current.lastScrolledAt || 0,
+                            };
+                            lightVehiclePointerRef.current = {
+                              vehicleId: vehicle.id || '',
+                              startX: event.clientX,
+                              startY: event.clientY,
+                              startScrollLeft: lightVehicleScrollerRef.current?.scrollLeft || 0,
+                              startedAt: Date.now(),
+                              moved: false,
+                            };
+                          }}
+                          onPointerMove={(event) => {
+                            if (event.pointerType === 'mouse') return;
+                            const gesture = lightVehiclePointerRef.current;
+                            if (String(gesture.vehicleId || '') !== String(vehicle.id || '')) return;
+                            const deltaX = Math.abs(event.clientX - Number(gesture.startX || 0));
+                            const deltaY = Math.abs(event.clientY - Number(gesture.startY || 0));
+                            const deltaScroll = Math.abs((lightVehicleScrollerRef.current?.scrollLeft || 0) - Number(gesture.startScrollLeft || 0));
+                            if (deltaX > 10 || deltaY > 10 || deltaScroll > 2) {
+                              lightVehiclePointerRef.current = { ...gesture, moved: true };
+                            }
+                          }}
+                          onPointerCancel={() => {
+                            lightVehiclePointerRef.current = { vehicleId: null, startX: 0, startY: 0, startScrollLeft: 0, startedAt: 0, moved: false };
+                            suppressNextLightVehicleClickRef.current = {
+                              vehicleId: vehicle.id || '',
+                              until: Date.now() + 650,
+                            };
+                          }}
                           onClick={() => {
-                            handleInputChange('vehicle_id', vehicle.id || '');
-                            setLightPackageDecisionMode('undecided');
-                            animateLightSectionTransition('package', lightPackageStepRef);
+                            const lastTouch = lastLightVehicleTouchSelectRef.current;
+                            const suppressedClick = suppressNextLightVehicleClickRef.current;
+                            const recentlyScrolled = Date.now() - Number(lightVehicleScrollerStateRef.current.lastScrolledAt || 0) < 220;
+                            if (
+                              String(suppressedClick.vehicleId || '') === String(vehicle.id || '') &&
+                              Date.now() < Number(suppressedClick.until || 0)
+                            ) {
+                              return;
+                            }
+                            if (recentlyScrolled) {
+                              return;
+                            }
+                            if (
+                              String(lastTouch.vehicleId || '') === String(vehicle.id || '') &&
+                              Date.now() - Number(lastTouch.selectedAt || 0) < 700
+                            ) {
+                              return;
+                            }
+                            document.activeElement?.blur?.();
+                            selectLightVehicle(vehicle, mappedLightPrice);
+                          }}
+                          onPointerUp={(event) => {
+                            if (event.pointerType === 'mouse') return;
+                            const gesture = lightVehiclePointerRef.current;
+                            lightVehiclePointerRef.current = { vehicleId: null, startX: 0, startY: 0, startScrollLeft: 0, startedAt: 0, moved: false };
+                            const deltaX = Math.abs(event.clientX - Number(gesture.startX || 0));
+                            const deltaY = Math.abs(event.clientY - Number(gesture.startY || 0));
+                            const deltaScroll = Math.abs((lightVehicleScrollerRef.current?.scrollLeft || 0) - Number(gesture.startScrollLeft || 0));
+                            const recentlyScrolled = Date.now() - Number(lightVehicleScrollerStateRef.current.lastScrolledAt || 0) < 160;
+                            const wasSwipe = Boolean(gesture.moved)
+                              || deltaX > 10
+                              || deltaY > 10
+                              || deltaScroll > 2
+                              || recentlyScrolled
+                              || Date.now() - Number(gesture.startedAt || 0) > 900;
+                            if (String(gesture.vehicleId || '') !== String(vehicle.id || '') || wasSwipe) {
+                              suppressNextLightVehicleClickRef.current = {
+                                vehicleId: vehicle.id || '',
+                                until: Date.now() + 650,
+                              };
+                              return;
+                            }
+                            document.activeElement?.blur?.();
+                            lastLightVehicleTouchSelectRef.current = {
+                              vehicleId: vehicle.id || '',
+                              selectedAt: Date.now(),
+                            };
+                            event.preventDefault();
+                            event.stopPropagation();
+                            selectLightVehicle(vehicle, mappedLightPrice);
                           }}
                           disabled={successfullySubmitted}
-                          className={`min-w-[250px] snap-center rounded-[22px] border p-4 text-left transition-all ${
+                          className={`min-w-[250px] snap-center touch-manipulation rounded-[22px] border p-4 text-left transition-all active:scale-[0.99] ${
                             isSelected
-                              ? 'scale-[1.02] border-violet-500 bg-violet-50/92 shadow-[0_22px_48px_rgba(79,70,229,0.22)] backdrop-blur-[3px]'
+                              ? `scale-[1.02] border-violet-500 bg-violet-50/92 shadow-[0_22px_48px_rgba(79,70,229,0.22)] backdrop-blur-[3px] ${isConfirmingSelection ? 'ring-4 ring-violet-200' : ''}`
                               : 'border-slate-200 bg-white hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-sm'
                           }`}
                         >
@@ -10025,8 +10357,9 @@ const SimplifiedRentalWizard = ({
                                 {vehicle.plate_number || tr('N/A', 'N/D')}
                               </p>
                             </div>
-                            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isAvailable ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
-                              {isAvailable ? tr('Available', 'Disponible') : tr('Busy', 'Occupé')}
+                            <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${isSelected ? 'bg-violet-100 text-violet-700' : isAvailable ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                              {isSelected && <CheckCircle className="h-3 w-3" />}
+                              {isSelected ? tr('Selected', 'Sélectionné') : isAvailable ? tr('Available', 'Disponible') : tr('Busy', 'Occupé')}
                             </span>
                           </div>
                           <p className="mt-4 text-2xl font-bold text-slate-900">
@@ -10047,12 +10380,18 @@ const SimplifiedRentalWizard = ({
                   </div>
                 </div>
               </div>
+              </div>
             )}
           </div>
         )}
 
         {formData.vehicle_id && (
-        <div ref={lightPackageStepRef} className="rounded-[22px] border border-violet-200 bg-white/95 shadow-[0_12px_28px_rgba(76,29,149,0.12)] backdrop-blur">
+        <div
+          ref={lightPackageStepRef}
+          className={`scroll-mt-3 rounded-[22px] border border-violet-200 bg-white/95 shadow-[0_12px_28px_rgba(76,29,149,0.12)] backdrop-blur transition-all duration-300 ease-out ${
+            lightFlowTransition === 'opening_package' ? 'translate-y-1 ring-4 ring-violet-100' : 'translate-y-0'
+          }`}
+        >
           <button
             type="button"
             onClick={() => setLightExpandedSection((prev) => (prev === 'package' ? null : 'package'))}
@@ -10067,13 +10406,13 @@ const SimplifiedRentalWizard = ({
                   <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-purple-50 text-purple-600 shadow-sm">
                     <DollarSign className="h-5 w-5" />
                   </span>
-                  {packageSummaryAccent && (
+                  {displayPackageSummaryAccent && (
                     <span className="inline-flex shrink-0 items-center rounded-full bg-violet-100 px-3 py-1.5 text-[13px] font-extrabold uppercase tracking-[0.1em] text-violet-700 shadow-sm">
-                      {packageSummaryAccent}
+                      {displayPackageSummaryAccent}
                     </span>
                   )}
                   <h3 className="min-w-0 truncate text-lg font-bold text-slate-900">
-                    {packageSummaryAccent ? packageSummaryRestLabel : packageSummaryLabel}
+                    {displayPackageSummaryAccent ? displayPackageSummaryRestLabel : displayPackageSummaryLabel}
                   </h3>
                 </div>
                 <span className="inline-flex items-center gap-2">
@@ -10101,19 +10440,19 @@ const SimplifiedRentalWizard = ({
           </button>
 
             {lightExpandedSection === 'package' && (
-              <div className="space-y-4 border-t border-slate-100 bg-white/70 px-4 pb-4 pt-3 backdrop-blur-[2px]">
+              <div className="space-y-4 rounded-b-[22px] border-t border-slate-100 bg-white/70 px-4 pb-6 pt-3 backdrop-blur-[2px]">
                 {isLoadingPackages ? (
                   <div className="rounded-2xl border border-purple-100 bg-purple-50 px-4 py-4 text-sm font-medium text-purple-700">
                     {tr('Loading packages...', 'Chargement des forfaits...')}
                   </div>
                 ) : (
-                  <div className="-mx-4 overflow-x-auto overflow-y-visible px-4 py-3">
-                    <div className="flex snap-x snap-mandatory items-stretch gap-3">
+                  <div className="-mx-4 overflow-x-auto overflow-y-hidden px-4 pb-8 pt-3 [-webkit-overflow-scrolling:touch]">
+                    <div className="flex snap-x snap-mandatory items-stretch gap-3 pr-4">
                       {currentLightDurationUnits !== 0.5 && (
                         <button
                           type="button"
                           onClick={chooseStandardPricing}
-                          className={`min-w-[220px] snap-center rounded-[22px] border p-4 text-left transition-all ${
+                          className={`min-w-[220px] shrink-0 snap-center rounded-[22px] border p-4 text-left transition-all ${
                             !formData.use_package_pricing && lightPackageDecisionMode === 'standard'
                               ? 'scale-[1.02] border-violet-500 bg-violet-50/92 shadow-[0_22px_48px_rgba(79,70,229,0.22)] backdrop-blur-[3px]'
                               : 'border-slate-200 bg-white hover:border-violet-300 hover:shadow-sm'
@@ -10150,7 +10489,7 @@ const SimplifiedRentalWizard = ({
                             key={pkg.id}
                             type="button"
                             onClick={() => applyLightPackageSelection(pkg)}
-                            className={`min-w-[220px] snap-center rounded-[22px] border p-4 text-left transition-all ${
+                            className={`min-w-[220px] shrink-0 snap-center rounded-[22px] border p-4 text-left transition-all ${
                               isSelected
                                 ? 'scale-[1.02] border-violet-500 bg-violet-50/92 shadow-[0_22px_48px_rgba(79,70,229,0.22)] backdrop-blur-[3px]'
                                 : 'border-slate-200 bg-white hover:border-violet-300 hover:shadow-sm'
@@ -10192,27 +10531,9 @@ const SimplifiedRentalWizard = ({
 
       <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:z-20 sm:mt-6">
         <div className="mb-3 flex items-center justify-between gap-3">
-          {stickySummaryLabel ? (
+          {displayStickySummaryLabel ? (
             <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                {selectedVehicle?.plate_number && (
-                  <span className="truncate">{selectedVehicle.plate_number}</span>
-                )}
-                {selectedVehicle?.model && (
-                  <span className="truncate text-slate-600">• {selectedVehicle.model}</span>
-                )}
-                {lightHasDurationSelection && (
-                  <span className="truncate text-slate-600">• {selectedDurationLabel}</span>
-                )}
-                {lightIncludedKmSummary && (
-                  <span className="inline-flex shrink-0 rounded-full bg-violet-50 px-3 py-1 text-xs font-extrabold text-violet-700">
-                    {lightIncludedKmSummary}
-                  </span>
-                )}
-                {liveTotalAmount > 0 && (
-                  <span className="truncate text-slate-900">• {formatDynamicMad(liveTotalAmount)} MAD</span>
-                )}
-              </div>
+              <p className="truncate">{displayStickySummaryLabel}</p>
             </div>
           ) : (
             <div />
@@ -10879,12 +11200,13 @@ const SimplifiedRentalWizard = ({
   );
 
   const renderLightStepThree = () => (
-    <div className="px-4 pb-36 pt-4 sm:px-6">
-      <div className="space-y-4">
+    <div className="px-4 pb-44 pt-4 sm:px-6 sm:pb-36">
+      <div className={`space-y-4 ${lightConfirmInProgress ? 'pointer-events-none' : ''}`}>
         <div className="rounded-[22px] border border-slate-200 bg-white shadow-sm">
           <button
             type="button"
             onClick={() => setLightPaymentSummaryOpen((prev) => !prev)}
+            disabled={lightConfirmInProgress}
             className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
           >
             <div className="min-w-0 flex-1">
@@ -10942,6 +11264,7 @@ const SimplifiedRentalWizard = ({
                 key={status}
                 type="button"
                 onClick={() => handlePaymentStatusTabClick(status)}
+                disabled={lightConfirmInProgress}
                 className={`rounded-2xl px-4 py-4 text-center text-sm font-bold transition-all ${
                   formData.payment_status === status
                     ? 'bg-violet-600 text-white'
@@ -10969,7 +11292,7 @@ const SimplifiedRentalWizard = ({
                 }
               }}
               onChange={(e) => handleInputChange('deposit_amount', normalizeMoneyInput(e.target.value))}
-              disabled={successfullySubmitted}
+              disabled={successfullySubmitted || lightConfirmInProgress}
               className="w-full bg-transparent text-3xl font-bold text-slate-900 outline-none"
               placeholder="0"
             />
@@ -10981,10 +11304,15 @@ const SimplifiedRentalWizard = ({
           </div>
         </div>
 
-        <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+        <div ref={lightDepositStepRef} className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
             {tr('Deposit', 'Caution')}
           </p>
+          {!lightDepositReadyToConfirm && (
+            <p className="mt-1 text-sm font-semibold text-amber-700">
+              {tr('Choose a deposit option before confirming the rental.', 'Choisissez une caution avant de confirmer la location.')}
+            </p>
+          )}
           <div className="mt-3">
             <DamageDepositTabs
               formData={formData}
@@ -10994,13 +11322,27 @@ const SimplifiedRentalWizard = ({
               variant="light"
               selectedTab={lightSelectedDepositTab}
               customAmount={customDepositAmount}
-              onTabClick={handleDepositTabClick}
+              onTabClick={(tabId, amount) => {
+                setLightDepositConfirmed(true);
+                handleDepositTabClick(tabId, amount);
+              }}
               onCustomAmountChange={setCustomDepositAmount}
-              onDocumentUpload={handleDepositDocumentUpload}
-              onDocumentTypeSelect={handleDepositDocumentTypeSelect}
-              onDocumentClear={handleDepositDocumentClear}
+              onDocumentUpload={async (file) => {
+                setLightDepositConfirmed(true);
+                await handleDepositDocumentUpload(file);
+              }}
+              onDocumentTypeSelect={(documentType) => {
+                setLightDepositConfirmed(true);
+                handleDepositDocumentTypeSelect(documentType);
+              }}
+              onDocumentClear={() => {
+                handleDepositDocumentClear();
+                if (!selectedDepositTab) {
+                  setLightDepositConfirmed(false);
+                }
+              }}
               documentUploading={depositDocumentUploading}
-              disabled={successfullySubmitted}
+              disabled={successfullySubmitted || lightConfirmInProgress}
             />
           </div>
         </div>
@@ -11009,6 +11351,7 @@ const SimplifiedRentalWizard = ({
           <button
             type="button"
             onClick={() => setLightPaymentDetailsOpen((prev) => !prev)}
+            disabled={lightConfirmInProgress}
             className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
           >
             <div>
@@ -11027,7 +11370,7 @@ const SimplifiedRentalWizard = ({
                 onToggle={handleFuelChargeToggleChange}
                 amount={fuelChargeAmount}
                 rentalType={formData.rental_type}
-                disabled={successfullySubmitted}
+                disabled={successfullySubmitted || lightConfirmInProgress}
               />
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -11036,7 +11379,7 @@ const SimplifiedRentalWizard = ({
                 <textarea
                   value={formData.accessories}
                   onChange={(e) => handleInputChange('accessories', e.target.value)}
-                  disabled={successfullySubmitted}
+                  disabled={successfullySubmitted || lightConfirmInProgress}
                   className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
                   rows="3"
                   placeholder={tr('Any additional accessories or notes...', 'Tout accessoire ou note supplémentaire...')}
@@ -11046,28 +11389,46 @@ const SimplifiedRentalWizard = ({
           )}
         </div>
 
-        <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
+        <div className="sticky bottom-4 z-30 mt-6 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:bottom-0">
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={handleBack}
-              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800"
+              disabled={lightConfirmInProgress}
+              className={`flex min-h-[68px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800 ${
+                lightConfirmInProgress ? 'cursor-not-allowed opacity-45' : ''
+              }`}
             >
               <ChevronLeft className="h-5 w-5" />
               {tr('Back', 'Retour')}
             </button>
             <button
-              type="submit"
+              type={lightDepositReadyToConfirm ? 'submit' : 'button'}
               onClick={() => {
+                if (!lightDepositReadyToConfirm) {
+                  scrollLightSectionIntoView(lightDepositStepRef);
+                  return;
+                }
                 explicitSubmitRef.current = true;
               }}
-              className={`flex items-center justify-center gap-2 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white ${
-                (submitting || isSubmitting) ? 'animate-bounce' : ''
+              className={`flex min-h-[68px] items-center justify-center gap-2 rounded-2xl px-4 py-4 text-base font-bold text-white shadow-[0_14px_30px_rgba(109,40,217,0.24)] transition-colors duration-150 ${
+                lightConfirmInProgress
+                  ? 'bg-violet-600'
+                  : 'bg-violet-700 hover:bg-violet-800'
               }`}
-              disabled={submitting || isSubmitting || successfullySubmitted}
+              disabled={lightConfirmInProgress || successfullySubmitted}
             >
-              {tr('Confirm', 'Confirmer')}
-              <ChevronRight className="h-5 w-5" />
+              {lightConfirmInProgress ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  {tr('Confirming...', 'Confirmation...')}
+                </>
+              ) : (
+                <>
+                  {lightDepositReadyToConfirm ? tr('Confirm', 'Confirmer') : tr('Choose deposit', 'Choisir la caution')}
+                  {lightDepositReadyToConfirm ? <ChevronRight className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -11100,7 +11461,9 @@ const SimplifiedRentalWizard = ({
 
   return (
     <div ref={wizardTopRef} className="max-w-4xl mx-auto p-4">
-      <ProgressStepper currentStep={isCustomerVerificationOnlyMode ? 1 : currentStep} steps={displayedSteps} />
+      <div ref={isLightVariant ? lightProgressStepperRef : null} className={isLightVariant ? '[overflow-anchor:none]' : ''}>
+        <ProgressStepper currentStep={isCustomerVerificationOnlyMode ? 1 : currentStep} steps={displayedSteps} />
+      </div>
 
       {errors.general && (
         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
@@ -12238,7 +12601,7 @@ const SimplifiedRentalWizard = ({
 
       {showIDScanModal && (
         <EnhancedUnifiedIDScanModal
-          saveWithoutOcrOnly={Boolean(formData.customer_id_image)}
+          saveWithoutOcrOnly={!canUseOcrIdScan || Boolean(formData.customer_id_image)}
           isOpen={showIDScanModal}
           onClose={() => {
             setShowIDScanModal(false);
@@ -12312,6 +12675,12 @@ const SimplifiedRentalWizard = ({
           customerId={formData.customer_id}
           autoProcessOnSelect={false}
           allowSaveWithoutOcr
+          ocrEnabled={canUseOcrIdScan}
+          saveWithoutOcrLabel={
+            canUseOcrIdScan
+              ? null
+              : tr('Save image and continue', "Enregistrer l'image et continuer")
+          }
         />
       )}
 
@@ -12321,6 +12690,7 @@ const SimplifiedRentalWizard = ({
           title={secondDriverScanEntryMode === 'upload' ? "Téléverser l'identité du second conducteur" : "Scanner l'identité du second conducteur"}
           autoLaunchPicker={secondDriverScanEntryMode === 'upload'}
           scanOnlyMode
+          ocrEnabled={canUseOcrIdScan}
           onClose={() => {
             setShowSecondDriverScanModal(false);
             setSecondDriverScanEntryMode('scan');

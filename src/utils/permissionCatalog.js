@@ -200,7 +200,42 @@ export const isModuleAllowedByTenantFeatures = (moduleName, featureAccess = {}) 
 };
 
 export const normalizePermissionMap = (permissionMap = {}) => {
-  if (!permissionMap || Array.isArray(permissionMap) || typeof permissionMap !== 'object') {
+  if (!permissionMap) {
+    return {};
+  }
+
+  if (Array.isArray(permissionMap)) {
+    const normalizedFromArray = {};
+    const stringPermissions = permissionMap
+      .filter((entry) => typeof entry === 'string')
+      .map((entry) => String(entry || '').trim())
+      .filter(Boolean);
+
+    if (stringPermissions.some((entry) => entry.toLowerCase() === 'all')) {
+      ALL_PERMISSION_KEYS.forEach((permissionKey) => {
+        normalizedFromArray[permissionKey] = true;
+      });
+      return normalizedFromArray;
+    }
+
+    permissionMap.forEach((entry) => {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry) && entry.module_name) {
+        normalizedFromArray[entry.module_name] = entry.has_access === true;
+        return;
+      }
+
+      if (typeof entry === 'string') {
+        const resolvedKey = resolvePermissionKey(entry);
+        if (resolvedKey) {
+          normalizedFromArray[resolvedKey] = true;
+        }
+      }
+    });
+
+    return normalizedFromArray;
+  }
+
+  if (typeof permissionMap !== 'object') {
     return {};
   }
 

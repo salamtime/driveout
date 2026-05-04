@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { getProvisioningAutomationConfig } from './provisioningAutomationConfig.js';
+import { normalizeTenantSchemaVersion } from './tenantSchemaRelease.js';
 
 const SUPABASE_MANAGEMENT_API_BASE = 'https://api.supabase.com/v1';
 const VERCEL_API_BASE = 'https://api.vercel.com';
@@ -289,7 +290,7 @@ export const buildAutomaticTenantWorkspace = async ({
     tenantAnonKey: anonKey,
     tenantAppUrl,
     tenantDatabaseName: 'postgres',
-    schemaVersion: 'v1',
+    schemaVersion: normalizeTenantSchemaVersion(),
     dbPassword,
     organizationSlug,
     supabaseProjectStatus: activeProject?.status || project?.status || null,

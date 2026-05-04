@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   X, Upload, FileImage, Loader, CheckCircle, AlertCircle, User, 
   CreditCard, Calendar, MapPin, Scan, FileText, Globe, Mail, Phone,
-  Eye, EyeOff, Shield, Database, UserPlus, Sparkles
+  Eye, EyeOff, Shield, Database, UserPlus, Sparkles, Camera, Trash2
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { toast } from 'sonner';
@@ -19,6 +19,7 @@ const SecondDriverIDScanModal = ({
   title = "Ajouter un second conducteur",
   autoLaunchPicker = false,
   scanOnlyMode = false,
+  ocrEnabled = true,
 }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
@@ -32,12 +33,21 @@ const SecondDriverIDScanModal = ({
   const [extractedData, setExtractedData] = useState(null);
   const [showRawData, setShowRawData] = useState(false);
   const [activeTab, setActiveTab] = useState('scan'); // 'scan' or 'manual'
+  const [primaryImageId, setPrimaryImageId] = useState(null);
   
   // Manual upload states
   const [manualUploadedImages, setManualUploadedImages] = useState([]);
   const [manualUploading, setManualUploading] = useState(false);
   const [manualImagePreview, setManualImagePreview] = useState(null);
+  const [cameraModalOpen, setCameraModalOpen] = useState(false);
+  const [cameraStarting, setCameraStarting] = useState(false);
+  const [cameraError, setCameraError] = useState(null);
+  const [capturedCameraPhotos, setCapturedCameraPhotos] = useState([]);
+  const [capturingPhoto, setCapturingPhoto] = useState(false);
   useAdminModalFocus(isOpen, 'second-driver-id-scan');
+  const liveVideoRef = useRef(null);
+  const liveCanvasRef = useRef(null);
+  const liveStreamRef = useRef(null);
   
   const [manualData, setManualData] = useState({
     full_name: '',
@@ -80,6 +90,14 @@ const SecondDriverIDScanModal = ({
     setActiveTab('scan');
     setManualUploadedImages([]);
     setManualImagePreview(null);
+    setPrimaryImageId(null);
+    setCameraModalOpen(false);
+    setCameraStarting(false);
+    setCameraError(null);
+    capturedCameraPhotos.forEach((photo) => {
+      if (photo?.url) URL.revokeObjectURL(photo.url);
+    });
+    setCapturedCameraPhotos([]);
     setManualData({
       full_name: '',
       licence_number: '',
@@ -95,61 +113,236 @@ const SecondDriverIDScanModal = ({
     });
   };
 
-  const handleManualImageUpload = async (file) => {
-    if (!file) return null;
-    
+  const stopCameraStream = () => {
+    if (liveStreamRef.current) {
+      liveStreamRef.current.getTracks().forEach((track) => track.stop());
+      liveStreamRef.current = null;
+    }
+    if (liveVideoRef.current) {
+      liveVideoRef.current.srcObject = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopCameraStream();
+      capturedCameraPhotos.forEach((photo) => {
+        if (photo?.url) URL.revokeObjectURL(photo.url);
+      });
+    };
+  }, [capturedCameraPhotos]);
+
+  const uploadDriverImages = async (files, { replace = true } = {}) => {
+    const normalizedFiles = Array.isArray(files) ? files.filter(Boolean) : [];
+    if (!normalizedFiles.length) return [];
+
     setManualUploading(true);
     try {
-      const timestamp = Date.now();
-      const randomString = Math.random().toString(36).substring(2, 8);
-      const fileExtension = file.name.split('.').pop() || 'jpg';
-      const fileName = `second_driver_manual_${timestamp}_${randomString}.${fileExtension}`;
+      const uploadedImages = [];
 
-      const uploadResult = await uploadFile(file, {
-        bucket: 'customer-documents',
-        fileName,
-        optimizationProfile: 'document',
-      });
+      for (const file of normalizedFiles) {
+        const timestamp = Date.now();
+        const randomString = Math.random().toString(36).substring(2, 8);
+        const fileExtension = file.name.split('.').pop() || 'jpg';
+        const fileName = `second_driver_manual_${timestamp}_${randomString}.${fileExtension}`;
 
-      if (!uploadResult.success) {
-        throw new Error(uploadResult.error || tr('Failed to upload image', "Impossible de téléverser l'image"));
+        const uploadResult = await uploadFile(file, {
+          bucket: 'customer-documents',
+          fileName,
+          optimizationProfile: 'document',
+        });
+
+        if (!uploadResult.success) {
+          throw new Error(uploadResult.error || tr('Failed to upload image', "Impossible de téléverser l'image"));
+        }
+
+        uploadedImages.push({
+          id: `manual_img_${timestamp}_${randomString}`,
+          url: uploadResult.url,
+          name: file.name,
+          file,
+          path: uploadResult.path,
+          uploadedAt: new Date().toISOString()
+        });
       }
-      
-      const imageObj = {
-        id: `manual_img_${timestamp}_${randomString}`,
-        url: uploadResult.url,
-        name: file.name,
-        path: uploadResult.path,
-        uploadedAt: new Date().toISOString()
-      };
-      
-      setManualUploadedImages([imageObj]);
-      setManualImagePreview(uploadResult.url);
-      toast.success(tr('Image uploaded successfully', 'Image téléversée avec succès'));
-      
-      return uploadResult.url;
+
+      setManualUploadedImages((prev) => {
+        const nextImages = replace ? uploadedImages : [...prev, ...uploadedImages];
+        const nextPrimaryId = replace
+          ? (uploadedImages[0]?.id || null)
+          : (primaryImageId || prev[0]?.id || uploadedImages[0]?.id || null);
+        setPrimaryImageId(nextPrimaryId);
+        setManualImagePreview(nextImages.find((image) => image.id === nextPrimaryId)?.url || nextImages[0]?.url || null);
+        return nextImages;
+      });
+      toast.success(
+        uploadedImages.length > 1
+          ? tr('Images uploaded successfully', 'Images téléversées avec succès')
+          : tr('Image uploaded successfully', 'Image téléversée avec succès')
+      );
+
+      return uploadedImages;
     } catch (error) {
       console.error('❌ Error uploading manual image:', error);
       toast.error(tr('Failed to upload image', "Impossible de téléverser l'image"));
-      return null;
+      return [];
     } finally {
       setManualUploading(false);
     }
   };
 
-  const handleFileUpload = async (file) => {
-    if (!file) return;
+  const handleManualImageUpload = async (fileOrFiles) => {
+    const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+    return uploadDriverImages(files);
+  };
+
+  const openCameraCaptureModal = async () => {
+    setCameraModalOpen(true);
+    setCameraStarting(true);
+    setCameraError(null);
+
+    try {
+      let mediaStream;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment',
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+      } catch (primaryError) {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
+
+      liveStreamRef.current = mediaStream;
+      if (liveVideoRef.current) {
+        liveVideoRef.current.srcObject = mediaStream;
+        await liveVideoRef.current.play().catch(() => {});
+      }
+    } catch (error) {
+      console.error('❌ Camera access failed:', error);
+      setCameraError(tr('Failed to access camera. Please check permissions.', "Impossible d'accéder à la caméra. Vérifiez les autorisations."));
+    } finally {
+      setCameraStarting(false);
+    }
+  };
+
+  const closeCameraCaptureModal = () => {
+    stopCameraStream();
+    setCameraModalOpen(false);
+    setCameraStarting(false);
+    setCameraError(null);
+  };
+
+  const captureCameraPhoto = async () => {
+    if (!liveVideoRef.current || !liveCanvasRef.current || !liveStreamRef.current) {
+      setCameraError(tr('Camera is not ready yet.', "La caméra n'est pas encore prête."));
+      return;
+    }
+
+    setCapturingPhoto(true);
+    try {
+      const video = liveVideoRef.current;
+      const canvas = liveCanvasRef.current;
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+
+      const context = canvas.getContext('2d');
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const blob = await new Promise((resolve) => {
+        canvas.toBlob(resolve, 'image/jpeg', 0.92);
+      });
+
+      if (!blob) {
+        throw new Error(tr('Failed to capture photo', 'Impossible de capturer la photo'));
+      }
+
+      const timestamp = Date.now();
+      const file = new File([blob], `second_driver_camera_${timestamp}.jpg`, { type: 'image/jpeg' });
+      const url = URL.createObjectURL(blob);
+
+      setCapturedCameraPhotos((prev) => [
+        ...prev,
+        {
+          id: `camera_${timestamp}`,
+          file,
+          blob,
+          url,
+          capturedAt: new Date().toISOString(),
+        },
+      ]);
+    } catch (error) {
+      console.error('❌ Failed to capture camera photo:', error);
+      setCameraError(error.message || tr('Failed to capture photo', 'Impossible de capturer la photo'));
+    } finally {
+      setCapturingPhoto(false);
+    }
+  };
+
+  const removeCapturedCameraPhoto = (photoId) => {
+    setCapturedCameraPhotos((prev) => {
+      const photoToRemove = prev.find((photo) => photo.id === photoId);
+      if (photoToRemove?.url) {
+        URL.revokeObjectURL(photoToRemove.url);
+      }
+      return prev.filter((photo) => photo.id !== photoId);
+    });
+  };
+
+  const saveCapturedCameraPhotos = async () => {
+    if (!capturedCameraPhotos.length) {
+      setCameraError(tr('Capture at least one photo first.', 'Capturez au moins une photo.'));
+      return;
+    }
+
+    const uploadedImages = await uploadDriverImages(
+      capturedCameraPhotos.map((photo) => photo.file),
+      { replace: true }
+    );
+
+    if (!uploadedImages.length) return;
+
+    setImageFile(capturedCameraPhotos[0].file);
+    setPreviewUrl(uploadedImages[0].url);
+    setScanSuccess(false);
+    setScanError(null);
+    setExtractedData(null);
+    capturedCameraPhotos.forEach((photo) => {
+      if (photo?.url) URL.revokeObjectURL(photo.url);
+    });
+    setCapturedCameraPhotos([]);
+    closeCameraCaptureModal();
+  };
+
+  const handleFileUpload = async (fileOrFiles) => {
+    const files = Array.isArray(fileOrFiles) ? fileOrFiles.filter(Boolean) : [fileOrFiles].filter(Boolean);
+    if (!files.length) return;
+    const primaryFile = files[0];
 
     setUploading(true);
-    setImageFile(file);
+    setImageFile(primaryFile);
     
     try {
-      // Create preview
-      const url = URL.createObjectURL(file);
-      setPreviewUrl(url);
+      const uploadedImages = files.length > 1
+        ? await uploadDriverImages(files, { replace: true })
+        : [];
+      const previewSource = uploadedImages[0]?.url || URL.createObjectURL(primaryFile);
+      setPreviewUrl(previewSource);
       
-      // Start OCR scanning using the EnhancedUnifiedCustomerService directly
-      await processImageWithService(file);
+      // Start OCR immediately only for single-file imports when OCR is enabled.
+      if (files.length === 1 && ocrEnabled) {
+        await processImageWithService(primaryFile);
+      } else {
+        setScanSuccess(false);
+        setScanError(null);
+        setExtractedData(null);
+      }
       
     } catch (error) {
       console.error('❌ File upload failed:', error);
@@ -161,6 +354,17 @@ const SecondDriverIDScanModal = ({
   };
 
   const processImageWithService = async (file) => {
+    if (!ocrEnabled) {
+      setScanError(
+        tr(
+          'OCR auto-fill is not available on this plan. Complete the driver details manually.',
+          "Le remplissage OCR n'est pas disponible sur ce forfait. Complétez manuellement les détails du conducteur."
+        )
+      );
+      setActiveTab('manual');
+      return;
+    }
+
     console.log("🎯 [MODAL] Starting scan for second driver");
     setScanning(true);
     setScanError(null);
@@ -210,13 +414,18 @@ const SecondDriverIDScanModal = ({
       setExtractedData(mappedData);
       setManualData(mappedData);
       if (uploadedImageUrl) {
-        setManualUploadedImages([{
-          id: `scan_img_${Date.now()}`,
-          url: uploadedImageUrl,
-          name: file.name || 'ID scanné',
-          uploadedAt: new Date().toISOString()
-        }]);
-        setManualImagePreview(uploadedImageUrl);
+        setManualUploadedImages((prev) => {
+          if (prev.length > 0) {
+            return prev;
+          }
+          return [{
+            id: `scan_img_${Date.now()}`,
+            url: uploadedImageUrl,
+            name: file.name || 'ID scanné',
+            uploadedAt: new Date().toISOString()
+          }];
+        });
+        setManualImagePreview((prev) => prev || uploadedImageUrl);
       }
 
       if (result.ocrUnavailable) {
@@ -263,17 +472,17 @@ const SecondDriverIDScanModal = ({
   };
 
   const handleFileSelect = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      handleFileUpload(file);
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) {
+      handleFileUpload(files);
     }
   };
 
   const handleDrop = (e) => {
     e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file) {
-      handleFileUpload(file);
+    const files = Array.from(e.dataTransfer.files || []).filter((file) => file.type?.startsWith('image/'));
+    if (files.length > 0) {
+      handleFileUpload(files);
     }
   };
 
@@ -281,10 +490,57 @@ const SecondDriverIDScanModal = ({
     setManualData(prev => ({ ...prev, [field]: value }));
   };
 
+  const getPrimaryManualImage = () => {
+    if (manualUploadedImages.length === 0) return null;
+    return manualUploadedImages.find((image) => image.id === primaryImageId) || manualUploadedImages[0];
+  };
+
+  const selectPrimaryImage = (imageId) => {
+    setPrimaryImageId(imageId);
+    const selectedImage = manualUploadedImages.find((image) => image.id === imageId);
+    if (selectedImage?.url) {
+      setManualImagePreview(selectedImage.url);
+      setPreviewUrl(selectedImage.url);
+    }
+    if (selectedImage?.file) {
+      setImageFile(selectedImage.file);
+    }
+  };
+
+  const handleScanSelectedImage = async () => {
+    const primaryImage = getPrimaryManualImage();
+    const primaryFile = primaryImage?.file || imageFile;
+
+    if (!primaryFile) {
+      toast.error(tr('Please add a photo first.', 'Veuillez ajouter une photo d’abord.'));
+      return;
+    }
+
+    setImageFile(primaryFile);
+    setPreviewUrl(primaryImage?.url || previewUrl);
+    await processImageWithService(primaryFile);
+  };
+
+  const removeManualUploadedImage = (imageId) => {
+    setManualUploadedImages((prev) => {
+      const nextImages = prev.filter((image) => image.id !== imageId);
+      const nextPrimaryId = imageId === primaryImageId ? (nextImages[0]?.id || null) : primaryImageId;
+      setPrimaryImageId(nextPrimaryId);
+      const nextPrimaryImage = nextImages.find((image) => image.id === nextPrimaryId) || nextImages[0] || null;
+      setManualImagePreview(nextPrimaryImage?.url || null);
+      setPreviewUrl(nextPrimaryImage?.url || null);
+      setImageFile(nextPrimaryImage?.file || null);
+      return nextImages;
+    });
+  };
+
   const buildDriverData = () => {
     const imageUrl =
       extractedData?.id_scan_url ||
       (manualUploadedImages.length > 0 ? manualUploadedImages[0].url : null);
+    const uploadedImageUrls = manualUploadedImages
+      .map((image) => image?.url)
+      .filter(Boolean);
 
     return {
       id: `temp_sd_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
@@ -307,7 +563,7 @@ const SecondDriverIDScanModal = ({
           name: imageFile?.name || 'ID scanné',
           uploadedAt: new Date().toISOString()
         }] : []),
-      extra_images: imageUrl ? [imageUrl] : [],
+      extra_images: uploadedImageUrls.length > 0 ? uploadedImageUrls : (imageUrl ? [imageUrl] : []),
       scan_confidence: extractedData?.scan_confidence || 0.95,
       is_active: true,
       created_at: new Date().toISOString(),
@@ -349,6 +605,9 @@ const SecondDriverIDScanModal = ({
       // Get image URL from either scan or manual upload
       const imageUrl = extractedData?.id_scan_url || 
                       (manualUploadedImages.length > 0 ? manualUploadedImages[0].url : null);
+      const uploadedImageUrls = manualUploadedImages
+        .map((image) => image?.url)
+        .filter(Boolean);
       
       const driverData = {
         id: `temp_sd_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
@@ -371,7 +630,7 @@ const SecondDriverIDScanModal = ({
                           name: 'ID scanné',
                           uploadedAt: new Date().toISOString()
                         }] : []),
-        extra_images: manualUploadedImages.length > 0 ? [imageUrl] : 
+        extra_images: uploadedImageUrls.length > 0 ? uploadedImageUrls : 
                      (extractedData?.id_scan_url ? [extractedData.id_scan_url] : []),
         scan_confidence: extractedData?.scan_confidence || 0.95,
         is_active: true,
@@ -409,7 +668,7 @@ const SecondDriverIDScanModal = ({
       data-admin-modal-open="true"
     >
       {/* Mobile Bottom Sheet / Desktop Modal */}
-      <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl h-[90vh] sm:h-auto max-h-[90vh] flex flex-col">
+      <div className="relative bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl h-[90vh] sm:h-auto max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="sticky top-0 z-10 bg-white p-4 sm:p-6 border-b border-gray-200">
           <div className="flex items-center justify-between">
@@ -475,12 +734,12 @@ const SecondDriverIDScanModal = ({
                 className={`relative border-2 border-dashed rounded-2xl p-6 text-center transition-all ${previewUrl ? 'border-green-500 bg-green-50' : 'border-gray-300 hover:border-blue-400'} ${uploading || scanning ? 'opacity-50' : ''}`}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={handleDrop}
-                onClick={() => !uploading && !scanning && document.getElementById('fileInput').click()}
               >
                 <input
                   id="fileInput"
                   type="file"
-                  accept="image/*,capture=camera"
+                  accept="image/*"
+                  multiple
                   className="hidden"
                   onChange={handleFileSelect}
                   disabled={uploading || scanning}
@@ -502,19 +761,66 @@ const SecondDriverIDScanModal = ({
                         className="w-full h-full object-cover"
                       />
                     </div>
+                    {manualUploadedImages.length > 1 && (
+                      <div className="mb-4 flex justify-center gap-2 overflow-x-auto pb-1">
+                        {manualUploadedImages.map((image) => (
+                          <button
+                            key={image.id}
+                            type="button"
+                            onClick={() => selectPrimaryImage(image.id)}
+                            className={`relative h-16 w-16 flex-shrink-0 overflow-hidden rounded-lg border bg-white ${image.id === primaryImageId ? 'border-blue-500 ring-2 ring-blue-200' : 'border-green-200'}`}
+                          >
+                            <img
+                              src={image.url}
+                              alt={image.name || 'ID'}
+                              className="h-full w-full object-cover"
+                            />
+                            {image.id === primaryImageId && (
+                              <span className="absolute inset-x-0 bottom-0 bg-blue-600/90 px-1 py-0.5 text-[10px] font-semibold text-white">
+                                {tr('Primary', 'Principale')}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex items-center justify-center gap-2 text-green-600">
                       <CheckCircle className="w-5 h-5" />
-                      <span className="font-medium">Prêt à scanner</span>
+                      <span className="font-medium">
+                        {manualUploadedImages.length > 1
+                          ? tr(`${manualUploadedImages.length} photos ready to scan`, `${manualUploadedImages.length} photos prêtes à être scannées`)
+                          : tr('Ready to scan', 'Prêt à scanner')}
+                      </span>
+                    </div>
+                    <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-center">
+                      <button
+                        type="button"
+                        onClick={openCameraCaptureModal}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50"
+                      >
+                        <Camera className="w-4 h-4" />
+                        {tr('Take Photo', 'Prendre une photo')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById('fileInput')?.click()}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                      >
+                        <Upload className="w-4 h-4" />
+                        {tr('Choose from Gallery', 'Choisir depuis la galerie')}
+                      </button>
                     </div>
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
+                      type="button"
+                      onClick={() => {
                         setPreviewUrl(null);
                         setImageFile(null);
+                        setManualUploadedImages([]);
+                        setManualImagePreview(null);
                       }}
                       className="mt-3 text-sm text-red-500 hover:text-red-700"
                     >
-                      Supprimer la photo
+                      {tr('Remove photos', 'Supprimer les photos')}
                     </button>
                   </div>
                 ) : (
@@ -522,9 +828,31 @@ const SecondDriverIDScanModal = ({
                     <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
                       <Upload className="w-7 h-7 text-blue-600" />
                     </div>
-                    <p className="text-gray-700 font-medium mb-2">Téléverser la photo d'identité</p>
-                    <p className="text-gray-500 text-sm mb-4">Touchez ou glissez-déposez</p>
-                    <div className="flex items-center justify-center gap-4 text-xs text-gray-500">
+                    <p className="text-gray-700 font-medium mb-2">{tr("Take photos or upload the driver's ID", "Prenez des photos ou téléversez la pièce d'identité")}</p>
+                    <p className="text-gray-500 text-sm mb-4">
+                      {ocrEnabled
+                        ? tr('Use the camera for multiple shots, or import one from the gallery.', 'Utilisez la caméra pour plusieurs prises, ou importez-en une depuis la galerie.')
+                        : tr('Capture or import the ID image, then complete the visible fields manually.', "Capturez ou importez l'image d'identité, puis complétez manuellement les champs visibles.")}
+                    </p>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
+                      <button
+                        type="button"
+                        onClick={openCameraCaptureModal}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                      >
+                        <Camera className="w-4 h-4" />
+                        {tr('Take Photo', 'Prendre une photo')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById('fileInput')?.click()}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                      >
+                        <Upload className="w-4 h-4" />
+                        {tr('Choose from Gallery', 'Choisir depuis la galerie')}
+                      </button>
+                    </div>
+                    <div className="mt-4 flex items-center justify-center gap-4 text-xs text-gray-500">
                       <span className="flex items-center gap-1">
                         <FileImage className="w-3 h-3" />
                         JPG, PNG
@@ -540,23 +868,33 @@ const SecondDriverIDScanModal = ({
 
               {/* Scan Button */}
               {previewUrl && !scanSuccess && (
-                <button
-                  onClick={() => processImageWithService(imageFile)}
-                  disabled={scanning}
-                  className="w-full mt-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white py-3.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 hover:opacity-95 disabled:opacity-50"
-                >
-                  {scanning ? (
-                    <>
-                      <Loader className="w-4 h-4 animate-spin" />
-                      Scan en cours...
-                    </>
-                  ) : (
-                    <>
-                      <Scan className="w-4 h-4" />
-                      Scanner maintenant
-                    </>
-                  )}
-                </button>
+                ocrEnabled ? (
+                  <button
+                    onClick={handleScanSelectedImage}
+                    disabled={scanning}
+                    className="w-full mt-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white py-3.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 hover:opacity-95 disabled:opacity-50"
+                  >
+                    {scanning ? (
+                      <>
+                        <Loader className="w-4 h-4 animate-spin" />
+                        Scan en cours...
+                      </>
+                    ) : (
+                      <>
+                        <Scan className="w-4 h-4" />
+                        Scanner maintenant
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('manual')}
+                    className="w-full mt-4 rounded-xl border border-slate-300 bg-white py-3.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    {tr('Continue without OCR', 'Continuer sans OCR')}
+                  </button>
+                )
               )}
 
               {/* Error Message */}
@@ -576,6 +914,12 @@ const SecondDriverIDScanModal = ({
                     Saisir manuellement à la place →
                   </button>
                 </div>
+              )}
+
+              {manualUploadedImages.length > 1 && !scanSuccess && (
+                <p className="mt-3 text-center text-xs text-slate-500">
+                  {tr('Tap a thumbnail to choose the primary scan image.', 'Touchez une miniature pour choisir l’image principale du scan.')}
+                </p>
               )}
             </div>
           ) : (
@@ -763,9 +1107,9 @@ const SecondDriverIDScanModal = ({
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={async (e) => {
                       e.preventDefault();
-                      const file = e.dataTransfer.files[0];
-                      if (file && file.type.startsWith('image/')) {
-                        await handleManualImageUpload(file);
+                      const files = Array.from(e.dataTransfer.files || []).filter((file) => file.type.startsWith('image/'));
+                      if (files.length > 0) {
+                        await handleManualImageUpload(files);
                       }
                     }}
                     onClick={() => !manualUploading && document.getElementById('manual-image-input').click()}
@@ -774,11 +1118,12 @@ const SecondDriverIDScanModal = ({
                       id="manual-image-input"
                       type="file"
                       accept="image/*"
+                      multiple
                       className="hidden"
                       onChange={async (e) => {
-                        const file = e.target.files[0];
-                        if (file) {
-                          await handleManualImageUpload(file);
+                        const files = Array.from(e.target.files || []);
+                        if (files.length > 0) {
+                          await handleManualImageUpload(files);
                         }
                       }}
                       disabled={manualUploading}
@@ -804,27 +1149,85 @@ const SecondDriverIDScanModal = ({
                         </div>
                         <div className="flex items-center justify-center gap-2 text-green-600">
                           <CheckCircle className="w-4 h-4" />
-                          <span className="text-sm font-medium">Image d'identité téléversée</span>
+                          <span className="text-sm font-medium">
+                            {manualUploadedImages.length > 1
+                              ? tr(`${manualUploadedImages.length} ID images uploaded`, `${manualUploadedImages.length} images d'identité téléversées`)
+                              : tr('ID image uploaded', "Image d'identité téléversée")}
+                          </span>
                         </div>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setManualUploadedImages([]);
-                            setManualImagePreview(null);
-                          }}
-                          className="mt-2 text-xs text-red-500 hover:text-red-700"
-                        >
-                          Supprimer l'image
-                        </button>
+                        {manualUploadedImages.length > 1 && (
+                          <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                            {manualUploadedImages.map((image) => (
+                              <button
+                                key={image.id}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  selectPrimaryImage(image.id);
+                                }}
+                                className={`relative h-16 w-16 flex-shrink-0 overflow-hidden rounded-lg border bg-white ${image.id === primaryImageId ? 'border-blue-500 ring-2 ring-blue-200' : 'border-green-200'}`}
+                              >
+                                <img
+                                  src={image.url}
+                                  alt={image.name || 'ID'}
+                                  className="h-full w-full object-cover"
+                                />
+                                {image.id === primaryImageId && (
+                                  <span className="absolute inset-x-0 bottom-0 bg-blue-600/90 px-1 py-0.5 text-[10px] font-semibold text-white">
+                                    {tr('Primary', 'Principale')}
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeManualUploadedImage(image.id);
+                                  }}
+                                  className="absolute right-1 top-1 rounded-full bg-black/70 p-1 text-white"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:justify-center">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              document.getElementById('manual-image-input')?.click();
+                            }}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                          >
+                            <Upload className="h-3.5 w-3.5" />
+                            {tr('Add More Photos', 'Ajouter plus de photos')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setManualUploadedImages([]);
+                              setManualImagePreview(null);
+                            }}
+                            className="text-xs text-red-500 hover:text-red-700"
+                          >
+                            {tr('Remove all photos', 'Supprimer toutes les photos')}
+                          </button>
+                        </div>
+                        {manualUploadedImages.length > 1 && (
+                          <p className="mt-2 text-xs text-slate-500">
+                            {tr('Tap any thumbnail to choose the primary image. All photos stay attached to this driver.', 'Touchez une miniature pour choisir l’image principale. Toutes les photos restent jointes à ce conducteur.')}
+                          </p>
+                        )}
                       </div>
                     ) : (
                       <>
                         <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
                           <Upload className="w-5 h-5 text-blue-600" />
                         </div>
-                        <p className="text-gray-700 text-sm font-medium mb-1">Téléverser la photo d'identité</p>
-                        <p className="text-gray-500 text-xs">Cliquez ou glissez-déposez</p>
+                        <p className="text-gray-700 text-sm font-medium mb-1">{tr("Upload the driver's ID photos", "Téléverser les photos d'identité")}</p>
+                        <p className="text-gray-500 text-xs">{tr('Click or drag multiple images here', 'Cliquez ou glissez plusieurs images ici')}</p>
                         <p className="text-xs text-gray-400 mt-2">JPG, PNG jusqu'à 10 Mo</p>
                       </>
                     )}
@@ -844,6 +1247,129 @@ const SecondDriverIDScanModal = ({
                         </div>
           )}
         </div>
+
+        {cameraModalOpen && (
+          <div className="absolute inset-0 z-20 flex flex-col bg-white">
+            <div className="flex items-center justify-between border-b border-gray-200 px-4 py-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">{tr('Take Photo', 'Prendre une photo')}</h3>
+                <p className="text-sm text-gray-500">
+                  {tr('Capture multiple shots, then save them to this scan.', 'Capturez plusieurs prises, puis enregistrez-les dans ce scan.')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeCameraCaptureModal}
+                className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="overflow-hidden rounded-2xl bg-black">
+                {cameraStarting ? (
+                  <div className="flex aspect-[4/3] items-center justify-center text-white">
+                    <div className="text-center">
+                      <Loader className="mx-auto mb-3 h-8 w-8 animate-spin" />
+                      <p className="text-sm">{tr('Starting camera...', 'Démarrage de la caméra...')}</p>
+                    </div>
+                  </div>
+                ) : cameraError ? (
+                  <div className="flex aspect-[4/3] items-center justify-center p-6 text-center text-white">
+                    <div>
+                      <AlertCircle className="mx-auto mb-3 h-8 w-8 text-red-400" />
+                      <p className="text-sm">{cameraError}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <video
+                    ref={liveVideoRef}
+                    className="aspect-[4/3] w-full object-cover"
+                    autoPlay
+                    muted
+                    playsInline
+                  />
+                )}
+                <canvas ref={liveCanvasRef} className="hidden" />
+              </div>
+
+              {capturedCameraPhotos.length > 0 && (
+                <div className="mt-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-sm font-semibold text-slate-900">
+                      {capturedCameraPhotos.length > 1
+                        ? tr(`${capturedCameraPhotos.length} photos captured`, `${capturedCameraPhotos.length} photos capturées`)
+                        : tr('1 photo captured', '1 photo capturée')}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        capturedCameraPhotos.forEach((photo) => {
+                          if (photo?.url) URL.revokeObjectURL(photo.url);
+                        });
+                        setCapturedCameraPhotos([]);
+                      }}
+                      className="text-xs font-medium text-red-500 hover:text-red-700"
+                    >
+                      {tr('Clear all', 'Tout effacer')}
+                    </button>
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {capturedCameraPhotos.map((photo) => (
+                      <div key={photo.id} className="relative h-24 w-24 flex-shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
+                        <img src={photo.url} alt="Captured ID" className="h-full w-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => removeCapturedCameraPhoto(photo.id)}
+                          className="absolute right-1 top-1 rounded-full bg-black/70 p-1 text-white"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-gray-200 p-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <button
+                  type="button"
+                  onClick={closeCameraCaptureModal}
+                  className="rounded-xl border border-gray-300 px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  {tr('Cancel', 'Annuler')}
+                </button>
+                <button
+                  type="button"
+                  onClick={captureCameraPhoto}
+                  disabled={cameraStarting || capturingPhoto}
+                  className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {capturingPhoto
+                    ? tr('Capturing...', 'Capture...')
+                    : capturedCameraPhotos.length > 0
+                      ? tr('Take Another Photo', 'Prendre une autre photo')
+                      : tr('Take Photo', 'Prendre une photo')}
+                </button>
+                <button
+                  type="button"
+                  onClick={saveCapturedCameraPhotos}
+                  disabled={!capturedCameraPhotos.length || manualUploading}
+                  className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {manualUploading
+                    ? tr('Saving...', 'Enregistrement...')
+                    : capturedCameraPhotos.length > 1
+                      ? tr('Save Photos', 'Enregistrer les photos')
+                      : tr('Save Photo', 'Enregistrer la photo')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         {!scanOnlyMode && (

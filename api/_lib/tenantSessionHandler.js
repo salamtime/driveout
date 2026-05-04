@@ -13,6 +13,11 @@ import {
 } from './tenantRegistry.js';
 import { bootstrapAutomaticBusinessOwnerProvisioning } from './tenantProvisioningHandler.js';
 import { getCachedWorkspaceReadiness, resolveWorkspaceReadiness } from './tenantWorkspaceReadiness.js';
+import {
+  buildEffectiveTenantFeatureAccess,
+  getTenantPlanLimits,
+  normalizeTenantPlanType,
+} from '../../src/config/tenantPlans.js';
 
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
@@ -55,6 +60,7 @@ const buildTenantWorkspaceState = ({
   tenant = null,
   provisioningJob = null,
   workspaceReadiness = null,
+  automaticSignupModeEnabled = false,
 }) => {
   const approvalStatus = normalizeRegistryStatus(
     businessAccount?.approval_status || businessAccount?.application_status || 'pending'
@@ -89,7 +95,7 @@ const buildTenantWorkspaceState = ({
   }
 
   if (!tenant?.id) {
-    return 'no_workspace';
+    return automaticSignupModeEnabled ? 'provisioning' : 'no_workspace';
   }
 
   if (tenantStatus === 'pending') {
@@ -167,13 +173,15 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { user, adminClient } = auth;
+  const { user, adminClient, masterAdminClient } = auth;
+  const registryClient = masterAdminClient || adminClient;
   const accountType = String(
     user?.user_metadata?.account_type ||
     user?.app_metadata?.account_type ||
     ''
   ).trim().toLowerCase();
-  const platformAccess = await resolvePlatformAccessContext(adminClient, user);
+  const automaticSignupModeEnabled = isAutomaticSignupModeEnabled();
+  const platformAccess = await resolvePlatformAccessContext(registryClient, user);
   const hasPlatformAccess =
     Boolean(platformAccess?.record) ||
     platformAccess?.isPlatformOwner === true ||
@@ -225,7 +233,7 @@ export default async function handler(req, res) {
     let provisioningJob = null;
 
     if (canUseBusinessOwnerSession) {
-      const businessAccountResult = await adminClient
+      const businessAccountResult = await registryClient
         .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
         .select('*')
         .eq('auth_user_id', user.id)
@@ -236,21 +244,21 @@ export default async function handler(req, res) {
 
       const [subscriptionResult, tenantResult, provisioningJobResult] = await Promise.all([
         businessAccountId
-          ? adminClient
+          ? registryClient
               .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
               .select('*')
               .eq('business_account_id', businessAccountId)
               .maybeSingle()
           : Promise.resolve({ data: null, error: null }),
         businessAccountId
-          ? adminClient
+          ? registryClient
               .from(PLATFORM_TENANTS_TABLE)
               .select('*')
               .eq('business_account_id', businessAccountId)
               .maybeSingle()
           : Promise.resolve({ data: null, error: null }),
         businessAccountId
-          ? adminClient
+          ? registryClient
               .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
               .select('*')
               .eq('business_account_id', businessAccountId)
@@ -264,7 +272,7 @@ export default async function handler(req, res) {
       tenant = tenantResult.data || null;
       provisioningJob = provisioningJobResult.data || null;
     } else if (canUsePlatformTenantHostSession) {
-      const tenantResult = await adminClient
+      const tenantResult = await registryClient
         .from(PLATFORM_TENANTS_TABLE)
         .select('*')
         .eq('tenant_slug', requestedTenantSlug)
@@ -275,21 +283,21 @@ export default async function handler(req, res) {
 
       const [businessAccountResult, subscriptionResult, provisioningJobResult] = await Promise.all([
         businessAccountId
-          ? adminClient
+          ? registryClient
               .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
               .select('*')
               .eq('id', businessAccountId)
               .maybeSingle()
           : Promise.resolve({ data: null, error: null }),
         businessAccountId
-          ? adminClient
+          ? registryClient
               .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
               .select('*')
               .eq('business_account_id', businessAccountId)
               .maybeSingle()
           : Promise.resolve({ data: null, error: null }),
         businessAccountId
-          ? adminClient
+          ? registryClient
               .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
               .select('*')
               .eq('business_account_id', businessAccountId)
@@ -308,6 +316,7 @@ export default async function handler(req, res) {
     const provisioningStatus = String(provisioningJob?.job_status || '').trim().toLowerCase();
     const shouldBootstrapAutomaticSignup =
       canUseBusinessOwnerSession &&
+      automaticSignupModeEnabled &&
       (!businessAccountId ||
         !tenant?.id ||
         tenantStatus === 'pending' ||
@@ -317,7 +326,7 @@ export default async function handler(req, res) {
     if (shouldBootstrapAutomaticSignup) {
       try {
         const bootstrapped = await bootstrapAutomaticBusinessOwnerProvisioning({
-          adminClient,
+          adminClient: registryClient,
           authUser: user,
         });
 
@@ -338,7 +347,7 @@ export default async function handler(req, res) {
       try {
         workspaceReadiness = await resolveWorkspaceReadiness({
           tenant,
-          adminClient,
+          adminClient: registryClient,
           forceFresh: !workspaceReadiness?.fresh,
           persist: true,
         });
@@ -362,22 +371,45 @@ export default async function handler(req, res) {
     }
 
     const effectiveSubscriptionStatus = resolveEffectiveSubscriptionStatus(subscription);
+    const effectivePlanType = normalizeTenantPlanType(subscription?.plan_type || 'starter');
     const effectiveSubscription = subscription
       ? {
           ...subscription,
+          plan_type: effectivePlanType,
+          plan_limits: {
+            ...getTenantPlanLimits(effectivePlanType),
+            ...((subscription?.plan_limits && typeof subscription.plan_limits === 'object')
+              ? subscription.plan_limits
+              : {}),
+          },
           subscription_status: effectiveSubscriptionStatus,
+        }
+      : null;
+    const effectiveTenant = tenant
+      ? {
+          ...tenant,
+          metadata: {
+            ...(tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {}),
+            effective_feature_access: buildEffectiveTenantFeatureAccess(
+              effectivePlanType,
+              tenant?.metadata?.feature_access && typeof tenant.metadata.feature_access === 'object'
+                ? tenant.metadata.feature_access
+                : {}
+            ),
+          },
         }
       : null;
     const workspaceState = buildTenantWorkspaceState({
       businessAccount,
       subscription: effectiveSubscription,
-      tenant,
+      tenant: effectiveTenant,
       provisioningJob,
       workspaceReadiness,
+      automaticSignupModeEnabled,
     });
     const lifecycle = buildTenantLifecycleSummary({
       subscription: effectiveSubscription,
-      tenant,
+      tenant: effectiveTenant,
     });
 
     res.status(200).json({
@@ -386,8 +418,9 @@ export default async function handler(req, res) {
         workspace_state: workspaceState,
         business_account: businessAccount,
         subscription: effectiveSubscription,
-        tenant,
+        tenant: effectiveTenant,
         provisioning_job: provisioningJob,
+        automatic_signup_mode: automaticSignupModeEnabled,
         platform_access: platformAccessPayload,
         lifecycle,
       },

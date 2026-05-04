@@ -1,5 +1,6 @@
 import {
   PLATFORM_BUSINESS_ACCOUNTS_TABLE,
+  PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE,
   PLATFORM_TENANTS_TABLE,
   PLATFORM_TENANT_AUDIT_LOG_TABLE,
   PLATFORM_TENANT_PROVISIONING_JOBS_TABLE,
@@ -11,7 +12,14 @@ import {
   mergeWorkspaceReadinessMetadata,
   resolveWorkspaceReadiness,
 } from './tenantWorkspaceReadiness.js';
-import { applyLegacyBusinessWorkspaceBootstrap } from './tenantWorkspaceBootstrap.js';
+import {
+  applyCanonicalBusinessWorkspaceSchema,
+  seedCanonicalBusinessWorkspaceRuntime,
+} from './tenantWorkspaceBootstrap.js';
+import {
+  CURRENT_TENANT_SCHEMA_RELEASE_ID,
+  normalizeTenantSchemaVersion,
+} from './tenantSchemaRelease.js';
 
 const sendJson = (res, status, body) => {
   res.status(status).json(body);
@@ -105,6 +113,18 @@ const insertAuditLog = async ({ adminClient, businessAccountId, tenantId, action
   } catch (error) {
     console.warn(`Unable to write tenant provisioning audit log for ${action}:`, error?.message || error);
   }
+};
+
+const fetchProvisioningSubscription = async ({ adminClient, businessAccountId }) => {
+  if (!businessAccountId) return null;
+  const { data, error } = await adminClient
+    .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
+    .select('trial_started_at, trial_ends_at')
+    .eq('business_account_id', businessAccountId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
 };
 
 const failProvisioning = async ({ adminClient, jobId, tenantId, businessAccountId, message, metadata = {} }) => {
@@ -466,7 +486,8 @@ export const runProvisioningDriver = async ({ body = {}, headers = {}, skipAuth 
         tenant_anon_key: workspace.tenant_anon_key,
         tenant_service_role_secret_ref: workspace.tenant_service_role_secret_ref,
         tenant_database_name: workspace.tenant_database_name,
-        schema_version: workspace.schema_version || 'v1',
+        schema_version: normalizeTenantSchemaVersion(workspace.schema_version),
+        schema_release_id: CURRENT_TENANT_SCHEMA_RELEASE_ID,
         workspace_pool_id: workspace.id,
       }),
     });
@@ -661,7 +682,7 @@ export const handleInternalProvisioningComplete = async (req, res) => {
   const tenantAnonKey = getPayloadValue(req.body, 'tenant_anon_key');
   const tenantServiceRoleSecretRef = getPayloadValue(req.body, 'tenant_service_role_secret_ref');
   const tenantDatabaseName = getPayloadValue(req.body, 'tenant_database_name');
-  const schemaVersion = getPayloadValue(req.body, 'schema_version') || 'v1';
+  const schemaVersion = normalizeTenantSchemaVersion(getPayloadValue(req.body, 'schema_version'));
 
   const missing = [
     ['job_id', jobId],
@@ -794,14 +815,25 @@ export const handleInternalProvisioningComplete = async (req, res) => {
       return;
     }
 
+    const subscription = await fetchProvisioningSubscription({
+      adminClient,
+      businessAccountId: job.business_account_id,
+    });
+
     try {
-      await applyLegacyBusinessWorkspaceBootstrap({
+      await applyCanonicalBusinessWorkspaceSchema({
+        projectRef: tenantProjectRef,
+      });
+
+      await seedCanonicalBusinessWorkspaceRuntime({
         projectRef: tenantProjectRef,
         tenantName: tenant.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Business Workspace',
         tenantSlug: tenant.tenant_slug,
         ownerAuthUserId: businessAccount?.auth_user_id || null,
         ownerEmail: businessAccount?.email || null,
         ownerFullName: businessAccount?.full_name || null,
+        trialStartedAt: subscription?.trial_started_at || null,
+        trialEndsAt: subscription?.trial_ends_at || null,
       });
     } catch (bootstrapError) {
       const bootstrapMessage = `Unable to bootstrap tenant workspace schema: ${bootstrapError?.message || bootstrapError}`;

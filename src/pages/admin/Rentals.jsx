@@ -13,13 +13,14 @@ import rentalSummaryService from '../../services/RentalSummaryService';
 import { DEFAULT_RENTAL_TIMING_SETTINGS, deriveEffectiveRentalStatus, getScheduledRentalTimingState, normalizeRentalLifecycle } from '../../utils/rentalLifecycle';
 import { getPaymentStatusStyle, normalizePaymentStatus } from '../../config/statusColors';
 import { roundTo } from '../../utils/fuelMath';
-import { Plus, Clock, ClipboardList, List, Grid, LayoutGrid, CheckCircle, XCircle, Calendar, MessageCircle, RectangleHorizontal, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Clock, ClipboardList, List, Grid, LayoutGrid, CheckCircle, XCircle, Calendar, MessageCircle, RectangleHorizontal, ChevronDown, ChevronLeft, ChevronRight, Lock } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import i18n from '../../i18n';
 import { canEditRentalContract } from '../../utils/permissionHelpers';
 import { fetchSystemSettings } from '../../services/systemSettingsApi';
 import { TABLE_NAMES } from '../../config/tableNames';
+import { toast } from 'sonner';
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
@@ -69,6 +70,16 @@ const sortRentalsForDisplay = (rentals, getEffectiveRentalStatus) =>
     return new Date(getRentalDisplayTimestamp(right)).getTime() - new Date(getRentalDisplayTimestamp(left)).getTime();
   });
 
+const buildRentalExtensionsMap = (extensions = []) =>
+  (extensions || []).reduce((acc, extension) => {
+    const rentalId = extension?.rental_id;
+    if (!rentalId) return acc;
+    if (!acc[rentalId]) {
+      acc[rentalId] = [];
+    }
+    acc[rentalId].push(extension);
+    return acc;
+  }, {});
 const openRentalWizard = (setShowStepperForm, setWizardUiVariant, variant = 'default') => () => {
   setWizardUiVariant(variant);
   setShowStepperForm(true);
@@ -907,8 +918,9 @@ const getDurationBadge = (rental) => {
 const Rentals = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user } = useAuth();
+  const { user, hasFeature } = useAuth();
   const isFrench = isFrenchLocale();
+  const canUseWhatsAppTools = hasFeature('whatsapp_tools');
   const warmRentalsSnapshot = useMemo(() => appWarmupService.getWarmRentalsSnapshot(), []);
   const hasWarmRentalsHint = useMemo(
     () => Boolean(warmRentalsSnapshot) || appWarmupService.isWarmupLikelyActive(),
@@ -951,6 +963,14 @@ const Rentals = () => {
     }
     setWhatsAppCustomMessage('');
     setWhatsAppSheetRental(rental);
+    if (!canUseWhatsAppTools) {
+      toast.info(
+        tr(
+          'WhatsApp tools are available on Growth and Pro. Upgrade this workspace to send rental messages.',
+          'Les outils WhatsApp sont disponibles sur Growth et Pro. Mettez à niveau ce workspace pour envoyer des messages de location.'
+        )
+      );
+    }
   };
 
   const [rentals, setRentals] = useState(() => warmRentalsSnapshot?.rentals || []);
@@ -1037,6 +1057,16 @@ const Rentals = () => {
   }, []);
 
   const handleSendWhatsAppTemplate = useCallback((rental, message) => {
+    if (!canUseWhatsAppTools) {
+      toast.info(
+        tr(
+          'Upgrade to Growth or Pro to send WhatsApp messages from Rentals.',
+          'Passez à Growth ou Pro pour envoyer des messages WhatsApp depuis les locations.'
+        )
+      );
+      return;
+    }
+
     const cleanPhone = String(rental?.customer_phone || '').replace(/\D/g, '');
     if (!cleanPhone) {
       alert(tr('Customer phone number is missing for this rental.', 'Le numéro de téléphone du client est manquant pour cette location.'));
@@ -1045,7 +1075,7 @@ const Rentals = () => {
 
     openWhatsAppContact(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`);
     closeWhatsAppSheet();
-  }, [closeWhatsAppSheet]);
+  }, [canUseWhatsAppTools, closeWhatsAppSheet]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1272,6 +1302,35 @@ const Rentals = () => {
     });
   }, []);
 
+  const hydrateRentalExtensions = useCallback(async (rentalIds = []) => {
+    const normalizedIds = [...new Set((rentalIds || []).filter(Boolean))];
+    if (normalizedIds.length === 0) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('rental_extensions')
+        .select('id,rental_id,extension_hours,extension_price,status,created_at')
+        .in('rental_id', normalizedIds);
+
+      if (error) {
+        throw error;
+      }
+
+      const extensionMap = buildRentalExtensionsMap(data);
+      const applyExtensions = (existingRentals) =>
+        (existingRentals || []).map((rental) =>
+          normalizedIds.includes(rental?.id)
+            ? { ...rental, extensions: extensionMap[rental.id] || [] }
+            : rental
+        );
+
+      setRentals((prev) => applyExtensions(prev));
+      setRentalUniverse((prev) => applyExtensions(prev));
+    } catch (extensionError) {
+      console.error('❌ Error hydrating rental extensions:', extensionError);
+    }
+  }, []);
+
   const fetchRentals = async (currentStatusFilter, currentPaymentStatusFilter, page = currentPage, limit = itemsPerPage) => {
     if (isFetchingRentalsRef.current) {
       return activeRentalsFetchRef.current;
@@ -1352,19 +1411,12 @@ const Rentals = () => {
               fixed_amount,
               included_kilometers,
               extra_km_rate
-            ),
-            extensions:rental_extensions!rental_extensions_rental_id_fkey(
-              id,
-              extension_hours,
-              extension_price,
-              status,
-              created_at
             )
-          `, { count: 'planned' });
+          `);
 
         query = query.order('created_at', { ascending: false });
 
-        let { data, error, count } = await query;
+        let { data, error } = await query;
 
         if (error) {
           console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
@@ -1394,6 +1446,9 @@ const Rentals = () => {
         setTotalPages(Math.ceil(nextTotalCount / limit));
         setRentals(nextRentals);
         const rentalIds = nextRentals.map((rental) => rental.id).filter(Boolean);
+        scheduleBackgroundTask(() => {
+          void hydrateRentalExtensions(rentalIds);
+        });
         void VehicleReportService.getLatestReportsForRentals(rentalIds)
           .then((latestReports) => {
             setRentalReportMap(latestReports);
@@ -1890,16 +1945,18 @@ const Rentals = () => {
         } catch (summaryError) {
           console.error('❌ Error fetching rental summary:', summaryError);
           await fetchRentals(statusFilter, paymentStatusFilter, currentPage, itemsPerPage);
-          await fetchDateFocusCounts(statusFilter, paymentStatusFilter);
         }
       } else {
         await fetchRentals(statusFilter, paymentStatusFilter, currentPage, itemsPerPage);
-        await fetchDateFocusCounts(statusFilter, paymentStatusFilter);
       }
 
       setLoading(false);
       setRefreshing(false);
       setHasLoadedOnce(true);
+
+      scheduleBackgroundTask(() => {
+        void fetchDateFocusCounts(statusFilter, paymentStatusFilter);
+      });
     };
     loadRentals();
   }, [statusFilter, paymentStatusFilter, currentPage, itemsPerPage, fetchDateFocusCounts, applyRentalSummarySnapshot, workspaceTab]);
@@ -3930,10 +3987,12 @@ const Rentals = () => {
 )}
 <button
   onClick={(e) => handleContactCustomerWhatsApp(rental, e)}
-  className="inline-flex items-center gap-1 text-emerald-600 hover:text-emerald-900"
-  title={tr('Contact customer on WhatsApp', 'Contacter le client sur WhatsApp')}
+  className={`inline-flex items-center gap-1 ${canUseWhatsAppTools ? 'text-emerald-600 hover:text-emerald-900' : 'text-slate-500 hover:text-slate-700'}`}
+  title={canUseWhatsAppTools
+    ? tr('Contact customer on WhatsApp', 'Contacter le client sur WhatsApp')
+    : tr('WhatsApp tools are available on Growth and Pro', 'Les outils WhatsApp sont disponibles sur Growth et Pro')}
 >
-  <MessageCircle className="h-4 w-4" />
+  {canUseWhatsAppTools ? <MessageCircle className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
   <span>{tr('WhatsApp', 'WhatsApp')}</span>
 </button>
 {showLateArrivalRecovery && (
@@ -4412,10 +4471,16 @@ const Rentals = () => {
 )}
 <button
   onClick={(e) => handleContactCustomerWhatsApp(rental, e)}
-  className="inline-flex items-center justify-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-100"
-  title={tr('Contact customer on WhatsApp', 'Contacter le client sur WhatsApp')}
+  className={`inline-flex items-center justify-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+    canUseWhatsAppTools
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+  }`}
+  title={canUseWhatsAppTools
+    ? tr('Contact customer on WhatsApp', 'Contacter le client sur WhatsApp')
+    : tr('WhatsApp tools are available on Growth and Pro', 'Les outils WhatsApp sont disponibles sur Growth et Pro')}
 >
-  <MessageCircle className="w-3.5 h-3.5" />
+  {canUseWhatsAppTools ? <MessageCircle className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
   <span>{tr('WhatsApp', 'WhatsApp')}</span>
 </button>
                           
@@ -4615,58 +4680,81 @@ const Rentals = () => {
               </button>
             </div>
 
-            <div className="mt-5 space-y-3">
-              {whatsAppTemplateOptions.map((option, index) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => handleSendWhatsAppTemplate(whatsAppSheetRental, option.message)}
-                  className={`w-full rounded-[1.4rem] border px-4 py-4 text-left transition ${
-                    index === 0
-                      ? 'border-violet-300 bg-violet-50 shadow-[0_10px_30px_rgba(124,58,237,0.12)]'
-                      : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/60'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {option.label}
-                        {index === 0 ? (
-                          <span className="ml-2 rounded-full bg-violet-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white">
-                            {tr('Suggested', 'Suggéré')}
-                          </span>
-                        ) : null}
-                      </p>
-                      <p className="mt-1 text-sm text-slate-500">{option.preview}</p>
-                      <p className="mt-2 line-clamp-2 text-xs text-slate-400">{option.message}</p>
-                    </div>
-                    <MessageCircle className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500" />
-                  </div>
-                </button>
-              ))}
-            </div>
+            {canUseWhatsAppTools ? (
+              <>
+                <div className="mt-5 space-y-3">
+                  {whatsAppTemplateOptions.map((option, index) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => handleSendWhatsAppTemplate(whatsAppSheetRental, option.message)}
+                      className={`w-full rounded-[1.4rem] border px-4 py-4 text-left transition ${
+                        index === 0
+                          ? 'border-violet-300 bg-violet-50 shadow-[0_10px_30px_rgba(124,58,237,0.12)]'
+                          : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/60'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">
+                            {option.label}
+                            {index === 0 ? (
+                              <span className="ml-2 rounded-full bg-violet-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-white">
+                                {tr('Suggested', 'Suggéré')}
+                              </span>
+                            ) : null}
+                          </p>
+                          <p className="mt-1 text-sm text-slate-500">{option.preview}</p>
+                          <p className="mt-2 line-clamp-2 text-xs text-slate-400">{option.message}</p>
+                        </div>
+                        <MessageCircle className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500" />
+                      </div>
+                    </button>
+                  ))}
+                </div>
 
-            <div className="mt-5 rounded-[1.4rem] border border-slate-200 bg-slate-50 p-4">
-              <p className="text-sm font-semibold text-slate-900">{tr('Custom message', 'Message personnalisé')}</p>
-              <textarea
-                value={whatsAppCustomMessage}
-                onChange={(event) => setWhatsAppCustomMessage(event.target.value)}
-                rows={3}
-                placeholder={tr('Write your own WhatsApp message…', 'Écrivez votre propre message WhatsApp…')}
-                className="mt-3 w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:ring-2 focus:ring-violet-100"
-              />
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => handleSendWhatsAppTemplate(whatsAppSheetRental, whatsAppCustomMessage.trim())}
-                  disabled={!whatsAppCustomMessage.trim()}
-                  className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  <MessageCircle className="h-4 w-4" />
-                  {tr('Send custom message', 'Envoyer le message personnalisé')}
-                </button>
+                <div className="mt-5 rounded-[1.4rem] border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-slate-900">{tr('Custom message', 'Message personnalisé')}</p>
+                  <textarea
+                    value={whatsAppCustomMessage}
+                    onChange={(event) => setWhatsAppCustomMessage(event.target.value)}
+                    rows={3}
+                    placeholder={tr('Write your own WhatsApp message…', 'Écrivez votre propre message WhatsApp…')}
+                    className="mt-3 w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:ring-2 focus:ring-violet-100"
+                  />
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => handleSendWhatsAppTemplate(whatsAppSheetRental, whatsAppCustomMessage.trim())}
+                      disabled={!whatsAppCustomMessage.trim()}
+                      className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      <MessageCircle className="h-4 w-4" />
+                      {tr('Send custom message', 'Envoyer le message personnalisé')}
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="mt-5 rounded-[1.6rem] border border-amber-200 bg-amber-50 p-5">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-2xl bg-white/80 p-2 text-amber-700">
+                    <Lock className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-amber-900">
+                      {tr('WhatsApp tools are locked on this plan', 'Les outils WhatsApp sont verrouillés sur ce plan')}
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-amber-800">
+                      {tr(
+                        'Upgrade this workspace to Growth or Pro to send customer WhatsApp messages directly from Rentals.',
+                        'Passez ce workspace à Growth ou Pro pour envoyer des messages WhatsApp aux clients directement depuis les locations.'
+                      )}
+                    </p>
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}

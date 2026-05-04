@@ -250,10 +250,33 @@ CREATE POLICY "allow_update_extensions" ON rental_extensions
 -- 6. CREATE HELPER VIEWS
 -- =====================================================
 
+-- Recreate views instead of CREATE OR REPLACE because Postgres refuses
+-- replacing a view when the SELECT column order/name changes.
+DROP VIEW IF EXISTS v_active_extensions;
+DROP VIEW IF EXISTS v_extension_history;
+
 -- View: Active extensions with rental details
 CREATE OR REPLACE VIEW v_active_extensions AS
 SELECT 
-    re.*,
+    re.id,
+    re.rental_id,
+    re.extension_hours,
+    re.extension_price,
+    re.calculation_method,
+    re.price_source,
+    re.status,
+    re.requested_at,
+    re.approved_at,
+    re.approved_by_id,
+    re.voided_at,
+    re.voided_by,
+    re.void_reason,
+    re.started_at,
+    re.completed_at,
+    re.notes,
+    re.tier_breakdown,
+    re.created_at,
+    re.updated_at,
     r.customer_name,
     r.customer_phone,
     r.rental_status,
@@ -270,7 +293,25 @@ WHERE re.status IN ('pending', 'approved', 'active');
 -- View: Extension history with calculations
 CREATE OR REPLACE VIEW v_extension_history AS
 SELECT 
-    re.*,
+    re.id,
+    re.rental_id,
+    re.extension_hours,
+    re.extension_price,
+    re.calculation_method,
+    re.price_source,
+    re.status,
+    re.requested_at,
+    re.approved_at,
+    re.approved_by_id,
+    re.voided_at,
+    re.voided_by,
+    re.void_reason,
+    re.started_at,
+    re.completed_at,
+    re.notes,
+    re.tier_breakdown,
+    re.created_at,
+    re.updated_at,
     r.customer_name,
     r.rental_start_date,
     r.rental_end_date,

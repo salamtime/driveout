@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import VehicleModelService from './VehicleModelService';
 import DynamicPricingService from './DynamicPricingService';
+import { assertTenantFeatureEnabled } from './TenantLimitService';
 
 export class PricingRulesService {
   /**
@@ -23,6 +24,11 @@ export class PricingRulesService {
    */
   static async getPricingRules() {
     try {
+      await assertTenantFeatureEnabled(
+        'pricing_module',
+        'Your tenant plan does not include Pricing Management.'
+      );
+
       const { data, error } = await supabase
         .from('saharax_0u4w4d_pricing_simple')
         .select('*')
@@ -45,6 +51,11 @@ export class PricingRulesService {
    */
   static async upsertPricingRule(ruleData) {
     try {
+      await assertTenantFeatureEnabled(
+        'pricing_module',
+        'Your tenant plan does not include Pricing Management.'
+      );
+
       // Check if user is authenticated
       const { data: { user }, error: authError } = await supabase.auth.getUser();
       
@@ -104,6 +115,11 @@ export class PricingRulesService {
    */
   static async deletePricingRule(ruleId) {
     try {
+      await assertTenantFeatureEnabled(
+        'pricing_module',
+        'Your tenant plan does not include Pricing Management.'
+      );
+
       // Check if user is authenticated
       const { data: { user }, error: authError } = await supabase.auth.getUser();
       

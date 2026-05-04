@@ -26,9 +26,15 @@ export const resolveUserEntry = ({ approved = false, tenantSession = null } = {}
     tenantSession?.workspaceState ||
     ''
   ).trim().toLowerCase();
+  const automaticSignupMode = tenantSession?.automatic_signup_mode !== false;
 
   if (!tenant?.id && !tenantSession?.tenantId) {
-    return { type: 'route', target: TENANT_ENTRY_ROUTES.noWorkspace };
+    return {
+      type: 'route',
+      target: workspaceState === 'no_workspace' || !automaticSignupMode
+        ? TENANT_ENTRY_ROUTES.noWorkspace
+        : TENANT_ENTRY_ROUTES.provisioning,
+    };
   }
 
   if (tenantStatus === 'pending' || workspaceState === 'pending') {

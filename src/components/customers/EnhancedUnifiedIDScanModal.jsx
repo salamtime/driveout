@@ -31,6 +31,7 @@ const EnhancedUnifiedIDScanModal = ({
   allowSaveWithoutOcr = false,
   saveWithoutOcrOnly = false,
   saveWithoutOcrLabel = null,
+  ocrEnabled = true,
   verifiedIdentity = null,
   skipCustomerSave = false,
 }) => {
@@ -45,6 +46,7 @@ const EnhancedUnifiedIDScanModal = ({
   const [processingStatus, setProcessingStatus] = useState('');
   const [processingMode, setProcessingMode] = useState('scan');
   const [uploadMethod, setUploadMethod] = useState(''); // 'camera' or 'gallery'
+  const isOcrAvailable = ocrEnabled !== false;
   
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
@@ -186,7 +188,7 @@ const EnhancedUnifiedIDScanModal = ({
       setExtractedData(null);
       setProcessingStatus('');
 
-      if (autoProcessOnSelect) {
+      if (autoProcessOnSelect && isOcrAvailable && !saveWithoutOcrOnly) {
         await processImage(normalizedFile);
       }
       
@@ -194,7 +196,7 @@ const EnhancedUnifiedIDScanModal = ({
       console.error('❌ File upload failed:', error);
       setError(tr('Upload failed', 'Échec du téléversement'));
     }
-  }, [autoProcessOnSelect, inferMimeTypeFromFile, tr]);
+  }, [autoProcessOnSelect, inferMimeTypeFromFile, isOcrAvailable, saveWithoutOcrOnly, tr]);
 
   const handlePreviewError = useCallback(() => {
     if (!selectedImage || !imagePreview?.startsWith('blob:')) {
@@ -281,6 +283,16 @@ const EnhancedUnifiedIDScanModal = ({
   };
 
   const processImage = async (fileToProcess = null) => {
+    if (!isOcrAvailable) {
+      setError(
+        tr(
+          'OCR auto-fill is not available on this plan. Save the image and continue manually.',
+          "Le remplissage OCR n'est pas disponible sur ce forfait. Enregistrez l'image et continuez manuellement."
+        )
+      );
+      return;
+    }
+
     if (!fileToProcess && !selectedImage) {
       setError(tr('Please select an image first', "Veuillez d'abord sélectionner une image"));
       return;
@@ -724,7 +736,7 @@ const EnhancedUnifiedIDScanModal = ({
                 >
                   {tr('Retake', 'Reprendre')}
                 </button>
-                {!saveWithoutOcrOnly && (
+                {!saveWithoutOcrOnly && isOcrAvailable && (
                   <button
                     onClick={() => processImage()}
                     className="flex-1 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-xl text-sm flex items-center justify-center gap-2 hover:opacity-95"
@@ -751,8 +763,24 @@ const EnhancedUnifiedIDScanModal = ({
                 <div className="mb-4 inline-flex h-20 w-20 items-center justify-center rounded-[28px] bg-gradient-to-br from-violet-50 via-violet-100 to-indigo-50 shadow-[0_18px_40px_rgba(124,58,237,0.14)]">
                   <Camera className="h-9 w-9 text-violet-600" />
                 </div>
-                <h3 className="mb-2 text-2xl font-bold tracking-tight text-slate-900">{tr('Scan ID Card', "Scanner la pièce d'identité")}</h3>
-                <p className="mx-auto max-w-xs text-sm text-slate-500">{tr('Take a clear photo for automatic data extraction', 'Prenez une photo nette pour l’extraction automatique des données')}</p>
+                <h3 className="mb-2 text-2xl font-bold tracking-tight text-slate-900">
+                  {isOcrAvailable
+                    ? tr('Scan ID Card', "Scanner la pièce d'identité")
+                    : tr('Capture ID Card', "Capturer la pièce d'identité")}
+                </h3>
+                <p className="mx-auto max-w-xs text-sm text-slate-500">
+                  {isOcrAvailable
+                    ? tr('Take a clear photo for automatic data extraction', 'Prenez une photo nette pour l’extraction automatique des données')
+                    : tr('Save a clear photo now and continue with manual details.', "Enregistrez une photo nette maintenant puis continuez avec les détails manuels.")}
+                </p>
+                {!isOcrAvailable && (
+                  <p className="mx-auto mt-3 max-w-sm rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
+                    {tr(
+                      'OCR auto-fill is locked on this plan. ID image capture still works normally.',
+                      "Le remplissage OCR est verrouillé sur ce forfait. La capture de la pièce d'identité reste disponible."
+                    )}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-4">

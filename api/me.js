@@ -9,6 +9,7 @@ import {
 } from './_lib/supabase.js';
 import { normalizeBillingStatus, normalizePlanType, normalizeSubscriptionStatus } from './_lib/tenantRegistry.js';
 import { authenticateRequest } from './_lib/auth.js';
+import { getTenantPlanLimits } from '../src/config/tenantPlans.js';
 import { DEFAULT_RENTAL_TIMING_SETTINGS, deriveEffectiveRentalStatus } from '../src/utils/rentalLifecycle.js';
 import { buildDefaultPermissionsForRole, buildBusinessOwnerPermissionMap } from '../src/utils/permissionCatalog.js';
 import { EMAIL_SENDERS, sendResendEmail } from './_lib/email.js';
@@ -18,6 +19,12 @@ import { SHARED_MESSAGES_TABLE, SHARED_MESSAGE_THREADS_TABLE, buildThreadKey } f
 const WALLET_TOPUPS_TABLE = 'wallet_topups';
 const BASE_PROFILE_FIELDS = 'id, email, username, full_name, first_name, last_name, role, access_enabled, permissions, phone_number, address, date_of_birth, emergency_contact, emergency_phone, preferences, staff_id_documents, whatsapp_notifications, salary_amount, created_at, updated_at, primary_organization_id';
 const BUSINESS_OWNER_PROFILE_FIELDS = `${BASE_PROFILE_FIELDS}, verification_status, approved_at, approved_by, rejection_reason, subscription_plan, subscription_status, trial_started_at, trial_ends_at, subscription_started_at, plan_type, billing_status, suspended_at, suspension_reason, plan_changed_at`;
+const CORE_PROFILE_FIELDS = 'id, email, username, full_name, first_name, last_name, role, permissions, primary_organization_id';
+const splitSelectFields = (fields) =>
+  String(fields || '')
+    .split(',')
+    .map((field) => field.trim())
+    .filter(Boolean);
 
 const isSchemaCompatibilityError = (error) => {
   const message = String(error?.message || '').toLowerCase();
@@ -2167,25 +2174,42 @@ const loadOrganizationContext = async (adminClient, userId, profile) => {
 };
 
 const loadProfileWithCompatibility = async (adminClient, userId) => {
-  const fullResult = await adminClient
-    .from(APP_USERS_TABLE)
-    .select(BUSINESS_OWNER_PROFILE_FIELDS)
-    .eq('id', userId)
-    .maybeSingle();
+  const fallbackCoreFields = splitSelectFields(CORE_PROFILE_FIELDS);
+  let fields = splitSelectFields(BUSINESS_OWNER_PROFILE_FIELDS);
 
-  if (!fullResult.error) {
-    return fullResult;
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const result = await adminClient
+      .from(APP_USERS_TABLE)
+      .select(fields.join(', '))
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (!result.error) {
+      return result;
+    }
+
+    if (!isSchemaCompatibilityError(result.error)) {
+      return result;
+    }
+
+    const missingColumn = getMissingColumnName(result.error);
+    if (missingColumn && fields.includes(missingColumn)) {
+      fields = fields.filter((field) => field !== missingColumn);
+      continue;
+    }
+
+    if (fields.join(',') !== fallbackCoreFields.join(',')) {
+      fields = fallbackCoreFields;
+      continue;
+    }
+
+    return result;
   }
 
-  if (!isSchemaCompatibilityError(fullResult.error)) {
-    return fullResult;
-  }
-
-  return adminClient
-    .from(APP_USERS_TABLE)
-    .select(BASE_PROFILE_FIELDS)
-    .eq('id', userId)
-    .maybeSingle();
+  return {
+    data: null,
+    error: new Error('Profile select compatibility fallback exhausted'),
+  };
 };
 
 const upsertProfileWithCompatibility = async (adminClient, profilePayload = {}) => {
@@ -2659,9 +2683,18 @@ export default async function handler(req, res) {
 
     if (req.method === 'PATCH' && resource === 'subscription') {
       const requestedPlan = String(req.body?.subscription_plan || '').trim().toLowerCase();
-      const allowedPlans = new Set(['saas', 'saas_web']);
+      const requestedPlanMap = {
+        free: { subscriptionPlan: 'free', planType: 'free' },
+        starter: { subscriptionPlan: 'starter', planType: 'starter' },
+        growth: { subscriptionPlan: 'growth', planType: 'growth' },
+        pro: { subscriptionPlan: 'pro', planType: 'pro' },
+        saas: { subscriptionPlan: 'starter', planType: 'starter' },
+        saas_web: { subscriptionPlan: 'growth', planType: 'growth' },
+      };
+      const complianceRequirements = ['company_ice_number', 'company_legal_form', 'company_registration_city'];
+      const resolvedPlan = requestedPlanMap[requestedPlan] || null;
 
-      if (!allowedPlans.has(requestedPlan)) {
+      if (!resolvedPlan) {
         res.status(400).json({ error: 'Invalid subscription plan' });
         return;
       }
@@ -2673,13 +2706,28 @@ export default async function handler(req, res) {
       }
 
       const nowIso = new Date().toISOString();
+      const existingSubscriptionStatus = normalizeSubscriptionStatus(
+        user.user_metadata?.subscription_status ||
+        user.app_metadata?.subscription_status ||
+        'trial'
+      );
+      const nextSubscriptionStatus = existingSubscriptionStatus === 'active' ? 'active' : 'trial';
+      const nextBillingStatus = existingSubscriptionStatus === 'active'
+        ? normalizeBillingStatus(user.user_metadata?.billing_status || user.app_metadata?.billing_status || 'active')
+        : 'none';
+      const { subscriptionPlan, planType } = resolvedPlan;
       const nextUserMetadata = {
         ...(user.user_metadata || {}),
-        subscription_plan: requestedPlan,
-        subscription_status: 'active',
-        plan_type: requestedPlan === 'saas_web' ? 'growth' : 'starter',
-        billing_status: 'active',
-        subscription_started_at: nowIso,
+        subscription_plan: subscriptionPlan,
+        subscription_status: nextSubscriptionStatus,
+        plan_type: planType,
+        billing_status: nextBillingStatus,
+        subscription_started_at: existingSubscriptionStatus === 'active'
+          ? (user.user_metadata?.subscription_started_at || user.app_metadata?.subscription_started_at || nowIso)
+          : (user.user_metadata?.subscription_started_at || user.app_metadata?.subscription_started_at || null),
+        activation_pending_compliance: true,
+        upgrade_requirements: complianceRequirements,
+        selected_plan_at: nowIso,
       };
 
       const { error: authUpdateError } = await adminClient.auth.admin.updateUserById(user.id, {
@@ -2694,12 +2742,12 @@ export default async function handler(req, res) {
       const { data, error } = await adminClient
         .from(APP_USERS_TABLE)
         .update({
-          subscription_plan: requestedPlan,
-          subscription_status: 'active',
-          plan_type: requestedPlan === 'saas_web' ? 'growth' : 'starter',
-          billing_status: 'active',
+          subscription_plan: subscriptionPlan,
+          subscription_status: nextSubscriptionStatus,
+          plan_type: planType,
+          billing_status: nextBillingStatus,
           plan_changed_at: nowIso,
-          subscription_started_at: nowIso,
+          subscription_started_at: existingSubscriptionStatus === 'active' ? nowIso : null,
           updated_at: nowIso,
         })
         .eq('id', user.id)
@@ -2721,9 +2769,8 @@ export default async function handler(req, res) {
         .maybeSingle();
 
       if (businessAccount?.id) {
-        const planType = requestedPlan === 'saas_web' ? 'growth' : 'starter';
-        const subscriptionStatus = normalizeSubscriptionStatus('active');
-        const billingStatus = normalizeBillingStatus('active');
+        const subscriptionStatus = normalizeSubscriptionStatus(nextSubscriptionStatus);
+        const billingStatus = normalizeBillingStatus(nextBillingStatus);
 
         await adminClient
           .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
@@ -2733,18 +2780,22 @@ export default async function handler(req, res) {
               plan_type: normalizePlanType(planType),
               subscription_status: subscriptionStatus,
               billing_status: billingStatus,
-              subscription_started_at: nowIso,
-              plan_limits: requestedPlan === 'saas_web'
-                ? { vehicles: 30, staff_users: 8, marketplace_distribution: true }
-                : { vehicles: 10, staff_users: 3, marketplace_distribution: false },
-              metadata: { source: 'self_plan_selection', subscription_plan: requestedPlan },
+              subscription_started_at: subscriptionStatus === 'active' ? nowIso : null,
+              plan_limits: getTenantPlanLimits(planType),
+              metadata: {
+                source: 'self_plan_selection',
+                subscription_plan: subscriptionPlan,
+                activation_pending_compliance: true,
+                upgrade_requirements: complianceRequirements,
+                selected_plan_at: nowIso,
+              },
             },
             { onConflict: 'business_account_id' }
           );
 
         const { data: tenantRecord } = await adminClient
           .from(PLATFORM_TENANTS_TABLE)
-          .select('id, tenant_status')
+          .select('id, tenant_status, tenant_project_ref, tenant_app_url, tenant_api_url, tenant_anon_key, metadata')
           .eq('business_account_id', businessAccount.id)
           .maybeSingle();
 
@@ -2753,9 +2804,15 @@ export default async function handler(req, res) {
             .from(PLATFORM_TENANTS_TABLE)
             .update({
               metadata: {
+                ...((tenantRecord.metadata && typeof tenantRecord.metadata === 'object')
+                  ? tenantRecord.metadata
+                  : {}),
                 latest_subscription_plan: requestedPlan,
                 latest_plan_type: planType,
                 activation_source: 'self_plan_selection',
+                activation_pending_compliance: true,
+                upgrade_requirements: complianceRequirements,
+                selected_plan_at: nowIso,
               },
             })
             .eq('id', tenantRecord.id);
@@ -2771,7 +2828,16 @@ export default async function handler(req, res) {
           .limit(1)
           .maybeSingle();
 
-        if (!existingProvisioningJob?.id) {
+        const tenantAlreadyProvisioned = Boolean(
+          tenantRecord?.id &&
+          String(tenantRecord?.tenant_status || '').trim().toLowerCase() === 'active' &&
+          tenantRecord?.tenant_project_ref &&
+          tenantRecord?.tenant_app_url &&
+          tenantRecord?.tenant_api_url &&
+          tenantRecord?.tenant_anon_key
+        );
+
+        if (!existingProvisioningJob?.id && !tenantAlreadyProvisioned) {
           await adminClient
             .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
             .insert({
@@ -2781,7 +2847,7 @@ export default async function handler(req, res) {
               job_status: 'queued',
               payload: {
                 source: 'self_plan_selection',
-                subscription_plan: requestedPlan,
+                subscription_plan: subscriptionPlan,
                 plan_type: planType,
               },
               result: {},

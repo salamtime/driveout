@@ -1,5 +1,6 @@
 import { adminApiRequest } from './adminApi';
 import { buildTenantWorkspaceBootstrap } from './TenantWorkspaceService';
+import { buildEffectiveTenantFeatureAccess } from '../config/tenantPlans';
 
 export const getTenantSession = async () => {
   const response = await adminApiRequest('/api/tenants?resource=session');
@@ -32,10 +33,18 @@ export const getTenantSession = async () => {
       session?.tenant?.metadata?.commercial_settings && typeof session.tenant.metadata.commercial_settings === 'object'
         ? session.tenant.metadata.commercial_settings
         : {},
+    effectiveFeatureAccess:
+      session?.tenant?.metadata?.effective_feature_access && typeof session.tenant.metadata.effective_feature_access === 'object'
+        ? session.tenant.metadata.effective_feature_access
+        : buildEffectiveTenantFeatureAccess(
+            session?.subscription?.plan_type || 'starter',
+            session?.tenant?.metadata?.feature_access || {}
+          ),
     lifecycle:
       session?.lifecycle && typeof session.lifecycle === 'object'
         ? session.lifecycle
         : null,
+    automaticSignupMode: session?.automatic_signup_mode !== false,
     platformAccess:
       session?.platform_access && typeof session.platform_access === 'object'
         ? session.platform_access

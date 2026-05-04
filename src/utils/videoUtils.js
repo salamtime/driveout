@@ -90,7 +90,7 @@ export const checkNetworkConnectivity = async () => {
     }
     
     // Try to fetch a small resource to verify actual connectivity
-    const response = await fetch('/favicon.ico', {
+    const response = await fetch('/assets/logo.png', {
       method: 'HEAD',
       cache: 'no-cache',
       timeout: 5000

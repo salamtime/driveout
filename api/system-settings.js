@@ -93,11 +93,11 @@ const handleGeminiProxy = async (req, res) => {
 };
 
 const getDefaultSettings = () => ({
-  companyName: 'QuadVenture',
-  companyEmail: 'info@quadventure.com',
-  companyPhone: '+212 123 456 789',
-  companyAddress: 'Marrakech, Morocco',
-  companyWebsite: 'https://quadventure.com',
+  companyName: '',
+  companyEmail: '',
+  companyPhone: '',
+  companyAddress: '',
+  companyWebsite: '',
   timezone: 'Africa/Casablanca',
   language: 'en',
   currency: 'MAD',

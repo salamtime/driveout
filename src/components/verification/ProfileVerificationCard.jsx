@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowRight, CheckCircle2, CircleDashed, ShieldCheck, Sparkles } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import VerificationUploadField from './VerificationUploadField';
 import VerificationStatusBadge from './VerificationStatusBadge';
 import VerificationService from '../../services/VerificationService';
@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 
 const ProfileVerificationCard = ({ profile }) => {
   const { i18n } = useTranslation();
+  const location = useLocation();
   const language = i18n.resolvedLanguage === 'fr' ? 'fr' : 'en';
   const tr = (en, fr) => (language === 'fr' ? fr : en);
   const [requests, setRequests] = useState([]);
@@ -71,17 +72,31 @@ const ProfileVerificationCard = ({ profile }) => {
     : nextTask
       ? tr(`Finish ${nextTask.label}`, `Terminer ${nextTask.label}`)
       : tr('Verification in progress', 'Vérification en cours');
+  const isAdminWorkspaceContext = location.pathname.startsWith('/admin/');
+  const nextDocumentType = String(nextTask?.id || 'profile_id').trim().toLowerCase() || 'profile_id';
+  const verificationTaskHref = isAdminWorkspaceContext
+    ? `/admin/profile/verification?documentType=${encodeURIComponent(nextDocumentType)}`
+    : `/account/verification?documentType=${encodeURIComponent(nextDocumentType)}`;
+  const verificationTaskState = isAdminWorkspaceContext
+    ? {
+        from: '/admin/profile',
+        fromLabel: tr('Back to profile', 'Retour au profil'),
+      }
+    : {
+        from: `${location.pathname}${location.search}`,
+        fromLabel: tr('Back to profile', 'Retour au profil'),
+      };
 
   return (
-    <div className="mt-5 rounded-[32px] border border-violet-100 bg-[linear-gradient(135deg,rgba(248,250,252,0.98)_0%,rgba(255,255,255,1)_68%)] p-5 shadow-[0_22px_60px_rgba(109,40,217,0.08)] ring-1 ring-violet-200/60">
-      <div className="rounded-[28px] border border-violet-100/90 bg-white/92 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.95)]">
+    <div className="mt-5 rounded-[32px] border border-slate-200 bg-white p-5 shadow-[0_20px_55px_rgba(15,23,42,0.06)]">
+      <div className="rounded-[28px] border border-slate-200 bg-slate-50/70 p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-500">
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500">
               {tr('Owner trust mission', 'Mission confiance propriétaire')}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-3">
-              <span className="inline-flex h-11 w-11 items-center justify-center rounded-[1.1rem] bg-violet-100 text-violet-700 shadow-sm">
+              <span className="inline-flex h-11 w-11 items-center justify-center rounded-[1.1rem] border border-violet-200 bg-white text-violet-700 shadow-sm">
                 <ShieldCheck className="h-5 w-5" />
               </span>
               <div className="min-w-0">
@@ -101,7 +116,7 @@ const ProfileVerificationCard = ({ profile }) => {
         </div>
 
         <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(18rem,0.9fr)]">
-          <div className="rounded-[26px] border border-violet-100 bg-[linear-gradient(135deg,rgba(245,243,255,0.72)_0%,rgba(255,255,255,0.98)_100%)] p-4 shadow-sm">
+          <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
@@ -114,7 +129,7 @@ const ProfileVerificationCard = ({ profile }) => {
                   </span>
                 </div>
               </div>
-              <span className="inline-flex items-center gap-2 rounded-full bg-violet-100 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.16em] text-violet-700">
+              <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.16em] text-violet-700">
                 <Sparkles className="h-3.5 w-3.5" />
                 {milestoneLabel}
               </span>
@@ -122,7 +137,7 @@ const ProfileVerificationCard = ({ profile }) => {
 
             <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-100">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-violet-500 via-indigo-500 to-cyan-400 transition-all duration-500"
+                className="h-full rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 transition-all duration-500"
                 style={{ width: `${Math.max(6, progress)}%` }}
               />
             </div>
@@ -136,7 +151,7 @@ const ProfileVerificationCard = ({ profile }) => {
                       ? 'border-emerald-200 bg-emerald-50/80'
                       : item.blocked
                         ? 'border-rose-200 bg-rose-50/80'
-                        : 'border-slate-200 bg-white/90'
+                        : 'border-slate-200 bg-slate-50/80'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -167,7 +182,7 @@ const ProfileVerificationCard = ({ profile }) => {
             </div>
           </div>
 
-          <div className="rounded-[26px] border border-slate-200 bg-slate-50/90 p-4 shadow-sm">
+          <div className="rounded-[26px] border border-slate-200 bg-white p-4 shadow-sm">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
               {tr('Next milestone', 'Prochain palier')}
             </p>
@@ -191,8 +206,9 @@ const ProfileVerificationCard = ({ profile }) => {
             </p>
 
             <Link
-              to="/account/verification"
-              className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-violet-200 bg-white px-4 py-2.5 text-sm font-semibold text-violet-700 transition hover:border-violet-300 hover:bg-violet-50"
+              to={verificationTaskHref}
+              state={verificationTaskState}
+              className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-800"
             >
               {summary.complete
                 ? tr('Open verification', 'Ouvrir la vérification')
@@ -214,7 +230,7 @@ const ProfileVerificationCard = ({ profile }) => {
 
       <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-500">
+          <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500">
             {tr('Verification', 'Vérification')}
           </p>
           <h3 className="mt-1 text-lg font-black text-slate-950">{tr('Verification details', 'Détails de vérification')}</h3>

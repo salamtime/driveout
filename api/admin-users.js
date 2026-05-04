@@ -20,6 +20,7 @@ import {
   normalizeSubscriptionStatus,
   sanitizeTenantSlug,
 } from './_lib/tenantRegistry.js';
+import { getTenantPlanLimits, normalizeTenantPlanType } from '../src/config/tenantPlans.js';
 import { buildDefaultPermissionsForRole } from '../src/utils/permissionCatalog.js';
 import crypto from 'crypto';
 
@@ -148,10 +149,7 @@ const normalizeBusinessOwnerSubscriptionStatus = (value) => {
 
 const normalizeBusinessOwnerPlanType = (value) => {
   const normalized = String(value || '').trim().toLowerCase();
-  if (['starter', 'growth', 'pro'].includes(normalized)) {
-    return normalized;
-  }
-  return null;
+  return normalizeTenantPlanType(normalized, '');
 };
 
 const normalizeBusinessOwnerBillingStatus = (value) => {
@@ -162,13 +160,7 @@ const normalizeBusinessOwnerBillingStatus = (value) => {
   return 'none';
 };
 
-const DEFAULT_PLAN_LIMITS = {
-  starter: { vehicles: 10, staff_users: 3, marketplace_distribution: false },
-  growth: { vehicles: 30, staff_users: 8, marketplace_distribution: true },
-  pro: { vehicles: 9999, staff_users: 25, marketplace_distribution: true },
-};
-
-const getPlanLimits = (planType) => DEFAULT_PLAN_LIMITS[planType] || DEFAULT_PLAN_LIMITS.starter;
+const getPlanLimits = (planType) => getTenantPlanLimits(planType || 'starter');
 
 const resolveUniqueTenantSlug = async ({ adminClient, requestedSlug = '', businessAccountId = '' }) => {
   const baseSlug = sanitizeTenantSlug(requestedSlug || 'tenant');

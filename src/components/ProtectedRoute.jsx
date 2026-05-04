@@ -48,10 +48,12 @@ const ProtectedRoute = ({
   requiredRoles = [],
   forbiddenRoles = [],
   requiredPermissions = [], // Expects an array of module names
+  requiredFeature = '',
+  requiredFeatures = [],
   fallbackPath = '/login',
   unauthorizedPath = '/unauthorized'
 }) => {
-  const { user, userProfile, session, loading, initialized, hasPermission, getBusinessOwnerHomePath } = useAuth();
+  const { user, userProfile, session, loading, initialized, hasPermission, hasFeature, getBusinessOwnerHomePath } = useAuth();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const location = useLocation();
@@ -132,6 +134,19 @@ const ProtectedRoute = ({
     const hasRequiredPermissions = requiredPermissions.every(moduleName => hasPermission(moduleName));
 
     if (!hasRequiredPermissions) {
+      return <Navigate to={unauthorizedPath} replace />;
+    }
+  }
+
+  const featureRequirements = [
+    ...(requiredFeature ? [requiredFeature] : []),
+    ...(Array.isArray(requiredFeatures) ? requiredFeatures : []),
+  ].filter(Boolean);
+
+  if (featureRequirements.length > 0) {
+    const hasRequiredFeatures = featureRequirements.every((featureKey) => hasFeature(featureKey));
+
+    if (!hasRequiredFeatures) {
       return <Navigate to={unauthorizedPath} replace />;
     }
   }

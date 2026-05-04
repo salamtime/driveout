@@ -112,7 +112,7 @@ const NotificationCenter = () => {
     if ('Notification' in window && Notification.permission === 'granted') {
       new Notification(notification.title, {
         body: notification.message,
-        icon: '/favicon.ico',
+        icon: '/assets/logo.png',
         tag: notification.id,
         requireInteraction: notification.priority === 'high'
       });

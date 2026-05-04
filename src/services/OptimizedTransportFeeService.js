@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { assertTenantFeatureEnabled } from './TenantLimitService';
 
 /**
  * OptimizedTransportFeeService - Database-backed transport fees mirroring OptimizedBasePriceService
@@ -157,6 +158,9 @@ class OptimizedTransportFeeService {
    */
   static async upsertTransportFees(feesData) {
     try {
+      await assertTenantFeatureEnabled('pricing_module', {
+        message: 'Pricing management is not available on this plan.',
+      });
       console.log('💾 OptimizedTransportFeeService: Upserting transport fees with timeout protection...');
 
       // Validate required fields
@@ -260,6 +264,9 @@ class OptimizedTransportFeeService {
    */
   static async deleteTransportFees(feesId) {
     try {
+      await assertTenantFeatureEnabled('pricing_module', {
+        message: 'Pricing management is not available on this plan.',
+      });
       console.log('🗑️ OptimizedTransportFeeService: Deactivating transport fees...');
 
       const updatePromise = supabase

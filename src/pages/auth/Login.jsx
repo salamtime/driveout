@@ -175,7 +175,17 @@ const Login = () => {
 
     if (signInError) {
       console.error('Login error:', signInError);
-      setError(signInError.message || tr('Login failed. Please try again.', "Échec de la connexion. Veuillez réessayer."));
+      const normalizedMessage = String(signInError.message || '').trim().toLowerCase();
+      if (normalizedMessage.includes('email not confirmed')) {
+        setError(
+          tr(
+            'Your email is not confirmed yet. Open the confirmation email first, then sign in again.',
+            "Votre e-mail n'est pas encore confirmé. Ouvrez d'abord l'e-mail de confirmation, puis reconnectez-vous."
+          )
+        );
+      } else {
+        setError(signInError.message || tr('Login failed. Please try again.', "Échec de la connexion. Veuillez réessayer."));
+      }
     } else {
       setSuccess(tr('Login successful! Redirecting...', 'Connexion réussie ! Redirection...'));
     }

@@ -21,13 +21,18 @@ class AppSettingsService {
       // 1. FIRST TRY DATABASE
       const { data, error } = await supabase
         .from(this.SETTINGS_TABLE)
-        .select('pickup_transport_fee, dropoff_transport_fee')
+        .select('transport_pickup_fee, transport_dropoff_fee')
         .eq('id', this.DEFAULT_SETTINGS_ID)
-        .single();
+        .maybeSingle();
 
       if (error) {
         console.error('❌ Database query failed:', error.message);
         throw error; // Go to cache fallback
+      }
+
+      if (!data) {
+        console.log('🔧 No app_settings row found, using defaults');
+        return { pickup_fee: 0, dropoff_fee: 0 };
       }
 
       // Format the response
@@ -300,10 +305,10 @@ class AppSettingsService {
         .from(this.SETTINGS_TABLE)
         .select('deposit_low_risk_multiplier, deposit_medium_risk_multiplier, deposit_high_risk_multiplier')
         .eq('id', this.DEFAULT_SETTINGS_ID)
-        .single();
+        .maybeSingle();
 
-      if (error) {
-        console.warn('⚠️ Database query failed, using defaults:', error.message);
+      if (error || !data) {
+        console.warn('⚠️ Database query failed, using defaults:', error?.message || 'app_settings row missing');
         return this.getDefaultDepositSettings();
       }
 

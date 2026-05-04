@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { LanguageProvider } from './contexts/LanguageContext';
@@ -19,6 +19,7 @@ import {
 } from './utils/hostContext';
 import { configureMasterSupabaseClient, configureSupabaseClient } from './lib/supabase';
 import i18n from './i18n';
+import TenantWorkspaceContext, { getDefaultTenantPublicFeatures, useTenantWorkspaceContext } from './contexts/TenantWorkspaceContext';
 
 const HostDomainRedirect = ({ kind, pathname, tenantSlug }) => {
   const location = useLocation();
@@ -71,6 +72,17 @@ const WorkspaceUnavailableState = ({
   </div>
 );
 
+const PUBLIC_FEATURE_LOCK_COPY = Object.freeze({
+  public_storefront: {
+    title: 'Storefront unavailable',
+    message: 'This tenant plan does not include the public storefront yet.',
+  },
+  online_booking: {
+    title: 'Online booking unavailable',
+    message: 'This tenant plan does not include online booking yet.',
+  },
+});
+
 const resolveHostAwarePath = (host, pathname = '/') => {
   const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
   return normalizedPath;
@@ -91,6 +103,11 @@ const buildMarketplaceLoginHandoffUrl = ({ email = '', redirect = '/customer/das
 
 const shouldUseFirstPartyTenantPublicShell = (host, pathname) =>
   isFirstPartyTenantHost(host) && isFirstPartyStorefrontPath(pathname);
+
+const shouldUseTenantWebsiteShell = (host, pathname) => {
+  const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
+  return host?.kind === 'tenant' && normalizedPath === '/website';
+};
 
 const shouldUseFirstPartyTenantUnifiedShell = (host, pathname, search = '') => {
   if (!isFirstPartyTenantHost(host)) {
@@ -119,6 +136,8 @@ const TenantWorkspaceBoot = ({ children }) => {
     status: host.kind === 'tenant' && !shouldUsePublicStorefront ? 'loading' : 'ready',
     error: '',
     detail: '',
+    tenant: null,
+    publicFeatures: getDefaultTenantPublicFeatures(),
   }));
 
   useEffect(() => {
@@ -126,14 +145,25 @@ const TenantWorkspaceBoot = ({ children }) => {
 
     if (host.kind !== 'tenant' || shouldUsePublicStorefront) {
       configureMasterSupabaseClient();
-      setState({ status: 'ready', error: '', detail: '' });
+      setState({
+        status: 'ready',
+        error: '',
+        detail: '',
+        tenant: null,
+        publicFeatures: getDefaultTenantPublicFeatures(),
+      });
       return () => {
         cancelled = true;
       };
     }
 
     const resolveTenantWorkspace = async () => {
-      setState({ status: 'loading', error: '', detail: '' });
+      setState((previous) => ({
+        ...previous,
+        status: 'loading',
+        error: '',
+        detail: '',
+      }));
 
       const lookupHostname = host.isLocal && host.tenantSlug
         ? `${host.tenantSlug}.driveout.io`
@@ -157,7 +187,19 @@ const TenantWorkspaceBoot = ({ children }) => {
         });
 
         if (!cancelled) {
-          setState({ status: 'ready', error: '', detail: '' });
+          setState({
+            status: 'ready',
+            error: '',
+            detail: '',
+            tenant,
+            publicFeatures:
+              tenant?.publicFeatures && typeof tenant.publicFeatures === 'object'
+                ? {
+                    ...getDefaultTenantPublicFeatures(),
+                    ...tenant.publicFeatures,
+                  }
+                : getDefaultTenantPublicFeatures(),
+          });
         }
       } catch (error) {
         if (!cancelled) {
@@ -165,6 +207,8 @@ const TenantWorkspaceBoot = ({ children }) => {
             status: 'error',
             error: error?.message || 'Workspace unavailable',
             detail: host.tenantSlug ? `Workspace: ${host.tenantSlug}` : '',
+            tenant: null,
+            publicFeatures: getDefaultTenantPublicFeatures(),
           });
         }
       }
@@ -177,6 +221,15 @@ const TenantWorkspaceBoot = ({ children }) => {
     };
   }, [host.hostname, host.isLocal, host.kind, host.tenantSlug, shouldUsePublicStorefront]);
 
+  const contextValue = useMemo(() => ({
+    ready: state.status === 'ready',
+    tenant: state.tenant || null,
+    publicFeatures:
+      state.publicFeatures && typeof state.publicFeatures === 'object'
+        ? state.publicFeatures
+        : getDefaultTenantPublicFeatures(),
+  }), [state.publicFeatures, state.status, state.tenant]);
+
   if (state.status === 'loading') {
     return null;
   }
@@ -185,7 +238,11 @@ const TenantWorkspaceBoot = ({ children }) => {
     return <WorkspaceUnavailableState title="Workspace unavailable" message={state.error} detail={state.detail} />;
   }
 
-  return children;
+  return (
+    <TenantWorkspaceContext.Provider value={contextValue}>
+      {children}
+    </TenantWorkspaceContext.Provider>
+  );
 };
 
 const ExternalRedirect = ({ to }) => {
@@ -209,8 +266,9 @@ const PublicHostRoute = ({ children }) => {
   const host = getHostContext();
   const location = useLocation();
   const isFirstPartyStorefrontTenant = shouldUseFirstPartyTenantPublicShell(host, location.pathname);
+  const isTenantWebsite = shouldUseTenantWebsiteShell(host, location.pathname);
 
-  if (host.kind === 'public' || host.kind === 'local' || isFirstPartyStorefrontTenant) {
+  if (host.kind === 'public' || host.kind === 'local' || isFirstPartyStorefrontTenant || isTenantWebsite) {
     return children;
   }
 
@@ -219,6 +277,32 @@ const PublicHostRoute = ({ children }) => {
   }
 
   return <HostDomainRedirect kind="public" />;
+};
+
+const PublicFeatureRoute = ({ children, requiredFeature }) => {
+  const host = getHostContext();
+  const { publicFeatures } = useTenantWorkspaceContext();
+
+  if (host.kind !== 'tenant' || !requiredFeature) {
+    return children;
+  }
+
+  if (publicFeatures?.[requiredFeature] === false) {
+    const lockCopy = PUBLIC_FEATURE_LOCK_COPY[requiredFeature] || {
+      title: 'Feature unavailable',
+      message: 'This tenant feature is not enabled on the current plan.',
+    };
+
+    return (
+      <WorkspaceUnavailableState
+        title={lockCopy.title}
+        message={lockCopy.message}
+        detail={host.tenantSlug ? `Workspace: ${host.tenantSlug}` : ''}
+      />
+    );
+  }
+
+  return children;
 };
 
 const PrivateWorkspaceHostRoute = ({ children }) => {
@@ -534,18 +618,18 @@ function App() {
                     <Routes>
                 {/* Public Routes */}
                 <Route path="/" element={<HomeRedirect />} />
-                <Route path="/website" element={<PublicHostRoute><Landing /></PublicHostRoute>} />
-                <Route path="/rent" element={<PublicHostRoute><PublicRentRedirect /></PublicHostRoute>} />
-                <Route path="/marketplace" element={<PublicHostRoute><PublicCatalog /></PublicHostRoute>} />
-                <Route path="/marketplace/:listingId" element={<PublicHostRoute><PublicMarketplaceDetail /></PublicHostRoute>} />
-                <Route path="/marketplace/:listingId/request" element={<PublicHostRoute><PublicBookingRequest /></PublicHostRoute>} />
-                <Route path="/rent/:listingId" element={<PublicHostRoute><PublicVehicleDetail /></PublicHostRoute>} />
-                <Route path="/rent/:listingId/book" element={<PublicHostRoute><PublicInstantBooking /></PublicHostRoute>} />
-                <Route path="/rent/:listingId/request" element={<PublicHostRoute><PublicBookingRequest /></PublicHostRoute>} />
-                <Route path="/rentals" element={<PublicHostRoute><Navigate to="/rent" replace /></PublicHostRoute>} />
-                <Route path="/tours" element={<PublicHostRoute><PublicTours /></PublicHostRoute>} />
-                <Route path="/tour-booking" element={<PublicHostRoute><Navigate to="/tours" replace /></PublicHostRoute>} />
-                <Route path="/rental-booking" element={<PublicHostRoute><RentalBooking /></PublicHostRoute>} />
+                <Route path="/website" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="public_storefront"><Landing /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/rent" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="public_storefront"><PublicRentRedirect /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/marketplace" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="public_storefront"><PublicCatalog /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/marketplace/:listingId" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="public_storefront"><PublicMarketplaceDetail /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/marketplace/:listingId/request" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="online_booking"><PublicBookingRequest /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/rent/:listingId" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="public_storefront"><PublicVehicleDetail /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/rent/:listingId/book" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="online_booking"><PublicInstantBooking /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/rent/:listingId/request" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="online_booking"><PublicBookingRequest /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/rentals" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="public_storefront"><Navigate to="/rent" replace /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/tours" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="public_storefront"><PublicTours /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/tour-booking" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="public_storefront"><Navigate to="/tours" replace /></PublicFeatureRoute></PublicHostRoute>} />
+                <Route path="/rental-booking" element={<PublicHostRoute><PublicFeatureRoute requiredFeature="online_booking"><RentalBooking /></PublicFeatureRoute></PublicHostRoute>} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
                 <Route path="/reset-password" element={<ResetPassword />} />
@@ -673,7 +757,7 @@ function App() {
                   <Route path="calendar" element={<ErrorBoundary name="Calendar-Page"><ProtectedRoute requiredPermissions={['Calendar']}><CalendarPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="tours/*" element={<ErrorBoundary name="Tours-Page"><ProtectedRoute requiredPermissions={['Tours & Bookings']}><ToursPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="tasks/*" element={<ErrorBoundary name="Tasks-Page"><ProtectedRoute requiredPermissions={['Team Tasks']}><TasksPage /></ProtectedRoute></ErrorBoundary>} />
-                  <Route path="live-map" element={<ErrorBoundary name="Live-Map-Page"><LiveMapPage /></ErrorBoundary>} />
+                  <Route path="live-map" element={<ErrorBoundary name="Live-Map-Page"><ProtectedRoute requiredPermissions={['Live Map']}><LiveMapPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="rentals" element={<ErrorBoundary name="Rentals-Page"><ProtectedRoute requiredPermissions={['Rental Management']}><Rentals /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="rentals/:id" element={<ErrorBoundary name="Rental-Details"><ProtectedRoute requiredPermissions={['Rental Management']}><RentalDetails /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="customers" element={<ErrorBoundary name="Customer-Management-Dashboard"><ProtectedRoute requiredPermissions={['Customer Management']}><CustomerManagementDashboard /></ProtectedRoute></ErrorBoundary>} />
@@ -694,12 +778,14 @@ function App() {
                   <Route path="verification" element={<ErrorBoundary name="Verification-Center"><ProtectedRoute requiredPermissions={['Verification Center']}><VerificationCenterPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="messages" element={<ErrorBoundary name="Admin-Messages"><ProtectedRoute requiredPermissions={['Messages']}><AdminMessagesPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="workspaces" element={<ErrorBoundary name="Workspaces"><ProtectedRoute requiredPermissions={['Workspaces']}><WorkspacesPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="workspaces/:workspaceId" element={<ErrorBoundary name="Workspace-Detail"><ProtectedRoute requiredPermissions={['Workspaces']}><WorkspacesPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="marketplace" element={<ErrorBoundary name="Marketplace-Control"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Marketplace Review']}><MarketplaceControlWorkspace /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="marketplace/:listingId" element={<ErrorBoundary name="Marketplace-Listing-Detail"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Marketplace Review']}><MarketplaceListingDetail /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="settings/*" element={<ErrorBoundary name="Settings-Page"><ProtectedRoute requiredPermissions={['System Settings']}><SettingsPage /></ProtectedRoute></ErrorBoundary>} />
-                  <Route path="website/*" element={<ErrorBoundary name="Website-Editor-Page"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['System Settings']}><WebsiteEditorPage /></ProtectedRoute></ErrorBoundary>} />
+                  <Route path="website/*" element={<ErrorBoundary name="Website-Editor-Page"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['System Settings']} requiredFeature="website_editor"><WebsiteEditorPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="export/*" element={<ErrorBoundary name="Export-Page"><ProtectedRoute forbiddenRoles={['business_owner']} requiredPermissions={['Project Export']}><ExportPage /></ProtectedRoute></ErrorBoundary>} />
                   <Route path="profile" element={<ErrorBoundary name="Admin-Profile"><ProfilePage /></ErrorBoundary>} />
+                  <Route path="profile/verification" element={<ErrorBoundary name="Admin-Profile-Verification"><AccountVerification /></ErrorBoundary>} />
                 </Route>
 
                 {/* Guide Routes */}

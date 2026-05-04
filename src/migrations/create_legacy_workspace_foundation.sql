@@ -121,13 +121,18 @@ begin
       table_name
     );
 
-    constraint_name := table_name || '_organization_id_fkey';
+    constraint_name := 'fk_org_' || substr(md5(table_name || '_organization_id'), 1, 20);
 
     if not exists (
       select 1
-      from pg_constraint
-      where conname = constraint_name
-        and conrelid = to_regclass('public.' || table_name)
+      from pg_constraint c
+      join pg_attribute a
+        on a.attrelid = c.conrelid
+       and a.attnum = any(c.conkey)
+      where c.contype = 'f'
+        and c.conrelid = to_regclass('public.' || table_name)
+        and c.confrelid = 'public.app_organizations'::regclass
+        and a.attname = 'organization_id'
     ) then
       execute format(
         'alter table public.%I add constraint %I foreign key (organization_id) references public.app_organizations(id) on delete set null',

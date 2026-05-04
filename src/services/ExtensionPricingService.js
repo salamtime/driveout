@@ -522,9 +522,11 @@ export class ExtensionPricingService {
         .from('app_settings')
         .select('tier_pricing_enabled, require_tier_for_extensions, fallback_to_hourly')
         .eq('id', 1)
-        .single();
+        .limit(1);
       
-      if (error || !data) {
+      const row = Array.isArray(data) ? data[0] : null;
+
+      if (error || !row) {
         return {
           enabled: true,
           requireTierForExtensions: true,
@@ -533,9 +535,9 @@ export class ExtensionPricingService {
       }
       
       return {
-        enabled: data.tier_pricing_enabled ?? true,
-        requireTierForExtensions: data.require_tier_for_extensions ?? true,
-        fallbackToHourly: data.fallback_to_hourly ?? false
+        enabled: row.tier_pricing_enabled ?? true,
+        requireTierForExtensions: row.require_tier_for_extensions ?? true,
+        fallbackToHourly: row.fallback_to_hourly ?? false
       };
     } catch {
       return {

@@ -35,6 +35,23 @@ const scheduleBackgroundTask = (callback: () => void) => {
 
   return window.setTimeout(callback, 0);
 };
+const STORAGE_DOCUMENT_COUNT_FAILURE_COOLDOWN_MS = 60 * 1000;
+let vehicleDocumentCountCooldownUntil = 0;
+
+const isTransientStorageListError = (error: unknown) => {
+  const normalizedError = `${(error as any)?.code || ''} ${(error as any)?.message || ''} ${(error as any)?.details || ''}`.toLowerCase();
+  return (
+    normalizedError.includes('504') ||
+    normalizedError.includes('503') ||
+    normalizedError.includes('502') ||
+    normalizedError.includes('timeout') ||
+    normalizedError.includes('unexpected token') ||
+    normalizedError.includes('storageunknownerror') ||
+    normalizedError.includes('<html') ||
+    normalizedError.includes('failed to fetch')
+  );
+};
+
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en: string, fr: string) => (isFrenchLocale() ? fr : en);
 
@@ -287,6 +304,10 @@ const VehicleManagement: React.FC = () => {
   };
 
   const getVehicleDocumentCount = async (vehicleId: number): Promise<number> => {
+    if (Date.now() < vehicleDocumentCountCooldownUntil) {
+      return 0;
+    }
+
     try {
       const { data: files, error } = await supabase.storage
         .from('vehicle-documents')
@@ -296,6 +317,12 @@ const VehicleManagement: React.FC = () => {
         });
 
       if (error) {
+        if (isTransientStorageListError(error)) {
+          vehicleDocumentCountCooldownUntil = Date.now() + STORAGE_DOCUMENT_COUNT_FAILURE_COOLDOWN_MS;
+          console.warn('Vehicle document counting temporarily paused because storage is unavailable:', error);
+          return 0;
+        }
+
         console.error('Error counting documents for vehicle', vehicleId, ':', error);
         return 0;
       }
@@ -308,6 +335,12 @@ const VehicleManagement: React.FC = () => {
 
       return validFiles.length;
     } catch (error) {
+      if (isTransientStorageListError(error)) {
+        vehicleDocumentCountCooldownUntil = Date.now() + STORAGE_DOCUMENT_COUNT_FAILURE_COOLDOWN_MS;
+        console.warn('Vehicle document counting temporarily paused because storage is unavailable:', error);
+        return 0;
+      }
+
       console.error('Error counting documents for vehicle', vehicleId, ':', error);
       return 0;
     }
@@ -477,6 +510,17 @@ const VehicleManagement: React.FC = () => {
     sanitized.image_url = sanitized.image_url || '';
     
     return sanitized;
+  };
+
+  const withRequiredVehicleDefaults = (data: any, options: { isCreate?: boolean } = {}) => {
+    const normalized = { ...data };
+
+    if (options.isCreate) {
+      const odometerValue = Number(normalized.current_odometer);
+      normalized.current_odometer = Number.isFinite(odometerValue) ? odometerValue : 0;
+    }
+
+    return normalized;
   };
 
   useEffect(() => {
@@ -862,10 +906,10 @@ const VehicleManagement: React.FC = () => {
     setSubmitting(true);
     
     try {
-      const sanitizedData = sanitizeFormData({
+      const sanitizedData = withRequiredVehicleDefaults(sanitizeFormData({
         ...formData,
         image_url: vehicleImageUrl || ''
-      });
+      }), { isCreate: !editingVehicle });
 
       // ⭐⭐⭐ DUPLICATE PLATE NUMBER CHECK ⭐⭐⭐
       if (sanitizedData.plate_number && sanitizedData.plate_number.trim()) {

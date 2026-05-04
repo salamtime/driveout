@@ -10,6 +10,7 @@ import tenantControlsHandler from './_lib/tenantControlsHandler.js';
 import tenantAuditHandler from './_lib/tenantAuditHandler.js';
 import tenantWorkspaceConfigHandler from './_lib/tenantWorkspaceConfigHandler.js';
 import tenantLifecycleHandler from './_lib/tenantLifecycleHandler.js';
+import tenantSchemaHandler from './_lib/tenantSchemaHandler.js';
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -43,6 +44,10 @@ export default async function handler(req, res) {
 
   if (resource === 'lifecycle') {
     return tenantLifecycleHandler(req, res);
+  }
+
+  if (resource === 'schema') {
+    return tenantSchemaHandler(req, res);
   }
 
   if (!resource || resource === 'provisioning') {

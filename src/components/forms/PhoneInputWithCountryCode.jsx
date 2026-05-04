@@ -195,7 +195,7 @@ const PhoneInputWithCountryCode = ({ value, onChange, tr = defaultTr, label = 'P
   return (
     <div>
       <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <div className="relative flex items-stretch overflow-visible rounded-2xl border border-slate-200 bg-slate-50/80 transition focus-within:border-violet-400 focus-within:bg-white focus-within:ring-4 focus-within:ring-violet-100">
+      <div className="relative flex w-full min-w-0 items-stretch overflow-visible rounded-2xl border border-slate-200 bg-slate-50/80 transition focus-within:border-violet-400 focus-within:bg-white focus-within:ring-4 focus-within:ring-violet-100">
         <div className="relative" ref={dropdownRef}>
           <button
             type="button"
@@ -246,7 +246,7 @@ const PhoneInputWithCountryCode = ({ value, onChange, tr = defaultTr, label = 'P
           )}
         </div>
 
-        <div className="relative flex-1">
+        <div className="relative min-w-0 flex-1">
           <Phone className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             type="tel"

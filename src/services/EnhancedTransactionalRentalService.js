@@ -513,24 +513,22 @@ class EnhancedTransactionalRentalService {
         .filter(Boolean)
         .join(' • ') || `Vehicle #${newRental.vehicle_id}`;
 
-      try {
-        await dispatchRentalLifecycleTelegramEvent({
-          eventType: 'rental_created',
-          actor: 'admin',
-          rental: {
-            id: newRental.id,
-            reference: newRental.rental_id || finalSanitizedData.rental_id || '',
-            vehicle: alertVehicleLabel,
-            customer: newRental.customer_name || finalSanitizedData.customer_name,
-            start: newRental.rental_start_date || finalSanitizedData.rental_start_date || sanitizedData.start_date,
-            end: newRental.rental_end_date || finalSanitizedData.rental_end_date || sanitizedData.end_date,
-            total: newRental.total_amount ?? finalSanitizedData.total_amount ?? 0,
-            createdBy: finalSanitizedData.created_by_name || newRental.created_by_name || '',
-          },
-        });
-      } catch (telegramDispatchError) {
+      dispatchRentalLifecycleTelegramEvent({
+        eventType: 'rental_created',
+        actor: 'admin',
+        rental: {
+          id: newRental.id,
+          reference: newRental.rental_id || finalSanitizedData.rental_id || '',
+          vehicle: alertVehicleLabel,
+          customer: newRental.customer_name || finalSanitizedData.customer_name,
+          start: newRental.rental_start_date || finalSanitizedData.rental_start_date || sanitizedData.start_date,
+          end: newRental.rental_end_date || finalSanitizedData.rental_end_date || sanitizedData.end_date,
+          total: newRental.total_amount ?? finalSanitizedData.total_amount ?? 0,
+          createdBy: finalSanitizedData.created_by_name || newRental.created_by_name || '',
+        },
+      }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);
-      }
+      });
 
       console.log('✅ RENTAL CREATED SUCCESSFULLY (TWO-STEP COMPLETE):', newRental.id);
       return { success: true, data: newRental, message: 'Rental created successfully' };

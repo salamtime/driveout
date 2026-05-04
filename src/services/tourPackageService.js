@@ -1,3 +1,4 @@
+import { supabase } from './supabaseClient';
 import { adminApiRequest } from './adminApi';
 
 /**
@@ -70,10 +71,15 @@ export const fetchTourPackages = async () => {
 
   try {
     inFlightTourPackagesRequest = (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers = session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` }
+        : undefined;
       const response = await fetch('/api/tour-packages', {
         method: 'GET',
         credentials: 'include',
         cache: 'no-store',
+        headers,
       });
       const contentType = response.headers.get('content-type') || '';
 

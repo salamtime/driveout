@@ -4178,62 +4178,8 @@ const calculateDailyTierPricingBreakdown = async () => {
         if (!baseRental) {
           throw lastError || new Error('Failed to load rental details');
         }
-
-        const [
-          vehicleResult,
-          extensionsResult,
-          secondDriversResult,
-          packageResult,
-        ] = await Promise.all([
-          baseRental.vehicle_id
-            ? supabase
-                .from('saharax_0u4w4d_vehicles')
-                .select(`
-                  *,
-                  vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
-                `)
-                .eq('id', baseRental.vehicle_id)
-                .maybeSingle()
-            : Promise.resolve({ data: null, error: null }),
-          supabase
-            .from('rental_extensions')
-            .select('*')
-            .eq('rental_id', id),
-          supabase
-            .from('app_4c3a7a6153_rental_second_drivers')
-            .select('*')
-            .eq('rental_id', id),
-          baseRental.package_id
-            ? supabase
-                .from('app_4c3a7a6153_rental_km_packages')
-                .select('*')
-                .eq('id', baseRental.package_id)
-                .maybeSingle()
-            : Promise.resolve({ data: null, error: null }),
-        ]);
-
-        if (vehicleResult?.error) {
-          console.warn('⚠️ loadRentalData - Vehicle relation fetch failed:', vehicleResult.error);
-        }
-        if (extensionsResult?.error) {
-          console.warn('⚠️ loadRentalData - Extensions fetch failed:', extensionsResult.error);
-        }
-        if (secondDriversResult?.error) {
-          console.warn('⚠️ loadRentalData - Second drivers fetch failed:', secondDriversResult.error);
-        }
-        if (packageResult?.error) {
-          console.warn('⚠️ loadRentalData - Package fetch failed:', packageResult.error);
-        }
-
-        return {
-          ...baseRental,
-          quantity_hours: baseRental.quantity_hours,
-          quantity_days: baseRental.quantity_days,
-          vehicle: vehicleResult?.data || null,
-          extensions: extensionsResult?.data || [],
-          second_drivers: secondDriversResult?.data || [],
-          package: packageResult?.data || null,
-        };
+        
+        return baseRental;
       });
       
       if (RENTAL_DEBUG) console.log('✅ loadRentalData - Fresh data received:', {
@@ -4247,7 +4193,13 @@ const calculateDailyTierPricingBreakdown = async () => {
       });
 
       // Only customer website bookings auto-expire automatically.
-      let finalRentalData = normalizeRentalLifecycleStatus({ ...rentalData }, rentalTimingSettings);
+      const previousRentalSnapshot = cachedSnapshot || rental || null;
+      let finalRentalData = normalizeRentalLifecycleStatus({
+        ...rentalData,
+        vehicle: previousRentalSnapshot?.vehicle || null,
+        second_drivers: previousRentalSnapshot?.second_drivers || [],
+        package: previousRentalSnapshot?.package || null,
+      }, rentalTimingSettings);
       if (rentalData.rental_status === 'scheduled' && rentalData.rental_start_date) {
         const timingState = getScheduledRentalTimingState(rentalData.rental_start_date, rentalTimingSettings, new Date());
         if (timingState?.isExpired && shouldAutoExpireScheduledRental(rentalData)) {
@@ -4283,8 +4235,8 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
       // Set existing fuel levels if available
       if (rentalData.start_engine_hours !== null && rentalData.start_engine_hours !== undefined) {
         setStartEngineHours(String(rentalData.start_engine_hours));
-      } else if (rentalData?.vehicle?.engine_hours !== null && rentalData?.vehicle?.engine_hours !== undefined) {
-        setStartEngineHours(String(rentalData.vehicle.engine_hours));
+      } else if (previousRentalSnapshot?.vehicle?.engine_hours !== null && previousRentalSnapshot?.vehicle?.engine_hours !== undefined) {
+        setStartEngineHours(String(previousRentalSnapshot.vehicle.engine_hours));
       } else {
         setStartEngineHours('');
       }
@@ -4329,12 +4281,74 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
       setStartOdometer(nextDisplayedStartingOdometer > 0 ? nextDisplayedStartingOdometer.toString() : '');
 
       scheduleBackgroundTask(async () => {
+        let hydratedVehicle = finalRentalData?.vehicle || null;
+
+        const [vehicleResult, secondDriversResult, packageResult] = await Promise.allSettled([
+          rentalData.vehicle_id
+            ? supabase
+                .from('saharax_0u4w4d_vehicles')
+                .select(`
+                  *,
+                  vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
+                `)
+                .eq('id', rentalData.vehicle_id)
+                .maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+          rentalData.id ? fetchSecondDriversSeparately(rentalData.id) : Promise.resolve([]),
+          rentalData.package_id
+            ? supabase
+                .from('app_4c3a7a6153_rental_km_packages')
+                .select('*')
+                .eq('id', rentalData.package_id)
+                .maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+        ]);
+
+        if (vehicleResult.status === 'fulfilled') {
+          if (vehicleResult.value?.error) {
+            console.warn('⚠️ loadRentalData - Vehicle relation fetch failed:', vehicleResult.value.error);
+          } else if (vehicleResult.value?.data) {
+            hydratedVehicle = vehicleResult.value.data;
+            setRental((prev) => prev ? ({ ...prev, vehicle: hydratedVehicle }) : prev);
+            writeRentalDetailsSnapshot(id, {
+              ...finalRentalData,
+              vehicle: hydratedVehicle,
+            });
+
+            if (
+              (rentalData.start_engine_hours === null || rentalData.start_engine_hours === undefined) &&
+              hydratedVehicle?.engine_hours !== null &&
+              hydratedVehicle?.engine_hours !== undefined
+            ) {
+              setStartEngineHours(String(hydratedVehicle.engine_hours));
+            }
+          }
+        } else {
+          console.warn('⚠️ loadRentalData - Vehicle relation fetch failed:', vehicleResult.reason);
+        }
+
+        if (secondDriversResult.status === 'fulfilled') {
+          const secondDrivers = secondDriversResult.value || [];
+          setRental((prev) => prev ? ({ ...prev, second_drivers: secondDrivers }) : prev);
+        } else {
+          console.warn('⚠️ loadRentalData - Second drivers fetch failed:', secondDriversResult.reason);
+        }
+
+        if (packageResult.status === 'fulfilled') {
+          if (packageResult.value?.error) {
+            console.warn('⚠️ loadRentalData - Package fetch failed:', packageResult.value.error);
+          } else if (packageResult.value?.data) {
+            setRental((prev) => prev ? ({ ...prev, package: packageResult.value.data }) : prev);
+          }
+        } else {
+          console.warn('⚠️ loadRentalData - Package fetch failed:', packageResult.reason);
+        }
+
         try {
           await refreshCustomerVerificationState(rentalData);
         } catch (verificationError) {
           console.error('❌ Non-critical customer verification refresh failure:', verificationError);
         }
-
         try {
           if (rentalData.package_id) {
             if (RENTAL_DEBUG) console.log('📦 Package ID found:', rentalData.package_id);
@@ -4351,21 +4365,10 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
           setExtraKmRate(null);
         }
 
-        if (rentalData.id) {
-          try {
-            const secondDrivers = await fetchSecondDriversSeparately(rentalData.id);
-            if (secondDrivers.length > 0) {
-              setRental((prev) => prev ? ({ ...prev, second_drivers: secondDrivers }) : prev);
-            }
-          } catch (secondDriverLoadError) {
-            console.error('❌ Non-critical second driver load failure:', secondDriverLoadError);
-          }
-        }
-
-        if (rentalData?.vehicle?.vehicle_model?.id) {
+        if (hydratedVehicle?.vehicle_model?.id) {
           try {
             const pricePerLine = await FuelPricingService.getFuelPricingForModel(
-              rentalData.vehicle.vehicle_model.id,
+              hydratedVehicle.vehicle_model.id,
               rentalData.rental_type || 'daily'
             );
             setFuelPricePerLine(pricePerLine);

@@ -20,6 +20,7 @@ import FinanceExpensesTabV2 from './FinanceExpensesTabV2';
 import { financeApiV2 } from '../../services/financeApiV2';
 import appWarmupService from '../../services/AppWarmupService';
 import i18n from '../../i18n';
+import { useAuth } from '../../contexts/AuthContext';
 
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -115,6 +116,8 @@ const isDateWithinInclusiveRange = (date, start, end) => {
  */
 const FinanceDashboardV2 = () => {
   const isFrench = isFrenchLocale();
+  const { hasFeature } = useAuth();
+  const canUseAdvancedReporting = hasFeature('advanced_reporting');
   const warmFinanceSnapshot = appWarmupService.getWarmFinanceSnapshot();
   const [searchParams] = useSearchParams();
   const initialTab = searchParams.get('tab') || 'overview';
@@ -304,6 +307,17 @@ const FinanceDashboardV2 = () => {
       dataScope: tr('Data shown includes export options for all available financial records.', "Les données affichées incluent les options d'export pour tous les enregistrements financiers disponibles.")
     }
   ];
+
+  const availableTabs = useMemo(
+    () => tabs.filter((tab) => canUseAdvancedReporting || tab.id !== 'reports'),
+    [canUseAdvancedReporting, tabs]
+  );
+
+  useEffect(() => {
+    if (!canUseAdvancedReporting && activeTab === 'reports') {
+      setActiveTab('overview');
+    }
+  }, [activeTab, canUseAdvancedReporting]);
 
   // Load initial data
   useEffect(() => {
@@ -593,6 +607,10 @@ const FinanceDashboardV2 = () => {
   };
 
   const handleExport = async () => {
+    if (!canUseAdvancedReporting) {
+      return;
+    }
+
     try {
       // Export based on active tab
       let exportData;
@@ -676,7 +694,7 @@ const FinanceDashboardV2 = () => {
     window.location.href = row.href;
   };
 
-  const activeTabConfig = tabs.find(tab => tab.id === activeTab);
+  const activeTabConfig = availableTabs.find(tab => tab.id === activeTab) || availableTabs[0];
   const showActiveTabMeta = false;
   const formatPreviewDate = (value) => {
     if (!value) return '';
@@ -732,13 +750,13 @@ const FinanceDashboardV2 = () => {
       case 'rental-pl':
         return (
           <div className="animate-slideInUp">
-            <RentalPLTableV2 {...tabProps} />
+            <RentalPLTableV2 {...tabProps} exportEnabled={canUseAdvancedReporting} />
           </div>
         );
       case 'tour-pl':
         return (
           <div className="animate-slideInUp">
-            <TourPLTableV2 {...tabProps} />
+            <TourPLTableV2 {...tabProps} exportEnabled={canUseAdvancedReporting} />
           </div>
         );
       case 'fuel-pl':
@@ -768,7 +786,12 @@ const FinanceDashboardV2 = () => {
       case 'customer-analysis':
         return (
           <div className="animate-slideInUp">
-            <CustomerAnalysisTabV2 {...tabProps} customers={customers} loading={directoryLoading} />
+            <CustomerAnalysisTabV2
+              {...tabProps}
+              customers={customers}
+              loading={directoryLoading}
+              exportEnabled={canUseAdvancedReporting}
+            />
           </div>
         );
       case 'calendar':
@@ -815,7 +838,7 @@ const FinanceDashboardV2 = () => {
       case 'reports':
         return (
           <div className="animate-slideInUp">
-            <ReportsTabV2 {...tabProps} />
+            <ReportsTabV2 {...tabProps} onExport={handleExport} />
           </div>
         );
       case 'alerts':
@@ -1036,13 +1059,15 @@ const FinanceDashboardV2 = () => {
                 {tr('Refresh', 'Actualiser')}
               </button>
 
-              <button
-                onClick={handleExport}
-                className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(79,70,229,0.25)] transition-all hover:scale-[1.01]"
-              >
-                <Download className="h-4 w-4" />
-                {tr('Export', 'Exporter')}
-              </button>
+              {canUseAdvancedReporting ? (
+                <button
+                  onClick={handleExport}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-700 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(79,70,229,0.25)] transition-all hover:scale-[1.01]"
+                >
+                  <Download className="h-4 w-4" />
+                  {tr('Export', 'Exporter')}
+                </button>
+              ) : null}
 
               <button
                 onClick={handleResetFilters}
@@ -1052,13 +1077,15 @@ const FinanceDashboardV2 = () => {
                 {tr('Reset', 'Réinitialiser')}
               </button>
 
-              <button
-                onClick={() => setActiveTab('reports')}
-                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700"
-              >
-                <FileText className="h-4 w-4" />
-                {tr('Reports', 'Rapports')}
-              </button>
+              {canUseAdvancedReporting ? (
+                <button
+                  onClick={() => setActiveTab('reports')}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-all hover:border-violet-200 hover:text-violet-700"
+                >
+                  <FileText className="h-4 w-4" />
+                  {tr('Reports', 'Rapports')}
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -1067,7 +1094,7 @@ const FinanceDashboardV2 = () => {
       <section id="finance-tabs" className="space-y-4">
         <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-5">
           <nav className="flex space-x-2 overflow-x-auto pb-1" aria-label="Tabs">
-            {tabs.map((tab) => {
+            {availableTabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               

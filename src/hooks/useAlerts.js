@@ -78,7 +78,7 @@ export const useAlerts = () => {
         const { title, message, alert_type, severity } = event.detail;
         new Notification('QuadVenture Alert', {
           body: `${severity || ''} ${alert_type || ''}: ${title}`,
-          icon: '/favicon.ico',
+          icon: '/assets/logo.png',
           tag: `quad-alert-${alert_type || 'general'}-${new Date().getTime()}`
         });
       }

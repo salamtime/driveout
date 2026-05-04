@@ -1,11 +1,10 @@
 import { supabase } from '../lib/supabase';
 import { adminApiRequest } from './adminApi';
-
-const PLAN_BASE_LIMITS = Object.freeze({
-  starter: { vehicles: 10, staff: 3, listings: 5, storage_gb: 10 },
-  growth: { vehicles: 30, staff: 10, listings: 20, storage_gb: 50 },
-  pro: { vehicles: 100, staff: 30, listings: 100, storage_gb: 250 },
-});
+import {
+  buildEffectiveTenantFeatureAccess,
+  getTenantPlanLimits,
+  normalizeTenantPlanType,
+} from '../config/tenantPlans';
 
 const STAFF_ROLES = ['owner', 'admin', 'guide', 'employee', 'manager', 'mechanic', 'staff'];
 const CACHE_TTL_MS = 45 * 1000;
@@ -20,16 +19,7 @@ const isPlatformOwnerEmail = (email = '') =>
 
 const normalizeFeatureAccess = (featureAccess = {}) => {
   const source = featureAccess && typeof featureAccess === 'object' ? featureAccess : {};
-  return {
-    public_storefront: Boolean(source.public_storefront),
-    online_booking: Boolean(source.online_booking),
-    finance_module: Boolean(source.finance_module),
-    marketplace_module: Boolean(source.marketplace_module),
-    ocr_id_scan: Boolean(source.ocr_id_scan),
-    whatsapp_tools: Boolean(source.whatsapp_tools),
-    advanced_reporting: Boolean(source.advanced_reporting),
-    multilingual_storefront: Boolean(source.multilingual_storefront),
-  };
+  return { ...source };
 };
 
 const buildControlsSnapshot = ({
@@ -38,18 +28,19 @@ const buildControlsSnapshot = ({
   featureAccess = {},
 } = {}) => {
   const normalizedPlanType = String(planType || 'starter').trim().toLowerCase();
-  const baseLimits = PLAN_BASE_LIMITS[normalizedPlanType] || PLAN_BASE_LIMITS.starter;
+  const effectivePlanType = normalizeTenantPlanType(normalizedPlanType);
+  const baseLimits = getTenantPlanLimits(effectivePlanType);
   const sourceLimits = planLimits && typeof planLimits === 'object' ? planLimits : {};
 
   return {
-    planType: normalizedPlanType,
+    planType: effectivePlanType,
     planLimits: {
       vehicles: Number(sourceLimits.vehicles ?? baseLimits.vehicles) || 0,
-      staff: Number(sourceLimits.staff ?? baseLimits.staff) || 0,
+      staff: Number(sourceLimits.staff ?? sourceLimits.staff_users ?? baseLimits.staff) || 0,
       listings: Number(sourceLimits.listings ?? baseLimits.listings) || 0,
       storage_gb: Number(sourceLimits.storage_gb ?? baseLimits.storage_gb) || 0,
     },
-    featureAccess: normalizeFeatureAccess(featureAccess),
+    featureAccess: buildEffectiveTenantFeatureAccess(effectivePlanType, normalizeFeatureAccess(featureAccess)),
   };
 };
 
@@ -90,16 +81,39 @@ export const getTenantRuntimeControls = async ({ forceRefresh = false } = {}) =>
     return writeCachedControls(
       buildControlsSnapshot({
         planType: 'pro',
-        planLimits: PLAN_BASE_LIMITS.pro,
+        planLimits: getTenantPlanLimits('pro'),
         featureAccess: {
-          public_storefront: true,
-          online_booking: true,
+          dashboard_basic: true,
+          calendar_module: true,
+          rentals_basic: true,
+          fleet_basic: true,
+          customers_basic: true,
+          documents_basic: true,
+          tours_module: true,
+          tasks_module: true,
+          live_map_module: true,
+          inventory_module: true,
+          alerts_module: true,
+          verification_module: true,
+          workspace_settings_module: true,
+          pricing_module: true,
           finance_module: true,
+          fuel_module: true,
+          maintenance_module: true,
+          messages_module: true,
+          website_editor: true,
           marketplace_module: true,
+          advanced_roles_permissions: true,
+          project_export: true,
+          pricing_km_packages: true,
+          pricing_tier_rules: true,
+          pricing_fuel_rules: true,
           ocr_id_scan: true,
           whatsapp_tools: true,
           advanced_reporting: true,
           multilingual_storefront: true,
+          online_booking: true,
+          public_storefront: true,
         },
       })
     );
@@ -178,3 +192,16 @@ export const assertCanCreateStaffUser = async () =>
 
 export const assertCanCreateListing = async () =>
   assertWithinLimit({ key: 'listings', entityLabel: 'listings', getCount: getListingCount });
+
+export const hasTenantFeatureAccess = async (featureKey) => {
+  const controls = await getTenantRuntimeControls();
+  return controls?.featureAccess?.[featureKey] === true;
+};
+
+export const assertTenantFeatureEnabled = async (featureKey, message = '') => {
+  const hasAccess = await hasTenantFeatureAccess(featureKey);
+  if (!hasAccess) {
+    throw new Error(message || 'Your tenant plan does not include this feature.');
+  }
+  return true;
+};

@@ -105,7 +105,7 @@ insert into public.platform_business_subscriptions (
 select
   pba.id,
   case
-    when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) in ('starter', 'growth', 'pro')
+    when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) in ('free', 'starter', 'growth', 'pro')
       then lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter'))
     else 'starter'
   end,
@@ -125,9 +125,10 @@ select
   nullif(coalesce(au.raw_user_meta_data->>'suspended_at', au.raw_app_meta_data->>'suspended_at', ''), '')::timestamptz,
   jsonb_strip_nulls(
     jsonb_build_object(
-      'vehicles', case when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'pro' then 9999 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'growth' then 30 else 10 end,
-      'staff_users', case when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'pro' then 25 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'growth' then 8 else 3 end,
-      'marketplace_distribution', lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) in ('growth', 'pro')
+      'vehicles', case when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'pro' then 100 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'growth' then 30 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'free' then 5 else 10 end,
+      'staff', case when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'pro' then 30 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'growth' then 10 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'free' then 1 else 3 end,
+      'listings', case when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'pro' then 100 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'growth' then 20 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'free' then 0 else 5 end,
+      'storage_gb', case when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'pro' then 250 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'growth' then 50 when lower(coalesce(au.raw_user_meta_data->>'plan_type', au.raw_app_meta_data->>'plan_type', 'starter')) = 'free' then 2 else 10 end
     )
   ),
   jsonb_build_object('source', 'legacy_business_owner_backfill')

@@ -72,12 +72,16 @@ CREATE TABLE IF NOT EXISTS public.app_687f658e98_tour_bookings (
   booking_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   booking_status text DEFAULT 'scheduled',
   scheduled_for timestamptz,
+  vehicle_id integer references public.saharax_0u4w4d_vehicles(id) on delete set null,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_tour_bookings_status
   ON public.app_687f658e98_tour_bookings (booking_status, scheduled_for);
+
+CREATE INDEX IF NOT EXISTS idx_tour_bookings_vehicle_id
+  ON public.app_687f658e98_tour_bookings (vehicle_id);
 
 ALTER TABLE public.app_687f658e98_tour_bookings ENABLE ROW LEVEL SECURITY;
 

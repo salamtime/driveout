@@ -331,6 +331,7 @@ class ReceiveFundsService {
       .from(FINANCE_EXPENSES_TABLE)
       .select('*')
       .eq('subcategory', 'purchase_expense')
+      .eq('status', 'active')
       .gte('expense_date', filters.startDate)
       .lte('expense_date', filters.endDate)
       .order('expense_date', { ascending: false })
@@ -346,6 +347,7 @@ class ReceiveFundsService {
         .from(FINANCE_EXPENSES_TABLE)
         .select('*')
         .eq('subcategory', 'purchase_expense')
+        .eq('status', 'active')
         .gte('expense_date', filters.startDate)
         .lte('expense_date', filters.endDate)
         .order('expense_date', { ascending: false })
@@ -374,6 +376,7 @@ class ReceiveFundsService {
       .from(FINANCE_EXPENSES_TABLE)
       .select('*')
       .eq('subcategory', 'purchase_expense')
+      .eq('status', 'active')
       .eq('created_by', userId)
       .order('expense_date', { ascending: false })
       .order('created_at', { ascending: false });
@@ -524,13 +527,24 @@ class ReceiveFundsService {
       throw new Error('Receive Funds table is not ready yet. Please run the SQL migration first.');
     }
 
-    const { error } = await supabase
+    const organizationId = getScopedOrganizationId(userProfile);
+    let query = supabase
       .from(RECEIVE_FUNDS_TABLE)
       .delete()
       .eq('id', entryId);
 
+    if (organizationId) {
+      query = query.eq('organization_id', organizationId);
+    }
+
+    const { data, error } = await query.select('id');
+
     if (error) {
       throw error;
+    }
+
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('Receive funds delete was not applied. Run the finance delete permissions SQL and try again.');
     }
 
     return true;
@@ -745,13 +759,24 @@ class ReceiveFundsService {
     }
 
     const expenseId = normalizeExpenseId(entryId);
-    const { error } = await supabase
+    const organizationId = getScopedOrganizationId(userProfile);
+    let query = supabase
       .from(FINANCE_EXPENSES_TABLE)
       .delete()
       .eq('id', expenseId);
 
+    if (organizationId) {
+      query = query.eq('organization_id', organizationId);
+    }
+
+    const { data, error } = await query.select('id');
+
     if (error) {
       throw error;
+    }
+
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('Purchase expense delete was not applied. Run the finance delete permissions SQL and try again.');
     }
 
     return true;

@@ -5,6 +5,7 @@ import { Info, Package, Plus, Edit, Trash2, CheckCircle, XCircle, Loader, X, Sav
 import KilometerPricingHelpModal from './KilometerPricingHelpModal';
 import PackageService from '../services/PackageService';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 
 interface RentalPackage {
   id: number;
@@ -176,9 +177,11 @@ const getDamageDepositPresetsForLookup = (
 };
 
 const KilometerPricingTab: React.FC = () => {
+  const { hasFeature } = useAuth();
   const { i18n } = useTranslation();
   const isFrench = i18n.language?.toLowerCase().startsWith('fr');
   const tr = (en: string, fr: string) => (isFrench ? fr : en);
+  const canManageKilometerPackages = hasFeature('pricing_km_packages');
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [packages, setPackages] = useState<RentalPackage[]>([]);
   const [filteredPackages, setFilteredPackages] = useState<RentalPackage[]>([]);
@@ -258,14 +261,14 @@ const KilometerPricingTab: React.FC = () => {
           .from('app_settings')
           .select('damage_deposit_presets')
           .eq('id', 1)
-          .single()
+          .limit(1)
       ]);
       setPackages(packagesData);
       setFilteredPackages(packagesData);
       setRateTypes(rateTypesData);
       setVehicleModels(vehicleModelsData);
       setDamageDepositPresetsByModelId(
-        normalizeDamageDepositPresets(appSettingsResult?.data?.damage_deposit_presets)
+        normalizeDamageDepositPresets(appSettingsResult?.data?.[0]?.damage_deposit_presets)
       );
     } catch (err: any) {
       console.error('Error loading kilometer pricing data:', err);
@@ -967,6 +970,27 @@ const KilometerPricingTab: React.FC = () => {
       <div className="flex items-center justify-center py-12">
         <Loader className="w-8 h-8 text-purple-600 animate-spin" />
         <span className="ml-3 text-gray-600">{tr('Loading packages...', 'Chargement des packages...')}</span>
+      </div>
+    );
+  }
+
+  if (!canManageKilometerPackages) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600" />
+          <div>
+            <h3 className="text-base font-semibold text-amber-900">
+              {tr('Kilometer packages are locked on this plan', 'Les forfaits kilométriques sont verrouillés sur ce forfait')}
+            </h3>
+            <p className="mt-1 text-sm text-amber-800">
+              {tr(
+                'Upgrade the tenant plan to create and edit kilometer-based rental packages.',
+                "Mettez à niveau le forfait du tenant pour créer et modifier les forfaits de location basés sur les kilomètres."
+              )}
+            </p>
+          </div>
+        </div>
       </div>
     );
   }

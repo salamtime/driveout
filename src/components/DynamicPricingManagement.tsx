@@ -8,6 +8,7 @@ import FuelPricingTab from './FuelPricingTab'; // NEW: Import Fuel Pricing Tab
 import TourPackagesWorkspace from './admin/pricing/TourPackagesWorkspace';
 import AdminModuleHero from './admin/AdminModuleHero';
 import i18n from '../i18n';
+import { useAuth } from '../contexts/AuthContext';
 
 const scheduleBackgroundTask = (callback: () => void | Promise<void>) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -162,12 +163,20 @@ const PRICING_TAB_ITEMS = [
 
 type PricingTabId = typeof PRICING_TAB_ITEMS[number]['id'];
 
+const PRICING_TAB_FEATURE_REQUIREMENTS: Partial<Record<PricingTabId, string>> = {
+  'tour-pricing': 'tours_module',
+  tiers: 'pricing_tier_rules',
+  packages: 'pricing_km_packages',
+  fuel: 'pricing_fuel_rules',
+};
+
 const isPricingTabId = (tab: string | null): tab is PricingTabId => (
   PRICING_TAB_ITEMS.some((item) => item.id === tab)
 );
 
 const DynamicPricingManagement: React.FC = () => {
   const isFrench = isFrenchLocale();
+  const { hasFeature } = useAuth();
   console.log('PRICING_MANAGEMENT: Loading with TIERED PRICING and FUEL PRICING support');
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
@@ -178,12 +187,33 @@ const DynamicPricingManagement: React.FC = () => {
   ));
 
   useEffect(() => {
-    if (isPricingTabId(tabParam) && tabParam !== activeTab) {
-      setActiveTab(tabParam);
+    setActiveTab((currentTab) => {
+      if (!isPricingTabId(tabParam)) {
+        return currentTab === 'base' ? currentTab : 'base';
+      }
+
+      return currentTab === tabParam ? currentTab : tabParam;
+    });
+  }, [tabParam]);
+
+  const visiblePricingTabs = PRICING_TAB_ITEMS.filter((item) => {
+    const requiredFeature = PRICING_TAB_FEATURE_REQUIREMENTS[item.id];
+    return requiredFeature ? hasFeature(requiredFeature) : true;
+  });
+
+  useEffect(() => {
+    const activeVisible = visiblePricingTabs.some((item) => item.id === activeTab);
+    if (!activeVisible && visiblePricingTabs.length > 0) {
+      setActiveTab(visiblePricingTabs[0].id);
     }
-  }, [activeTab, tabParam]);
+  }, [activeTab, visiblePricingTabs]);
 
   const handleTabChange = (tab: PricingTabId) => {
+    const requiredFeature = PRICING_TAB_FEATURE_REQUIREMENTS[tab];
+    if (requiredFeature && !hasFeature(requiredFeature)) {
+      return;
+    }
+
     setActiveTab(tab);
 
     const nextParams = new URLSearchParams(searchParams);
@@ -214,6 +244,34 @@ const DynamicPricingManagement: React.FC = () => {
   const [editingTier, setEditingTier] = useState<PricingTier | null>(null);
   const [selectedVehicleForTiers, setSelectedVehicleForTiers] = useState<string>('');
   const [tierDurationFilter, setTierDurationFilter] = useState<'hours' | 'days'>('hours');
+
+  if (!hasFeature('pricing_module')) {
+    return (
+      <div className="min-h-screen bg-slate-50 px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-4xl">
+          <section className="rounded-2xl border border-amber-200 bg-white p-8 shadow-sm">
+            <div className="flex items-start gap-4">
+              <Lock className="mt-1 h-6 w-6 text-amber-500" />
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-600">
+                  {tr('Upgrade Required', 'Mise à niveau requise')}
+                </p>
+                <h1 className="mt-2 text-2xl font-bold text-slate-900">
+                  {tr('Pricing Management is locked for this tenant plan.', 'La gestion tarifaire est verrouillée pour ce plan tenant.')}
+                </h1>
+                <p className="mt-3 max-w-2xl text-sm text-slate-600">
+                  {tr(
+                    'Upgrade this workspace to unlock pricing rules, kilometer packages, deposits, and fuel pricing controls.',
+                    'Mettez ce workspace à niveau pour débloquer les règles tarifaires, les forfaits kilométriques, les dépôts et les contrôles de tarification carburant.'
+                  )}
+                </p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
 
   // State for Extension Rules
   const [extensionRules, setExtensionRules] = useState<ExtensionRule[]>([]);
@@ -342,17 +400,19 @@ const DynamicPricingManagement: React.FC = () => {
         .from('app_settings')
         .select('tier_pricing_enabled, require_tier_for_extensions, fallback_to_hourly')
         .eq('id', 1)
-        .single();
+        .limit(1);
 
       if (error) throw error;
 
-      if (data) {
+      const row = Array.isArray(data) ? data[0] : null;
+
+      if (row) {
         setTierEnforcement({
-          enabled: data.tier_pricing_enabled ?? true,
-          requireTierForExtensions: data.require_tier_for_extensions ?? true,
-          fallbackToHourly: data.fallback_to_hourly ?? false
+          enabled: row.tier_pricing_enabled ?? true,
+          requireTierForExtensions: row.require_tier_for_extensions ?? true,
+          fallbackToHourly: row.fallback_to_hourly ?? false
         });
-        console.log('✅ Loaded tier enforcement settings:', data);
+        console.log('✅ Loaded tier enforcement settings:', row);
       }
     } catch (error: any) {
       console.log('🔄 Using default tier enforcement settings:', error.message);
@@ -369,14 +429,16 @@ const DynamicPricingManagement: React.FC = () => {
         .from('app_settings')
         .select('damage_deposit_presets, allow_custom_deposit')
         .eq('id', 1)
-        .single();
+        .limit(1);
 
       if (error) throw error;
 
-      if (data) {
+      const row = Array.isArray(data) ? data[0] : null;
+
+      if (row) {
         const normalized = normalizeDamageDepositSettings(
-          data.damage_deposit_presets,
-          data.allow_custom_deposit ?? true
+          row.damage_deposit_presets,
+          row.allow_custom_deposit ?? true
         );
         setDepositSettings(normalized);
         console.log('✅ Loaded vehicle model-based deposit settings:', normalized);
@@ -417,7 +479,7 @@ const DynamicPricingManagement: React.FC = () => {
           .from('app_settings')
           .select('transport_pickup_fee, transport_dropoff_fee, damage_deposit_presets, allow_custom_deposit, tier_pricing_enabled, require_tier_for_extensions, fallback_to_hourly')
           .eq('id', 1)
-          .single(),
+          .limit(1),
       ]);
 
       if (vehicleModelsResult.status === 'fulfilled') {
@@ -437,23 +499,24 @@ const DynamicPricingManagement: React.FC = () => {
 
       if (appSettingsResult.status === 'fulfilled') {
         const { data: dbData, error: dbError } = appSettingsResult.value;
-        if (!dbError && dbData) {
+        const appSettingsRow = Array.isArray(dbData) ? dbData[0] : null;
+        if (!dbError && appSettingsRow) {
           const fees = {
-            pickup_fee: Number(dbData.transport_pickup_fee) || 0,
-            dropoff_fee: Number(dbData.transport_dropoff_fee) || 0
+            pickup_fee: Number(appSettingsRow.transport_pickup_fee) || 0,
+            dropoff_fee: Number(appSettingsRow.transport_dropoff_fee) || 0
           };
           setTransportFees(fees);
           setTransportFeeFormData(fees);
           setTierEnforcement({
-            enabled: dbData.tier_pricing_enabled ?? true,
-            requireTierForExtensions: dbData.require_tier_for_extensions ?? true,
-            fallbackToHourly: dbData.fallback_to_hourly ?? false
+            enabled: appSettingsRow.tier_pricing_enabled ?? true,
+            requireTierForExtensions: appSettingsRow.require_tier_for_extensions ?? true,
+            fallbackToHourly: appSettingsRow.fallback_to_hourly ?? false
           });
 
           setDepositSettings(
             normalizeDamageDepositSettings(
-              dbData.damage_deposit_presets,
-              dbData.allow_custom_deposit ?? true
+              appSettingsRow.damage_deposit_presets,
+              appSettingsRow.allow_custom_deposit ?? true
             )
           );
         } else {
@@ -1418,19 +1481,20 @@ const DynamicPricingManagement: React.FC = () => {
     activeBasePrices: basePrices.filter((price) => price.is_active).length,
     activeTiers: pricingTiers.filter((tier) => tier.is_active).length,
   };
+  const activeTabConfig = visiblePricingTabs.find((item) => item.id === activeTab);
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50">
+      <div className="min-h-screen bg-gray-50 pb-10">
         <AdminModuleHero
           className="w-full"
-          icon={<DollarSign className="h-8 w-8 text-white" />}
+          icon={<DollarSign className="h-7 w-7" />}
           eyebrow={tr('Pricing Management', 'Gestion tarifaire')}
           title={tr('Pricing Management', 'Gestion tarifaire')}
           description={tr('Preparing the pricing workspace...', 'Préparation de l’espace tarifaire...')}
         />
-        <div className="max-w-7xl mx-auto p-6">
-          <div className="rounded-2xl border border-violet-100 bg-white p-8 shadow-[0_18px_45px_rgba(76,29,149,0.08)]">
+        <div className="mx-auto mt-6 max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="rounded-[28px] border border-slate-200 bg-white p-8 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
             <div className="flex flex-col items-center justify-center text-center">
               <div className="mb-4 text-4xl animate-spin">⏳</div>
               <p className="text-base font-medium text-slate-700">{tr('Loading pricing...', 'Chargement des tarifs...')}</p>
@@ -1443,149 +1507,129 @@ const DynamicPricingManagement: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-slate-50 overflow-hidden border border-slate-200">
-        <div className="bg-gradient-to-r from-violet-700 via-violet-800 to-indigo-900 shadow-xl">
-          <div className="px-4 sm:px-6 lg:px-8">
-            <div className="border-b border-violet-500/20 py-6">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="rounded-lg bg-white/10 p-2 backdrop-blur-sm">
-                    <DollarSign className="h-8 w-8 text-white" />
-                  </div>
-                  <div>
-                    <h1 className="text-2xl font-bold text-white sm:text-3xl">{tr('Pricing Management', 'Gestion tarifaire')}</h1>
-                    <p className="mt-1 text-sm text-violet-200">
-                      {tr('Manage rates, tiers, extensions, deposits, fuel, and tour pricing from one pricing workspace.', 'Gérez les tarifs, paliers, prolongations, dépôts, carburant et prix des tours depuis un seul espace tarifaire.')}
-                    </p>
-                  </div>
-                </div>
+    <div className="pb-10">
+      <AdminModuleHero
+        className="w-full"
+        icon={<DollarSign className="h-7 w-7" />}
+        eyebrow={tr('Pricing Management', 'Gestion tarifaire')}
+        title={tr('Pricing Management', 'Gestion tarifaire')}
+        description={tr('Manage rental prices, extensions, transport fees, deposits, fuel, and tour pricing from one workspace.', 'Gérez les tarifs de location, prolongations, frais de transport, dépôts, carburant et prix des tours depuis un seul espace.')}
+        actions={(
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => setRefreshTrigger(prev => prev + 1)}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+            >
+              <RefreshCw className="h-4 w-4" />
+              {tr('Refresh Pricing', 'Actualiser les tarifs')}
+            </button>
+            <span className="inline-flex items-center gap-2 rounded-2xl bg-violet-100 px-4 py-2 text-sm font-semibold text-violet-700">
+              <CheckCircle className="h-4 w-4" />
+              {tr('Pricing workspace active', 'Espace tarifaire actif')}
+            </span>
+          </div>
+        )}
+      />
 
-                <div className="flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={() => setRefreshTrigger(prev => prev + 1)}
-                    className="inline-flex items-center rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm transition-all duration-200 hover:border-white/30 hover:bg-white/20"
-                  >
-                    <RefreshCw className="mr-2 h-4 w-4" />
-                    {tr('Refresh Pricing', 'Actualiser les tarifs')}
-                  </button>
-
-                  <div className="inline-flex items-center rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-white backdrop-blur-sm">
-                    <CheckCircle className="mr-2 h-4 w-4" />
-                    {tr('Pricing workspace active', 'Espace tarifaire actif')}
-                  </div>
-                </div>
+      <div className="mt-6 space-y-6 px-4 sm:px-6 lg:px-8">
+        {/* Error Message */}
+        {error && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 text-red-500" />
+              <div>
+                <p className="font-medium text-red-800">{tr('Error', 'Erreur')}</p>
+                <p className="mt-1 text-sm text-red-700">{error}</p>
               </div>
             </div>
           </div>
-        </div>
+        )}
 
-        <div className="border-b border-gray-200 bg-white shadow-sm">
-          <div className="px-4 sm:px-6 lg:px-8">
-            <nav className="flex flex-wrap gap-2 py-4" aria-label="Pricing tabs">
-              {PRICING_TAB_ITEMS.map((item) => {
-                const Icon = item.icon;
-                const active = activeTab === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => handleTabChange(item.id)}
-                    className={`group relative flex items-center whitespace-nowrap rounded-xl px-4 py-3 text-sm font-medium transition-all duration-200 ${
-                      active
-                        ? 'bg-gradient-to-r from-violet-600 to-indigo-700 text-white shadow-lg'
-                        : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'
-                    }`}
-                  >
-                    <Icon className={`mr-2 h-5 w-5 transition-transform duration-200 ${active ? 'scale-110' : 'group-hover:scale-105'}`} />
-                    <span className="font-semibold">{isFrench ? item.labelFr : item.labelEn}</span>
-                  </button>
-                );
-              })}
-            </nav>
+        {vehicleModels.length === 0 && (
+          <div className="rounded-2xl border border-yellow-200 bg-yellow-50 p-4">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 text-yellow-500" />
+              <div>
+                <p className="font-medium text-yellow-800">{tr('No Vehicle Models Found', 'Aucun modèle de véhicule trouvé')}</p>
+                <p className="mt-1 text-sm text-yellow-700">
+                  {tr('Please add vehicle models first before creating pricing tiers. Check the browser console for more details.', 'Veuillez d’abord ajouter des modèles de véhicules avant de créer des paliers tarifaires. Consultez la console du navigateur pour plus de détails.')}
+                </p>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
 
-        <div className="px-4 py-6 sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-7xl space-y-6">
-            {/* Error Message */}
-            {error && (
-              <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
-                <div className="flex items-center gap-3">
-                  <AlertCircle className="w-5 h-5 text-red-500" />
-                  <div>
-                    <p className="font-medium text-red-800">{tr('Error', 'Erreur')}</p>
-                    <p className="mt-1 text-sm text-red-700">{error}</p>
-                  </div>
-                </div>
+        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Pricing Workspace', 'Espace tarifaire')}</p>
+              <h1 className="mt-2 text-3xl font-bold text-slate-900">
+                {isFrench ? activeTabConfig?.labelFr : activeTabConfig?.labelEn}
+              </h1>
+              <p className="mt-2 max-w-3xl text-sm text-slate-600">
+                {activeTab === 'base' && tr('Set core rental prices by model. This is the base layer other pricing rules build on top of.', 'Définissez les tarifs de location de base par modèle. C’est la couche principale sur laquelle reposent les autres règles tarifaires.')}
+                {activeTab === 'tiers' && tr('Shape longer rentals with duration tiers, discounts, and tier enforcement logic.', 'Structurez les locations longues avec des paliers de durée, des remises et une logique de contrôle des paliers.')}
+                {activeTab === 'extensions' && tr('Control overtime, grace windows, and how extended rentals are priced.', 'Contrôlez le dépassement, les délais de grâce et la tarification des prolongations.')}
+                {activeTab === 'transport' && tr('Manage pickup and drop-off charges without burying them inside system settings.', 'Gérez les frais de départ et de retour sans les cacher dans les paramètres système.')}
+                {activeTab === 'tour-pricing' && tr('Price each tour package by quad model and flexible timing like 1h, 1.5h, 2h, and 2.5h.', 'Tarifez chaque forfait tour par modèle de quad et avec des durées flexibles comme 1h, 1,5h, 2h et 2,5h.')}
+                {activeTab === 'packages' && tr('Create kilometer-based packages with included distance and overage logic.', 'Créez des forfaits kilométriques avec distance incluse et logique de dépassement.')}
+                {activeTab === 'deposits' && tr('Keep deposit presets consistent by model and by rental workflow.', 'Gardez des presets de dépôt cohérents par modèle et par workflow de location.')}
+                {activeTab === 'fuel' && tr('Set hourly and daily fuel line charges in the same workspace as the rest of pricing.', 'Définissez les frais carburant horaires et journaliers dans le même espace que le reste des tarifs.')}
+              </p>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-center">
+                <p className="whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Models', 'Modèles')}</p>
+                <p className="mt-1 text-2xl font-semibold text-slate-900">{pricingWorkspaceStats.vehicleModels}</p>
               </div>
-            )}
-
-            {/* Debug Info - Show vehicle models count */}
-            {vehicleModels.length === 0 && (
-              <div className="rounded-2xl border border-yellow-200 bg-yellow-50 p-4">
-                <div className="flex items-center gap-3">
-                  <AlertCircle className="w-5 h-5 text-yellow-500" />
-                  <div>
-                    <p className="font-medium text-yellow-800">{tr('No Vehicle Models Found', 'Aucun modèle de véhicule trouvé')}</p>
-                    <p className="mt-1 text-sm text-yellow-700">
-                      {tr('Please add vehicle models first before creating pricing tiers. Check the browser console for more details.', 'Veuillez d’abord ajouter des modèles de véhicules avant de créer des paliers tarifaires. Consultez la console du navigateur pour plus de détails.')}
-                    </p>
-                  </div>
-                </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-center">
+                <p className="whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Base Prices', 'Tarifs de base')}</p>
+                <p className="mt-1 text-2xl font-semibold text-slate-900">{pricingWorkspaceStats.activeBasePrices}</p>
               </div>
-            )}
-
-            <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Pricing Workspace', 'Espace tarifaire')}</p>
-                  <h1 className="mt-2 text-3xl font-bold text-slate-900">
-                    {isFrench ? PRICING_TAB_ITEMS.find((item) => item.id === activeTab)?.labelFr : PRICING_TAB_ITEMS.find((item) => item.id === activeTab)?.labelEn}
-                  </h1>
-                  <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                    {activeTab === 'base' && tr('Set core rental prices by model. This is the base layer other pricing rules build on top of.', 'Définissez les tarifs de location de base par modèle. C’est la couche principale sur laquelle reposent les autres règles tarifaires.')}
-                    {activeTab === 'tiers' && tr('Shape longer rentals with duration tiers, discounts, and tier enforcement logic.', 'Structurez les locations longues avec des paliers de durée, des remises et une logique de contrôle des paliers.')}
-                    {activeTab === 'extensions' && tr('Control overtime, grace windows, and how extended rentals are priced.', 'Contrôlez le dépassement, les délais de grâce et la tarification des prolongations.')}
-                    {activeTab === 'transport' && tr('Manage pickup and drop-off charges without burying them inside system settings.', 'Gérez les frais de départ et de retour sans les cacher dans les paramètres système.')}
-                    {activeTab === 'tour-pricing' && tr('Price each tour package by quad model and flexible timing like 1h, 1.5h, 2h, and 2.5h.', 'Tarifez chaque forfait tour par modèle de quad et avec des durées flexibles comme 1h, 1,5h, 2h et 2,5h.')}
-                    {activeTab === 'packages' && tr('Create kilometer-based packages with included distance and overage logic.', 'Créez des forfaits kilométriques avec distance incluse et logique de dépassement.')}
-                    {activeTab === 'deposits' && tr('Keep deposit presets consistent by model and by rental workflow.', 'Gardez des presets de dépôt cohérents par modèle et par workflow de location.')}
-                    {activeTab === 'fuel' && tr('Set hourly and daily fuel line charges in the same workspace as the rest of pricing.', 'Définissez les frais carburant horaires et journaliers dans le même espace que le reste des tarifs.')}
-                  </p>
-                </div>
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="rounded-lg bg-gradient-to-br from-slate-100 to-white px-4 py-3 text-center ring-1 ring-slate-200/80">
-                    <p className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-slate-500">{tr('Models', 'Modèles')}</p>
-                    <p className="mt-1 text-2xl font-semibold text-slate-900">{pricingWorkspaceStats.vehicleModels}</p>
-                  </div>
-                  <div className="rounded-lg bg-violet-50 px-4 py-3 text-center ring-1 ring-violet-200/80">
-                    <p className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-violet-600">{tr('Base Prices', 'Tarifs de base')}</p>
-                    <p className="mt-1 text-2xl font-semibold text-violet-900">{pricingWorkspaceStats.activeBasePrices}</p>
-                  </div>
-                  <div className="rounded-lg bg-indigo-50 px-4 py-3 text-center ring-1 ring-indigo-200/80">
-                    <p className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wide text-indigo-600">{tr('Active Tiers', 'Paliers actifs')}</p>
-                    <p className="mt-1 text-2xl font-semibold text-indigo-900">{pricingWorkspaceStats.activeTiers}</p>
-                  </div>
-                </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-center">
+                <p className="whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{tr('Active Tiers', 'Paliers actifs')}</p>
+                <p className="mt-1 text-2xl font-semibold text-slate-900">{pricingWorkspaceStats.activeTiers}</p>
               </div>
-            </section>
-
+            </div>
           </div>
-        </div>
+        </section>
+
+        <section className="rounded-[28px] border border-slate-200 bg-white p-3 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <nav className="flex flex-wrap gap-2" aria-label="Pricing tabs">
+            {visiblePricingTabs.map((item) => {
+              const Icon = item.icon;
+              const active = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleTabChange(item.id)}
+                  className={`group relative flex items-center whitespace-nowrap rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                    active
+                      ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className="mr-2 h-5 w-5" />
+                  <span>{isFrench ? item.labelFr : item.labelEn}</span>
+                </button>
+              );
+            })}
+          </nav>
+        </section>
 
       {/* BASE PRICES TAB */}
       {activeTab === 'base' && (
-        <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
-          <div className="border-b border-gray-200 p-6">
+        <div className="rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <div className="border-b border-slate-200 p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">{tr('Base Prices', 'Tarifs de base')}</h2>
-                <p className="mt-1 text-sm text-gray-600">{tr('Set the standard hourly, daily, weekly, and monthly prices by vehicle model.', 'Définissez les tarifs horaires, journaliers, hebdomadaires et mensuels standards par modèle de véhicule.')}</p>
+                <h2 className="text-lg font-semibold text-slate-900">{tr('Base Prices', 'Tarifs de base')}</h2>
+                <p className="mt-1 text-sm text-slate-600">{tr('Set the standard hourly, daily, weekly, and monthly prices by vehicle model.', 'Définissez les tarifs horaires, journaliers, hebdomadaires et mensuels standards par modèle de véhicule.')}</p>
               </div>
               <button
                 onClick={() => setShowBasePriceForm(true)}
-                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+                className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700"
               >
                 <Plus className="w-4 h-4" />
                 {tr('Add Base Price', 'Ajouter un tarif de base')}
@@ -1600,14 +1644,14 @@ const DynamicPricingManagement: React.FC = () => {
                   placeholder={tr('Search by vehicle model...', 'Rechercher par modèle de véhicule...')}
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full rounded-xl border border-gray-300 py-2.5 pl-10 pr-4 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  className="w-full rounded-2xl border border-slate-300 py-2.5 pl-10 pr-4 text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
                 />
               </div>
 
               <select
                 value={selectedVehicleForBasePrices}
                 onChange={(e) => setSelectedVehicleForBasePrices(e.target.value)}
-                className="rounded-xl border border-gray-300 px-4 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                className="rounded-2xl border border-slate-300 px-4 py-2.5 text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
               >
                 <option value="">{tr('All Vehicle Models', 'Tous les modèles')}</option>
                 {vehicleModels.map((model) => (
@@ -1620,7 +1664,7 @@ const DynamicPricingManagement: React.FC = () => {
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="rounded-xl border border-gray-300 px-4 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                className="rounded-2xl border border-slate-300 px-4 py-2.5 text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
               >
                 <option value="all">{tr('All Status', 'Tous les statuts')}</option>
                 <option value="active">{tr('Active', 'Actif')}</option>
@@ -1667,7 +1711,7 @@ const DynamicPricingManagement: React.FC = () => {
                             <div className="flex items-center gap-2">
                               <button
                                 onClick={() => handleEditBasePrice(price)}
-                                className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-blue-600 transition hover:bg-blue-50"
+                                className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-violet-600 transition hover:bg-violet-50"
                                 title={tr('Edit base price', 'Modifier le tarif de base')}
                               >
                                 <Edit className="h-4 w-4" />
@@ -2509,18 +2553,18 @@ const DynamicPricingManagement: React.FC = () => {
 
       {/* EXTENSION RULES TAB */}
       {activeTab === 'extensions' && (
-        <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
-          <div className="border-b border-gray-200 p-6">
+        <div className="rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <div className="border-b border-slate-200 p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">{tr('Extension Rules', 'Règles de prolongation')}</h2>
-                <p className="mt-1 text-sm text-gray-600">
+                <h2 className="text-lg font-semibold text-slate-900">{tr('Extension Rules', 'Règles de prolongation')}</h2>
+                <p className="mt-1 text-sm text-slate-600">
                   {tr('Control the grace period, uplift, and approval path for each vehicle model’s extension pricing.', 'Contrôlez la période de grâce, le multiplicateur et le parcours d’approbation pour la tarification de prolongation de chaque modèle de véhicule.')}
                 </p>
               </div>
               <button
                 onClick={() => setShowExtensionForm(true)}
-                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+                className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700"
               >
                 <Plus className="h-4 w-4" />
                 {tr('Add Extension Rule', 'Ajouter une règle de prolongation')}
@@ -2575,7 +2619,7 @@ const DynamicPricingManagement: React.FC = () => {
                               <div className="flex items-center gap-2">
                                 <button
                                   onClick={() => handleEditExtension(rule)}
-                                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-blue-600 transition hover:bg-blue-50"
+                                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-violet-600 transition hover:bg-violet-50"
                                   title={tr('Edit extension rule', 'Modifier la règle de prolongation')}
                                 >
                                   <Edit className="h-4 w-4" />
@@ -2618,7 +2662,7 @@ const DynamicPricingManagement: React.FC = () => {
                               <span className={`inline-flex rounded-full border px-2.5 py-1 font-semibold ${
                                 rule.requires_manual_extension
                                   ? 'border-amber-200 bg-amber-50 text-amber-700'
-                                  : 'border-blue-200 bg-blue-50 text-blue-700'
+                                  : 'border-violet-200 bg-violet-50 text-violet-700'
                               }`}>
                                 {rule.requires_manual_extension ? tr('Requires staff approval', "Nécessite l'approbation du personnel") : tr('Customer can continue directly', 'Le client peut continuer directement')}
                               </span>
@@ -2800,10 +2844,10 @@ const DynamicPricingManagement: React.FC = () => {
 
       {/* TRANSPORT FEES TAB */}
       {activeTab === 'transport' && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-          <div className="p-6 border-b border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-900">{tr('Transport Fees', 'Frais de transport')}</h2>
-            <p className="mt-1 text-sm text-gray-600">{tr('Set optional pickup and dropoff charges that are added to the rental total.', 'Définissez des frais optionnels de prise en charge et de retour ajoutés au total de location.')}</p>
+        <div className="rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <div className="border-b border-slate-200 p-6">
+            <h2 className="text-lg font-semibold text-slate-900">{tr('Transport Fees', 'Frais de transport')}</h2>
+            <p className="mt-1 text-sm text-slate-600">{tr('Set optional pickup and dropoff charges that are added to the rental total.', 'Définissez des frais optionnels de prise en charge et de retour ajoutés au total de location.')}</p>
           </div>
 
           <form onSubmit={handleSaveTransportFees} className="p-6 space-y-6">
@@ -2836,7 +2880,7 @@ const DynamicPricingManagement: React.FC = () => {
                   type="number"
                   value={transportFeeFormData.pickup_fee}
                   onChange={(e) => handleTransportFeeChange('pickup_fee', e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-2.5 text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
                   min="0"
                   step="0.01"
                 />
@@ -2850,7 +2894,7 @@ const DynamicPricingManagement: React.FC = () => {
                   type="number"
                   value={transportFeeFormData.dropoff_fee}
                   onChange={(e) => handleTransportFeeChange('dropoff_fee', e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-2.5 text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
                   min="0"
                   step="0.01"
                 />
@@ -2861,14 +2905,14 @@ const DynamicPricingManagement: React.FC = () => {
               <button
                 type="button"
                 onClick={resetTransportFees}
-                className="px-6 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                className="rounded-2xl border border-slate-300 px-6 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
               >
                 {tr('Reset', 'Réinitialiser')}
               </button>
               <button
                 type="submit"
                 disabled={savingTransportFees}
-                className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {savingTransportFees ? (
                   <>
@@ -2902,19 +2946,19 @@ const DynamicPricingManagement: React.FC = () => {
 
       {/* DAMAGE DEPOSITS TAB */}
       {activeTab === 'deposits' && (
-        <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
-          <div className="border-b border-gray-200 p-6">
+        <div className="rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <div className="border-b border-slate-200 p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">{tr('Damage Deposits', 'Dépôts de garantie')}</h2>
-                <p className="mt-1 text-sm text-gray-600">
+                <h2 className="text-lg font-semibold text-slate-900">{tr('Damage Deposits', 'Dépôts de garantie')}</h2>
+                <p className="mt-1 text-sm text-slate-600">
                   {tr('Keep deposit presets clear by vehicle model, with up to three quick choices for the rental team.', "Gardez des presets de dépôt clairs par modèle de véhicule, avec jusqu'à trois choix rapides pour l'équipe de location.")}
                 </p>
               </div>
               <button
                 onClick={handleSaveDepositSettings}
                 disabled={savingDepositSettings}
-                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {savingDepositSettings ? (
                   <>
@@ -2934,7 +2978,7 @@ const DynamicPricingManagement: React.FC = () => {
               <select
                 value={selectedVehicleForDeposits}
                 onChange={(e) => setSelectedVehicleForDeposits(e.target.value)}
-                className="rounded-xl border border-gray-300 px-4 py-2.5 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                className="rounded-2xl border border-slate-300 px-4 py-2.5 text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
               >
                 <option value="">{tr('All Vehicle Models', 'Tous les modèles de véhicules')}</option>
                 {vehicleModels.map((model) => (
@@ -2949,7 +2993,7 @@ const DynamicPricingManagement: React.FC = () => {
                   type="checkbox"
                   checked={depositSettings.allowCustomDeposit}
                   onChange={(e) => setDepositSettings(prev => ({ ...prev, allowCustomDeposit: e.target.checked }))}
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  className="h-4 w-4 rounded border-gray-300 text-violet-600 focus:ring-violet-500"
                 />
                 <div>
                   <span className="text-sm font-medium text-slate-900">{tr('Allow custom deposit entry', 'Autoriser la saisie manuelle du dépôt')}</span>
@@ -2992,7 +3036,7 @@ const DynamicPricingManagement: React.FC = () => {
                   <button
                     onClick={handleAddPresetForVehicle}
                     disabled={getCurrentVehiclePresets().length >= 3}
-                    className="inline-flex items-center gap-2 self-start rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex items-center gap-2 self-start rounded-2xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Plus className="h-4 w-4" />
                     {tr('Add Preset', 'Ajouter un preset')}
@@ -3028,7 +3072,7 @@ const DynamicPricingManagement: React.FC = () => {
                               type="text"
                               value={preset.label}
                               onChange={(e) => handleUpdatePresetForVehicle(index, 'label', e.target.value)}
-                              className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                              className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
                               placeholder={tr('e.g. Standard', 'ex. Standard')}
                             />
                           </div>
@@ -3039,7 +3083,7 @@ const DynamicPricingManagement: React.FC = () => {
                               type="number"
                               value={preset.amount}
                               onChange={(e) => handleUpdatePresetForVehicle(index, 'amount', parseFloat(e.target.value) || 0)}
-                              className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                              className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
                               min="0"
                               step="1"
                             />
@@ -3050,7 +3094,7 @@ const DynamicPricingManagement: React.FC = () => {
                               type="checkbox"
                               checked={preset.enabled}
                               onChange={(e) => handleUpdatePresetForVehicle(index, 'enabled', e.target.checked)}
-                              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              className="h-4 w-4 rounded border-gray-300 text-violet-600 focus:ring-violet-500"
                             />
                             <span className="text-sm font-medium text-slate-700">{tr('Preset enabled', 'Preset activé')}</span>
                           </label>
@@ -3061,7 +3105,7 @@ const DynamicPricingManagement: React.FC = () => {
                               name={`default-deposit-${selectedVehicleForDeposits}`}
                               checked={Boolean(preset.isDefault)}
                               onChange={(e) => handleUpdatePresetForVehicle(index, 'isDefault', e.target.checked)}
-                              className="h-4 w-4 border-gray-300 text-blue-600 focus:ring-blue-500"
+                              className="h-4 w-4 border-gray-300 text-violet-600 focus:ring-violet-500"
                             />
                             <span className="text-sm font-medium text-slate-700">{tr('Default preset', 'Preset par défaut')}</span>
                           </label>
@@ -3100,7 +3144,7 @@ const DynamicPricingManagement: React.FC = () => {
                       </div>
                       <button
                         onClick={() => setSelectedVehicleForDeposits(model.id)}
-                        className="inline-flex self-start rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50"
+                        className="inline-flex self-start rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-violet-600 transition hover:bg-violet-50"
                       >
                         {tr('Configure', 'Configurer')}
                       </button>
@@ -3128,7 +3172,7 @@ const DynamicPricingManagement: React.FC = () => {
                             key={`${model.id}-${index}`}
                             className={`inline-flex rounded-full border px-3 py-1.5 text-xs font-semibold ${
                               preset.enabled
-                                ? 'border-blue-200 bg-blue-50 text-blue-700'
+                                ? 'border-violet-200 bg-violet-50 text-violet-700'
                                 : 'border-slate-200 bg-white text-slate-500'
                             }`}
                           >

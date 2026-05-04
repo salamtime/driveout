@@ -2,10 +2,13 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Save, Loader, AlertCircle, CheckCircle, Fuel, Search, Droplets } from 'lucide-react';
 import i18n from '../i18n';
+import { useAuth } from '../contexts/AuthContext';
 
 const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
+  const { hasFeature } = useAuth();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
+  const canManageFuelPricing = hasFeature('pricing_fuel_rules');
   const [fuelPricing, setFuelPricing] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState(null); // track which row is saving
@@ -60,6 +63,11 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
   };
 
   const handleSave = async (modelId) => {
+    if (!canManageFuelPricing) {
+      setError(tr('Fuel pricing rules are not available on this plan.', "Les règles de tarification carburant ne sont pas disponibles sur ce forfait."));
+      return;
+    }
+
     setSavingId(modelId);
     setError(null);
     setSuccess(null);
@@ -97,6 +105,11 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
   };
 
   const handleReset = async (modelId) => {
+    if (!canManageFuelPricing) {
+      setError(tr('Fuel pricing rules are not available on this plan.', "Les règles de tarification carburant ne sont pas disponibles sur ce forfait."));
+      return;
+    }
+
     setSavingId(modelId);
     try {
       const { error } = await supabase
@@ -150,6 +163,27 @@ const FuelPricingTab = ({ vehicleModels, onRefresh }) => {
       <div className="flex items-center justify-center py-12">
         <Loader className="w-6 h-6 animate-spin text-orange-500" />
         <span className="ml-2 text-gray-600">{tr('Loading fuel pricing...', 'Chargement de la tarification carburant...')}</span>
+      </div>
+    );
+  }
+
+  if (!canManageFuelPricing) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600" />
+          <div>
+            <h3 className="text-base font-semibold text-amber-900">
+              {tr('Fuel pricing is locked on this plan', 'La tarification carburant est verrouillée sur ce forfait')}
+            </h3>
+            <p className="mt-1 text-sm text-amber-800">
+              {tr(
+                'Upgrade the tenant plan to manage fuel line charges inside Pricing.',
+                "Mettez à niveau le forfait du tenant pour gérer les frais de lignes de carburant dans Pricing."
+              )}
+            </p>
+          </div>
+        </div>
       </div>
     );
   }

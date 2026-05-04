@@ -44,7 +44,7 @@ export const normalizeBillingStatus = (value, fallback = 'none') => {
 
 export const normalizePlanType = (value, fallback = 'starter') => {
   const normalized = String(value || '').trim().toLowerCase();
-  if (['starter', 'growth', 'pro'].includes(normalized)) {
+  if (['free', 'starter', 'growth', 'pro'].includes(normalized)) {
     return normalized;
   }
   return fallback;

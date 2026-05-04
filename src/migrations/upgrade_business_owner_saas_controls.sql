@@ -1,12 +1,21 @@
 do $$
 begin
   if not exists (select 1 from pg_type where typname = 'driveout_plan_type') then
-    create type public.driveout_plan_type as enum ('starter', 'growth', 'pro');
+    create type public.driveout_plan_type as enum ('free', 'starter', 'growth', 'pro');
   end if;
 
   if not exists (select 1 from pg_type where typname = 'driveout_billing_status') then
     create type public.driveout_billing_status as enum ('none', 'active', 'failed');
   end if;
+end $$;
+
+do $$
+begin
+  begin
+    alter type public.driveout_plan_type add value if not exists 'free' before 'starter';
+  exception
+    when duplicate_object then null;
+  end;
 end $$;
 
 do $$

@@ -215,7 +215,7 @@ const GlobalMessageLauncher = ({
 
     const notification = new Notification(title, {
       body,
-      icon: '/favicon.ico',
+      icon: '/assets/logo.png',
       tag: `saharax-booking-${threadKey || Date.now()}`,
     });
 

@@ -4,13 +4,13 @@ import { useTranslation } from 'react-i18next';
 import UserProfileService from '../../services/UserProfileService';
 
 const fieldBaseClass =
-  'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-900 shadow-sm outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100';
+  'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-900 shadow-sm outline-none transition focus:border-violet-300 focus:ring-4 focus:ring-violet-50';
 
 const sectionClassName =
   'overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-[0_20px_55px_rgba(15,23,42,0.06)]';
 
 const sectionHeaderClassName =
-  'border-b border-violet-100 bg-gradient-to-r from-violet-50/80 via-white to-indigo-50/70 px-6 py-5';
+  'border-b border-slate-200 bg-slate-50/90 px-6 py-5';
 
 const sectionBodyClassName = 'px-6 py-6';
 
@@ -225,7 +225,7 @@ const ProfileSettings = ({ profile, userRole, onProfileUpdate }) => {
       <section className={sectionClassName}>
         <div className={`${sectionHeaderClassName} flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between`}>
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-500">
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500">
               {tr('profile.tabs.profile', 'Profile')}
             </p>
             <h2 className="mt-1 text-xl font-bold text-slate-950">
@@ -248,7 +248,7 @@ const ProfileSettings = ({ profile, userRole, onProfileUpdate }) => {
 
       <section className={sectionClassName}>
         <div className={sectionHeaderClassName}>
-          <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-500">
+          <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500">
             {tr('common.contact', 'Contact')}
           </p>
           <h2 className="mt-1 text-xl font-bold text-slate-950">

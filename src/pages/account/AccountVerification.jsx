@@ -311,7 +311,11 @@ const AccountVerification = () => {
     .filter(Boolean);
   const needsLicenseReplacement = rejectedTypes.includes('driver_license');
   const needsIdentityReplacement = rejectedTypes.includes('profile_id');
-  const backLink = useMemo(() => resolveReturnPath(location, '/account/overview'), [location]);
+  const isAdminWorkspaceShell = location.pathname.startsWith('/admin/');
+  const backLink = useMemo(
+    () => resolveReturnPath(location, isAdminWorkspaceShell ? '/admin/profile' : '/account/overview'),
+    [isAdminWorkspaceShell, location]
+  );
   const verificationThreadKey = useMemo(
     () => (user?.id ? buildVerificationThreadKey({ entityType: 'user', entityId: user.id }) : ''),
     [user?.id]
@@ -475,7 +479,7 @@ const AccountVerification = () => {
                 </Link>
               ) : (
                 <Link
-                  to="/account/vehicles/new/profile?tab=overview"
+                  to={isAdminWorkspaceShell ? '/admin/fleet' : '/account/vehicles/new/profile?tab=overview'}
                   state={verificationCtaState}
                   className={workspacePrimaryButtonClass}
                 >
@@ -532,7 +536,7 @@ const AccountVerification = () => {
               <div className="mt-4">
                 <p className="text-sm text-slate-500">{tr('Need help?', 'Besoin d’aide ?')}</p>
                 <Link
-                  to={`/account/messages?threadKey=${encodeURIComponent(verificationThreadKey)}`}
+                  to={`${isAdminWorkspaceShell ? '/admin/messages' : '/account/messages'}?threadKey=${encodeURIComponent(verificationThreadKey)}`}
                   className="mt-1 inline-flex items-center gap-2 text-sm font-semibold text-violet-700 transition hover:text-violet-800"
                 >
                   <MessageSquare className="h-4 w-4" />

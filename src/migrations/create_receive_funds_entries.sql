@@ -76,8 +76,15 @@ to authenticated
 using (true)
 with check (true);
 
-grant select, insert, update on public.app_4c3a7a6153_receive_funds_entries to authenticated;
-grant select, insert, update on public.app_4c3a7a6153_receive_funds_entries to service_role;
+drop policy if exists "authenticated delete receive funds" on public.app_4c3a7a6153_receive_funds_entries;
+create policy "authenticated delete receive funds"
+on public.app_4c3a7a6153_receive_funds_entries
+for delete
+to authenticated
+using (true);
+
+grant select, insert, update, delete on public.app_4c3a7a6153_receive_funds_entries to authenticated;
+grant select, insert, update, delete on public.app_4c3a7a6153_receive_funds_entries to service_role;
 
 create or replace view public.app_4c3a7a6153_receive_funds_daily_summary as
 select

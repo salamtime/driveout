@@ -29,7 +29,7 @@ import AdminWorkspaceLoadingShell from '../../components/admin/AdminWorkspaceLoa
 import i18n from '../../i18n';
 import { supabase } from '../../lib/supabase';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
-import { getHostContext } from '../../utils/hostContext';
+import { getHostContext, isSaharaXBrandingHost } from '../../utils/hostContext';
 
 const SAHARAX_DEFAULT_LOGO_URL = '/assets/logo.jpg';
 const SAHARAX_DEFAULT_STAMP_URL = '/assets/stamp.png';
@@ -43,12 +43,26 @@ const buildTenantIdentityDraft = (tenantSession = null, fallbackSettings = {}) =
     tenantSession?.businessAccount && typeof tenantSession.businessAccount === 'object'
       ? tenantSession.businessAccount
       : {};
+  const tenantRecord =
+    tenantSession?.tenant && typeof tenantSession.tenant === 'object'
+      ? tenantSession.tenant
+      : {};
+  const tenantLabel = String(
+    tenantSettings.public_display_name ||
+    tenantSettings.brand_name ||
+    tenantRecord.tenant_name ||
+    tenantSession?.tenantName ||
+    tenantRecord.tenant_slug ||
+    tenantSession?.tenantSlug ||
+    businessAccount.company_name ||
+    ''
+  ).trim();
 
   return {
-    brand_name: String(tenantSettings.brand_name || fallbackSettings.companyName || '').trim(),
-    public_display_name: String(tenantSettings.public_display_name || fallbackSettings.companyName || '').trim(),
-    legal_business_name: String(tenantSettings.legal_business_name || businessAccount.company_name || fallbackSettings.companyName || '').trim(),
-    support_email: String(tenantSettings.support_email || fallbackSettings.companyEmail || '').trim(),
+    brand_name: String(tenantSettings.brand_name || tenantLabel || '').trim(),
+    public_display_name: String(tenantSettings.public_display_name || tenantLabel || '').trim(),
+    legal_business_name: String(tenantSettings.legal_business_name || businessAccount.company_name || tenantLabel || '').trim(),
+    support_email: String(tenantSettings.support_email || businessAccount.email || '').trim(),
     custom_domain: String(tenantSettings.custom_domain || '').trim(),
     default_language: ['en', 'fr', 'ar'].includes(String(tenantSettings.default_language || fallbackSettings.language || '').trim().toLowerCase())
       ? String(tenantSettings.default_language || fallbackSettings.language).trim().toLowerCase()
@@ -56,6 +70,46 @@ const buildTenantIdentityDraft = (tenantSession = null, fallbackSettings = {}) =
     currency: String(tenantSettings.currency || fallbackSettings.currency || 'MAD').trim().toUpperCase(),
     timezone: String(tenantSettings.timezone || fallbackSettings.timezone || 'Africa/Casablanca').trim(),
     country: String(tenantSettings.country || '').trim(),
+  };
+};
+
+const buildTenantBusinessProfileDraft = (tenantSession = null, fallbackSettings = {}) => {
+  const tenantSettings =
+    tenantSession?.tenantSettings && typeof tenantSession.tenantSettings === 'object'
+      ? tenantSession.tenantSettings
+      : {};
+  const businessAccount =
+    tenantSession?.businessAccount && typeof tenantSession.businessAccount === 'object'
+      ? tenantSession.businessAccount
+      : {};
+  const tenantRecord =
+    tenantSession?.tenant && typeof tenantSession.tenant === 'object'
+      ? tenantSession.tenant
+      : {};
+  const tenantLabel = String(
+    tenantSettings.public_display_name ||
+    tenantSettings.brand_name ||
+    tenantRecord.tenant_name ||
+    tenantSession?.tenantName ||
+    tenantRecord.tenant_slug ||
+    tenantSession?.tenantSlug ||
+    businessAccount.company_name ||
+    ''
+  ).trim();
+
+  return {
+    companyName: tenantLabel,
+    companyEmail: String(tenantSettings.support_email || businessAccount.email || '').trim(),
+    companyPhone: String(tenantSettings.company_phone || '').trim(),
+    companyAddress: String(tenantSettings.company_address || '').trim(),
+    companyWebsite: String(tenantSettings.company_website || '').trim(),
+    logoUrl: String(tenantSettings.logo_url || '').trim(),
+    stampUrl: String(tenantSettings.stamp_url || '').trim(),
+    timezone: String(tenantSettings.timezone || fallbackSettings.timezone || 'Africa/Casablanca').trim(),
+    language: ['en', 'fr', 'ar'].includes(String(tenantSettings.default_language || fallbackSettings.language || '').trim().toLowerCase())
+      ? String(tenantSettings.default_language || fallbackSettings.language).trim().toLowerCase()
+      : 'en',
+    currency: String(tenantSettings.currency || fallbackSettings.currency || 'MAD').trim().toUpperCase(),
   };
 };
 
@@ -105,11 +159,7 @@ const getBrandingContext = () => {
 
   const hostname = String(window.location.hostname || '').toLowerCase();
   const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
-  const isSaharaXTenant =
-    isLocal ||
-    hostname === 'saharax.driveout.io' ||
-    hostname === 'saharax.co' ||
-    hostname === 'www.saharax.co';
+  const isSaharaXTenant = isSaharaXBrandingHost();
 
   return { isSaharaXTenant, isLocal };
 };
@@ -452,6 +502,7 @@ const SettingsPage = () => {
   const [telegramAuditLoading, setTelegramAuditLoading] = useState(false);
   const [telegramTesting, setTelegramTesting] = useState(false);
   const brandingContext = useMemo(() => getBrandingContext(), []);
+  const hostContext = useMemo(() => getHostContext(), []);
   const suppressBlockingLoader = shouldSuppressBlockingPageLoader({
     pathname: location.pathname,
     isTransitionFlow: loading,
@@ -522,6 +573,7 @@ const SettingsPage = () => {
   const normalizedRole = String(userProfile?.role || userProfile?.user_role || '').trim().toLowerCase();
   const canEditTenantLifecycle = canEdit && normalizedRole === 'owner';
   const brandingBucket = settings.storageBucket || defaultSystemSettings.storageBucket || 'rental-documents';
+  const isIsolatedTenantWorkspace = hostContext.kind === 'tenant' && !brandingContext.isSaharaXTenant;
 
   const overviewCards = useMemo(
     () => [
@@ -641,13 +693,23 @@ const SettingsPage = () => {
       resolvedWorkspace = buildRegistryTenantSession(registryEntry);
     }
 
-    if (resolvedWorkspace?.tenantId && resolvedWorkspace?.businessAccountId) {
-      setTenantWorkspaceSession(resolvedWorkspace);
-      setTenantIdentityForm((current) => ({
-        ...buildTenantIdentityDraft(resolvedWorkspace, {
-          companyName: current.public_display_name || businessForm.companyName || '',
-          companyEmail: current.support_email || businessForm.companyEmail || '',
-          timezone: current.timezone || businessForm.timezone || 'Africa/Casablanca',
+      if (resolvedWorkspace?.tenantId && resolvedWorkspace?.businessAccountId) {
+        setTenantWorkspaceSession(resolvedWorkspace);
+        if (isIsolatedTenantWorkspace) {
+          setBusinessForm((current) => ({
+            ...current,
+            ...buildTenantBusinessProfileDraft(resolvedWorkspace, {
+              timezone: current.timezone || 'Africa/Casablanca',
+              language: current.language || 'en',
+              currency: current.currency || 'MAD',
+            }),
+          }));
+        }
+        setTenantIdentityForm((current) => ({
+          ...buildTenantIdentityDraft(resolvedWorkspace, {
+            companyName: current.public_display_name || businessForm.companyName || '',
+            companyEmail: current.support_email || businessForm.companyEmail || '',
+            timezone: current.timezone || businessForm.timezone || 'Africa/Casablanca',
           language: current.default_language || businessForm.language || 'en',
           currency: current.currency || businessForm.currency || 'MAD',
         }),
@@ -665,7 +727,7 @@ const SettingsPage = () => {
     }
 
     return null;
-  }, [tenantWorkspaceSession, userProfile, canEdit, businessForm.companyEmail, businessForm.companyName, businessForm.currency, businessForm.language, businessForm.timezone]);
+  }, [tenantWorkspaceSession, userProfile, canEdit, businessForm.companyEmail, businessForm.companyName, businessForm.currency, businessForm.language, businessForm.timezone, isIsolatedTenantWorkspace]);
 
   useEffect(() => {
     let cancelled = false;
@@ -802,21 +864,34 @@ const SettingsPage = () => {
         effectiveAuthTenantSession,
         localRegistryTenantWorkspace
       );
+      const shouldUseTenantScopedBusinessProfile = Boolean(
+        isIsolatedTenantWorkspace &&
+        effectiveTenantWorkspace?.tenantId &&
+        effectiveTenantWorkspace?.businessAccountId
+      );
 
       setSettings(mergedSettings);
       setTenantWorkspaceSession(effectiveTenantWorkspace);
-      setBusinessForm({
-        companyName: mergedSettings.companyName || '',
-        companyEmail: mergedSettings.companyEmail || '',
-        companyPhone: mergedSettings.companyPhone || '',
-        companyAddress: mergedSettings.companyAddress || '',
-        companyWebsite: mergedSettings.companyWebsite || '',
-        logoUrl: mergedSettings.logoUrl || '',
-        stampUrl: mergedSettings.stampUrl || '',
-        timezone: mergedSettings.timezone || 'Africa/Casablanca',
-        language: mergedSettings.language || 'en',
-        currency: mergedSettings.currency || 'MAD',
-      });
+      setBusinessForm(
+        shouldUseTenantScopedBusinessProfile
+          ? buildTenantBusinessProfileDraft(effectiveTenantWorkspace, {
+              timezone: mergedSettings.timezone || 'Africa/Casablanca',
+              language: mergedSettings.language || 'en',
+              currency: mergedSettings.currency || 'MAD',
+            })
+          : {
+              companyName: mergedSettings.companyName || '',
+              companyEmail: mergedSettings.companyEmail || '',
+              companyPhone: mergedSettings.companyPhone || '',
+              companyAddress: mergedSettings.companyAddress || '',
+              companyWebsite: mergedSettings.companyWebsite || '',
+              logoUrl: mergedSettings.logoUrl || '',
+              stampUrl: mergedSettings.stampUrl || '',
+              timezone: mergedSettings.timezone || 'Africa/Casablanca',
+              language: mergedSettings.language || 'en',
+              currency: mergedSettings.currency || 'MAD',
+            }
+      );
       setOperationsForm({
         operatingStart: mergedSettings.operatingHours?.start || '08:00',
         operatingEnd: mergedSettings.operatingHours?.end || '18:00',
@@ -890,13 +965,24 @@ const SettingsPage = () => {
 
   useEffect(() => {
     loadSettingsHub();
-  }, [tenantSession, userProfile?.accountType, userProfile?.account_type]);
+  }, [tenantSession, userProfile?.accountType, userProfile?.account_type, isIsolatedTenantWorkspace]);
 
   useEffect(() => {
     if (!hasUsableTenantWorkspaceSession(tenantSession)) return;
 
+    const preferredSession = pickRicherTenantSession(tenantWorkspaceSession, tenantSession);
     setTenantWorkspaceSession((current) => pickRicherTenantSession(current, tenantSession));
-    setTenantIdentityForm((current) => buildTenantIdentityDraft(pickRicherTenantSession(tenantWorkspaceSession, tenantSession), {
+    if (isIsolatedTenantWorkspace) {
+      setBusinessForm((current) => ({
+        ...current,
+        ...buildTenantBusinessProfileDraft(preferredSession, {
+          timezone: current.timezone || 'Africa/Casablanca',
+          language: current.language || 'en',
+          currency: current.currency || 'MAD',
+        }),
+      }));
+    }
+    setTenantIdentityForm((current) => buildTenantIdentityDraft(preferredSession, {
       companyName: current.public_display_name || businessForm.companyName || '',
       companyEmail: current.support_email || businessForm.companyEmail || '',
       timezone: current.timezone || businessForm.timezone || 'Africa/Casablanca',
@@ -916,7 +1002,7 @@ const SettingsPage = () => {
     });
     // Sync only when the resolved tenant session changes, not while the form is being edited.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantSession, tenantWorkspaceSession, businessForm.companyEmail, businessForm.companyName, businessForm.currency, businessForm.language, businessForm.timezone]);
+  }, [tenantSession, tenantWorkspaceSession, businessForm.companyEmail, businessForm.companyName, businessForm.currency, businessForm.language, businessForm.timezone, isIsolatedTenantWorkspace]);
 
   const persistSettings = async (sectionName, patch, afterSave) => {
     if (!canEdit) {
@@ -981,16 +1067,51 @@ const SettingsPage = () => {
         [assetType === 'logo' ? 'logoUrl' : 'stampUrl']: publicUrl,
       }));
 
-      const savedSettings = await saveSystemSettings({
-        [assetType === 'logo' ? 'logoUrl' : 'stampUrl']: publicUrl,
-      });
+      if (isIsolatedTenantWorkspace && tenantWorkspaceSession?.tenantId && tenantWorkspaceSession?.businessAccountId) {
+        const tenantSettingsPatch = {
+          [assetType === 'logo' ? 'logo_url' : 'stamp_url']: publicUrl,
+        };
+        await updateTenantControls({
+          businessAccountId: tenantWorkspaceSession.businessAccountId,
+          tenantId: tenantWorkspaceSession.tenantId,
+          tenantPatch: {
+            settings: tenantSettingsPatch,
+          },
+        });
 
-      setSettings({ ...defaultSystemSettings, ...savedSettings });
-      setBusinessForm((current) => ({
-        ...current,
-        logoUrl: savedSettings.logoUrl || current.logoUrl,
-        stampUrl: savedSettings.stampUrl || current.stampUrl,
-      }));
+        setTenantWorkspaceSession((current) => current
+          ? {
+              ...current,
+              tenantSettings: {
+                ...(current.tenantSettings || {}),
+                ...tenantSettingsPatch,
+              },
+              tenant: current.tenant
+                ? {
+                    ...current.tenant,
+                    metadata: {
+                      ...(current.tenant.metadata || {}),
+                      tenant_settings: {
+                        ...((current.tenant.metadata && current.tenant.metadata.tenant_settings) || {}),
+                        ...tenantSettingsPatch,
+                      },
+                    },
+                  }
+                : current.tenant,
+            }
+          : current);
+      } else {
+        const savedSettings = await saveSystemSettings({
+          [assetType === 'logo' ? 'logoUrl' : 'stampUrl']: publicUrl,
+        });
+
+        setSettings({ ...defaultSystemSettings, ...savedSettings });
+        setBusinessForm((current) => ({
+          ...current,
+          logoUrl: savedSettings.logoUrl || current.logoUrl,
+          stampUrl: savedSettings.stampUrl || current.stampUrl,
+        }));
+      }
 
       toast.success(
         assetType === 'logo'
@@ -1006,6 +1127,79 @@ const SettingsPage = () => {
   };
 
   const handleBusinessSave = async () => {
+    if (isIsolatedTenantWorkspace && tenantWorkspaceSession?.tenantId && tenantWorkspaceSession?.businessAccountId) {
+      if (!canEdit) {
+        toast.error('Only owner and admin users can change system settings');
+        return;
+      }
+
+      setSavingSection('Business profile');
+      try {
+        const tenantBusinessSettings = {
+          brand_name: businessForm.companyName || '',
+          public_display_name: businessForm.companyName || '',
+          support_email: businessForm.companyEmail || '',
+          company_phone: businessForm.companyPhone || '',
+          company_address: businessForm.companyAddress || '',
+          company_website: businessForm.companyWebsite || '',
+          logo_url: businessForm.logoUrl || '',
+          stamp_url: businessForm.stampUrl || '',
+          timezone: businessForm.timezone || 'Africa/Casablanca',
+          default_language: businessForm.language || 'en',
+          currency: businessForm.currency || 'MAD',
+        };
+
+        await updateTenantControls({
+          businessAccountId: tenantWorkspaceSession.businessAccountId,
+          tenantId: tenantWorkspaceSession.tenantId,
+          tenantPatch: {
+            settings: tenantBusinessSettings,
+          },
+        });
+
+        setTenantWorkspaceSession((current) => current
+          ? {
+              ...current,
+              tenantSettings: {
+                ...(current.tenantSettings || {}),
+                ...tenantBusinessSettings,
+              },
+              tenant: current.tenant
+                ? {
+                    ...current.tenant,
+                    metadata: {
+                      ...(current.tenant.metadata || {}),
+                      tenant_settings: {
+                        ...((current.tenant.metadata && current.tenant.metadata.tenant_settings) || {}),
+                        ...tenantBusinessSettings,
+                      },
+                    },
+                  }
+                : current.tenant,
+            }
+          : current);
+
+        setTenantIdentityForm((current) => ({
+          ...current,
+          brand_name: tenantBusinessSettings.brand_name,
+          public_display_name: tenantBusinessSettings.public_display_name,
+          support_email: tenantBusinessSettings.support_email,
+          timezone: tenantBusinessSettings.timezone,
+          default_language: tenantBusinessSettings.default_language,
+          currency: tenantBusinessSettings.currency,
+        }));
+
+        setLanguage(businessForm.language || 'en');
+        toast.success('Business profile saved');
+      } catch (error) {
+        console.error('Failed to save business profile:', error);
+        toast.error('Failed to save business profile');
+      } finally {
+        setSavingSection(null);
+      }
+      return;
+    }
+
     await persistSettings('Business profile', {
       ...businessForm,
     }, async () => {

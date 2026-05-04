@@ -22,7 +22,7 @@ begin
   end if;
 
   if not exists (select 1 from pg_type where typname = 'driveout_plan_type') then
-    create type public.driveout_plan_type as enum ('starter', 'growth', 'pro');
+    create type public.driveout_plan_type as enum ('free', 'starter', 'growth', 'pro');
   end if;
 
   if not exists (select 1 from pg_type where typname = 'driveout_billing_status') then
@@ -209,6 +209,112 @@ create table if not exists public.app_4c3a7a6153_transport_fees (
   updated_at timestamptz not null default now()
 );
 
+alter table public.app_4c3a7a6153_base_prices enable row level security;
+alter table public.pricing_tiers enable row level security;
+alter table public.app_4c3a7a6153_transport_fees enable row level security;
+
+drop policy if exists "public read active base prices" on public.app_4c3a7a6153_base_prices;
+create policy "public read active base prices"
+on public.app_4c3a7a6153_base_prices
+for select
+to anon
+using (coalesce(is_active, true) = true);
+
+drop policy if exists "authenticated read base prices" on public.app_4c3a7a6153_base_prices;
+create policy "authenticated read base prices"
+on public.app_4c3a7a6153_base_prices
+for select
+to authenticated
+using (true);
+
+drop policy if exists "authenticated insert base prices" on public.app_4c3a7a6153_base_prices;
+create policy "authenticated insert base prices"
+on public.app_4c3a7a6153_base_prices
+for insert
+to authenticated
+with check (true);
+
+drop policy if exists "authenticated update base prices" on public.app_4c3a7a6153_base_prices;
+create policy "authenticated update base prices"
+on public.app_4c3a7a6153_base_prices
+for update
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "authenticated delete base prices" on public.app_4c3a7a6153_base_prices;
+create policy "authenticated delete base prices"
+on public.app_4c3a7a6153_base_prices
+for delete
+to authenticated
+using (true);
+
+drop policy if exists "authenticated read pricing tiers" on public.pricing_tiers;
+create policy "authenticated read pricing tiers"
+on public.pricing_tiers
+for select
+to authenticated
+using (true);
+
+drop policy if exists "authenticated insert pricing tiers" on public.pricing_tiers;
+create policy "authenticated insert pricing tiers"
+on public.pricing_tiers
+for insert
+to authenticated
+with check (true);
+
+drop policy if exists "authenticated update pricing tiers" on public.pricing_tiers;
+create policy "authenticated update pricing tiers"
+on public.pricing_tiers
+for update
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "authenticated delete pricing tiers" on public.pricing_tiers;
+create policy "authenticated delete pricing tiers"
+on public.pricing_tiers
+for delete
+to authenticated
+using (true);
+
+drop policy if exists "authenticated read transport fees" on public.app_4c3a7a6153_transport_fees;
+create policy "authenticated read transport fees"
+on public.app_4c3a7a6153_transport_fees
+for select
+to authenticated
+using (true);
+
+drop policy if exists "authenticated insert transport fees" on public.app_4c3a7a6153_transport_fees;
+create policy "authenticated insert transport fees"
+on public.app_4c3a7a6153_transport_fees
+for insert
+to authenticated
+with check (true);
+
+drop policy if exists "authenticated update transport fees" on public.app_4c3a7a6153_transport_fees;
+create policy "authenticated update transport fees"
+on public.app_4c3a7a6153_transport_fees
+for update
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "authenticated delete transport fees" on public.app_4c3a7a6153_transport_fees;
+create policy "authenticated delete transport fees"
+on public.app_4c3a7a6153_transport_fees
+for delete
+to authenticated
+using (true);
+
+grant select on public.app_4c3a7a6153_base_prices to anon;
+grant select, insert, update, delete on public.app_4c3a7a6153_base_prices to authenticated;
+grant select, insert, update, delete on public.app_4c3a7a6153_base_prices to service_role;
+grant select, insert, update, delete on public.pricing_tiers to authenticated;
+grant select, insert, update, delete on public.pricing_tiers to service_role;
+grant select, insert, update, delete on public.app_4c3a7a6153_transport_fees to authenticated;
+grant select, insert, update, delete on public.app_4c3a7a6153_transport_fees to service_role;
+
 create table if not exists public.app_4c3a7a6153_rentals (
   id uuid primary key default gen_random_uuid(),
   rental_id text unique,
@@ -323,6 +429,7 @@ create unique index if not exists rental_events_dispatch_key_unique_idx
 create table if not exists public.app_687f658e98_maintenance (
   id uuid primary key default gen_random_uuid(),
   vehicle_id bigint not null references public.saharax_0u4w4d_vehicles(id) on delete cascade,
+  vehicle_name text,
   rental_id uuid references public.app_4c3a7a6153_rentals(id) on delete set null,
   maintenance_type text not null default 'Other',
   description text,

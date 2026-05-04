@@ -3,7 +3,7 @@ import { Search, Download, ChevronLeft, ChevronRight, ArrowUpDown, ArrowUp, Arro
 import { Link } from 'react-router-dom';
 import { financeApiV2 } from '../../services/financeApiV2';
 
-const TourPLTableV2 = ({ filters, refreshTrigger }) => {
+const TourPLTableV2 = ({ filters, refreshTrigger, exportEnabled = true }) => {
   const [tourData, setTourData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -237,25 +237,27 @@ const TourPLTableV2 = ({ filters, refreshTrigger }) => {
               <p className="text-sm text-gray-600">Detailed tour profitability with operational cost tracking</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleExportSelected}
-              disabled={!selectedTour}
-              className={`flex items-center rounded-lg px-4 py-2 transition-colors ${
-                selectedTour ? 'bg-violet-600 text-white hover:bg-violet-700' : 'cursor-not-allowed bg-gray-100 text-gray-400'
-              }`}
-            >
-              <Download className="mr-2 h-4 w-4" />
-              Export selected CSV
-            </button>
-            <button
-              onClick={handleExport}
-              className="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
-            >
-              <Download className="mr-2 h-4 w-4" />
-              Export CSV
-            </button>
-          </div>
+          {exportEnabled ? (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleExportSelected}
+                disabled={!selectedTour}
+                className={`flex items-center rounded-lg px-4 py-2 transition-colors ${
+                  selectedTour ? 'bg-violet-600 text-white hover:bg-violet-700' : 'cursor-not-allowed bg-gray-100 text-gray-400'
+                }`}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Export selected CSV
+              </button>
+              <button
+                onClick={handleExport}
+                className="flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Export CSV
+              </button>
+            </div>
+          ) : null}
         </div>
 
         <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, 
   Minus, 
@@ -43,6 +43,7 @@ const FuelTransactionsList = ({
     limit: 20
   });
   const { user } = useAuth();
+  const skippedInitialFetchRef = useRef(false);
 
   useEffect(() => {
     if (!initialPageData?.success || !Array.isArray(initialPageData.transactions) || initialPageData.transactions.length === 0) {
@@ -76,6 +77,28 @@ const FuelTransactionsList = ({
   ]);
 
   useEffect(() => {
+    const hasActiveFilters = Boolean(
+      filters.search ||
+      filters.vehicleId ||
+      filters.transactionType ||
+      filters.fuelType ||
+      filters.startDate ||
+      filters.endDate ||
+      filters.fuelStation ||
+      filters.location
+    );
+    const canHydrateFromInitialPage =
+      !skippedInitialFetchRef.current &&
+      pagination.currentPage === 1 &&
+      !hasActiveFilters &&
+      initialPageData?.success &&
+      Array.isArray(initialPageData.transactions);
+
+    if (canHydrateFromInitialPage) {
+      skippedInitialFetchRef.current = true;
+      return;
+    }
+
     loadTransactions();
   }, [
     pagination.currentPage,
@@ -87,6 +110,7 @@ const FuelTransactionsList = ({
     filters.endDate,
     filters.fuelStation,
     filters.location,
+    initialPageData,
   ]);
 
   const loadTransactions = async () => {

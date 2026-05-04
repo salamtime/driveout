@@ -124,8 +124,8 @@ class AudioNotificationSystem {
     if ('Notification' in window && Notification.permission === 'granted') {
       new Notification('Tour Milestone Reached!', {
         body: `Tour has been running for ${minutes} minutes`,
-        icon: '/favicon.ico',
-        badge: '/favicon.ico'
+        icon: '/assets/logo.png',
+        badge: '/assets/logo.png'
       });
     }
 

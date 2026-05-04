@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { assertTenantFeatureEnabled } from './TenantLimitService';
 
 /**
  * Service for managing vehicle models in pricing components
@@ -11,6 +12,11 @@ export class VehicleModelPricingService {
    */
   static async getActiveVehicleModels() {
     try {
+      await assertTenantFeatureEnabled(
+        'pricing_module',
+        'Your tenant plan does not include Pricing Management.'
+      );
+
       const { data, error } = await supabase
         .from('saharax_0u4w4d_vehicle_models')
         .select('id, name, model, is_active')
@@ -49,6 +55,11 @@ export class VehicleModelPricingService {
    */
   static async getVehicleModelById(modelId) {
     try {
+      await assertTenantFeatureEnabled(
+        'pricing_module',
+        'Your tenant plan does not include Pricing Management.'
+      );
+
       const { data, error } = await supabase
         .from('saharax_0u4w4d_vehicle_models')
         .select('id, name, model, is_active')

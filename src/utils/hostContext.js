@@ -6,6 +6,9 @@ export const APP_SHELL_HOSTS = new Set(['app.driveout.io']);
 export const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 export const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 const LOCAL_TENANT_SESSION_KEY = 'driveout.localTenantSlug';
+const LOCAL_TENANT_PORT_MAP = {
+  '5174': 'offroad',
+};
 const FIRST_PARTY_STOREFRONT_PATHS = new Set([
   '/',
   '/website',
@@ -49,11 +52,17 @@ export const getCurrentHostname = () => {
   return String(window.location.hostname || '').toLowerCase();
 };
 
+const getCurrentPort = () => {
+  if (typeof window === 'undefined') return '';
+  return String(window.location.port || '').trim();
+};
+
 export const isPreviewHost = (hostname = getCurrentHostname()) =>
   String(hostname || '').toLowerCase().endsWith('.vercel.app');
 
 export const getHostContext = (hostname = getCurrentHostname()) => {
   const normalizedHostname = String(hostname || '').toLowerCase();
+  const localTenantSlugFromPort = LOCAL_TENANT_PORT_MAP[getCurrentPort()] || '';
   const localTenantSlug = typeof window !== 'undefined'
     ? new URLSearchParams(window.location.search || '').get('tenant')
     : '';
@@ -62,12 +71,13 @@ export const getHostContext = (hostname = getCurrentHostname()) => {
     : '';
 
   if (isLocalHost(normalizedHostname)) {
-    const normalizedLocalTenantSlug = String(localTenantSlug || '').trim().toLowerCase();
+    const normalizedLocalTenantSlug = String(localTenantSlug || localTenantSlugFromPort || '').trim().toLowerCase();
     if (normalizedLocalTenantSlug && typeof window !== 'undefined') {
       window.sessionStorage.setItem(LOCAL_TENANT_SESSION_KEY, normalizedLocalTenantSlug);
     }
 
-    const effectiveLocalTenantSlug = normalizedLocalTenantSlug || String(storedLocalTenantSlug || '').trim().toLowerCase();
+    const storedSlug = String(storedLocalTenantSlug || '').trim().toLowerCase();
+    const effectiveLocalTenantSlug = normalizedLocalTenantSlug || (localTenantSlugFromPort ? storedSlug : '');
     if (effectiveLocalTenantSlug) {
       return { hostname: normalizedHostname, kind: 'tenant', tenantSlug: effectiveLocalTenantSlug, isLocal: true };
     }
@@ -124,6 +134,19 @@ export const isFirstPartyTenantSlug = (tenantSlug = '') =>
 
 export const isFirstPartyTenantHost = (host = {}) =>
   host?.kind === 'tenant' && isFirstPartyTenantSlug(host?.tenantSlug);
+
+export const isSaharaXBrandingHost = (host = getHostContext()) => {
+  const hostname = String(host?.hostname || '').toLowerCase();
+  const tenantSlug = String(host?.tenantSlug || '').trim().toLowerCase();
+
+  return (
+    host?.kind === 'local' ||
+    (host?.kind === 'tenant' && isFirstPartyTenantSlug(tenantSlug)) ||
+    hostname === 'saharax.driveout.io' ||
+    hostname === 'saharax.co' ||
+    hostname === 'www.saharax.co'
+  );
+};
 
 export const isFirstPartyStorefrontPath = (pathname = '') => {
   const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;

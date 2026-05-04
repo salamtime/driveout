@@ -58,12 +58,24 @@ const buildPermissionSignature = (user) => {
   });
 };
 
+const unwrapStoredUserProfile = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  if (value.profile && typeof value.profile === 'object' && !Array.isArray(value.profile)) {
+    return value.profile;
+  }
+
+  return value;
+};
+
 // Get current user from locally persisted auth state, if available.
 export const getCurrentUser = () => {
   try {
     const raw = localStorage.getItem('userProfile');
     if (!raw) return {};
-    return JSON.parse(raw);
+    return unwrapStoredUserProfile(JSON.parse(raw)) || {};
   } catch {
     return {};
   }
@@ -71,7 +83,7 @@ export const getCurrentUser = () => {
 
 // ✅ UPDATED: Main permission checking function with caching
 export const hasPermission = (moduleName, user = null) => {
-  const userProfile = user || getCurrentUser();
+  const userProfile = unwrapStoredUserProfile(user) || getCurrentUser();
   
   if (!userProfile || !userProfile.id) {
     return false;

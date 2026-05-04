@@ -28,6 +28,7 @@ class FuelTransactionService {
     this.fuelWithdrawalsTable = 'fuel_withdrawals';
     this.vehicleFuelStateTable = 'vehicle_fuel_state';
     this.fuelOperationLogsTable = 'fuel_operation_logs';
+    this.defaultTransactionsFeedView = 'fuel_transactions_default_feed';
     this.vehiclesTable = 'saharax_0u4w4d_vehicles';
     this.vehicleModelsTable = 'saharax_0u4w4d_vehicle_models';
 
@@ -863,6 +864,95 @@ class FuelTransactionService {
     return new Map((data || []).map((vehicle) => [Number(vehicle.id), vehicle]));
   }
 
+  buildFeedVehicleFallback(row = {}) {
+    if (!row?.vehicle_id) {
+      return null;
+    }
+
+    return {
+      id: row.vehicle_id,
+      name: row.vehicle_name || null,
+      plate_number: row.vehicle_plate || null,
+      model: row.vehicle_model || null,
+      vehicle_type: row.vehicle_type || null,
+    };
+  }
+
+  async getDefaultTransactionsFeed(options = {}) {
+    const { limit = 20, offset = 0 } = options;
+
+    if (!(await this.tableExists(this.defaultTransactionsFeedView))) {
+      return null;
+    }
+
+    const end = Math.max(offset, offset + limit - 1);
+    const { data, error, count } = await supabase
+      .from(this.defaultTransactionsFeedView)
+      .select(
+        [
+          'id',
+          'transaction_date',
+          'transaction_type',
+          'fuel_type',
+          'amount',
+          'cost',
+          'unit_price',
+          'fuel_station',
+          'location',
+          'odometer_reading',
+          'notes',
+          'filled_by',
+          'performed_by_name',
+          'performed_by_user_id',
+          'vehicle_id',
+          'vehicle_name',
+          'vehicle_plate',
+          'vehicle_model',
+          'vehicle_type',
+          'created_at',
+          'source',
+          'is_financial_expense',
+          'receipt_media',
+          'invoice_image',
+          'rental_id',
+          'rental_reference',
+          'fuel_lines_before',
+          'fuel_lines_after',
+          'liters_before',
+          'liters_after',
+        ].join(', '),
+        { count: 'exact' }
+      )
+      .order('transaction_date', { ascending: false })
+      .range(offset, end);
+
+    if (error) {
+      if (this.isRetryableSchemaError(error)) {
+        console.warn('Default fuel transactions feed view unavailable; falling back to client merge:', error);
+      } else {
+        this.markTableUnavailable(this.defaultTransactionsFeedView);
+      }
+      return null;
+    }
+
+    const vehicleLookup = await this.getVehicleLookup((data || []).map((row) => row.vehicle_id));
+    const transactions = (data || []).map((row) => {
+      const vehicle = vehicleLookup.get(Number(row.vehicle_id)) || this.buildFeedVehicleFallback(row);
+      return this.mapTransactionRecord({
+        ...row,
+        vehicle,
+        [this.vehiclesTable]: vehicle,
+        saharax_0u4w4d_vehicles: vehicle,
+      });
+    });
+
+    return {
+      success: true,
+      transactions,
+      totalCount: Number(count ?? transactions.length ?? 0),
+    };
+  }
+
   async getRentalVehicleLookup(rentalIds = []) {
     const uniqueRentalIds = Array.from(
       new Set((rentalIds || []).filter(Boolean).map((value) => String(value)))
@@ -1218,7 +1308,11 @@ class FuelTransactionService {
   }
 
   async getFuelOperationLogs(options = {}) {
-    const { limit } = options;
+    const {
+      limit,
+      includeRentalVehicleLookup = true,
+      includeRentalReferenceLookup = true,
+    } = options;
     if (!(await this.tableExists(this.fuelOperationLogsTable))) {
       return [];
     }
@@ -1246,22 +1340,27 @@ class FuelTransactionService {
     }
 
     const rows = data || [];
-    const rentalIds = rows.filter((row) => row.rental_id).map((row) => row.rental_id);
     const directVehicleLookup = await this.getVehicleLookup(rows.map((row) => row.vehicle_id));
+    const rentalIds = rows.filter((row) => row.rental_id).map((row) => row.rental_id);
+    const rentalVehicleIds = rows
+      .filter((row) => !row.vehicle_id && row.rental_id)
+      .map((row) => row.rental_id);
     const [rentalVehicleLookup, rentalReferenceLookup] = await Promise.all([
-      this.getRentalVehicleLookup(
-        rows
-          .filter((row) => !row.vehicle_id && row.rental_id)
-          .map((row) => row.rental_id)
-      ),
-      this.getRentalReferenceLookup(rentalIds),
+      includeRentalVehicleLookup
+        ? this.getRentalVehicleLookup(rentalVehicleIds)
+        : Promise.resolve(new Map()),
+      includeRentalReferenceLookup
+        ? this.getRentalReferenceLookup(rentalIds)
+        : Promise.resolve(new Map()),
     ]);
 
     return rows.map((row) => {
       const rentalVehicle = row.rental_id ? rentalVehicleLookup.get(String(row.rental_id)) || null : null;
       const vehicle = directVehicleLookup.get(Number(row.vehicle_id)) || rentalVehicle || null;
       const vehicleId = row.vehicle_id || vehicle?.id || null;
-      const rentalReference = row.rental_reference || (row.rental_id ? rentalReferenceLookup.get(String(row.rental_id)) || null : null);
+      const rentalReference = includeRentalReferenceLookup
+        ? (row.rental_reference || (row.rental_id ? rentalReferenceLookup.get(String(row.rental_id)) || null : null))
+        : (row.rental_reference || null);
       return {
         ...row,
         vehicle_id: vehicleId,
@@ -2526,24 +2625,52 @@ class FuelTransactionService {
       return this.transactionListPromiseCache.get(cacheKey);
     }
     const promise = (async () => {
+      if (!hasAdvancedFilters) {
+        const defaultFeed = await this.getDefaultTransactionsFeed({ limit, offset });
+        if (defaultFeed?.success) {
+          this.transactionListCache.set(cacheKey, {
+            timestamp: Date.now(),
+            value: defaultFeed,
+          });
+          return defaultFeed;
+        }
+      }
+
       const fetchLimit = hasAdvancedFilters ? Math.max(offset + limit + 40, 120) : Math.max(offset + limit + 8, 36);
       const sourceFetchLimit = isFastDefaultPage ? Math.max(limit + 4, 16) : fetchLimit;
+      const shouldUseFastLogPath = isFastDefaultPage;
 
       const [refills, withdrawals, operationLogs] = await Promise.all([
         this.getAllRefills({ limit: sourceFetchLimit }),
         this.getAllWithdrawals({ limit: sourceFetchLimit }),
-        this.getFuelOperationLogs({ limit: sourceFetchLimit }),
+        this.getFuelOperationLogs({
+          limit: sourceFetchLimit,
+          includeRentalVehicleLookup: !shouldUseFastLogPath,
+          includeRentalReferenceLookup: !shouldUseFastLogPath,
+        }),
       ]);
-      const rentalFuelLevelsMap = await this.getRentalFuelLevelsMap(
-        operationLogs
-          .filter((log) => (log.transaction_type === 'rental_opening_level' || log.transaction_type === 'rental_closing_level') && log.rental_id)
-          .map((log) => log.rental_id)
-      );
-      const rentalReferenceLookup = await this.getRentalReferenceLookup(
-        operationLogs
-          .filter((log) => log.rental_id)
-          .map((log) => log.rental_id)
-      );
+      const shouldReconcileRentalSnapshots =
+        !shouldUseFastLogPath &&
+        operationLogs.some(
+          (log) =>
+            (log.transaction_type === 'rental_opening_level' || log.transaction_type === 'rental_closing_level') &&
+            log.rental_id
+        );
+      const rentalFuelLevelsMap = shouldReconcileRentalSnapshots
+        ? await this.getRentalFuelLevelsMap(
+            operationLogs
+              .filter((log) => (log.transaction_type === 'rental_opening_level' || log.transaction_type === 'rental_closing_level') && log.rental_id)
+              .map((log) => log.rental_id)
+          )
+        : new Map();
+      const rentalReferenceLookup =
+        !shouldUseFastLogPath && operationLogs.some((log) => log.rental_id)
+          ? await this.getRentalReferenceLookup(
+              operationLogs
+                .filter((log) => log.rental_id)
+                .map((log) => log.rental_id)
+            )
+          : new Map();
 
       const rentalOpeningSnapshots = new Map();
       for (const log of [...operationLogs].sort(
@@ -2584,6 +2711,24 @@ class FuelTransactionService {
       }
 
       for (const log of operationLogs) {
+        if (shouldUseFastLogPath) {
+          const mapped = this.mapTransactionRecord({
+            ...log,
+            id: `log-${log.id}`,
+          });
+          const shouldSuppressAsDuplicate =
+            ['tank_refill', 'vehicle_refill', 'withdrawal', 'tank_out'].includes(mapped.transaction_type) &&
+            baseTransactionKeys.has(this.buildTransactionDedupKey(mapped));
+
+          if (shouldSuppressAsDuplicate) {
+            continue;
+          }
+          if (!transactionMap.has(mapped.id)) {
+            transactionMap.set(mapped.id, mapped);
+          }
+          continue;
+        }
+
         const rentalFuelLevels = log.rental_id ? rentalFuelLevelsMap.get(String(log.rental_id)) : null;
         const rentalOpeningLitersFromTable =
           rentalFuelLevels?.start_fuel_level !== null && rentalFuelLevels?.start_fuel_level !== undefined

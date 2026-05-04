@@ -24,7 +24,7 @@ const FuelLevelModal = ({
   const isLightVariant = variant === 'light';
 
   const FUEL_LEVELS = [
-    { value: 0, label: tr('Empty', 'Vide'), color: 'bg-red-500' },
+    { value: 0, label: tr('Empty', 'Vide'), color: 'bg-slate-200', textColor: 'text-slate-700' },
     { value: 1, label: '1/8', color: 'bg-orange-500' },
     { value: 2, label: '2/8', color: 'bg-orange-400' },
     { value: 3, label: '3/8', color: 'bg-yellow-500' },
@@ -93,14 +93,16 @@ const FuelLevelModal = ({
                   className={`
                     ${isLightVariant ? 'h-24 rounded-[18px]' : 'h-20 rounded-lg'} transition-all duration-200 border-2
                     ${selectedLevel === level.value 
-                      ? `${level.color} ${isLightVariant ? 'border-violet-600 scale-[1.03] shadow-[0_14px_30px_rgba(76,29,149,0.16)]' : 'border-blue-600 scale-105 shadow-lg'}` 
+                      ? `${level.value === 0 ? 'bg-emerald-500' : level.color} ${isLightVariant ? 'border-violet-600 scale-[1.03] shadow-[0_14px_30px_rgba(76,29,149,0.16)]' : 'border-blue-600 scale-105 shadow-lg'}` 
                       : `${level.color} border-gray-300 opacity-50 hover:opacity-75`
                     }
                     ${isSaving ? 'cursor-not-allowed opacity-60' : ''}
                   `}
                   title={level.label}
                 >
-                  <div className={`${isLightVariant ? 'text-base' : 'text-xs'} font-bold text-white`}>{level.value}</div>
+                  <div className={`${level.value === 0 ? 'px-1 text-[11px] leading-tight' : isLightVariant ? 'text-base' : 'text-xs'} font-bold ${selectedLevel === level.value && level.value === 0 ? 'text-white' : (level.textColor || 'text-white')}`}>
+                    {level.value === 0 ? level.label : level.value}
+                  </div>
                 </button>
               ))}
             </div>
