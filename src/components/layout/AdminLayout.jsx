@@ -595,7 +595,7 @@ const AdminLayout = () => {
   }, [modalFocusDepth, location.pathname]);
 
   useEffect(() => {
-    if (!userProfile || !hasPermission('fuel')) {
+    if (!userProfile || !hasPermission('Fuel Logs')) {
       return undefined;
     }
 

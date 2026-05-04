@@ -13,7 +13,7 @@ import {
 } from '../utils/permissionCatalog';
 import { getBusinessOwnerFreezeRedirect, hasBusinessOwnerRequest, isApprovedBusinessOwnerAccount, isPlatformOwnerEmail } from '../utils/accountType';
 import { resolveUserEntry } from '../utils/tenantEntryResolver';
-import { getHostContext } from '../utils/hostContext';
+import { getHostContext, isFirstPartyTenantHost } from '../utils/hostContext';
 import { buildEffectiveTenantFeatureAccess, normalizeTenantPlanType } from '../config/tenantPlans';
 import { isTenantFeatureEnabled, isTenantModuleEnabled } from '../utils/tenantFeatureAccess';
 
@@ -1104,6 +1104,7 @@ export const AuthProvider = ({ children }) => {
     const normalizedEmail = (userProfile.email || '').toLowerCase();
     const platformOwnerOverride = isPlatformOwnerEmail(normalizedEmail);
     const hostContext = getHostContext();
+    const isFirstPartyWorkspace = isFirstPartyTenantHost(hostContext);
     const rawTenantFeatureAccess =
       tenantSession?.tenant?.metadata?.effective_feature_access && typeof tenantSession.tenant.metadata.effective_feature_access === 'object'
         ? tenantSession.tenant.metadata.effective_feature_access
@@ -1118,12 +1119,17 @@ export const AuthProvider = ({ children }) => {
       userProfile?.planType ||
       session?.user?.user_metadata?.plan_type ||
       session?.user?.app_metadata?.plan_type ||
-      'starter'
+      (isFirstPartyWorkspace ? 'pro' : 'starter')
     );
-    const tenantFeatureAccess = buildEffectiveTenantFeatureAccess(tenantPlanType, rawTenantFeatureAccess);
+    const tenantFeatureAccess = buildEffectiveTenantFeatureAccess(
+      isFirstPartyWorkspace ? 'pro' : tenantPlanType,
+      rawTenantFeatureAccess
+    );
     const enforceTenantFeatureAccess =
-      String(userProfile.role || '').toLowerCase() === 'business_owner'
-      || hostContext.kind === 'tenant';
+      !isFirstPartyWorkspace && (
+        String(userProfile.role || '').toLowerCase() === 'business_owner'
+        || hostContext.kind === 'tenant'
+      );
     const resolvedModuleKey = resolvePermissionKey(moduleName);
     const normalizedPlatformPermissions =
       platformAccess?.permissions && typeof platformAccess.permissions === 'object' && !Array.isArray(platformAccess.permissions)
@@ -1182,6 +1188,11 @@ export const AuthProvider = ({ children }) => {
 
     const normalizedEmail = (userProfile.email || '').toLowerCase();
     if (isPlatformOwnerEmail(normalizedEmail)) {
+      return true;
+    }
+
+    const hostContext = getHostContext();
+    if (isFirstPartyTenantHost(hostContext)) {
       return true;
     }
 
