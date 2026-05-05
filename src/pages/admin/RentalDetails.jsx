@@ -10764,7 +10764,7 @@ useEffect(() => {
   };
   const reserveWhatsAppWindow = () => {
     try {
-      return window.open('', '_blank', 'noopener,noreferrer');
+      return window.open('about:blank', '_blank');
     } catch {
       return null;
     }
@@ -10784,10 +10784,10 @@ useEffect(() => {
 
     try {
       if (reservedWindow && !reservedWindow.closed) {
-        reservedWindow.location.replace(url);
+        reservedWindow.location.href = url;
         return;
       }
-      window.location.assign(url);
+      window.location.href = url;
     } catch (err) {
       if (RENTAL_DEBUG) console.log('WhatsApp navigation failed');
       toast.error(`WhatsApp blocked by browser. Please copy this link manually: | ${url}`);
