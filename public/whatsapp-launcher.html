@@ -34,12 +34,41 @@
         line-height: 1.6;
         color: #475569;
       }
+      .actions {
+        display: none;
+        margin-top: 1rem;
+      }
+      .actions.ready {
+        display: block;
+      }
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 3rem;
+        padding: 0 1rem;
+        border-radius: 999px;
+        border: 1px solid #22c55e;
+        background: #16a34a;
+        color: #ffffff;
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .helper {
+        margin-top: 0.75rem;
+        font-size: 0.95rem;
+        color: #64748b;
+      }
     </style>
   </head>
   <body>
     <div class="card">
       <h1>Opening WhatsApp…</h1>
-      <p>Please wait while we prepare your message.</p>
+      <p id="status">Please wait while we prepare your message.</p>
+      <div id="actions" class="actions">
+        <a id="open-link" class="button" href="#">Open WhatsApp</a>
+        <p class="helper">If WhatsApp did not open automatically, tap the button above.</p>
+      </div>
     </div>
     <script>
       (function () {
@@ -50,6 +79,20 @@
         }
 
         const storageKey = "wa-launch:" + key;
+        const actions = document.getElementById("actions");
+        const openLink = document.getElementById("open-link");
+        const status = document.getElementById("status");
+        let currentUrl = null;
+
+        const revealFallback = (url) => {
+          if (!url) {
+            return;
+          }
+          currentUrl = url;
+          openLink.href = url;
+          actions.classList.add("ready");
+          status.textContent = "WhatsApp is ready. If it didn't open automatically, tap below.";
+        };
 
         const navigateIfReady = () => {
           const nextUrl = window.localStorage.getItem(storageKey);
@@ -57,6 +100,7 @@
             return false;
           }
           window.localStorage.removeItem(storageKey);
+          revealFallback(nextUrl);
           window.location.href = nextUrl;
           return true;
         };
@@ -70,6 +114,7 @@
             return;
           }
           window.localStorage.removeItem(storageKey);
+          revealFallback(event.newValue);
           window.location.href = event.newValue;
         });
 
@@ -80,6 +125,12 @@
             window.clearInterval(poll);
           }
         }, 250);
+
+        openLink.addEventListener("click", function () {
+          if (currentUrl) {
+            window.location.href = currentUrl;
+          }
+        });
       })();
     </script>
   </body>
