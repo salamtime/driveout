@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { ArrowRight, FileText, Lock, Receipt, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Camera, FileText, Landmark, Lock, Receipt, ShieldCheck, Video } from 'lucide-react';
 import ContractTemplate from '../components/ContractTemplate';
 import ReceiptTemplate from '../components/ReceiptTemplate';
 import i18n from '../i18n';
@@ -94,19 +94,34 @@ const SHARE_ITEM_META = {
     },
   },
   'opening-media': {
-    icon: FileText,
+    icon: Camera,
     title: { en: 'Opening Media', fr: 'Media de depart' },
     subtitle: { en: 'Browse opening photos and videos', fr: 'Parcourir les photos et videos de depart' },
+    accent: {
+      tint: 'linear-gradient(135deg, rgba(14,165,233,0.14), rgba(99,102,241,0.08))',
+      border: 'rgba(125,211,252,0.38)',
+      color: '#0284c7',
+    },
   },
   'closing-media': {
-    icon: '🎥',
+    icon: Video,
     title: { en: 'Closing Media', fr: 'Media de retour' },
     subtitle: { en: 'Browse return photos and videos', fr: 'Parcourir les photos et videos de retour' },
+    accent: {
+      tint: 'linear-gradient(135deg, rgba(249,115,22,0.14), rgba(124,58,237,0.08))',
+      border: 'rgba(253,186,116,0.38)',
+      color: '#ea580c',
+    },
   },
   'banking-info': {
-    icon: '🏦',
+    icon: Landmark,
     title: { en: 'Banking Info', fr: 'Informations bancaires' },
     subtitle: { en: 'Open bank transfer instructions', fr: 'Ouvrir les instructions de virement' },
+    accent: {
+      tint: 'linear-gradient(135deg, rgba(16,185,129,0.14), rgba(20,184,166,0.08))',
+      border: 'rgba(110,231,183,0.38)',
+      color: '#059669',
+    },
   },
 };
 

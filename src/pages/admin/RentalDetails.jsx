@@ -5280,8 +5280,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
 
       const message = `Hi ${rental.customer_name}!\n\nYour rental documents:\nInvoice: ${invoiceUrl}\nVideo: ${videoUrl}\n\nThank you!`;
       
-      const encodedMessage = encodeURIComponent(message);
-      const whatsappUrl = `https://wa.me/${syncedCustomerPhone.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
+      const whatsappUrl = buildWhatsAppSendUrl(syncedCustomerPhone, message);
 
       window.location.href = whatsappUrl;
 
@@ -5346,13 +5345,11 @@ ${rentalDetailsUrl}
 
 Click the link above to review and approve the extension.`;
       
-      const encodedMessage = encodeURIComponent(message);
-      
       // 4. Send to each admin
       let sentCount = 0;
       for (const admin of admins) {
         if (admin.phone_number) {
-          const whatsappUrl = `https://wa.me/${admin.phone_number.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
+          const whatsappUrl = buildWhatsAppSendUrl(admin.phone_number, message);
           
           // Open in new tab for each admin
           window.open(whatsappUrl, '_blank');
@@ -5404,12 +5401,10 @@ Click the link above to review and approve the extension.`;
       
       const message = `🔔 Price Override Request\n\nRental ID: ${rental.rental_id}\nCustomer: ${rental.customer_name}\nVehicle: ${rental.vehicle?.name} - ${rental.vehicle?.model}\n\n💰 Price Details:\n• Current Price: ${rental.total_amount} MAD\n• Requested Price: ${rental.pending_total_request} MAD\n• Reason: ${rental.price_override_reason || 'No reason provided'}\n\n🔗 Review & Approve:\n${rentalDetailsUrl}\n\nClick the link above to review and approve the price change.`;
       
-      const encodedMessage = encodeURIComponent(message);
-      
       let sentCount = 0;
       for (const admin of admins) {
         if (admin.phone_number) {
-          const whatsappUrl = `https://wa.me/${admin.phone_number.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
+          const whatsappUrl = buildWhatsAppSendUrl(admin.phone_number, message);
           window.open(whatsappUrl, '_blank');
           sentCount++;
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -5539,8 +5534,7 @@ Click the link above to review and approve the extension.`;
         throw new Error('Contract share was not generated');
       }
       const message = `Here is your contract:\n${contractUrl}`;
-      const encodedMessage = encodeURIComponent(message);
-      const whatsappUrl = `https://wa.me/${syncedCustomerPhone.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
+      const whatsappUrl = buildWhatsAppSendUrl(syncedCustomerPhone, message);
 
       openWhatsAppUrl(whatsappUrl);
     } catch (error) {
@@ -5565,8 +5559,7 @@ Click the link above to review and approve the extension.`;
         throw new Error('Receipt share was not generated');
       }
       const message = `Here is your receipt:\n${receiptUrl}`;
-      const encodedMessage = encodeURIComponent(message);
-      const whatsappUrl = `https://wa.me/${syncedCustomerPhone.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
+      const whatsappUrl = buildWhatsAppSendUrl(syncedCustomerPhone, message);
 
       openWhatsAppUrl(whatsappUrl);
     } catch (error) {
@@ -6169,8 +6162,7 @@ Click the link above to review and approve the extension.`;
             ...selectedItems.map((item) => `${item.label}:\n${item.url}`),
           ].join('\n');
 
-      const phoneNumber = syncedCustomerPhone.replace(/[^0-9]/g, '');
-      const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
+      const whatsappUrl = buildWhatsAppSendUrl(syncedCustomerPhone, message);
       
       if (RENTAL_DEBUG) console.log('📱 Opening WhatsApp with URL:', whatsappUrl);
       
@@ -10761,6 +10753,16 @@ useEffect(() => {
       return url;
     }
   };
+  const buildWhatsAppSendUrl = (phoneNumber, message) => {
+    const cleanPhone = String(phoneNumber || '').replace(/\D/g, '');
+    const params = new URLSearchParams();
+    if (cleanPhone) {
+      params.set('phone', cleanPhone);
+    }
+    params.set('text', message || '');
+    return `https://api.whatsapp.com/send?${params.toString()}`;
+  };
+
   const openWhatsAppUrl = (url) => {
     if (RENTAL_DEBUG) console.log('🔗 Navigating to WhatsApp URL:', url);
 
@@ -10787,7 +10789,7 @@ useEffect(() => {
       ? `Bonjour ${customerName}, nous vous contactons au sujet de votre location ${rental?.rental_id || ''} pour ${vehicleLabel}.`
       : `Hi ${customerName}, we are contacting you regarding your rental ${rental?.rental_id || ''} for ${vehicleLabel}.`;
 
-    const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
+    const whatsappUrl = buildWhatsAppSendUrl(cleanPhone, message);
     openWhatsAppUrl(whatsappUrl);
   };
 

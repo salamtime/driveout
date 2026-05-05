@@ -143,15 +143,23 @@ ${rentalUrl}
 
 Click the link above to review and approve the extension.`;
       
-      const encodedMessage = encodeURIComponent(message);
-      
+      const buildWhatsAppSendUrl = (phoneNumber, text) => {
+        const cleanPhone = String(phoneNumber || '').replace(/\D/g, '');
+        const params = new URLSearchParams();
+        if (cleanPhone) {
+          params.set('phone', cleanPhone);
+        }
+        params.set('text', text || '');
+        return `https://api.whatsapp.com/send?${params.toString()}`;
+      };
+
       let sentCount = 0;
       for (const admin of adminsWithPermission) {
         if (admin.phone_number) {
           const cleanPhone = admin.phone_number.replace(/[^0-9]/g, '');
           
           if (cleanPhone && cleanPhone.length >= 9) {
-            const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodedMessage}`;
+            const whatsappUrl = buildWhatsAppSendUrl(cleanPhone, message);
             window.open(whatsappUrl, '_blank');
             sentCount++;
             await new Promise(resolve => setTimeout(resolve, 500));
