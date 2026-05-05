@@ -5512,7 +5512,14 @@ Click the link above to review and approve the extension.`;
 
     const body = await response.json().catch(() => ({}));
     if (!response.ok || !body?.url) {
-      throw new Error(body?.error || 'Failed to create public share');
+      const responseError = body?.error;
+      const errorMessage =
+        typeof responseError === 'string'
+          ? responseError
+          : responseError?.message || responseError?.error || (
+              responseError ? JSON.stringify(responseError) : 'Failed to create public share'
+            );
+      throw new Error(errorMessage);
     }
 
     return body.url;
@@ -5947,6 +5954,20 @@ Click the link above to review and approve the extension.`;
     return await shortenUrlService(publicViewUrl, rental?.id || null, 'contract');
   };
 
+  const getCompactShareBrandSettings = () => {
+    const compactSettings = {};
+    const addSetting = (key, value) => {
+      const normalized = String(value || '').trim();
+      if (/^https?:\/\//i.test(normalized) && normalized.length <= 2048) {
+        compactSettings[key] = normalized;
+      }
+    };
+
+    addSetting('logoUrl', logoUrl);
+    addSetting('stampUrl', stampUrl);
+    return compactSettings;
+  };
+
   const buildCompactReceiptSharePayload = (pdfUrl) => {
     const scalarOverrides = {
       deposit_amount: receiptRentalData?.deposit_amount,
@@ -5992,10 +6013,7 @@ Click the link above to review and approve the extension.`;
       rentalId: rental?.rental_id || rental?.id || '',
       rentalLookupId: rental?.id || rental?.rental_id || '',
       ...(Object.keys(overrides).length ? { overrides } : {}),
-      settings: {
-        logoUrl,
-        stampUrl,
-      },
+      settings: getCompactShareBrandSettings(),
       ...(pdfUrl ? {
         pdfUrl,
         links: {
@@ -6055,10 +6073,7 @@ Click the link above to review and approve the extension.`;
         language: documentLanguage,
         rentalId: rental?.rental_id || rental?.id || '',
         customerName: rental?.customer_name || '',
-        settings: {
-          logoUrl,
-          stampUrl,
-        },
+        settings: getCompactShareBrandSettings(),
         items: compactItems,
       },
     });
