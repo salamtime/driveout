@@ -5947,12 +5947,78 @@ Click the link above to review and approve the extension.`;
     return await shortenUrlService(publicViewUrl, rental?.id || null, 'contract');
   };
 
+  const buildCompactReceiptSharePayload = (pdfUrl) => {
+    const scalarOverrides = {
+      deposit_amount: receiptRentalData?.deposit_amount,
+      fuel_charge: receiptRentalData?.fuel_charge,
+      payment_status: receiptRentalData?.payment_status,
+      start_fuel_level: receiptRentalData?.start_fuel_level,
+      end_fuel_level: receiptRentalData?.end_fuel_level,
+      ...(receiptRentalData?.impound_is_estimate
+        ? {
+            impound_charge_days: receiptRentalData?.impound_charge_days,
+            impound_charge_hours: receiptRentalData?.impound_charge_hours,
+            impound_rate: receiptRentalData?.impound_rate,
+            impound_manual_charge: receiptRentalData?.impound_manual_charge,
+            impound_discount: receiptRentalData?.impound_discount,
+            impound_total: receiptRentalData?.impound_total,
+            impound_live_charge_days: receiptRentalData?.impound_live_charge_days,
+            impound_live_charge_hours: receiptRentalData?.impound_live_charge_hours,
+            impound_live_rate: receiptRentalData?.impound_live_rate,
+            impound_live_discount: receiptRentalData?.impound_live_discount,
+            impound_live_total: receiptRentalData?.impound_live_total,
+            impound_is_estimate: receiptRentalData?.impound_is_estimate,
+            impound_estimated_release_at: receiptRentalData?.impound_estimated_release_at,
+            impound_estimate_note: receiptRentalData?.impound_estimate_note,
+            impound_extra_daily_charge_waived: receiptRentalData?.impound_extra_daily_charge_waived,
+            impound_estimate_weekend_carry: receiptRentalData?.impound_estimate_weekend_carry,
+            impound_estimate_pricing_label: receiptRentalData?.impound_estimate_pricing_label,
+            impound_estimated_days_total: receiptRentalData?.impound_estimated_days_total,
+            impound_estimated_hours_total: receiptRentalData?.impound_estimated_hours_total,
+            impound_estimated_rate: receiptRentalData?.impound_estimated_rate,
+            impound_estimated_discount: receiptRentalData?.impound_estimated_discount,
+            impound_estimated_total: receiptRentalData?.impound_estimated_total,
+            impound_estimated_extra_days: receiptRentalData?.impound_estimated_extra_days,
+            impound_estimated_extra_amount: receiptRentalData?.impound_estimated_extra_amount,
+          }
+        : {}),
+    };
+    const overrides = Object.fromEntries(
+      Object.entries(scalarOverrides).filter(([, value]) => value !== undefined && value !== null && value !== '')
+    );
+
+    return {
+      language: documentLanguage,
+      rentalId: rental?.rental_id || rental?.id || '',
+      rentalLookupId: rental?.id || rental?.rental_id || '',
+      ...(Object.keys(overrides).length ? { overrides } : {}),
+      settings: {
+        logoUrl,
+        stampUrl,
+      },
+      ...(pdfUrl ? {
+        pdfUrl,
+        links: {
+          receiptPdf: pdfUrl,
+        },
+      } : {}),
+      bundle: {
+        contract: Boolean(rental?.signature_url),
+        receipt: Boolean(dynamicPaymentState.isPaid),
+        openingMedia: openingMedia.length > 0,
+        closingMedia: closingMedia.length > 0,
+      },
+    };
+  };
+
   const getReceiptWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('receipt');
     if (!pdfUrl) return null;
-    const publicViewUrl = await buildSharedDocumentUrl('receipt', { pdfUrl });
-    if (!publicViewUrl) return null;
-    return await shortenUrlService(publicViewUrl, rental?.id || null, 'receipt');
+    return await createDocumentShareRecord({
+      shareType: 'receipt',
+      documentType: 'receipt',
+      payload: buildCompactReceiptSharePayload(pdfUrl),
+    });
   };
 
   const getOpeningMediaShareUrl = async () => {
