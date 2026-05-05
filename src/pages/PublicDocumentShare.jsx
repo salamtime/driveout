@@ -72,6 +72,190 @@ const cardBaseStyle = {
   transition: 'transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease',
 };
 
+const publicDocumentShareStyles = `
+  .public-share-page,
+  .public-share-page * {
+    box-sizing: border-box;
+  }
+
+  .public-share-title,
+  .public-share-meta,
+  .public-share-secure-pill,
+  .public-share-card-title,
+  .public-share-card-subtitle {
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 640px) {
+    .public-share-page {
+      padding: 12px !important;
+    }
+
+    .public-share-hero {
+      border-radius: 22px !important;
+    }
+
+    .public-share-hero-inner {
+      flex-direction: column !important;
+      align-items: stretch !important;
+      gap: 18px !important;
+      padding: 18px !important;
+    }
+
+    .public-share-hero-main {
+      width: 100% !important;
+      flex: 0 0 auto !important;
+      gap: 14px !important;
+    }
+
+    .public-share-logo {
+      width: 62px !important;
+      height: 62px !important;
+      border-radius: 18px !important;
+      padding: 8px !important;
+      flex: 0 0 62px !important;
+    }
+
+    .public-share-hero-copy {
+      width: calc(100% - 76px) !important;
+      min-width: 0 !important;
+      flex: 1 1 auto !important;
+    }
+
+    .public-share-eyebrow {
+      font-size: 11px !important;
+      letter-spacing: 0.16em !important;
+      line-height: 1.35 !important;
+    }
+
+    .public-share-title {
+      max-width: 100% !important;
+      margin-top: 10px !important;
+      font-size: clamp(2rem, 10vw, 2.65rem) !important;
+      line-height: 0.98 !important;
+      letter-spacing: -0.05em !important;
+    }
+
+    .public-share-meta {
+      margin-top: 10px !important;
+      font-size: 14px !important;
+      line-height: 1.45 !important;
+    }
+
+    .public-share-secure-pill {
+      max-width: 100% !important;
+      border-radius: 16px !important;
+      padding: 8px 10px !important;
+      font-size: 12px !important;
+      line-height: 1.35 !important;
+      align-items: flex-start !important;
+    }
+
+    .public-share-hero-actions {
+      width: 100% !important;
+      min-width: 0 !important;
+      gap: 10px !important;
+    }
+
+    .public-share-count-pill {
+      align-self: stretch !important;
+      width: 100% !important;
+      justify-content: center !important;
+      text-align: center !important;
+      padding: 9px 12px !important;
+      font-size: 11px !important;
+      letter-spacing: 0.12em !important;
+    }
+
+    .public-share-primary-action {
+      width: 100% !important;
+      min-height: 54px !important;
+      border-radius: 18px !important;
+      font-size: 15px !important;
+    }
+
+    .public-share-body {
+      padding: 0 18px 18px !important;
+    }
+
+    .public-share-account-prompt {
+      flex-direction: column !important;
+      align-items: stretch !important;
+      padding: 16px !important;
+      border-radius: 20px !important;
+    }
+
+    .public-share-account-actions {
+      width: 100% !important;
+      display: grid !important;
+      grid-template-columns: 1fr !important;
+    }
+
+    .public-share-account-button {
+      width: 100% !important;
+      min-height: 44px !important;
+    }
+
+    .public-share-doc-grid {
+      grid-template-columns: 1fr !important;
+      gap: 14px !important;
+    }
+
+    .public-share-doc-card {
+      padding: 18px !important;
+      border-radius: 20px !important;
+    }
+
+    .public-share-doc-icon {
+      width: 52px !important;
+      height: 52px !important;
+      border-radius: 16px !important;
+    }
+
+    .public-share-document-pill {
+      padding: 7px 9px !important;
+      font-size: 10px !important;
+      letter-spacing: 0.12em !important;
+    }
+
+    .public-share-card-title {
+      margin-top: 16px !important;
+      font-size: 28px !important;
+      line-height: 1.08 !important;
+    }
+
+    .public-share-card-subtitle {
+      font-size: 15px !important;
+      line-height: 1.45 !important;
+    }
+
+    .public-share-open-button {
+      width: 100% !important;
+      justify-content: center !important;
+    }
+  }
+
+  @media (max-width: 380px) {
+    .public-share-hero-main {
+      flex-direction: column !important;
+    }
+
+    .public-share-hero-copy {
+      width: 100% !important;
+    }
+
+    .public-share-title {
+      font-size: 2rem !important;
+    }
+  }
+
+  @media print {
+    .no-print { display: none !important; }
+    body { background: white !important; }
+    @page { size: A4; margin: 1cm; }
+  }
+`;
+
 const SHARE_ITEM_META = {
   contract: {
     icon: FileText,
@@ -295,7 +479,7 @@ export default function PublicDocumentShare() {
   const stampUrl = payload?.settings?.stampUrl || null;
   const printablePdfUrl = payload?.pdfUrl || null;
   const accountPrompt = (
-    <div style={inlinePromptStyle} className="no-print">
+    <div style={inlinePromptStyle} className="no-print public-share-account-prompt">
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
@@ -303,11 +487,11 @@ export default function PublicDocumentShare() {
           </div>
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <a href="/login" style={{ ...PUBLIC_PROMPT_BUTTON, background: '#4f46e5', color: '#fff' }}>
+      <div className="public-share-account-actions" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <a href="/login" className="public-share-account-button" style={{ ...PUBLIC_PROMPT_BUTTON, background: '#4f46e5', color: '#fff' }}>
           {tr('Sign in', 'Se connecter')}
         </a>
-        <a href="/register" style={{ ...PUBLIC_PROMPT_BUTTON, background: '#fff', color: '#334155', border: '1px solid #cbd5e1' }}>
+        <a href="/register" className="public-share-account-button" style={{ ...PUBLIC_PROMPT_BUTTON, background: '#fff', color: '#334155', border: '1px solid #cbd5e1' }}>
           {tr('Create account', 'Créer un compte')}
         </a>
       </div>
@@ -340,38 +524,40 @@ export default function PublicDocumentShare() {
     const secureLabel = tr('Secure access • Private link', 'Accès sécurisé • Lien privé');
     const availableLabel = tr(`${hubItems.length} documents available`, `${hubItems.length} documents disponibles`);
     return (
-      <div style={pageWrapStyle}>
+      <div style={pageWrapStyle} className="public-share-page">
         <div style={contentWrapStyle}>
-          <div style={premiumHeroStyle}>
-            <div style={premiumHeroInnerStyle}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0, flex: 1 }}>
+          <div style={premiumHeroStyle} className="public-share-hero">
+            <div style={premiumHeroInnerStyle} className="public-share-hero-inner">
+              <div className="public-share-hero-main" style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0, flex: 1 }}>
                 <img
+                  className="public-share-logo"
                   src={logoUrl || '/assets/logo.jpg'}
                   alt="SaharaX"
                   style={{ width: 72, height: 72, objectFit: 'contain', borderRadius: 20, background: '#fff', border: '1px solid rgba(226,232,240,0.9)', padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,0.06)' }}
                   onError={(e) => { e.target.style.display = 'none'; }}
                 />
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#7c3aed' }}>
+                <div className="public-share-hero-copy" style={{ minWidth: 0, flex: 1 }}>
+                  <div className="public-share-eyebrow" style={{ fontSize: 12, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#7c3aed' }}>
                     {tr('Shared Rental Access', 'Accès partagé location')}
                   </div>
-                  <h1 style={{ margin: '8px 0 0', fontSize: 32, lineHeight: 1.05, fontWeight: 800, letterSpacing: '-0.03em', color: '#0f172a' }}>
+                  <h1 className="public-share-title" style={{ margin: '8px 0 0', fontSize: 32, lineHeight: 1.05, fontWeight: 800, letterSpacing: '-0.03em', color: '#0f172a' }}>
                     {tr('Rental Documents', 'Documents de location')}
                   </h1>
-                  <p style={{ margin: '10px 0 0', color: '#475569', fontSize: 15, fontWeight: 600 }}>
+                  <p className="public-share-meta" style={{ margin: '10px 0 0', color: '#475569', fontSize: 15, fontWeight: 600 }}>
                     {[payload?.rentalId || tr('Booking', 'Réservation'), payload?.customerName || tr('Customer', 'Client')].filter(Boolean).join(' • ')}
                   </p>
-                  <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 999, background: 'rgba(255,255,255,0.68)', border: '1px solid rgba(196,181,253,0.45)', color: '#5b21b6', fontSize: 13, fontWeight: 700 }}>
+                  <div className="public-share-secure-pill" style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 999, background: 'rgba(255,255,255,0.68)', border: '1px solid rgba(196,181,253,0.45)', color: '#5b21b6', fontSize: 13, fontWeight: 700 }}>
                     <Lock size={14} />
                     <span>{secureLabel}</span>
                   </div>
                 </div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 10, minWidth: 220 }}>
-                <div style={{ alignSelf: 'flex-end', padding: '8px 12px', borderRadius: 999, background: 'rgba(255,255,255,0.68)', border: '1px solid rgba(196,181,253,0.45)', color: '#6d28d9', fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              <div className="public-share-hero-actions" style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 10, minWidth: 220 }}>
+                <div className="public-share-count-pill" style={{ alignSelf: 'flex-end', padding: '8px 12px', borderRadius: 999, background: 'rgba(255,255,255,0.68)', border: '1px solid rgba(196,181,253,0.45)', color: '#6d28d9', fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
                   {availableLabel}
                 </div>
                 <button
+                  className="public-share-primary-action"
                   type="button"
                   onClick={() => {
                     const firstUrl = hubItems[0]?.url;
@@ -409,15 +595,16 @@ export default function PublicDocumentShare() {
               </div>
             </div>
 
-            <div style={{ padding: '0 24px 24px' }}>
+            <div className="public-share-body" style={{ padding: '0 24px 24px' }}>
               {accountPrompt}
               <div style={{ height: 18 }} />
-              <div style={docGridStyle}>
+              <div style={docGridStyle} className="public-share-doc-grid">
                 {hubItems.map((item) => {
                   const meta = SHARE_ITEM_META[item.key] || SHARE_ITEM_META.receipt;
                   const Icon = meta.icon || FileText;
                   return (
                     <a
+                      className="public-share-doc-card"
                       key={item.key}
                       href={item.url}
                       target="_blank"
@@ -435,21 +622,21 @@ export default function PublicDocumentShare() {
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-                        <div style={{ width: 58, height: 58, borderRadius: 18, background: meta.accent?.tint || 'linear-gradient(135deg, rgba(99,102,241,0.14), rgba(59,130,246,0.08))', border: `1px solid ${meta.accent?.border || 'rgba(196,181,253,0.35)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.72)' }}>
+                        <div className="public-share-doc-icon" style={{ width: 58, height: 58, borderRadius: 18, background: meta.accent?.tint || 'linear-gradient(135deg, rgba(99,102,241,0.14), rgba(59,130,246,0.08))', border: `1px solid ${meta.accent?.border || 'rgba(196,181,253,0.35)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.72)' }}>
                           <Icon size={24} color={meta.accent?.color || '#5b21b6'} />
                         </div>
-                        <div style={{ padding: '8px 10px', borderRadius: 999, background: '#f8fafc', color: '#64748b', fontSize: 11, fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+                        <div className="public-share-document-pill" style={{ padding: '8px 10px', borderRadius: 999, background: '#f8fafc', color: '#64748b', fontSize: 11, fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
                           {tr('Document', 'Document')}
                         </div>
                       </div>
-                      <div style={{ marginTop: 18, fontSize: 24, lineHeight: 1.1, fontWeight: 800, letterSpacing: '-0.02em' }}>
+                      <div className="public-share-card-title" style={{ marginTop: 18, fontSize: 24, lineHeight: 1.1, fontWeight: 800, letterSpacing: '-0.02em' }}>
                         {isFrench ? meta.title.fr : meta.title.en}
                       </div>
-                      <div style={{ marginTop: 10, color: '#64748b', lineHeight: 1.5, fontSize: 15 }}>
+                      <div className="public-share-card-subtitle" style={{ marginTop: 10, color: '#64748b', lineHeight: 1.5, fontSize: 15 }}>
                         {isFrench ? meta.subtitle.fr : meta.subtitle.en}
                       </div>
                       <div style={{ marginTop: 18 }}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderRadius: 14, background: '#f8fafc', border: '1px solid rgba(226,232,240,0.95)', color: '#0f172a', fontSize: 14, fontWeight: 800 }}>
+                        <span className="public-share-open-button" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderRadius: 14, background: '#f8fafc', border: '1px solid rgba(226,232,240,0.95)', color: '#0f172a', fontSize: 14, fontWeight: 800 }}>
                           {tr('Open document', 'Ouvrir le document')}
                           <ArrowRight size={16} />
                         </span>
@@ -461,12 +648,13 @@ export default function PublicDocumentShare() {
             </div>
           </div>
         </div>
+        <style>{publicDocumentShareStyles}</style>
       </div>
     );
   }
 
   return (
-    <div style={pageWrapStyle}>
+    <div style={pageWrapStyle} className="public-share-page">
       <div style={{ maxWidth: 980, margin: '0 auto 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }} className="no-print">
         <div>
           <div style={{ color: '#6366f1', fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
@@ -539,13 +727,7 @@ export default function PublicDocumentShare() {
         )}
       </div>
 
-      <style>{`
-        @media print {
-          .no-print { display: none !important; }
-          body { background: white !important; }
-          @page { size: A4; margin: 1cm; }
-        }
-      `}</style>
+      <style>{publicDocumentShareStyles}</style>
     </div>
   );
 }
