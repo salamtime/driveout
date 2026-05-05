@@ -10769,8 +10769,16 @@ useEffect(() => {
     }
   };
   const reserveWhatsAppWindow = () => {
+    const reservationKey =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    const launcherUrl = `/whatsapp-launcher.html?key=${encodeURIComponent(reservationKey)}`;
+
     try {
-      return window.open('about:blank', '_blank');
+      const popup = window.open(launcherUrl, '_blank');
+      return popup ? { popup, reservationKey } : null;
     } catch {
       return null;
     }
@@ -10778,8 +10786,11 @@ useEffect(() => {
 
   const closeReservedWhatsAppWindow = (reservedWindow) => {
     try {
-      if (reservedWindow && !reservedWindow.closed) {
-        reservedWindow.close();
+      if (reservedWindow?.reservationKey && typeof window !== 'undefined') {
+        window.localStorage.removeItem(`wa-launch:${reservedWindow.reservationKey}`);
+      }
+      if (reservedWindow?.popup && !reservedWindow.popup.closed) {
+        reservedWindow.popup.close();
       }
     } catch {}
   };
@@ -10789,8 +10800,12 @@ useEffect(() => {
     if (RENTAL_DEBUG) console.log('🔗 Navigating to WhatsApp URL:', url);
 
     try {
-      if (reservedWindow && !reservedWindow.closed) {
-        reservedWindow.location.href = url;
+      if (reservedWindow?.reservationKey && typeof window !== 'undefined') {
+        window.localStorage.setItem(`wa-launch:${reservedWindow.reservationKey}`, url);
+        return;
+      }
+      if (reservedWindow?.popup && !reservedWindow.popup.closed) {
+        reservedWindow.popup.location.href = url;
         return;
       }
       window.location.href = url;
