@@ -5160,6 +5160,8 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
   const appliedKilometerPackagePrice = appliedKilometerPackage
     ? getPackageDisplayTotal(rental, appliedKilometerPackage)
     : 0;
+  const lateFeeApiEnabled = false;
+
   // Calculate late fee for completed rentals (guarded to prevent duplicate calls)
   useEffect(() => {
     const calculateLateFee = async () => {
@@ -5167,6 +5169,10 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
         // Guard: only calculate once per rental ID
         if (lateFeeCalculatedRef.current === rental?.id) return;
         if (lateFeeUnavailableRef.current) return;
+        if (!lateFeeApiEnabled) {
+          lateFeeUnavailableRef.current = true;
+          return;
+        }
         lateFeeCalculatedRef.current = rental?.id;
         try {
           const isLocalDev =
