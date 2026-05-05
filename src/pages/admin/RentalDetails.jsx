@@ -6030,7 +6030,7 @@ Click the link above to review and approve the extension.`;
     const selectedItems = [];
 
     if (options.contract && canShareContractDocument) {
-      const contractDocumentUrl = await getContractWebUrl();
+      const contractDocumentUrl = await getContractUrl();
       if (contractDocumentUrl) {
         selectedItems.push({
           key: 'contract',
@@ -6043,7 +6043,7 @@ Click the link above to review and approve the extension.`;
     }
 
     if (options.receipt && canShareReceiptDocument) {
-      const receiptDocumentUrl = await getReceiptWebUrl();
+      const receiptDocumentUrl = await getReceiptUrl();
       if (receiptDocumentUrl) {
         selectedItems.push({
           key: 'receipt',
@@ -6165,10 +6165,15 @@ Click the link above to review and approve the extension.`;
         `Voici les éléments de votre location ${rental.rental_id} :`
       );
 
-      const documentsHubUrl =
-        selectedItems.length > 1
-          ? await getDocumentsHubShareUrl({ items: selectedItems })
-          : null;
+      let documentsHubUrl = null;
+      if (selectedItems.length > 1) {
+        try {
+          documentsHubUrl = await getDocumentsHubShareUrl({ items: selectedItems });
+        } catch (shareError) {
+          console.warn('Documents hub share unavailable, falling back to direct item links:', shareError);
+          documentsHubUrl = null;
+        }
+      }
 
       const shouldUseDocumentsHub = Boolean(documentsHubUrl);
       const message = shouldUseDocumentsHub
@@ -6269,10 +6274,15 @@ Click the link above to review and approve the extension.`;
         return;
       }
 
-      const documentsHubUrl =
-        selectedItems.length > 1
-          ? await getDocumentsHubShareUrl({ items: selectedItems })
-          : null;
+      let documentsHubUrl = null;
+      if (selectedItems.length > 1) {
+        try {
+          documentsHubUrl = await getDocumentsHubShareUrl({ items: selectedItems });
+        } catch (shareError) {
+          console.warn('Documents hub share unavailable, falling back to direct item links:', shareError);
+          documentsHubUrl = null;
+        }
+      }
 
       await sendRentalDocumentsEmail({
         toEmail: recipientEmail,
