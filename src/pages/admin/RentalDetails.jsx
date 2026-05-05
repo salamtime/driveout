@@ -5928,43 +5928,17 @@ Click the link above to review and approve the extension.`;
   const getContractWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('contract');
     if (!pdfUrl) return null;
-
-    return await createShortDocumentShareRecord({
-      shareType: 'contract',
-      documentType: 'contract',
-      payload: {
-        language: documentLanguage,
-        rentalLookupId: rental?.id || null,
-        rentalId: rental?.rental_id || rental?.id || '',
-        customerName: contractRentalData?.customer_name || rental?.customer_name || '',
-        settings: {
-          logoUrl,
-          stampUrl,
-        },
-        pdfUrl,
-      },
-    });
+    const publicViewUrl = await buildSharedDocumentUrl('contract', { pdfUrl });
+    if (!publicViewUrl) return null;
+    return await shortenUrlService(publicViewUrl, rental?.id || null, 'contract');
   };
 
   const getReceiptWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('receipt');
     if (!pdfUrl) return null;
-
-    return await createShortDocumentShareRecord({
-      shareType: 'receipt',
-      documentType: 'receipt',
-      payload: {
-        language: documentLanguage,
-        rentalLookupId: rental?.id || null,
-        rentalId: rental?.rental_id || rental?.id || '',
-        customerName: receiptRentalData?.customer_name || rental?.customer_name || '',
-        settings: {
-          logoUrl,
-          stampUrl,
-        },
-        pdfUrl,
-      },
-    });
+    const publicViewUrl = await buildSharedDocumentUrl('receipt', { pdfUrl });
+    if (!publicViewUrl) return null;
+    return await shortenUrlService(publicViewUrl, rental?.id || null, 'receipt');
   };
 
   const getOpeningMediaShareUrl = async () => {
