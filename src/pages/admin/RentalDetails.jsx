@@ -2217,6 +2217,10 @@ const openReplacementResumeWorkflow = useCallback(() => {
   );
 
   useEffect(() => {
+    if (!showReplaceVehicleDialog) {
+      return;
+    }
+
     let isMounted = true;
 
     const loadFleetLocations = async () => {
@@ -2226,6 +2230,9 @@ const openReplacementResumeWorkflow = useCallback(() => {
         setFleetLocations(locations);
       } catch (locationError) {
         console.error('Failed to load fleet locations in rental details:', locationError);
+        if (isMounted) {
+          setFleetLocations([]);
+        }
       }
     };
 
@@ -2234,7 +2241,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [showReplaceVehicleDialog]);
 
   useEffect(() => {
     const vehicleLocationId = rental?.vehicle?.location_id;
@@ -5921,13 +5928,6 @@ Click the link above to review and approve the extension.`;
   const getContractWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('contract');
     if (!pdfUrl) return null;
-    const contractSnapshot = contractRentalData
-      ? {
-          ...contractRentalData,
-          vehicleReport: contractRentalData?.vehicleReport || contractRentalData?.vehicle_report || null,
-          vehicle_report: contractRentalData?.vehicle_report || contractRentalData?.vehicleReport || null,
-        }
-      : null;
 
     return await createShortDocumentShareRecord({
       shareType: 'contract',
@@ -5937,7 +5937,6 @@ Click the link above to review and approve the extension.`;
         rentalLookupId: rental?.id || null,
         rentalId: rental?.rental_id || rental?.id || '',
         customerName: contractRentalData?.customer_name || rental?.customer_name || '',
-        rental: contractSnapshot,
         settings: {
           logoUrl,
           stampUrl,
@@ -5960,13 +5959,6 @@ Click the link above to review and approve the extension.`;
   const getReceiptWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('receipt');
     if (!pdfUrl) return null;
-    const receiptSnapshot = receiptRentalData
-      ? {
-          ...receiptRentalData,
-          vehicleReport: receiptRentalData?.vehicleReport || receiptRentalData?.vehicle_report || null,
-          vehicle_report: receiptRentalData?.vehicle_report || receiptRentalData?.vehicleReport || null,
-        }
-      : null;
 
     return await createShortDocumentShareRecord({
       shareType: 'receipt',
@@ -5976,7 +5968,6 @@ Click the link above to review and approve the extension.`;
         rentalLookupId: rental?.id || null,
         rentalId: rental?.rental_id || rental?.id || '',
         customerName: receiptRentalData?.customer_name || rental?.customer_name || '',
-        rental: receiptSnapshot,
         settings: {
           logoUrl,
           stampUrl,
