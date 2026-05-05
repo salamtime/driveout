@@ -3071,6 +3071,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
 
   // WhatsApp modal state
   const [whatsappModalOpen, setWhatsappModalOpen] = useState(false);
+  const [pendingWhatsAppShare, setPendingWhatsAppShare] = useState(null);
   const [whatsappOptions, setWhatsappOptions] = useState({
     contract: true,
     receipt: true,
@@ -5281,8 +5282,12 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
       const message = `Hi ${rental.customer_name}!\n\nYour rental documents:\nInvoice: ${invoiceUrl}\nVideo: ${videoUrl}\n\nThank you!`;
       
       const whatsappUrl = buildWhatsAppSendUrl(syncedCustomerPhone, message);
-
-      window.location.href = whatsappUrl;
+      presentPreparedWhatsAppShare({
+        url: whatsappUrl,
+        message,
+        title: tr('WhatsApp message is ready', 'Le message WhatsApp est prêt'),
+        summary: tr('Invoice and latest media link prepared.', 'Facture et dernier média préparés.'),
+      });
 
     } catch (err) {
       console.error('❌ Error:', err);
@@ -5536,7 +5541,12 @@ Click the link above to review and approve the extension.`;
       const message = `Here is your contract:\n${contractUrl}`;
       const whatsappUrl = buildWhatsAppSendUrl(syncedCustomerPhone, message);
 
-      openWhatsAppUrl(whatsappUrl);
+      presentPreparedWhatsAppShare({
+        url: whatsappUrl,
+        message,
+        title: tr('Contract message is ready', 'Le message du contrat est prêt'),
+        summary: tr('One contract link prepared for WhatsApp.', 'Un lien contrat préparé pour WhatsApp.'),
+      });
     } catch (error) {
       console.error('Error sending contract:', error);
       toast.error('Failed to send contract. Please try again.');
@@ -5561,7 +5571,12 @@ Click the link above to review and approve the extension.`;
       const message = `Here is your receipt:\n${receiptUrl}`;
       const whatsappUrl = buildWhatsAppSendUrl(syncedCustomerPhone, message);
 
-      openWhatsAppUrl(whatsappUrl);
+      presentPreparedWhatsAppShare({
+        url: whatsappUrl,
+        message,
+        title: tr('Receipt message is ready', 'Le message du reçu est prêt'),
+        summary: tr('One receipt link prepared for WhatsApp.', 'Un lien reçu préparé pour WhatsApp.'),
+      });
     } catch (error) {
       console.error('Error sending receipt:', error);
       toast.error('Failed to send receipt. Please try again.');
@@ -6112,7 +6127,6 @@ Click the link above to review and approve the extension.`;
   // Handle WhatsApp selection and sending - INSTANT WEB VIEW VERSION
   const handleSendWhatsAppSelection = async (options) => {
     setIsSharing(true);
-    setWhatsappModalOpen(false);
     toast.loading('Preparing documents…', { id: 'wa-prepare' });
     
     try {
@@ -6127,6 +6141,7 @@ Click the link above to review and approve the extension.`;
       
       // If no lines were added (no documents), don't send WhatsApp
       if (!hasDocuments) {
+        toast.dismiss('wa-prepare');
         toast.error('No documents selected or documents are not ready yet. Please try again in a moment.');
         setIsSharing(false);
         return;
@@ -6167,7 +6182,16 @@ Click the link above to review and approve the extension.`;
       if (RENTAL_DEBUG) console.log('📱 Opening WhatsApp with URL:', whatsappUrl);
       
       toast.dismiss('wa-prepare');
-      openWhatsAppUrl(whatsappUrl);
+      presentPreparedWhatsAppShare({
+        url: whatsappUrl,
+        message,
+        title: tr('WhatsApp share is ready', 'Le partage WhatsApp est prêt'),
+        summary: shouldUseDocumentsHub
+          ? tr('One public link will open all selected rental items.', 'Un seul lien public ouvrira tous les éléments sélectionnés.')
+          : tr('Selected rental links are prepared for WhatsApp.', 'Les liens sélectionnés sont prêts pour WhatsApp.'),
+        documentsHubUrl,
+        itemCount: selectedItems.length,
+      });
       
     } catch (error) {
       toast.dismiss('wa-prepare');
@@ -10760,7 +10784,9 @@ useEffect(() => {
       params.set('phone', cleanPhone);
     }
     params.set('text', message || '');
-    return `https://api.whatsapp.com/send?${params.toString()}`;
+    const isMobileDevice = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+    const baseUrl = isMobileDevice ? 'https://api.whatsapp.com/send' : 'https://web.whatsapp.com/send';
+    return `${baseUrl}?${params.toString()}`;
   };
 
   const openWhatsAppUrl = (url) => {
@@ -10772,6 +10798,25 @@ useEffect(() => {
       if (RENTAL_DEBUG) console.log('WhatsApp navigation failed');
       toast.error(`WhatsApp blocked by browser. Please copy this link manually: | ${url}`);
     }
+  };
+
+  const presentPreparedWhatsAppShare = ({ url, message, title, summary, documentsHubUrl = null, itemCount = null }) => {
+    if (!url) {
+      toast.error(tr('WhatsApp link could not be prepared.', 'Le lien WhatsApp n’a pas pu être préparé.'));
+      return;
+    }
+
+    setPendingWhatsAppShare({
+      url,
+      message,
+      title,
+      summary,
+      documentsHubUrl,
+      itemCount,
+      preparedAt: new Date().toISOString(),
+    });
+    setWhatsappModalOpen(true);
+    toast.success(tr('WhatsApp is ready. Tap Open WhatsApp.', 'WhatsApp est prêt. Appuyez sur Ouvrir WhatsApp.'));
   };
 
   const handleContactCustomerWhatsApp = () => {
@@ -24307,18 +24352,99 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       </div>
 
       {/* WhatsApp Send Modal */}
-      <Dialog open={whatsappModalOpen} onOpenChange={setWhatsappModalOpen}>
+      <Dialog
+        open={whatsappModalOpen}
+        onOpenChange={(open) => {
+          setWhatsappModalOpen(open);
+          if (!open) {
+            setPendingWhatsAppShare(null);
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-md rounded-2xl border border-slate-200 bg-white p-0 shadow-xl overflow-hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 border-b border-slate-100 bg-gradient-to-r from-white via-violet-50 to-white px-6 py-5">
               <FaWhatsapp className="text-violet-600" />
-              {tr('Send via WhatsApp', 'Envoyer via WhatsApp')}
+              {pendingWhatsAppShare?.title || tr('Send via WhatsApp', 'Envoyer via WhatsApp')}
             </DialogTitle>
             <DialogDescription className="chat-copy-body px-6 pt-3 text-slate-600">
-              {tr('Select items to send to', 'Sélectionnez les éléments à envoyer à')} {rental.customer_name}
+              {pendingWhatsAppShare
+                ? tr('Tap the button below to open WhatsApp. This avoids Chrome popup blocking.', 'Appuyez sur le bouton ci-dessous pour ouvrir WhatsApp. Cela évite le blocage Chrome.')
+                : `${tr('Select items to send to', 'Sélectionnez les éléments à envoyer à')} ${rental.customer_name}`}
             </DialogDescription>
           </DialogHeader>
-          
+
+          {pendingWhatsAppShare ? (
+            <>
+              <div className="space-y-4 px-6 py-5">
+                <div className="rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-violet-50 p-4 shadow-sm">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-emerald-500 text-white shadow-sm">
+                      <FaWhatsapp size={22} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="chat-copy-title text-slate-950">
+                        {pendingWhatsAppShare.summary || tr('Your WhatsApp message is prepared.', 'Votre message WhatsApp est préparé.')}
+                      </p>
+                      <p className="chat-copy-body mt-1 text-slate-600">
+                        {pendingWhatsAppShare.itemCount
+                          ? tr(`${pendingWhatsAppShare.itemCount} selected item(s) ready to share.`, `${pendingWhatsAppShare.itemCount} élément(s) prêt(s) à partager.`)
+                          : tr('Ready to send to the customer.', 'Prêt à envoyer au client.')}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {pendingWhatsAppShare.documentsHubUrl && (
+                  <a
+                    href={pendingWhatsAppShare.documentsHubUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700 transition-colors hover:bg-violet-100"
+                  >
+                    <span>{tr('Preview public multi-link page', 'Prévisualiser la page publique multi-liens')}</span>
+                    <Share2 className="h-4 w-4" />
+                  </a>
+                )}
+              </div>
+
+              <div className="border-t border-slate-100 px-6 pb-5 pt-4">
+                <div className="flex flex-wrap gap-3">
+                  <Button
+                    variant="outline"
+                    onClick={() => setPendingWhatsAppShare(null)}
+                    className={SECONDARY_ACTION_BUTTON_CLASS}
+                  >
+                    {tr('Back', 'Retour')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(pendingWhatsAppShare.message || '');
+                        toast.success(tr('WhatsApp message copied.', 'Message WhatsApp copié.'));
+                      } catch {
+                        toast.error(tr('Could not copy the message.', 'Impossible de copier le message.'));
+                      }
+                    }}
+                    className={SECONDARY_ACTION_BUTTON_CLASS}
+                  >
+                    {tr('Copy message', 'Copier le message')}
+                  </Button>
+                  <Button asChild className={`${SUCCESS_ACTION_BUTTON_CLASS} flex items-center gap-2`}>
+                    <a
+                      href={pendingWhatsAppShare.url}
+                      target="_self"
+                    >
+                      <FaWhatsapp size={18} />
+                      {tr('Open WhatsApp', 'Ouvrir WhatsApp')}
+                    </a>
+                  </Button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
           <div className="space-y-3 px-6 py-4">
             {/* Contract Box */}
             <div 
@@ -24456,16 +24582,19 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         </Button>
         <Button
           className={`${PRIMARY_ACTION_BUTTON_CLASS} flex items-center gap-2`}
+          disabled={isSharing}
           onClick={async () => {
             // Use the updated handleSendWhatsAppSelection function
             await handleSendWhatsAppSelection(whatsappOptions);
           }}
         >
           <FaWhatsapp size={18} />
-          {tr('Send via WhatsApp', 'Envoyer via WhatsApp')}
+          {isSharing ? tr('Preparing...', 'Préparation...') : tr('Send via WhatsApp', 'Envoyer via WhatsApp')}
         </Button>
       </div>
       </div>
+            </>
+          )}
     </DialogContent>
   </Dialog>
 
