@@ -6043,7 +6043,7 @@ Click the link above to review and approve the extension.`;
     }
 
     if (options.receipt && canShareReceiptDocument) {
-      const receiptDocumentUrl = await getReceiptUrl();
+      const receiptDocumentUrl = await getReceiptWebUrl();
       if (receiptDocumentUrl) {
         selectedItems.push({
           key: 'receipt',
