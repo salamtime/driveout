@@ -7,8 +7,15 @@ import {
   PLATFORM_TENANTS_TABLE,
   PLATFORM_TENANT_PROVISIONING_JOBS_TABLE,
 } from './_lib/supabase.js';
-import { normalizeBillingStatus, normalizePlanType, normalizeSubscriptionStatus } from './_lib/tenantRegistry.js';
+import {
+  normalizeBillingStatus,
+  normalizePlanType,
+  normalizeSubscriptionStatus,
+  resolveTenantTenancyMode,
+  runPlatformTenantSelectWithModeFallback,
+} from './_lib/tenantRegistry.js';
 import { authenticateRequest } from './_lib/auth.js';
+import { stampTenantPayload } from './_lib/sharedTenantIsolation.js';
 import { getTenantPlanLimits } from '../src/config/tenantPlans.js';
 import { DEFAULT_RENTAL_TIMING_SETTINGS, deriveEffectiveRentalStatus } from '../src/utils/rentalLifecycle.js';
 import { buildDefaultPermissionsForRole, buildBusinessOwnerPermissionMap } from '../src/utils/permissionCatalog.js';
@@ -762,10 +769,41 @@ const isSharedMessagesSchemaUnavailable = (error) => {
   );
 };
 
-const insertMarketplaceSharedMessage = async (adminClient, payload = {}) => {
+const buildOrganizationStampScope = (organizationId = null) => ({
+  isShared: Boolean(organizationId),
+  organizationId: organizationId || null,
+});
+
+const loadUserOrganizationId = async (adminClient, userId) => {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) return null;
+
+  const { data: profile } = await adminClient
+    .from(APP_USERS_TABLE)
+    .select('primary_organization_id')
+    .eq('id', normalizedUserId)
+    .maybeSingle();
+
+  const profileOrganizationId = String(profile?.primary_organization_id || '').trim();
+  if (profileOrganizationId) {
+    return profileOrganizationId;
+  }
+
+  const { data: membership } = await adminClient
+    .from(ORGANIZATION_MEMBERS_TABLE)
+    .select('organization_id')
+    .eq('user_id', normalizedUserId)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  return String(membership?.organization_id || '').trim() || null;
+};
+
+const insertMarketplaceSharedMessage = async (adminClient, payload = {}, tenantScope = null) => {
   const { error } = await adminClient
     .from(SHARED_MESSAGES_TABLE)
-    .insert(payload);
+    .insert(stampTenantPayload(payload, tenantScope));
 
   if (error) {
     if (isSharedMessagesSchemaUnavailable(error)) return false;
@@ -775,14 +813,14 @@ const insertMarketplaceSharedMessage = async (adminClient, payload = {}) => {
   return true;
 };
 
-const upsertMarketplaceThreadState = async (adminClient, payload = {}) => {
+const upsertMarketplaceThreadState = async (adminClient, payload = {}, tenantScope = null) => {
   const threadKey = String(payload.thread_key || '').trim();
   if (!threadKey) return false;
 
   const { error } = await adminClient
     .from(SHARED_MESSAGE_THREADS_TABLE)
     .upsert({
-      ...payload,
+      ...stampTenantPayload(payload, tenantScope),
       updated_at: new Date().toISOString(),
     }, {
       onConflict: 'thread_key',
@@ -806,6 +844,7 @@ const seedMarketplaceApprovalMessages = async ({
   approvedAt,
   commissionAmount = 0,
   depositAmount = 0,
+  tenantScope = null,
 }) => {
   const requestId = String(requestRow?.id || '').trim();
   const customerUserId = String(requestRow?.customer_id || '').trim();
@@ -903,7 +942,7 @@ const seedMarketplaceApprovalMessages = async ({
         roleContext: threadDefinition.roleContext,
         href: threadDefinition.href,
       },
-    });
+    }, tenantScope);
 
     await insertMarketplaceSharedMessage(adminClient, {
       thread_key: threadKey,
@@ -924,7 +963,7 @@ const seedMarketplaceApprovalMessages = async ({
         href: threadDefinition.href,
       },
       status: 'sent',
-    });
+    }, tenantScope);
 
     await insertMarketplaceSharedMessage(adminClient, {
       thread_key: threadKey,
@@ -946,7 +985,7 @@ const seedMarketplaceApprovalMessages = async ({
         autoWelcome: true,
       },
       status: 'sent',
-    });
+    }, tenantScope);
   }
 };
 
@@ -1018,6 +1057,9 @@ const approveOwnerMarketplaceRequest = async (adminClient, user, requestId, owne
   if (!normalizedRequestId) {
     throw new Error('Booking reference missing');
   }
+
+  const ownerOrganizationId = await loadUserOrganizationId(adminClient, ownerUserId);
+  const tenantScope = buildOrganizationStampScope(ownerOrganizationId);
 
   const { data: requestRow, error: requestError } = await adminClient
     .from(BOOKING_REQUESTS_TABLE)
@@ -1244,6 +1286,7 @@ const approveOwnerMarketplaceRequest = async (adminClient, user, requestId, owne
     approvedAt,
     commissionAmount,
     depositAmount,
+    tenantScope,
   });
 
   await insertRentalEvent(adminClient, {
@@ -2173,6 +2216,37 @@ const loadOrganizationContext = async (adminClient, userId, profile) => {
   };
 };
 
+const isTenantRecordReadyForCurrentMode = (tenantRecord = {}) => {
+  if (!tenantRecord?.id) return false;
+
+  const tenantStatus = String(tenantRecord?.tenant_status || '').trim().toLowerCase();
+  if (tenantStatus !== 'active') {
+    return false;
+  }
+
+  const tenancyMode = resolveTenantTenancyMode(tenantRecord);
+  const metadata = tenantRecord?.metadata && typeof tenantRecord.metadata === 'object'
+    ? tenantRecord.metadata
+    : {};
+
+  if (tenancyMode === 'shared') {
+    return Boolean(
+      String(
+        metadata.organization_id ||
+        metadata.shared_organization_id ||
+        ''
+      ).trim()
+    );
+  }
+
+  return Boolean(
+    tenantRecord?.tenant_project_ref &&
+    tenantRecord?.tenant_app_url &&
+    tenantRecord?.tenant_api_url &&
+    tenantRecord?.tenant_anon_key
+  );
+};
+
 const loadProfileWithCompatibility = async (adminClient, userId) => {
   const fallbackCoreFields = splitSelectFields(CORE_PROFILE_FIELDS);
   let fields = splitSelectFields(BUSINESS_OWNER_PROFILE_FIELDS);
@@ -2793,11 +2867,13 @@ export default async function handler(req, res) {
             { onConflict: 'business_account_id' }
           );
 
-        const { data: tenantRecord } = await adminClient
-          .from(PLATFORM_TENANTS_TABLE)
-          .select('id, tenant_status, tenant_project_ref, tenant_app_url, tenant_api_url, tenant_anon_key, metadata')
-          .eq('business_account_id', businessAccount.id)
-          .maybeSingle();
+        const { data: tenantRecord } = await runPlatformTenantSelectWithModeFallback((selectClause) =>
+          adminClient
+            .from(PLATFORM_TENANTS_TABLE)
+            .select(selectClause)
+            .eq('business_account_id', businessAccount.id)
+            .maybeSingle()
+        );
 
         if (tenantRecord?.id) {
           await adminClient
@@ -2828,14 +2904,7 @@ export default async function handler(req, res) {
           .limit(1)
           .maybeSingle();
 
-        const tenantAlreadyProvisioned = Boolean(
-          tenantRecord?.id &&
-          String(tenantRecord?.tenant_status || '').trim().toLowerCase() === 'active' &&
-          tenantRecord?.tenant_project_ref &&
-          tenantRecord?.tenant_app_url &&
-          tenantRecord?.tenant_api_url &&
-          tenantRecord?.tenant_anon_key
-        );
+        const tenantAlreadyProvisioned = isTenantRecordReadyForCurrentMode(tenantRecord);
 
         if (!existingProvisioningJob?.id && !tenantAlreadyProvisioned) {
           await adminClient

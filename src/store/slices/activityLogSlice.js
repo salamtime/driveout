@@ -1,10 +1,5 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../utils/supabaseClient';
-import { TABLE_NAMES } from '../../config/tableNames';
-
-const TABLES = {
-  ACTIVITY_LOG: TABLE_NAMES.ACTIVITY_LOG
-};
+import ActivityLogService from '../../services/ActivityLogService';
 
 // Async thunks
 export const fetchActivityLogs = createAsyncThunk(
@@ -13,17 +8,7 @@ export const fetchActivityLogs = createAsyncThunk(
     try {
       console.log('🔄 Fetching activity logs...');
       
-      const { data, error } = await supabase
-        .from(TABLES.ACTIVITY_LOG)
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100);
-      
-      if (error) {
-        console.error('❌ Activity logs fetch error:', error);
-        throw error;
-      }
-      
+      const data = await ActivityLogService.getLogs({ limit: 100 });
       console.log('✅ Activity logs fetched successfully:', data?.length || 0, 'logs');
       return data || [];
     } catch (error) {
@@ -39,21 +24,9 @@ export const createActivityLog = createAsyncThunk(
     try {
       console.log('🔄 Creating activity log:', logData);
       
-      const { data, error } = await supabase
-        .from(TABLES.ACTIVITY_LOG)
-        .insert([{
-          ...logData,
-          created_at: new Date().toISOString()
-        }])
-        .select();
-      
-      if (error) {
-        console.error('❌ Activity log create error:', error);
-        throw error;
-      }
-      
-      console.log('✅ Activity log created successfully:', data[0]);
-      return data[0];
+      const data = await ActivityLogService.createLog(logData);
+      console.log('✅ Activity log created successfully:', data);
+      return data;
     } catch (error) {
       console.error('❌ Activity log create failed:', error);
       return rejectWithValue(error.message);
@@ -68,36 +41,24 @@ export const subscribeToActivityLogs = createAsyncThunk(
     try {
       console.log('🔄 Setting up activity logs realtime subscription...');
       
-      const subscription = supabase
-        .channel('activity_log_changes')
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: TABLES.ACTIVITY_LOG
-          },
-          (payload) => {
-            console.log('🔄 Activity log realtime event:', payload);
-            
-            switch (payload.eventType) {
-              case 'INSERT':
-                dispatch(activityLogSlice.actions.addActivityLog(payload.new));
-                break;
-              case 'UPDATE':
-                dispatch(activityLogSlice.actions.updateActivityLog(payload.new));
-                break;
-              case 'DELETE':
-                dispatch(activityLogSlice.actions.removeActivityLog(payload.old.id));
-                break;
-              default:
-                console.log('Unknown event type:', payload.eventType);
-            }
+      const subscription = await ActivityLogService.subscribe({
+        onChange: (payload) => {
+          console.log('🔄 Activity log realtime event:', payload);
+          switch (payload.eventType) {
+            case 'INSERT':
+              dispatch(activityLogSlice.actions.addActivityLog(payload.new));
+              break;
+            case 'UPDATE':
+              dispatch(activityLogSlice.actions.updateActivityLog(payload.new));
+              break;
+            case 'DELETE':
+              dispatch(activityLogSlice.actions.removeActivityLog(payload.old.id));
+              break;
+            default:
+              console.log('Unknown event type:', payload.eventType);
           }
-        )
-        .subscribe((status) => {
-          console.log('🔄 Activity log subscription status:', status);
-        });
+        },
+      });
       
       console.log('✅ Activity logs realtime subscription setup complete');
       return subscription;

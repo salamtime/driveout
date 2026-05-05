@@ -13,7 +13,7 @@ const normalizeInitialExtensionHours = (value) => {
   return Math.min(24, parsed);
 };
 
-export default function ExtensionRequestModal({ isOpen, onClose, rental, onExtensionCreated, currentUser, editingExtension = null, initialExtensionHours = 1 }) {
+export default function ExtensionRequestModal({ isOpen, onClose, rental, onExtensionCreated, currentUser, editingExtension = null, initialExtensionHours = 1, initialQuickExtensionConfig = null }) {
   const [extensionType, setExtensionType] = useState('hours');
   const [selectedHours, setSelectedHours] = useState(1);
   const [selectedDays, setSelectedDays] = useState(1);
@@ -90,19 +90,24 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
       setShowCalculator(isPackage);
       setError(null);
     } else {
-      setExtensionType('hours');
-      setSelectedHours(normalizedInitialExtensionHours);
-      setSelectedDays(1);
+      const presetType = initialQuickExtensionConfig?.extensionType === 'days' ? 'days' : 'hours';
+      const presetDays = Math.max(1, Math.ceil(Number(initialQuickExtensionConfig?.initialDays || 1)) || 1);
+      const presetUsePackage = Boolean(initialQuickExtensionConfig?.usePackagePricing && initialQuickExtensionConfig?.packageId);
+
+      setExtensionType(presetType);
+      setSelectedHours(presetType === 'hours' ? normalizedInitialExtensionHours : 1);
+      setSelectedDays(presetType === 'days' ? presetDays : 1);
       setManualPriceOverride(false);
       setCustomPrice('');
-      setUsePackagePricing(false);
+      setUsePackagePricing(presetUsePackage);
       setSelectedPackage(null);
       setPackagePrice(null);
-      setShowPackageSelector(false);
-      setShowCalculator(false);
+      setEstimatedKms(Math.max(1, Math.ceil(Number(initialQuickExtensionConfig?.estimatedKms || 150)) || 150));
+      setShowPackageSelector(presetUsePackage);
+      setShowCalculator(presetUsePackage);
       setError(null);
     }
-  }, [editingExtension, isOpen, normalizedInitialExtensionHours]);
+  }, [editingExtension, initialQuickExtensionConfig, isOpen, normalizedInitialExtensionHours]);
 
   useEffect(() => {
     if (!isOpen || !editingExtension || !availablePackages.length) return;
@@ -113,6 +118,18 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
       setSelectedPackage(matchingPackage);
     }
   }, [availablePackages, editingExtension, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || editingExtension || !initialQuickExtensionConfig?.packageId || !availablePackages.length) return;
+
+    const matchingPackage = availablePackages.find((pkg) => String(pkg.id) === String(initialQuickExtensionConfig.packageId));
+    if (matchingPackage) {
+      setSelectedPackage(matchingPackage);
+      setUsePackagePricing(true);
+      setShowPackageSelector(true);
+      setShowCalculator(true);
+    }
+  }, [availablePackages, editingExtension, initialQuickExtensionConfig, isOpen]);
 
   const fetchBaseRates = async () => {
     try {
@@ -147,11 +164,9 @@ export default function ExtensionRequestModal({ isOpen, onClose, rental, onExten
       console.log('Found ' + (data?.length || 0) + ' packages for ' + extensionType + ' (rate_type_id: ' + rateTypeId + '):', data);
       setAvailablePackages(data || []);
       
-      // Always clear selected package when fetching new packages (extension type changed)
+      // Reset package selection for the current rate type.
       setSelectedPackage(null);
       setPackagePrice(null);
-      setUsePackagePricing(false);
-      setShowPackageSelector(false);
     } catch (err) {
       console.error('Error fetching packages:', err);
     }

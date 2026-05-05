@@ -878,6 +878,26 @@ class FuelTransactionService {
     };
   }
 
+  async getFilteredDefaultFeedTransactions(transactionTypes = [], limit = 20) {
+    const normalizedTypes = Array.from(
+      new Set((transactionTypes || []).filter(Boolean).map((value) => String(value).trim().toLowerCase()))
+    );
+
+    if (normalizedTypes.length === 0) {
+      return [];
+    }
+
+    const feedFetchLimit = Math.max(limit * 5, 25);
+    const feed = await this.getDefaultTransactionsFeed({ limit: feedFetchLimit, offset: 0 });
+    if (!feed?.success) {
+      return [];
+    }
+
+    return (feed.transactions || [])
+      .filter((transaction) => normalizedTypes.includes(String(transaction.transaction_type || '').trim().toLowerCase()))
+      .slice(0, limit);
+  }
+
   async getDefaultTransactionsFeed(options = {}) {
     const { limit = 20, offset = 0 } = options;
 
@@ -1097,6 +1117,19 @@ class FuelTransactionService {
 
   async getTankRefills(options = {}) {
     const { limit } = options;
+    const feedTransactions = await this.getFilteredDefaultFeedTransactions(['tank_refill'], limit || 20);
+    if (feedTransactions.length > 0) {
+      return feedTransactions.map((transaction) => ({
+        ...transaction,
+        transaction_date: transaction.transaction_date ?? transaction.created_at ?? null,
+        liters_added: transaction.amount ?? transaction.liters_added ?? null,
+        total_cost: transaction.cost ?? transaction.total_cost ?? null,
+        unit_price: transaction.unit_price ?? null,
+        invoice_image: transaction.invoice_image ?? null,
+        refilled_by: transaction.performed_by_name ?? transaction.filled_by ?? 'System',
+      }));
+    }
+
     if (!(await this.tableExists(this.fuelRefillsTable))) {
       return [];
     }
@@ -1149,6 +1182,27 @@ class FuelTransactionService {
   async getVehicleRefills(options = {}) {
     const { limit } = options;
     const results = [];
+
+    const feedTransactions = await this.getFilteredDefaultFeedTransactions(['vehicle_refill'], limit || 20);
+    if (feedTransactions.length > 0) {
+      return feedTransactions.map((transaction) => ({
+        ...transaction,
+        liters_added: transaction.amount ?? transaction.liters_added ?? null,
+        total_cost: transaction.cost ?? transaction.total_cost ?? null,
+        unit_price: transaction.unit_price ?? null,
+        transaction_date: transaction.transaction_date ?? transaction.created_at ?? null,
+        fuel_station: transaction.fuel_station ?? null,
+        fuel_type: transaction.fuel_type ?? 'gasoline',
+        location: transaction.location ?? null,
+        refilled_by: transaction.performed_by_name ?? transaction.filled_by ?? null,
+        invoice_image: transaction.invoice_image ?? null,
+        performed_by_name: transaction.performed_by_name ?? 'System',
+        transaction_type: 'vehicle_refill',
+        source: transaction.source || 'direct_station',
+        receipt_media: transaction.receipt_media ?? this.normalizeReceiptMedia(transaction.invoice_image),
+        is_financial_expense: true,
+      }));
+    }
 
     if (await this.tableExists(this.vehicleFuelRefillsTable)) {
       let query = supabase

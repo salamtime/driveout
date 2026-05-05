@@ -177,10 +177,10 @@ const PendingApproval = () => {
     if (showsAutomaticWorkspacePreparation || displayStatus === 'approved') {
       return {
         icon: Clock3,
-        title: tr('Your private business workspace is being prepared', 'Votre espace business privé est en cours de préparation'),
+        title: tr('Your business workspace is being prepared', 'Votre espace business est en cours de préparation'),
         description: tr(
-          'We are creating your dedicated DriveOut workspace automatically. Keep this page open and we will take you in as soon as everything is ready.',
-          "Nous créons automatiquement votre espace DriveOut dédié. Gardez cette page ouverte et nous vous y emmènerons dès que tout sera prêt."
+          'We are preparing your DriveOut workspace automatically. Keep this page open and we will take you in as soon as everything is ready.',
+          "Nous préparons automatiquement votre espace DriveOut. Gardez cette page ouverte et nous vous y emmènerons dès que tout sera prêt."
         ),
         badge: tr('Preparing workspace', 'Préparation de l’espace'),
       };
@@ -213,8 +213,8 @@ const PendingApproval = () => {
             </h1>
             <p className="mt-3 max-w-2xl text-sm font-medium text-violet-100">
               {tr(
-                'Your business workspace is created automatically after signup. We are finishing the private tenant setup and will redirect you once it is ready.',
-                "Votre espace business est créé automatiquement après l’inscription. Nous terminons la configuration du tenant privé et vous redirigerons dès qu’il sera prêt."
+                'Your business workspace is created automatically after signup. We are finishing the tenant setup and will redirect you once it is ready.',
+                "Votre espace business est créé automatiquement après l’inscription. Nous terminons la configuration du tenant et vous redirigerons dès qu’il sera prêt."
               )}
             </p>
           </div>

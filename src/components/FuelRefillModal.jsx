@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Upload, Image as ImageIcon, FileText, Trash2 } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { uploadFile } from '../utils/storageUpload';
 
 const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
   const [formData, setFormData] = useState({
@@ -190,36 +190,25 @@ const FuelRefillModal = ({ isOpen, onClose, onSave }) => {
     const timestamp = Date.now();
     const randomStr = Math.random().toString(36).substring(2, 15);
     const fileName = `invoice-${timestamp}-${randomStr}.${fileExt}`;
-    const filePath = `invoices/${fileName}`;
+    const uploadResult = await uploadFile(file, {
+      bucket: 'fuel_invoices',
+      pathPrefix: 'fuel-invoices/invoices',
+      fileName,
+      optimizationProfile: 'document',
+    });
 
-    console.log('📤 Upload path:', filePath);
-
-    // Upload to Supabase Storage - NO FALLBACK, must succeed
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('fuel_invoices')
-      .upload(filePath, file, {
-        cacheControl: '3600',
-        upsert: false
-      });
-
-    if (uploadError) {
-      console.error('❌ Storage upload failed:', uploadError);
-      throw new Error(`Impossible de téléverser l'image de facture : ${uploadError.message}`);
+    if (!uploadResult?.success) {
+      throw new Error(`Impossible de téléverser l'image de facture : ${uploadResult?.error || 'Storage upload failed'}`);
     }
 
-    // Get public URL
-    const { data: urlData } = supabase.storage
-      .from('fuel_invoices')
-      .getPublicUrl(filePath);
-
     console.log('✅ Image uploaded successfully');
-    console.log('🔗 Public URL:', urlData.publicUrl);
+    console.log('🔗 Public URL:', uploadResult.url);
 
     // Return standardized JSONB format (storage type only)
     return {
       type: 'storage',
-      path: filePath,
-      url: urlData.publicUrl,
+      path: uploadResult.path,
+      url: uploadResult.url,
       name: file.name,
       size: file.size,
       contentType: file.type,

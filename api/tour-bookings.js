@@ -1,5 +1,11 @@
 import { authenticateRequest } from './_lib/auth.js';
 import { APP_USERS_TABLE, createSupabaseClients } from './_lib/supabase.js';
+import {
+  applyTenantQueryScope,
+  assertUserInTenantScope,
+  resolveRequestTenantScope,
+  stampTenantPayload,
+} from './_lib/sharedTenantIsolation.js';
 import { handleTourPackages } from './_lib/tourPackagesShared.js';
 import { handleTourTracking } from './_lib/tourTrackingShared.js';
 import {
@@ -292,11 +298,14 @@ const fromTableRow = (row = {}) => {
   });
 };
 
-const readBookingsFromTable = async (adminClient) => {
-  const { data, error } = await adminClient
+const readBookingsFromTable = async (adminClient, tenantScope = null) => {
+  const { data, error } = await applyTenantQueryScope(
+    adminClient
     .from(TOUR_BOOKINGS_TABLE)
     .select('*')
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false }),
+    tenantScope
+  );
 
   if (error) {
     if (isTourBookingsSchemaUnavailable(error)) {
@@ -307,7 +316,7 @@ const readBookingsFromTable = async (adminClient) => {
   return Array.isArray(data) ? data.map(fromTableRow) : [];
 };
 
-const insertBookings = async (adminClient, rows = []) => {
+const insertBookings = async (adminClient, rows = [], tenantScope = null) => {
   const now = new Date().toISOString();
   const normalizedRows = rows.map((row) => normalizeBookingRow({
     ...row,
@@ -316,7 +325,7 @@ const insertBookings = async (adminClient, rows = []) => {
     updated_at: row.updated_at || now,
   }));
 
-  const tableRows = normalizedRows.map(toTableRow);
+  const tableRows = normalizedRows.map((row) => stampTenantPayload(toTableRow(row), tenantScope));
   const { data, error } = await adminClient
     .from(TOUR_BOOKINGS_TABLE)
     .insert(tableRows)
@@ -326,36 +335,42 @@ const insertBookings = async (adminClient, rows = []) => {
   return Array.isArray(data) ? data.map(fromTableRow) : [];
 };
 
-const getPublicTourPrice = async (adminClient, { packageId, vehicleModelId, durationHours }) => {
+const getPublicTourPrice = async (adminClient, { packageId, vehicleModelId, durationHours }, tenantScope = null) => {
   const normalizedDuration = normalizeDuration(durationHours);
 
-  const { data: exactRows, error: exactError } = await adminClient
+  const { data: exactRows, error: exactError } = await applyTenantQueryScope(
+    adminClient
     .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
     .select('price_mad')
     .eq('package_id', packageId)
     .eq('vehicle_model_id', vehicleModelId)
     .eq('duration_hours', normalizedDuration)
     .eq('is_active', true)
-    .limit(1);
+    .limit(1),
+    tenantScope
+  );
 
   if (exactError) throw exactError;
   const exactPrice = Number(exactRows?.[0]?.price_mad || 0);
   if (exactPrice > 0) return exactPrice;
 
-  const { data: globalRows, error: globalError } = await adminClient
+  const { data: globalRows, error: globalError } = await applyTenantQueryScope(
+    adminClient
     .from(TOUR_PACKAGE_MODEL_PRICES_TABLE)
     .select('price_mad')
     .eq('package_id', GLOBAL_TOUR_PRICING_KEY)
     .eq('vehicle_model_id', vehicleModelId)
     .eq('duration_hours', normalizedDuration)
     .eq('is_active', true)
-    .limit(1);
+    .limit(1),
+    tenantScope
+  );
 
   if (globalError) throw globalError;
   return Number(globalRows?.[0]?.price_mad || 0);
 };
 
-const createPublicTourBooking = async (req, body = {}) => {
+const createPublicTourBooking = async (req, body = {}, tenantScope = null) => {
   const packageId = String(body.packageId || body.package_id || '').trim();
   const vehicleModelId = String(body.vehicleModelId || body.vehicle_model_id || '').trim();
   const requestedMix = normalizeSelectedModelMix(body.selectedModelMix || body.selected_model_mix);
@@ -387,12 +402,15 @@ const createPublicTourBooking = async (req, body = {}) => {
   }
 
   const { adminClient } = createSupabaseClients();
-  const { data: packageRow, error: packageError } = await adminClient
+  const { data: packageRow, error: packageError } = await applyTenantQueryScope(
+    adminClient
     .from(TOUR_PACKAGES_TABLE)
     .select('*')
     .eq('id', packageId)
     .eq('is_active', true)
-    .maybeSingle();
+    .maybeSingle(),
+    tenantScope
+  );
 
   if (packageError) throw packageError;
   if (!packageRow) {
@@ -406,7 +424,7 @@ const createPublicTourBooking = async (req, body = {}) => {
       packageId,
       vehicleModelId: item.modelId,
       durationHours,
-    });
+    }, tenantScope);
 
     if (!(unitPrice > 0)) {
       return { status: 409, body: { error: `Tour pricing is not configured for ${item.label || 'this model'} and package` } };
@@ -482,7 +500,7 @@ const createPublicTourBooking = async (req, body = {}) => {
     }))
   );
 
-  const createdRows = await insertBookings(adminClient, rows);
+  const createdRows = await insertBookings(adminClient, rows, tenantScope);
   void sendTourBookingConfirmationEmail({
     adminClient,
     requestOrigin: getRequestOrigin(req),
@@ -509,18 +527,21 @@ const createPublicTourBooking = async (req, body = {}) => {
   };
 };
 
-const updateBookingRows = async (adminClient, updates = []) => {
+const updateBookingRows = async (adminClient, updates = [], tenantScope = null) => {
   const changedRows = [];
 
   for (const item of updates) {
     const bookingId = String(item.id || '');
     if (!bookingId) continue;
 
-    const { data: current, error: loadError } = await adminClient
+    const { data: current, error: loadError } = await applyTenantQueryScope(
+      adminClient
       .from(TOUR_BOOKINGS_TABLE)
       .select('*')
       .eq('id', bookingId)
-      .single();
+      .single(),
+      tenantScope
+    );
 
     if (loadError) throw loadError;
 
@@ -531,12 +552,15 @@ const updateBookingRows = async (adminClient, updates = []) => {
       updated_at: item.updated_at || new Date().toISOString(),
     });
 
-    const { data: updated, error: updateError } = await adminClient
+    const { data: updated, error: updateError } = await applyTenantQueryScope(
+      adminClient
       .from(TOUR_BOOKINGS_TABLE)
-      .update(toTableRow(nextRow))
+      .update(stampTenantPayload(toTableRow(nextRow), tenantScope))
       .eq('id', bookingId)
       .select('*')
-      .single();
+      .single(),
+      tenantScope
+    );
 
     if (updateError) throw updateError;
     changedRows.push(fromTableRow(updated));
@@ -545,21 +569,27 @@ const updateBookingRows = async (adminClient, updates = []) => {
   return changedRows;
 };
 
-const deleteBookingRows = async (adminClient, rowIds = []) => {
+const deleteBookingRows = async (adminClient, rowIds = [], tenantScope = null) => {
   const normalizedRowIds = rowIds.filter(Boolean).map(String);
   if (normalizedRowIds.length === 0) return [];
 
-  const { data: existingRows, error: loadError } = await adminClient
+  const { data: existingRows, error: loadError } = await applyTenantQueryScope(
+    adminClient
     .from(TOUR_BOOKINGS_TABLE)
     .select('*')
-    .in('id', normalizedRowIds);
+    .in('id', normalizedRowIds),
+    tenantScope
+  );
 
   if (loadError) throw loadError;
 
-  const { error: deleteError } = await adminClient
+  const { error: deleteError } = await applyTenantQueryScope(
+    adminClient
     .from(TOUR_BOOKINGS_TABLE)
     .delete()
-    .in('id', normalizedRowIds);
+    .in('id', normalizedRowIds),
+    tenantScope
+  );
 
   if (deleteError) throw deleteError;
 
@@ -586,7 +616,9 @@ export default async function handler(req, res) {
 
   if (req.method === 'POST' && body?.publicBooking === true) {
     try {
-      const result = await createPublicTourBooking(req, body);
+      const { adminClient } = createSupabaseClients();
+      const tenantScope = await resolveRequestTenantScope({ req, adminClient, payload: body });
+      const result = await createPublicTourBooking(req, body, tenantScope);
       return json(res, result.status, result.body);
     } catch (error) {
       return json(res, 500, { error: error.message || 'Unknown error' });
@@ -598,17 +630,22 @@ export default async function handler(req, res) {
     return json(res, auth.error.status, auth.error.body);
   }
 
-  const { adminClient } = auth;
+  const { adminClient, user, tenantRuntime } = auth;
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime, payload: body });
+  const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+  if (!userInScope) {
+    return json(res, 403, { error: 'You do not have access to this workspace' });
+  }
 
   try {
     if (req.method === 'GET') {
-      const rows = await readBookingsFromTable(adminClient);
+      const rows = await readBookingsFromTable(adminClient, tenantScope);
       return json(res, 200, { success: true, rows, setup_required: false });
     }
 
     if (req.method === 'POST') {
       const rows = Array.isArray(body?.rows) ? body.rows : [];
-      const createdRows = await insertBookings(adminClient, rows);
+      const createdRows = await insertBookings(adminClient, rows, tenantScope);
       return json(res, 200, { success: true, rows: createdRows });
     }
 
@@ -618,7 +655,7 @@ export default async function handler(req, res) {
         return json(res, 400, { error: 'rowIds array is required' });
       }
 
-      const rows = await deleteBookingRows(adminClient, rowIds);
+      const rows = await deleteBookingRows(adminClient, rowIds, tenantScope);
       return json(res, 200, { success: true, rows });
     }
 
@@ -627,7 +664,7 @@ export default async function handler(req, res) {
       return json(res, 400, { error: 'Updates array is required' });
     }
 
-    const rows = await updateBookingRows(adminClient, updates);
+    const rows = await updateBookingRows(adminClient, updates, tenantScope);
     return json(res, 200, { success: true, rows });
   } catch (error) {
     if (req.method === 'GET' && isTourBookingsSchemaUnavailable(error)) {

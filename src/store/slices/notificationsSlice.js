@@ -1,30 +1,14 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../lib/supabase';
-
-const NOTIFICATIONS_TABLE = 'notifications'; // Updated to actual table name
+import notificationService from '../../services/NotificationService';
 
 // Async thunks
 export const fetchNotifications = createAsyncThunk(
   'notifications/fetchNotifications',
   async (userId, { rejectWithValue }) => {
     try {
-      console.log(`🔧 DEBUG: Fetching notifications for user ${userId} from table "${NOTIFICATIONS_TABLE}"`);
-      
-      const { data, error } = await supabase
-        .from(NOTIFICATIONS_TABLE)
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error(`❌ Error fetching notifications from ${NOTIFICATIONS_TABLE}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully fetched ${data?.length || 0} notifications from ${NOTIFICATIONS_TABLE}`);
-      return data || [];
+      return await notificationService.getNotifications(userId);
     } catch (error) {
-      console.error(`❌ Exception fetching notifications from ${NOTIFICATIONS_TABLE}:`, error);
+      console.error('❌ Exception fetching notifications:', error);
       return rejectWithValue(error.message);
     }
   }
@@ -34,27 +18,9 @@ export const markNotificationAsRead = createAsyncThunk(
   'notifications/markAsRead',
   async (notificationId, { rejectWithValue }) => {
     try {
-      console.log(`🔧 DEBUG: Marking notification ${notificationId} as read in table "${NOTIFICATIONS_TABLE}"`);
-      
-      const { data, error } = await supabase
-        .from(NOTIFICATIONS_TABLE)
-        .update({ 
-          read: true,
-          read_at: new Date().toISOString()
-        })
-        .eq('id', notificationId)
-        .select()
-        .single();
-
-      if (error) {
-        console.error(`❌ Error marking notification ${notificationId} as read in ${NOTIFICATIONS_TABLE}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully marked notification ${notificationId} as read in ${NOTIFICATIONS_TABLE}`);
-      return data;
+      return await notificationService.markNotificationAsRead(notificationId);
     } catch (error) {
-      console.error(`❌ Exception marking notification ${notificationId} as read in ${NOTIFICATIONS_TABLE}:`, error);
+      console.error(`❌ Exception marking notification ${notificationId} as read:`, error);
       return rejectWithValue(error.message);
     }
   }
@@ -64,27 +30,9 @@ export const markAllNotificationsAsRead = createAsyncThunk(
   'notifications/markAllAsRead',
   async (userId, { rejectWithValue }) => {
     try {
-      console.log(`🔧 DEBUG: Marking all notifications as read for user ${userId} in table "${NOTIFICATIONS_TABLE}"`);
-      
-      const { data, error } = await supabase
-        .from(NOTIFICATIONS_TABLE)
-        .update({ 
-          read: true,
-          read_at: new Date().toISOString()
-        })
-        .eq('user_id', userId)
-        .eq('read', false)
-        .select();
-
-      if (error) {
-        console.error(`❌ Error marking all notifications as read in ${NOTIFICATIONS_TABLE}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully marked ${data?.length || 0} notifications as read in ${NOTIFICATIONS_TABLE}`);
-      return data || [];
+      return await notificationService.markAllNotificationsAsRead(userId);
     } catch (error) {
-      console.error(`❌ Exception marking all notifications as read in ${NOTIFICATIONS_TABLE}:`, error);
+      console.error('❌ Exception marking all notifications as read:', error);
       return rejectWithValue(error.message);
     }
   }
@@ -94,27 +42,9 @@ export const createNotification = createAsyncThunk(
   'notifications/create',
   async (notificationData, { rejectWithValue }) => {
     try {
-      console.log(`🔧 DEBUG: Creating notification in table "${NOTIFICATIONS_TABLE}":`, notificationData);
-      
-      const { data, error } = await supabase
-        .from(NOTIFICATIONS_TABLE)
-        .insert([{
-          ...notificationData,
-          created_at: new Date().toISOString(),
-          read: false
-        }])
-        .select()
-        .single();
-
-      if (error) {
-        console.error(`❌ Error creating notification in ${NOTIFICATIONS_TABLE}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully created notification in ${NOTIFICATIONS_TABLE}:`, data);
-      return data;
+      return await notificationService.createNotification(notificationData);
     } catch (error) {
-      console.error(`❌ Exception creating notification in ${NOTIFICATIONS_TABLE}:`, error);
+      console.error('❌ Exception creating notification:', error);
       return rejectWithValue(error.message);
     }
   }
@@ -124,22 +54,9 @@ export const deleteNotification = createAsyncThunk(
   'notifications/delete',
   async (notificationId, { rejectWithValue }) => {
     try {
-      console.log(`🔧 DEBUG: Deleting notification ${notificationId} from table "${NOTIFICATIONS_TABLE}"`);
-      
-      const { error } = await supabase
-        .from(NOTIFICATIONS_TABLE)
-        .delete()
-        .eq('id', notificationId);
-
-      if (error) {
-        console.error(`❌ Error deleting notification ${notificationId} from ${NOTIFICATIONS_TABLE}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully deleted notification ${notificationId} from ${NOTIFICATIONS_TABLE}`);
-      return notificationId;
+      return await notificationService.deleteNotification(notificationId);
     } catch (error) {
-      console.error(`❌ Exception deleting notification ${notificationId} from ${NOTIFICATIONS_TABLE}:`, error);
+      console.error(`❌ Exception deleting notification ${notificationId}:`, error);
       return rejectWithValue(error.message);
     }
   }
@@ -150,29 +67,9 @@ export const subscribeToNotifications = createAsyncThunk(
   'notifications/subscribe',
   async (userId, { dispatch, rejectWithValue }) => {
     try {
-      console.log(`🔧 DEBUG: Subscribing to notifications for user ${userId} on table "${NOTIFICATIONS_TABLE}"`);
-      
-      // Set up real-time subscription
-      const subscription = supabase
-        .channel(`notifications_${userId}`)
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: NOTIFICATIONS_TABLE,
-            filter: `user_id=eq.${userId}`
-          },
-          (payload) => {
-            console.log('🔔 Real-time notification update:', payload);
-            // Refresh notifications when changes occur
-            dispatch(fetchNotifications(userId));
-          }
-        )
-        .subscribe();
-
-      console.log(`✅ Successfully subscribed to notifications for user ${userId}`);
-      return subscription;
+      return await notificationService.subscribeToUserNotifications(userId, () => {
+        dispatch(fetchNotifications(userId));
+      });
     } catch (error) {
       console.error(`❌ Exception subscribing to notifications:`, error);
       return rejectWithValue(error.message);
@@ -184,14 +81,7 @@ export const unsubscribeFromNotifications = createAsyncThunk(
   'notifications/unsubscribe',
   async (subscription, { rejectWithValue }) => {
     try {
-      console.log(`🔧 DEBUG: Unsubscribing from notifications`);
-      
-      if (subscription) {
-        await supabase.removeChannel(subscription);
-        console.log(`✅ Successfully unsubscribed from notifications`);
-      }
-      
-      return true;
+      return await notificationService.unsubscribeFromUserNotifications(subscription);
     } catch (error) {
       console.error(`❌ Exception unsubscribing from notifications:`, error);
       return rejectWithValue(error.message);

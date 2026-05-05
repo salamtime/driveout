@@ -1,5 +1,6 @@
 import { authenticateRequest, resolvePlatformAccessContext } from './auth.js';
 import {
+  ORGANIZATIONS_TABLE,
   PLATFORM_BUSINESS_ACCOUNTS_TABLE,
   PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE,
   PLATFORM_TENANTS_TABLE,
@@ -10,6 +11,7 @@ import {
   normalizeRegistryStatus,
   normalizeSubscriptionStatus,
   resolveEffectiveSubscriptionStatus,
+  resolveTenantTenancyMode,
 } from './tenantRegistry.js';
 import { bootstrapAutomaticBusinessOwnerProvisioning } from './tenantProvisioningHandler.js';
 import { getCachedWorkspaceReadiness, resolveWorkspaceReadiness } from './tenantWorkspaceReadiness.js';
@@ -18,9 +20,19 @@ import {
   getTenantPlanLimits,
   normalizeTenantPlanType,
 } from '../../src/config/tenantPlans.js';
+import { buildLegacyDedicatedInfrastructure } from './legacyDedicatedTenant.js';
 
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
+const LOCAL_TENANT_PORT_MAP = Object.freeze({
+  '5174': 'owner1',
+});
+
+const isAutomaticSignupModeEnabled = () => {
+  const signupMode = String(process.env.TENANT_SIGNUP_MODE || 'automatic').trim().toLowerCase();
+  const autoProvisioningEnabled = String(process.env.TENANT_AUTO_PROVISIONING_ENABLED || 'true').trim().toLowerCase();
+  return signupMode !== 'manual' && autoProvisioningEnabled !== 'false';
+};
 
 const normalizeHostname = (value = '') => {
   const trimmed = String(value || '').trim().toLowerCase();
@@ -34,7 +46,13 @@ const normalizeHostname = (value = '') => {
 };
 
 const getTenantSlugFromHostname = (hostname = '') => {
+  const rawHostname = String(hostname || '').trim().toLowerCase();
   const normalizedHostname = normalizeHostname(hostname);
+  const localPort = rawHostname.split(':')[1] || '';
+  if ((normalizedHostname === 'localhost' || normalizedHostname === '127.0.0.1') && LOCAL_TENANT_PORT_MAP[localPort]) {
+    return LOCAL_TENANT_PORT_MAP[localPort];
+  }
+
   if (!normalizedHostname.endsWith(`.${DRIVEOUT_BASE_DOMAIN}`)) return '';
 
   const slug = normalizedHostname.slice(0, -(`.${DRIVEOUT_BASE_DOMAIN}`.length));
@@ -54,6 +72,69 @@ const isRetryableTenantBootstrapFailure = (tenant = {}, provisioningJob = null) 
   return !failedVia.includes('schema_readiness_guard');
 };
 
+const getTenantMetadata = (tenant = {}) => (
+  tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {}
+);
+
+const extractTenantPublicFeatures = (featureAccess = {}) => ({
+  public_storefront: featureAccess.public_storefront === true,
+  online_booking: featureAccess.online_booking === true,
+  multilingual_storefront: featureAccess.multilingual_storefront === true,
+});
+
+const resolveTenantOrganizationContext = async ({ tenant = null, businessAccount = null, adminClient = null } = {}) => {
+  const tenancyMode = resolveTenantTenancyMode(tenant);
+  if (tenancyMode !== 'shared') {
+    return {
+      organizationId: null,
+      organizationSlug: null,
+    };
+  }
+
+  const tenantMetadata = getTenantMetadata(tenant);
+  const metadataOrganizationId = String(
+    tenantMetadata.organization_id ||
+    tenantMetadata.shared_organization_id ||
+    ''
+  ).trim();
+  const metadataOrganizationSlug = String(
+    tenantMetadata.organization_slug ||
+    tenantMetadata.shared_organization_slug ||
+    ''
+  ).trim();
+
+  if (metadataOrganizationId || metadataOrganizationSlug) {
+    return {
+      organizationId: metadataOrganizationId || null,
+      organizationSlug: metadataOrganizationSlug || null,
+    };
+  }
+
+  const ownerUserId = String(businessAccount?.auth_user_id || '').trim();
+  if (!ownerUserId || !adminClient) {
+    return {
+      organizationId: null,
+      organizationSlug: null,
+    };
+  }
+
+  const { data: organization, error } = await adminClient
+    .from(ORGANIZATIONS_TABLE)
+    .select('id, slug')
+    .eq('owner_user_id', ownerUserId)
+    .eq('is_platform_organization', false)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  return {
+    organizationId: String(organization?.id || '').trim() || null,
+    organizationSlug: String(organization?.slug || '').trim() || null,
+  };
+};
+
 const buildTenantWorkspaceState = ({
   businessAccount = null,
   subscription = null,
@@ -69,6 +150,7 @@ const buildTenantWorkspaceState = ({
   const billingStatus = String(subscription?.billing_status || 'none').trim().toLowerCase();
   const tenantStatus = String(tenant?.tenant_status || '').trim().toLowerCase();
   const provisioningStatus = String(provisioningJob?.job_status || '').trim().toLowerCase();
+  const tenancyMode = resolveTenantTenancyMode(tenant);
 
   if (approvalStatus === 'rejected') {
     return 'rejected';
@@ -102,7 +184,18 @@ const buildTenantWorkspaceState = ({
     return 'pending';
   }
 
-  if (tenantStatus === 'archived' || tenantStatus === 'failed') {
+  if (tenantStatus === 'archived') {
+    return 'failed';
+  }
+
+  if (tenantStatus === 'failed') {
+    if (
+      automaticSignupModeEnabled &&
+      tenancyMode === 'shared' &&
+      isRetryableTenantBootstrapFailure(tenant, provisioningJob)
+    ) {
+      return 'provisioning';
+    }
     return 'failed';
   }
 
@@ -111,6 +204,13 @@ const buildTenantWorkspaceState = ({
   }
 
   if (workspaceReadiness && workspaceReadiness.ready !== true) {
+    if (
+      automaticSignupModeEnabled &&
+      tenancyMode === 'shared' &&
+      isRetryableTenantBootstrapFailure(tenant, provisioningJob)
+    ) {
+      return 'provisioning';
+    }
     return provisioningStatus === 'queued' || provisioningStatus === 'running'
       ? 'provisioning'
       : 'failed';
@@ -173,7 +273,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { user, adminClient, masterAdminClient } = auth;
+  const { user, adminClient, masterAdminClient, tenantRuntime } = auth;
   const registryClient = masterAdminClient || adminClient;
   const accountType = String(
     user?.user_metadata?.account_type ||
@@ -196,22 +296,26 @@ export default async function handler(req, res) {
     permissions: platformAccess?.permissions || {},
   };
 
-  const requestedHostname = normalizeHostname(
+  const requestedHost = String(
     req.query?.hostname ||
     req.headers['x-forwarded-host'] ||
     req.headers.host ||
     ''
-  );
-  const requestedTenantSlug = getTenantSlugFromHostname(requestedHostname);
+  ).trim();
+  const requestedHostname = normalizeHostname(requestedHost);
+  const requestedTenantSlug = getTenantSlugFromHostname(requestedHost);
 
   try {
     const canUseBusinessOwnerSession = isBusinessOwnerAccountType(accountType);
-    const canUsePlatformTenantHostSession =
-      !canUseBusinessOwnerSession &&
-      hasPlatformAccess &&
-      Boolean(requestedTenantSlug);
+  const canUseTenantHostSession =
+    !canUseBusinessOwnerSession &&
+    Boolean(requestedTenantSlug) &&
+    (
+      hasPlatformAccess ||
+      String(tenantRuntime?.tenant_slug || '').trim().toLowerCase() === requestedTenantSlug
+    );
 
-    if (!canUseBusinessOwnerSession && !canUsePlatformTenantHostSession) {
+    if (!canUseBusinessOwnerSession && !canUseTenantHostSession) {
       res.status(200).json({
         session: {
           account_type: accountType,
@@ -271,7 +375,7 @@ export default async function handler(req, res) {
       subscription = subscriptionResult.data || null;
       tenant = tenantResult.data || null;
       provisioningJob = provisioningJobResult.data || null;
-    } else if (canUsePlatformTenantHostSession) {
+    } else if (canUseTenantHostSession) {
       const tenantResult = await registryClient
         .from(PLATFORM_TENANTS_TABLE)
         .select('*')
@@ -372,6 +476,15 @@ export default async function handler(req, res) {
 
     const effectiveSubscriptionStatus = resolveEffectiveSubscriptionStatus(subscription);
     const effectivePlanType = normalizeTenantPlanType(subscription?.plan_type || 'starter');
+    const featureAccessOverrides =
+      tenant?.metadata?.feature_access && typeof tenant.metadata.feature_access === 'object'
+        ? tenant.metadata.feature_access
+        : {};
+    const effectiveFeatureAccess = buildEffectiveTenantFeatureAccess(
+      effectivePlanType,
+      featureAccessOverrides
+    );
+    const publicFeatures = extractTenantPublicFeatures(effectiveFeatureAccess);
     const effectiveSubscription = subscription
       ? {
           ...subscription,
@@ -389,16 +502,18 @@ export default async function handler(req, res) {
       ? {
           ...tenant,
           metadata: {
-            ...(tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {}),
-            effective_feature_access: buildEffectiveTenantFeatureAccess(
-              effectivePlanType,
-              tenant?.metadata?.feature_access && typeof tenant.metadata.feature_access === 'object'
-                ? tenant.metadata.feature_access
-                : {}
-            ),
+            ...getTenantMetadata(tenant),
+            effective_feature_access: effectiveFeatureAccess,
           },
         }
       : null;
+    const organizationContext = await resolveTenantOrganizationContext({
+      tenant: effectiveTenant,
+      businessAccount,
+      adminClient: registryClient,
+    });
+    const tenancyMode = resolveTenantTenancyMode(effectiveTenant || tenant);
+    const legacyDedicatedInfrastructure = buildLegacyDedicatedInfrastructure(effectiveTenant || tenant || {});
     const workspaceState = buildTenantWorkspaceState({
       businessAccount,
       subscription: effectiveSubscription,
@@ -416,6 +531,18 @@ export default async function handler(req, res) {
       session: {
         account_type: accountType,
         workspace_state: workspaceState,
+        tenant_id: effectiveTenant?.id || null,
+        tenant_slug: effectiveTenant?.tenant_slug || null,
+        tenant_name: effectiveTenant?.tenant_name || null,
+        tenant_status: effectiveTenant?.tenant_status || null,
+        tenancy_mode: tenancyMode,
+        organization_id: organizationContext.organizationId,
+        organization_slug: organizationContext.organizationSlug,
+        legacy_dedicated_infrastructure: legacyDedicatedInfrastructure,
+        plan_type: effectivePlanType,
+        feature_access: featureAccessOverrides,
+        effective_feature_access: effectiveFeatureAccess,
+        public_features: publicFeatures,
         business_account: businessAccount,
         subscription: effectiveSubscription,
         tenant: effectiveTenant,

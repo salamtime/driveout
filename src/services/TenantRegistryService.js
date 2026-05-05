@@ -12,7 +12,20 @@ export const getTenantSession = async () => {
 
   return {
     ...buildTenantWorkspaceBootstrap({
-      tenant: session.tenant,
+      tenant: {
+        ...(session.tenant || {}),
+        id: session?.tenant_id || session?.tenant?.id || null,
+        tenant_slug: session?.tenant_slug || session?.tenant?.tenant_slug || '',
+        tenant_name: session?.tenant_name || session?.tenant?.tenant_name || '',
+        tenant_status: session?.tenant_status || session?.tenant?.tenant_status || 'pending',
+        tenancy_mode: session?.tenancy_mode || session?.tenant?.tenancy_mode || 'shared',
+        organization_id: session?.organization_id || session?.tenant?.organization_id || null,
+        organization_slug: session?.organization_slug || session?.tenant?.organization_slug || '',
+        legacy_dedicated_infrastructure:
+          session?.legacy_dedicated_infrastructure ||
+          session?.tenant?.legacy_dedicated_infrastructure ||
+          null,
+      },
       subscription: session.subscription,
       businessAccount: session.business_account,
     }),
@@ -22,8 +35,10 @@ export const getTenantSession = async () => {
     subscription: session.subscription || null,
     businessAccount: session.business_account || null,
     featureAccess:
-      session?.tenant?.metadata?.feature_access && typeof session.tenant.metadata.feature_access === 'object'
-        ? session.tenant.metadata.feature_access
+      session?.feature_access && typeof session.feature_access === 'object'
+        ? session.feature_access
+        : session?.tenant?.metadata?.feature_access && typeof session.tenant.metadata.feature_access === 'object'
+          ? session.tenant.metadata.feature_access
         : {},
     tenantSettings:
       session?.tenant?.metadata?.tenant_settings && typeof session.tenant.metadata.tenant_settings === 'object'
@@ -34,12 +49,30 @@ export const getTenantSession = async () => {
         ? session.tenant.metadata.commercial_settings
         : {},
     effectiveFeatureAccess:
-      session?.tenant?.metadata?.effective_feature_access && typeof session.tenant.metadata.effective_feature_access === 'object'
-        ? session.tenant.metadata.effective_feature_access
+      session?.effective_feature_access && typeof session.effective_feature_access === 'object'
+        ? session.effective_feature_access
+        : session?.tenant?.metadata?.effective_feature_access && typeof session.tenant.metadata.effective_feature_access === 'object'
+          ? session.tenant.metadata.effective_feature_access
         : buildEffectiveTenantFeatureAccess(
-            session?.subscription?.plan_type || 'starter',
-            session?.tenant?.metadata?.feature_access || {}
+            session?.plan_type || session?.subscription?.plan_type || 'starter',
+            session?.feature_access || session?.tenant?.metadata?.feature_access || {}
           ),
+    tenantId: session?.tenant_id || session?.tenant?.id || null,
+    tenantSlug: session?.tenant_slug || session?.tenant?.tenant_slug || '',
+    tenantName: session?.tenant_name || session?.tenant?.tenant_name || '',
+    tenantStatus: session?.tenant_status || session?.tenant?.tenant_status || 'pending',
+    tenancyMode: session?.tenancy_mode || session?.tenant?.tenancy_mode || 'shared',
+    organizationId: session?.organization_id || null,
+    organizationSlug: session?.organization_slug || '',
+    legacyDedicatedInfrastructure:
+      session?.legacy_dedicated_infrastructure ||
+      session?.tenant?.legacy_dedicated_infrastructure ||
+      null,
+    planType: session?.plan_type || session?.subscription?.plan_type || 'starter',
+    publicFeatures:
+      session?.public_features && typeof session.public_features === 'object'
+        ? session.public_features
+        : null,
     lifecycle:
       session?.lifecycle && typeof session.lifecycle === 'object'
         ? session.lifecycle

@@ -75,7 +75,7 @@ const assertMatchingSupabaseProject = ({ publicUrl, serverUrl, anonKey, serviceR
   }
 };
 
-export const createSupabaseClients = () => {
+export const getSharedSupabaseTenantConfig = () => {
   const publicSupabaseUrl = getRequiredEnv('VITE_SUPABASE_URL', 'SUPABASE_URL');
   const supabaseUrl = process.env.SUPABASE_URL || publicSupabaseUrl;
   const supabaseAnonKey = getRequiredEnv('VITE_SUPABASE_ANON_KEY', 'SUPABASE_ANON_KEY');
@@ -87,6 +87,22 @@ export const createSupabaseClients = () => {
     anonKey: supabaseAnonKey,
     serviceRoleKey: supabaseServiceRoleKey,
   });
+
+  return {
+    projectRef:
+      extractProjectRefFromUrl(supabaseUrl) ||
+      extractProjectRefFromUrl(publicSupabaseUrl) ||
+      extractProjectRefFromJwt(supabaseAnonKey) ||
+      extractProjectRefFromJwt(supabaseServiceRoleKey) ||
+      'master',
+    apiUrl: supabaseUrl,
+    anonKey: supabaseAnonKey,
+  };
+};
+
+export const createSupabaseClients = () => {
+  const { apiUrl: supabaseUrl, anonKey: supabaseAnonKey } = getSharedSupabaseTenantConfig();
+  const supabaseServiceRoleKey = getRequiredEnv('SUPABASE_SERVICE_ROLE_KEY');
 
   const anonClient = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {

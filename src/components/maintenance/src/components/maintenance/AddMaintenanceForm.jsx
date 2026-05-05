@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import MaintenanceTrackingService from '../../services/MaintenanceTrackingService';
-import { supabase } from '../../lib/supabase';
+import VehicleService from '../../services/VehicleService';
 import { 
   X, 
   Save, 
@@ -92,14 +92,12 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null }) => {
       
       // Load vehicles and pricing catalog
       const [vehiclesData, pricingData] = await Promise.all([
-        supabase.from('saharax_0u4w4d_vehicles').select('id, name, model, plate_number, current_odometer').order('name'),
+        VehicleService.getAllVehicles(),
         MaintenanceTrackingService.getMaintenancePricingCatalog()
       ]);
-
-      if (vehiclesData.error) throw vehiclesData.error;
       
       // CRITICAL: Always ensure arrays
-      const safeVehicles = Array.isArray(vehiclesData.data) ? vehiclesData.data : [];
+      const safeVehicles = Array.isArray(vehiclesData) ? vehiclesData : [];
       const safePricing = Array.isArray(pricingData) ? pricingData : [];
       
       setVehicles(safeVehicles);

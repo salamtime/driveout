@@ -1106,11 +1106,15 @@ export const AuthProvider = ({ children }) => {
     const hostContext = getHostContext();
     const isFirstPartyWorkspace = isFirstPartyTenantHost(hostContext);
     const rawTenantFeatureAccess =
-      tenantSession?.tenant?.metadata?.effective_feature_access && typeof tenantSession.tenant.metadata.effective_feature_access === 'object'
-        ? tenantSession.tenant.metadata.effective_feature_access
+      tenantSession?.effectiveFeatureAccess && typeof tenantSession.effectiveFeatureAccess === 'object'
+        ? tenantSession.effectiveFeatureAccess
+        : tenantSession?.tenant?.metadata?.effective_feature_access && typeof tenantSession.tenant.metadata.effective_feature_access === 'object'
+          ? tenantSession.tenant.metadata.effective_feature_access
         : (
-          tenantSession?.tenant?.metadata?.feature_access && typeof tenantSession.tenant.metadata.feature_access === 'object'
-            ? tenantSession.tenant.metadata.feature_access
+          tenantSession?.featureAccess && typeof tenantSession.featureAccess === 'object'
+            ? tenantSession.featureAccess
+            : tenantSession?.tenant?.metadata?.feature_access && typeof tenantSession.tenant.metadata.feature_access === 'object'
+              ? tenantSession.tenant.metadata.feature_access
             : {}
         );
     const tenantPlanType = normalizeTenantPlanType(
@@ -1178,6 +1182,8 @@ export const AuthProvider = ({ children }) => {
     session?.user?.user_metadata?.plan_type,
     tenantSession?.planType,
     tenantSession?.subscription?.plan_type,
+    tenantSession?.effectiveFeatureAccess,
+    tenantSession?.featureAccess,
     tenantSession?.tenant?.metadata?.effective_feature_access,
     tenantSession?.tenant?.metadata?.feature_access,
     userProfile,
@@ -1205,11 +1211,15 @@ export const AuthProvider = ({ children }) => {
       'starter'
     );
     const rawTenantFeatureAccess =
-      tenantSession?.tenant?.metadata?.effective_feature_access && typeof tenantSession.tenant.metadata.effective_feature_access === 'object'
-        ? tenantSession.tenant.metadata.effective_feature_access
+      tenantSession?.effectiveFeatureAccess && typeof tenantSession.effectiveFeatureAccess === 'object'
+        ? tenantSession.effectiveFeatureAccess
+        : tenantSession?.tenant?.metadata?.effective_feature_access && typeof tenantSession.tenant.metadata.effective_feature_access === 'object'
+          ? tenantSession.tenant.metadata.effective_feature_access
         : (
-          tenantSession?.tenant?.metadata?.feature_access && typeof tenantSession.tenant.metadata.feature_access === 'object'
-            ? tenantSession.tenant.metadata.feature_access
+          tenantSession?.featureAccess && typeof tenantSession.featureAccess === 'object'
+            ? tenantSession.featureAccess
+            : tenantSession?.tenant?.metadata?.feature_access && typeof tenantSession.tenant.metadata.feature_access === 'object'
+              ? tenantSession.tenant.metadata.feature_access
             : {}
         );
     const tenantFeatureAccess = buildEffectiveTenantFeatureAccess(tenantPlanType, rawTenantFeatureAccess);
@@ -1220,6 +1230,8 @@ export const AuthProvider = ({ children }) => {
     session?.user?.user_metadata?.plan_type,
     tenantSession?.planType,
     tenantSession?.subscription?.plan_type,
+    tenantSession?.effectiveFeatureAccess,
+    tenantSession?.featureAccess,
     tenantSession?.tenant?.metadata?.effective_feature_access,
     tenantSession?.tenant?.metadata?.feature_access,
     userProfile,

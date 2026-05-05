@@ -1,21 +1,12 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../lib/supabase';
+import VehicleService from '../../services/VehicleService';
 
 // Async thunk for fetching vehicles
 export const fetchVehicles = createAsyncThunk(
   'vehicles/fetchVehicles',
   async (_, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        throw error;
-      }
-
-      return data || [];
+      return await VehicleService.getAllVehicles();
     } catch (error) {
       return rejectWithValue(error.message);
     }
@@ -27,17 +18,11 @@ export const addVehicle = createAsyncThunk(
   'vehicles/addVehicle',
   async (vehicleData, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .insert([vehicleData])
-        .select()
-        .single();
-
-      if (error) {
-        throw error;
+      const result = await VehicleService.createVehicle(vehicleData);
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to create vehicle');
       }
-
-      return data;
+      return result.vehicle;
     } catch (error) {
       return rejectWithValue(error.message);
     }
@@ -49,18 +34,11 @@ export const updateVehicle = createAsyncThunk(
   'vehicles/updateVehicle',
   async ({ id, updates }, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) {
-        throw error;
+      const result = await VehicleService.updateVehicle(id, updates);
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to update vehicle');
       }
-
-      return data;
+      return result.vehicle;
     } catch (error) {
       return rejectWithValue(error.message);
     }
@@ -72,15 +50,10 @@ export const deleteVehicle = createAsyncThunk(
   'vehicles/deleteVehicle',
   async (id, { rejectWithValue }) => {
     try {
-      const { error } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .delete()
-        .eq('id', id);
-
-      if (error) {
-        throw error;
+      const result = await VehicleService.deleteVehicle(id);
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to delete vehicle');
       }
-
       return id;
     } catch (error) {
       return rejectWithValue(error.message);

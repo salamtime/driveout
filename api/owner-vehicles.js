@@ -1,5 +1,11 @@
 import { APP_USERS_TABLE, VEHICLES_TABLE } from './_lib/supabase.js';
 import { authenticateRequest } from './_lib/auth.js';
+import {
+  applyTenantQueryScope,
+  assertUserInTenantScope,
+  resolveRequestTenantScope,
+  stampTenantPayload,
+} from './_lib/sharedTenantIsolation.js';
 
 const VEHICLE_PROFILES_TABLE = 'app_vehicle_public_profiles';
 const MARKETPLACE_LISTINGS_TABLE = 'app_marketplace_listings';
@@ -284,17 +290,20 @@ const buildPayloads = ({ ownerId, accountType, metadata = {}, formData, submitFo
   return { profilePayload, listingPayload };
 };
 
-const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, vehicleId, formData, submitForReview = false, saveListing = false }) => {
+const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, vehicleId, formData, submitForReview = false, saveListing = false, tenantScope = null }) => {
   let existingListing = null;
   if (vehicleId) {
-    const { data: listing } = await adminClient
+    const { data: listing } = await applyTenantQueryScope(
+      adminClient
       .from(MARKETPLACE_LISTINGS_TABLE)
       .select('*')
       .eq('owner_id', ownerId)
       .eq('vehicle_public_profile_id', vehicleId)
       .order('updated_at', { ascending: false })
       .limit(1)
-      .maybeSingle();
+      .maybeSingle(),
+      tenantScope
+    );
     existingListing = listing || null;
   }
 
@@ -312,8 +321,8 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const { data, error } = vehicleId
-      ? await adminClient.from(VEHICLE_PROFILES_TABLE).update(compatibleProfilePayload).eq('id', vehicleId).eq('owner_id', ownerId).select('*').single()
-      : await adminClient.from(VEHICLE_PROFILES_TABLE).insert(compatibleProfilePayload).select('*').single();
+      ? await applyTenantQueryScope(adminClient.from(VEHICLE_PROFILES_TABLE).update(stampTenantPayload(compatibleProfilePayload, tenantScope)).eq('id', vehicleId).eq('owner_id', ownerId).select('*').single(), tenantScope)
+      : await adminClient.from(VEHICLE_PROFILES_TABLE).insert(stampTenantPayload(compatibleProfilePayload, tenantScope)).select('*').single();
 
     if (!error) {
       savedProfile = data;
@@ -353,13 +362,16 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
     null;
 
   if (fleetVehiclePayload?.plate_number) {
-    const { data: existingPlateVehicle, error: plateError } = await adminClient
+    const { data: existingPlateVehicle, error: plateError } = await applyTenantQueryScope(
+      adminClient
       .from(VEHICLES_TABLE)
       .select('*')
       .eq('plate_number', fleetVehiclePayload.plate_number)
       .order('id', { ascending: false })
       .limit(1)
-      .maybeSingle();
+      .maybeSingle(),
+      tenantScope
+    );
 
     if (plateError && !setupErrorCodes.has(String(plateError.code || ''))) {
       throw plateError;
@@ -381,8 +393,8 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const { data, error } = linkedFleetVehicleId
-      ? await adminClient.from(VEHICLES_TABLE).update(compatibleFleetPayload).eq('id', linkedFleetVehicleId).select('*').single()
-      : await adminClient.from(VEHICLES_TABLE).insert([{ ...compatibleFleetPayload, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }]).select('*').single();
+      ? await applyTenantQueryScope(adminClient.from(VEHICLES_TABLE).update(stampTenantPayload(compatibleFleetPayload, tenantScope)).eq('id', linkedFleetVehicleId).select('*').single(), tenantScope)
+      : await adminClient.from(VEHICLES_TABLE).insert([stampTenantPayload({ ...compatibleFleetPayload, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, tenantScope)]).select('*').single();
 
     if (!error) {
       savedFleetVehicle = data;
@@ -399,13 +411,16 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
     const duplicatePlateConstraint = String(error?.message || error?.details || '').includes('plate_number_key')
       || String(error?.constraint || '') === 'saharax_0u4w4d_vehicles_plate_number_key';
     if (String(error?.code || '') === '23505' && duplicatePlateConstraint && compatibleFleetPayload?.plate_number) {
-      const { data: duplicateVehicle } = await adminClient
+      const { data: duplicateVehicle } = await applyTenantQueryScope(
+        adminClient
         .from(VEHICLES_TABLE)
         .select('*')
         .eq('plate_number', compatibleFleetPayload.plate_number)
         .order('id', { ascending: false })
         .limit(1)
-        .maybeSingle();
+        .maybeSingle(),
+        tenantScope
+      );
       if (duplicateVehicle?.id && (!duplicateVehicle?.owner_user_id || String(duplicateVehicle.owner_user_id) === String(ownerId))) {
         savedFleetVehicle = duplicateVehicle;
         linkedFleetVehicleId = duplicateVehicle.id;
@@ -426,11 +441,14 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
     vehicle_ref_table: VEHICLES_TABLE,
   };
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const { error } = await adminClient
+    const { error } = await applyTenantQueryScope(
+      adminClient
       .from(VEHICLE_PROFILES_TABLE)
-      .update(compatibleLinkPayload)
+      .update(stampTenantPayload(compatibleLinkPayload, tenantScope))
       .eq('id', savedProfile.id)
-      .eq('owner_id', ownerId);
+      .eq('owner_id', ownerId),
+      tenantScope
+    );
     if (!error) break;
     const missingColumn = getMissingSchemaColumn(error);
     if (missingColumn && Object.prototype.hasOwnProperty.call(compatibleLinkPayload, missingColumn)) {
@@ -449,8 +467,8 @@ const saveVehicleRecord = async ({ adminClient, ownerId, accountType, metadata, 
     };
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const { data, error } = existingListing?.id
-        ? await adminClient.from(MARKETPLACE_LISTINGS_TABLE).update(compatibleListingPayload).eq('id', existingListing.id).eq('owner_id', ownerId).select('*').single()
-        : await adminClient.from(MARKETPLACE_LISTINGS_TABLE).insert(compatibleListingPayload).select('*').single();
+        ? await applyTenantQueryScope(adminClient.from(MARKETPLACE_LISTINGS_TABLE).update(stampTenantPayload(compatibleListingPayload, tenantScope)).eq('id', existingListing.id).eq('owner_id', ownerId).select('*').single(), tenantScope)
+        : await adminClient.from(MARKETPLACE_LISTINGS_TABLE).insert(stampTenantPayload(compatibleListingPayload, tenantScope)).select('*').single();
       if (!error) {
         savedListing = data;
         break;
@@ -489,10 +507,15 @@ export default async function handler(req, res) {
     return json(res, auth.error.status, auth.error.body);
   }
 
-  const { adminClient, user } = auth;
+  const { adminClient, user, tenantRuntime } = auth;
 
   try {
     const body = parseBody(req.body);
+    const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime, payload: body });
+    const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+    if (!userInScope) {
+      return json(res, 403, { error: 'You do not have access to this workspace' });
+    }
     const ownerId = user.id;
     const { data: profile } = await adminClient
       .from(APP_USERS_TABLE)
@@ -514,6 +537,7 @@ export default async function handler(req, res) {
       formData: body.formData || {},
       submitForReview: Boolean(body.submitForReview),
       saveListing: Boolean(body.saveListing),
+      tenantScope,
     });
 
     return json(res, 200, {

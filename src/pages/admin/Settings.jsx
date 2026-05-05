@@ -143,6 +143,7 @@ const buildTenantTelegramDraft = (tenantSession = null) => {
     telegram_event_types: {
       rental_created: eventTypes.rental_created !== false,
       rental_started: eventTypes.rental_started !== false,
+      rental_vehicle_replaced: eventTypes.rental_vehicle_replaced !== false,
       rental_completed: eventTypes.rental_completed !== false,
       payment_received: eventTypes.payment_received !== false,
       rental_overdue: eventTypes.rental_overdue !== false,
@@ -1287,6 +1288,7 @@ const SettingsPage = () => {
       telegram_event_types: {
         rental_created: Boolean(tenantTelegramForm.telegram_event_types?.rental_created),
         rental_started: Boolean(tenantTelegramForm.telegram_event_types?.rental_started),
+        rental_vehicle_replaced: Boolean(tenantTelegramForm.telegram_event_types?.rental_vehicle_replaced),
         rental_completed: Boolean(tenantTelegramForm.telegram_event_types?.rental_completed),
         payment_received: Boolean(tenantTelegramForm.telegram_event_types?.payment_received),
         rental_overdue: Boolean(tenantTelegramForm.telegram_event_types?.rental_overdue),
@@ -2506,6 +2508,16 @@ const SettingsPage = () => {
                 onChange={(value) => setTenantTelegramForm((current) => ({
                   ...current,
                   telegram_event_types: { ...current.telegram_event_types, rental_started: value },
+                }))}
+              />
+              <ToggleCard
+                title={isFrench ? 'Véhicule remplacé' : 'Vehicle replaced'}
+                description={isFrench ? "Alerte envoyée lorsqu'un véhicule est remplacé pendant la location." : 'Send an alert when a rental vehicle is replaced.'}
+                checked={tenantTelegramForm.telegram_event_types.rental_vehicle_replaced}
+                disabled={!canEdit}
+                onChange={(value) => setTenantTelegramForm((current) => ({
+                  ...current,
+                  telegram_event_types: { ...current.telegram_event_types, rental_vehicle_replaced: value },
                 }))}
               />
               <ToggleCard

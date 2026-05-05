@@ -5,6 +5,8 @@
 
 import { supabase } from '../../lib/supabase';
 import unifiedCustomerService from '../UnifiedCustomerService';
+import { buildTenantScopedStoragePath } from '../../utils/storageUpload';
+import { getCurrentOrganizationId } from '../OrganizationService';
 
 class FallbackOcrService {
   constructor() {
@@ -74,9 +76,14 @@ class FallbackOcrService {
    */
   async uploadImage(imageFile, customerId) {
     try {
+      const organizationId = await getCurrentOrganizationId();
       const timestamp = Date.now();
       const fileName = `idscan_fallback_${timestamp}.jpg`;
-      const filePath = `${customerId}/${fileName}`;
+      const filePath = buildTenantScopedStoragePath({
+        organizationId,
+        pathPrefix: `customers/${customerId}`,
+        fileName,
+      });
 
       const { data, error } = await supabase.storage
         .from('id_scans')

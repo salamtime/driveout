@@ -1,5 +1,11 @@
 import { authenticateRequest } from './_lib/auth.js';
 import { APP_USERS_TABLE, SHARED_MESSAGE_MEDIA_TABLE } from './_lib/supabase.js';
+import {
+  applyTenantQueryScope,
+  assertUserInTenantScope,
+  resolveRequestTenantScope,
+  stampTenantPayload,
+} from './_lib/sharedTenantIsolation.js';
 import { handleTelegramAlertsRequest } from './_lib/telegramAlertsHandler.js';
 import { handleTelegramOverdueRemindersRequest } from './_lib/telegramOverdueRemindersHandler.js';
 import {
@@ -289,7 +295,7 @@ const dedupeRowsById = (rows = []) => {
   });
 };
 
-const loadMessagesForThreadStates = async (adminClient, threadStateRows = [], scope = 'self', userId = '', limit = 200) => {
+const loadMessagesForThreadStates = async (adminClient, threadStateRows = [], scope = 'self', userId = '', limit = 200, tenantScope = null) => {
   const threadIds = [...new Set((threadStateRows || []).map((row) => String(row?.id || '').trim()).filter(Boolean))];
   const threadKeys = [...new Set((threadStateRows || []).map((row) => String(row?.thread_key || '').trim()).filter(Boolean))];
   if (!threadIds.length && !threadKeys.length) return [];
@@ -304,12 +310,15 @@ const loadMessagesForThreadStates = async (adminClient, threadStateRows = [], sc
 
   if (threadIds.length) {
     const { data, error } = await applyScope(
-      adminClient
+      applyTenantQueryScope(
+        adminClient
         .from(SHARED_MESSAGES_TABLE)
         .select('*')
         .in('thread_id', threadIds)
         .order('created_at', { ascending: false })
-        .limit(limit)
+        .limit(limit),
+        tenantScope
+      )
     );
 
     if (error) {
@@ -322,13 +331,16 @@ const loadMessagesForThreadStates = async (adminClient, threadStateRows = [], sc
 
   if (threadKeys.length) {
     const { data, error } = await applyScope(
-      adminClient
+      applyTenantQueryScope(
+        adminClient
         .from(SHARED_MESSAGES_TABLE)
         .select('*')
         .in('thread_key', threadKeys)
         .is('thread_id', null)
         .order('created_at', { ascending: false })
-        .limit(limit)
+        .limit(limit),
+        tenantScope
+      )
     );
 
     if (error) {
@@ -427,17 +439,20 @@ const isMissingMessageMediaSchemaError = (error) => {
   );
 };
 
-const cleanupExpiredMessageMedia = async (adminClient, retentionDays = null) => {
+const cleanupExpiredMessageMedia = async (adminClient, retentionDays = null, tenantScope = null) => {
   const nowIso = new Date().toISOString();
 
-  let query = adminClient
+  let query = applyTenantQueryScope(
+    adminClient
     .from(SHARED_MESSAGE_MEDIA_TABLE)
     .select('id, bucket, storage_path, thumbnail_url, public_url, expires_at, status')
     .is('deleted_at', null)
     .neq('status', 'expired')
     .lte('expires_at', nowIso)
     .order('expires_at', { ascending: true })
-    .limit(500);
+    .limit(500),
+    tenantScope
+  );
 
   if (retentionDays !== null && retentionDays !== undefined) {
     const cutoffIso = new Date(Date.now() - Math.max(1, Number(retentionDays) || 1) * 24 * 60 * 60 * 1000).toISOString();
@@ -534,15 +549,18 @@ const mergeThreadState = (threads = [], threadStateRows = []) => {
   });
 };
 
-const loadThreadEvents = async (adminClient, threadIds = []) => {
+const loadThreadEvents = async (adminClient, threadIds = [], tenantScope = null) => {
   const safeThreadIds = [...new Set((threadIds || []).map((value) => String(value || '').trim()).filter(Boolean))];
   if (!safeThreadIds.length) return [];
 
-  const { data, error } = await adminClient
+  const { data, error } = await applyTenantQueryScope(
+    adminClient
     .from(THREAD_EVENTS_TABLE)
     .select('*')
     .in('thread_id', safeThreadIds)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true }),
+    tenantScope
+  );
 
   if (error) {
     if (isThreadEventsSchemaUnavailable(error)) {
@@ -572,14 +590,17 @@ const attachThreadEvents = (threads = [], eventRows = []) => {
   });
 };
 
-const loadThreadStates = async (adminClient, threadKeys = [], scope = 'self', userId = '') => {
+const loadThreadStates = async (adminClient, threadKeys = [], scope = 'self', userId = '', tenantScope = null) => {
   const safeKeys = [...new Set((threadKeys || []).map((value) => String(value || '').trim()).filter(Boolean))];
   if (!safeKeys.length) return [];
 
-  let query = adminClient
+  let query = applyTenantQueryScope(
+    adminClient
     .from(SHARED_MESSAGE_THREADS_TABLE)
     .select('*')
-    .in('thread_key', safeKeys);
+    .in('thread_key', safeKeys),
+    tenantScope
+  );
 
   if (scope !== 'admin') {
     query = query.or(`sender_user_id.eq.${userId},recipient_user_id.eq.${userId}`);
@@ -596,12 +617,15 @@ const loadThreadStates = async (adminClient, threadKeys = [], scope = 'self', us
   return data || [];
 };
 
-const loadAllVisibleThreadStates = async (adminClient, scope = 'self', userId = '', limit = 200) => {
-  let query = adminClient
+const loadAllVisibleThreadStates = async (adminClient, scope = 'self', userId = '', limit = 200, tenantScope = null) => {
+  let query = applyTenantQueryScope(
+    adminClient
     .from(SHARED_MESSAGE_THREADS_TABLE)
     .select('*')
     .order('updated_at', { ascending: false })
-    .limit(limit);
+    .limit(limit),
+    tenantScope
+  );
 
   if (scope !== 'admin') {
     query = query.or(`sender_user_id.eq.${userId},recipient_user_id.eq.${userId}`);
@@ -623,6 +647,7 @@ const loadThreadStateByContext = async (
   {
     scope = 'self',
     userId = '',
+    tenantScope = null,
     family = '',
     threadType = '',
     entityType = '',
@@ -635,7 +660,7 @@ const loadThreadStateByContext = async (
 
   const safeFamily = String(family || '').trim().toLowerCase();
   const safeThreadType = String(threadType || '').trim().toLowerCase();
-  const rows = await loadAllVisibleThreadStates(adminClient, scope, userId, 200);
+  const rows = await loadAllVisibleThreadStates(adminClient, scope, userId, 200, tenantScope);
 
   return rows.find((row) => {
     const rowFamily = String(row?.family || '').trim().toLowerCase();
@@ -711,14 +736,14 @@ const threadMatchesRequestFilters = (thread = {}, query = {}) => {
   return true;
 };
 
-const upsertThreadState = async (adminClient, payload = {}) => {
+const upsertThreadState = async (adminClient, payload = {}, tenantScope = null) => {
   const threadKey = String(payload.thread_key || '').trim();
   if (!threadKey) return null;
 
   const { data, error } = await adminClient
     .from(SHARED_MESSAGE_THREADS_TABLE)
     .upsert({
-      ...payload,
+      ...stampTenantPayload(payload, tenantScope),
       priority: normalizeMessagePriority(payload.priority),
       waiting_on: normalizeWaitingOn(payload.waiting_on),
       updated_at: new Date().toISOString(),
@@ -773,10 +798,11 @@ const deriveThreadStateFromMessage = (body = {}, user = {}) => {
   };
 };
 
-const insertSharedMessage = async (adminClient, payload = {}) => {
+const insertSharedMessage = async (adminClient, payload = {}, tenantScope = null) => {
+  const scopedPayload = stampTenantPayload(payload, tenantScope);
   const { data, error } = await adminClient
     .from(SHARED_MESSAGES_TABLE)
-    .insert(payload)
+    .insert(scopedPayload)
     .select('*')
     .single();
 
@@ -787,7 +813,7 @@ const insertSharedMessage = async (adminClient, payload = {}) => {
   const message = String(error?.message || '').toLowerCase();
   const code = String(error?.code || '').trim().toUpperCase();
   if (code === 'PGRST204' || code === '42703' || message.includes('is_internal')) {
-    const { is_internal, ...fallbackPayload } = payload;
+    const { is_internal, ...fallbackPayload } = scopedPayload;
     return adminClient
       .from(SHARED_MESSAGES_TABLE)
       .insert(fallbackPayload)
@@ -958,7 +984,7 @@ const getMessagingPolicy = async (adminClient) => {
   };
 };
 
-const attachUploadedMedia = async (adminClient, messageRow, attachments = []) => {
+const attachUploadedMedia = async (adminClient, messageRow, attachments = [], tenantScope = null) => {
   const normalizedAttachments = normalizeAttachmentPayload(attachments);
   if (!normalizedAttachments.length) {
     return [];
@@ -967,7 +993,7 @@ const attachUploadedMedia = async (adminClient, messageRow, attachments = []) =>
   const retentionDays = await getMessageMediaRetentionDays(adminClient);
   const expiresAt = new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
-  const insertRows = normalizedAttachments.map((attachment) => ({
+  const insertRows = normalizedAttachments.map((attachment) => stampTenantPayload({
     message_id: messageRow.id,
     thread_key: messageRow.thread_key,
     family: messageRow.family,
@@ -983,7 +1009,7 @@ const attachUploadedMedia = async (adminClient, messageRow, attachments = []) =>
     metadata: attachment.metadata || {},
     status: 'active',
     expires_at: expiresAt,
-  }));
+  }, tenantScope));
 
   const { data, error } = await adminClient
     .from(SHARED_MESSAGE_MEDIA_TABLE)
@@ -1039,17 +1065,20 @@ const validateIncomingAttachments = async (adminClient, attachments = []) => {
   return normalizedAttachments;
 };
 
-const loadExistingThreadMessage = async (adminClient, threadKey) => {
+const loadExistingThreadMessage = async (adminClient, threadKey, tenantScope = null) => {
   const normalizedThreadKey = String(threadKey || '').trim();
   if (!normalizedThreadKey) return null;
 
-  const { data, error } = await adminClient
+  const { data, error } = await applyTenantQueryScope(
+    adminClient
     .from(SHARED_MESSAGES_TABLE)
     .select('*')
     .eq('thread_key', normalizedThreadKey)
     .order('created_at', { ascending: false })
     .limit(1)
-    .maybeSingle();
+    .maybeSingle(),
+    tenantScope
+  );
 
   if (error) {
     if (isSharedMessagesSchemaUnavailable(error)) return null;
@@ -1095,10 +1124,15 @@ const handleGet = async (req, res) => {
   const auth = await authenticateRequest(req);
   if (auth.error) return sendJson(res, auth.error.status, auth.error.body);
 
-  const { adminClient, user } = auth;
+  const { adminClient, user, tenantRuntime } = auth;
   const scope = await getAccessScope(adminClient, user);
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime });
+  const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+  if (!userInScope) {
+    return sendJson(res, 403, { error: 'You do not have access to this workspace' });
+  }
 
-  const allThreadStateRows = await loadAllVisibleThreadStates(adminClient, scope, user.id, Number(req.query.limit || 200));
+  const allThreadStateRows = await loadAllVisibleThreadStates(adminClient, scope, user.id, Number(req.query.limit || 200), tenantScope);
   const filteredThreadStateRows = (allThreadStateRows || [])
     .filter((row) => getThreadStateStatus(row) !== 'merged')
     .filter((row) => threadMatchesRequestFilters(row, req.query));
@@ -1107,13 +1141,15 @@ const handleGet = async (req, res) => {
     filteredThreadStateRows,
     scope,
     user.id,
-    Number(req.query.limit || 200)
+    Number(req.query.limit || 200),
+    tenantScope
   );
   const decorated = await decorateMessages(adminClient, rawMessages || []);
   const mergedThreads = await buildThreadsFromThreadStates(adminClient, filteredThreadStateRows, decorated, user.id);
   const threadEvents = await loadThreadEvents(
     adminClient,
-    mergedThreads.map((thread) => thread?.thread_row_id).filter(Boolean)
+    mergedThreads.map((thread) => thread?.thread_row_id).filter(Boolean),
+    tenantScope
   );
   const threads = attachThreadEvents(mergedThreads, threadEvents)
     .filter((thread) => threadMatchesRequestFilters(thread, req.query));
@@ -1124,10 +1160,15 @@ const handlePost = async (req, res) => {
   const auth = await authenticateRequest(req);
   if (auth.error) return sendJson(res, auth.error.status, auth.error.body);
 
-  const { adminClient, user } = auth;
+  const { adminClient, user, tenantRuntime } = auth;
   const body = parseBody(req.body);
   const action = getAction(req);
   const scope = await getAccessScope(adminClient, user);
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime, payload: body });
+  const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+  if (!userInScope) {
+    return sendJson(res, 403, { error: 'You do not have access to this workspace' });
+  }
 
   if (action === 'cleanup-media') {
     if (scope !== 'admin') {
@@ -1142,7 +1183,7 @@ const handlePost = async (req, res) => {
           Number(body?.retentionDays) || DEFAULT_MESSAGE_MEDIA_POLICY.messagingPhotoRetentionDays
         )
       );
-      const result = await cleanupExpiredMessageMedia(adminClient, safeDays);
+      const result = await cleanupExpiredMessageMedia(adminClient, safeDays, tenantScope);
       return sendJson(res, 200, { ok: true, ...result });
     } catch (error) {
       if (isMissingMessageMediaSchemaError(error)) {
@@ -1160,11 +1201,11 @@ const handlePost = async (req, res) => {
 
   const requestedThreadKey = String(body.threadKey || '').trim();
   const existingThreadStateRows = requestedThreadKey
-    ? await loadThreadStates(adminClient, [requestedThreadKey], scope, user.id)
+    ? await loadThreadStates(adminClient, [requestedThreadKey], scope, user.id, tenantScope)
     : [];
   const existingThreadState = existingThreadStateRows[0] || null;
   const existingThreadMessage = requestedThreadKey
-    ? await loadExistingThreadMessage(adminClient, requestedThreadKey)
+    ? await loadExistingThreadMessage(adminClient, requestedThreadKey, tenantScope)
     : null;
 
   const family = assertString(existingThreadState?.family || existingThreadMessage?.family || body.family, 'family').toLowerCase();
@@ -1208,6 +1249,7 @@ const handlePost = async (req, res) => {
     ? await loadThreadStateByContext(adminClient, {
         scope,
         userId: user.id,
+        tenantScope,
         family,
         threadType: requestedThreadType,
         entityType: explicitEntityType,
@@ -1216,7 +1258,7 @@ const handlePost = async (req, res) => {
     : null);
 
   if (requestedThreadKey) {
-    const resolvedReplyTarget = await resolveThreadReplyTarget(adminClient, requestedThreadKey, user.id);
+    const resolvedReplyTarget = await resolveThreadReplyTarget(adminClient, requestedThreadKey, user.id, tenantScope);
     if (resolvedReplyTarget?.recipientUserId) {
       recipientUserId = resolvedReplyTarget.recipientUserId;
       recipientRole = resolvedReplyTarget.recipientRole || recipientRole;
@@ -1318,7 +1360,7 @@ const handlePost = async (req, res) => {
   };
 
   const derivedState = deriveThreadStateFromMessage(body, user);
-  const { data, error } = await insertSharedMessage(adminClient, insertPayload);
+  const { data, error } = await insertSharedMessage(adminClient, insertPayload, tenantScope);
 
   if (error) {
     if (isSharedMessagesSchemaUnavailable(error)) {
@@ -1330,19 +1372,22 @@ const handlePost = async (req, res) => {
   try {
     let savedAttachments = [];
     if (incomingAttachments.length) {
-      savedAttachments = await attachUploadedMedia(adminClient, data, incomingAttachments);
+      savedAttachments = await attachUploadedMedia(adminClient, data, incomingAttachments, tenantScope);
       if (savedAttachments.length) {
         const nextMetadata = {
           ...(data?.metadata && typeof data.metadata === 'object' ? data.metadata : {}),
           attachments: savedAttachments,
         };
 
-        const { data: updatedMessage, error: updateMessageError } = await adminClient
+        const { data: updatedMessage, error: updateMessageError } = await applyTenantQueryScope(
+          adminClient
           .from(SHARED_MESSAGES_TABLE)
           .update({ metadata: nextMetadata })
           .eq('id', data.id)
           .select('*')
-          .single();
+          .single(),
+          tenantScope
+        );
 
         if (updateMessageError) {
           throw updateMessageError;
@@ -1374,14 +1419,14 @@ const handlePost = async (req, res) => {
       workflow_status: existingContextThreadState.workflow_status || null,
       visibility_scope: existingContextThreadState.visibility_scope || null,
       metadata: existingContextThreadState.metadata || {},
-    });
+    }, tenantScope);
   } catch (threadStateError) {
     return sendJson(res, 500, { error: threadStateError.message });
   }
 
   const [message] = await decorateMessages(adminClient, [data]);
-  const threadStateRows = await loadThreadStates(adminClient, [threadKey], 'admin', user.id);
-  const threadMessages = await loadMessagesForThreadStates(adminClient, threadStateRows, 'admin', user.id, 200);
+  const threadStateRows = await loadThreadStates(adminClient, [threadKey], 'admin', user.id, tenantScope);
+  const threadMessages = await loadMessagesForThreadStates(adminClient, threadStateRows, 'admin', user.id, 200, tenantScope);
   const decoratedThreadMessages = await decorateMessages(adminClient, threadMessages || []);
   const [thread] = await buildThreadsFromThreadStates(adminClient, threadStateRows, decoratedThreadMessages, user.id);
   return sendJson(res, 201, { message, thread });
@@ -1391,7 +1436,7 @@ const handlePatch = async (req, res) => {
   const auth = await authenticateRequest(req);
   if (auth.error) return sendJson(res, auth.error.status, auth.error.body);
 
-  const { adminClient, user } = auth;
+  const { adminClient, user, tenantRuntime } = auth;
   const scope = await getAccessScope(adminClient, user);
   const action = getAction(req);
 
@@ -1400,6 +1445,11 @@ const handlePatch = async (req, res) => {
   }
 
   const body = parseBody(req.body);
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime, payload: body });
+  const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+  if (!userInScope) {
+    return sendJson(res, 403, { error: 'You do not have access to this workspace' });
+  }
   const threadKey = ['delete-message', 'ensure-thread'].includes(action)
     ? String(body.threadKey || '').trim()
     : assertString(body.threadKey, 'threadKey');
@@ -1409,11 +1459,14 @@ const handlePatch = async (req, res) => {
 
   if (action === 'delete-message') {
     const messageId = assertString(body.messageId, 'messageId');
-    const { data: messageRow, error: messageLookupError } = await adminClient
+    const { data: messageRow, error: messageLookupError } = await applyTenantQueryScope(
+      adminClient
       .from(SHARED_MESSAGES_TABLE)
       .select('id, thread_key, sender_user_id, message_type')
       .eq('id', messageId)
-      .maybeSingle();
+      .maybeSingle(),
+      tenantScope
+    );
 
     if (messageLookupError) {
       if (isSharedMessagesSchemaUnavailable(messageLookupError)) {
@@ -1436,11 +1489,14 @@ const handlePatch = async (req, res) => {
       return sendJson(res, 400, { error: 'This message cannot be deleted' });
     }
 
-    const { error: deleteError } = await adminClient
+    const { error: deleteError } = await applyTenantQueryScope(
+      adminClient
       .from(SHARED_MESSAGES_TABLE)
       .delete()
       .eq('id', messageId)
-      .eq('sender_user_id', user.id);
+      .eq('sender_user_id', user.id),
+      tenantScope
+    );
 
     if (deleteError) {
       if (isSharedMessagesSchemaUnavailable(deleteError)) {
@@ -1458,13 +1514,16 @@ const handlePatch = async (req, res) => {
 
   if (action === 'delete-thread') {
     const normalizedThreadKey = String(threadKey || '').trim();
-    const threadStateRows = await loadThreadStates(adminClient, [normalizedThreadKey], scope, user.id);
+    const threadStateRows = await loadThreadStates(adminClient, [normalizedThreadKey], scope, user.id, tenantScope);
     const threadState = threadStateRows[0] || null;
 
-    const { data: threadMessages, error: lookupError } = await adminClient
+    const { data: threadMessages, error: lookupError } = await applyTenantQueryScope(
+      adminClient
       .from(SHARED_MESSAGES_TABLE)
       .select('id, sender_user_id, recipient_user_id')
-      .eq('thread_key', normalizedThreadKey);
+      .eq('thread_key', normalizedThreadKey),
+      tenantScope
+    );
 
     if (lookupError) {
       if (isSharedMessagesSchemaUnavailable(lookupError)) {
@@ -1486,10 +1545,13 @@ const handlePatch = async (req, res) => {
     }
 
     if (messages.length) {
-      const { error: deleteMessagesError } = await adminClient
+      const { error: deleteMessagesError } = await applyTenantQueryScope(
+        adminClient
         .from(SHARED_MESSAGES_TABLE)
         .delete()
-        .eq('thread_key', normalizedThreadKey);
+        .eq('thread_key', normalizedThreadKey),
+        tenantScope
+      );
 
       if (deleteMessagesError) {
         if (isSharedMessagesSchemaUnavailable(deleteMessagesError)) {
@@ -1499,10 +1561,13 @@ const handlePatch = async (req, res) => {
       }
     }
 
-    const { error: deleteThreadStateError } = await adminClient
+    const { error: deleteThreadStateError } = await applyTenantQueryScope(
+      adminClient
       .from(SHARED_MESSAGE_THREADS_TABLE)
       .delete()
-      .eq('thread_key', normalizedThreadKey);
+      .eq('thread_key', normalizedThreadKey),
+      tenantScope
+    );
 
     if (deleteThreadStateError && !isSharedMessageThreadsSchemaUnavailable(deleteThreadStateError)) {
       return sendJson(res, 500, { error: deleteThreadStateError.message });
@@ -1538,6 +1603,7 @@ const handlePatch = async (req, res) => {
     const existingState = await loadThreadStateByContext(adminClient, {
       scope,
       userId: user.id,
+      tenantScope,
       family,
       threadType,
       entityType: normalizedContextType,
@@ -1597,15 +1663,18 @@ const handlePatch = async (req, res) => {
       updates.resolved_at = body.resolved ? new Date().toISOString() : null;
     }
 
-    const existingStateRows = await loadThreadStates(adminClient, [threadKey], 'admin', user.id);
+    const existingStateRows = await loadThreadStates(adminClient, [threadKey], 'admin', user.id, tenantScope);
     const existingState = existingStateRows[0] || null;
-    const seedMessageResponse = await adminClient
+    const seedMessageResponse = await applyTenantQueryScope(
+      adminClient
       .from(SHARED_MESSAGES_TABLE)
       .select('thread_key, family, thread_type, entity_type, entity_id, sender_user_id, recipient_user_id')
       .eq('thread_key', threadKey)
       .order('created_at', { ascending: true })
       .limit(1)
-      .maybeSingle();
+      .maybeSingle(),
+      tenantScope
+    );
 
     if (seedMessageResponse.error) {
       return sendJson(res, 500, { error: seedMessageResponse.error.message });
@@ -1632,7 +1701,7 @@ const handlePatch = async (req, res) => {
         resolved_at: Object.prototype.hasOwnProperty.call(updates, 'resolved_at')
           ? updates.resolved_at
           : existingState?.resolved_at || null,
-      });
+      }, tenantScope);
       return sendJson(res, 200, { ok: true, threadState: state });
     } catch (stateError) {
       if (isSharedMessageThreadsSchemaUnavailable(stateError)) {
@@ -1642,6 +1711,7 @@ const handlePatch = async (req, res) => {
     }
   }
 
+  updateQuery = applyTenantQueryScope(updateQuery, tenantScope);
   const { error } = await updateQuery;
 
   if (error) {

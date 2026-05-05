@@ -13,6 +13,7 @@
 import { supabase } from '../lib/supabase';
 import TransactionalRentalService from './TransactionalRentalService';
 import { dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
+import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram';
 
 const getRawStorageValue = (value) => {
   if (!value) return '';
@@ -529,6 +530,16 @@ class EnhancedTransactionalRentalService {
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);
       });
+
+      if (shouldDispatchInitialPaymentReceived(newRental)) {
+        dispatchRentalLifecycleTelegramEvent({
+          eventType: 'payment_received',
+          actor: 'admin',
+          rental: buildInitialPaymentReceivedTelegramPayload(newRental),
+        }).catch((telegramDispatchError) => {
+          console.warn('⚠️ Initial payment received Telegram dispatch failed (non-blocking):', telegramDispatchError);
+        });
+      }
 
       console.log('✅ RENTAL CREATED SUCCESSFULLY (TWO-STEP COMPLETE):', newRental.id);
       return { success: true, data: newRental, message: 'Rental created successfully' };

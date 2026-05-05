@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { authenticateRequest } from './_lib/auth.js';
 import { APP_USERS_TABLE, createSupabaseClients } from './_lib/supabase.js';
+import { applyTenantQueryScope, resolveRequestTenantScope } from './_lib/sharedTenantIsolation.js';
 import {
   BOOST_LEDGER_EVENT_TYPES_PHASE2,
   BOOST_MAD_RATE,
@@ -73,6 +74,28 @@ const buildVisitorHash = (req, fallback = '') => {
 
 const hashUserRef = (value) =>
   crypto.createHash('sha256').update(`user:${String(value || '')}`).digest('hex');
+
+const normalizeMarketplaceListingId = (value = '') => {
+  const candidate = String(value || '').trim();
+  if (!candidate) return '';
+  return candidate.startsWith('marketplace-') ? candidate.slice('marketplace-'.length) : candidate;
+};
+
+const parseListingIdFromDestinationUrl = (destinationUrl = '') => {
+  const raw = String(destinationUrl || '').trim();
+  if (!raw) return '';
+
+  const normalizedPath = (() => {
+    try {
+      return new URL(raw, 'https://driveout.local').pathname;
+    } catch {
+      return raw;
+    }
+  })();
+
+  const match = normalizedPath.match(/\/marketplace\/([^/?#]+)/i);
+  return normalizeMarketplaceListingId(match?.[1] || '');
+};
 
 const generateCode = () =>
   Array.from({ length: GROWTH_SHORT_CODE_LENGTH }, () => CHARS[Math.floor(Math.random() * CHARS.length)]).join('');
@@ -383,6 +406,22 @@ const getLinkByCode = async (adminClient, code) => {
     .select('*')
     .eq('short_code', code)
     .maybeSingle();
+  if (error) throw error;
+  return data || null;
+};
+
+const getScopedMarketplaceListing = async ({ adminClient, listingId, tenantScope = null }) => {
+  const normalizedListingId = String(listingId || '').trim();
+  if (!normalizedListingId) return null;
+
+  let query = adminClient
+    .from(MARKETPLACE_LISTINGS_TABLE)
+    .select('id, owner_id, organization_id, listing_status')
+    .eq('id', normalizedListingId);
+
+  query = applyTenantQueryScope(query, tenantScope);
+
+  const { data, error } = await query.maybeSingle();
   if (error) throw error;
   return data || null;
 };
@@ -719,6 +758,7 @@ const buildBoostSnapshotFromGrowth = async (req, adminClient, userId) => {
 const handleLegacyBoostRequest = async (req, res, auth, body = {}) => {
   const { adminClient, user } = auth;
   const origin = buildOrigin(req);
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime: body?.tenantRuntime || null });
   const action = String(body.action || '').trim().toLowerCase();
 
   if (req.method === 'GET') {
@@ -735,7 +775,19 @@ const handleLegacyBoostRequest = async (req, res, auth, body = {}) => {
   }
 
   if (action === 'create_share_link') {
-    const listingId = String(body.listingId || '').trim();
+    const listingId = normalizeMarketplaceListingId(body.listingId || '');
+
+    if (listingId) {
+      const listing = await getScopedMarketplaceListing({
+        adminClient,
+        listingId,
+        tenantScope,
+      });
+      if (!listing?.id) {
+        return json(res, 404, { error: 'Listing not found' });
+      }
+    }
+
     const destinationUrl = listingId
       ? `${origin}/marketplace/${listingId}`
       : String(body.destinationUrl || '').trim();
@@ -771,10 +823,25 @@ const handleLegacyBoostRequest = async (req, res, auth, body = {}) => {
 
 const trackClickAndResolve = async (req, res, code) => {
   const { adminClient } = createSupabaseClients();
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient });
   const link = await getLinkByCode(adminClient, code);
 
   if (!link) {
     return json(res, 404, { error: 'Link not found' });
+  }
+
+  if (tenantScope?.isShared) {
+    const destinationListingId = parseListingIdFromDestinationUrl(link.destination_url);
+    if (destinationListingId) {
+      const listing = await getScopedMarketplaceListing({
+        adminClient,
+        listingId: destinationListingId,
+        tenantScope,
+      });
+      if (!listing?.id) {
+        return json(res, 404, { error: 'Link not found' });
+      }
+    }
   }
 
   const visitorHash = buildVisitorHash(req);
@@ -891,23 +958,41 @@ const trackSignup = async (res, body) => {
   });
 };
 
-const trackBooking = async (res, body) => {
+const trackBooking = async (req, res, body) => {
   const code = String(body.code || '').trim();
   const bookingRequestId = String(body.bookingRequestId || '').trim();
-  const listingId = String(body.listingId || '').trim();
+  const listingId = normalizeMarketplaceListingId(body.listingId || '');
   if (!code || !bookingRequestId) {
     return json(res, 400, { error: 'Missing booking attribution data' });
   }
 
   const { adminClient } = createSupabaseClients();
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient, payload: body });
   const link = await getLinkByCode(adminClient, code);
   if (!link || link.type !== GROWTH_SHARE_TYPES.boost) {
     return json(res, 404, { error: 'Boost link not found' });
   }
 
+  const destinationListingId = parseListingIdFromDestinationUrl(link.destination_url);
+  if (listingId && destinationListingId && String(destinationListingId) !== String(listingId)) {
+    return json(res, 400, { error: 'Listing attribution mismatch' });
+  }
+
+  const scopedListing = listingId || destinationListingId
+    ? await getScopedMarketplaceListing({
+        adminClient,
+        listingId: listingId || destinationListingId,
+        tenantScope,
+      })
+    : null;
+
+  if ((listingId || destinationListingId) && !scopedListing?.id) {
+    return json(res, 404, { error: 'Listing not found' });
+  }
+
   const { data: booking } = await adminClient
     .from(BOOKING_REQUESTS_TABLE)
-    .select('id, listing_id')
+    .select('id, listing_id, organization_id')
     .eq('id', bookingRequestId)
     .maybeSingle();
 
@@ -915,7 +1000,15 @@ const trackBooking = async (res, body) => {
     return json(res, 404, { error: 'Booking request not found' });
   }
 
-  if (listingId && !String(link.destination_url || '').includes(`/${listingId}`)) {
+  if (tenantScope?.isShared && booking?.organization_id && String(booking.organization_id) !== String(tenantScope.organizationId)) {
+    return json(res, 400, { error: 'Booking attribution mismatch' });
+  }
+
+  if (scopedListing?.id && String(booking.listing_id || '') !== String(scopedListing.id)) {
+    return json(res, 400, { error: 'Booking attribution mismatch' });
+  }
+
+  if (listingId && !destinationListingId && !String(link.destination_url || '').includes(`/${listingId}`)) {
     return json(res, 400, { error: 'Listing attribution mismatch' });
   }
 
@@ -1037,7 +1130,7 @@ export default async function handler(req, res) {
       }
 
       if (action === 'track_booking') {
-        return await trackBooking(res, body);
+        return await trackBooking(req, res, body);
       }
 
       const auth = await authenticateRequest(req);

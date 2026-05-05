@@ -5,6 +5,11 @@ import {
 } from './supabase.js';
 import { insertTenantAuditLog } from './tenantAuditLog.js';
 import { TENANT_FEATURE_KEYS, TENANT_PLAN_ORDER } from '../../src/config/tenantPlans.js';
+import { DEFAULT_TENANCY_MODE, normalizeTenancyMode } from './tenancyMode.js';
+import {
+  runPlatformTenantSelectWithModeFallback,
+  runPlatformTenantUpdateWithModeFallback,
+} from './tenantRegistry.js';
 
 const json = (res, status, body) => res.status(status).json(body);
 
@@ -74,6 +79,7 @@ const sanitizeTenantSettings = (settings = {}) => {
     const allowedTelegramEvents = [
       'rental_created',
       'rental_started',
+      'rental_vehicle_replaced',
       'rental_completed',
       'payment_received',
       'rental_overdue',
@@ -203,17 +209,27 @@ export default async function tenantControlsHandler(req, res) {
 
     if (subscriptionLookupError) throw subscriptionLookupError;
 
-    const { data: existingTenant, error: tenantLookupError } = await adminClient
-      .from(PLATFORM_TENANTS_TABLE)
-      .select('*')
-      .eq('id', tenantId)
-      .eq('business_account_id', businessAccountId)
-      .maybeSingle();
+    const { data: existingTenant, error: tenantLookupError } = await runPlatformTenantSelectWithModeFallback((selectClause) =>
+      adminClient
+        .from(PLATFORM_TENANTS_TABLE)
+        .select(selectClause)
+        .eq('id', tenantId)
+        .eq('business_account_id', businessAccountId)
+        .maybeSingle()
+    );
 
     if (tenantLookupError) throw tenantLookupError;
     if (!existingTenant) {
       return json(res, 404, { error: 'Tenant not found' });
     }
+
+    const nextTenancyMode = normalizeTenancyMode(
+      tenantPatch.tenancy_mode,
+      normalizeTenancyMode(
+        existingTenant?.tenancy_mode || existingTenant?.metadata?.tenancy_mode,
+        DEFAULT_TENANCY_MODE
+      )
+    );
 
     const subscriptionPayload = {
       business_account_id: businessAccountId,
@@ -247,10 +263,12 @@ export default async function tenantControlsHandler(req, res) {
     };
 
     const tenantPayload = {
+      tenancy_mode: nextTenancyMode,
       metadata: {
         ...((existingTenant?.metadata && typeof existingTenant.metadata === 'object')
           ? existingTenant.metadata
           : {}),
+        tenancy_mode: nextTenancyMode,
         feature_access: {
           ...(((existingTenant?.metadata?.feature_access) && typeof existingTenant.metadata.feature_access === 'object')
             ? existingTenant.metadata.feature_access
@@ -277,10 +295,14 @@ export default async function tenantControlsHandler(req, res) {
       adminClient
         .from(PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE)
         .upsert(subscriptionPayload, { onConflict: 'business_account_id' }),
-      adminClient
-        .from(PLATFORM_TENANTS_TABLE)
-        .update(tenantPayload)
-        .eq('id', tenantId),
+      runPlatformTenantUpdateWithModeFallback(
+        (payload) =>
+          adminClient
+            .from(PLATFORM_TENANTS_TABLE)
+            .update(payload)
+            .eq('id', tenantId),
+        tenantPayload
+      ),
     ]);
 
     if (subscriptionSaveError) throw subscriptionSaveError;
@@ -296,6 +318,9 @@ export default async function tenantControlsHandler(req, res) {
     if ((existingSubscription?.plan_type || 'starter') !== subscriptionPayload.plan_type) changedCoreControls.push('plan_type');
     if ((existingSubscription?.subscription_status || 'trial') !== subscriptionPayload.subscription_status) changedCoreControls.push('subscription_status');
     if ((existingSubscription?.billing_status || 'none') !== subscriptionPayload.billing_status) changedCoreControls.push('billing_status');
+    if (normalizeTenancyMode(existingTenant?.tenancy_mode || existingTenant?.metadata?.tenancy_mode, DEFAULT_TENANCY_MODE) !== nextTenancyMode) {
+      changedCoreControls.push('tenancy_mode');
+    }
 
     await insertTenantAuditLog({
       adminClient,
@@ -315,6 +340,7 @@ export default async function tenantControlsHandler(req, res) {
           commercial_settings: changedCommercialSettings,
         },
         next_state: {
+          tenancy_mode: nextTenancyMode,
           plan_type: subscriptionPayload.plan_type,
           subscription_status: subscriptionPayload.subscription_status,
           billing_status: subscriptionPayload.billing_status,
@@ -330,6 +356,10 @@ export default async function tenantControlsHandler(req, res) {
     return json(res, 200, {
       ok: true,
       subscription: subscriptionPayload,
+      tenant: {
+        id: tenantId,
+        tenancy_mode: nextTenancyMode,
+      },
       tenant_metadata: tenantPayload.metadata,
     });
   } catch (error) {

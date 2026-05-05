@@ -1,31 +1,12 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../utils/supabaseClient';
-import { TBL } from '../../config/tables';
+import ToursService from '../../services/ToursService';
 
 // Async thunks for tour operations
 export const fetchTours = createAsyncThunk(
   'tours/fetchTours',
   async (_, { rejectWithValue }) => {
     try {
-      console.log(`🔧 Fetching tours from table: ${TBL.TOURS}`);
-      
-      const { data, error } = await supabase
-        .from(TBL.TOURS)
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error(`❌ Error fetching tours from ${TBL.TOURS}:`, error);
-        // If table doesn't exist, return empty array
-        if (error.code === '42P01') {
-          console.warn(`⚠️ Tours table ${TBL.TOURS} does not exist, returning empty array`);
-          return [];
-        }
-        throw error;
-      }
-
-      console.log(`✅ Successfully fetched ${data?.length || 0} tours from ${TBL.TOURS}`);
-      return data || [];
+      return await ToursService.getAllTours();
     } catch (error) {
       console.error(`❌ Exception fetching tours:`, error);
       return rejectWithValue(error.message);
@@ -37,27 +18,7 @@ export const createTour = createAsyncThunk(
   'tours/createTour',
   async (tourData, { rejectWithValue }) => {
     try {
-      console.log(`🔧 Creating tour in table: ${TBL.TOURS}`, tourData);
-      
-      const cleanedData = {
-        ...tourData,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-
-      const { data, error } = await supabase
-        .from(TBL.TOURS)
-        .insert([cleanedData])
-        .select()
-        .single();
-
-      if (error) {
-        console.error(`❌ Error creating tour in ${TBL.TOURS}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully created tour in ${TBL.TOURS}:`, data);
-      return data;
+      return await ToursService.createTour(tourData);
     } catch (error) {
       console.error(`❌ Exception creating tour:`, error);
       return rejectWithValue(error.message);
@@ -69,27 +30,7 @@ export const updateTour = createAsyncThunk(
   'tours/updateTour',
   async ({ id, updates }, { rejectWithValue }) => {
     try {
-      console.log(`🔧 Updating tour ${id} in table: ${TBL.TOURS}`, updates);
-      
-      const cleanedUpdates = {
-        ...updates,
-        updated_at: new Date().toISOString()
-      };
-
-      const { data, error } = await supabase
-        .from(TBL.TOURS)
-        .update(cleanedUpdates)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) {
-        console.error(`❌ Error updating tour ${id} in ${TBL.TOURS}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully updated tour ${id} in ${TBL.TOURS}:`, data);
-      return data;
+      return await ToursService.updateTour(id, updates);
     } catch (error) {
       console.error(`❌ Exception updating tour:`, error);
       return rejectWithValue(error.message);
@@ -101,19 +42,7 @@ export const deleteTour = createAsyncThunk(
   'tours/deleteTour',
   async (id, { rejectWithValue }) => {
     try {
-      console.log(`🔧 Deleting tour ${id} from table: ${TBL.TOURS}`);
-      
-      const { error } = await supabase
-        .from(TBL.TOURS)
-        .delete()
-        .eq('id', id);
-
-      if (error) {
-        console.error(`❌ Error deleting tour ${id} from ${TBL.TOURS}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully deleted tour ${id} from ${TBL.TOURS}`);
+      await ToursService.deleteTour(id);
       return id;
     } catch (error) {
       console.error(`❌ Exception deleting tour:`, error);

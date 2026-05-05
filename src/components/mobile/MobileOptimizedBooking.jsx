@@ -17,7 +17,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { createBooking } from '../../store/slices/bookingsSlice';
 import { fetchVehicles } from '../../store/slices/vehiclesSlice';
 import PerformanceMonitor from '../../utils/PerformanceMonitor';
-import CacheService from '../../services/CacheService';
+import { CacheService } from '../../services/CacheService';
 
 const MobileOptimizedBooking = ({ onComplete, onCancel }) => {
   const { t } = useTranslation();

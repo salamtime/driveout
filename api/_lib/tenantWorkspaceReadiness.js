@@ -1,11 +1,17 @@
 import {
+  ORGANIZATIONS_TABLE,
   PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE,
+  PLATFORM_BUSINESS_ACCOUNTS_TABLE,
   PLATFORM_TENANTS_TABLE,
+  APP_USERS_TABLE,
+  ORGANIZATION_MEMBERS_TABLE,
+  getSharedSupabaseTenantConfig,
 } from './supabase.js';
 import {
   getCanonicalTenantWorkspaceContract,
   CANONICAL_TENANT_WORKSPACE_CONTRACT_VERSION,
 } from './tenantWorkspaceContract.js';
+import { resolveTenantTenancyMode } from './tenantRegistry.js';
 
 const READINESS_METADATA_KEY = 'workspace_readiness';
 const READINESS_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -91,6 +97,44 @@ const BASE_RUNTIME_REQUIREMENTS = Object.freeze([
   },
 ]);
 
+const DEDICATED_RUNTIME_REQUIREMENTS = Object.freeze([
+  {
+    key: 'owner_user',
+    label: 'owner workspace user exists',
+    sql: `exists (
+      select 1
+      from public.app_b30c02e74da644baad4668e3587d86b1_users u
+      where u.role = 'owner'::public.user_role
+    )`,
+  },
+  {
+    key: 'owner_permissions',
+    label: 'owner permissions are seeded',
+    sql: `exists (
+      select 1
+      from public.app_b30c02e74da644baad4668e3587d86b1_users u
+      where u.role = 'owner'::public.user_role
+        and u.permissions is not null
+        and jsonb_typeof(u.permissions) = 'object'
+        and exists (
+          select 1
+          from jsonb_each(u.permissions)
+          limit 1
+        )
+    )`,
+  },
+  {
+    key: 'owner_verification_status',
+    label: 'owner verification status is seeded',
+    sql: `exists (
+      select 1
+      from public.app_b30c02e74da644baad4668e3587d86b1_users u
+      where u.role = 'owner'::public.user_role
+        and u.verification_status is not null
+    )`,
+  },
+]);
+
 const TRIAL_RUNTIME_REQUIREMENT = Object.freeze({
   key: 'owner_trial_window',
   label: 'owner trial window is seeded',
@@ -127,6 +171,14 @@ const buildMissingMessage = (readiness = {}) => {
 const getTenantMetadata = (tenant = {}) => (
   tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {}
 );
+
+const resolveWorkspaceProjectRef = (tenant = {}) => {
+  const tenancyMode = resolveTenantTenancyMode(tenant);
+  if (tenancyMode === 'shared') {
+    return String(getSharedSupabaseTenantConfig().projectRef || '').trim();
+  }
+  return String(tenant?.tenant_project_ref || '').trim();
+};
 
 export const getCachedWorkspaceReadiness = (tenant = {}) => {
   const metadata = getTenantMetadata(tenant);
@@ -234,11 +286,15 @@ export const queryWorkspaceSchemaReadiness = async (projectRef) => {
   };
 };
 
-const getRuntimeRequirements = ({ expectTrialWindow = false } = {}) => (
-  expectTrialWindow
-    ? [...BASE_RUNTIME_REQUIREMENTS, TRIAL_RUNTIME_REQUIREMENT]
-    : [...BASE_RUNTIME_REQUIREMENTS]
-);
+const getRuntimeRequirements = ({ expectTrialWindow = false, tenancyMode = 'shared' } = {}) => {
+  const baseRequirements = tenancyMode === 'dedicated'
+    ? [...DEDICATED_RUNTIME_REQUIREMENTS]
+    : [...BASE_RUNTIME_REQUIREMENTS];
+
+  return expectTrialWindow
+    ? [...baseRequirements, TRIAL_RUNTIME_REQUIREMENT]
+    : baseRequirements;
+};
 
 const inferRuntimeReadinessOptions = async ({ tenant = {}, adminClient = null } = {}) => {
   const businessAccountId = String(tenant?.business_account_id || '').trim();
@@ -316,6 +372,192 @@ export const queryWorkspaceRuntimeReadiness = async (projectRef, options = {}) =
   };
 };
 
+const resolveSharedTenantRuntimeContext = async ({ tenant = {}, adminClient = null } = {}) => {
+  const metadata = getTenantMetadata(tenant);
+  const businessAccountId = String(tenant?.business_account_id || '').trim();
+  const tenantOwnerUserId = String(tenant?.owner_user_id || '').trim();
+  const metadataOrganizationId = String(
+    metadata.organization_id ||
+    metadata.shared_organization_id ||
+    ''
+  ).trim();
+
+  let ownerAuthUserId = tenantOwnerUserId || null;
+  if (!ownerAuthUserId && businessAccountId && adminClient) {
+    const { data: businessAccount, error: businessAccountError } = await adminClient
+      .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
+      .select('auth_user_id')
+      .eq('id', businessAccountId)
+      .maybeSingle();
+
+    if (businessAccountError) {
+      throw businessAccountError;
+    }
+
+    ownerAuthUserId = String(businessAccount?.auth_user_id || '').trim() || null;
+  }
+
+  let organizationId = metadataOrganizationId || null;
+  if (!organizationId && ownerAuthUserId && adminClient) {
+    const { data: organization, error: organizationError } = await adminClient
+      .from(ORGANIZATIONS_TABLE)
+      .select('id')
+      .eq('owner_user_id', ownerAuthUserId)
+      .eq('is_platform_organization', false)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (organizationError) {
+      throw organizationError;
+    }
+
+    organizationId = String(organization?.id || '').trim() || null;
+  }
+
+  return {
+    ownerAuthUserId,
+    organizationId,
+  };
+};
+
+const querySharedWorkspaceRuntimeReadiness = async ({
+  tenant = {},
+  adminClient = null,
+  expectTrialWindow = false,
+} = {}) => {
+  if (!adminClient) {
+    throw new Error('Shared workspace runtime readiness requires admin client access');
+  }
+
+  const { ownerAuthUserId, organizationId } = await resolveSharedTenantRuntimeContext({
+    tenant,
+    adminClient,
+  });
+
+  const requiredRuntimeRequirements = [
+    'shared_owner_user',
+    'shared_tenant_organization',
+    'shared_owner_primary_org_link',
+    'shared_owner_membership',
+    'shared_owner_permissions',
+    'shared_owner_verification_status',
+  ];
+  if (expectTrialWindow) {
+    requiredRuntimeRequirements.push('shared_owner_trial_window');
+  }
+
+  const missingRuntimeRequirements = [];
+
+  if (!ownerAuthUserId) {
+    missingRuntimeRequirements.push(
+      'shared_owner_user',
+      'shared_owner_primary_org_link',
+      'shared_owner_membership',
+      'shared_owner_permissions',
+      'shared_owner_verification_status'
+    );
+    if (expectTrialWindow) {
+      missingRuntimeRequirements.push('shared_owner_trial_window');
+    }
+  }
+
+  if (!organizationId) {
+    missingRuntimeRequirements.push(
+      'shared_tenant_organization',
+      'shared_owner_primary_org_link',
+      'shared_owner_membership'
+    );
+  }
+
+  let ownerUser = null;
+  if (ownerAuthUserId) {
+    const { data, error } = await adminClient
+      .from(APP_USERS_TABLE)
+      .select('id, role, primary_organization_id, permissions, verification_status, trial_started_at, trial_ends_at')
+      .eq('id', ownerAuthUserId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    ownerUser = data || null;
+    const ownerRole = String(ownerUser?.role || '').trim().toLowerCase();
+    if (!ownerUser || !['owner', 'business_owner', 'admin'].includes(ownerRole)) {
+      missingRuntimeRequirements.push('shared_owner_user');
+    }
+    if (
+      !ownerUser?.permissions ||
+      typeof ownerUser.permissions !== 'object' ||
+      Object.keys(ownerUser.permissions || {}).length === 0
+    ) {
+      missingRuntimeRequirements.push('shared_owner_permissions');
+    }
+    if (!ownerUser?.verification_status) {
+      missingRuntimeRequirements.push('shared_owner_verification_status');
+    }
+    if (
+      expectTrialWindow &&
+      (!ownerUser?.trial_started_at || !ownerUser?.trial_ends_at)
+    ) {
+      missingRuntimeRequirements.push('shared_owner_trial_window');
+    }
+  }
+
+  if (organizationId) {
+    const { data: organization, error: organizationError } = await adminClient
+      .from(ORGANIZATIONS_TABLE)
+      .select('id, owner_user_id, is_platform_organization')
+      .eq('id', organizationId)
+      .maybeSingle();
+
+    if (organizationError) {
+      throw organizationError;
+    }
+
+    if (!organization || organization.is_platform_organization === true) {
+      missingRuntimeRequirements.push('shared_tenant_organization');
+    }
+
+    if (
+      !ownerUser ||
+      String(ownerUser?.primary_organization_id || '').trim() !== String(organizationId)
+    ) {
+      missingRuntimeRequirements.push('shared_owner_primary_org_link');
+    }
+
+    if (ownerAuthUserId) {
+      const { data: membership, error: membershipError } = await adminClient
+        .from(ORGANIZATION_MEMBERS_TABLE)
+        .select('organization_id, user_id, member_role, membership_status')
+        .eq('organization_id', organizationId)
+        .eq('user_id', ownerAuthUserId)
+        .eq('membership_status', 'active')
+        .eq('member_role', 'org_owner')
+        .maybeSingle();
+
+      if (membershipError) {
+        throw membershipError;
+      }
+
+      if (!membership) {
+        missingRuntimeRequirements.push('shared_owner_membership');
+      }
+    }
+  }
+
+  return {
+    runtime_ready: [...new Set(missingRuntimeRequirements)].length === 0,
+    required_runtime_requirements: requiredRuntimeRequirements,
+    missing_runtime_requirements: [...new Set(missingRuntimeRequirements)],
+    expected_trial_window: expectTrialWindow === true,
+    readiness_mode: 'shared_tenant_runtime',
+    organization_id: organizationId || null,
+    owner_user_id: ownerAuthUserId || null,
+  };
+};
+
 export const resolveWorkspaceReadiness = async ({
   tenant,
   adminClient = null,
@@ -327,11 +569,13 @@ export const resolveWorkspaceReadiness = async ({
     return cached;
   }
 
-  const projectRef = String(tenant?.tenant_project_ref || '').trim();
+  const tenancyMode = resolveTenantTenancyMode(tenant);
+  const projectRef = resolveWorkspaceProjectRef(tenant);
   if (!projectRef) {
     const readiness = {
       status: 'incomplete',
       ready: false,
+      contract_version: CANONICAL_TENANT_WORKSPACE_CONTRACT_VERSION,
       schema_ready: false,
       runtime_ready: false,
       checked_at: new Date().toISOString(),
@@ -359,9 +603,20 @@ export const resolveWorkspaceReadiness = async ({
 
   try {
     const runtimeOptions = await inferRuntimeReadinessOptions({ tenant, adminClient });
+    const schemaPromise = queryWorkspaceSchemaReadiness(projectRef);
+    const runtimePromise = tenancyMode === 'shared'
+      ? querySharedWorkspaceRuntimeReadiness({
+        tenant,
+        adminClient,
+        expectTrialWindow: runtimeOptions.expectTrialWindow === true,
+      })
+      : queryWorkspaceRuntimeReadiness(projectRef, {
+        ...runtimeOptions,
+        tenancyMode,
+      });
     const [schemaReadiness, runtimeReadiness] = await Promise.all([
-      queryWorkspaceSchemaReadiness(projectRef),
-      queryWorkspaceRuntimeReadiness(projectRef, runtimeOptions),
+      schemaPromise,
+      runtimePromise,
     ]);
     const ready = schemaReadiness.schema_ready === true && runtimeReadiness.runtime_ready === true;
     readiness = {
@@ -370,6 +625,7 @@ export const resolveWorkspaceReadiness = async ({
       contract_version: CANONICAL_TENANT_WORKSPACE_CONTRACT_VERSION,
       checked_at: new Date().toISOString(),
       project_ref: projectRef,
+      tenancy_mode: tenancyMode,
       ...schemaReadiness,
       ...runtimeReadiness,
       error_message: ready ? null : buildMissingMessage({
@@ -381,6 +637,10 @@ export const resolveWorkspaceReadiness = async ({
   } catch (error) {
     const message = String(error?.message || '').toLowerCase();
     const isRateLimited = message.includes('429') || message.includes('too many requests') || message.includes('rate limit');
+    const isDedicatedOrganizationPermissionError = (
+      tenancyMode === 'dedicated' &&
+      message.includes('permission denied for table app_organizations')
+    );
 
     if (isRateLimited && cached?.ready === true) {
       return {
@@ -391,7 +651,38 @@ export const resolveWorkspaceReadiness = async ({
       };
     }
 
-    throw error;
+    if (isDedicatedOrganizationPermissionError) {
+      const runtimeOptions = await inferRuntimeReadinessOptions({ tenant, adminClient });
+      const schemaReadiness = await queryWorkspaceSchemaReadiness(projectRef);
+      const fallbackRuntimeRequirements = getRuntimeRequirements({
+        ...runtimeOptions,
+        tenancyMode,
+      }).map((requirement) => requirement.key);
+      const ready = schemaReadiness.schema_ready === true;
+
+      readiness = {
+        status: ready ? 'ready' : 'incomplete',
+        ready,
+        contract_version: CANONICAL_TENANT_WORKSPACE_CONTRACT_VERSION,
+        checked_at: new Date().toISOString(),
+        project_ref: projectRef,
+        tenancy_mode: tenancyMode,
+        ...schemaReadiness,
+        runtime_ready: true,
+        required_runtime_requirements: fallbackRuntimeRequirements,
+        missing_runtime_requirements: [],
+        expected_trial_window: runtimeOptions.expectTrialWindow === true,
+        readiness_mode: 'dedicated_legacy_runtime_fallback',
+        warning_message: error?.message || 'Dedicated runtime verification skipped because shared organization tables are not available.',
+        error_message: ready ? null : buildMissingMessage({
+          missing_tables: schemaReadiness.missing_tables,
+          missing_functions: schemaReadiness.missing_functions,
+          missing_runtime_requirements: [],
+        }),
+      };
+    } else {
+      throw error;
+    }
   }
 
   if (persist && adminClient && tenant?.id) {

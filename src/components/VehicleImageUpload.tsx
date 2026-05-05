@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, X, AlertCircle, CheckCircle, Image as ImageIcon } from 'lucide-react';
-import { supabase } from '../lib/supabase';
 import i18n from '../i18n';
+import { uploadFile } from '../utils/storageUpload';
 
 interface VehicleImageUploadProps {
   vehicleId: string;
@@ -67,31 +67,22 @@ const VehicleImageUpload: React.FC<VehicleImageUploadProps> = ({
     const fileId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     try {
-      // Create vehicle-scoped storage path
       const fileExtension = file.name.split('.').pop();
-      const storagePath = `${vehicleId}/${fileId}.${fileExtension}`;
       
       // Update progress
       setUploadProgress({
         [fileId]: { progress: 0, status: 'uploading' }
       });
 
-      // Upload to Supabase Storage
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from(BUCKET_NAME)
-        .upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
+      const uploadResult = await uploadFile(file, {
+        bucket: BUCKET_NAME,
+        pathPrefix: `vehicles/${vehicleId}`,
+        fileName: `${fileId}.${fileExtension}`,
+      });
 
-      if (uploadError) {
-        throw uploadError;
+      if (!uploadResult?.success) {
+        throw new Error(uploadResult?.error || 'Vehicle image upload failed');
       }
-
-      // Get public URL
-      const { data: urlData } = supabase.storage
-        .from(BUCKET_NAME)
-        .getPublicUrl(storagePath);
 
       // Update progress
       setUploadProgress({
@@ -99,7 +90,7 @@ const VehicleImageUpload: React.FC<VehicleImageUploadProps> = ({
       });
 
       // Notify parent component with new image URL
-      onImageChange(urlData.publicUrl);
+      onImageChange(uploadResult.url);
 
       // Clear file input
       if (fileInputRef.current) {

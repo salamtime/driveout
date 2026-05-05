@@ -5,9 +5,8 @@ import {
   Camera, AlertCircle, CheckCircle, Plus, Upload, Car, Clock, Users,
   Eye, Download, Image as ImageIcon
 } from 'lucide-react';
-import { supabase } from '../../lib/supabase';
 import CustomerService from '../../services/EnhancedUnifiedCustomerService';
-import { getCustomerRentalHistory } from '../../services/EnhancedUnifiedCustomerService';
+import { getCustomerById, getCustomerRentalHistory, getLatestRentalByCustomerId } from '../../services/EnhancedUnifiedCustomerService';
 import { uploadCustomerDocument } from '../../utils/storageUpload';
 import i18n from '../../i18n';
 import { mergeCustomerScanHistory } from '../../utils/customerIdentity';
@@ -204,21 +203,15 @@ const ViewCustomerDetailsDrawer = ({
       }
 
       // Fetch customer profile and their latest rental in parallel for robust data fallback
-      const [customerResult, latestRentalResult] = await Promise.all([
-        supabase.from('app_4c3a7a6153_customers').select('*').eq('id', targetCustomerId).single(),
-        supabase.from('app_4c3a7a6153_rentals').select('*').eq('customer_id', targetCustomerId).order('created_at', { ascending: false }).limit(1).single()
+      const [customerResponse, latestRental] = await Promise.all([
+        getCustomerById(targetCustomerId),
+        getLatestRentalByCustomerId(targetCustomerId).catch((latestRentalError) => {
+          console.warn(`Could not fetch latest rental: ${latestRentalError.message}`);
+          return null;
+        }),
       ]);
 
-      const { data: customerProfile, error: customerError } = customerResult;
-      const { data: latestRental, error: latestRentalError } = latestRentalResult;
-
-      if (customerError && customerError.code !== 'PGRST116') { // PGRST116 means no rows found, which is not a fatal error
-        throw new Error(`Failed to fetch customer profile: ${customerError.message}`);
-      }
-      
-      if (latestRentalError && latestRentalError.code !== 'PGRST116') {
-         console.warn(`Could not fetch latest rental: ${latestRentalError.message}`);
-      }
+      const customerProfile = customerResponse?.success ? customerResponse.data : null;
 
       let dataToShow = {};
       const fallbackRental = latestRental || rental;

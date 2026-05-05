@@ -4,6 +4,8 @@
  */
 
 import { supabase } from '../lib/supabase';
+import { buildTenantScopedStoragePath } from '../utils/storageUpload.js';
+import { getCurrentOrganizationId } from './OrganizationService.js';
 
 class UnifiedCustomerService {
   constructor() {
@@ -511,6 +513,7 @@ class UnifiedCustomerService {
   async saveIdScanImage(imageFile, customerId) {
     try {
       console.log('🖼️ Saving ID scan image for customer:', customerId);
+      const organizationId = await getCurrentOrganizationId();
 
       if (!imageFile) {
         console.warn('⚠️ No image file provided');
@@ -521,7 +524,11 @@ class UnifiedCustomerService {
       const timestamp = Date.now();
       const fileExtension = imageFile.name.split('.').pop() || 'jpg';
       const fileName = `idscan_${timestamp}.${fileExtension}`;
-      const filePath = `${customerId}/${fileName}`;
+      const filePath = buildTenantScopedStoragePath({
+        organizationId,
+        pathPrefix: `customers/${customerId}`,
+        fileName,
+      });
 
       // Upload to Supabase Storage
       const { data, error } = await supabase.storage

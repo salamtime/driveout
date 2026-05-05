@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { runFullStorageSetup } from '../utils/storageSetup';
 import { toast } from 'react-hot-toast';
+import { getCurrentOrganizationId } from '../services/OrganizationService';
+import { buildTenantScopedStoragePath } from '../utils/storageUpload';
 
 /**
  * A hook that manages storage initialization and provides image upload/deletion functionality
@@ -55,7 +57,12 @@ const useStorage = () => {
         await runFullStorageSetup();
       }
       
-      const fileName = path || `${Date.now()}_${file.name}`;
+      const organizationId = await getCurrentOrganizationId();
+      const fileName = buildTenantScopedStoragePath({
+        organizationId,
+        pathPrefix: 'vehicles',
+        fileName: path || `${Date.now()}_${file.name}`,
+      });
       
       const { data, error } = await supabase.storage
         .from('vehicle-images')

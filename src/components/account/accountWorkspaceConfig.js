@@ -27,8 +27,8 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
     icon: LayoutDashboard,
     accent: 'from-violet-500 to-indigo-600',
     description: {
-      en: 'Your private workspace summary, actions, and status signals.',
-      fr: 'Votre résumé d’espace privé, actions et statuts importants.',
+      en: 'Your workspace summary, actions, and status signals.',
+      fr: 'Votre résumé d’espace, actions et statuts importants.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.service, ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
   },
@@ -36,6 +36,7 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
     id: 'rentals',
     label: { en: 'My Rentals', fr: 'Mes locations' },
     href: '/account/rentals',
+    moduleName: 'Rental Management',
     icon: Compass,
     accent: 'from-indigo-500 to-violet-600',
     description: {
@@ -48,11 +49,12 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
     id: 'tours',
     label: { en: 'My Tours', fr: 'Mes tours' },
     href: '/account/tours',
+    moduleName: 'Tours & Bookings',
     icon: Bell,
     accent: 'from-fuchsia-500 to-violet-600',
     description: {
-      en: 'Private guided tour history and support entry points.',
-      fr: 'Historique privé des tours et accès support.',
+      en: 'Guided tour history and support entry points.',
+      fr: 'Historique des tours et accès support.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.service, ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
   },
@@ -60,6 +62,7 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
     id: 'marketplace',
     label: { en: 'Marketplace', fr: 'Marketplace' },
     href: '/account/marketplace',
+    moduleName: 'Marketplace Review',
     icon: Store,
     accent: 'from-violet-500 to-fuchsia-600',
     description: {
@@ -72,11 +75,12 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
     id: 'my-vehicles',
     label: { en: 'My Vehicles', fr: 'Mes véhicules' },
     href: '/account/vehicles',
+    moduleName: 'Fleet Management',
     icon: Car,
     accent: 'from-indigo-500 to-violet-600',
     description: {
-      en: 'Your private vehicle profiles, maintenance tracking, and listing readiness.',
-      fr: 'Vos profils véhicules privés, suivi maintenance et préparation à la mise en ligne.',
+      en: 'Your vehicle profiles, maintenance tracking, and listing readiness.',
+      fr: 'Vos profils véhicules, suivi maintenance et préparation à la mise en ligne.',
     },
     visibleIn: [ACCOUNT_WORKSPACE_MODES.ownerSetup, ACCOUNT_WORKSPACE_MODES.owner],
   },
@@ -84,6 +88,7 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
     id: 'messages',
     label: { en: 'Messages', fr: 'Messages' },
     href: '/account/messages',
+    moduleName: 'Messages',
     icon: MessageSquare,
     accent: 'from-emerald-500 to-teal-600',
     description: {
@@ -96,6 +101,7 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
     id: 'boost',
     label: { en: 'Boost', fr: 'Boost' },
     href: '/account/boost',
+    moduleName: 'Marketplace Review',
     icon: Rocket,
     accent: 'from-fuchsia-500 to-violet-600',
     description: {
@@ -132,6 +138,7 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
     id: 'revenue',
     label: { en: 'Wallet', fr: 'Portefeuille' },
     href: '/account/revenue',
+    moduleName: 'Finance Management',
     icon: CreditCard,
     accent: 'from-emerald-500 to-lime-500',
     description: {
@@ -144,6 +151,7 @@ export const ACCOUNT_WORKSPACE_SECTIONS = [
     id: 'verification',
     label: { en: 'Verification', fr: 'Vérification' },
     href: '/account/verification',
+    moduleName: 'Verification Center',
     icon: ShieldCheck,
     accent: 'from-cyan-500 to-sky-600',
     description: {

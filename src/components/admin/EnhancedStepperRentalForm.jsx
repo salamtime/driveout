@@ -14,9 +14,11 @@ import { useNavigate } from 'react-router-dom';
 import EnhancedUnifiedIDScanModal from '../customers/EnhancedUnifiedIDScanModal';
 import SecondDriverIDScanModal from './SecondDriverIDScanModal';
 import TransactionalRentalService from '../../services/TransactionalRentalService';
+import RentalService from '../../services/RentalService';
+import VehicleService from '../../services/VehicleService';
 import VehicleModelService from '../../services/VehicleModelService';
 import AppSettingsService from '../../services/AppSettingsService';
-import enhancedUnifiedCustomerService from '../../services/EnhancedUnifiedCustomerService';
+import enhancedUnifiedCustomerService, { updateCustomerById } from '../../services/EnhancedUnifiedCustomerService';
 import { useAuth } from '../../contexts/AuthContext';
 import { canEditRentalPrice } from '../../utils/permissionHelpers';
 import { 
@@ -702,7 +704,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
   // ==================== DATA LOADING ====================
   const loadCustomers = async () => {
     try {
-      const { data } = await supabase.from('app_4c3a7a6153_customers').select('*');
+      const data = await enhancedUnifiedCustomerService.getAllCustomers();
       if (data) setCustomers(data);
     } catch (err) {
       console.error('Failed to load customers:', err);
@@ -711,7 +713,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
 
   const loadRentals = async () => {
     try {
-      const { data } = await supabase.from('app_4c3a7a6153_rentals').select('*').order('created_at', { ascending: false });
+      const data = await RentalService.getAllRentalsDetailed();
       if (data) setRentals(data);
     } catch (err) {
       console.error('Failed to load rentals:', err);
@@ -736,14 +738,15 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       
       console.log('🔍 Filtering vehicles for availability from', start.toISOString(), 'to', end.toISOString());
       
-      const { data: allConflicts, error } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select('id, vehicle_id, rental_start_date, rental_end_date, rental_status')
-        .in('rental_status', ['confirmed', 'scheduled', 'active'])
-        .or(`and(rental_start_date.lte.${end.toISOString()},rental_end_date.gte.${start.toISOString()})`);
-      
-      if (error) {
+      const allConflicts = await RentalService.getSchedulingConflictsForRange({
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+      }).catch((error) => {
         console.error('❌ Error fetching conflicts:', error);
+        return null;
+      });
+      
+      if (!allConflicts) {
         return vehicles;
       }
       
@@ -796,13 +799,9 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
       const models = await VehicleModelService.getAllVehicleModels();
       setVehicleModels(models || []);
       
-      const { data: vehicles, error } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .select('*')
-        .order('id');
+      const vehicles = await VehicleService.getAllVehicles();
       
-      if (error) {
-        console.error('❌ Error loading vehicles:', error);
+      if (!Array.isArray(vehicles)) {
         setAvailableVehicles([]);
       } else {
         const eligibleVehicles = (vehicles || []).filter(vehicle => {
@@ -892,21 +891,22 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
         return { available: true };
       }
       
-      const { data: conflicts, error } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .select('id, rental_start_date, rental_end_date, customer_name, vehicle_id, rental_status')
-        .eq('vehicle_id', vehicleId)
-        .in('rental_status', ['confirmed', 'scheduled', 'active'])
-        .or(`and(rental_start_date.lte.${end.toISOString()},rental_end_date.gte.${start.toISOString()})`)
-        .neq('id', initialData?.id || '');
-      
-      if (error) {
+      const result = await RentalService.checkRentalConflicts({
+        vehicleId,
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+        excludeBookingId: initialData?.id || null,
+      }).catch((error) => {
         console.error('❌ Availability check error:', error);
+        return null;
+      });
+      
+      if (!result) {
         setIsCheckingAvailability(false);
         return { available: true };
       }
       
-      const blockingConflicts = (conflicts || []).filter((conflict) => !isScheduledConflictExpired(conflict, bookingGraceMinutes));
+      const blockingConflicts = (result.conflicts || []).filter((conflict) => !isScheduledConflictExpired(conflict, bookingGraceMinutes));
 
       if (blockingConflicts.length > 0) {
         console.log(`❌ Found ${blockingConflicts.length} conflict(s) for vehicle ${vehicleId}`);
@@ -988,50 +988,18 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
         licence_number: normalizedIdentity.licenceNumber || '',
         id_number: normalizedIdentity.idNumber || '',
       };
-      const lookupTable = supabase.from('app_4c3a7a6153_customers');
-      const runLookup = async (builder) => {
-        const { data, error } = await builder;
-        if (error) throw error;
-        return data || [];
-      };
-
-      const exactMatchGroups = await Promise.all([
-        lookupCandidate.id_number
-          ? runLookup(lookupTable.select('*').eq('id_number', lookupCandidate.id_number).limit(10))
-          : Promise.resolve([]),
-        lookupCandidate.licence_number
-          ? runLookup(lookupTable.select('*').eq('licence_number', lookupCandidate.licence_number).limit(10))
-          : Promise.resolve([]),
-        lookupCandidate.phone
-          ? runLookup(lookupTable.select('*').eq('phone', lookupCandidate.phone).limit(10))
-          : Promise.resolve([]),
-        lookupCandidate.email
-          ? runLookup(lookupTable.select('*').eq('email', lookupCandidate.email).limit(10))
-          : Promise.resolve([]),
-      ]);
-
-      const exactMatch = pickMostCompleteCustomerProfile(
-        mergeUniqueCustomersById(...exactMatchGroups)
-      );
+      const exactMatches = await enhancedUnifiedCustomerService.findMatchingCustomers(lookupCandidate);
+      const exactMatch = pickMostCompleteCustomerProfile(exactMatches);
 
       if (exactMatch) return exactMatch;
 
-      if (fullName) {
-        const { data, error } = await lookupTable
-          .select('*')
-          .ilike('full_name', fullName)
-          .limit(5);
+      const bestMatch = pickBestExistingCustomerMatch({
+        incomingCustomer: lookupCandidate,
+        candidates: exactMatches || [],
+      });
 
-        if (error) throw error;
-
-        const bestMatch = pickBestExistingCustomerMatch({
-          incomingCustomer: lookupCandidate,
-          candidates: data || [],
-        });
-
-        if (bestMatch?.id) {
-          return bestMatch;
-        }
+      if (bestMatch?.id) {
+        return bestMatch;
       }
 
       return null;
@@ -2871,7 +2839,6 @@ const calculateFinancials = () => {
 
       let finalCustomerId = submissionReadyFormData.customer_id;
       const findExistingCustomerForSubmission = async () => {
-        const customerTable = supabase.from('app_4c3a7a6153_customers');
         const normalizedIdentity = normalizeCustomerIdentityFields({
           licenceNumber: submissionReadyFormData.customer_licence_number,
           idNumber: submissionReadyFormData.customer_id_number,
@@ -2883,36 +2850,17 @@ const calculateFinancials = () => {
         const customerName = submissionReadyFormData.customer_name?.trim();
         const customerDob = submissionReadyFormData.customer_dob?.trim();
 
-        const runLookup = async (builder) => {
-          const { data } = await builder;
-          return data || [];
-        };
-
-        const exactMatchGroups = await Promise.all([
-          licenceNumber
-            ? runLookup(customerTable.select('*').eq('licence_number', licenceNumber).limit(10))
-            : Promise.resolve([]),
-          idNumber
-            ? runLookup(customerTable.select('*').eq('id_number', idNumber).limit(10))
-            : Promise.resolve([]),
-          phoneNumber
-            ? runLookup(customerTable.select('*').eq('phone', phoneNumber).limit(10))
-            : Promise.resolve([]),
-          emailAddress
-            ? runLookup(customerTable.select('*').eq('email', emailAddress).limit(10))
-            : Promise.resolve([]),
-        ]);
-
-        const exactMatch = pickMostCompleteCustomerProfile(
-          mergeUniqueCustomersById(...exactMatchGroups)
-        );
+        const exactMatches = await enhancedUnifiedCustomerService.findMatchingCustomers({
+          full_name: customerName,
+          phone: phoneNumber,
+          email: emailAddress,
+          licence_number: licenceNumber,
+          id_number: idNumber,
+        });
+        const exactMatch = pickMostCompleteCustomerProfile(exactMatches);
         if (exactMatch?.id) return exactMatch;
 
         if (customerName) {
-          const { data } = await customerTable
-            .select('*')
-            .ilike('full_name', customerName)
-            .limit(5);
           const bestMatch = pickBestExistingCustomerMatch({
             incomingCustomer: {
               full_name: customerName,
@@ -2923,7 +2871,7 @@ const calculateFinancials = () => {
               nationality: submissionReadyFormData.customer_nationality,
               email: emailToSubmit,
             },
-            candidates: data || [],
+            candidates: exactMatches || [],
           });
           if (bestMatch?.id) return bestMatch;
         }
@@ -8143,40 +8091,17 @@ const SimplifiedRentalWizard = ({
     let resolvedCustomerId = String(formData.customer_id || '').trim();
 
     if (!resolvedCustomerId) {
-      const customerTable = supabase.from('app_4c3a7a6153_customers');
       const licenceNumber = String(formData.customer_licence_number || '').trim();
       const idNumber = String(formData.customer_id_number || '').trim();
       const phoneNumber = String(formData.customer_phone || '').trim();
       const customerName = String(formData.customer_name || '').trim();
-
-      const tryFindCustomer = async (builder) => {
-        const { data, error } = await builder;
-        if (error) throw error;
-        return data || [];
-      };
-
-      const exactPersistedGroups = await Promise.all([
-        licenceNumber
-          ? tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata, phone, email, date_of_birth, place_of_birth, nationality, issue_date, updated_at, created_at').eq('licence_number', licenceNumber).limit(10))
-          : Promise.resolve([]),
-        idNumber
-          ? tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata, phone, email, date_of_birth, place_of_birth, nationality, issue_date, updated_at, created_at').eq('id_number', idNumber).limit(10))
-          : Promise.resolve([]),
-        phoneNumber
-          ? tryFindCustomer(customerTable.select('id, id_scan_url, scan_metadata, phone, email, date_of_birth, place_of_birth, nationality, issue_date, updated_at, created_at').eq('phone', phoneNumber).limit(10))
-          : Promise.resolve([]),
-      ]);
-
-      persistedCustomer = pickMostCompleteCustomerProfile(
-        mergeUniqueCustomersById(...exactPersistedGroups)
-      );
-
-      if (!persistedCustomer?.id && customerName) {
-        const nameMatches = await tryFindCustomer(
-          customerTable.select('id, id_scan_url, scan_metadata, phone, email, date_of_birth, place_of_birth, nationality, issue_date, updated_at, created_at').ilike('full_name', customerName).limit(5)
-        );
-        persistedCustomer = pickMostCompleteCustomerProfile(nameMatches) || null;
-      }
+      const exactMatches = await enhancedUnifiedCustomerService.findMatchingCustomers({
+        full_name: customerName,
+        phone: phoneNumber,
+        licence_number: licenceNumber,
+        id_number: idNumber,
+      });
+      persistedCustomer = pickMostCompleteCustomerProfile(exactMatches) || null;
 
       if (persistedCustomer?.id) {
         resolvedCustomerId = String(persistedCustomer.id).trim();
@@ -8186,16 +8111,11 @@ const SimplifiedRentalWizard = ({
     if (resolvedCustomerId) {
       const existingCustomer = persistedCustomer || (() => null)();
       const fetchedCustomer = existingCustomer || await (async () => {
-        const { data, error: fetchError } = await supabase
-          .from('app_4c3a7a6153_customers')
-          .select('id, id_scan_url, scan_metadata')
-          .eq('id', resolvedCustomerId)
-          .maybeSingle();
-
-        if (fetchError) {
-          throw fetchError;
+        const fetchResult = await enhancedUnifiedCustomerService.getCustomerById(resolvedCustomerId);
+        if (!fetchResult?.success) {
+          throw new Error(fetchResult?.error || 'Failed to fetch customer');
         }
-        return data;
+        return fetchResult.data;
       })();
 
       if (fetchedCustomer) {
@@ -8209,21 +8129,10 @@ const SimplifiedRentalWizard = ({
           id_scan_history: updatedHistory,
         };
 
-        const { data: updatedCustomer, error: updateError } = await supabase
-          .from('app_4c3a7a6153_customers')
-          .update({
-            scan_metadata: nextScanMetadata,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', resolvedCustomerId)
-          .select('*')
-          .single();
-
-        if (updateError) {
-          throw updateError;
-        }
-
-        persistedCustomer = updatedCustomer;
+        persistedCustomer = await updateCustomerById(resolvedCustomerId, {
+          scan_metadata: nextScanMetadata,
+          updated_at: new Date().toISOString(),
+        }, '*');
       }
     }
 

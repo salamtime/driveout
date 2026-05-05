@@ -9,8 +9,10 @@ import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
 import AdminWorkspaceLoadingShell from '../../components/admin/AdminWorkspaceLoadingShell';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { shortenUrl } from '../../services/UrlShortenerService';
+import VehicleService from '../../services/VehicleService';
 import { getStaffDirectory } from '../../services/UserService';
 import { getTaskStats } from '../../services/TaskService';
+import dashboardWorkspaceService from '../../services/DashboardWorkspaceService';
 import { buildTourTrackingUrl } from '../../services/tourTrackingService';
 import { uploadFile } from '../../utils/storageUpload';
 import { normalizeAdminRecipients } from '../../utils/receiveFundsUi';
@@ -83,48 +85,9 @@ const extractTourBookingMeta = (value) => {
   }
 };
 
-const VEHICLE_TABLE_CANDIDATES = [
-  'saharax_0u4w4d_vehicles',
-  'vehicles',
-];
-
-let resolvedVehicleTableName = null;
 let dashboardCoreCache = null;
 let dashboardCoreCacheAt = 0;
 let dashboardCorePromise = null;
-
-const getVehicleTableName = async () => {
-  if (resolvedVehicleTableName) {
-    return resolvedVehicleTableName;
-  }
-
-  let bestMatch = null;
-
-  for (const tableName of VEHICLE_TABLE_CANDIDATES) {
-    const { count, error } = await supabase.from(tableName).select('id', { head: true, count: 'exact' }).limit(1);
-    if (!error) {
-      const rowCount = Number(count || 0);
-
-      if (!bestMatch || rowCount > bestMatch.count) {
-        bestMatch = { tableName, count: rowCount };
-      }
-
-      if (rowCount > 0 && tableName === 'saharax_0u4w4d_vehicles') {
-        resolvedVehicleTableName = tableName;
-        console.log('✅ Dashboard resolved populated live vehicle table:', tableName, rowCount);
-        return tableName;
-      }
-    }
-  }
-
-  if (bestMatch) {
-    resolvedVehicleTableName = bestMatch.tableName;
-    console.log('✅ Dashboard resolved best vehicle table:', bestMatch.tableName, bestMatch.count);
-    return bestMatch.tableName;
-  }
-
-  throw new Error(`Could not resolve a vehicle table from: ${VEHICLE_TABLE_CANDIDATES.join(', ')}`);
-};
 
 const fetchVehiclesByIds = async (vehicleIds = []) => {
   const uniqueIds = [...new Set(vehicleIds.filter(Boolean))];
@@ -132,17 +95,12 @@ const fetchVehiclesByIds = async (vehicleIds = []) => {
     return new Map();
   }
 
-  const vehicleTable = await getVehicleTableName();
-  const { data, error } = await supabase
-    .from(vehicleTable)
-    .select('id, name, model, vehicle_type, plate_number')
-    .in('id', uniqueIds);
-
-  if (error) {
-    throw error;
-  }
-
-  return new Map((data || []).map((vehicle) => [vehicle.id, vehicle]));
+  const vehicles = await VehicleService.getAllVehicles();
+  return new Map(
+    (vehicles || [])
+      .filter((vehicle) => uniqueIds.includes(vehicle.id))
+      .map((vehicle) => [vehicle.id, vehicle])
+  );
 };
 
 const fetchDashboardTourRows = async (accessToken) => {
@@ -3096,113 +3054,7 @@ const AdminDashboard = () => {
       } else {
         if (!dashboardCorePromise) {
           const coreFetchPromise = (async () => {
-            const vehicleTable = await getVehicleTableName();
-
-            const [
-              vehiclesResult,
-              rentalsResult,
-              maintenanceResult,
-              revenueResult,
-              bookingsResult,
-              rentalScheduleResult,
-            ] = await Promise.all([
-              supabase.from(vehicleTable).select('id, vehicle_type, status'),
-              supabase.from('app_4c3a7a6153_rentals').select('id', { count: 'planned', head: true }).eq('rental_status', 'active'),
-              supabase.from('app_687f658e98_maintenance').select('vehicle_id, status, cost, service_date, created_at'),
-              supabase.from('app_4c3a7a6153_rentals').select('total_amount').eq('payment_status', 'paid'),
-              supabase
-                .from("app_4c3a7a6153_rentals")
-                .select('id, customer_name, vehicle_id, payment_status, total_amount, created_at')
-                .order("created_at", { ascending: false })
-                .limit(5),
-              supabase
-                .from('app_4c3a7a6153_rentals')
-                .select('id, customer_name, rental_start_date, rental_end_date, rental_status, rental_type, pickup_location, vehicle_id, vehicle_plate_number')
-                .order('rental_start_date', { ascending: true })
-                .limit(25),
-            ]);
-
-            const maintenanceRows = Array.isArray(maintenanceResult.data) ? maintenanceResult.data : [];
-            const openMaintenanceRows = maintenanceRows.filter((row) => ['scheduled', 'in_progress', 'pending'].includes(String(row.status || '').toLowerCase()));
-            const maintenanceCount = new Set(openMaintenanceRows.map(r => r.vehicle_id)).size;
-            const totalRevenue = revenueResult.data ? revenueResult.data.reduce((acc, item) => acc + item.total_amount, 0) : 0;
-            const allVehicles = Array.isArray(vehiclesResult.data) ? vehiclesResult.data : [];
-            const totalVehicles = allVehicles.length;
-            const startOfWeek = new Date();
-            startOfWeek.setDate(startOfWeek.getDate() - 6);
-            startOfWeek.setHours(0, 0, 0, 0);
-
-            const fleetSnapshotData = {
-              available: allVehicles.filter((vehicle) => vehicle.status === 'available').length,
-              rented: allVehicles.filter((vehicle) => vehicle.status === 'rented').length,
-              tour: allVehicles.filter((vehicle) => vehicle.status === 'tour').length,
-              maintenance: allVehicles.filter((vehicle) => vehicle.status === 'maintenance').length,
-              outOfService: allVehicles.filter((vehicle) => vehicle.status === 'out_of_service').length,
-              total: totalVehicles,
-            };
-
-            const maintenanceSnapshotData = {
-              open: openMaintenanceRows.length,
-              completed: maintenanceRows.filter((row) => String(row.status || '').toLowerCase() === 'completed').length,
-              weeklyCost: maintenanceRows
-                .filter((row) => {
-                  const serviceDate = row.service_date || row.created_at;
-                  return serviceDate && new Date(serviceDate) >= startOfWeek;
-                })
-                .reduce((sum, row) => sum + Number(row.cost || 0), 0),
-            };
-
-            const statsData = {
-              vehicles: totalVehicles,
-              rentals: rentalsResult.count || 0,
-              maintenance: maintenanceCount || 0,
-              revenue: totalRevenue,
-            };
-
-            const { data: bookingsRaw, error: bError } = bookingsResult;
-            if (bError) console.error('❌ Error fetching recent bookings', bError);
-            const bookingVehicleMap = await fetchVehiclesByIds((bookingsRaw || []).map((booking) => booking.vehicle_id));
-            const bookings = (bookingsRaw || []).map((booking) => ({
-              ...booking,
-              vehicle: bookingVehicleMap.get(booking.vehicle_id) || null,
-            }));
-
-            let normalizedUpcomingRentals = [];
-            const { data: rentalScheduleRaw, error: rentalScheduleError } = rentalScheduleResult;
-            if (rentalScheduleError) {
-              console.error('❌ Error fetching upcoming rentals', rentalScheduleError);
-            } else {
-              const upcomingRentalRows = (rentalScheduleRaw || []).filter((rental) => {
-                const status = String(rental.rental_status || '').toLowerCase();
-                const startTime = new Date(rental.rental_start_date || '').getTime();
-                return Number.isFinite(startTime) && startTime >= Date.now() && !['active', 'completed', 'cancelled'].includes(status);
-              });
-              const rentalVehicleMap = await fetchVehiclesByIds(upcomingRentalRows.map((rental) => rental.vehicle_id));
-              normalizedUpcomingRentals = upcomingRentalRows
-                .map((rental) => {
-                  const vehicle = rentalVehicleMap.get(rental.vehicle_id) || null;
-                  return {
-                    id: rental.id,
-                    customerName: rental.customer_name || 'Guest',
-                    startAt: rental.rental_start_date,
-                    endAt: rental.rental_end_date,
-                    vehicleName: vehicle?.model || vehicle?.name || 'Vehicle',
-                    plateNumber: rental.vehicle_plate_number || vehicle?.plate_number || '',
-                    rentalTypeLabel: rental.rental_type ? `${String(rental.rental_type).charAt(0).toUpperCase()}${String(rental.rental_type).slice(1)}` : 'Rental',
-                    pickupLocation: rental.pickup_location || '',
-                  };
-                })
-                .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
-                .slice(0, 5);
-            }
-
-            return {
-              stats: statsData,
-              fleetSnapshot: fleetSnapshotData,
-              maintenanceSnapshot: maintenanceSnapshotData,
-              recentBookings: bookings,
-              upcomingRentals: normalizedUpcomingRentals,
-            };
+            return dashboardWorkspaceService.getCoreSnapshot();
           })();
 
           dashboardCorePromise = withTimeout(
@@ -3220,59 +3072,9 @@ const AdminDashboard = () => {
 
       scheduleBackgroundTask(async () => {
         try {
-          const vehicleTable = await getVehicleTableName();
-          const sevenDaysAgo = new Date();
-          sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-          const [
-            revenueTrendResult,
-            allRentalsResult,
-            allVehiclesResult,
-          ] = await Promise.all([
-            supabase
-              .from('app_4c3a7a6153_rentals')
-              .select('created_at, total_amount')
-              .eq('payment_status', 'paid')
-              .gte('created_at', sevenDaysAgo.toISOString()),
-            supabase.from('app_4c3a7a6153_rentals').select('vehicle_id'),
-            supabase.from(vehicleTable).select("id, vehicle_type")
-          ]);
-
-          if (revenueTrendResult.error) {
-            console.error('❌ Error fetching revenue trend', revenueTrendResult.error);
-          } else {
-            const dailyRevenue = {};
-            (revenueTrendResult.data || []).forEach((rental) => {
-              const date = new Date(rental.created_at).toISOString().split('T')[0];
-              if (!dailyRevenue[date]) dailyRevenue[date] = 0;
-              dailyRevenue[date] += rental.total_amount;
-            });
-
-            const last7DaysData = Array(7).fill(0).map((_, i) => {
-              const d = new Date();
-              d.setDate(d.getDate() - i);
-              const dateStr = d.toISOString().split('T')[0];
-              return {
-                date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-                revenue: dailyRevenue[dateStr] || 0,
-              };
-            }).reverse();
-            setRevenueData(last7DaysData);
-          }
-
-          const utilization = {};
-          if (allRentalsResult.data && allVehiclesResult.data) {
-            const vehicleTypeMap = new Map(allVehiclesResult.data.map(v => [v.id, v.vehicle_type]));
-            allRentalsResult.data.forEach((rental) => {
-              const vehicleType = vehicleTypeMap.get(rental.vehicle_id);
-              if (vehicleType) {
-                if (!utilization[vehicleType]) utilization[vehicleType] = 0;
-                utilization[vehicleType]++;
-              }
-            });
-          }
-
-          setUtilizationData(Object.keys(utilization).map((type) => ({ name: type, rentals: utilization[type] })));
+          const secondaryData = await dashboardWorkspaceService.getSecondarySnapshot();
+          setRevenueData(secondaryData.revenueData || []);
+          setUtilizationData(secondaryData.utilizationData || []);
           void fetchUrgentRentals();
         } catch (backgroundError) {
           console.error('❌ Error hydrating dashboard secondary data:', backgroundError);

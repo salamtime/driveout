@@ -1,4 +1,10 @@
 import { supabase } from '../lib/supabase';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  getCurrentOrganizationId,
+  requireCurrentOrganizationId,
+} from './OrganizationService';
 
 const TABLE = 'saharax_0u4w4d_locations';
 
@@ -14,11 +20,14 @@ const normalizeLocation = (row = {}) => ({
 
 const FleetLocationService = {
   async listLocations(includeInactive = true) {
+    const organizationId = await getCurrentOrganizationId();
     let query = supabase
       .from(TABLE)
       .select('id, name, code, address, is_active, is_default, display_order')
       .order('display_order', { ascending: true })
       .order('name', { ascending: true });
+
+    query = applyOrganizationScope(query, organizationId);
 
     if (!includeInactive) {
       query = query.eq('is_active', true);
@@ -30,7 +39,9 @@ const FleetLocationService = {
   },
 
   async saveLocation(location = {}) {
+    const organizationId = await requireCurrentOrganizationId();
     const payload = {
+      ...applyOrganizationMatch({}, organizationId),
       name: String(location.name || '').trim(),
       code: String(location.code || '').trim() || null,
       address: String(location.address || '').trim() || null,
@@ -47,7 +58,8 @@ const FleetLocationService = {
       const { error: resetError } = await supabase
         .from(TABLE)
         .update({ is_default: false })
-        .neq('id', location.id || 0);
+        .neq('id', location.id || 0)
+        .eq('organization_id', organizationId);
       if (resetError) throw resetError;
     }
 
@@ -56,6 +68,7 @@ const FleetLocationService = {
         .from(TABLE)
         .update(payload)
         .eq('id', location.id)
+        .eq('organization_id', organizationId)
         .select('id, name, code, address, is_active, is_default, display_order')
         .single();
       if (error) throw error;

@@ -1,4 +1,9 @@
 import { supabase } from '../lib/supabase.js';
+import {
+  buildStoragePathCandidates,
+  buildTenantScopedStoragePath,
+} from '../utils/storageUpload.js';
+import { getCurrentOrganizationId } from './OrganizationService';
 
 /**
  * Vehicle Image Service - Handles vehicle image operations with enforced path convention
@@ -20,19 +25,37 @@ class VehicleImageService {
   static async listVehicleImages(vehicleId) {
     try {
       console.log(`🔍 [VehicleImageService] Listing images for vehicle: ${vehicleId}`);
-      
+      const organizationId = await getCurrentOrganizationId();
       const pathPrefix = this.getVehicleImagePath(vehicleId);
-      
-      const { data: files, error } = await supabase.storage
-        .from(this.BUCKET_NAME)
-        .list(pathPrefix, {
-          limit: 100,
-          offset: 0,
-        });
+      const prefixCandidates = buildStoragePathCandidates(organizationId, pathPrefix);
 
-      if (error) {
-        console.error('❌ [VehicleImageService] Error listing images:', error);
-        throw error;
+      let files = [];
+      let resolvedPrefix = prefixCandidates[0];
+      let lastError = null;
+
+      for (const candidatePrefix of prefixCandidates) {
+        const { data, error } = await supabase.storage
+          .from(this.BUCKET_NAME)
+          .list(candidatePrefix, {
+            limit: 100,
+            offset: 0,
+          });
+
+        if (error) {
+          lastError = error;
+          continue;
+        }
+
+        files = data || [];
+        resolvedPrefix = candidatePrefix;
+        if (files.length > 0 || candidatePrefix === prefixCandidates[prefixCandidates.length - 1]) {
+          break;
+        }
+      }
+
+      if (lastError && files.length === 0) {
+        console.error('❌ [VehicleImageService] Error listing images:', lastError);
+        throw lastError;
       }
 
       console.log(`📊 [VehicleImageService] Found ${files?.length || 0} images for vehicle ${vehicleId}`);
@@ -45,7 +68,7 @@ class VehicleImageService {
       const imageObjects = files
         .filter(file => file.name && !file.name.endsWith('/')) // Filter out folders
         .map((file, index) => {
-          const fullPath = `${pathPrefix}${file.name}`;
+          const fullPath = `${resolvedPrefix}/${file.name}`;
           const { data: urlData } = supabase.storage
             .from(this.BUCKET_NAME)
             .getPublicUrl(fullPath);
@@ -77,6 +100,7 @@ class VehicleImageService {
   static async uploadVehicleImage(file, vehicleId) {
     try {
       console.log(`📤 [VehicleImageService] Uploading image for vehicle: ${vehicleId}`);
+      const organizationId = await getCurrentOrganizationId();
       
       // Validate file
       this.validateImageFile(file);
@@ -85,7 +109,11 @@ class VehicleImageService {
       const randomString = Math.random().toString(36).substring(2, 15);
       const fileExtension = file.name.split('.').pop().toLowerCase();
       const fileName = `${timestamp}_${randomString}.${fileExtension}`;
-      const fullPath = `${this.getVehicleImagePath(vehicleId)}${fileName}`;
+      const fullPath = buildTenantScopedStoragePath({
+        organizationId,
+        pathPrefix: this.getVehicleImagePath(vehicleId),
+        fileName,
+      });
 
       console.log(`📁 [VehicleImageService] Upload path: ${fullPath}`);
 

@@ -1,5 +1,10 @@
 import { supabase } from '../lib/supabase';
 import { assertCanCreateVehicle, clearTenantRuntimeControlsCache } from './TenantLimitService';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  getCurrentOrganizationId,
+} from './OrganizationService';
 
 const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
 const isExpiredScheduledConflict = (rentalLike, graceMinutes = DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES) => {
@@ -91,9 +96,11 @@ class VehicleService {
 
     try {
       console.log('🔄 Loading vehicles from actual database table...');
+      const organizationId = await getCurrentOrganizationId();
 
       const result = await this.withRetry(async () => {
-        const { data, error } = await supabase
+        const { data, error } = await applyOrganizationScope(
+          supabase
           .from('saharax_0u4w4d_vehicles')
           .select(`
             id,
@@ -105,7 +112,9 @@ class VehicleService {
             image_url,
             location_id
           `)
-          .order('name', { ascending: true });
+          .order('name', { ascending: true }),
+          organizationId
+        );
 
         if (error) throw error;
         
@@ -149,8 +158,10 @@ class VehicleService {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         console.log(`🚗 Loading available vehicles (attempt ${attempt + 1})...`);
+        const organizationId = await getCurrentOrganizationId();
 
-        const { data: vehicles, error } = await supabase
+        const { data: vehicles, error } = await applyOrganizationScope(
+          supabase
           .from('saharax_0u4w4d_vehicles')
           .select(`
             id,
@@ -161,7 +172,9 @@ class VehicleService {
             status
           `)
           .eq('status', 'available')
-          .order('name', { ascending: true });
+          .order('name', { ascending: true }),
+          organizationId
+        );
 
         if (error) throw error;
 
@@ -171,11 +184,14 @@ class VehicleService {
         if (startDate && endDate) {
           console.log('🔍 Applying additional date-based filtering...');
           
-          const { data: conflictingRentals } = await supabase
+          const { data: conflictingRentals } = await applyOrganizationScope(
+            supabase
             .from('app_4c3a7a6153_rentals')
             .select('vehicle_id')
             .or(`and(rental_start_date.lte.${endDate},rental_end_date.gte.${startDate})`)
-            .in('rental_status', ['scheduled', 'active', 'confirmed']);
+            .in('rental_status', ['scheduled', 'active', 'confirmed']),
+            organizationId
+          );
 
           const activeConflicts = (conflictingRentals || []).filter((rental) => !isExpiredScheduledConflict(rental));
 
@@ -232,8 +248,10 @@ class VehicleService {
 
     try {
       console.log('🔍 Loading vehicle details...', id);
+      const organizationId = await getCurrentOrganizationId();
 
-      const { data: vehicle, error } = await supabase
+      const { data: vehicle, error } = await applyOrganizationScope(
+        supabase
         .from('saharax_0u4w4d_vehicles')
         .select(`
           id,
@@ -244,7 +262,9 @@ class VehicleService {
           status
         `)
         .eq('id', id)
-        .single();
+        .single(),
+        organizationId
+      );
 
       if (error) throw error;
 
@@ -266,14 +286,18 @@ class VehicleService {
     }
 
     try {
-      const { data: vehicle, error } = await supabase
+      const organizationId = await getCurrentOrganizationId();
+      const { data: vehicle, error } = await applyOrganizationScope(
+        supabase
         .from('saharax_0u4w4d_vehicles')
         .select('*')
         .eq('owner_user_id', ownerId)
         .eq('plate_number', normalizedPlateNumber)
         .order('id', { ascending: false })
         .limit(1)
-        .maybeSingle();
+        .maybeSingle(),
+        organizationId
+      );
 
       if (error) throw error;
       return { success: true, vehicle: vehicle || null };
@@ -293,13 +317,17 @@ class VehicleService {
     }
 
     try {
-      const { data: vehicle, error } = await supabase
+      const organizationId = await getCurrentOrganizationId();
+      const { data: vehicle, error } = await applyOrganizationScope(
+        supabase
         .from('saharax_0u4w4d_vehicles')
         .select('*')
         .eq('plate_number', normalizedPlateNumber)
         .order('id', { ascending: false })
         .limit(1)
-        .maybeSingle();
+        .maybeSingle(),
+        organizationId
+      );
 
       if (error) throw error;
       return { success: true, vehicle: vehicle || null };
@@ -316,8 +344,9 @@ class VehicleService {
     try {
       console.log('💾 Creating new vehicle...');
       await assertCanCreateVehicle();
+      const organizationId = await getCurrentOrganizationId();
       let compatiblePayload = {
-        ...vehicleData,
+        ...applyOrganizationMatch(vehicleData, organizationId),
         current_odometer: Number.isFinite(Number(vehicleData?.current_odometer))
           ? Number(vehicleData.current_odometer)
           : 0,
@@ -379,8 +408,9 @@ class VehicleService {
   async updateVehicle(id, updates) {
     try {
       console.log('📝 Updating vehicle...', id);
+      const organizationId = await getCurrentOrganizationId();
       let compatiblePayload = {
-        ...updates,
+        ...applyOrganizationMatch(updates, organizationId),
         updated_at: new Date().toISOString(),
       };
       let vehicle = null;
@@ -390,6 +420,7 @@ class VehicleService {
           .from('saharax_0u4w4d_vehicles')
           .update(compatiblePayload)
           .eq('id', id)
+          .eq('organization_id', organizationId)
           .select()
           .single();
 
@@ -444,11 +475,13 @@ class VehicleService {
   async deleteVehicle(id) {
     try {
       console.log('🗑️ Deleting vehicle...', id);
+      const organizationId = await getCurrentOrganizationId();
 
       const { error } = await supabase
         .from('saharax_0u4w4d_vehicles')
         .delete()
-        .eq('id', id);
+        .eq('id', id)
+        .eq('organization_id', organizationId);
 
       if (error) throw error;
 
@@ -475,10 +508,14 @@ class VehicleService {
 
     try {
       console.log('📊 Loading vehicle statistics from database table...');
+      const organizationId = await getCurrentOrganizationId();
 
-      const { data: vehicles, error } = await supabase
+      const { data: vehicles, error } = await applyOrganizationScope(
+        supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('status');
+        .select('status'),
+        organizationId
+      );
 
       if (error) throw error;
 
@@ -520,8 +557,10 @@ class VehicleService {
 
     try {
       console.log('🔍 Searching vehicles...', searchTerm);
+      const organizationId = await getCurrentOrganizationId();
 
-      const { data: vehicles, error } = await supabase
+      const { data: vehicles, error } = await applyOrganizationScope(
+        supabase
         .from('saharax_0u4w4d_vehicles')
         .select(`
           id,
@@ -532,7 +571,9 @@ class VehicleService {
           status
         `)
         .or(`name.ilike.%${searchTerm}%,model.ilike.%${searchTerm}%,plate_number.ilike.%${searchTerm}%`)
-        .order('name', { ascending: true });
+        .order('name', { ascending: true }),
+        organizationId
+      );
 
       if (error) throw error;
 
@@ -553,23 +594,30 @@ class VehicleService {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         console.log('🔍 Checking specific vehicle availability...', { vehicleId, startDate, endDate, attempt: attempt + 1 });
+        const organizationId = await getCurrentOrganizationId();
 
         // First get the current status from the vehicle table
-        const { data: vehicle, error: statusError } = await supabase
+        const { data: vehicle, error: statusError } = await applyOrganizationScope(
+          supabase
           .from('saharax_0u4w4d_vehicles')
           .select('status')
           .eq('id', vehicleId)
-          .single();
+          .single(),
+          organizationId
+        );
 
         if (statusError) throw statusError;
 
         // Then check for conflicts in the specific date range
-        const { data: conflicts, error: conflictError } = await supabase
+        const { data: conflicts, error: conflictError } = await applyOrganizationScope(
+          supabase
           .from('app_4c3a7a6153_rentals')
           .select('rental_start_date, rental_end_date, rental_status')
           .eq('vehicle_id', vehicleId)
           .or(`and(rental_start_date.lte.${endDate},rental_end_date.gte.${startDate})`)
-          .in('rental_status', ['scheduled', 'active', 'confirmed']);
+          .in('rental_status', ['scheduled', 'active', 'confirmed']),
+          organizationId
+        );
 
         if (conflictError) throw conflictError;
 

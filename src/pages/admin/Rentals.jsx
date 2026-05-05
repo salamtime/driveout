@@ -20,6 +20,8 @@ import i18n from '../../i18n';
 import { canEditRentalContract } from '../../utils/permissionHelpers';
 import { fetchSystemSettings } from '../../services/systemSettingsApi';
 import { TABLE_NAMES } from '../../config/tableNames';
+import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
+import { buildRentalTelegramVehicleLabel } from '../../utils/rentalTelegram';
 import { toast } from 'sonner';
 
 const scheduleBackgroundTask = (callback) => {
@@ -133,6 +135,13 @@ const insertSharedRentalActivityLog = async (payload) => {
     .from(TABLE_NAMES.ACTIVITY_LOG)
     .insert(payload);
 };
+
+const buildVehicleHistorySnapshot = (vehicle) => ({
+  vehicle_id: vehicle?.id || null,
+  plate_number_snapshot: vehicle?.plate_number || null,
+  vehicle_name_snapshot: vehicle?.name || vehicle?.vehicle_model?.name || null,
+  vehicle_model_snapshot: vehicle?.model || vehicle?.vehicle_model?.model || null,
+});
 
 const formatRentalWhatsAppDate = (value) => {
   const parsed = value ? new Date(value) : null;
@@ -1513,7 +1522,7 @@ const Rentals = () => {
       const actualEndTime = new Date(now.getTime() + originalDuration).toISOString();
 
       // Update rental status to active
-      const { error: updateError } = await supabase
+      const { data: updatedRental, error: updateError } = await supabase
         .from('app_4c3a7a6153_rentals')
         .update({ 
           rental_status: 'active', 
@@ -1522,9 +1531,45 @@ const Rentals = () => {
           started_by: user?.id || null,
           started_by_name: actorName,
         })
-        .eq('id', rental.id);
+        .eq('id', rental.id)
+        .select(`
+          *,
+          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
+            *,
+            vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)
+          )
+        `)
+        .single();
 
       if (updateError) throw updateError;
+
+      try {
+        const { count, error: historyCountError } = await supabase
+          .from('rental_vehicle_history')
+          .select('id', { count: 'exact', head: true })
+          .eq('rental_id', rental.id);
+
+        if (historyCountError) throw historyCountError;
+
+        if (!count) {
+          const { error: insertHistoryError } = await supabase
+            .from('rental_vehicle_history')
+            .insert({
+              rental_id: rental.id,
+              ...buildVehicleHistorySnapshot(updatedRental?.vehicle || rental?.vehicle),
+              started_at: actualStartTime,
+              ended_at: null,
+              replacement_reason: tr('Started rental', 'Démarrage de location'),
+              change_note: null,
+              changed_by: actorName || 'Staff',
+              sequence_index: 1,
+            });
+
+          if (insertHistoryError) throw insertHistoryError;
+        }
+      } catch (vehicleHistoryError) {
+        console.error('❌ Failed to create initial vehicle history from rentals list:', vehicleHistoryError);
+      }
 
       // Update vehicle status
       if (rental.vehicle_id) {
@@ -1553,6 +1598,24 @@ const Rentals = () => {
       } catch (activityError) {
         console.warn('⚠️ Failed to write rental start activity log:', activityError);
       }
+
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'rental_started',
+        actor: 'admin',
+        rental: {
+          id: rental.id,
+          reference: rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(updatedRental || rental),
+          customer: rental.customer_name,
+          start: actualStartTime,
+          end: actualEndTime,
+          total: updatedRental?.total_amount ?? rental?.total_amount ?? 0,
+          amountPaid: updatedRental?.deposit_amount ?? rental?.deposit_amount ?? 0,
+          remaining: updatedRental?.remaining_amount ?? rental?.remaining_amount ?? 0,
+        },
+      }).catch((telegramDispatchError) => {
+        console.warn('⚠️ Rental started Telegram dispatch failed from rentals list (non-blocking):', telegramDispatchError);
+      });
 
       // Show success message
       alert(`✅ Rental ${rental.rental_id} started successfully! Timer is now active.`);

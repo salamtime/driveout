@@ -1,5 +1,5 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../utils/supabaseClient';
+import FinanceRecordsService from '../../services/FinanceRecordsService';
 
 // Async thunks
 export const fetchFinanceRecords = createAsyncThunk(
@@ -8,35 +8,7 @@ export const fetchFinanceRecords = createAsyncThunk(
     try {
       console.log('💰 Fetching finance records...');
       
-      let query = supabase
-        .from('finance_records')
-        .select('*')
-        .order('transaction_date', { ascending: false });
-
-      // Add filters if provided
-      if (startDate) {
-        query = query.gte('transaction_date', startDate);
-      }
-      
-      if (endDate) {
-        query = query.lte('transaction_date', endDate);
-      }
-      
-      if (type && type !== 'all') {
-        query = query.eq('transaction_type', type);
-      }
-      
-      if (category && category !== 'all') {
-        query = query.eq('category', category);
-      }
-
-      const { data, error } = await query;
-
-      if (error) {
-        console.error('❌ Finance records fetch error:', error);
-        throw error;
-      }
-
+      const data = await FinanceRecordsService.getRecords({ startDate, endDate, type, category });
       console.log('✅ Finance records fetched successfully:', data?.length || 0, 'records');
       return data || [];
     } catch (error) {
@@ -52,20 +24,7 @@ export const createFinanceRecord = createAsyncThunk(
     try {
       console.log('💰 Creating finance record:', recordData);
       
-      const { data, error } = await supabase
-        .from('finance_records')
-        .insert([{
-          ...recordData,
-          created_at: new Date().toISOString()
-        }])
-        .select()
-        .single();
-
-      if (error) {
-        console.error('❌ Finance record create error:', error);
-        throw error;
-      }
-
+      const data = await FinanceRecordsService.createRecord(recordData);
       console.log('✅ Finance record created successfully:', data);
       return data;
     } catch (error) {
@@ -81,18 +40,7 @@ export const updateFinanceRecord = createAsyncThunk(
     try {
       console.log('📝 Updating finance record:', id, updateData);
       
-      const { data, error } = await supabase
-        .from('finance_records')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) {
-        console.error('❌ Finance record update error:', error);
-        throw error;
-      }
-
+      const data = await FinanceRecordsService.updateRecord(id, updateData);
       console.log('✅ Finance record updated successfully:', data);
       return data;
     } catch (error) {
@@ -108,16 +56,7 @@ export const deleteFinanceRecord = createAsyncThunk(
     try {
       console.log('🗑️ Deleting finance record:', recordId);
       
-      const { error } = await supabase
-        .from('finance_records')
-        .delete()
-        .eq('id', recordId);
-
-      if (error) {
-        console.error('❌ Finance record delete error:', error);
-        throw error;
-      }
-
+      await FinanceRecordsService.deleteRecord(recordId);
       console.log('✅ Finance record deleted successfully');
       return recordId;
     } catch (error) {

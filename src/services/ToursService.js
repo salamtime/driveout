@@ -1,5 +1,10 @@
 import { supabase } from '../lib/supabase';
 import { TBL } from '../config/tables';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  requireCurrentOrganizationId,
+} from './OrganizationService';
 
 class ToursService {
   constructor() {
@@ -13,11 +18,15 @@ class ToursService {
   async getAllTours() {
     try {
       console.log(`🔧 Fetching tours from ${this.tableName}`);
+      const organizationId = await requireCurrentOrganizationId();
       
-      const { data, error } = await supabase
-        .from(this.tableName)
-        .select('*')
-        .order('created_at', { ascending: false });
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from(this.tableName)
+          .select('*')
+          .order('created_at', { ascending: false }),
+        organizationId
+      );
 
       if (error) {
         console.error(`❌ Error fetching tours from ${this.tableName}:`, error);
@@ -40,12 +49,16 @@ class ToursService {
   async getTourById(tourId) {
     try {
       console.log(`🔧 Fetching tour ${tourId} from ${this.tableName}`);
+      const organizationId = await requireCurrentOrganizationId();
       
-      const { data, error } = await supabase
-        .from(this.tableName)
-        .select('*')
-        .eq('id', tourId)
-        .single();
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from(this.tableName)
+          .select('*')
+          .eq('id', tourId)
+          .single(),
+        organizationId
+      );
 
       if (error) {
         console.error(`❌ Error fetching tour ${tourId} from ${this.tableName}:`, error);
@@ -68,10 +81,12 @@ class ToursService {
   async createTour(tourData) {
     try {
       console.log(`🔧 Creating tour in ${this.tableName}:`, tourData);
+      const organizationId = await requireCurrentOrganizationId();
       
       const { data, error } = await supabase
         .from(this.tableName)
         .insert([{
+          ...applyOrganizationMatch({}, organizationId),
           ...tourData,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
@@ -101,14 +116,17 @@ class ToursService {
   async updateTour(tourId, tourData) {
     try {
       console.log(`🔧 Updating tour ${tourId} in ${this.tableName}:`, tourData);
+      const organizationId = await requireCurrentOrganizationId();
       
       const { data, error } = await supabase
         .from(this.tableName)
         .update({
+          ...applyOrganizationMatch({}, organizationId),
           ...tourData,
           updated_at: new Date().toISOString()
         })
         .eq('id', tourId)
+        .eq('organization_id', organizationId)
         .select()
         .single();
 
@@ -133,11 +151,13 @@ class ToursService {
   async deleteTour(tourId) {
     try {
       console.log(`🔧 Deleting tour ${tourId} from ${this.tableName}`);
+      const organizationId = await requireCurrentOrganizationId();
       
       const { error } = await supabase
         .from(this.tableName)
         .delete()
-        .eq('id', tourId);
+        .eq('id', tourId)
+        .eq('organization_id', organizationId);
 
       if (error) {
         console.error(`❌ Error deleting tour ${tourId} from ${this.tableName}:`, error);
@@ -160,12 +180,16 @@ class ToursService {
   async getToursByStatus(status) {
     try {
       console.log(`🔧 Fetching tours with status ${status} from ${this.tableName}`);
+      const organizationId = await requireCurrentOrganizationId();
       
-      const { data, error } = await supabase
-        .from(this.tableName)
-        .select('*')
-        .eq('status', status)
-        .order('created_at', { ascending: false });
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from(this.tableName)
+          .select('*')
+          .eq('status', status)
+          .order('created_at', { ascending: false }),
+        organizationId
+      );
 
       if (error) {
         console.error(`❌ Error fetching tours with status ${status} from ${this.tableName}:`, error);

@@ -1,4 +1,9 @@
 import { supabase } from '../lib/supabase';
+import {
+  buildStoragePathCandidates,
+  buildTenantScopedStoragePath,
+} from '../utils/storageUpload';
+import { getCurrentOrganizationId } from './OrganizationService';
 
 const BUCKET_NAME = 'vehicle-documents';
 
@@ -8,6 +13,7 @@ const BUCKET_NAME = 'vehicle-documents';
 export const uploadDocument = async (file, vehicleId) => {
   try {
     console.log('🔄 DocumentService: Starting document upload:', file.name);
+    const organizationId = await getCurrentOrganizationId();
     
     // Validate file
     validateDocumentFile(file);
@@ -16,14 +22,19 @@ export const uploadDocument = async (file, vehicleId) => {
     const timestamp = Date.now();
     const randomString = Math.random().toString(36).substring(2, 15);
     const fileExtension = file.name.split('.').pop();
-    const fileName = `${vehicleId}/${timestamp}_${randomString}.${fileExtension}`;
+    const fileName = `${timestamp}_${randomString}.${fileExtension}`;
+    const filePath = buildTenantScopedStoragePath({
+      organizationId,
+      pathPrefix: String(vehicleId),
+      fileName,
+    });
     
-    console.log('📁 Uploading to path:', fileName);
+    console.log('📁 Uploading to path:', filePath);
     
     // Upload file directly to Supabase storage (same approach as imageUpload.js)
     const { data, error } = await supabase.storage
       .from(BUCKET_NAME)
-      .upload(fileName, file, {
+      .upload(filePath, file, {
         cacheControl: '3600',
         upsert: false,
         contentType: file.type
@@ -39,7 +50,7 @@ export const uploadDocument = async (file, vehicleId) => {
     // Get public URL for the uploaded document (same as imageUpload.js)
     const { data: urlData } = supabase.storage
       .from(BUCKET_NAME)
-      .getPublicUrl(fileName);
+      .getPublicUrl(filePath);
 
     return {
       id: `doc_${timestamp}_${randomString}`,
@@ -47,7 +58,7 @@ export const uploadDocument = async (file, vehicleId) => {
       type: file.type,
       size: file.size,
       url: urlData.publicUrl,
-      storagePath: fileName,
+      storagePath: filePath,
       uploadedAt: new Date().toISOString(),
       category: getCategoryFromType(file.type),
       vehicleId: vehicleId
@@ -90,16 +101,35 @@ export const deleteDocument = async (storagePath) => {
 export const getVehicleDocuments = async (vehicleId) => {
   try {
     console.log('🔄 DocumentService: Getting documents for vehicle:', vehicleId);
-    
-    const { data, error } = await supabase.storage
-      .from(BUCKET_NAME)
-      .list(`${vehicleId}/`, {
-        limit: 100,
-        offset: 0
-      });
+    const organizationId = await getCurrentOrganizationId();
+    const prefixCandidates = buildStoragePathCandidates(organizationId, String(vehicleId));
 
-    if (error) {
-      console.error('❌ Error getting vehicle documents:', error);
+    let data = [];
+    let resolvedPrefix = prefixCandidates[0];
+    let lastError = null;
+
+    for (const candidatePrefix of prefixCandidates) {
+      const result = await supabase.storage
+        .from(BUCKET_NAME)
+        .list(candidatePrefix, {
+          limit: 100,
+          offset: 0
+        });
+
+      if (result.error) {
+        lastError = result.error;
+        continue;
+      }
+
+      data = result.data || [];
+      resolvedPrefix = candidatePrefix;
+      if (data.length > 0 || candidatePrefix === prefixCandidates[prefixCandidates.length - 1]) {
+        break;
+      }
+    }
+
+    if (lastError && data.length === 0) {
+      console.error('❌ Error getting vehicle documents:', lastError);
       return [];
     }
 
@@ -111,7 +141,7 @@ export const getVehicleDocuments = async (vehicleId) => {
         if (item.name && !item.name.endsWith('/')) { // Skip folder entries
           const { data: urlData } = supabase.storage
             .from(BUCKET_NAME)
-            .getPublicUrl(`${vehicleId}/${item.name}`);
+            .getPublicUrl(`${resolvedPrefix}/${item.name}`);
 
           documents.push({
             id: item.id || `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -119,7 +149,7 @@ export const getVehicleDocuments = async (vehicleId) => {
             type: getMimeTypeFromName(item.name),
             size: item.metadata?.size || 0,
             url: urlData.publicUrl,
-            storagePath: `${vehicleId}/${item.name}`,
+            storagePath: `${resolvedPrefix}/${item.name}`,
             uploadedAt: item.created_at || item.updated_at,
             category: getCategoryFromName(item.name),
             vehicleId: vehicleId

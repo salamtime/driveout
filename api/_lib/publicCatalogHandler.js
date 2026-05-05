@@ -1,4 +1,5 @@
 import { createSupabaseClients } from './supabase.js';
+import { resolveRequestTenantScope } from './sharedTenantIsolation.js';
 import { normalizeVehicleImageUrl } from '../../src/utils/vehicleImage.js';
 
 const DEFAULT_CURRENCY = 'MAD';
@@ -625,13 +626,19 @@ const fetchCertifiedFleet = async (adminClient) => {
   });
 };
 
-const fetchMarketplaceListings = async (adminClient) => {
+const fetchMarketplaceListings = async (adminClient, tenantScope = null) => {
   try {
-    const { data: listingRows, error } = await adminClient
+    let listingsQuery = adminClient
       .from('app_marketplace_listings')
       .select('*')
       .eq('listing_status', 'live')
       .limit(48);
+
+    if (tenantScope?.isShared && tenantScope.organizationId) {
+      listingsQuery = listingsQuery.eq('organization_id', tenantScope.organizationId);
+    }
+
+    const { data: listingRows, error } = await listingsQuery;
 
     if (error) throw error;
 
@@ -696,10 +703,10 @@ const fetchMarketplaceListings = async (adminClient) => {
   }
 };
 
-const buildCatalog = async (adminClient, filters = {}) => {
+const buildCatalog = async (adminClient, filters = {}, tenantScope = null) => {
   const [certifiedFleet, marketplace] = await Promise.all([
-    fetchCertifiedFleet(adminClient),
-    fetchMarketplaceListings(adminClient),
+    tenantScope?.isShared ? [] : fetchCertifiedFleet(adminClient),
+    fetchMarketplaceListings(adminClient, tenantScope),
   ]);
 
   const allListings = [...certifiedFleet, ...marketplace];
@@ -753,8 +760,8 @@ const buildCatalog = async (adminClient, filters = {}) => {
   };
 };
 
-const getListingById = async (adminClient, listingId, cityOverride) => {
-  const catalog = await buildCatalog(adminClient, {});
+const getListingById = async (adminClient, listingId, cityOverride, tenantScope = null) => {
+  const catalog = await buildCatalog(adminClient, {}, tenantScope);
   const directMatch = catalog.listings.find((listing) => listing.id === listingId)
     || catalog.featuredListings.find((listing) => listing.id === listingId)
     || null;
@@ -832,6 +839,7 @@ const json = (res, status, body) => {
 export default async function publicCatalogHandler(req, res) {
   try {
     const { adminClient } = createSupabaseClients();
+    const tenantScope = await resolveRequestTenantScope({ req, adminClient });
     const action = String(req.query?.action || 'catalog').trim().toLowerCase();
 
     if (req.method !== 'GET') {
@@ -845,7 +853,7 @@ export default async function publicCatalogHandler(req, res) {
         return json(res, 400, { error: 'Missing listingId' });
       }
 
-      const listing = await getListingById(adminClient, listingId, city);
+      const listing = await getListingById(adminClient, listingId, city, tenantScope);
       if (!listing) {
         return json(res, 404, { error: 'Listing not found' });
       }
@@ -869,7 +877,7 @@ export default async function publicCatalogHandler(req, res) {
       search: safeText(req.query?.search, ''),
     };
 
-    const catalog = await buildCatalog(adminClient, filters);
+    const catalog = await buildCatalog(adminClient, filters, tenantScope);
     return json(res, 200, catalog);
   } catch (error) {
     return json(res, 500, { error: error?.message || 'Failed to load public catalog' });

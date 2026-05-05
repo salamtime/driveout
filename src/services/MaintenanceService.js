@@ -1,5 +1,10 @@
 import { supabase } from '../lib/supabase';
 import MaintenancePartsService from './MaintenancePartsService';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  requireCurrentOrganizationId,
+} from './OrganizationService';
 
 const VEHICLE_REPORTS_TABLE = 'app_4c3a7a6153_vehicle_reports';
 
@@ -74,10 +79,14 @@ class MaintenanceService {
   }
 
   async getOpenMaintenanceCount() {
-    const { data, error } = await supabase
-      .from(this.table)
-      .select('vehicle_id', { count: 'exact' })
-      .in('status', ['scheduled', 'in_progress']);
+    const organizationId = await requireCurrentOrganizationId();
+    const { data, error } = await applyOrganizationScope(
+      supabase
+        .from(this.table)
+        .select('vehicle_id', { count: 'exact' })
+        .in('status', ['scheduled', 'in_progress']),
+      organizationId
+    );
 
     if (error) {
       console.error('❌ Supabase Error', {
@@ -95,14 +104,18 @@ class MaintenanceService {
 
   async getAllMaintenanceRecords(filters = {}) {
     try {
-      let query = supabase
-        .from(this.table)
-        .select(`
-          *,
-          vehicle:${this.vehiclesTable}!app_687f658e98_maintenance_vehicle_id_fkey(*),
-          parts:${this.partsTable}(*)
-        `)
-        .order('service_date', { ascending: false });
+      const organizationId = await requireCurrentOrganizationId();
+      let query = applyOrganizationScope(
+        supabase
+          .from(this.table)
+          .select(`
+            *,
+            vehicle:${this.vehiclesTable}!app_687f658e98_maintenance_vehicle_id_fkey(*),
+            parts:${this.partsTable}(*)
+          `)
+          .order('service_date', { ascending: false }),
+        organizationId
+      );
 
       if (filters.vehicle_id) query = query.eq('vehicle_id', filters.vehicle_id);
       if (filters.status) query = query.eq('status', filters.status);
@@ -123,14 +136,18 @@ class MaintenanceService {
 
   async getMaintenanceById(recordId) {
     try {
-      const { data, error } = await supabase
-        .from(this.table)
-        .select(`
-          *,
-          vehicle:${this.vehiclesTable}!app_687f658e98_maintenance_vehicle_id_fkey(*)
-        `)
-        .eq('id', recordId)
-        .single();
+      const organizationId = await requireCurrentOrganizationId();
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from(this.table)
+          .select(`
+            *,
+            vehicle:${this.vehiclesTable}!app_687f658e98_maintenance_vehicle_id_fkey(*)
+          `)
+          .eq('id', recordId)
+          .single(),
+        organizationId
+      );
 
       if (error) throw error;
 
@@ -148,6 +165,7 @@ class MaintenanceService {
 
   async createMaintenanceRecord(recordData) {
     try {
+      const organizationId = await requireCurrentOrganizationId();
       const normalizedPartsUsed = this.normalizePartsUsedInput(recordData.parts_used);
       const payload = this.buildMaintenancePayload({
         ...recordData,
@@ -159,6 +177,7 @@ class MaintenanceService {
       const { data: maintenance, error } = await supabase
         .from(this.table)
         .insert({
+          ...applyOrganizationMatch({}, organizationId),
           ...payload,
           created_at: new Date().toISOString()
         })
@@ -178,11 +197,13 @@ class MaintenanceService {
       const { data: updatedMaintenance, error: updateError } = await supabase
         .from(this.table)
         .update({
+          ...applyOrganizationMatch({}, organizationId),
           parts_cost_mad: partsResult.totalPartsCost,
           cost: totalCost,
           updated_at: new Date().toISOString()
         })
         .eq('id', maintenance.id)
+        .eq('organization_id', organizationId)
         .select()
         .single();
 
@@ -196,29 +217,36 @@ class MaintenanceService {
             status: nextVehicleStatus,
             updated_at: new Date().toISOString()
           })
-          .eq('id', payload.vehicle_id);
+          .eq('id', payload.vehicle_id)
+          .eq('organization_id', organizationId);
       }
 
-      await supabase
-        .from(VEHICLE_REPORTS_TABLE)
-        .update({
-          maintenance_cost_total: totalCost,
-          customer_charge_amount: totalCost,
-          status: payload.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('maintenance_id', maintenance.id)
-        .eq('customer_chargeable', true);
+      await applyOrganizationScope(
+        supabase
+          .from(VEHICLE_REPORTS_TABLE)
+          .update({
+            maintenance_cost_total: totalCost,
+            customer_charge_amount: totalCost,
+            status: payload.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('maintenance_id', maintenance.id)
+          .eq('customer_chargeable', true),
+        organizationId
+      );
 
-      await supabase
-        .from(VEHICLE_REPORTS_TABLE)
-        .update({
-          maintenance_cost_total: totalCost,
-          status: payload.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('maintenance_id', maintenance.id)
-        .eq('customer_chargeable', false);
+      await applyOrganizationScope(
+        supabase
+          .from(VEHICLE_REPORTS_TABLE)
+          .update({
+            maintenance_cost_total: totalCost,
+            status: payload.status === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('maintenance_id', maintenance.id)
+          .eq('customer_chargeable', false),
+        organizationId
+      );
 
       return {
         maintenance: updatedMaintenance,
@@ -233,6 +261,7 @@ class MaintenanceService {
 
   async updateMaintenanceRecord(recordId, updateData) {
     try {
+      const organizationId = await requireCurrentOrganizationId();
       const existingRecord = await this.getMaintenanceById(recordId);
       const hasExplicitPartsUpdate = Object.prototype.hasOwnProperty.call(updateData, 'parts_used');
       const normalizedPartsUsed = hasExplicitPartsUpdate
@@ -274,12 +303,14 @@ class MaintenanceService {
       const { data: updatedMaintenance, error } = await supabase
         .from(this.table)
         .update({
+          ...applyOrganizationMatch({}, organizationId),
           ...payload,
           parts_cost_mad: partsChanges.totalPartsCost,
           cost: totalCost,
           updated_at: new Date().toISOString()
         })
         .eq('id', recordId)
+        .eq('organization_id', organizationId)
         .select()
         .single();
 
@@ -294,7 +325,8 @@ class MaintenanceService {
             .select('id')
             .eq('vehicle_id', payload.vehicle_id)
             .in('status', ['scheduled', 'in_progress'])
-            .neq('id', recordId);
+            .neq('id', recordId)
+            .eq('organization_id', organizationId);
 
           if (openRecordsError) throw openRecordsError;
 
@@ -309,29 +341,36 @@ class MaintenanceService {
             status: nextVehicleStatus,
             updated_at: new Date().toISOString()
           })
-          .eq('id', payload.vehicle_id);
+          .eq('id', payload.vehicle_id)
+          .eq('organization_id', organizationId);
       }
 
-      await supabase
-        .from(VEHICLE_REPORTS_TABLE)
-        .update({
-          maintenance_cost_total: totalCost,
-          customer_charge_amount: totalCost,
-          status: nextStatus === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('maintenance_id', recordId)
-        .eq('customer_chargeable', true);
+      await applyOrganizationScope(
+        supabase
+          .from(VEHICLE_REPORTS_TABLE)
+          .update({
+            maintenance_cost_total: totalCost,
+            customer_charge_amount: totalCost,
+            status: nextStatus === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('maintenance_id', recordId)
+          .eq('customer_chargeable', true),
+        organizationId
+      );
 
-      await supabase
-        .from(VEHICLE_REPORTS_TABLE)
-        .update({
-          maintenance_cost_total: totalCost,
-          status: nextStatus === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('maintenance_id', recordId)
-        .eq('customer_chargeable', false);
+      await applyOrganizationScope(
+        supabase
+          .from(VEHICLE_REPORTS_TABLE)
+          .update({
+            maintenance_cost_total: totalCost,
+            status: nextStatus === 'completed' ? 'maintenance_completed' : 'maintenance_in_progress',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('maintenance_id', recordId)
+          .eq('customer_chargeable', false),
+        organizationId
+      );
 
       return {
         maintenance: updatedMaintenance,
@@ -354,6 +393,7 @@ class MaintenanceService {
 
   async deleteMaintenanceRecord(recordId) {
     try {
+      const organizationId = await requireCurrentOrganizationId();
       const existingRecord = await this.getMaintenanceById(recordId);
       const vehicleId = existingRecord?.vehicle_id || null;
       const restoreInventory = existingRecord.status === 'completed';
@@ -365,7 +405,8 @@ class MaintenanceService {
       const { error } = await supabase
         .from(this.table)
         .delete()
-        .eq('id', recordId);
+        .eq('id', recordId)
+        .eq('organization_id', organizationId);
 
       if (error) throw error;
 
@@ -374,7 +415,8 @@ class MaintenanceService {
           .from(this.table)
           .select('id')
           .eq('vehicle_id', vehicleId)
-          .in('status', ['scheduled', 'in_progress']);
+          .in('status', ['scheduled', 'in_progress'])
+          .eq('organization_id', organizationId);
 
         if (openRecordsError) throw openRecordsError;
 
@@ -387,7 +429,8 @@ class MaintenanceService {
             status: hasOtherOpenMaintenance ? 'maintenance' : fallbackVehicleStatus,
             updated_at: new Date().toISOString()
           })
-          .eq('id', vehicleId);
+          .eq('id', vehicleId)
+          .eq('organization_id', organizationId);
       }
 
       return {

@@ -1,4 +1,6 @@
 import { supabase } from '../lib/supabase';
+import { getCurrentOrganizationId } from '../services/OrganizationService';
+import { buildStoragePathCandidates, buildTenantScopedStoragePath } from './storageUpload';
 
 const BUCKET_NAME = 'vehicle-images';
 
@@ -22,7 +24,12 @@ export const uploadImage = async (file, vehicleId) => {
     const timestamp = Date.now();
     const randomString = Math.random().toString(36).substring(2, 15);
     const fileExtension = file.name.split('.').pop();
-    const fileName = `${vehicleId}/${timestamp}_${randomString}.${fileExtension}`;
+    const organizationId = await getCurrentOrganizationId();
+    const fileName = buildTenantScopedStoragePath({
+      organizationId,
+      pathPrefix: `vehicles/${vehicleId}`,
+      fileName: `${timestamp}_${randomString}.${fileExtension}`,
+    });
     
     console.log('📁 Uploading to path:', fileName);
     console.log('📁 Bucket name:', BUCKET_NAME);
@@ -101,28 +108,36 @@ export const deleteImage = async (storagePath) => {
 export const getVehicleImages = async (vehicleId) => {
   try {
     console.log('🔄 ImageUpload: Getting images for vehicle:', vehicleId);
-    
-    const { data, error } = await supabase.storage
-      .from(BUCKET_NAME)
-      .list(`${vehicleId}/`, {
-        limit: 100,
-        offset: 0
-      });
+    const organizationId = await getCurrentOrganizationId();
+    const prefixes = buildStoragePathCandidates(organizationId, `vehicles/${vehicleId}`);
+    const files = [];
 
-    if (error) {
-      console.error('❌ Error getting vehicle images:', error);
-      return [];
+    for (const prefix of prefixes) {
+      const { data, error } = await supabase.storage
+        .from(BUCKET_NAME)
+        .list(prefix, {
+          limit: 100,
+          offset: 0
+        });
+
+      if (error) {
+        console.error('❌ Error getting vehicle images:', error);
+        continue;
+      }
+
+      (data || []).forEach((item) => files.push({ ...item, __prefix: prefix }));
     }
 
     // Transform storage objects to image metadata
     const images = [];
     
-    if (data && Array.isArray(data)) {
-      for (const item of data) {
+    if (files.length && Array.isArray(files)) {
+      for (const item of files) {
         if (item.name && !item.name.endsWith('/')) { // Skip folder entries
+          const storagePath = `${item.__prefix}/${item.name}`;
           const { data: urlData } = supabase.storage
             .from(BUCKET_NAME)
-            .getPublicUrl(`${vehicleId}/${item.name}`);
+            .getPublicUrl(storagePath);
 
           images.push({
             id: item.id || `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -130,7 +145,7 @@ export const getVehicleImages = async (vehicleId) => {
             type: getMimeTypeFromName(item.name),
             size: item.metadata?.size || 0,
             url: urlData.publicUrl,
-            storagePath: `${vehicleId}/${item.name}`,
+            storagePath,
             uploadedAt: item.created_at || item.updated_at,
             vehicleId: vehicleId
           });

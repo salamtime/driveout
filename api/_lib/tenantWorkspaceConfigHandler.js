@@ -1,11 +1,16 @@
 import {
+  ORGANIZATIONS_TABLE,
+  PLATFORM_BUSINESS_ACCOUNTS_TABLE,
   PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE,
   PLATFORM_TENANTS_TABLE,
   createSupabaseClients,
+  getSharedSupabaseTenantConfig,
 } from './supabase.js';
 import { getCachedWorkspaceReadiness, resolveWorkspaceReadiness } from './tenantWorkspaceReadiness.js';
 import { normalizeTenantSchemaVersion } from './tenantSchemaRelease.js';
 import { buildEffectiveTenantFeatureAccess, normalizeTenantPlanType } from '../../src/config/tenantPlans.js';
+import { resolveTenantTenancyMode } from './tenantRegistry.js';
+import { buildLegacyDedicatedInfrastructure } from './legacyDedicatedTenant.js';
 
 const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
 const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
@@ -83,6 +88,105 @@ const extractTenantPublicFeatures = (featureAccess = {}) => ({
   multilingual_storefront: featureAccess.multilingual_storefront === true,
 });
 
+const getTenantMetadata = (tenant = {}) => (
+  tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {}
+);
+
+const getTenantConnectionConfig = (tenant = {}) => {
+  const tenancyMode = resolveTenantTenancyMode(tenant);
+  if (tenancyMode === 'shared') {
+    const sharedConfig = getSharedSupabaseTenantConfig();
+    return {
+      tenancyMode,
+      projectRef: sharedConfig.projectRef,
+      apiUrl: normalizeUrl(sharedConfig.apiUrl),
+      anonKey: sharedConfig.anonKey,
+      appUrl: normalizeUrl(tenant.tenant_app_url),
+    };
+  }
+
+  return {
+    tenancyMode,
+    projectRef: String(tenant.tenant_project_ref || '').trim(),
+    apiUrl: normalizeUrl(tenant.tenant_api_url || ''),
+    anonKey: String(tenant.tenant_anon_key || '').trim(),
+    appUrl: normalizeUrl(tenant.tenant_app_url),
+  };
+};
+
+const resolveTenantOrganizationContext = async ({ adminClient, tenant }) => {
+  const tenancyMode = resolveTenantTenancyMode(tenant);
+  if (tenancyMode !== 'shared') {
+    return {
+      organizationId: null,
+      organizationSlug: null,
+    };
+  }
+
+  const metadata = getTenantMetadata(tenant);
+  const metadataOrganizationId = String(
+    metadata.organization_id ||
+    metadata.shared_organization_id ||
+    ''
+  ).trim();
+  const metadataOrganizationSlug = String(
+    metadata.organization_slug ||
+    metadata.shared_organization_slug ||
+    ''
+  ).trim();
+
+  if (metadataOrganizationId || metadataOrganizationSlug) {
+    return {
+      organizationId: metadataOrganizationId || null,
+      organizationSlug: metadataOrganizationSlug || null,
+    };
+  }
+
+  const businessAccountId = String(tenant?.business_account_id || '').trim();
+  if (!businessAccountId) {
+    return {
+      organizationId: null,
+      organizationSlug: null,
+    };
+  }
+
+  const { data: businessAccount, error: businessAccountError } = await adminClient
+    .from(PLATFORM_BUSINESS_ACCOUNTS_TABLE)
+    .select('auth_user_id')
+    .eq('id', businessAccountId)
+    .maybeSingle();
+
+  if (businessAccountError) {
+    throw businessAccountError;
+  }
+
+  const ownerUserId = String(businessAccount?.auth_user_id || '').trim();
+  if (!ownerUserId) {
+    return {
+      organizationId: null,
+      organizationSlug: null,
+    };
+  }
+
+  const { data: organization, error: organizationError } = await adminClient
+    .from(ORGANIZATIONS_TABLE)
+    .select('id, slug')
+    .eq('owner_user_id', ownerUserId)
+    .eq('is_platform_organization', false)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (organizationError) {
+    throw organizationError;
+  }
+
+  return {
+    organizationId: String(organization?.id || '').trim() || null,
+    organizationSlug: String(organization?.slug || '').trim() || null,
+  };
+};
+
 const getFirstPartyTenantConfig = ({ hostname, tenantSlug }) => {
   const normalizedHostname = normalizeHostname(hostname);
   const normalizedSlug = String(tenantSlug || '').trim().toLowerCase();
@@ -103,6 +207,7 @@ const getFirstPartyTenantConfig = ({ hostname, tenantSlug }) => {
     tenant_name: 'SaharaX',
     tenant_slug: 'saharax',
     tenant_status: 'active',
+    tenancy_mode: 'shared',
     tenant_project_ref: getProjectRefFromSupabaseUrl(apiUrl),
     tenant_app_url: `https://${normalizedHostname}`,
     tenant_api_url: apiUrl,
@@ -175,6 +280,14 @@ export default async function handler(req, res) {
 
     const tenantStatus = String(tenant.tenant_status || '').trim().toLowerCase();
     const appHostname = getUrlHostname(tenant.tenant_app_url);
+    const tenantConnection = getTenantConnectionConfig(tenant);
+    const legacyDedicatedInfrastructure = buildLegacyDedicatedInfrastructure({
+      ...tenant,
+      tenant_project_ref: tenantConnection.projectRef,
+      tenant_app_url: tenantConnection.appUrl,
+      tenant_api_url: tenantConnection.apiUrl,
+      tenant_anon_key: tenantConnection.anonKey,
+    });
 
     if (tenantStatus !== 'active') {
       res.status(409).json({
@@ -185,7 +298,7 @@ export default async function handler(req, res) {
       return;
     }
 
-    if (!tenant.tenant_project_ref || !tenant.tenant_app_url || !tenant.tenant_api_url || !tenant.tenant_anon_key) {
+    if (!tenantConnection.projectRef || !tenantConnection.appUrl || !tenantConnection.apiUrl || !tenantConnection.anonKey) {
       res.status(409).json({
         error: 'Workspace configuration is incomplete',
         code: 'missing_tenant_config',
@@ -194,7 +307,14 @@ export default async function handler(req, res) {
       return;
     }
 
-    const invalidConfigReason = tenant.first_party ? '' : getInvalidTenantConfigReason(tenant);
+    const invalidConfigReason = tenant.first_party || tenantConnection.tenancyMode === 'shared'
+      ? ''
+      : getInvalidTenantConfigReason({
+        ...tenant,
+        tenant_project_ref: tenantConnection.projectRef,
+        tenant_api_url: tenantConnection.apiUrl,
+        tenant_anon_key: tenantConnection.anonKey,
+      });
     if (invalidConfigReason) {
       res.status(409).json({
         error: 'Workspace configuration is not ready',
@@ -214,7 +334,7 @@ export default async function handler(req, res) {
       return;
     }
 
-    if (!tenant.first_party && isMasterSupabaseUrl(tenant.tenant_api_url)) {
+    if (!tenant.first_party && tenantConnection.tenancyMode !== 'shared' && isMasterSupabaseUrl(tenantConnection.apiUrl)) {
       res.status(409).json({
         error: 'Workspace API URL points to the master project',
         code: 'master_project_config_rejected',
@@ -226,7 +346,12 @@ export default async function handler(req, res) {
       let workspaceReadiness = getCachedWorkspaceReadiness(tenant);
       try {
         workspaceReadiness = await resolveWorkspaceReadiness({
-          tenant,
+          tenant: {
+            ...tenant,
+            tenant_project_ref: tenantConnection.projectRef,
+            tenant_api_url: tenantConnection.apiUrl,
+            tenant_anon_key: tenantConnection.anonKey,
+          },
           adminClient,
           forceFresh: !workspaceReadiness?.fresh || workspaceReadiness?.ready !== true,
           persist: true,
@@ -251,10 +376,17 @@ export default async function handler(req, res) {
       }
     }
 
+    const tenantMetadata = getTenantMetadata(tenant);
     let effectivePlanType = 'pro';
-    let publicFeatures = extractTenantPublicFeatures(
-      buildEffectiveTenantFeatureAccess('pro', tenant?.metadata?.feature_access || {})
-    );
+    let featureAccessOverrides = tenantMetadata?.feature_access && typeof tenantMetadata.feature_access === 'object'
+      ? tenantMetadata.feature_access
+      : {};
+    let effectiveFeatureAccess = buildEffectiveTenantFeatureAccess('pro', featureAccessOverrides);
+    let publicFeatures = extractTenantPublicFeatures(effectiveFeatureAccess);
+    let organizationContext = {
+      organizationId: null,
+      organizationSlug: null,
+    };
 
     if (!tenant.first_party) {
       const { data: subscription, error: subscriptionError } = await adminClient
@@ -268,14 +400,17 @@ export default async function handler(req, res) {
       }
 
       effectivePlanType = normalizeTenantPlanType(subscription?.plan_type || 'starter');
-      publicFeatures = extractTenantPublicFeatures(
-        buildEffectiveTenantFeatureAccess(
-          effectivePlanType,
-          tenant?.metadata?.feature_access && typeof tenant.metadata.feature_access === 'object'
-            ? tenant.metadata.feature_access
-            : {}
-        )
+      effectiveFeatureAccess = buildEffectiveTenantFeatureAccess(
+        effectivePlanType,
+        featureAccessOverrides
       );
+      publicFeatures = extractTenantPublicFeatures(effectiveFeatureAccess);
+      if (tenantConnection.tenancyMode === 'shared') {
+        organizationContext = await resolveTenantOrganizationContext({
+          adminClient,
+          tenant,
+        });
+      }
     }
 
     res.status(200).json({
@@ -285,12 +420,26 @@ export default async function handler(req, res) {
         slug: tenant.tenant_slug,
         status: tenantStatus,
         mode: tenant.first_party ? 'first_party' : 'tenant',
-        projectRef: tenant.tenant_project_ref,
-        appUrl: normalizeUrl(tenant.tenant_app_url),
-        apiUrl: normalizeUrl(tenant.tenant_api_url),
-        anonKey: tenant.tenant_anon_key,
+        tenancyMode: tenantConnection.tenancyMode,
+        organizationId: organizationContext.organizationId,
+        organizationSlug: organizationContext.organizationSlug,
+        legacyDedicatedInfrastructure,
+        projectRef: tenantConnection.projectRef,
+        appUrl: tenantConnection.appUrl,
+        apiUrl: tenantConnection.apiUrl,
+        anonKey: tenantConnection.anonKey,
         schemaVersion: normalizeTenantSchemaVersion(tenant.schema_version),
         planType: effectivePlanType,
+        featureAccess: featureAccessOverrides,
+        effectiveFeatureAccess,
+        tenantSettings:
+          tenantMetadata?.tenant_settings && typeof tenantMetadata.tenant_settings === 'object'
+            ? tenantMetadata.tenant_settings
+            : {},
+        commercialSettings:
+          tenantMetadata?.commercial_settings && typeof tenantMetadata.commercial_settings === 'object'
+            ? tenantMetadata.commercial_settings
+            : {},
         publicFeatures,
       },
     });

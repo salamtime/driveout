@@ -4,6 +4,13 @@ import {
   PLATFORM_TENANTS_TABLE,
   PLATFORM_TENANT_PROVISIONING_JOBS_TABLE,
 } from './supabase.js';
+import {
+  DEFAULT_TENANCY_MODE,
+  LEGACY_TENANCY_MODE,
+  TENANCY_MODES,
+  normalizeTenancyMode,
+  resolveTenantTenancyMode,
+} from './tenancyMode.js';
 
 export const BUSINESS_OWNER_ACCOUNT_TYPES = new Set([
   'business_owner',
@@ -116,4 +123,101 @@ export const PLATFORM_TENANT_REGISTRY_TABLES = {
   subscriptions: PLATFORM_BUSINESS_SUBSCRIPTIONS_TABLE,
   tenants: PLATFORM_TENANTS_TABLE,
   provisioningJobs: PLATFORM_TENANT_PROVISIONING_JOBS_TABLE,
+};
+
+export const PLATFORM_TENANT_BASE_SELECT = [
+  'id',
+  'business_account_id',
+  'tenant_name',
+  'tenant_slug',
+  'tenant_status',
+  'tenant_project_ref',
+  'tenant_app_url',
+  'tenant_api_url',
+  'tenant_anon_key',
+  'schema_version',
+  'metadata',
+].join(', ');
+
+export const PLATFORM_TENANT_SELECT_WITH_TENANCY_MODE = `${PLATFORM_TENANT_BASE_SELECT}, tenancy_mode`;
+
+export const isMissingPlatformTenantColumnError = (error, columnName = 'tenancy_mode') => {
+  const code = String(error?.code || '').trim().toUpperCase();
+  const message = String(error?.message || '').trim().toLowerCase();
+  const details = String(error?.details || '').trim().toLowerCase();
+  const normalizedColumn = String(columnName || '').trim().toLowerCase();
+
+  return (
+    code === 'PGRST204' ||
+    code === '42703' ||
+    message.includes(`could not find the '${normalizedColumn}' column`) ||
+    message.includes(`column ${normalizedColumn}`) ||
+    details.includes(`column ${normalizedColumn}`) ||
+    message.includes('schema cache') ||
+    details.includes('schema cache')
+  );
+};
+
+const normalizePlatformTenantRecord = (tenant = null) => {
+  if (!tenant || typeof tenant !== 'object') {
+    return tenant;
+  }
+
+  return {
+    ...tenant,
+    tenancy_mode:
+      tenant.tenancy_mode ||
+      tenant?.metadata?.tenancy_mode ||
+      tenant?.metadata?.workspace_mode ||
+      undefined,
+  };
+};
+
+const normalizePlatformTenantData = (data) => {
+  if (Array.isArray(data)) {
+    return data.map((tenant) => normalizePlatformTenantRecord(tenant));
+  }
+
+  return normalizePlatformTenantRecord(data);
+};
+
+export const runPlatformTenantSelectWithModeFallback = async (buildQuery) => {
+  let result = await buildQuery(PLATFORM_TENANT_SELECT_WITH_TENANCY_MODE);
+
+  if (result?.error && isMissingPlatformTenantColumnError(result.error, 'tenancy_mode')) {
+    result = await buildQuery(PLATFORM_TENANT_BASE_SELECT);
+  }
+
+  if (!result?.error) {
+    return {
+      ...result,
+      data: normalizePlatformTenantData(result?.data),
+    };
+  }
+
+  return result;
+};
+
+export const runPlatformTenantUpdateWithModeFallback = async (buildQuery, payload = {}) => {
+  let result = await buildQuery(payload);
+
+  if (
+    result?.error &&
+    Object.prototype.hasOwnProperty.call(payload, 'tenancy_mode') &&
+    isMissingPlatformTenantColumnError(result.error, 'tenancy_mode')
+  ) {
+    const fallbackPayload = { ...payload };
+    delete fallbackPayload.tenancy_mode;
+    result = await buildQuery(fallbackPayload);
+  }
+
+  return result;
+};
+
+export {
+  DEFAULT_TENANCY_MODE,
+  LEGACY_TENANCY_MODE,
+  TENANCY_MODES,
+  normalizeTenancyMode,
+  resolveTenantTenancyMode,
 };

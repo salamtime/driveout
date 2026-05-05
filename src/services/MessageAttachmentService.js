@@ -1,5 +1,9 @@
-import { optimizeFileForUpload } from '../utils/storageUpload';
+import {
+  buildTenantScopedStoragePath,
+  optimizeFileForUpload,
+} from '../utils/storageUpload';
 import { supabase } from '../lib/supabase';
+import { getCurrentOrganizationId } from './OrganizationService';
 
 const CHAT_MEDIA_BUCKET = 'chat-media';
 const MAX_CHAT_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -39,6 +43,7 @@ const revokeObjectPreview = (url) => {
 };
 
 const uploadPhoto = async ({ file, threadKey = '', contextId = '', userId = '' }) => {
+  const organizationId = await getCurrentOrganizationId();
   const optimized = await optimizeFileForUpload(file, {
     bucket: CHAT_MEDIA_BUCKET,
     pathPrefix: 'messages',
@@ -49,7 +54,11 @@ const uploadPhoto = async ({ file, threadKey = '', contextId = '', userId = '' }
   const ownerSegment = String(userId || 'guest').trim() || 'guest';
   const threadSegment = String(threadKey || contextId || 'draft').trim().replace(/[^a-z0-9-_]+/gi, '-') || 'draft';
   const fileName = buildFileName(file, extension);
-  const storagePath = `messages/${ownerSegment}/${threadSegment}/${fileName}`;
+  const storagePath = buildTenantScopedStoragePath({
+    organizationId,
+    pathPrefix: `messages/${ownerSegment}/${threadSegment}`,
+    fileName,
+  });
 
   const { data, error } = await supabase.storage
     .from(CHAT_MEDIA_BUCKET)

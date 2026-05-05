@@ -3,8 +3,8 @@ import i18n from '../i18n';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Button } from './ui/button';
 import SignatureCanvas from 'react-signature-canvas';
-import { supabase } from '../lib/supabase';
 import { v4 as uuidv4 } from 'uuid';
+import { uploadFile } from '../utils/storageUpload';
 
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
@@ -46,22 +46,18 @@ const SignaturePadModal = ({
     try {
       const signatureImage = sigPad.current.getTrimmedCanvas().toDataURL('image/png');
       const blob = dataURLtoBlob(signatureImage);
-      const fileName = `signatures/${rentalId || 'general'}/${uuidv4()}.png`;
+      const signatureFile = new File([blob], `${uuidv4()}.png`, { type: 'image/png' });
+      const uploadResult = await uploadFile(signatureFile, {
+        bucket: 'rental-signatures',
+        pathPrefix: `signatures/${rentalId || 'general'}`,
+        fileName: `${uuidv4()}.png`,
+      });
 
-      const { data, error } = await supabase.storage
-        .from('rental-signatures')
-        .upload(fileName, blob, {
-          cacheControl: '3600',
-          upsert: false,
-        });
-
-      if (error) {
-        throw error;
+      if (!uploadResult?.success) {
+        throw new Error(uploadResult?.error || 'Failed to save signature');
       }
 
-      const { data: publicUrlData } = supabase.storage.from('rental-signatures').getPublicUrl(fileName);
-      
-      onSave(publicUrlData.publicUrl);
+      onSave(uploadResult.url);
       onClose();
     } catch (error) {
       console.error('Error saving signature:', error);

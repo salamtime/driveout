@@ -1,6 +1,11 @@
 // PackageService.js
 import { supabase } from '../lib/supabase';
 import { assertTenantFeatureEnabled } from './TenantLimitService';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  getCurrentOrganizationId,
+} from './OrganizationService';
 
 const isMissingFuelChargeColumnError = (error) =>
   error?.code === 'PGRST204' &&
@@ -15,6 +20,7 @@ const PackageService = {
       await assertTenantFeatureEnabled('pricing_km_packages', {
         message: 'Kilometer packages are not available on this plan.',
       });
+      const organizationId = await getCurrentOrganizationId();
       console.log('📦 PackageService.createPackage called with:', packageData);
       
       // Ensure all required fields are present and not null
@@ -29,7 +35,7 @@ const PackageService = {
         fuel_charge_enabled: packageData.fuel_charge_enabled === true,
         duration_units: packageData.duration_units ?? packageData.durationUnits ?? 1,
         is_active: packageData.is_active !== undefined ? packageData.is_active : true,
-        show_on_print: packageData.show_on_print === true || packageData.showOnPrint === true
+        show_on_print: packageData.show_on_print === true || packageData.showOnPrint === true,
       };
 
       // Fixed amount is always required. Kilometer fields are optional for unlimited packages.
@@ -41,7 +47,7 @@ const PackageService = {
 
       const { error } = await supabase
         .from('app_4c3a7a6153_rental_km_packages')
-        .insert([dataToInsert]);
+        .insert([applyOrganizationMatch(dataToInsert, organizationId)]);
 
       if (error) {
         console.error('❌ Supabase error:', error);
@@ -66,6 +72,7 @@ const PackageService = {
       await assertTenantFeatureEnabled('pricing_km_packages', {
         message: 'Kilometer packages are not available on this plan.',
       });
+      const organizationId = await getCurrentOrganizationId();
       console.log('📦 PackageService.updatePackage called with ID:', id, 'data:', packageData);
       
       const dataToUpdate = {
@@ -90,8 +97,9 @@ const PackageService = {
 
       const { error } = await supabase
         .from('app_4c3a7a6153_rental_km_packages')
-        .update(dataToUpdate)
-        .eq('id', id);
+        .update(applyOrganizationMatch(dataToUpdate, organizationId))
+        .eq('id', id)
+        .eq('organization_id', organizationId);
 
       if (error) {
         console.error('❌ Supabase error:', error);
@@ -113,13 +121,17 @@ const PackageService = {
 
   async getPackages() {
     try {
-      const { data, error } = await supabase
+      const organizationId = await getCurrentOrganizationId();
+      const { data, error } = await applyOrganizationScope(
+        supabase
         .from('app_4c3a7a6153_rental_km_packages')
         .select(`
           *,
           vehicle_model:saharax_0u4w4d_vehicle_models(*)
         `)
-        .order('id');
+        .order('id'),
+        organizationId
+      );
 
       if (error) throw error;
       return data || [];
@@ -164,10 +176,12 @@ const PackageService = {
       await assertTenantFeatureEnabled('pricing_km_packages', {
         message: 'Kilometer packages are not available on this plan.',
       });
+      const organizationId = await getCurrentOrganizationId();
       const { error } = await supabase
         .from('app_4c3a7a6153_rental_km_packages')
         .delete()
-        .eq('id', id);
+        .eq('id', id)
+        .eq('organization_id', organizationId);
 
       if (error) throw error;
       return true;

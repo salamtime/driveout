@@ -1,40 +1,14 @@
 // src/store/slices/paymentsSlice.js
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../utils/supabaseClient';
 import { updateBookingStatus } from './bookingsSlice';
+import PaymentService from '../../services/PaymentService';
 
 // Create a payment
 export const createPayment = createAsyncThunk(
   'payments/createPayment',
   async (paymentData, { rejectWithValue }) => {
     try {
-      // Ensure we have a user email
-      if (!paymentData.user_email) {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          paymentData.user_email = user.email;
-        } else {
-          throw new Error('User email is required for payment');
-        }
-      }
-
-      // Set initial payment status to 'processing'
-      const paymentRecord = {
-        ...paymentData,
-        status: paymentData.status || 'processing', // Default to processing if status not specified
-        created_at: new Date().toISOString()
-      };
-
-      // Insert payment record
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_payments')
-        .insert(paymentRecord)
-        .select()
-        .single();
-
-      if (error) throw new Error(error.message);
-
-      return data;
+      return await PaymentService.createPayment(paymentData);
     } catch (error) {
       return rejectWithValue(error.message);
     }
@@ -46,61 +20,9 @@ export const processPayment = createAsyncThunk(
   'payments/processPayment',
   async ({ paymentMethodId, bookingData }, { rejectWithValue, dispatch }) => {
     try {
-      // Create initial payment record
-      const paymentData = {
-        user_email: bookingData.user_email,
-        amount: bookingData.totalPrice,
-        currency: 'USD',
-        payment_method: 'card',
-        payment_method_id: paymentMethodId,
-        booking_id: bookingData.id || null,
-      };
+      const updatedPayment = await PaymentService.processPayment({ paymentMethodId, bookingData });
 
-      // Create payment record
-      const { data: payment, error } = await supabase
-        .from('saharax_0u4w4d_payments')
-        .insert(paymentData)
-        .select()
-        .single();
-
-      if (error) throw new Error(error.message);
-
-      // In a real implementation, you would process the payment through a server-side API
-      // Here we'll simulate a successful payment after a brief delay
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Update payment status to succeeded
-      const { data: updatedPayment, error: updateError } = await supabase
-        .from('saharax_0u4w4d_payments')
-        .update({ 
-          status: 'succeeded',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', payment.id)
-        .select()
-        .single();
-
-      if (updateError) throw new Error(updateError.message);
-
-      // If we have a booking ID, update the booking payment status
-      if (bookingData.id) {
-        // Determine booking type (rental or tour)
-        const bookingType = bookingData.type || 'rental'; // Default to rental if not specified
-        const tableName = bookingType === 'rental' ? 'saharax_0u4w4d_rental_bookings' : 'saharax_0u4w4d_tour_bookings';
-
-        // Update booking with payment information
-        const { error: bookingError } = await supabase
-          .from(tableName)
-          .update({ 
-            payment_status: 'paid',
-            payment_id: payment.id,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', bookingData.id);
-
-        if (bookingError) throw new Error(bookingError.message);
-
-        // Also update booking status in the Redux store
+      if (bookingData?.id) {
         dispatch(updateBookingStatus({ 
           id: bookingData.id, 
           status: 'confirmed',
@@ -120,18 +42,7 @@ export const updatePaymentStatus = createAsyncThunk(
   'payments/updatePaymentStatus',
   async ({ paymentId, status }, { rejectWithValue, dispatch, getState }) => {
     try {
-      // Update payment status
-      const { data: updatedPayment, error } = await supabase
-        .from('saharax_0u4w4d_payments')
-        .update({ 
-          status,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', paymentId)
-        .select()
-        .single();
-
-      if (error) throw new Error(error.message);
+      const updatedPayment = await PaymentService.updatePaymentStatus(paymentId, status);
 
       // If payment is associated with a booking, update booking status
       if (updatedPayment.booking_id) {
@@ -162,13 +73,12 @@ export const updatePaymentStatus = createAsyncThunk(
 
         // Update the booking payment status
         const tableName = bookingType === 'rental' ? 'saharax_0u4w4d_rental_bookings' : 'saharax_0u4w4d_tour_bookings';
-        await supabase
-          .from(tableName)
-          .update({ 
-            payment_status: bookingPaymentStatus,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', updatedPayment.booking_id);
+        await PaymentService.syncBookingPaymentStatus({
+          bookingId: updatedPayment.booking_id,
+          bookingType,
+          paymentId,
+          paymentStatus: bookingPaymentStatus,
+        });
 
         // Also update booking status in the Redux store if needed
         if (status === 'succeeded') {
@@ -192,27 +102,7 @@ export const fetchUserPayments = createAsyncThunk(
   'payments/fetchUserPayments',
   async (_, { rejectWithValue }) => {
     try {
-      // Get the current authenticated user
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        throw new Error('User not authenticated');
-      }
-
-      // Fetch payments for the user
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_payments')
-        .select(`
-          *,
-          saharax_0u4w4d_rental_bookings(*),
-          saharax_0u4w4d_tour_bookings(*)
-        `)
-        .eq('user_email', user.email)
-        .order('created_at', { ascending: false });
-
-      if (error) throw new Error(error.message);
-
-      return data || [];
+      return await PaymentService.getUserPayments();
     } catch (error) {
       return rejectWithValue(error.message);
     }
@@ -224,15 +114,7 @@ export const fetchBookingPayments = createAsyncThunk(
   'payments/fetchBookingPayments',
   async (bookingId, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_payments')
-        .select('*')
-        .eq('booking_id', bookingId)
-        .order('created_at', { ascending: false });
-
-      if (error) throw new Error(error.message);
-
-      return data || [];
+      return await PaymentService.getPaymentsByBookingId(bookingId);
     } catch (error) {
       return rejectWithValue(error.message);
     }
@@ -244,32 +126,10 @@ export const linkPaymentToBooking = createAsyncThunk(
   'payments/linkPaymentToBooking',
   async ({ paymentId, bookingId, bookingType = 'rental' }, { rejectWithValue, dispatch }) => {
     try {
-      // Update payment with booking ID
-      const { data: updatedPayment, error } = await supabase
-        .from('saharax_0u4w4d_payments')
-        .update({ 
-          booking_id: bookingId,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', paymentId)
-        .select()
-        .single();
-
-      if (error) throw new Error(error.message);
+      const updatedPayment = await PaymentService.linkPaymentToBookingWithType(paymentId, bookingId, bookingType);
 
       // Update booking with payment information if payment was successful
       if (updatedPayment.status === 'succeeded') {
-        const tableName = bookingType === 'rental' ? 'saharax_0u4w4d_rental_bookings' : 'saharax_0u4w4d_tour_bookings';
-        
-        await supabase
-          .from(tableName)
-          .update({ 
-            payment_status: 'paid',
-            payment_id: paymentId,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', bookingId);
-
         // Update booking status in Redux store
         dispatch(updateBookingStatus({ 
           id: bookingId, 

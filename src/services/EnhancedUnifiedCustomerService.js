@@ -1,7 +1,7 @@
 import { supabase } from '../lib/supabase.js';
 import { geminiVisionOCR } from './ocr/optimizedGeminiVisionOcr.js';
 import { buildApiUrl, GEMINI_PROXY_PATH } from './apiUrl.js';
-import { uploadFile } from '../utils/storageUpload.js';
+import { buildTenantScopedStoragePath, uploadFile } from '../utils/storageUpload.js';
 import { optimizeFileForUpload } from '../utils/storageUpload.js';
 import {
   mergeUniqueCustomersById,
@@ -9,6 +9,12 @@ import {
   pickBestExistingCustomerMatch,
   pickMostCompleteCustomerProfile,
 } from '../utils/customerIdentity.js';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  getCurrentOrganizationId,
+  requireCurrentOrganizationId,
+} from './OrganizationService.js';
 
 /**
  * EnhancedUnifiedCustomerService - Complete customer management with ID scanning integration
@@ -308,7 +314,12 @@ class EnhancedUnifiedCustomerService {
 
   async uploadPreparedOcrSourceImage(file, scanId, folder) {
     const cleanName = String(file?.name || 'document.webp').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const filePath = `${folder}/${scanId || Date.now()}_${cleanName}`;
+    const organizationId = await getCurrentOrganizationId();
+    const filePath = buildTenantScopedStoragePath({
+      organizationId,
+      pathPrefix: folder,
+      fileName: `${scanId || Date.now()}_${cleanName}`,
+    });
 
     const { data, error } = await supabase.storage
       .from('rental-documents')
@@ -1099,11 +1110,15 @@ class EnhancedUnifiedCustomerService {
     console.log('🔍 Fetching customer by ID:', customerId);
     
     try {
-      const { data, error } = await supabase
-        .from('app_4c3a7a6153_customers')
-        .select('*')
-        .eq('id', customerId)
-        .single();
+      const organizationId = await getCurrentOrganizationId();
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from('app_4c3a7a6153_customers')
+          .select('*')
+          .eq('id', customerId)
+          .single(),
+        organizationId
+      );
       
       if (error) {
         console.error('❌ Error fetching customer:', error);
@@ -1126,10 +1141,14 @@ class EnhancedUnifiedCustomerService {
     console.log('📋 Fetching all customers with filters:', filters);
     
     try {
-      let query = supabase
-        .from('app_4c3a7a6153_customers')
-        .select('*')
-        .order('created_at', { ascending: false });
+      const organizationId = await getCurrentOrganizationId();
+      let query = applyOrganizationScope(
+        supabase
+          .from('app_4c3a7a6153_customers')
+          .select('*')
+          .order('created_at', { ascending: false }),
+        organizationId
+      );
       
       // Apply filters
       if (filters.search) {
@@ -1163,10 +1182,12 @@ class EnhancedUnifiedCustomerService {
     console.log('🗑️ Deleting customer:', customerId);
     
     try {
+      const organizationId = await requireCurrentOrganizationId();
       const { error } = await supabase
         .from('app_4c3a7a6153_customers')
         .delete()
-        .eq('id', customerId);
+        .eq('id', customerId)
+        .eq('organization_id', organizationId);
       
       if (error) {
         console.error('❌ Error deleting customer:', error);
@@ -1190,10 +1211,12 @@ class EnhancedUnifiedCustomerService {
       return { success: true, message: 'No customers selected for deletion.' };
     }
     try {
+      const organizationId = await requireCurrentOrganizationId();
       const { data, error } = await supabase
         .from('app_4c3a7a6153_customers')
         .delete()
-        .in('id', customerIds);
+        .in('id', customerIds)
+        .eq('organization_id', organizationId);
 
       if (error) {
         console.error('Error during bulk customer deletion:', error);
@@ -1214,11 +1237,15 @@ class EnhancedUnifiedCustomerService {
     console.log('🔍 Searching customers with term:', searchTerm);
     
     try {
-      const { data, error } = await supabase
-        .from('app_4c3a7a6153_customers')
-        .select('*')
-        .or(`full_name.ilike.%${searchTerm}%,phone.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,licence_number.ilike.%${searchTerm}%,id_number.ilike.%${searchTerm}%`)
-        .order('created_at', { ascending: false });
+      const organizationId = await getCurrentOrganizationId();
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from('app_4c3a7a6153_customers')
+          .select('*')
+          .or(`full_name.ilike.%${searchTerm}%,phone.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,licence_number.ilike.%${searchTerm}%,id_number.ilike.%${searchTerm}%`)
+          .order('created_at', { ascending: false }),
+        organizationId
+      );
       
       if (error) {
         console.error('❌ Error searching customers:', error);
@@ -1241,11 +1268,15 @@ class EnhancedUnifiedCustomerService {
     console.log('🔍 Fetching customer by licence number:', licenceNumber);
     
     try {
-      const { data, error } = await supabase
-        .from('app_4c3a7a6153_customers')
-        .select('*')
-        .eq('licence_number', licenceNumber)
-        .single();
+      const organizationId = await getCurrentOrganizationId();
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from('app_4c3a7a6153_customers')
+          .select('*')
+          .eq('licence_number', licenceNumber)
+          .single(),
+        organizationId
+      );
       
       if (error) {
         if (error.code === 'PGRST116') {
@@ -1272,11 +1303,15 @@ class EnhancedUnifiedCustomerService {
     console.log('🔍 Fetching customer by ID number:', idNumber);
     
     try {
-      const { data, error } = await supabase
-        .from('app_4c3a7a6153_customers')
-        .select('*')
-        .eq('id_number', idNumber)
-        .single();
+      const organizationId = await getCurrentOrganizationId();
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from('app_4c3a7a6153_customers')
+          .select('*')
+          .eq('id_number', idNumber)
+          .single(),
+        organizationId
+      );
       
       if (error) {
         if (error.code === 'PGRST116') {
@@ -1303,11 +1338,15 @@ class EnhancedUnifiedCustomerService {
     console.log('🔍 DEBUG: Fetching customer record for debugging:', customerId);
     
     try {
-      const { data, error } = await supabase
-        .from('app_4c3a7a6153_customers')
-        .select('*')
-        .eq('id', customerId)
-        .single();
+      const organizationId = await getCurrentOrganizationId();
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from('app_4c3a7a6153_customers')
+          .select('*')
+          .eq('id', customerId)
+          .single(),
+        organizationId
+      );
       
       if (error) {
         console.error('❌ DEBUG: Error fetching customer:', error);
@@ -1489,15 +1528,19 @@ class EnhancedUnifiedCustomerService {
    */
   static async getCustomerRentalHistory(customerId) {
     try {
+      const organizationId = await getCurrentOrganizationId();
       // 1. Fetch rentals with a 'soft' join
-      const { data, error } = await supabase
-        .from(`app_4c3a7a6153_rentals`)
-        .select(`
-          *,
-          vehicle:saharax_0u4w4d_vehicles(name, plate_number)
-        `)
-        .eq('customer_id', customerId)
-        .order('created_at', { ascending: false });
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from(`app_4c3a7a6153_rentals`)
+          .select(`
+            *,
+            vehicle:saharax_0u4w4d_vehicles(name, plate_number)
+          `)
+          .eq('customer_id', customerId)
+          .order('created_at', { ascending: false }),
+        organizationId
+      );
 
       if (error) throw error;
 
@@ -1519,6 +1562,99 @@ class EnhancedUnifiedCustomerService {
       console.error('Rental History Error:', err);
       return { success: false, error: err.message };
     }
+  }
+
+  static async getLatestRentalByCustomerId(customerId) {
+    if (!customerId) return null;
+
+    const organizationId = await getCurrentOrganizationId();
+    const { data, error } = await applyOrganizationScope(
+      supabase
+        .from('app_4c3a7a6153_rentals')
+        .select('*')
+        .eq('customer_id', customerId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      organizationId
+    );
+
+    if (error) {
+      throw new Error(`Failed to fetch customer rental context: ${error.message}`);
+    }
+
+    return data || null;
+  }
+
+  static async findMatchingCustomers(criteria = {}) {
+    const organizationId = await getCurrentOrganizationId();
+    const fullName = String(criteria.full_name || criteria.fullName || '').trim();
+    const phone = String(criteria.phone || '').trim();
+    const email = String(criteria.email || '').trim();
+    const normalizedIdentity = normalizeCustomerIdentityFields({
+      licenceNumber: criteria.licence_number || criteria.licenceNumber,
+      idNumber: criteria.id_number || criteria.idNumber,
+    });
+
+    const runLookup = async (builder) => {
+      const { data, error } = await builder;
+      if (error) throw error;
+      return data || [];
+    };
+
+    const customerTable = supabase.from('app_4c3a7a6153_customers');
+    const exactMatchGroups = await Promise.all([
+      normalizedIdentity.idNumber
+        ? runLookup(applyOrganizationScope(customerTable.select('*').eq('id_number', normalizedIdentity.idNumber).limit(10), organizationId))
+        : Promise.resolve([]),
+      normalizedIdentity.licenceNumber
+        ? runLookup(applyOrganizationScope(customerTable.select('*').eq('licence_number', normalizedIdentity.licenceNumber).limit(10), organizationId))
+        : Promise.resolve([]),
+      phone
+        ? runLookup(applyOrganizationScope(customerTable.select('*').eq('phone', phone).limit(10), organizationId))
+        : Promise.resolve([]),
+      email
+        ? runLookup(applyOrganizationScope(customerTable.select('*').eq('email', email).limit(10), organizationId))
+        : Promise.resolve([]),
+    ]);
+
+    const exactMatches = mergeUniqueCustomersById(...exactMatchGroups);
+    if (exactMatches.length > 0) {
+      return exactMatches;
+    }
+
+    if (!fullName) return [];
+
+    const { data, error } = await applyOrganizationScope(
+      customerTable
+        .select('*')
+        .ilike('full_name', fullName)
+        .limit(5),
+      organizationId
+    );
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  static async updateCustomerById(customerId, updates = {}, select = '*') {
+    const organizationId = await requireCurrentOrganizationId();
+    const { data, error } = await supabase
+      .from('app_4c3a7a6153_customers')
+      .update({
+        ...applyOrganizationMatch({}, organizationId),
+        ...updates,
+      })
+      .eq('id', customerId)
+      .eq('organization_id', organizationId)
+      .select(select)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to update customer: ${error.message}`);
+    }
+
+    return data || null;
   }
 
 
@@ -1619,6 +1755,22 @@ class EnhancedUnifiedCustomerService {
    */
   // Export singleton instance (not the class)
 const enhancedUnifiedCustomerServiceInstance = new EnhancedUnifiedCustomerService();
+Object.assign(enhancedUnifiedCustomerServiceInstance, {
+  saveCustomer: (...args) => EnhancedUnifiedCustomerService.saveCustomer(...args),
+  processSequentialImageUpload: (...args) => EnhancedUnifiedCustomerService.processSequentialImageUpload(...args),
+  getCustomerById: (...args) => EnhancedUnifiedCustomerService.getCustomerById(...args),
+  getAllCustomers: (...args) => EnhancedUnifiedCustomerService.getAllCustomers(...args),
+  deleteCustomer: (...args) => EnhancedUnifiedCustomerService.deleteCustomer(...args),
+  deleteCustomers: (...args) => EnhancedUnifiedCustomerService.deleteCustomers(...args),
+  searchCustomers: (...args) => EnhancedUnifiedCustomerService.searchCustomers(...args),
+  getCustomerByLicenceNumber: (...args) => EnhancedUnifiedCustomerService.getCustomerByLicenceNumber(...args),
+  getCustomerByIdNumber: (...args) => EnhancedUnifiedCustomerService.getCustomerByIdNumber(...args),
+  checkCustomerRentalHistory: (...args) => EnhancedUnifiedCustomerService.checkCustomerRentalHistory(...args),
+  getCustomerRentalHistory: (...args) => EnhancedUnifiedCustomerService.getCustomerRentalHistory(...args),
+  getLatestRentalByCustomerId: (...args) => EnhancedUnifiedCustomerService.getLatestRentalByCustomerId(...args),
+  findMatchingCustomers: (...args) => EnhancedUnifiedCustomerService.findMatchingCustomers(...args),
+  updateCustomerById: (...args) => EnhancedUnifiedCustomerService.updateCustomerById(...args),
+});
 export default enhancedUnifiedCustomerServiceInstance;
 
 export const saveCustomer = (...args) => EnhancedUnifiedCustomerService.saveCustomer(...args);
@@ -1634,3 +1786,6 @@ export const debugCustomerRecord = (...args) => EnhancedUnifiedCustomerService.d
 export const runDiagnostics = (...args) => EnhancedUnifiedCustomerService.runDiagnostics(...args);
 export const checkCustomerRentalHistory = (...args) => EnhancedUnifiedCustomerService.checkCustomerRentalHistory(...args);
 export const getCustomerRentalHistory = (...args) => EnhancedUnifiedCustomerService.getCustomerRentalHistory(...args);
+export const getLatestRentalByCustomerId = (...args) => EnhancedUnifiedCustomerService.getLatestRentalByCustomerId(...args);
+export const findMatchingCustomers = (...args) => EnhancedUnifiedCustomerService.findMatchingCustomers(...args);
+export const updateCustomerById = (...args) => EnhancedUnifiedCustomerService.updateCustomerById(...args);

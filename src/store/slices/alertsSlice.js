@@ -1,5 +1,5 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../utils/supabaseClient';
+import WorkspaceAlertsService from '../../services/WorkspaceAlertsService';
 
 // Initial state
 const initialState = {
@@ -14,13 +14,7 @@ export const fetchAlerts = createAsyncThunk(
   'alerts/fetchAlerts',
   async (_, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from('app_3c652a5149_alerts')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data;
+      return await WorkspaceAlertsService.getAlerts();
     } catch (err) {
       return rejectWithValue(err.message);
     }
@@ -31,15 +25,7 @@ export const markAlertAsRead = createAsyncThunk(
   'alerts/markAlertAsRead',
   async (alertId, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from('app_3c652a5149_alerts')
-        .update({ is_read: true, read_at: new Date().toISOString() })
-        .eq('id', alertId)
-        .select('*')
-        .single();
-
-      if (error) throw error;
-      return data;
+      return await WorkspaceAlertsService.markAlertAsRead(alertId);
     } catch (err) {
       return rejectWithValue(err.message);
     }
@@ -50,14 +36,7 @@ export const markAllAlertsAsRead = createAsyncThunk(
   'alerts/markAllAlertsAsRead',
   async (_, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from('app_3c652a5149_alerts')
-        .update({ is_read: true, read_at: new Date().toISOString() })
-        .eq('is_read', false)
-        .select('*');
-
-      if (error) throw error;
-      return data;
+      return await WorkspaceAlertsService.markAllAlertsAsRead();
     } catch (err) {
       return rejectWithValue(err.message);
     }
@@ -68,14 +47,7 @@ export const createAlert = createAsyncThunk(
   'alerts/createAlert',
   async (alertData, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from('app_3c652a5149_alerts')
-        .insert([alertData])
-        .select('*')
-        .single();
-
-      if (error) throw error;
-      return data;
+      return await WorkspaceAlertsService.createAlert(alertData);
     } catch (err) {
       return rejectWithValue(err.message);
     }
@@ -86,36 +58,18 @@ export const createAlert = createAsyncThunk(
 export const setupAlertsRealtimeSubscription = createAsyncThunk(
   'alerts/setupRealtimeSubscription',
   async (_, { dispatch }) => {
-    const subscription = supabase
-      .channel('alerts-channel')
-      .on('postgres_changes', 
-        { 
-          event: 'INSERT', 
-          schema: 'public', 
-          table: 'app_3c652a5149_alerts' 
-        }, 
-        (payload) => {
-          // Update the redux store
-          dispatch(alertAdded(payload.new));
-          
-          // Dispatch a custom event for components to listen to
-          const event = new CustomEvent('supabase:alert-insert', { 
-            detail: payload.new 
-          });
-          document.dispatchEvent(event);
-        }
-      )
-      .on('postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'app_3c652a5149_alerts'
-        },
-        (payload) => {
-          dispatch(alertUpdated(payload.new));
-        }
-      )
-      .subscribe();
+    const subscription = await WorkspaceAlertsService.subscribe({
+      onInsert: (row) => {
+        dispatch(alertAdded(row));
+        const event = new CustomEvent('supabase:alert-insert', {
+          detail: row,
+        });
+        document.dispatchEvent(event);
+      },
+      onUpdate: (row) => {
+        dispatch(alertUpdated(row));
+      },
+    });
 
     return subscription;
   }

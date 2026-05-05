@@ -50,6 +50,8 @@ export const buildTenantWorkspaceBootstrap = ({
 } = {}) => {
   const planType = normalizeTenantPlanType(subscription?.plan_type || subscription?.planType || 'starter');
   const limits = getTenantPlanLimits(planType);
+  const tenancyMode = tenant?.tenancy_mode || tenant?.tenancyMode || 'shared';
+  const isDedicated = String(tenancyMode).trim().toLowerCase() === 'dedicated';
 
   return {
     tenantId: tenant?.id || null,
@@ -57,10 +59,17 @@ export const buildTenantWorkspaceBootstrap = ({
     tenantName: tenant?.tenant_name || tenant?.tenantName || '',
     tenantSlug: tenant?.tenant_slug || tenant?.tenantSlug || '',
     tenantStatus: tenant?.tenant_status || tenant?.tenantStatus || 'provisioning',
+    tenancyMode,
+    organizationId: tenant?.organization_id || tenant?.organizationId || null,
+    organizationSlug: tenant?.organization_slug || tenant?.organizationSlug || '',
+    legacyDedicatedInfrastructure:
+      tenant?.legacy_dedicated_infrastructure ||
+      tenant?.legacyDedicatedInfrastructure ||
+      null,
     tenantAppUrl: tenant?.tenant_app_url || tenant?.tenantAppUrl || '',
-    tenantApiUrl: tenant?.tenant_api_url || tenant?.tenantApiUrl || '',
-    tenantProjectRef: tenant?.tenant_project_ref || tenant?.tenantProjectRef || '',
-    tenantDatabaseName: tenant?.tenant_database_name || tenant?.tenantDatabaseName || '',
+    tenantApiUrl: isDedicated ? (tenant?.tenant_api_url || tenant?.tenantApiUrl || '') : '',
+    tenantProjectRef: isDedicated ? (tenant?.tenant_project_ref || tenant?.tenantProjectRef || '') : '',
+    tenantDatabaseName: isDedicated ? (tenant?.tenant_database_name || tenant?.tenantDatabaseName || '') : '',
     schemaVersion: tenant?.schema_version || tenant?.schemaVersion || '',
     planType,
     subscriptionStatus: subscription?.subscription_status || subscription?.subscriptionStatus || 'trial',

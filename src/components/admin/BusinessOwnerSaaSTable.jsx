@@ -134,6 +134,9 @@ const PlanSelector = ({ currentPlan, onChange, disabled }) => {
   );
 };
 
+const resolveTenancyMode = (row) =>
+  String(row?.tenancy_mode || row?.metadata?.tenancy_mode || 'shared').trim().toLowerCase() || 'shared';
+
 const buildProvisioningDraft = (row) => ({
   tenant_project_ref: row?.tenant_project_ref || '',
   tenant_app_url: row?.tenant_app_url || '',
@@ -145,7 +148,10 @@ const buildProvisioningDraft = (row) => ({
   error_message: row?.provisioning_job_error || '',
 });
 
-const getProvisioningMissingFields = (draft = {}) => {
+const getProvisioningMissingFields = (draft = {}, tenancyMode = 'shared') => {
+  if (tenancyMode !== 'dedicated') {
+    return [];
+  }
   const missing = [];
   if (!String(draft?.tenant_project_ref || '').trim()) missing.push('tenant_project_ref');
   if (!String(draft?.tenant_app_url || '').trim()) missing.push('tenant_app_url');
@@ -234,11 +240,14 @@ const BusinessOwnerSaaSTable = ({
               const tenantStatus = String(row?.tenant_status || '').toLowerCase();
               const provisioningJobStatus = String(row?.provisioning_job_status || '').toLowerCase();
               const provisioningDraft = provisioningDrafts[row.id] || buildProvisioningDraft(row);
+              const tenancyMode = resolveTenancyMode(row);
+              const isDedicatedTenant = tenancyMode === 'dedicated';
               const isTenantActive = tenantStatus === 'active';
               const manualProvisioningOpen = manualProvisioningRowId === row.id;
-              const missingProvisioningFields = getProvisioningMissingFields(provisioningDraft);
+              const missingProvisioningFields = getProvisioningMissingFields(provisioningDraft, tenancyMode);
               const canCompleteProvisioning =
                 !busyAction &&
+                isDedicatedTenant &&
                 Boolean(row?.provisioning_job_id) &&
                 !isTenantActive &&
                 missingProvisioningFields.length === 0;
@@ -391,7 +400,10 @@ const BusinessOwnerSaaSTable = ({
                                     <div className="mt-1 text-sm font-semibold text-slate-900">{provisioningJobStatus || 'queued'}</div>
                                   </div>
                                 </div>
-                                {row?.tenant_project_ref ? (
+                                <div className="mt-3 text-xs text-slate-500">
+                                  {isFrench ? 'Mode' : 'Mode'}: <span className="font-medium text-slate-700">{isDedicatedTenant ? 'dedicated' : 'shared'}</span>
+                                </div>
+                                {isDedicatedTenant && row?.tenant_project_ref ? (
                                   <div className="mt-3 text-xs text-slate-500">
                                     {isFrench ? 'Projet' : 'Project'}: <span className="font-medium text-slate-700">{row.tenant_project_ref}</span>
                                   </div>
@@ -408,8 +420,12 @@ const BusinessOwnerSaaSTable = ({
                                         ? 'Le worker de provisionnement prépare cet espace automatiquement.'
                                         : 'The provisioning worker is preparing this workspace automatically.')
                                       : (isFrench
-                                        ? 'Démarrez le job automatique. Les champs techniques sont réservés au fallback d’urgence.'
-                                        : 'Start the automatic job. Technical fields are reserved for emergency fallback only.')}
+                                        ? (isDedicatedTenant
+                                          ? 'Démarrez le job automatique. Les champs techniques sont réservés au fallback d’urgence.'
+                                          : 'Démarrez le job automatique. Les tenants partagés héritent du runtime partagé et ne demandent pas de clés projet dédiées.')
+                                        : (isDedicatedTenant
+                                          ? 'Start the automatic job. Technical fields are reserved for emergency fallback only.'
+                                          : 'Start the automatic job. Shared tenants inherit the shared runtime and do not require dedicated project credentials.'))}
                                   </div>
                                 ) : null}
                               </div>
@@ -429,18 +445,20 @@ const BusinessOwnerSaaSTable = ({
                                           : (isFrench ? 'Démarrer automatiquement' : 'Start automatic provisioning')}
                                       </button>
                                     ) : null}
-                                    <button
-                                      type="button"
-                                      onClick={() => setManualProvisioningRowId(manualProvisioningOpen ? null : row.id)}
-                                      className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold uppercase tracking-[0.14em] text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
-                                    >
-                                      {manualProvisioningOpen
-                                        ? (isFrench ? 'Masquer activation d’urgence' : 'Hide emergency activation')
-                                        : (isFrench ? 'Activation manuelle d’urgence' : 'Emergency manual activation')}
-                                    </button>
+                                    {isDedicatedTenant ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => setManualProvisioningRowId(manualProvisioningOpen ? null : row.id)}
+                                        className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold uppercase tracking-[0.14em] text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
+                                      >
+                                        {manualProvisioningOpen
+                                          ? (isFrench ? 'Masquer activation d’urgence' : 'Hide emergency activation')
+                                          : (isFrench ? 'Activation manuelle d’urgence' : 'Emergency manual activation')}
+                                      </button>
+                                    ) : null}
                                   </div>
 
-                                  {manualProvisioningOpen ? (
+                                  {manualProvisioningOpen && isDedicatedTenant ? (
                                     <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50/70 p-3">
                                       <p className="text-xs font-semibold leading-5 text-amber-800">
                                         {isFrench
@@ -520,7 +538,7 @@ const BusinessOwnerSaaSTable = ({
                                     </div>
                                   ) : null}
 
-                                  {manualProvisioningOpen ? (
+                                  {manualProvisioningOpen && isDedicatedTenant ? (
                                     <div className="grid gap-2">
                                     <button
                                       type="button"

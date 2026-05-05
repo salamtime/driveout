@@ -1,28 +1,14 @@
 // src/store/slices/maintenanceSlice.js
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../utils/supabaseClient';
 import { addNotification } from './notificationsSlice';
-
-// Table name for maintenance records
-const MAINTENANCE_TABLE = 'saharax_0u4w4d_maintenance';
-const PARTS_TABLE = 'saharax_0u4w4d_maintenance_parts';
+import MaintenanceTrackingService from '../../services/MaintenanceTrackingService';
 
 // Fetch all maintenance records with related data
 export const fetchMaintenanceRecords = createAsyncThunk(
   'maintenance/fetchRecords',
   async (_, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from(MAINTENANCE_TABLE)
-        .select(`
-          *,
-          vehicle:vehicle_id(id, name, model, image_url),
-          parts:${PARTS_TABLE}(*)
-        `)
-        .order('date', { ascending: false });
-
-      if (error) throw error;
-      return data;
+      return await MaintenanceTrackingService.getAllMaintenanceRecords();
     } catch (error) {
       console.error('Error fetching maintenance records:', error);
       return rejectWithValue(error.message || 'Failed to fetch maintenance records');
@@ -35,18 +21,7 @@ export const fetchMaintenanceRecordById = createAsyncThunk(
   'maintenance/fetchRecordById',
   async (recordId, { rejectWithValue }) => {
     try {
-      const { data, error } = await supabase
-        .from(MAINTENANCE_TABLE)
-        .select(`
-          *,
-          vehicle:vehicle_id(id, name, model, image_url),
-          parts:${PARTS_TABLE}(*)
-        `)
-        .eq('id', recordId)
-        .single();
-
-      if (error) throw error;
-      return data;
+      return await MaintenanceTrackingService.getMaintenanceById(recordId);
     } catch (error) {
       console.error('Error fetching maintenance record:', error);
       return rejectWithValue(error.message || 'Failed to fetch maintenance record');
@@ -59,76 +34,15 @@ export const createMaintenanceRecord = createAsyncThunk(
   'maintenance/createRecord',
   async (recordData, { rejectWithValue, dispatch }) => {
     try {
-      // Extract parts data to be inserted separately
-      const { parts, ...maintenanceData } = recordData;
-      
-      // Get the current user's email for RLS policies
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Authentication required');
-      
-      // Format data for Supabase
-      const formattedData = {
-        vehicle_id: maintenanceData.vehicleId,
-        date: maintenanceData.date,
-        type: maintenanceData.type,
-        status: maintenanceData.status,
-        description: maintenanceData.description,
-        details: maintenanceData.details,
-        technician: maintenanceData.technician,
-        technician_id: maintenanceData.technicianId,
-        odometer_reading: maintenanceData.odometerReading,
-        next_service: maintenanceData.nextService,
-        invoice_number: maintenanceData.invoiceNumber,
-        notes: maintenanceData.notes,
-        user_email: user.email,
-      };
-
-      // Insert maintenance record
-      const { data: maintenanceRecord, error: maintenanceError } = await supabase
-        .from(MAINTENANCE_TABLE)
-        .insert(formattedData)
-        .select()
-        .single();
-
-      if (maintenanceError) throw maintenanceError;
-
-      // If parts are provided, insert them linked to the maintenance record
-      if (parts && parts.length > 0) {
-        const partsToInsert = parts.map(part => ({
-          maintenance_id: maintenanceRecord.id,
-          name: part.name,
-          quantity: part.quantity,
-          unit_cost: part.unit_cost,
-          total_cost: part.total_cost,
-        }));
-
-        const { error: partsError } = await supabase
-          .from(PARTS_TABLE)
-          .insert(partsToInsert);
-
-        if (partsError) throw partsError;
-      }
-
-      // Fetch the complete record with parts and vehicle info
-      const { data: completeRecord, error: fetchError } = await supabase
-        .from(MAINTENANCE_TABLE)
-        .select(`
-          *,
-          vehicle:vehicle_id(id, name, model, image_url),
-          parts:${PARTS_TABLE}(*)
-        `)
-        .eq('id', maintenanceRecord.id)
-        .single();
-
-      if (fetchError) throw fetchError;
+      const completeRecord = await MaintenanceTrackingService.createMaintenanceRecord(recordData);
       
       // If this is a completed record, add alert about the completion
-      if (formattedData.status === 'completed') {
+      if (recordData?.status === 'completed') {
         const vehicleName = completeRecord.vehicle?.name || 'Vehicle';
         
         dispatch(addNotification({
           type: 'info',
-          message: `Maintenance completed: ${formattedData.description} for ${vehicleName}`,
+          message: `Maintenance completed: ${completeRecord.description} for ${vehicleName}`,
           details: `Maintenance record #${completeRecord.id} has been marked as completed`,
           link: `/admin/maintenance?id=${completeRecord.id}`
         }));
@@ -147,63 +61,11 @@ export const updateMaintenanceRecord = createAsyncThunk(
   'maintenance/updateRecord',
   async ({ recordId, updates }, { rejectWithValue, dispatch, getState }) => {
     try {
-      // Extract parts data to be updated separately
-      const { parts, ...maintenanceUpdates } = updates;
-
-      // Update the maintenance record
-      const { data: updatedRecord, error: updateError } = await supabase
-        .from(MAINTENANCE_TABLE)
-        .update(maintenanceUpdates)
-        .eq('id', recordId)
-        .select()
-        .single();
-
-      if (updateError) throw updateError;
-
-      // If parts are included, handle them
-      if (parts && Array.isArray(parts)) {
-        // First, delete existing parts for this maintenance record
-        const { error: deleteError } = await supabase
-          .from(PARTS_TABLE)
-          .delete()
-          .eq('maintenance_id', recordId);
-
-        if (deleteError) throw deleteError;
-
-        // Then insert the new parts
-        if (parts.length > 0) {
-          const partsToInsert = parts.map(part => ({
-            maintenance_id: recordId,
-            name: part.name,
-            quantity: part.quantity,
-            unit_cost: part.unit_cost,
-            total_cost: part.total_cost,
-          }));
-
-          const { error: insertError } = await supabase
-            .from(PARTS_TABLE)
-            .insert(partsToInsert);
-
-          if (insertError) throw insertError;
-        }
-      }
-
-      // Fetch the complete updated record with parts and vehicle info
-      const { data: completeRecord, error: fetchError } = await supabase
-        .from(MAINTENANCE_TABLE)
-        .select(`
-          *,
-          vehicle:vehicle_id(id, name, model, image_url),
-          parts:${PARTS_TABLE}(*)
-        `)
-        .eq('id', recordId)
-        .single();
-
-      if (fetchError) throw fetchError;
+      const completeRecord = await MaintenanceTrackingService.updateMaintenanceRecord(recordId, updates);
       
       // If the status changed to 'completed', add an alert
       const previousRecord = getState().maintenance.records.find(r => r.id === recordId);
-      if (previousRecord && previousRecord.status !== 'completed' && maintenanceUpdates.status === 'completed') {
+      if (previousRecord && previousRecord.status !== 'completed' && updates.status === 'completed') {
         const vehicleName = completeRecord.vehicle?.name || 'Vehicle';
         
         dispatch(addNotification({
@@ -227,22 +89,7 @@ export const deleteMaintenanceRecord = createAsyncThunk(
   'maintenance/deleteRecord',
   async (recordId, { rejectWithValue }) => {
     try {
-      // Delete the parts first (due to foreign key constraints)
-      const { error: partsError } = await supabase
-        .from(PARTS_TABLE)
-        .delete()
-        .eq('maintenance_id', recordId);
-
-      if (partsError) throw partsError;
-
-      // Then delete the maintenance record
-      const { error: maintenanceError } = await supabase
-        .from(MAINTENANCE_TABLE)
-        .delete()
-        .eq('id', recordId);
-
-      if (maintenanceError) throw maintenanceError;
-
+      await MaintenanceTrackingService.deleteMaintenanceRecord(recordId);
       return recordId;
     } catch (error) {
       console.error('Error deleting maintenance record:', error);

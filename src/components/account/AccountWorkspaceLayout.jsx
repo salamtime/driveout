@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { ChevronRight, LogOut, Menu, X } from 'lucide-react';
 import i18n from '../../i18n';
+import { normalizeTenantPlanType } from '../../config/tenantPlans';
 import {
   ACCOUNT_WORKSPACE_MODES,
   getAccountWorkspaceSectionByPath,
@@ -20,6 +21,11 @@ import BusinessMarketplaceService from '../../services/BusinessMarketplaceServic
 import CustomerExperienceService from '../../services/CustomerExperienceService';
 import VerificationService from '../../services/VerificationService';
 import { getCurrentLocationPath } from '../../utils/navigationReturn';
+import { getHostContext } from '../../utils/hostContext';
+import {
+  buildTenantEffectiveFeatureAccess,
+  isTenantModuleEnabled,
+} from '../../utils/tenantFeatureAccess';
 
 const SAHARAX_LOGO_SRC = '/assets/logo.jpg';
 const WEBSITE_HOME_HREF = '/website';
@@ -73,11 +79,12 @@ const AccountWorkspaceLayout = () => {
       return false;
     }
   });
-  const { user, userProfile, signOut, getBusinessOwnerHomePath } = useAuth();
+  const { user, userProfile, signOut, getBusinessOwnerHomePath, tenantSession } = useAuth();
   const { setLanguage } = useLanguageContext();
   const tr = (en, fr) => (isFrench ? fr : en);
   const activeLanguage = i18n.resolvedLanguage === 'fr' ? 'fr' : 'en';
   const [dbOwnerVehicleCount, setDbOwnerVehicleCount] = useState(0);
+  const hostContext = useMemo(() => getHostContext(), []);
 
   const normalizedRole = String(userProfile?.role || '').toLowerCase();
   const normalizedEmail = String(userProfile?.email || user?.email || '').toLowerCase();
@@ -152,9 +159,51 @@ const AccountWorkspaceLayout = () => {
     : effectiveOwnerVehicleCount > 0
       ? ACCOUNT_WORKSPACE_MODES.owner
       : ACCOUNT_WORKSPACE_MODES.ownerSetup;
+  const tenantPlanType = useMemo(
+    () => normalizeTenantPlanType(
+      tenantSession?.subscription?.plan_type ||
+      tenantSession?.planType ||
+      userProfile?.planType ||
+      'starter'
+    ),
+    [tenantSession?.planType, tenantSession?.subscription?.plan_type, userProfile?.planType]
+  );
+  const tenantFeatureAccess = useMemo(() => {
+    const rawFeatureAccess =
+      tenantSession?.effectiveFeatureAccess && typeof tenantSession.effectiveFeatureAccess === 'object'
+        ? tenantSession.effectiveFeatureAccess
+        : tenantSession?.tenant?.metadata?.effective_feature_access && typeof tenantSession.tenant.metadata.effective_feature_access === 'object'
+          ? tenantSession.tenant.metadata.effective_feature_access
+          : tenantSession?.featureAccess && typeof tenantSession.featureAccess === 'object'
+            ? tenantSession.featureAccess
+            : tenantSession?.tenant?.metadata?.feature_access && typeof tenantSession.tenant.metadata.feature_access === 'object'
+              ? tenantSession.tenant.metadata.feature_access
+              : {};
+
+    return buildTenantEffectiveFeatureAccess(tenantPlanType, rawFeatureAccess);
+  }, [
+    tenantPlanType,
+    tenantSession?.effectiveFeatureAccess,
+    tenantSession?.featureAccess,
+    tenantSession?.tenant?.metadata?.effective_feature_access,
+    tenantSession?.tenant?.metadata?.feature_access,
+  ]);
+  const shouldApplyTenantModuleFiltering =
+    managedAccountType === 'business_owner' || hostContext.kind === 'tenant';
   const visibleSections = useMemo(
-    () => getAccountWorkspaceSectionsForMode(workspaceMode),
-    [workspaceMode]
+    () =>
+      getAccountWorkspaceSectionsForMode(workspaceMode).filter((section) => {
+        if (!section?.moduleName) {
+          return true;
+        }
+
+        if (!shouldApplyTenantModuleFiltering) {
+          return true;
+        }
+
+        return isTenantModuleEnabled(section.moduleName, tenantFeatureAccess, tenantPlanType);
+      }),
+    [shouldApplyTenantModuleFiltering, tenantFeatureAccess, tenantPlanType, workspaceMode]
   );
   const matchedSection = useMemo(
     () => getAccountWorkspaceSectionByPath(location.pathname),

@@ -215,6 +215,13 @@ const mergeCustomersWithRecoveredAuthAccounts = (customers, authUsers) => {
 };
 
 const buildProvisioningPayload = (payload = {}) => {
+  const tenancyMode = String(
+    payload?.tenancy_mode ||
+    payload?.tenancyMode ||
+    payload?.tenant?.tenancy_mode ||
+    payload?.tenant?.tenancyMode ||
+    'shared'
+  ).trim().toLowerCase();
   const tenantProjectRef = String(payload?.tenant_project_ref || '').trim();
   const tenantAppUrl = normalizeUrl(payload?.tenant_app_url || '');
   const tenantApiUrl = normalizeUrl(
@@ -226,15 +233,27 @@ const buildProvisioningPayload = (payload = {}) => {
   const schemaVersion = String(payload?.schema_version || 'v1').trim() || 'v1';
 
   return {
-    tenant_project_ref: tenantProjectRef,
+    tenancy_mode: tenancyMode,
+    tenant_project_ref: tenancyMode === 'dedicated' ? tenantProjectRef : '',
     tenant_app_url: tenantAppUrl,
-    tenant_api_url: tenantApiUrl,
-    tenant_anon_key: tenantAnonKey,
+    tenant_api_url: tenancyMode === 'dedicated' ? tenantApiUrl : '',
+    tenant_anon_key: tenancyMode === 'dedicated' ? tenantAnonKey : '',
     tenant_database_name: tenantDatabaseName,
     tenant_service_role_secret_ref: tenantServiceRoleSecretRef,
     schema_version: schemaVersion,
   };
 };
+
+const resolveCustomerTenancyMode = (customer, tenant = null) =>
+  String(
+    tenant?.tenancy_mode ||
+    tenant?.tenancyMode ||
+    customer?.tenancy_mode ||
+    customer?.tenancyMode ||
+    customer?.scan_metadata?.tenancy_mode ||
+    customer?.scan_metadata?.tenancyMode ||
+    'shared'
+  ).trim().toLowerCase();
 
 const buildCustomerRowFromBusinessRegistry = (registryEntry) => {
   const businessAccount = registryEntry?.business_account || {};
@@ -545,14 +564,17 @@ const applyBusinessOwnerProvisioningStateToCustomer = (customer, provisioning = 
   const tenant = provisioning?.tenant || {};
   const provisioningJob = provisioning?.provisioningJob || provisioning?.job || {};
   const businessAccount = provisioning?.businessAccount || {};
+  const tenancyMode = resolveCustomerTenancyMode(customer, tenant);
+  const dedicatedInfrastructure = tenancyMode === 'dedicated';
 
   return {
     ...customer,
+    tenancy_mode: tenancyMode,
     tenant_status: tenant?.tenant_status || customer?.tenant_status || null,
     tenant_app_url: tenant?.tenant_app_url || customer?.tenant_app_url || null,
-    tenant_api_url: tenant?.tenant_api_url || customer?.tenant_api_url || null,
-    tenant_project_ref: tenant?.tenant_project_ref || customer?.tenant_project_ref || null,
-    tenant_database_name: tenant?.tenant_database_name || customer?.tenant_database_name || null,
+    tenant_api_url: dedicatedInfrastructure ? (tenant?.tenant_api_url || customer?.tenant_api_url || null) : null,
+    tenant_project_ref: dedicatedInfrastructure ? (tenant?.tenant_project_ref || customer?.tenant_project_ref || null) : null,
+    tenant_database_name: dedicatedInfrastructure ? (tenant?.tenant_database_name || customer?.tenant_database_name || null) : null,
     tenant_schema_version: tenant?.schema_version || customer?.tenant_schema_version || null,
     platform_business_account_id: businessAccount?.id || customer?.platform_business_account_id || null,
     provisioning_job_id: provisioningJob?.id || customer?.provisioning_job_id || null,
@@ -561,12 +583,13 @@ const applyBusinessOwnerProvisioningStateToCustomer = (customer, provisioning = 
     provisioning_job_type: provisioningJob?.job_type || customer?.provisioning_job_type || null,
     scan_metadata: {
       ...(customer?.scan_metadata || {}),
+      tenancy_mode: tenancyMode,
       platform_business_account_id: businessAccount?.id || customer?.scan_metadata?.platform_business_account_id || null,
       tenant_status: tenant?.tenant_status || customer?.scan_metadata?.tenant_status || null,
       tenant_app_url: tenant?.tenant_app_url || customer?.scan_metadata?.tenant_app_url || null,
-      tenant_api_url: tenant?.tenant_api_url || customer?.scan_metadata?.tenant_api_url || null,
-      tenant_project_ref: tenant?.tenant_project_ref || customer?.scan_metadata?.tenant_project_ref || null,
-      tenant_database_name: tenant?.tenant_database_name || customer?.scan_metadata?.tenant_database_name || null,
+      tenant_api_url: dedicatedInfrastructure ? (tenant?.tenant_api_url || customer?.scan_metadata?.tenant_api_url || null) : null,
+      tenant_project_ref: dedicatedInfrastructure ? (tenant?.tenant_project_ref || customer?.scan_metadata?.tenant_project_ref || null) : null,
+      tenant_database_name: dedicatedInfrastructure ? (tenant?.tenant_database_name || customer?.scan_metadata?.tenant_database_name || null) : null,
       tenant_schema_version: tenant?.schema_version || customer?.scan_metadata?.tenant_schema_version || null,
       provisioning_job_id: provisioningJob?.id || customer?.scan_metadata?.provisioning_job_id || null,
       provisioning_job_status: provisioningJob?.job_status || customer?.scan_metadata?.provisioning_job_status || null,
@@ -3487,13 +3510,18 @@ const CustomerManagementDashboard = () => {
       return;
     }
 
-    const normalizedPayload = buildProvisioningPayload(payload);
-    const missingFields = [
-      ['tenant_project_ref', normalizedPayload.tenant_project_ref],
-      ['tenant_app_url', normalizedPayload.tenant_app_url],
-      ['tenant_api_url', normalizedPayload.tenant_api_url],
-      ['tenant_anon_key', normalizedPayload.tenant_anon_key],
-    ].filter(([, value]) => !String(value || '').trim());
+    const normalizedPayload = buildProvisioningPayload({
+      ...payload,
+      tenancy_mode: resolveCustomerTenancyMode(customer),
+    });
+    const missingFields = resolveCustomerTenancyMode(customer) === 'dedicated'
+      ? [
+          ['tenant_project_ref', normalizedPayload.tenant_project_ref],
+          ['tenant_app_url', normalizedPayload.tenant_app_url],
+          ['tenant_api_url', normalizedPayload.tenant_api_url],
+          ['tenant_anon_key', normalizedPayload.tenant_anon_key],
+        ].filter(([, value]) => !String(value || '').trim())
+      : [];
 
     if (missingFields.length > 0) {
       const fieldLabels = missingFields.map(([field]) => {
@@ -4973,8 +5001,8 @@ const CustomerManagementDashboard = () => {
             />
           </div>
         ) : !isMobile ? (
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)]">
-            <div className="overflow-x-auto">
+          <div className="relative overflow-visible rounded-2xl border border-slate-200 bg-white shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)]">
+            <div className="overflow-x-auto overflow-y-visible">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-slate-50">
                   <tr>

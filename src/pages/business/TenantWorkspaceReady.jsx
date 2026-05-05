@@ -65,6 +65,14 @@ const TenantWorkspaceReady = () => {
   }, [navigate]);
 
   const launchUrl = useMemo(() => getTenantWorkspaceLaunchUrl(tenantSession), [tenantSession]);
+  const tenancyMode = tenantSession?.tenancyMode || 'shared';
+  const isDedicated = tenancyMode === 'dedicated';
+  const infrastructureLabel = isDedicated
+    ? tr('Project reference', 'Référence projet')
+    : tr('Organization slug', "Slug d'organisation");
+  const infrastructureValue = isDedicated
+    ? tenantSession?.legacyDedicatedInfrastructure?.projectRef || tenantSession?.tenantProjectRef || '—'
+    : tenantSession?.organizationSlug || '—';
 
   useEffect(() => {
     if (!launchUrl) return undefined;
@@ -84,7 +92,9 @@ const TenantWorkspaceReady = () => {
         <div className="text-center">
           <div className="text-4xl">⏳</div>
           <p className="mt-4 text-sm font-semibold text-slate-600">
-            {tr('Loading your dedicated workspace...', 'Chargement de votre espace dédié...')}
+            {isDedicated
+              ? tr('Loading your dedicated workspace...', 'Chargement de votre espace dédié...')
+              : tr('Loading your shared workspace...', 'Chargement de votre espace partagé...')}
           </p>
         </div>
       </div>
@@ -97,16 +107,23 @@ const TenantWorkspaceReady = () => {
         <div className="overflow-hidden rounded-[34px] border border-white/80 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.12)]">
           <div className="bg-gradient-to-br from-slate-950 via-violet-950 to-violet-700 px-6 py-8 text-white sm:px-8">
             <p className="text-xs font-bold uppercase tracking-[0.26em] text-violet-200">
-              {tr('Private tenant workspace', 'Espace tenant privé')}
+              {tr('Tenant workspace', 'Espace tenant')}
             </p>
             <h1 className="mt-3 text-3xl font-black tracking-tight">
-              {tr('Your isolated workspace is ready', 'Votre espace isolé est prêt')}
+              {isDedicated
+                ? tr('Your dedicated workspace is ready', 'Votre espace dédié est prêt')
+                : tr('Your workspace is ready', 'Votre espace est prêt')}
             </h1>
             <p className="mt-3 max-w-3xl text-sm font-medium text-violet-100">
-              {tr(
-                'Your business now runs in its own dedicated workspace and no longer uses SaharaX internal admin data.',
-                "Votre activité fonctionne désormais dans son propre espace dédié et n'utilise plus les données internes d'administration SaharaX."
-              )}
+              {isDedicated
+                ? tr(
+                    'Your business now runs in its own dedicated workspace and no longer uses SaharaX internal admin data.',
+                    "Votre activité fonctionne désormais dans son propre espace dédié et n'utilise plus les données internes d'administration SaharaX."
+                  )
+                : tr(
+                    'Your business now runs inside the shared tenant platform with strict organization isolation and its own workspace domain.',
+                    "Votre activité fonctionne désormais dans la plateforme partagée avec une isolation stricte par organisation et son propre domaine d’espace."
+                  )}
             </p>
           </div>
 
@@ -135,10 +152,15 @@ const TenantWorkspaceReady = () => {
                   </p>
                 </div>
                 <p className="mt-4 text-sm font-semibold text-slate-700">
-                  {tr(
-                    'This workspace is provisioned separately from SaharaX master operations.',
-                    "Cet espace est provisionné séparément des opérations maîtres SaharaX."
-                  )}
+                  {isDedicated
+                    ? tr(
+                        'This workspace is provisioned separately from SaharaX master operations.',
+                        "Cet espace est provisionné séparément des opérations maîtres SaharaX."
+                      )
+                    : tr(
+                        'This workspace uses the shared tenant runtime while keeping your organization data isolated from other tenants.',
+                        "Cet espace utilise le runtime partagé tout en gardant les données de votre organisation isolées des autres tenants."
+                      )}
                 </p>
               </div>
             </div>
@@ -153,8 +175,8 @@ const TenantWorkspaceReady = () => {
                 <p className="mt-2 text-sm font-bold capitalize text-slate-900">{tenantSession?.tenantStatus || 'active'}</p>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-400">{tr('Project reference', 'Référence projet')}</p>
-                <p className="mt-2 break-all text-sm font-bold text-slate-900">{tenantSession?.tenantProjectRef || '—'}</p>
+                <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-400">{infrastructureLabel}</p>
+                <p className="mt-2 break-all text-sm font-bold text-slate-900">{infrastructureValue}</p>
               </div>
             </div>
 

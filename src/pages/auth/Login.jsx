@@ -104,8 +104,8 @@ const Login = () => {
   const isBusy = authLoading;
   const marketplaceTenantNotice = tenantAccessNotice === 'marketplace-customer'
     ? tr(
-        'This email signs in on Driveout marketplace, not inside the SaharaX private workspace. Continue below and we will take you to the right place.',
-        "Cet e-mail se connecte sur la marketplace Driveout, pas dans l'espace privé SaharaX. Continuez ci-dessous et nous vous emmènerons au bon endroit."
+        'This email signs in on Driveout marketplace, not inside the SaharaX tenant workspace. Continue below and we will take you to the right place.',
+        "Cet e-mail se connecte sur la marketplace Driveout, pas dans l'espace tenant SaharaX. Continuez ci-dessous et nous vous emmènerons au bon endroit."
       )
     : '';
 

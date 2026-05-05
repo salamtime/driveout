@@ -1,166 +1,173 @@
-/**
- * Simple Cache Service for managing application cache
- * FIXED: Proper clearPattern implementation
- */
 class CacheService {
-  constructor() {
+  constructor(namespace = 'global') {
+    this.namespace = namespace;
     this.cache = new Map();
     this.patterns = new Map();
   }
 
-  /**
-   * Set a cache entry with optional pattern tracking
-   * @param {string} key - Cache key
-   * @param {any} value - Value to cache
-   * @param {string} pattern - Optional pattern for bulk clearing
-   */
-  set(key, value, pattern = null) {
-    this.cache.set(key, {
+  normalizeKey(key) {
+    return `${this.namespace}:${String(key)}`;
+  }
+
+  parseSetOptions(thirdArg = null, fourthArg = null) {
+    if (typeof thirdArg === 'number') {
+      return { ttl: thirdArg, pattern: typeof fourthArg === 'string' ? fourthArg : null };
+    }
+
+    if (typeof thirdArg === 'string') {
+      return { ttl: null, pattern: thirdArg };
+    }
+
+    if (thirdArg && typeof thirdArg === 'object') {
+      return {
+        ttl: typeof thirdArg.ttl === 'number' ? thirdArg.ttl : null,
+        pattern: typeof thirdArg.pattern === 'string' ? thirdArg.pattern : null,
+      };
+    }
+
+    return { ttl: null, pattern: null };
+  }
+
+  set(key, value, thirdArg = null, fourthArg = null) {
+    const normalizedKey = this.normalizeKey(key);
+    const { ttl, pattern } = this.parseSetOptions(thirdArg, fourthArg);
+
+    this.cache.set(normalizedKey, {
+      key,
       value,
       timestamp: Date.now(),
-      pattern
+      expiresAt: typeof ttl === 'number' ? Date.now() + ttl : null,
+      pattern,
     });
 
-    // Track patterns for bulk clearing
     if (pattern) {
       if (!this.patterns.has(pattern)) {
         this.patterns.set(pattern, new Set());
       }
-      this.patterns.get(pattern).add(key);
+      this.patterns.get(pattern).add(normalizedKey);
     }
+
+    return value;
   }
 
-  /**
-   * Get a cache entry
-   * @param {string} key - Cache key
-   * @returns {any} Cached value or null
-   */
-  get(key) {
-    const entry = this.cache.get(key);
-    return entry ? entry.value : null;
+  get(key, maxAge = null) {
+    const normalizedKey = this.normalizeKey(key);
+    const entry = this.cache.get(normalizedKey);
+
+    if (!entry) {
+      return null;
+    }
+
+    const now = Date.now();
+    if (entry.expiresAt && now > entry.expiresAt) {
+      this.delete(key);
+      return null;
+    }
+
+    if (typeof maxAge === 'number' && now - entry.timestamp > maxAge) {
+      this.delete(key);
+      return null;
+    }
+
+    return entry.value;
   }
 
-  /**
-   * Check if a key exists in cache
-   * @param {string} key - Cache key
-   * @returns {boolean}
-   */
   has(key) {
-    return this.cache.has(key);
+    return this.get(key) !== null;
   }
 
-  /**
-   * Remove a specific cache entry
-   * @param {string} key - Cache key
-   */
   delete(key) {
-    const entry = this.cache.get(key);
-    if (entry && entry.pattern) {
+    const normalizedKey = this.normalizeKey(key);
+    const entry = this.cache.get(normalizedKey);
+
+    if (entry?.pattern) {
       const patternSet = this.patterns.get(entry.pattern);
       if (patternSet) {
-        patternSet.delete(key);
+        patternSet.delete(normalizedKey);
         if (patternSet.size === 0) {
           this.patterns.delete(entry.pattern);
         }
       }
     }
-    this.cache.delete(key);
+
+    this.cache.delete(normalizedKey);
   }
 
-  /**
-   * Clear all cache entries matching a pattern
-   * FIXED: Proper implementation that actually works
-   * @param {string} pattern - Pattern to match
-   */
   clearPattern(pattern) {
-    try {
-      console.log(`🧹 Clearing cache pattern: ${pattern}`);
-      
-      if (!pattern) {
-        console.warn('⚠️ No pattern provided to clearPattern');
-        return;
-      }
+    if (!pattern) {
+      return;
+    }
 
-      // Method 1: Clear by tracked pattern
-      if (this.patterns.has(pattern)) {
-        const keysToDelete = Array.from(this.patterns.get(pattern));
-        keysToDelete.forEach(key => {
-          this.cache.delete(key);
-        });
-        this.patterns.delete(pattern);
-        console.log(`✅ Cleared ${keysToDelete.length} entries for pattern: ${pattern}`);
-        return;
-      }
-
-      // Method 2: Clear by pattern matching (fallback)
-      const keysToDelete = [];
-      for (const [key, entry] of this.cache.entries()) {
-        // Match by stored pattern or key pattern
-        if (entry.pattern === pattern || key.includes(pattern)) {
-          keysToDelete.push(key);
+    if (this.patterns.has(pattern)) {
+      const keysToDelete = Array.from(this.patterns.get(pattern));
+      keysToDelete.forEach((normalizedKey) => {
+        const entry = this.cache.get(normalizedKey);
+        if (entry) {
+          this.delete(entry.key);
         }
+      });
+      this.patterns.delete(pattern);
+      return;
+    }
+
+    for (const [normalizedKey, entry] of this.cache.entries()) {
+      if (entry.pattern === pattern || String(entry.key).includes(pattern)) {
+        this.delete(entry.key);
       }
-
-      keysToDelete.forEach(key => this.delete(key));
-      console.log(`✅ Cleared ${keysToDelete.length} entries matching pattern: ${pattern}`);
-      
-    } catch (error) {
-      console.error(`❌ Error clearing cache pattern ${pattern}:`, error);
-      // Don't throw - cache clearing should be non-blocking
     }
   }
 
-  /**
-   * Clear all cache entries
-   */
+  invalidateRelated(prefix) {
+    this.clearPattern(prefix);
+  }
+
   clear() {
-    try {
-      console.log('🧹 Clearing all cache entries');
-      this.cache.clear();
-      this.patterns.clear();
-      console.log('✅ All cache cleared');
-    } catch (error) {
-      console.error('❌ Error clearing all cache:', error);
+    this.cache.clear();
+    this.patterns.clear();
+  }
+
+  cleanExpired(maxAge = 60 * 60 * 1000) {
+    const now = Date.now();
+    for (const [, entry] of this.cache.entries()) {
+      const expiredByTtl = entry.expiresAt && now > entry.expiresAt;
+      const expiredByAge = now - entry.timestamp > maxAge;
+      if (expiredByTtl || expiredByAge) {
+        this.delete(entry.key);
+      }
     }
   }
 
-  /**
-   * Get cache statistics
-   * @returns {Object} Cache stats
-   */
+  generateCacheKey(domain, action, params = {}) {
+    const stableParams = Object.keys(params)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = params[key];
+        return acc;
+      }, {});
+
+    return `${domain}:${action}:${JSON.stringify(stableParams)}`;
+  }
+
   getStats() {
     return {
+      namespace: this.namespace,
       totalEntries: this.cache.size,
       totalPatterns: this.patterns.size,
-      patterns: Array.from(this.patterns.keys())
+      patterns: Array.from(this.patterns.keys()),
     };
   }
 
-  /**
-   * Clean expired entries (if TTL is implemented later)
-   * @param {number} maxAge - Maximum age in milliseconds
-   */
-  cleanExpired(maxAge = 3600000) { // 1 hour default
-    try {
-      const now = Date.now();
-      const keysToDelete = [];
-      
-      for (const [key, entry] of this.cache.entries()) {
-        if (now - entry.timestamp > maxAge) {
-          keysToDelete.push(key);
-        }
-      }
-      
-      keysToDelete.forEach(key => this.delete(key));
-      
-      if (keysToDelete.length > 0) {
-        console.log(`🧹 Cleaned ${keysToDelete.length} expired cache entries`);
-      }
-    } catch (error) {
-      console.error('❌ Error cleaning expired cache:', error);
-    }
+  getHealthReport() {
+    const stats = this.getStats();
+    return {
+      ...stats,
+      status: stats.totalEntries > 0 ? 'active' : 'idle',
+      memoryPressure: stats.totalEntries > 500 ? 'high' : stats.totalEntries > 100 ? 'medium' : 'low',
+    };
   }
 }
 
-// Export singleton instance
-export default new CacheService();
+const cacheService = new CacheService();
+
+export { CacheService };
+export default cacheService;

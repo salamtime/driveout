@@ -9,6 +9,11 @@ import {
   assertTenantTargetProjectRef,
   getCanonicalProjectRef,
 } from './tenantSchemaMutationGuard.js';
+import {
+  APP_USERS_TABLE,
+  ORGANIZATIONS_TABLE,
+  ORGANIZATION_MEMBERS_TABLE,
+} from './supabase.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_ROOT = path.resolve(MODULE_DIR, '..', '..');
@@ -299,6 +304,22 @@ const buildOwnerPermissionsSql = () => `jsonb_build_object(
   'Settings', true
 )`;
 
+const buildOwnerPermissionsObject = () => ({
+  Dashboard: true,
+  Fleet: true,
+  Rentals: true,
+  Customers: true,
+  Maintenance: true,
+  'Team Tasks': true,
+  Fuel: true,
+  Pricing: true,
+  Inventory: true,
+  Finance: true,
+  Calendar: true,
+  Marketplace: true,
+  Settings: true,
+});
+
 const buildWorkspaceRuntimeSeedSql = ({
   tenantName,
   tenantSlug,
@@ -528,6 +549,125 @@ export const seedCanonicalBusinessWorkspaceRuntime = async ({
     projectRef: normalizedProjectRef,
     runtimeSeeded: Boolean(runtimeSeedSql),
     runtimeSeedMode: 'owner_org_permissions_trial_only',
+  };
+};
+
+export const seedSharedBusinessWorkspaceRuntime = async ({
+  adminClient,
+  tenantName,
+  tenantSlug,
+  ownerAuthUserId,
+  ownerEmail,
+  ownerFullName,
+  trialStartedAt,
+  trialEndsAt,
+} = {}) => {
+  const ownerId = String(ownerAuthUserId || '').trim();
+  const ownerEmailText = String(ownerEmail || '').trim();
+
+  if (!adminClient) {
+    throw new Error('Admin client is required for shared workspace runtime seed');
+  }
+
+  if (!ownerId || !ownerEmailText) {
+    return {
+      runtimeSeeded: false,
+      runtimeSeedMode: 'shared_platform_project',
+      organizationId: null,
+    };
+  }
+
+  const workspaceName = String(tenantName || ownerFullName || ownerEmailText || 'Business Workspace').trim();
+  const ownerName = String(ownerFullName || ownerEmailText).trim() || ownerEmailText;
+  const workspaceSlugBase = slugify(tenantSlug || tenantName || ownerEmailText.split('@')[0], 'workspace');
+  const workspaceSlug = `${workspaceSlugBase.slice(0, 42)}-${ownerId.replace(/-/g, '').slice(0, 8)}`;
+  const ownerPermissions = buildOwnerPermissionsObject();
+
+  const userPayload = {
+    id: ownerId,
+    email: ownerEmailText,
+    full_name: ownerName,
+    role: 'owner',
+    permissions: ownerPermissions,
+    verification_status: 'approved',
+    updated_at: new Date().toISOString(),
+  };
+
+  if (trialStartedAt) userPayload.trial_started_at = trialStartedAt;
+  if (trialEndsAt) userPayload.trial_ends_at = trialEndsAt;
+
+  const { error: userUpsertError } = await adminClient
+    .from(APP_USERS_TABLE)
+    .upsert(userPayload, { onConflict: 'id' });
+
+  if (userUpsertError) throw userUpsertError;
+
+  const { data: organization, error: organizationError } = await adminClient
+    .from(ORGANIZATIONS_TABLE)
+    .upsert({
+      name: workspaceName,
+      slug: workspaceSlug,
+      owner_user_id: ownerId,
+      organization_type: 'business_tenant',
+      organization_status: 'active',
+      is_platform_organization: false,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'slug' })
+    .select('id')
+    .single();
+
+  if (organizationError) throw organizationError;
+
+  const organizationId = organization?.id || null;
+  if (!organizationId) {
+    throw new Error('Shared workspace organization could not be resolved');
+  }
+
+  const { error: primaryOrganizationError } = await adminClient
+    .from(APP_USERS_TABLE)
+    .update({
+      primary_organization_id: organizationId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', ownerId);
+
+  if (primaryOrganizationError) throw primaryOrganizationError;
+
+  const { error: membershipError } = await adminClient
+    .from(ORGANIZATION_MEMBERS_TABLE)
+    .upsert({
+      organization_id: organizationId,
+      user_id: ownerId,
+      member_role: 'org_owner',
+      membership_status: 'active',
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'organization_id,user_id' });
+
+  if (membershipError) throw membershipError;
+
+  const { data: platformOrganization, error: platformOrganizationError } = await adminClient
+    .from(ORGANIZATIONS_TABLE)
+    .select('id')
+    .eq('slug', 'driveout-platform')
+    .maybeSingle();
+
+  if (platformOrganizationError) throw platformOrganizationError;
+
+  if (platformOrganization?.id) {
+    const { error: cleanupMembershipError } = await adminClient
+      .from(ORGANIZATION_MEMBERS_TABLE)
+      .delete()
+      .eq('organization_id', platformOrganization.id)
+      .eq('user_id', ownerId);
+
+    if (cleanupMembershipError) throw cleanupMembershipError;
+  }
+
+  return {
+    runtimeSeeded: true,
+    runtimeSeedMode: 'shared_platform_project',
+    organizationId,
+    organizationSlug: workspaceSlug,
   };
 };
 

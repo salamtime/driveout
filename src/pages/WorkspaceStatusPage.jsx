@@ -18,7 +18,7 @@ const pageMeta = {
   },
   '/workspace-preparing': {
     icon: Loader2,
-    title: ['Your private workspace is being prepared', 'Votre espace privé est en préparation'],
+    title: ['Your workspace is being prepared', 'Votre espace est en préparation'],
     subtitle: ['This usually takes a few moments.', 'Cela prend généralement quelques instants.'],
     spin: true,
   },
@@ -26,8 +26,8 @@ const pageMeta = {
     icon: AlertCircle,
     title: ['We couldn’t prepare your workspace yet', "Nous n'avons pas encore pu préparer votre espace"],
     subtitle: [
-      'Your private tenant workspace could not be created because the current infrastructure account has reached its active project capacity. Your signup is still saved and we can retry as soon as capacity is available.',
-      "Votre espace tenant privé n'a pas pu être créé car le compte d'infrastructure actuel a atteint sa capacité de projets actifs. Votre inscription est bien enregistrée et nous pourrons relancer le provisionnement dès qu'une capacité sera disponible.",
+      'Your workspace is not ready yet. Your signup is still saved, and we can retry provisioning automatically as soon as the shared workspace path is available again.',
+      "Votre espace n'est pas encore prêt. Votre inscription est bien enregistrée, et nous pourrons relancer automatiquement le provisionnement dès que le parcours d'espace partagé sera de nouveau disponible.",
     ],
   },
   '/workspace-suspended': {
@@ -42,53 +42,96 @@ const getProvisioningProgressModel = ({ tenantSession, userProfile, tr }) => {
     tenantSession?.workspaceState || tenantSession?.workspace_state || ''
   ).trim().toLowerCase();
   const tenant = tenantSession?.tenant || null;
+  const tenancyMode = String(
+    tenantSession?.tenancyMode || tenantSession?.tenancy_mode || tenant?.tenancyMode || tenant?.tenancy_mode || 'shared'
+  ).trim().toLowerCase();
   const provisioningJob = tenantSession?.provisioningJob || null;
   const hasTenantRecord = Boolean(tenant?.id || tenantSession?.tenantId);
   const hasProject = Boolean(tenant?.tenant_project_ref || tenantSession?.tenantProjectRef);
   const hasDomain = Boolean(tenant?.tenant_app_url || tenantSession?.tenantAppUrl);
+  const hasOrganization = Boolean(tenant?.organization_id || tenant?.organizationId || tenantSession?.organizationId);
   const modulesPrepared =
     workspaceState === 'tenant_ready' ||
     String(tenant?.tenant_status || '').trim().toLowerCase() === 'active';
   const ready = workspaceState === 'tenant_ready';
 
-  const steps = [
-    {
-      key: 'account',
-      label: tr('Demo account created', 'Compte démo créé'),
-      description: tr('Your owner account is active and the onboarding request is saved.', 'Votre compte propriétaire est actif et la demande d’onboarding est enregistrée.'),
-      complete: Boolean(userProfile?.email || userProfile?.id),
-    },
-    {
-      key: 'request',
-      label: tr('Workspace request accepted', 'Demande d’espace acceptée'),
-      description: tr('We created the tenant request and started the provisioning workflow.', 'Nous avons créé la demande tenant et lancé le workflow de provisionnement.'),
-      complete: hasTenantRecord,
-    },
-    {
-      key: 'project',
-      label: tr('Private database initialized', 'Base de données privée initialisée'),
-      description: tr('A dedicated Supabase project is being prepared for your company.', 'Un projet Supabase dédié est en cours de préparation pour votre société.'),
-      complete: hasProject,
-    },
-    {
-      key: 'domain',
-      label: tr('Private domain assigned', 'Domaine privé attribué'),
-      description: tr('Your secure workspace URL is being attached to your business.', 'L’URL sécurisée de votre espace est en cours d’attribution à votre activité.'),
-      complete: hasDomain,
-    },
-    {
-      key: 'modules',
-      label: tr('Modules and permissions prepared', 'Modules et permissions préparés'),
-      description: tr('Core modules, owner access, and default permissions are being finalized.', 'Les modules principaux, l’accès propriétaire et les permissions par défaut sont en cours de finalisation.'),
-      complete: modulesPrepared,
-    },
-    {
-      key: 'ready',
-      label: tr('Workspace ready', 'Espace prêt'),
-      description: tr('You will be redirected automatically as soon as your workspace is ready.', 'Vous serez redirigé automatiquement dès que votre espace sera prêt.'),
-      complete: ready,
-    },
-  ];
+  const steps = tenancyMode === 'dedicated'
+    ? [
+        {
+          key: 'account',
+          label: tr('Demo account created', 'Compte démo créé'),
+          description: tr('Your owner account is active and the onboarding request is saved.', 'Votre compte propriétaire est actif et la demande d’onboarding est enregistrée.'),
+          complete: Boolean(userProfile?.email || userProfile?.id),
+        },
+        {
+          key: 'request',
+          label: tr('Workspace request accepted', 'Demande d’espace acceptée'),
+          description: tr('We created the tenant request and started the provisioning workflow.', 'Nous avons créé la demande tenant et lancé le workflow de provisionnement.'),
+          complete: hasTenantRecord,
+        },
+        {
+          key: 'project',
+          label: tr('Private database initialized', 'Base de données privée initialisée'),
+          description: tr('A dedicated Supabase project is being prepared for your company.', 'Un projet Supabase dédié est en cours de préparation pour votre société.'),
+          complete: hasProject,
+        },
+        {
+          key: 'domain',
+          label: tr('Workspace domain assigned', 'Domaine de l’espace attribué'),
+          description: tr('Your secure workspace URL is being attached to your business.', 'L’URL sécurisée de votre espace est en cours d’attribution à votre activité.'),
+          complete: hasDomain,
+        },
+        {
+          key: 'modules',
+          label: tr('Modules and permissions prepared', 'Modules et permissions préparés'),
+          description: tr('Core modules, owner access, and default permissions are being finalized.', 'Les modules principaux, l’accès propriétaire et les permissions par défaut sont en cours de finalisation.'),
+          complete: modulesPrepared,
+        },
+        {
+          key: 'ready',
+          label: tr('Workspace ready', 'Espace prêt'),
+          description: tr('You will be redirected automatically as soon as your workspace is ready.', 'Vous serez redirigé automatiquement dès que votre espace sera prêt.'),
+          complete: ready,
+        },
+      ]
+    : [
+        {
+          key: 'account',
+          label: tr('Demo account created', 'Compte démo créé'),
+          description: tr('Your owner account is active and the onboarding request is saved.', 'Votre compte propriétaire est actif et la demande d’onboarding est enregistrée.'),
+          complete: Boolean(userProfile?.email || userProfile?.id),
+        },
+        {
+          key: 'request',
+          label: tr('Workspace request accepted', 'Demande d’espace acceptée'),
+          description: tr('We created the tenant request and started the shared-workspace provisioning workflow.', 'Nous avons créé la demande tenant et lancé le workflow de provisionnement partagé.'),
+          complete: hasTenantRecord,
+        },
+        {
+          key: 'organization',
+          label: tr('Tenant organization prepared', 'Organisation tenant préparée'),
+          description: tr('Your company workspace is being linked to its isolated organization inside the shared platform.', 'Votre espace société est en cours de liaison avec son organisation isolée dans la plateforme partagée.'),
+          complete: hasOrganization,
+        },
+        {
+          key: 'domain',
+          label: tr('Workspace domain assigned', 'Domaine de l’espace attribué'),
+          description: tr('Your secure workspace URL is being attached to your business.', 'L’URL sécurisée de votre espace est en cours d’attribution à votre activité.'),
+          complete: hasDomain,
+        },
+        {
+          key: 'modules',
+          label: tr('Modules and permissions prepared', 'Modules et permissions préparés'),
+          description: tr('Core modules, owner access, and tenant feature access are being finalized.', 'Les modules principaux, l’accès propriétaire et les fonctionnalités tenant sont en cours de finalisation.'),
+          complete: modulesPrepared,
+        },
+        {
+          key: 'ready',
+          label: tr('Workspace ready', 'Espace prêt'),
+          description: tr('You will be redirected automatically as soon as your shared workspace is ready.', 'Vous serez redirigé automatiquement dès que votre espace partagé sera prêt.'),
+          complete: ready,
+        },
+      ];
 
   const completedCount = steps.filter((step) => step.complete).length;
   const progressPercent = Math.max(8, Math.round((completedCount / steps.length) * 100));
@@ -103,6 +146,7 @@ const getProvisioningProgressModel = ({ tenantSession, userProfile, tr }) => {
     activeStep,
     workspaceName: tenantSession?.tenantName || tenant?.tenant_name || tenant?.tenant_slug || '',
     jobStatus: provisioningJob?.job_status || null,
+    tenancyMode,
   };
 };
 
@@ -164,14 +208,14 @@ const WorkspaceStatusPage = ({ status = 'preparing' }) => {
         <div className="w-full overflow-hidden rounded-[34px] border border-white/80 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.12)]">
           <div className="bg-gradient-to-br from-slate-950 via-violet-950 to-violet-800 px-6 py-8 text-white sm:px-8">
             <p className="text-xs font-bold uppercase tracking-[0.26em] text-violet-200">
-              {showProvisioningProgress ? tr('30-day demo workspace', 'Espace démo 30 jours') : tr('Private tenant workspace', 'Espace tenant privé')}
+              {showProvisioningProgress ? tr('30-day demo workspace', 'Espace démo 30 jours') : tr('Tenant workspace', 'Espace tenant')}
             </p>
             <h1 className="mt-3 text-3xl font-black tracking-tight">{isFrench ? meta.title[1] : meta.title[0]}</h1>
             <p className="mt-3 max-w-2xl text-sm font-medium text-violet-100">
               {showProvisioningProgress
                 ? tr(
-                    'We are building your isolated workspace now. Keep this page open and we will redirect you as soon as everything is ready.',
-                    'Nous construisons votre espace isolé maintenant. Gardez cette page ouverte et nous vous redirigerons dès que tout sera prêt.'
+                    'We are preparing your workspace now. Keep this page open and we will redirect you as soon as everything is ready.',
+                    'Nous préparons votre espace maintenant. Gardez cette page ouverte et nous vous redirigerons dès que tout sera prêt.'
                   )
                 : isFrench
                   ? meta.subtitle[1]
@@ -268,16 +312,16 @@ const WorkspaceStatusPage = ({ status = 'preparing' }) => {
 
                 <p className="mx-auto max-w-2xl text-center text-sm font-medium leading-6 text-slate-600">
                   {tr(
-                    'Your demo workspace is isolated from SaharaX master operations. We only complete the redirect once the private tenant workspace is fully ready.',
-                    'Votre espace de démonstration est isolé des opérations maîtres SaharaX. La redirection ne se fait qu’une fois l’espace tenant privé entièrement prêt.'
+                    'Your demo workspace stays separate from SaharaX master operations. We only complete the redirect once your tenant workspace is fully ready.',
+                    'Votre espace de démonstration reste séparé des opérations maîtres SaharaX. La redirection ne se fait qu’une fois votre espace tenant entièrement prêt.'
                   )}
                 </p>
               </div>
             ) : (
               <p className="mx-auto max-w-md text-sm font-medium leading-6 text-slate-600">
                 {isFrench
-                  ? "Votre compte ne sera pas envoyé vers l'admin principal SaharaX tant que l'espace isolé n'est pas prêt. Aucune donnée n'a été perdue pendant l'échec de provisionnement."
-                  : 'Your account will not be sent into the main SaharaX admin while the isolated workspace is not ready. No signup data was lost during this provisioning failure.'}
+                  ? "Votre compte ne sera pas envoyé vers l'admin principal SaharaX tant que l'espace tenant n'est pas prêt. Aucune donnée n'a été perdue pendant l'échec de provisionnement."
+                  : 'Your account will not be sent into the main SaharaX admin while the tenant workspace is not ready. No signup data was lost during this provisioning failure.'}
               </p>
             )}
 

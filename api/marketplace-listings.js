@@ -1,6 +1,12 @@
 import { APP_USERS_TABLE } from './_lib/supabase.js';
 import { authenticateRequest } from './_lib/auth.js';
 import { buildThreadKey, SHARED_MESSAGES_TABLE } from './_lib/messages.js';
+import {
+  applyTenantQueryScope,
+  assertUserInTenantScope,
+  resolveRequestTenantScope,
+  stampTenantPayload,
+} from './_lib/sharedTenantIsolation.js';
 
 const VEHICLE_PROFILES_TABLE = 'app_vehicle_public_profiles';
 const MARKETPLACE_LISTINGS_TABLE = 'app_marketplace_listings';
@@ -116,7 +122,7 @@ const insertOptionalRecord = async (adminClient, table, payload) => {
   }
 };
 
-const buildSharedMarketplaceOwnerMessagePayload = ({ listing, userId, ownerMessagePayload }) => {
+const buildSharedMarketplaceOwnerMessagePayload = ({ listing, userId, ownerMessagePayload, tenantScope = null }) => {
   if (!listing?.id || !listing?.owner_id || !userId || !ownerMessagePayload?.body) {
     return null;
   }
@@ -130,7 +136,7 @@ const buildSharedMarketplaceOwnerMessagePayload = ({ listing, userId, ownerMessa
     senderUserId: userId,
   });
 
-  return {
+  return stampTenantPayload({
     thread_key: threadKey,
     family: 'marketplace',
     thread_type: 'marketplace_moderation',
@@ -154,7 +160,7 @@ const buildSharedMarketplaceOwnerMessagePayload = ({ listing, userId, ownerMessa
       action: ownerMessagePayload?.metadata?.action || ownerMessagePayload?.message_type || 'message_owner',
     },
     status: 'sent',
-  };
+  }, tenantScope);
 };
 
 const loadOptionalQuery = async (factory, fallbackValue) => {
@@ -320,12 +326,15 @@ const buildListingDetail = (listing = {}, profile = {}) => ({
   updatedAt: listing.updated_at || profile.updated_at || profile.created_at || null,
 });
 
-const getListingDetail = async (adminClient, listingId) => {
-  const { data: listing, error: listingError } = await adminClient
+const getListingDetail = async (adminClient, listingId, tenantScope = null) => {
+  let listingQuery = adminClient
     .from(MARKETPLACE_LISTINGS_TABLE)
     .select('*')
-    .eq('id', listingId)
-    .single();
+    .eq('id', listingId);
+
+  listingQuery = applyTenantQueryScope(listingQuery, tenantScope);
+
+  const { data: listing, error: listingError } = await listingQuery.single();
 
   if (listingError) throw listingError;
 
@@ -360,21 +369,27 @@ const getListingDetail = async (adminClient, listingId) => {
     );
 
     totalListings = await loadOptionalCount(
-      () =>
-        adminClient
+      () => {
+        let query = adminClient
           .from(MARKETPLACE_LISTINGS_TABLE)
           .select('id', { count: 'exact', head: true })
-          .eq('owner_id', listing.owner_id),
+          .eq('owner_id', listing.owner_id);
+        query = applyTenantQueryScope(query, tenantScope);
+        return query;
+      },
       0
     );
 
     liveListings = await loadOptionalCount(
-      () =>
-        adminClient
+      () => {
+        let query = adminClient
           .from(MARKETPLACE_LISTINGS_TABLE)
           .select('id', { count: 'exact', head: true })
           .eq('owner_id', listing.owner_id)
-          .eq('listing_status', 'live'),
+          .eq('listing_status', 'live');
+        query = applyTenantQueryScope(query, tenantScope);
+        return query;
+      },
       0
     );
 
@@ -458,8 +473,19 @@ const getListingDetail = async (adminClient, listingId) => {
   };
 };
 
-const getSnapshot = async (adminClient) => {
-  const { data: listings, error: listingError } = await loadListingsSnapshot(adminClient);
+const getSnapshot = async (adminClient, tenantScope = null) => {
+  let listingsQuery = adminClient
+    .from(MARKETPLACE_LISTINGS_TABLE)
+    .select('*');
+
+  listingsQuery = applyTenantQueryScope(listingsQuery, tenantScope);
+
+  let response = await listingsQuery.order('updated_at', { ascending: false });
+  if (response.error && String(response.error.code || '') === '42703') {
+    response = await listingsQuery.order('created_at', { ascending: false });
+  }
+
+  const { data: listings, error: listingError } = response;
 
   if (listingError) throw listingError;
 
@@ -531,6 +557,7 @@ const getSnapshot = async (adminClient) => {
 
 const updateListingStatus = async ({
   adminClient,
+  tenantScope,
   userId,
   listingId,
   action,
@@ -540,11 +567,14 @@ const updateListingStatus = async ({
   sendToOwner,
   messageBody,
 }) => {
-  const { data: listing, error: loadError } = await adminClient
+  let loadQuery = adminClient
     .from(MARKETPLACE_LISTINGS_TABLE)
     .select('*')
-    .eq('id', listingId)
-    .single();
+    .eq('id', listingId);
+
+  loadQuery = applyTenantQueryScope(loadQuery, tenantScope);
+
+  const { data: listing, error: loadError } = await loadQuery.single();
 
   if (loadError) throw loadError;
 
@@ -791,6 +821,7 @@ const updateListingStatus = async ({
         listing,
         userId,
         ownerMessagePayload,
+        tenantScope,
       })
     );
   }
@@ -814,12 +845,23 @@ export default async function handler(req, res) {
   }
 
   const { adminClient, user } = auth;
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient });
 
   try {
+    const canAccessTenantScope = await assertUserInTenantScope({
+      adminClient,
+      userId: user.id,
+      tenantScope,
+    });
+
+    if (tenantScope?.isShared && !canAccessTenantScope) {
+      return json(res, 403, { error: 'Tenant scope access required' });
+    }
+
     if (req.method === 'GET') {
       const listingId = String(getQueryParam(req, 'listingId') || '').trim();
       if (listingId) {
-        const detail = await getListingDetail(adminClient, listingId);
+        const detail = await getListingDetail(adminClient, listingId, tenantScope);
         return json(res, 200, { success: true, detail });
       }
     }
@@ -835,6 +877,7 @@ export default async function handler(req, res) {
 
       await updateListingStatus({
         adminClient,
+        tenantScope,
         userId: user.id,
         listingId,
         action,
@@ -846,7 +889,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const snapshot = await getSnapshot(adminClient);
+    const snapshot = await getSnapshot(adminClient, tenantScope);
     return json(res, 200, { success: true, snapshot });
   } catch (error) {
     console.error('Marketplace listings API failed:', {

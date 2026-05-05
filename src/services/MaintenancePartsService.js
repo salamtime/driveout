@@ -1,5 +1,10 @@
 import { supabase } from '../lib/supabase';
 import InventoryService from './InventoryService';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  requireCurrentOrganizationId,
+} from './OrganizationService';
 
 /**
  * MaintenancePartsService - Comprehensive parts tracking for maintenance records
@@ -113,6 +118,7 @@ class MaintenancePartsService {
     }
 
     const { deductInventory = true, actorName = 'Maintenance' } = options;
+    const organizationId = await requireCurrentOrganizationId();
 
     try {
       const inventoryUpdates = [];
@@ -187,7 +193,7 @@ class MaintenancePartsService {
       for (const partData of partsToCreate) {
         const { data: createdPart, error: partError } = await supabase
           .from(this.partsTable)
-          .insert(partData)
+          .insert(applyOrganizationMatch(partData, organizationId))
           .select(`
             *,
             inventory_item:saharax_0u4w4d_inventory_items(id, name, sku, unit)
@@ -282,6 +288,7 @@ class MaintenancePartsService {
     console.log('🗑️ Deleting maintenance parts:', maintenanceId);
 
     try {
+      const organizationId = await requireCurrentOrganizationId();
       const parts = await this.getMaintenanceParts(maintenanceId);
       const { restoreInventory = true, actorName = 'Maintenance' } = options;
       
@@ -325,7 +332,8 @@ class MaintenancePartsService {
       const { error: deleteError } = await supabase
         .from(this.partsTable)
         .delete()
-        .eq('maintenance_id', maintenanceId);
+        .eq('maintenance_id', maintenanceId)
+        .eq('organization_id', organizationId);
 
       if (deleteError) {
         throw new Error(`Failed to delete maintenance parts: ${deleteError.message}`);
@@ -351,16 +359,20 @@ class MaintenancePartsService {
    */
   async getMaintenanceParts(maintenanceId) {
     try {
-      const { data: parts, error } = await supabase
-        .from(this.partsTable)
-        .select(`
-          *,
-          inventory_item:saharax_0u4w4d_inventory_items(
-            id, name, sku, unit, cost_mad, price_mad, stock_on_hand
-          )
-        `)
-        .eq('maintenance_id', maintenanceId)
-        .order('created_at', { ascending: true });
+      const organizationId = await requireCurrentOrganizationId();
+      const { data: parts, error } = await applyOrganizationScope(
+        supabase
+          .from(this.partsTable)
+          .select(`
+            *,
+            inventory_item:saharax_0u4w4d_inventory_items(
+              id, name, sku, unit, cost_mad, price_mad, stock_on_hand
+            )
+          `)
+          .eq('maintenance_id', maintenanceId)
+          .order('created_at', { ascending: true }),
+        organizationId
+      );
 
       if (error) {
         console.error('❌ Error getting maintenance parts:', error);
@@ -401,15 +413,19 @@ class MaintenancePartsService {
    */
   async calculateMaintenancePartsCost(maintenanceId) {
     try {
-      const { data, error } = await supabase
-        .from(this.partsTable)
-        .select(`
-          quantity,
-          unit_cost_mad,
-          notes,
-          inventory_item:saharax_0u4w4d_inventory_items(price_mad)
-        `)
-        .eq('maintenance_id', maintenanceId);
+      const organizationId = await requireCurrentOrganizationId();
+      const { data, error } = await applyOrganizationScope(
+        supabase
+          .from(this.partsTable)
+          .select(`
+            quantity,
+            unit_cost_mad,
+            notes,
+            inventory_item:saharax_0u4w4d_inventory_items(price_mad)
+          `)
+          .eq('maintenance_id', maintenanceId),
+        organizationId
+      );
 
       if (error) {
         console.error('❌ Error calculating parts cost:', error);

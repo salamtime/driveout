@@ -3,6 +3,7 @@ import { X, Save, Car, Fuel, Calculator, Calendar, DollarSign, Upload, Image as 
 import { supabase } from '../utils/supabaseClient';
 import toast from 'react-hot-toast';
 import i18n from '../i18n';
+import { uploadFile } from '../utils/storageUpload';
 
 const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
   const isFrench = i18n.resolvedLanguage === 'fr';
@@ -170,32 +171,23 @@ const VehicleRefillModal = ({ isOpen, onClose, onSuccess }) => {
       // Generate unique filename with proper extension
       const fileExt = file.name.split('.').pop().toLowerCase();
       const fileName = `invoice-refill-${crypto.randomUUID()}.${fileExt}`;
-      const filePath = fileName; // Don't add folder prefix since bucket is already 'fuel_invoices'
+      const uploadResult = await uploadFile(file, {
+        bucket: 'fuel_invoices',
+        pathPrefix: 'fuel-invoices',
+        fileName,
+        optimizationProfile: 'document',
+      });
 
-      // Upload to Supabase Storage
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('fuel_invoices')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
-
-      if (uploadError) {
-        console.error('❌ Storage upload error:', uploadError);
-        throw uploadError;
+      if (!uploadResult?.success) {
+        throw new Error(uploadResult?.error || 'Storage upload failed');
       }
 
-      // Get public URL
-      const { data: urlData } = supabase.storage
-        .from('fuel_invoices')
-        .getPublicUrl(filePath);
-
-      console.log('✅ Image uploaded successfully:', uploadData);
+      console.log('✅ Image uploaded successfully:', uploadResult.path);
 
       return {
         type: 'storage',
-        path: filePath,
-        url: urlData.publicUrl,
+        path: uploadResult.path,
+        url: uploadResult.url,
         name: file.name,
         size: file.size,
         contentType: file.type,

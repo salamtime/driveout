@@ -54,6 +54,8 @@ import { MESSAGE_FAMILIES, MESSAGE_THREAD_TYPES } from '../../utils/messageCente
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
 import { getCurrentLocationPath, resolveReturnPath } from '../../utils/navigationReturn';
 import { supabase } from '../../lib/supabase';
+import { buildStoragePathCandidates } from '../../utils/storageUpload';
+import { getCurrentOrganizationId } from '../../services/OrganizationService';
 import AccountWorkspaceLoadingShell from '../../components/navigation/AccountWorkspaceLoadingShell';
 import RentalEvidenceGallery from '../../components/account/RentalEvidenceGallery';
 import RentalPhotoEvidenceCapture from '../../components/account/RentalPhotoEvidenceCapture';
@@ -363,22 +365,24 @@ const normalizeMediaFromFormState = (formState = {}) => {
   })));
 };
 
-const mapDraftVehicleStorageImages = (vehicleId, files = []) =>
+const mapDraftVehicleStorageImages = (storagePrefix, files = []) =>
   (Array.isArray(files) ? files : [])
     .filter((file) => file?.name && !String(file.name).endsWith('/'))
     .map((file, index) => {
       const fileName = String(file.name || '').trim();
       const shotTypeMatch = fileName.match(/^(hero|context|detail)__/i);
       const shotType = shotTypeMatch?.[1]?.toLowerCase() || null;
+      const storagePath = `${storagePrefix}/${fileName}`;
       const { data: urlData } = supabase.storage
         .from('vehicle-images')
-        .getPublicUrl(`${vehicleId}/${fileName}`);
+        .getPublicUrl(storagePath);
 
       return {
         id: file.id || `draft-media-${index}`,
         url: normalizeVehicleImageUrl(urlData?.publicUrl || ''),
         type: 'image',
         name: fileName,
+        storagePath,
         is_cover: shotType === 'hero' || index === 0,
         shot_type: shotType,
         quality_status: 'approved',
@@ -1399,15 +1403,22 @@ const AccountMarketplaceVehicleProfile = () => {
 
     const loadDraftMediaFromStorage = async () => {
       try {
-        const { data: files, error: listError } = await supabase.storage
-          .from('vehicle-images')
-          .list(String(draftUploadVehicleId), { limit: 50, offset: 0 });
+        const organizationId = await getCurrentOrganizationId();
+        const prefixes = buildStoragePathCandidates(organizationId, `vehicles/${draftUploadVehicleId}`);
+        let storageMedia = [];
 
-        if (listError || cancelled) {
-          return;
+        for (const prefix of prefixes) {
+          const { data: files, error: listError } = await supabase.storage
+            .from('vehicle-images')
+            .list(String(prefix), { limit: 50, offset: 0 });
+
+          if (listError || cancelled) {
+            continue;
+          }
+
+          storageMedia = storageMedia.concat(mapDraftVehicleStorageImages(prefix, files));
         }
 
-        const storageMedia = mapDraftVehicleStorageImages(draftUploadVehicleId, files);
         if (!storageMedia.length) {
           return;
         }

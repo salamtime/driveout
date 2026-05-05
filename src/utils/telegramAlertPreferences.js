@@ -1,6 +1,7 @@
 export const TELEGRAM_ALERT_EVENT_KEYS = [
   'rental_created',
   'rental_started',
+  'rental_vehicle_replaced',
   'rental_completed',
   'payment_received',
   'rental_overdue',

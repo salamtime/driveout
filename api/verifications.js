@@ -2,6 +2,12 @@ import { authenticateRequest, requireOwnerOrAdmin } from './_lib/auth.js';
 import { APP_USERS_TABLE, VEHICLES_TABLE, VERIFICATION_DOCUMENTS_BUCKET, VERIFICATION_EVENTS_TABLE, VERIFICATION_REQUESTS_TABLE } from './_lib/supabase.js';
 import { SHARED_MESSAGES_TABLE, SHARED_MESSAGE_THREADS_TABLE, isSharedMessageThreadsSchemaUnavailable } from './_lib/messages.js';
 import {
+  applyTenantQueryScope,
+  assertUserInTenantScope,
+  resolveRequestTenantScope,
+  stampTenantPayload,
+} from './_lib/sharedTenantIsolation.js';
+import {
   addVerificationEvent,
   buildVerificationSummary,
   expireInsuranceVerifications,
@@ -167,6 +173,7 @@ const ensureVerificationCaseThread = async (adminClient, {
   entityType,
   entityId,
   ownerUserId,
+  tenantScope = null,
 } = {}) => {
   const normalizedEntityType = String(entityType || '').trim().toLowerCase();
   const normalizedEntityId = String(entityId || '').trim();
@@ -179,14 +186,14 @@ const ensureVerificationCaseThread = async (adminClient, {
   try {
     const { data, error } = await adminClient
       .from(VERIFICATION_CASES_TABLE)
-      .upsert({
+      .upsert(stampTenantPayload({
         case_type: caseType,
         entity_type: normalizedEntityType,
         entity_id: normalizedEntityId,
         owner_user_id: normalizedOwnerUserId,
         case_status: 'pending',
         opened_at: new Date().toISOString(),
-      }, {
+      }, tenantScope), {
         onConflict: 'case_type,entity_type,entity_id,owner_user_id',
       })
       .select('*')
@@ -212,7 +219,7 @@ const ensureVerificationCaseThread = async (adminClient, {
   try {
     const { data, error } = await adminClient
       .from(SHARED_MESSAGE_THREADS_TABLE)
-      .upsert({
+      .upsert(stampTenantPayload({
         thread_key: threadKey,
         family: 'verification',
         thread_type: 'verification',
@@ -233,7 +240,7 @@ const ensureVerificationCaseThread = async (adminClient, {
           entityId: normalizedEntityId,
         },
         updated_at: new Date().toISOString(),
-      }, {
+      }, tenantScope), {
         onConflict: 'thread_key',
       })
       .select('*')
@@ -280,7 +287,7 @@ const ensureVerificationCaseThread = async (adminClient, {
   };
 };
 
-const removeVerificationArtifacts = async (adminClient, verificationRow) => {
+const removeVerificationArtifacts = async (adminClient, verificationRow, tenantScope = null) => {
   if (!verificationRow?.id) return;
 
   if (verificationRow.file_path) {
@@ -295,12 +302,15 @@ const removeVerificationArtifacts = async (adminClient, verificationRow) => {
 
   let relatedMessages = [];
   try {
-    const { data, error } = await adminClient
+    const { data, error } = await applyTenantQueryScope(
+      adminClient
       .from(SHARED_MESSAGES_TABLE)
       .select('id, metadata')
       .eq('family', 'verification')
       .eq('entity_type', verificationRow.entity_type)
-      .eq('entity_id', verificationRow.entity_id);
+      .eq('entity_id', verificationRow.entity_id),
+      tenantScope
+    );
 
     if (error) {
       console.warn('Unable to load related verification messages:', error.message || error);
@@ -318,10 +328,13 @@ const removeVerificationArtifacts = async (adminClient, verificationRow) => {
 
   if (relatedMessageIds.length) {
     try {
-      const { error } = await adminClient
+      const { error } = await applyTenantQueryScope(
+        adminClient
         .from(SHARED_MESSAGES_TABLE)
         .delete()
-        .in('id', relatedMessageIds);
+        .in('id', relatedMessageIds),
+        tenantScope
+      );
 
       if (error) {
         console.warn('Unable to remove related verification messages:', error.message || error);
@@ -332,10 +345,13 @@ const removeVerificationArtifacts = async (adminClient, verificationRow) => {
   }
 
   try {
-    const { error } = await adminClient
+    const { error } = await applyTenantQueryScope(
+      adminClient
       .from(VERIFICATION_EVENTS_TABLE)
       .delete()
-      .eq('verification_request_id', verificationRow.id);
+      .eq('verification_request_id', verificationRow.id),
+      tenantScope
+    );
 
     if (error) {
       console.warn('Unable to remove verification events:', error.message || error);
@@ -782,7 +798,12 @@ const handleGet = async (req, res) => {
     const auth = await requireOwnerOrAdmin(req);
     if (auth.error) return sendJson(res, auth.error.status, auth.error.body);
 
-    const { adminClient } = auth;
+    const { adminClient, user, tenantRuntime } = auth;
+    const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime });
+    const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+    if (!userInScope) {
+      return sendJson(res, 403, { error: 'You do not have access to this workspace' });
+    }
     try {
       await expireInsuranceVerifications(adminClient);
     } catch (error) {
@@ -795,11 +816,14 @@ const handleGet = async (req, res) => {
       throw error;
     }
 
-    let query = adminClient
+    let query = applyTenantQueryScope(
+      adminClient
       .from(VERIFICATION_REQUESTS_TABLE)
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(Number(req.query.limit || 120));
+      .limit(Number(req.query.limit || 120)),
+      tenantScope
+    );
 
     if (req.query.status && req.query.status !== 'all') {
       query = query.eq('status', req.query.status);
@@ -835,7 +859,12 @@ const handleGet = async (req, res) => {
     const auth = await authenticateRequest(req);
     if (auth.error) return sendJson(res, auth.error.status, auth.error.body);
 
-    const { adminClient, user } = auth;
+    const { adminClient, user, tenantRuntime } = auth;
+    const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime });
+    const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+    if (!userInScope) {
+      return sendJson(res, 403, { error: 'You do not have access to this workspace' });
+    }
     const entityType = assertString(req.query.entityType, 'entityType');
     const entityId = assertString(req.query.entityId, 'entityId');
 
@@ -843,12 +872,15 @@ const handleGet = async (req, res) => {
       return sendJson(res, 400, { error: 'Invalid entityType' });
     }
 
-    const rowsQuery = adminClient
+    const rowsQuery = applyTenantQueryScope(
+      adminClient
       .from(VERIFICATION_REQUESTS_TABLE)
       .select('*')
       .eq('entity_type', entityType)
       .eq('entity_id', entityId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false }),
+      tenantScope
+    );
 
     const { data, error } = await rowsQuery;
     if (error) {
@@ -900,8 +932,13 @@ const handlePost = async (req, res) => {
   const auth = await authenticateRequest(req);
   if (auth.error) return sendJson(res, auth.error.status, auth.error.body);
 
-  const { adminClient, user } = auth;
+  const { adminClient, user, tenantRuntime } = auth;
   const body = req.body || {};
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime, payload: body });
+  const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+  if (!userInScope) {
+    return sendJson(res, 403, { error: 'You do not have access to this workspace' });
+  }
   const entityType = assertString(body.entityType, 'entityType');
   const entityId = assertString(body.entityId, 'entityId');
   const verificationType = assertString(body.verificationType, 'verificationType');
@@ -921,12 +958,15 @@ const handlePost = async (req, res) => {
       entityId,
       ownerUserId,
     });
-    const { data: existingRows, error: existingRowsError } = await adminClient
+    const { data: existingRows, error: existingRowsError } = await applyTenantQueryScope(
+      adminClient
       .from(VERIFICATION_REQUESTS_TABLE)
       .select('*')
       .eq('entity_type', entityType)
       .eq('owner_user_id', ownerUserId)
-      .eq('verification_type', verificationType);
+      .eq('verification_type', verificationType),
+      tenantScope
+    );
 
     if (existingRowsError) {
       return sendJson(res, 500, { error: existingRowsError.message || 'Unable to prepare verification replacement' });
@@ -939,12 +979,15 @@ const handlePost = async (req, res) => {
     });
 
     for (const existingRow of replaceableRows) {
-      await removeVerificationArtifacts(adminClient, existingRow);
+      await removeVerificationArtifacts(adminClient, existingRow, tenantScope);
 
-      const { error: deleteExistingError } = await adminClient
+      const { error: deleteExistingError } = await applyTenantQueryScope(
+        adminClient
         .from(VERIFICATION_REQUESTS_TABLE)
         .delete()
-        .eq('id', existingRow.id);
+        .eq('id', existingRow.id),
+        tenantScope
+      );
 
       if (deleteExistingError) {
         return sendJson(res, 500, {
@@ -971,7 +1014,7 @@ const handlePost = async (req, res) => {
 
   const { data, error } = await adminClient
     .from(VERIFICATION_REQUESTS_TABLE)
-    .insert(insertPayload)
+    .insert(stampTenantPayload(insertPayload, tenantScope))
     .select('*')
     .single();
 
@@ -981,6 +1024,7 @@ const handlePost = async (req, res) => {
     entityType,
     entityId,
     ownerUserId,
+    tenantScope,
   });
 
   if (canonicalThread?.threadKey || canonicalThread?.threadId || canonicalThread?.caseId) {
@@ -992,7 +1036,8 @@ const handlePost = async (req, res) => {
       normalizedSource: 'api_verifications_create',
     };
 
-    const { data: updatedVerification } = await adminClient
+    const { data: updatedVerification } = await applyTenantQueryScope(
+      adminClient
       .from(VERIFICATION_REQUESTS_TABLE)
       .update({
         verification_case_id: canonicalThread?.caseId || null,
@@ -1002,7 +1047,9 @@ const handlePost = async (req, res) => {
       })
       .eq('id', data.id)
       .select('*')
-      .single();
+      .single(),
+      tenantScope
+    );
 
     if (updatedVerification?.id) {
       Object.assign(data, updatedVerification);
@@ -1027,7 +1074,7 @@ const handlePost = async (req, res) => {
 
   await adminClient
     .from(SHARED_MESSAGES_TABLE)
-    .insert({
+    .insert(stampTenantPayload({
       ...(data.thread_id ? { thread_id: data.thread_id } : {}),
       thread_key: verificationThreadKey,
       family: 'verification',
@@ -1071,7 +1118,7 @@ const handlePost = async (req, res) => {
         source: 'verification_submission',
       },
       status: 'sent',
-    });
+    }, tenantScope));
 
   return sendJson(res, 201, { request: signedRequest, summary });
 };
@@ -1086,8 +1133,13 @@ const handlePatch = async (req, res) => {
   const auth = await requireOwnerOrAdmin(req);
   if (auth.error) return sendJson(res, auth.error.status, auth.error.body);
 
-  const { adminClient, user } = auth;
+  const { adminClient, user, tenantRuntime } = auth;
   const body = req.body || {};
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime, payload: body });
+  const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+  if (!userInScope) {
+    return sendJson(res, 403, { error: 'You do not have access to this workspace' });
+  }
   const id = assertString(body.id, 'id');
   const status = assertString(body.status, 'status');
 
@@ -1099,15 +1151,19 @@ const handlePatch = async (req, res) => {
     return sendJson(res, 400, { error: 'A reason is required for rejection or suspension' });
   }
 
-  const { data: existing, error: loadError } = await adminClient
+  const { data: existing, error: loadError } = await applyTenantQueryScope(
+    adminClient
     .from(VERIFICATION_REQUESTS_TABLE)
     .select('*')
     .eq('id', id)
-    .single();
+    .single(),
+    tenantScope
+  );
 
   if (loadError) return sendJson(res, 404, { error: loadError.message });
 
-  const { data, error } = await adminClient
+  const { data, error } = await applyTenantQueryScope(
+    adminClient
     .from(VERIFICATION_REQUESTS_TABLE)
     .update({
       status,
@@ -1119,7 +1175,9 @@ const handlePatch = async (req, res) => {
     })
     .eq('id', id)
     .select('*')
-    .single();
+    .single(),
+    tenantScope
+  );
 
   if (error) return sendJson(res, 500, { error: error.message });
 
@@ -1138,6 +1196,7 @@ const handlePatch = async (req, res) => {
     entityType: data.entity_type,
     entityId: data.entity_id,
     ownerUserId: data.owner_user_id,
+    tenantScope,
   });
   const verificationThreadKey = String(canonicalThread?.threadKey || data.thread_key || '').trim() || buildVerificationThreadKey({
     entityType: data.entity_type,
@@ -1158,7 +1217,7 @@ const handlePatch = async (req, res) => {
   if (!shouldSendCompletionOnly) {
     await adminClient
       .from(SHARED_MESSAGES_TABLE)
-      .insert({
+      .insert(stampTenantPayload({
         ...(canonicalThread?.threadId || data.thread_id ? { thread_id: canonicalThread?.threadId || data.thread_id } : {}),
         thread_key: verificationThreadKey,
         family: 'verification',
@@ -1201,13 +1260,13 @@ const handlePatch = async (req, res) => {
           source: 'verification_review_status',
         },
         status: 'sent',
-      });
+      }, tenantScope));
   }
 
   if (shouldSendCompletionOnly) {
     await adminClient
       .from(SHARED_MESSAGES_TABLE)
-      .insert({
+      .insert(stampTenantPayload({
         ...(canonicalThread?.threadId || data.thread_id ? { thread_id: canonicalThread?.threadId || data.thread_id } : {}),
         thread_key: verificationThreadKey,
         family: 'verification',
@@ -1243,7 +1302,7 @@ const handlePatch = async (req, res) => {
           source: 'verification_review_complete',
         },
         status: 'sent',
-      });
+      }, tenantScope));
   }
   return sendJson(res, 200, { request: signedRequest, summary });
 };
@@ -1258,14 +1317,22 @@ const handleDelete = async (req, res) => {
   const auth = await authenticateRequest(req);
   if (auth.error) return sendJson(res, auth.error.status, auth.error.body);
 
-  const { adminClient, user } = auth;
+  const { adminClient, user, tenantRuntime } = auth;
+  const tenantScope = await resolveRequestTenantScope({ req, adminClient, tenantRuntime });
+  const userInScope = await assertUserInTenantScope({ adminClient, userId: user.id, tenantScope });
+  if (!userInScope) {
+    return sendJson(res, 403, { error: 'You do not have access to this workspace' });
+  }
   const id = assertString(req.query?.id, 'id');
 
-  const { data: existing, error: loadError } = await adminClient
+  const { data: existing, error: loadError } = await applyTenantQueryScope(
+    adminClient
     .from(VERIFICATION_REQUESTS_TABLE)
     .select('*')
     .eq('id', id)
-    .single();
+    .single(),
+    tenantScope
+  );
 
   if (loadError || !existing) {
     return sendJson(res, 404, { error: loadError?.message || 'Verification request not found' });
@@ -1292,7 +1359,8 @@ const handleDelete = async (req, res) => {
     String(existing.entity_type || '').toLowerCase() === 'user'
   ) {
     const archivedNotes = buildArchivedVerificationNotes(existing.notes, user.id, existing.status);
-    const { data: archivedRow, error: archiveError } = await adminClient
+    const { data: archivedRow, error: archiveError } = await applyTenantQueryScope(
+      adminClient
       .from(VERIFICATION_REQUESTS_TABLE)
       .update({
         status: existing.status,
@@ -1301,7 +1369,9 @@ const handleDelete = async (req, res) => {
       })
       .eq('id', id)
       .select('*')
-      .single();
+      .single(),
+      tenantScope
+    );
 
     if (archiveError) {
       return sendJson(res, 500, { error: archiveError.message || 'Unable to archive verification document' });
@@ -1356,12 +1426,15 @@ const handleDelete = async (req, res) => {
       : [existing];
 
   if (existingEntityType === 'vehicle' && REPLACEABLE_VEHICLE_VERIFICATION_TYPES.has(existingVerificationType)) {
-    const { data: siblingRows, error: siblingRowsError } = await adminClient
+    const { data: siblingRows, error: siblingRowsError } = await applyTenantQueryScope(
+      adminClient
       .from(VERIFICATION_REQUESTS_TABLE)
       .select('*')
       .eq('entity_type', 'vehicle')
       .eq('owner_user_id', existing.owner_user_id)
-      .eq('verification_type', existing.verification_type);
+      .eq('verification_type', existing.verification_type),
+      tenantScope
+    );
 
     if (siblingRowsError) {
       return sendJson(res, 500, { error: siblingRowsError.message || 'Unable to remove duplicate verification documents' });
@@ -1382,21 +1455,27 @@ const handleDelete = async (req, res) => {
   ));
 
   for (const row of dedupedRowsToDelete) {
-    await removeVerificationArtifacts(adminClient, row);
+    await removeVerificationArtifacts(adminClient, row, tenantScope);
 
-    const { error: deleteError } = await adminClient
+    const { error: deleteError } = await applyTenantQueryScope(
+      adminClient
       .from(VERIFICATION_REQUESTS_TABLE)
       .delete()
-      .eq('id', row.id);
+      .eq('id', row.id),
+      tenantScope
+    );
 
     if (deleteError) {
-      const { error: softDeleteError } = await adminClient
+      const { error: softDeleteError } = await applyTenantQueryScope(
+        adminClient
         .from(VERIFICATION_REQUESTS_TABLE)
         .update({
           notes: JSON.stringify(buildRemovedVerificationNotes(row.notes, user.id)),
           updated_at: new Date().toISOString(),
         })
-        .eq('id', row.id);
+        .eq('id', row.id),
+        tenantScope
+      );
 
       if (softDeleteError) {
         return sendJson(res, 500, {

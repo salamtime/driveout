@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { getCurrentOrganizationId } from '../services/OrganizationService';
 
 const DEFAULT_IMAGE_SETTINGS = {
   document: {
@@ -119,6 +120,41 @@ const isAlreadyExistsUploadError = (error) => {
   );
 };
 
+export const sanitizeStorageSegment = (value, fallback = 'default') => {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/[^a-z0-9/_-]+/gi, '-')
+    .replace(/\/+/g, '/')
+    .replace(/-+/g, '-')
+    .replace(/^\/|\/$/g, '');
+
+  return normalized || fallback;
+};
+
+export const buildTenantStoragePrefix = (organizationId, pathPrefix = '') => {
+  const tenantRoot = `tenant/${sanitizeStorageSegment(organizationId, 'unknown-org')}`;
+  const normalizedPrefix = sanitizeStorageSegment(pathPrefix, '');
+  return normalizedPrefix ? `${tenantRoot}/${normalizedPrefix}` : tenantRoot;
+};
+
+export const buildTenantScopedStoragePath = ({
+  organizationId,
+  pathPrefix = '',
+  fileName = '',
+}) => {
+  const scopedPrefix = buildTenantStoragePrefix(organizationId, pathPrefix);
+  const normalizedFileName = sanitizeStorageSegment(fileName, 'upload.bin');
+  return normalizedFileName ? `${scopedPrefix}/${normalizedFileName}` : scopedPrefix;
+};
+
+export const buildStoragePathCandidates = (organizationId, pathPrefix = '') => {
+  const scopedPrefix = buildTenantStoragePrefix(organizationId, pathPrefix);
+  const normalizedLegacyPrefix = sanitizeStorageSegment(pathPrefix, '');
+  return normalizedLegacyPrefix
+    ? [scopedPrefix, normalizedLegacyPrefix]
+    : [scopedPrefix];
+};
+
 export const optimizeFileForUpload = async (file, options = {}) => {
   if (!isBrowserFile(file) || !isCompressibleImage(file)) {
     return {
@@ -224,7 +260,12 @@ export const uploadFile = async (file, options = {}) => {
     const randomId = Math.random().toString(36).substring(2, 10);
     const fileExt = optimizedUpload.extension;
     const cleanName = fileName || `${timestamp}_${randomId}.${fileExt}`;
-    const filePath = pathPrefix ? `${pathPrefix}/${cleanName}` : cleanName;
+    const organizationId = await getCurrentOrganizationId();
+    const filePath = buildTenantScopedStoragePath({
+      organizationId,
+      pathPrefix,
+      fileName: cleanName,
+    });
 
     let uploadData = null;
     let uploadError = null;

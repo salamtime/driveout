@@ -9,6 +9,7 @@ const TELEGRAM_TIMEZONE = 'Africa/Casablanca';
 const TELEGRAM_EVENT_KEYS = [
   'rental_created',
   'rental_started',
+  'rental_vehicle_replaced',
   'rental_completed',
   'payment_received',
   'rental_overdue',
@@ -303,6 +304,25 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         '',
         linkLine,
       ].join('\n');
+    case 'rental_vehicle_replaced': {
+      const oldVehicle = safeText(data.oldVehicle || data.old_vehicle_name || 'Unknown vehicle');
+      const newVehicle = safeText(data.newVehicle || data.new_vehicle_name || vehicle);
+      const reason = safeText(data.replacementReasonLabel || data.replacement_reason_label || data.replacementReason || '');
+      const note = safeText(data.replacementNote || data.replacement_note || '');
+
+      return [
+        '🔁 Rental Vehicle Replaced',
+        '',
+        ...(customerLine ? [customerLine] : []),
+        `From: ${oldVehicle}`,
+        `To: ${newVehicle}`,
+        ...(reason ? [`Reason: ${reason}`] : []),
+        ...(note ? [`Note: ${note}`] : []),
+        ...(rentalIdentityLine ? [rentalIdentityLine] : []),
+        '',
+        linkLine,
+      ].join('\n');
+    }
     case 'payment_received':
       if (isStaffLayout) {
         return [
@@ -803,6 +823,7 @@ const TELEGRAM_EVENT_DEDUPLICATION_WINDOWS_MS = {
   telegram_test: 30 * 1000,
   rental_created: 2 * 60 * 1000,
   rental_started: 2 * 60 * 1000,
+  rental_vehicle_replaced: 2 * 60 * 1000,
   rental_completed: 2 * 60 * 1000,
   rental_cancelled: 2 * 60 * 1000,
   rental_overdue: 30 * 1000,
@@ -821,6 +842,7 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
   switch (normalizedEventType) {
     case 'rental_created':
     case 'rental_started':
+    case 'rental_vehicle_replaced':
     case 'rental_completed':
     case 'rental_cancelled':
     case 'rental_overdue':
@@ -831,6 +853,9 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
         safeText(payload?.total),
         safeText(payload?.remaining),
         safeText(payload?.amountPaid),
+        safeText(payload?.old_vehicle_id || payload?.oldVehicle || payload?.old_vehicle_name),
+        safeText(payload?.new_vehicle_id || payload?.newVehicle || payload?.new_vehicle_name),
+        safeText(payload?.replacementReason || payload?.replacement_reason || payload?.replacement_reason_label),
         safeText(
           resolveDistanceValue(payload) ||
           payload?.total_kilometers_driven ||

@@ -3,7 +3,7 @@ import { Search, Filter, X, Calendar, MapPin, DollarSign, Clock, Car } from 'luc
 import { useTranslation } from 'react-i18next';
 import { debounce } from 'lodash';
 import PerformanceMonitor from '../../utils/PerformanceMonitor';
-import CacheService from '../../services/CacheService';
+import { CacheService } from '../../services/CacheService';
 
 const AdvancedSearch = ({ 
   onSearch, 

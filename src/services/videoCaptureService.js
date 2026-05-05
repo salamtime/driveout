@@ -1,5 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { getCompressedVideoRecorderOptions } from '../utils/videoRecording';
+import { buildTenantScopedStoragePath } from '../utils/storageUpload';
+import { getCurrentOrganizationId } from './OrganizationService';
 
 /**
  * Video Capture Service - Handles video recording and upload functionality
@@ -120,9 +122,16 @@ class VideoCaptureService {
       console.log(`Uploading video to: ${bucketName}/${filename}`);
 
       // FIXED: Upload to correct bucket
+      const organizationId = await getCurrentOrganizationId();
+      const scopedFilename = buildTenantScopedStoragePath({
+        organizationId,
+        pathPrefix: `rental-videos/${rentalId}/${videoType}`,
+        fileName: filename,
+      });
+
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from(bucketName)
-        .upload(filename, videoBlob, {
+        .upload(scopedFilename, videoBlob, {
           cacheControl: '3600',
           upsert: false,
           contentType: 'video/webm'
@@ -135,7 +144,7 @@ class VideoCaptureService {
       // Get public URL
       const { data: urlData } = supabase.storage
         .from(bucketName)
-        .getPublicUrl(filename);
+        .getPublicUrl(scopedFilename);
 
       // FIXED: Store in media table instead of rental table
       const mediaRecord = {

@@ -1,7 +1,14 @@
 import { supabase } from '../lib/supabase';
 import { TBL } from '../config/tables';
-import CacheService from './CacheService';
+import { CacheService } from './CacheService';
 import PerformanceMonitor from '../utils/PerformanceMonitor';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  getCurrentOrganizationId,
+} from './OrganizationService';
+
+const NOTIFICATIONS_TABLE = 'notifications';
 
 class NotificationService {
   constructor() {
@@ -113,15 +120,21 @@ class NotificationService {
    * Set up system notifications subscription
    */
   async setupSystemSubscription() {
+    const organizationId = await getCurrentOrganizationId();
     const subscription = supabase
       .channel('system_notifications')
       .on('postgres_changes', 
         { 
           event: '*', 
           schema: 'public', 
-          table: TBL.NOTIFICATIONS 
+          table: NOTIFICATIONS_TABLE 
         }, 
-        (payload) => this.handleSystemNotification(payload)
+        (payload) => {
+          if (organizationId && payload?.new?.organization_id && String(payload.new.organization_id) !== String(organizationId)) {
+            return;
+          }
+          this.handleSystemNotification(payload);
+        }
       )
       .subscribe((status) => {
         console.log(`📡 System notifications subscription status: ${status}`);
@@ -435,25 +448,172 @@ class NotificationService {
    * Send custom notification
    */
   async sendNotification(notification) {
-    try {
-      // Store in database if needed
-      const { data, error } = await supabase
-        .from(TBL.NOTIFICATIONS)
-        .insert([{
-          title: notification.title,
-          message: notification.message,
-          type: notification.type || 'custom',
-          priority: notification.priority || 'medium',
-          data: notification.data || {},
-          created_at: new Date().toISOString()
-        }])
-        .select()
-        .single();
+    return this.createNotification(notification);
+  }
 
-      if (error) {
-        console.error('Error storing notification:', error);
-        throw error;
-      }
+  async resolveNotificationContext(userId = null) {
+    const [
+      organizationId,
+      { data: authData },
+    ] = await Promise.all([
+      getCurrentOrganizationId(),
+      supabase.auth.getUser(),
+    ]);
+
+    return {
+      organizationId: organizationId || null,
+      userId: userId || authData?.user?.id || null,
+    };
+  }
+
+  async getNotifications(userId = null) {
+    const { organizationId, userId: resolvedUserId } = await this.resolveNotificationContext(userId);
+    if (!resolvedUserId) return [];
+
+    const { data, error } = await applyOrganizationScope(
+      supabase
+        .from(NOTIFICATIONS_TABLE)
+        .select('*')
+        .eq('user_id', resolvedUserId)
+        .order('created_at', { ascending: false }),
+      organizationId
+    );
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  async markNotificationAsRead(notificationId, userId = null) {
+    const { organizationId, userId: resolvedUserId } = await this.resolveNotificationContext(userId);
+    if (!resolvedUserId) {
+      throw new Error('Authentication required');
+    }
+
+    const { data, error } = await applyOrganizationScope(
+      supabase
+        .from(NOTIFICATIONS_TABLE)
+        .update({
+          read: true,
+          read_at: new Date().toISOString(),
+        })
+        .eq('id', notificationId)
+        .eq('user_id', resolvedUserId)
+        .select()
+        .single(),
+      organizationId
+    );
+
+    if (error) throw error;
+    return data;
+  }
+
+  async markAllNotificationsAsRead(userId = null) {
+    const { organizationId, userId: resolvedUserId } = await this.resolveNotificationContext(userId);
+    if (!resolvedUserId) return [];
+
+    const { data, error } = await applyOrganizationScope(
+      supabase
+        .from(NOTIFICATIONS_TABLE)
+        .update({
+          read: true,
+          read_at: new Date().toISOString(),
+        })
+        .eq('user_id', resolvedUserId)
+        .eq('read', false)
+        .select(),
+      organizationId
+    );
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  async createNotification(notificationData) {
+    const { organizationId, userId: resolvedUserId } = await this.resolveNotificationContext(notificationData?.user_id);
+    const payload = {
+      ...applyOrganizationMatch({}, organizationId),
+      ...notificationData,
+      user_id: notificationData?.user_id || resolvedUserId,
+      created_at: new Date().toISOString(),
+      read: Boolean(notificationData?.read),
+    };
+
+    const { data, error } = await supabase
+      .from(NOTIFICATIONS_TABLE)
+      .insert([payload])
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  async deleteNotification(notificationId, userId = null) {
+    const { organizationId, userId: resolvedUserId } = await this.resolveNotificationContext(userId);
+    if (!resolvedUserId) {
+      throw new Error('Authentication required');
+    }
+
+    const { error } = await applyOrganizationScope(
+      supabase
+        .from(NOTIFICATIONS_TABLE)
+        .delete()
+        .eq('id', notificationId)
+        .eq('user_id', resolvedUserId),
+      organizationId
+    );
+
+    if (error) throw error;
+    return notificationId;
+  }
+
+  async subscribeToUserNotifications(userId = null, onChange = null) {
+    const { organizationId, userId: resolvedUserId } = await this.resolveNotificationContext(userId);
+    if (!resolvedUserId) {
+      throw new Error('Authentication required');
+    }
+
+    const subscription = supabase
+      .channel(`notifications_${organizationId || 'global'}_${resolvedUserId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: NOTIFICATIONS_TABLE,
+          filter: `user_id=eq.${resolvedUserId}`
+        },
+        (payload) => {
+          if (organizationId && payload?.new?.organization_id && String(payload.new.organization_id) !== String(organizationId)) {
+            return;
+          }
+          if (typeof onChange === 'function') {
+            onChange(payload);
+          }
+        }
+      )
+      .subscribe();
+
+    return subscription;
+  }
+
+  async unsubscribeFromUserNotifications(subscription) {
+    if (subscription) {
+      await supabase.removeChannel(subscription);
+    }
+    return true;
+  }
+
+  async sendNotification(notification) {
+    try {
+      const data = await this.createNotification({
+        title: notification.title,
+        message: notification.message,
+        type: notification.type || 'custom',
+        priority: notification.priority || 'medium',
+        data: notification.data || {},
+        user_id: notification.user_id || null,
+      });
 
       // Emit immediately for real-time delivery
       this.emit('notification', {

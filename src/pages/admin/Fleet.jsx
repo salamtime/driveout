@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Car, MapPin, CircleDot } from 'lucide-react';
-import { supabase } from '../../lib/supabase';
 import VehicleService from '../../services/VehicleService';
+import FleetLocationService from '../../services/FleetLocationService';
 import { normalizeVehicleImageUrl } from '../../utils/vehicleImage';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import i18n from '../../i18n';
@@ -25,11 +25,11 @@ const FleetPage = () => {
         setLoading(true);
         const [vehicleRows, locationRows] = await Promise.all([
           VehicleService.getAllVehicles(),
-          supabase.from('saharax_0u4w4d_locations').select('id, name'),
+          FleetLocationService.listLocations(),
         ]);
         if (!isMounted) return;
         setVehicles(Array.isArray(vehicleRows) ? vehicleRows : []);
-        setLocations(Array.isArray(locationRows?.data) ? locationRows.data : []);
+        setLocations(Array.isArray(locationRows) ? locationRows : []);
       } catch (error) {
         console.error('Failed to load vehicles list', error);
       } finally {

@@ -6,6 +6,11 @@
  */
 
 import { supabase } from '../lib/supabase';
+import {
+  applyOrganizationMatch,
+  applyOrganizationScope,
+  getCurrentOrganizationId,
+} from './OrganizationService';
 
 class FuelService {
   constructor() {
@@ -40,18 +45,25 @@ class FuelService {
   async checkDatabaseSetup() {
     try {
       console.log('🔍 Checking database access for fuel tables...');
+      const organizationId = await getCurrentOrganizationId();
       
       // Test access to fuel_refills table
-      const { data: refillsTest, error: refillsError } = await supabase
+      const { data: refillsTest, error: refillsError } = await applyOrganizationScope(
+        supabase
         .from('fuel_refills')
         .select('id')
-        .limit(1);
+        .limit(1),
+        organizationId
+      );
         
       // Test access to fuel_withdrawals table  
-      const { data: withdrawalsTest, error: withdrawalsError } = await supabase
+      const { data: withdrawalsTest, error: withdrawalsError } = await applyOrganizationScope(
+        supabase
         .from('fuel_withdrawals')
         .select('id')
-        .limit(1);
+        .limit(1),
+        organizationId
+      );
 
       if (refillsError) {
         console.error('❌ fuel_refills table access error:', refillsError);
@@ -186,6 +198,7 @@ class FuelService {
   async addRefill(refillData) {
     try {
       console.log('🚀 Adding fuel refill to DATABASE + localStorage:', refillData);
+      const organizationId = await getCurrentOrganizationId();
       
       const refill = {
         liters_added: parseFloat(refillData.liters_added),
@@ -212,7 +225,7 @@ class FuelService {
           console.log('💾 Saving refill to fuel_refills table...');
           const { data: dbRefill, error: dbError } = await supabase
             .from('fuel_refills')
-            .insert([refill])
+            .insert([applyOrganizationMatch(refill, organizationId)])
             .select()
             .single();
 
@@ -268,6 +281,7 @@ class FuelService {
   async addWithdrawal(withdrawalData) {
     try {
       console.log('🚀 Adding fuel withdrawal to DATABASE + localStorage:', withdrawalData);
+      const organizationId = await getCurrentOrganizationId();
       
       const withdrawal = {
         vehicle_id: parseInt(withdrawalData.vehicle_id) || null,
@@ -293,7 +307,7 @@ class FuelService {
           console.log('💾 Saving withdrawal to fuel_withdrawals table...');
           const { data: dbWithdrawal, error: dbError } = await supabase
             .from('fuel_withdrawals')
-            .insert([withdrawal])
+            .insert([applyOrganizationMatch(withdrawal, organizationId)])
             .select()
             .single();
 
@@ -353,6 +367,7 @@ class FuelService {
   async deleteTransaction(id, type, currentUserId) {
     try {
       console.log('🗑️ Deleting transaction:', { id, type, currentUserId });
+      const organizationId = await getCurrentOrganizationId();
 
       // Extract the actual database ID from the prefixed ID
       const dbId = id.replace(/^(refill|withdrawal)-/, '');
@@ -381,6 +396,7 @@ class FuelService {
             .from(tableName)
             .select('*')
             .eq('id', dbId)
+            .eq('organization_id', organizationId)
             .single();
 
           if (fetchError) {
@@ -412,7 +428,8 @@ class FuelService {
           const { error: deleteError } = await supabase
             .from(tableName)
             .delete()
-            .eq('id', dbId);
+            .eq('id', dbId)
+            .eq('organization_id', organizationId);
 
           if (deleteError) {
             console.error('❌ Database delete error:', deleteError);
@@ -453,17 +470,21 @@ class FuelService {
   async getRecentRefills(limit = 10) {
     try {
       console.log('🔄 Loading recent refills from DATABASE + localStorage...');
+      const organizationId = await getCurrentOrganizationId();
       
       let dbRefills = [];
       
       // Try to load from database first
       if (this.useDatabase) {
         try {
-          const { data: refillsFromDB, error: dbError } = await supabase
+          const { data: refillsFromDB, error: dbError } = await applyOrganizationScope(
+            supabase
             .from('fuel_refills')
             .select('*')
             .order('created_at', { ascending: false })
-            .limit(limit);
+            .limit(limit),
+            organizationId
+          );
 
           if (dbError) {
             console.error('❌ Database error loading refills:', dbError);
@@ -521,17 +542,21 @@ class FuelService {
   async getRecentWithdrawals(limit = 10) {
     try {
       console.log('🔄 Loading recent withdrawals from DATABASE + localStorage...');
+      const organizationId = await getCurrentOrganizationId();
       
       let dbWithdrawals = [];
       
       // Try to load from database first
       if (this.useDatabase) {
         try {
-          const { data: withdrawalsFromDB, error: dbError } = await supabase
+          const { data: withdrawalsFromDB, error: dbError } = await applyOrganizationScope(
+            supabase
             .from('fuel_withdrawals')
             .select('*')
             .order('created_at', { ascending: false })
-            .limit(limit);
+            .limit(limit),
+            organizationId
+          );
 
           if (dbError) {
             console.error('❌ Database error loading withdrawals:', dbError);
@@ -640,12 +665,14 @@ class FuelService {
     console.log('🔍 Querying saharax_0u4w4d_vehicles table with correct columns...');
     
     try {
+      const organizationId = await getCurrentOrganizationId();
       // Force a fresh query every time - no caching
       const timestamp = new Date().toISOString();
       console.log(`🕐 Query timestamp: ${timestamp}`);
       
       // Only select columns that actually exist in the table
-      const { data: vehicles, error } = await supabase
+      const { data: vehicles, error } = await applyOrganizationScope(
+        supabase
         .from('saharax_0u4w4d_vehicles')
         .select(`
           id,
@@ -657,7 +684,9 @@ class FuelService {
           created_at,
           updated_at
         `)
-        .order('name', { ascending: true });
+        .order('name', { ascending: true }),
+        organizationId
+      );
 
       console.log('📊 SUPABASE RESPONSE:', { 
         error: error, 
@@ -731,12 +760,16 @@ class FuelService {
   async getFuelRefillsForReporting(startDate, endDate) {
     try {
       console.log('📊 Loading fuel refills for reporting:', { startDate, endDate });
+      const organizationId = await getCurrentOrganizationId();
       
       if (this.useDatabase) {
-        let query = supabase
+        let query = applyOrganizationScope(
+          supabase
           .from('fuel_refills')
           .select('*')
-          .order('refill_date', { ascending: false });
+          .order('refill_date', { ascending: false }),
+          organizationId
+        );
           
         if (startDate) {
           query = query.gte('refill_date', startDate);

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Building2, CheckCircle2, ChevronLeft, Clock3, ExternalLink, RefreshCw, Search, ShieldAlert, ShieldCheck, UserRound } from 'lucide-react';
+import { toast } from 'sonner';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
 import { useAuth } from '../../contexts/AuthContext';
@@ -42,6 +43,7 @@ const statusTone = {
 };
 
 const WORKSPACE_DETAIL_TAB_IDS = ['overview', 'owner_identity', 'audit', 'feature_access', 'upgrades'];
+const TENANCY_MODE_OPTIONS = ['shared', 'dedicated'];
 
 const formatDate = (value) => {
   if (!value) return '—';
@@ -59,6 +61,14 @@ const normalizeUrl = (value) => {
   const trimmed = String(value || '').trim();
   if (!trimmed) return '';
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+};
+
+const formatTenancyModeLabel = (mode, tr) => {
+  const normalized = String(mode || '').trim().toLowerCase();
+  if (normalized === 'dedicated') {
+    return tr('Dedicated', 'Dédié');
+  }
+  return tr('Shared', 'Partagé');
 };
 
 const getProjectRefFromSupabaseUrl = (value) => {
@@ -512,16 +522,43 @@ const getHealthSeverityTone = (severity = 'warning') => {
   return 'border-amber-200 bg-amber-50 text-amber-700';
 };
 
-const buildTenantHealthReport = ({ workspace, controlsDraft, connectionDraft, storefrontUrl, workspaceUrl, tr, showOwnerLinkage = true }) => {
+const resolveSharedTenantOrganizationIdentity = (tenant = {}) => {
+  const metadata = tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {};
+  const sharedRuntime = metadata?.shared_runtime && typeof metadata.shared_runtime === 'object'
+    ? metadata.shared_runtime
+    : {};
+
+  return {
+    organizationId: String(
+      tenant?.organization_id ||
+      metadata.organization_id ||
+      metadata.shared_organization_id ||
+      sharedRuntime.organization_id ||
+      ''
+    ).trim(),
+    organizationSlug: String(
+      tenant?.organization_slug ||
+      metadata.organization_slug ||
+      metadata.shared_organization_slug ||
+      sharedRuntime.organization_slug ||
+      ''
+    ).trim(),
+  };
+};
+
+const buildTenantHealthReport = ({ workspace, controlsDraft, connectionDraft, storefrontUrl, workspaceUrl, tr, showOwnerLinkage = true, tenancyMode = 'shared' }) => {
   const tenant = workspace?.tenant || {};
   const job = workspace?.provisioningJob || {};
   const relationship = workspace?.relationship || {};
   const status = String(workspace?.status || 'pending').trim().toLowerCase();
+  const normalizedTenancyMode = String(tenancyMode || 'shared').trim().toLowerCase() || 'shared';
+  const isDedicated = normalizedTenancyMode === 'dedicated';
   const projectRef = String(connectionDraft?.tenant_project_ref || tenant?.tenant_project_ref || '').trim();
   const apiUrl = normalizeUrl(connectionDraft?.tenant_api_url || tenant?.tenant_api_url || '');
   const anonKey = String(connectionDraft?.tenant_anon_key || tenant?.tenant_anon_key || '').trim();
   const appUrl = normalizeUrl(connectionDraft?.tenant_app_url || tenant?.tenant_app_url || '');
   const schemaVersion = String(connectionDraft?.schema_version || tenant?.schema_version || '').trim();
+  const { organizationId, organizationSlug } = resolveSharedTenantOrganizationIdentity(tenant);
   const provisioningError = String(tenant?.provisioning_error || job?.error_message || '').trim();
   const dispatch = tenant?.metadata?.provisioning_dispatch || {};
   const dispatchAttempted = Boolean(dispatch?.dispatched);
@@ -535,14 +572,21 @@ const buildTenantHealthReport = ({ workspace, controlsDraft, connectionDraft, st
     || String(controlsDraft?.billing_status || '').trim().toLowerCase() === 'failed';
 
   const checks = [
-    {
+    ...(isDedicated ? [{
       key: 'workspace_config',
-      label: tr('Workspace configuration', 'Configuration workspace'),
+      label: tr('Dedicated infrastructure', 'Infrastructure dédiée'),
       state: projectRef && apiUrl && anonKey && appUrl ? 'healthy' : (status === 'active' ? 'critical' : 'warning'),
       detail: projectRef && apiUrl && anonKey && appUrl
         ? tr('Project ref, API URL, anon key, and app URL are all present.', 'La référence projet, l’URL API, la clé anon et l’URL app sont toutes présentes.')
-        : tr('One or more required workspace connection fields are missing.', 'Un ou plusieurs champs de connexion workspace sont manquants.'),
-    },
+        : tr('One or more required dedicated workspace connection fields are missing.', 'Un ou plusieurs champs de connexion workspace dédiés sont manquants.'),
+    }] : [{
+      key: 'shared_runtime',
+      label: tr('Shared runtime mapping', 'Mapping runtime partagé'),
+      state: organizationId && organizationSlug ? 'healthy' : (status === 'active' ? 'critical' : 'warning'),
+      detail: organizationId && organizationSlug
+        ? tr('Organization identity is linked for this shared tenant runtime.', 'L’identité organisation est liée pour ce runtime tenant partagé.')
+        : tr('Organization identity is still missing for this shared tenant runtime.', 'L’identité organisation manque encore pour ce runtime tenant partagé.'),
+    }]),
     {
       key: 'dispatch',
       label: tr('Provisioning dispatch', 'Déclenchement provisionnement'),
@@ -558,14 +602,14 @@ const buildTenantHealthReport = ({ workspace, controlsDraft, connectionDraft, st
     {
       key: 'runtime_access',
       label: tr('Runtime access', 'Accès runtime'),
-      state: storefrontUrl && workspaceUrl ? 'healthy' : (status === 'active' ? 'critical' : 'warning'),
-      detail: storefrontUrl && workspaceUrl
-        ? tr('Storefront and workspace URLs are available.', 'Les URLs vitrine et workspace sont disponibles.')
+      state: appUrl && storefrontUrl && workspaceUrl ? 'healthy' : (status === 'active' ? 'critical' : 'warning'),
+      detail: appUrl && storefrontUrl && workspaceUrl
+        ? tr('Storefront and workspace URLs are available for this tenant.', 'Les URLs vitrine et workspace sont disponibles pour ce tenant.')
         : tr('Storefront or workspace URL is still missing.', 'L’URL vitrine ou workspace est encore manquante.'),
     },
     {
       key: 'schema_version',
-      label: tr('Schema version', 'Version schéma'),
+      label: isDedicated ? tr('Schema version', 'Version schéma') : tr('Runtime version', 'Version runtime'),
       state: schemaVersion ? 'healthy' : 'warning',
       detail: schemaVersion
         ? tr(`Schema version recorded: ${schemaVersion}.`, `Version de schéma enregistrée : ${schemaVersion}.`)
@@ -598,7 +642,11 @@ const buildTenantHealthReport = ({ workspace, controlsDraft, connectionDraft, st
 
   const recommendations = [];
   if (status === 'pending') {
-    recommendations.push(tr('Start automatic provisioning to create the isolated tenant workspace.', 'Démarrez le provisionnement automatique pour créer le workspace tenant isolé.'));
+    recommendations.push(
+      isDedicated
+        ? tr('Start automatic provisioning to create the isolated tenant workspace.', 'Démarrez le provisionnement automatique pour créer le workspace tenant isolé.')
+        : tr('Start automatic provisioning to prepare the shared tenant runtime and owner organization.', 'Démarrez le provisionnement automatique pour préparer le runtime partagé et l’organisation propriétaire.')
+    );
   }
   if (dispatchFailedAt) {
     recommendations.push(tr('Retry the automatic provisioning dispatch and confirm the worker webhook is configured.', 'Relancez le déclenchement automatique et confirmez que le webhook worker est configuré.'));
@@ -606,8 +654,11 @@ const buildTenantHealthReport = ({ workspace, controlsDraft, connectionDraft, st
   if (isStalledProvisioning) {
     recommendations.push(tr('Provisioning has been running for more than one hour. Review the latest job logs and either retry or fail the job explicitly.', 'Le provisionnement tourne depuis plus d’une heure. Vérifiez les derniers logs du job puis relancez-le ou marquez-le en échec.'));
   }
-  if (status === 'active' && (!projectRef || !apiUrl || !anonKey || !appUrl)) {
+  if (isDedicated && status === 'active' && (!projectRef || !apiUrl || !anonKey || !appUrl)) {
     recommendations.push(tr('Complete the missing workspace connection fields before treating this tenant as fully live.', 'Complétez les champs de connexion workspace manquants avant de considérer ce tenant comme totalement en ligne.'));
+  }
+  if (!isDedicated && status === 'active' && (!organizationId || !organizationSlug)) {
+    recommendations.push(tr('Resolve the missing organization mapping before treating this shared tenant as fully live.', 'Résolvez le mapping organisation manquant avant de considérer ce tenant partagé comme totalement en ligne.'));
   }
   if (provisioningError) {
     recommendations.push(tr(`Latest provisioning error: ${provisioningError}`, `Dernière erreur de provisionnement : ${provisioningError}`));
@@ -692,8 +743,8 @@ const resolveWorkspaceAccessMode = (relationship, isFrench) => {
   return {
     label: tr('Platform admin access only', 'Accès admin plateforme seulement'),
     note: tr(
-      'Opening this workspace keeps your platform-admin identity. It does not sign you in as that tenant owner.',
-      'L’ouverture de cet espace conserve votre identité admin plateforme. Cela ne vous connecte pas comme propriétaire de ce tenant.'
+      'Opening this workspace keeps your current platform-admin identity while loading that tenant context.',
+      "L’ouverture de cet espace conserve votre identité admin plateforme actuelle tout en chargeant le contexte de ce tenant."
     ),
     buttonLabel: tr('Open as platform admin', 'Ouvrir comme admin plateforme'),
     tone: 'border-slate-200 bg-slate-100 text-slate-700',
@@ -819,6 +870,7 @@ const buildControlsDraft = (workspace = {}) => {
     : {};
 
   return {
+    tenancy_mode: String(tenant?.tenancy_mode || tenant?.metadata?.tenancy_mode || 'shared').trim().toLowerCase() || 'shared',
     plan_type: planType,
     subscription_status: String(subscription?.subscription_status || 'trial').trim().toLowerCase() || 'trial',
     billing_status: String(subscription?.billing_status || 'none').trim().toLowerCase() || 'none',
@@ -989,6 +1041,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
     error_message: tenant?.provisioning_error || job?.error_message || '',
   });
   const [busy, setBusy] = useState('');
+  const [controlsSaveNotice, setControlsSaveNotice] = useState('');
   const [showManualConfig, setShowManualConfig] = useState(false);
   const [controlsDraft, setControlsDraft] = useState(() => buildControlsDraft(workspace));
   const [settingsDraft, setSettingsDraft] = useState(() => buildSettingsDraft(workspace));
@@ -996,6 +1049,9 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
   const [auditLoading, setAuditLoading] = useState(false);
   const [schemaActionResult, setSchemaActionResult] = useState(null);
   const [confirmSchemaApply, setConfirmSchemaApply] = useState(false);
+  const tenancyMode = String(controlsDraft?.tenancy_mode || tenant?.tenancy_mode || tenant?.metadata?.tenancy_mode || 'shared').trim().toLowerCase() || 'shared';
+  const isDedicatedTenant = tenancyMode === 'dedicated';
+  const isSharedTenant = !isDedicatedTenant;
 
   useEffect(() => {
     const nextDraft = {
@@ -1021,7 +1077,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
   }, [workspace]);
 
   const applySavedControlsSnapshot = useCallback((response) => {
-    if (!response || (!response.subscription && !response.tenant_metadata)) return;
+    if (!response || (!response.subscription && !response.tenant_metadata && !response.tenant)) return;
 
     const nextWorkspace = {
       ...workspace,
@@ -1031,6 +1087,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
       },
       tenant: {
         ...(workspace?.tenant || {}),
+        ...(response.tenant || {}),
         metadata: {
           ...(((workspace?.tenant?.metadata) && typeof workspace.tenant.metadata === 'object')
             ? workspace.tenant.metadata
@@ -1093,9 +1150,10 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
       storefrontUrl,
       workspaceUrl,
       tr,
+      tenancyMode,
       showOwnerLinkage: hostContext.kind === 'admin' || hostContext.isLocal,
     }),
-    [controlsDraft, draft, hostContext.isLocal, hostContext.kind, storefrontUrl, workspace, workspaceUrl, tr]
+    [controlsDraft, draft, hostContext.isLocal, hostContext.kind, storefrontUrl, tenancyMode, workspace, workspaceUrl, tr]
   );
   const schemaState = useMemo(() => buildSchemaWorkspaceState(workspace), [workspace]);
   const isSchemaBusy = busy.startsWith('schema-');
@@ -1186,6 +1244,10 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
       if (action === 'start') {
         await startTenantProvisioning(job?.id || '', workspace?.businessAccount?.id);
       } else if (action === 'complete') {
+        if (!isDedicatedTenant) {
+          alert(tr('Manual dedicated activation is only available for dedicated tenants.', 'L’activation manuelle dédiée est disponible seulement pour les tenants dédiés.'));
+          return;
+        }
         const payload = {
           ...draft,
           tenant_api_url: normalizeUrl(draft.tenant_api_url),
@@ -1224,6 +1286,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
     tenant?.provisioning_started_at;
   const accessMode = resolveWorkspaceAccessMode(workspace.relationship, isFrench);
   const enabledFeatureCount = Object.values(controlsDraft.feature_access || {}).filter(Boolean).length;
+  const sharedTenantOrganizationIdentity = resolveSharedTenantOrganizationIdentity(tenant);
   const moduleFeatureDefinitions = [
     ['dashboard_basic', tr('Dashboard', 'Tableau de bord')],
     ['calendar_module', tr('Calendar', 'Calendrier')],
@@ -1272,11 +1335,13 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
   const saveControls = async () => {
     try {
       setBusy('controls');
+      setControlsSaveNotice('');
       const response = await updateTenantControls({
         businessAccountId: workspace?.businessAccount?.id,
         tenantId: tenant?.id,
         subscriptionPatch: controlsDraft,
         tenantPatch: {
+          tenancy_mode: controlsDraft.tenancy_mode,
           feature_access: controlsDraft.feature_access,
           settings: settingsDraft,
           commercial_settings: controlsDraft.commercial_settings,
@@ -1285,7 +1350,10 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
       applySavedControlsSnapshot(response);
       await loadAuditRows();
       await onUpdated?.();
+      setControlsSaveNotice(tr('Tenant controls saved successfully.', 'Contrôles tenant enregistrés avec succès.'));
+      toast.success(tr('Tenant controls saved successfully.', 'Contrôles tenant enregistrés avec succès.'));
     } catch (error) {
+      setControlsSaveNotice('');
       alert(error?.message || tr('Unable to save tenant controls.', 'Impossible d’enregistrer les contrôles tenant.'));
     } finally {
       setBusy('');
@@ -1443,6 +1511,11 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
   };
 
   const runSchemaAction = async (action) => {
+    if (!isDedicatedTenant && action !== 'runtime') {
+      alert(tr('Schema release actions are only available for dedicated tenants. Shared tenants use the shared runtime readiness flow instead.', 'Les actions de release schéma sont disponibles seulement pour les tenants dédiés. Les tenants partagés utilisent le flux de readiness runtime partagé.'));
+      return;
+    }
+
     try {
       setBusy(`schema-${action}`);
       setSchemaActionResult(null);
@@ -1561,7 +1634,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
         </section>
 
         <div className="space-y-4">
-          {detailTab === 'overview' ? (
+          {detailTab === 'overview' && isDedicatedTenant ? (
           <section className={`${lightSectionClass} p-5`}>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
@@ -1574,6 +1647,61 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
                 <p className={lightCardValueClass}>{accessMode.label}</p>
                 <p className="mt-1 text-sm text-slate-500">{tr('Current role and workspace context', 'Rôle actuel et contexte workspace')}</p>
               </div>
+            </div>
+          </section>
+          ) : null}
+
+          {detailTab === 'overview' && isSharedTenant ? (
+          <section className={`${lightSectionClass} p-5`}>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className={lightEyebrowClass}>{tr('Shared runtime', 'Runtime partagé')}</p>
+                <h3 className={lightSectionHeadingClass}>{tr('Shared tenant readiness', 'Readiness du tenant partagé')}</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  {tr(
+                    'This tenant uses the shared runtime, so the admin view tracks organization mapping and runtime readiness instead of dedicated infrastructure controls.',
+                    'Ce tenant utilise le runtime partagé, donc la vue admin suit le mapping organisation et la readiness runtime plutôt que les contrôles d’infrastructure dédiée.'
+                  )}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getRuntimeVerificationTone(schemaState.runtimeVerificationOk)}`}>
+                  {schemaState.runtimeVerificationOk === true
+                    ? <CheckCircle2 className="h-3.5 w-3.5" />
+                    : schemaState.runtimeVerificationOk === false
+                      ? <ShieldAlert className="h-3.5 w-3.5" />
+                      : <Clock3 className="h-3.5 w-3.5" />}
+                  {getRuntimeVerificationLabel(schemaState.runtimeVerificationOk, tr)}
+                </span>
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                  {formatTenancyModeLabel(tenancyMode, tr)}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                [tr('Organization id', 'Identifiant organisation'), sharedTenantOrganizationIdentity.organizationId || '—'],
+                [tr('Organization slug', 'Slug organisation'), sharedTenantOrganizationIdentity.organizationSlug || '—'],
+                [tr('Runtime verified', 'Runtime vérifié'), schemaState.runtimeLastVerifiedAt ? formatDateTime(schemaState.runtimeLastVerifiedAt) : tr('Never verified', 'Jamais vérifié')],
+                [tr('Schema version', 'Version schéma'), schemaState.schemaVersion || 'v1'],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                  <p className={lightLabelClass}>{label}</p>
+                  <p className="mt-2 break-words text-sm font-semibold text-slate-900">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                disabled={isSchemaBusy}
+                onClick={() => runSchemaAction('runtime')}
+                className={lightPrimaryButtonClass}
+              >
+                {busy === 'schema-runtime' ? tr('Checking runtime...', 'Vérification runtime...') : tr('Verify shared runtime', 'Vérifier le runtime partagé')}
+              </button>
             </div>
           </section>
           ) : null}
@@ -2367,6 +2495,18 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
             <div className="mt-5 grid gap-3 md:grid-cols-3">
               <label className="block">
+                <span className={lightLabelClass}>{tr('Tenancy mode', 'Mode de tenancy')}</span>
+                <select
+                  value={controlsDraft.tenancy_mode}
+                  onChange={(event) => setControlsDraft((prev) => ({ ...prev, tenancy_mode: event.target.value }))}
+                  className={lightInputClass}
+                >
+                  {TENANCY_MODE_OPTIONS.map((item) => (
+                    <option key={item} value={item}>{formatTenancyModeLabel(item, tr)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
                 <span className={lightLabelClass}>{tr('Plan', 'Plan')}</span>
                 <select
                   value={controlsDraft.plan_type}
@@ -2402,6 +2542,18 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
                   ))}
                 </select>
               </label>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm leading-6 text-slate-600">
+              {controlsDraft.tenancy_mode === 'dedicated'
+                ? tr(
+                    'Dedicated mode preserves the legacy project-per-tenant infrastructure path for isolated or premium workspaces.',
+                    'Le mode dédié préserve le chemin legacy projet-par-tenant pour les workspaces isolés ou premium.'
+                  )
+                : tr(
+                    'Shared mode keeps this tenant on the default shared runtime with organization-level isolation and the standard subdomain experience.',
+                    'Le mode partagé maintient ce tenant sur le runtime partagé par défaut avec isolation au niveau organisation et expérience sous-domaine standard.'
+                  )}
             </div>
 
             <div className={`mt-5 ${lightInsetCardClass} p-4`}>
@@ -2492,6 +2644,11 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
                 {busy === 'controls' ? tr('Saving access controls...', 'Enregistrement accès...') : tr('Save access controls', 'Enregistrer les contrôles d’accès')}
               </button>
             </div>
+            {controlsSaveNotice ? (
+              <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
+                {controlsSaveNotice}
+              </div>
+            ) : null}
           </section>
           ) : null}
 
@@ -2756,21 +2913,38 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
               <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Provisioning pipeline', 'Pipeline de provisionnement')}</p>
               <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
                 {status === 'pending'
-                  ? tr('Start the automatic provisioning job. The backend worker will create and connect the private tenant.', 'Démarrez le job automatique. Le worker backend créera et connectera le tenant privé.')
+                  ? (
+                    isDedicatedTenant
+                      ? tr('Start the automatic provisioning job. The backend worker will create and connect the private tenant.', 'Démarrez le job automatique. Le worker backend créera et connectera le tenant privé.')
+                      : tr('Start the automatic provisioning job. The backend worker will prepare the shared tenant runtime, owner organization, and subdomain routing.', 'Démarrez le job automatique. Le worker backend préparera le runtime partagé, l’organisation propriétaire et le routage sous-domaine.')
+                  )
                   : automationWasDispatched
                     ? tr('The worker has been notified. This page refreshes automatically; when it finishes, status changes to Active and Open Tenant appears.', 'Le worker a été notifié. Cette page se rafraîchit automatiquement; quand il termine, le statut passe à Actif et Ouvrir le tenant apparaît.')
-                    : tr('The tenant is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'Le tenant est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')}
+                    : (
+                      isDedicatedTenant
+                        ? tr('The tenant is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'Le tenant est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')
+                        : tr('The shared tenant is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'Le tenant partagé est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')
+                    )}
               </p>
 
-              <button
-                type="button"
-                onClick={() => setShowManualConfig((value) => !value)}
-                className="mt-4 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500 underline-offset-4 hover:text-slate-700 hover:underline"
-              >
-                {showManualConfig ? tr('Hide emergency activation', 'Masquer l’activation d’urgence') : tr('Emergency manual activation', 'Activation manuelle d’urgence')}
-              </button>
+              {isDedicatedTenant ? (
+                <button
+                  type="button"
+                  onClick={() => setShowManualConfig((value) => !value)}
+                  className="mt-4 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500 underline-offset-4 hover:text-slate-700 hover:underline"
+                >
+                  {showManualConfig ? tr('Hide emergency activation', 'Masquer l’activation d’urgence') : tr('Emergency manual activation', 'Activation manuelle d’urgence')}
+                </button>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm leading-6 text-slate-600">
+                  {tr(
+                    'Shared tenants do not use manual project/app/API activation fields. Provisioning should complete through tenant, organization, and runtime readiness only.',
+                    'Les tenants partagés n’utilisent pas les champs manuels projet/app/API. Le provisionnement doit se terminer uniquement via la readiness tenant, organisation et runtime.'
+                  )}
+                </div>
+              )}
 
-              {showManualConfig ? (
+              {isDedicatedTenant && showManualConfig ? (
                 <div className="mt-4 grid gap-3 rounded-[22px] border border-amber-200 bg-amber-50/70 p-4">
                   <p className="text-xs font-bold leading-5 text-amber-800">
                     {tr('Use this only while bootstrapping automation. Normal tenant activation should come from the provisioning worker.', 'À utiliser seulement pendant le bootstrap de l’automatisation. L’activation normale doit venir du worker de provisionnement.')}
@@ -2823,7 +2997,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
                 {tr('Provisioning in progress', 'Provisionnement en cours')}
               </div>
             ) : null}
-            {(status === 'provisioning' || status === 'failed') && showManualConfig ? (
+            {(status === 'provisioning' || status === 'failed') && isDedicatedTenant && showManualConfig ? (
               <div className="grid gap-3 sm:grid-cols-2">
                 <button type="button" disabled={!!busy} onClick={() => runAction('complete')} className={lightPrimaryButtonClass}>
                   <CheckCircle2 className="mr-2 h-4 w-4" />

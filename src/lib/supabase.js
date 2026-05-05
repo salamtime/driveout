@@ -12,12 +12,33 @@ const getHostname = () => {
   return String(window.location.hostname || 'local').toLowerCase();
 };
 
+const getPort = () => {
+  if (typeof window === 'undefined') return '';
+  return String(window.location.port || '').trim();
+};
+
+const LOCAL_TENANT_PORT_MAP = Object.freeze({
+  '5174': 'owner1',
+});
+
+const buildHostStorageScope = () => {
+  const hostname = getHostname();
+  const port = getPort();
+  return hostname === 'localhost' || hostname === '127.0.0.1'
+    ? `${hostname}:${port || 'default'}`
+    : hostname;
+};
+
 const isTenantHostname = () => {
   const hostname = getHostname();
+  const port = getPort();
+  if ((hostname === 'localhost' || hostname === '127.0.0.1') && LOCAL_TENANT_PORT_MAP[port]) {
+    return true;
+  }
   return hostname.endsWith('.driveout.io') && !['www.driveout.io', 'admin.driveout.io', 'app.driveout.io'].includes(hostname);
 };
 
-const buildStorageKey = ({ projectRef = 'master', hostname = getHostname() } = {}) =>
+const buildStorageKey = ({ projectRef = 'master', hostname = buildHostStorageScope() } = {}) =>
   `driveout.auth.${hostname}.${projectRef || 'workspace'}`;
 
 const createSupabaseClient = ({ url, anonKey, storageKey, applicationName = 'rental-management-system' }) =>

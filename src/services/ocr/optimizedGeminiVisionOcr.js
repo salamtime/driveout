@@ -12,6 +12,8 @@
 import { supabase } from '../../lib/supabase.js';
 import { buildApiUrl, GEMINI_PROXY_PATH } from '../apiUrl.js';
 import unifiedCustomerService from '../UnifiedCustomerService';
+import { buildTenantScopedStoragePath } from '../../utils/storageUpload.js';
+import { getCurrentOrganizationId } from '../OrganizationService.js';
 
 const GEMINI_PROXY_URL = buildApiUrl(GEMINI_PROXY_PATH);
 const GEMINI_KEY_REPLACEMENT_MESSAGE = 'OCR is unavailable right now because the Gemini API key must be replaced or renewed by an admin.';
@@ -653,8 +655,13 @@ Rules:
    */
   async uploadImage(imageFile, customerId) {
     try {
+      const organizationId = await getCurrentOrganizationId();
       const fileName = `idscan_${Date.now()}.jpg`;
-      const filePath = `${customerId}/${fileName}`;
+      const filePath = buildTenantScopedStoragePath({
+        organizationId,
+        pathPrefix: `customers/${customerId}`,
+        fileName,
+      });
 
       const { error } = await supabase.storage
         .from('id_scans')

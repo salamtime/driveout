@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { TBL } from '../config/tables';
 import { dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService';
+import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram';
 
 /**
  * Optimized Rental Service - High-performance rental data management
@@ -284,6 +285,16 @@ class OptimizedRentalService {
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);
       });
+
+      if (shouldDispatchInitialPaymentReceived(rental)) {
+        dispatchRentalLifecycleTelegramEvent({
+          eventType: 'payment_received',
+          actor: 'admin',
+          rental: buildInitialPaymentReceivedTelegramPayload(rental),
+        }).catch((telegramDispatchError) => {
+          console.warn('⚠️ Initial payment received Telegram dispatch failed (non-blocking):', telegramDispatchError);
+        });
+      }
 
       return { success: true, rental };
     } catch (error) {

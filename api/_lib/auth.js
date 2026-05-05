@@ -1,5 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
-import { APP_USERS_TABLE, PLATFORM_ADMIN_ACCOUNTS_TABLE, PLATFORM_TENANTS_TABLE, createSupabaseClients } from './supabase.js';
+import { APP_USERS_TABLE, PLATFORM_ADMIN_ACCOUNTS_TABLE, PLATFORM_TENANTS_TABLE, createSupabaseClients, getSharedSupabaseTenantConfig } from './supabase.js';
+import {
+  resolveTenantTenancyMode,
+  runPlatformTenantSelectWithModeFallback,
+} from './tenantRegistry.js';
 
 const PLATFORM_OWNER_EMAILS = new Set(['salamtime2016@gmail.com']);
 const PLATFORM_ADMIN_EMAILS = new Set([]);
@@ -125,6 +129,37 @@ const getProjectUrlFromJwt = (token) => {
   return projectRef ? `https://${projectRef}.supabase.co` : null;
 };
 
+const DRIVEOUT_BASE_DOMAIN = 'driveout.io';
+const RESERVED_SUBDOMAINS = new Set(['www', 'admin', 'app']);
+const LOCAL_TENANT_PORT_MAP = Object.freeze({
+  '5174': 'owner1',
+});
+
+const normalizeHostname = (value = '') => {
+  const trimmed = String(value || '').trim().toLowerCase();
+  if (!trimmed) return '';
+
+  try {
+    return new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).hostname.toLowerCase();
+  } catch {
+    return trimmed.split('/')[0].split(':')[0].toLowerCase();
+  }
+};
+
+const getTenantSlugFromHostname = (hostname = '') => {
+  const rawHostname = String(hostname || '').trim().toLowerCase();
+  const normalizedHostname = normalizeHostname(hostname);
+  const localPort = rawHostname.split(':')[1] || '';
+  if ((normalizedHostname === 'localhost' || normalizedHostname === '127.0.0.1') && LOCAL_TENANT_PORT_MAP[localPort]) {
+    return LOCAL_TENANT_PORT_MAP[localPort];
+  }
+
+  if (!normalizedHostname.endsWith(`.${DRIVEOUT_BASE_DOMAIN}`)) return '';
+
+  const slug = normalizedHostname.slice(0, -(`.${DRIVEOUT_BASE_DOMAIN}`.length));
+  return slug && !RESERVED_SUBDOMAINS.has(slug) ? slug : '';
+};
+
 const tenantServiceRoleKeyCache = new Map();
 
 export const getServiceRoleKeyForProject = async (projectRef) => {
@@ -213,6 +248,49 @@ const resolveTenantRuntimeFromToken = async (masterAdminClient, token) => {
   };
 };
 
+const resolveSharedTenantRuntimeFromRequest = async (masterAdminClient, req) => {
+  const requestedHost = String(
+    req.headers['x-forwarded-host'] ||
+    req.headers.host ||
+    ''
+  );
+  const tenantSlug = getTenantSlugFromHostname(requestedHost);
+  if (!tenantSlug) {
+    return null;
+  }
+
+  const { data: tenant, error } = await runPlatformTenantSelectWithModeFallback((selectClause) =>
+    masterAdminClient
+      .from(PLATFORM_TENANTS_TABLE)
+      .select(selectClause)
+      .eq('tenant_slug', tenantSlug)
+      .maybeSingle()
+  );
+
+  if (error) {
+    throw error;
+  }
+
+  if (!tenant || String(tenant.tenant_status || '').trim().toLowerCase() !== 'active') {
+    return null;
+  }
+
+  if (resolveTenantTenancyMode(tenant) !== 'shared') {
+    return null;
+  }
+
+  const sharedConfig = getSharedSupabaseTenantConfig();
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  return {
+    tenant,
+    projectRef: sharedConfig.projectRef,
+    apiUrl: sharedConfig.apiUrl,
+    anonKey: sharedConfig.anonKey,
+    serviceRoleKey,
+  };
+};
+
 export const getBearerToken = (req) => {
   const authHeader = getAuthHeader(req);
 
@@ -236,7 +314,9 @@ export const authenticateRequest = async (req) => {
     const { adminClient: masterAdminClient } = createSupabaseClients();
     const publicSupabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
     const publicSupabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-    const tenantRuntime = await resolveTenantRuntimeFromToken(masterAdminClient, token);
+    const tenantRuntime =
+      await resolveTenantRuntimeFromToken(masterAdminClient, token) ||
+      await resolveSharedTenantRuntimeFromRequest(masterAdminClient, req);
     const effectiveSupabaseUrl = tenantRuntime?.apiUrl || publicSupabaseUrl;
     const effectiveSupabaseAnonKey = tenantRuntime?.anonKey || publicSupabaseAnonKey;
     const effectiveAdminClient = tenantRuntime

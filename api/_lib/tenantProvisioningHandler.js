@@ -15,6 +15,7 @@ import {
   normalizePlanType,
   normalizeSubscriptionStatus,
   sanitizeTenantSlug,
+  resolveTenantTenancyMode,
 } from './tenantRegistry.js';
 import { buildAutomaticTenantWorkspace } from './tenantAutomationWorker.js';
 import {
@@ -25,11 +26,13 @@ import {
 import {
   applyCanonicalBusinessWorkspaceSchema,
   seedCanonicalBusinessWorkspaceRuntime,
+  seedSharedBusinessWorkspaceRuntime,
 } from './tenantWorkspaceBootstrap.js';
 import {
   CURRENT_TENANT_SCHEMA_RELEASE_ID,
   normalizeTenantSchemaVersion,
 } from './tenantSchemaRelease.js';
+import { getSharedSupabaseTenantConfig } from './supabase.js';
 
 const createHttpError = (status, message) => {
   const error = new Error(message);
@@ -562,6 +565,221 @@ const runAutomaticProvisioningWorker = async ({
   userId,
 }) => {
   const nowIso = new Date().toISOString();
+  const tenancyMode = resolveTenantTenancyMode(tenant);
+  const subscription = await fetchProvisioningSubscription({
+    adminClient,
+    businessAccountId: job.business_account_id,
+  });
+
+  if (tenancyMode === 'shared') {
+    const sharedConfig = getSharedSupabaseTenantConfig();
+    let runtime;
+
+    try {
+      runtime = await seedSharedBusinessWorkspaceRuntime({
+        adminClient,
+        tenantName: tenant.tenant_name || businessAccount?.company_name || businessAccount?.full_name || businessAccount?.email || 'Business Workspace',
+        tenantSlug: tenant.tenant_slug,
+        ownerAuthUserId: businessAccount?.auth_user_id || null,
+        ownerEmail: businessAccount?.email || null,
+        ownerFullName: businessAccount?.full_name || null,
+        trialStartedAt: subscription?.trial_started_at || null,
+        trialEndsAt: subscription?.trial_ends_at || null,
+      });
+    } catch (bootstrapError) {
+      throw createHttpError(
+        502,
+        `Unable to bootstrap shared tenant workspace runtime: ${bootstrapError?.message || bootstrapError}`
+      );
+    }
+
+    const sharedTenant = {
+      ...tenant,
+      tenant_project_ref: sharedConfig.projectRef,
+      tenant_api_url: sharedConfig.apiUrl,
+      tenant_anon_key: sharedConfig.anonKey,
+    };
+
+    let workspaceReadiness;
+    try {
+      workspaceReadiness = await resolveWorkspaceReadiness({
+        tenant: sharedTenant,
+        adminClient,
+        forceFresh: true,
+        persist: false,
+      });
+    } catch (readinessError) {
+      throw createHttpError(
+        502,
+        `Unable to verify shared workspace readiness: ${readinessError?.message || readinessError}`
+      );
+    }
+
+    if (workspaceReadiness?.ready !== true) {
+      const readinessMessage = getWorkspaceReadinessFailureMessage(workspaceReadiness);
+      const failedMetadata = mergeWorkspaceReadinessMetadata(sharedTenant, workspaceReadiness);
+
+      await Promise.all([
+        adminClient
+          .from(PLATFORM_TENANTS_TABLE)
+          .update({
+            tenant_status: 'failed',
+            tenant_project_ref: sharedConfig.projectRef,
+            tenant_api_url: sharedConfig.apiUrl,
+            tenant_anon_key: sharedConfig.anonKey,
+            schema_version: normalizeTenantSchemaVersion(tenant.schema_version),
+            provisioning_error: readinessMessage,
+            metadata: {
+              ...failedMetadata,
+              tenancy_mode: 'shared',
+              provisioning_mode: 'automatic',
+              provisioning_failed_at: nowIso,
+              provisioning_failed_via: 'shared_runtime_readiness_guard',
+              shared_workspace_source: 'platform_project',
+              shared_organization_id: runtime?.organizationId || null,
+              shared_organization_slug: runtime?.organizationSlug || null,
+            },
+          })
+          .eq('id', tenant.id),
+        adminClient
+          .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+          .update({
+            job_status: 'failed',
+            started_at: job.started_at || nowIso,
+            finished_at: nowIso,
+            error_message: readinessMessage,
+            result: {
+              ...(job.result || {}),
+              tenant_project_ref: sharedConfig.projectRef,
+              tenant_api_url: sharedConfig.apiUrl,
+              mode: 'automatic_shared',
+              failure_reason: readinessMessage,
+              workspace_readiness: workspaceReadiness,
+            },
+          })
+          .eq('id', job.id),
+      ]);
+
+      await insertProvisioningAuditLog({
+        adminClient,
+        businessAccountId: job.business_account_id,
+        tenantId: tenant.id,
+        performedBy: userId,
+        action: 'tenant_shared_runtime_readiness_failed',
+        metadata: {
+          job_id: job.id,
+          tenant_project_ref: sharedConfig.projectRef,
+          workspace_readiness: workspaceReadiness,
+        },
+      });
+
+      throw createHttpError(409, readinessMessage);
+    }
+
+    const tenantMetadata = {
+      ...mergeWorkspaceReadinessMetadata(sharedTenant, workspaceReadiness),
+      tenancy_mode: 'shared',
+      provisioning_mode: 'automatic',
+      provisioning_completed_by: userId,
+      provisioning_completed_via: 'shared_inline_worker',
+      provisioning_completed_at: nowIso,
+      automatic_workspace_source: 'shared_platform_project',
+      shared_organization_id: runtime?.organizationId || null,
+      shared_organization_slug: runtime?.organizationSlug || null,
+    };
+
+    const provisioningResult = buildProvisioningResult({
+      tenant_project_ref: sharedConfig.projectRef,
+      tenant_app_url: tenant.tenant_app_url,
+      tenant_api_url: sharedConfig.apiUrl,
+      schema_version: tenant.schema_version,
+    });
+
+    const [{ data: updatedTenant, error: tenantUpdateError }, { data: updatedJob, error: jobUpdateError }] = await Promise.all([
+      adminClient
+        .from(PLATFORM_TENANTS_TABLE)
+        .update({
+          tenant_status: 'active',
+          tenant_project_ref: sharedConfig.projectRef,
+          tenant_api_url: sharedConfig.apiUrl,
+          tenant_anon_key: sharedConfig.anonKey,
+          provisioned_at: nowIso,
+          provisioning_completed_at: nowIso,
+          provisioning_error: null,
+          metadata: tenantMetadata,
+        })
+        .eq('id', tenant.id)
+        .select('*')
+        .single(),
+      adminClient
+        .from(PLATFORM_TENANT_PROVISIONING_JOBS_TABLE)
+        .update({
+          job_status: 'completed',
+          started_at: job.started_at || nowIso,
+          finished_at: nowIso,
+          error_message: null,
+          result: {
+            ...(job.result || {}),
+            ...provisioningResult,
+            completed_by: userId,
+            mode: 'automatic_shared',
+            workspace_source: 'shared_platform_project',
+            organization_id: runtime?.organizationId || null,
+          },
+        })
+        .eq('id', job.id)
+        .select('*')
+        .single(),
+    ]);
+
+    if (tenantUpdateError) throw tenantUpdateError;
+    if (jobUpdateError) throw jobUpdateError;
+
+    await insertProvisioningAuditLog({
+      adminClient,
+      businessAccountId: job.business_account_id,
+      tenantId: tenant.id,
+      performedBy: userId,
+      action: 'complete_tenant_provisioning_shared',
+      metadata: {
+        job_id: job.id,
+        tenant_project_ref: sharedConfig.projectRef,
+        tenant_api_url: sharedConfig.apiUrl,
+        schema_version: tenant.schema_version,
+        organization_id: runtime?.organizationId || null,
+        provisioning_mode: 'automatic_shared',
+        workspace_source: 'shared_platform_project',
+      },
+    });
+
+    await adminClient.from('platform_tenant_events').insert({
+      tenant_id: tenant.id,
+      actor_user_id: userId || null,
+      event_type: 'activated',
+      payload: {
+        job_id: job.id,
+        tenant_project_ref: sharedConfig.projectRef,
+        mode: 'automatic_shared',
+        workspace_source: 'shared_platform_project',
+        organization_id: runtime?.organizationId || null,
+      },
+    });
+
+    return {
+      dispatched: true,
+      completed: true,
+      mode: 'automatic_shared',
+      workspace: {
+        tenantProjectRef: sharedConfig.projectRef,
+        tenantApiUrl: sharedConfig.apiUrl,
+        tenantAnonKey: sharedConfig.anonKey,
+        schemaVersion: normalizeTenantSchemaVersion(tenant.schema_version),
+      },
+      job: updatedJob,
+      tenant: updatedTenant,
+    };
+  }
+
   const persistedWorkspace = await resolvePersistedTenantWorkspace({
     adminClient,
     tenant,
@@ -585,11 +803,6 @@ const runAutomaticProvisioningWorker = async ({
     schemaVersion: workspace.schemaVersion,
     userId,
     syncMode: 'automatic_inline',
-  });
-
-  const subscription = await fetchProvisioningSubscription({
-    adminClient,
-    businessAccountId: job.business_account_id,
   });
 
   try {
@@ -1034,10 +1247,12 @@ const ensureTenantProvisioningRecord = async ({ adminClient, businessAccountId, 
         db_provider: 'supabase',
         schema_version: normalizeTenantSchemaVersion(),
         metadata: {
-          source: 'manual_workspace_provisioning',
+          source: 'automatic_workspace_provisioning',
           created_by: userId || null,
           requested_subdomain: tenantSlug,
           schema_release_id: CURRENT_TENANT_SCHEMA_RELEASE_ID,
+          tenancy_mode: 'shared',
+          provisioning_architecture: 'shared_platform_project',
         },
       },
       { onConflict: 'business_account_id' }
@@ -1067,7 +1282,11 @@ const ensureTenantProvisioningRecord = async ({ adminClient, businessAccountId, 
       tenant_id: tenant.id,
       job_type: 'create_tenant',
       job_status: 'queued',
-      payload: { source: 'manual_workspace_provisioning' },
+      payload: {
+        source: 'automatic_workspace_provisioning',
+        tenancy_mode: 'shared',
+        provisioning_architecture: 'shared_platform_project',
+      },
       result: {},
     })
     .select('*')

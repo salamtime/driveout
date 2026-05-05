@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase.js';
 import MaintenanceService from './MaintenanceService.js';
 import { dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService.js';
+import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram.js';
 import {
   mergeUniqueCustomersById,
   normalizeCustomerIdentityFields,
@@ -1018,6 +1019,16 @@ class TransactionalRentalService {
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);
       });
+
+      if (shouldDispatchInitialPaymentReceived(rental)) {
+        dispatchRentalLifecycleTelegramEvent({
+          eventType: 'payment_received',
+          actor: 'admin',
+          rental: buildInitialPaymentReceivedTelegramPayload(rental),
+        }).catch((telegramDispatchError) => {
+          console.warn('⚠️ Initial payment received Telegram dispatch failed (non-blocking):', telegramDispatchError);
+        });
+      }
       
       return {
         success: true,

@@ -1,5 +1,7 @@
 import { supabase } from '../utils/supabaseClient';
 import { normalizeInventoryLabels } from '../config/maintenanceInventoryMapping';
+import { getCurrentOrganizationId } from './OrganizationService';
+import { buildStoragePathCandidates, buildTenantScopedStoragePath } from '../utils/storageUpload';
 
 class InventoryService {
   constructor() {
@@ -281,17 +283,23 @@ class InventoryService {
   async getItemDocuments(itemId) {
     try {
       if (!itemId) return [];
-      const folderPath = `inventory-items/${itemId}/documents`;
-      const { data: files, error } = await supabase.storage
-        .from(this.storageBucket)
-        .list(folderPath, { limit: 100, offset: 0 });
+      const organizationId = await getCurrentOrganizationId();
+      const folderPrefixes = buildStoragePathCandidates(organizationId, `inventory-items/${itemId}/documents`);
+      const files = [];
 
-      if (error) throw error;
+      for (const folderPath of folderPrefixes) {
+        const { data, error } = await supabase.storage
+          .from(this.storageBucket)
+          .list(folderPath, { limit: 100, offset: 0 });
+
+        if (error) continue;
+        (data || []).forEach((file) => files.push({ ...file, __folderPath: folderPath }));
+      }
 
       return (files || [])
         .filter((file) => file?.name && !file.name.endsWith('/'))
         .map((file) => {
-          const storagePath = `${folderPath}/${file.name}`;
+          const storagePath = `${file.__folderPath}/${file.name}`;
           const { data: urlData } = supabase.storage
             .from(this.storageBucket)
             .getPublicUrl(storagePath);
@@ -325,7 +333,12 @@ class InventoryService {
     const safeType = this.formatStorageDocumentType(documentType);
     const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
     const fileId = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    const storagePath = `inventory-items/${itemId}/documents/${safeType}__${fileId}_${safeFileName}`;
+    const organizationId = await getCurrentOrganizationId();
+    const storagePath = buildTenantScopedStoragePath({
+      organizationId,
+      pathPrefix: `inventory-items/${itemId}/documents`,
+      fileName: `${safeType}__${fileId}_${safeFileName}`,
+    });
 
     const { error } = await supabase.storage
       .from(this.storageBucket)
@@ -362,10 +375,14 @@ class InventoryService {
       const fileExt = file.name.split('.').pop();
       const timestamp = Date.now();
       const randomStr = Math.random().toString(36).substring(7);
-      const fileName = itemId 
-        ? `item_${itemId}_${timestamp}.${fileExt}`
-        : `temp_${timestamp}_${randomStr}.${fileExt}`;
-      const filePath = `inventory-items/${fileName}`;
+      const organizationId = await getCurrentOrganizationId();
+      const filePath = buildTenantScopedStoragePath({
+        organizationId,
+        pathPrefix: itemId ? `inventory-items/${itemId}` : 'inventory-items/temp',
+        fileName: itemId
+          ? `item_${itemId}_${timestamp}.${fileExt}`
+          : `temp_${timestamp}_${randomStr}.${fileExt}`,
+      });
 
       console.log('📤 Uploading image:', filePath);
 

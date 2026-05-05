@@ -2,6 +2,8 @@ import { supabase } from '../lib/supabase';
 import { adminApiRequest } from './adminApi';
 import { VERIFICATION_BUCKET } from '../utils/verificationStatus';
 import { createTimedRequestCache } from '../utils/requestCache';
+import { buildTenantScopedStoragePath } from '../utils/storageUpload';
+import { getCurrentOrganizationId } from './OrganizationService';
 
 const verificationRequestCache = createTimedRequestCache(45000);
 const runWithTimeout = (promise, timeoutMs, errorMessage) =>
@@ -27,7 +29,10 @@ const buildStoragePath = ({ userId, entityType, entityId, verificationType, file
     .replace(/-+/g, '-')
     .slice(0, 120);
 
-  return `${userId}/${entityType}/${entityId}/${verificationType}/${timestamp}-${safeName}`;
+  return {
+    pathPrefix: `verifications/${userId}/${entityType}/${entityId}/${verificationType}`,
+    fileName: `${timestamp}-${safeName}`,
+  };
 };
 
 export const uploadVerificationDocument = async ({
@@ -43,12 +48,18 @@ export const uploadVerificationDocument = async ({
 
   const user = await getSessionUser();
   const effectiveOwnerUserId = ownerUserId || user.id;
-  const filePath = buildStoragePath({
+  const organizationId = await getCurrentOrganizationId();
+  const pathConfig = buildStoragePath({
     userId: user.id,
     entityType,
     entityId,
     verificationType,
     file,
+  });
+  const filePath = buildTenantScopedStoragePath({
+    organizationId,
+    pathPrefix: pathConfig.pathPrefix,
+    fileName: pathConfig.fileName,
   });
 
   const { error: uploadError } = await runWithTimeout(

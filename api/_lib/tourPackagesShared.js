@@ -1,6 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
-import { APP_USERS_TABLE, PLATFORM_TENANTS_TABLE, createSupabaseClients } from './supabase.js';
+import { APP_USERS_TABLE, PLATFORM_TENANTS_TABLE, createSupabaseClients, getSharedSupabaseTenantConfig } from './supabase.js';
 import { authenticateRequest, getBearerToken, getServiceRoleKeyForProject } from './auth.js';
+import {
+  resolveTenantTenancyMode,
+  runPlatformTenantSelectWithModeFallback,
+} from './tenantRegistry.js';
 
 export const TOUR_PACKAGES_TABLE = 'app_687f658e98_tour_packages';
 export const TOUR_PACKAGE_MODEL_PRICES_TABLE = 'app_687f658e98_tour_package_model_prices';
@@ -67,6 +71,19 @@ const normalizeUrl = (value = '') => {
 };
 
 const createTenantAdminClientFromRecord = async (tenant = {}) => {
+  const tenancyMode = resolveTenantTenancyMode(tenant);
+  if (tenancyMode === 'shared') {
+    const sharedConfig = getSharedSupabaseTenantConfig();
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    return createClient(sharedConfig.apiUrl, serviceRoleKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false,
+      },
+    });
+  }
+
   const projectRef = String(tenant?.tenant_project_ref || '').trim();
   const apiUrl = normalizeUrl(tenant?.tenant_api_url || '');
 
@@ -97,11 +114,13 @@ const resolveAdminClientForPublicTenantRequest = async (req) => {
     return masterAdminClient;
   }
 
-  const { data: tenant, error } = await masterAdminClient
-    .from(PLATFORM_TENANTS_TABLE)
-    .select('tenant_slug, tenant_status, tenant_project_ref, tenant_api_url')
-    .eq('tenant_slug', tenantSlug)
-    .maybeSingle();
+  const { data: tenant, error } = await runPlatformTenantSelectWithModeFallback((selectClause) =>
+    masterAdminClient
+      .from(PLATFORM_TENANTS_TABLE)
+      .select(selectClause)
+      .eq('tenant_slug', tenantSlug)
+      .maybeSingle()
+  );
 
   if (error) {
     throw error;

@@ -5,6 +5,15 @@ import { TBL } from '../config/tables.js';
  * PaymentService provides methods for handling payment operations
  */
 class PaymentService {
+  async getCurrentUserEmail(fallbackEmail = '') {
+    if (fallbackEmail) return fallbackEmail;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user?.email) {
+      throw new Error('User email is required for payment');
+    }
+    return user.email;
+  }
+
   /**
    * Create a new payment record
    * @param {Object} paymentData - Payment information
@@ -18,19 +27,12 @@ class PaymentService {
    */
   async createPayment(paymentData) {
     try {
-      // Ensure we have a user email
-      if (!paymentData.user_email) {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          paymentData.user_email = user.email;
-        } else {
-          throw new Error('User email is required for payment');
-        }
-      }
+      const userEmail = await this.getCurrentUserEmail(paymentData.user_email);
 
       // Set initial payment status to 'processing'
       const paymentRecord = {
         ...paymentData,
+        user_email: userEmail,
         status: 'processing',
         created_at: new Date().toISOString()
       };
@@ -191,6 +193,44 @@ class PaymentService {
     }
   }
 
+  async processPayment({ paymentMethodId, bookingData }) {
+    const paymentData = {
+      user_email: await this.getCurrentUserEmail(bookingData?.user_email),
+      amount: bookingData?.totalPrice,
+      currency: bookingData?.currency || 'USD',
+      payment_method: 'card',
+      payment_method_id: paymentMethodId,
+      booking_id: bookingData?.id || null,
+    };
+
+    const paymentRecord = await this.createPayment(paymentData);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    const updatedPayment = await this.updatePaymentStatus(paymentRecord.id, 'succeeded');
+
+    if (bookingData?.id) {
+      const bookingType = bookingData?.type || 'rental';
+      const tableName = bookingType === 'rental'
+        ? 'saharax_0u4w4d_rental_bookings'
+        : 'saharax_0u4w4d_tour_bookings';
+
+      const { error } = await supabase
+        .from(tableName)
+        .update({
+          payment_status: 'paid',
+          payment_id: paymentRecord.id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', bookingData.id);
+
+      if (error) {
+        throw new Error(error.message);
+      }
+    }
+
+    return updatedPayment;
+  }
+
   /**
    * Link payment to a booking
    * @param {string} paymentId - Payment record ID
@@ -218,6 +258,45 @@ class PaymentService {
     } catch (error) {
       console.error('Payment Service Error:', error);
       throw error;
+    }
+  }
+
+  async linkPaymentToBookingWithType(paymentId, bookingId, bookingType = 'rental') {
+    const updatedPayment = await this.linkPaymentToBooking(paymentId, bookingId);
+
+    if (updatedPayment?.status === 'succeeded') {
+      await this.syncBookingPaymentStatus({
+        bookingId,
+        bookingType,
+        paymentId,
+        paymentStatus: 'paid',
+      });
+    }
+
+    return updatedPayment;
+  }
+
+  async syncBookingPaymentStatus({ bookingId, bookingType = 'rental', paymentId = null, paymentStatus }) {
+    const tableName = bookingType === 'rental'
+      ? 'saharax_0u4w4d_rental_bookings'
+      : 'saharax_0u4w4d_tour_bookings';
+
+    const updatePayload = {
+      payment_status: paymentStatus,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (paymentId) {
+      updatePayload.payment_id = paymentId;
+    }
+
+    const { error } = await supabase
+      .from(tableName)
+      .update(updatePayload)
+      .eq('id', bookingId);
+
+    if (error) {
+      throw new Error(error.message);
     }
   }
 }

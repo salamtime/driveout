@@ -34,19 +34,84 @@ export const applyOrganizationScope = (query, organizationId, columnName = 'orga
   return query.eq(columnName, organizationId);
 };
 
-export const getCurrentOrganizationContext = async () => {
-  const response = await adminApiRequest('/api/me/profile');
-  const profile = response?.profile || null;
-
-  if (!profile) {
-    return null;
+export const applyOrganizationMatch = (payload, organizationId, columnName = 'organization_id') => {
+  if (!organizationId) {
+    return payload;
   }
 
   return {
-    organizationId: getScopedOrganizationId(profile),
-    organizationName: profile.organization_name || profile.organizationName || '',
-    organizationRole: profile.organization_role || profile.organizationRole || '',
-    organizationStatus: profile.organization_status || profile.organizationStatus || '',
-    isPlatformOrganization: Boolean(profile.is_platform_organization || profile.isPlatformOrganization),
+    ...payload,
+    [columnName]: organizationId,
   };
+};
+
+const ORGANIZATION_CONTEXT_CACHE_TTL = 60 * 1000;
+
+let organizationContextCache = {
+  value: null,
+  timestamp: 0,
+  promise: null,
+};
+
+export const clearOrganizationContextCache = () => {
+  organizationContextCache = {
+    value: null,
+    timestamp: 0,
+    promise: null,
+  };
+};
+
+export const getCurrentOrganizationContext = async () => {
+  const now = Date.now();
+  if (
+    organizationContextCache.value &&
+    now - organizationContextCache.timestamp < ORGANIZATION_CONTEXT_CACHE_TTL
+  ) {
+    return organizationContextCache.value;
+  }
+
+  if (organizationContextCache.promise) {
+    return organizationContextCache.promise;
+  }
+
+  organizationContextCache.promise = (async () => {
+    const response = await adminApiRequest('/api/me/profile');
+    const profile = response?.profile || null;
+
+    if (!profile) {
+      organizationContextCache.value = null;
+      organizationContextCache.timestamp = Date.now();
+      return null;
+    }
+
+    const context = {
+      organizationId: getScopedOrganizationId(profile),
+      organizationName: profile.organization_name || profile.organizationName || '',
+      organizationRole: profile.organization_role || profile.organizationRole || '',
+      organizationStatus: profile.organization_status || profile.organizationStatus || '',
+      isPlatformOrganization: Boolean(profile.is_platform_organization || profile.isPlatformOrganization),
+    };
+    organizationContextCache.value = context;
+    organizationContextCache.timestamp = Date.now();
+    return context;
+  })();
+
+  try {
+    return await organizationContextCache.promise;
+  } finally {
+    organizationContextCache.promise = null;
+  }
+};
+
+export const getCurrentOrganizationId = async () => {
+  const context = await getCurrentOrganizationContext();
+  return context?.organizationId || null;
+};
+
+export const requireCurrentOrganizationId = async (message = 'Workspace organization context is unavailable.') => {
+  const organizationId = await getCurrentOrganizationId();
+  if (!organizationId) {
+    throw new Error(message);
+  }
+  return organizationId;
 };

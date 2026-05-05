@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Eye, Image as ImageIcon, Loader2, Upload, X } from 'lucide-react';
-import { supabase } from '../lib/supabase';
 import { normalizeVehicleImageUrl } from '../utils/vehicleImage';
 import i18n from '../i18n';
+import { uploadFile } from '../utils/storageUpload';
 
 const REQUIRED_PHOTO_TYPES = [
   {
@@ -265,29 +265,22 @@ const VehicleImageUpload = ({
         return;
       }
 
-      const fileExtension = file.name.split('.').pop();
-      const storagePrefix = shotType ? `${shotType}__` : '';
-      const storagePath = `${vehicleId}/${storagePrefix}${fileId}.${fileExtension}`;
-
       setUploadProgress({
         [fileId]: { progress: 0, status: 'uploading' },
       });
+      const fileExtension = file.name.split('.').pop();
+      const storagePrefix = shotType ? `${shotType}__` : '';
+      const uploadResult = await uploadFile(file, {
+        bucket: BUCKET_NAME,
+        pathPrefix: `vehicles/${vehicleId}`,
+        fileName: `${storagePrefix}${fileId}.${fileExtension}`,
+      });
 
-      const { error: uploadError } = await supabase.storage
-        .from(BUCKET_NAME)
-        .upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: false,
-        });
-
-      if (uploadError) {
-        throw uploadError;
+      if (!uploadResult?.success) {
+        throw new Error(uploadResult?.error || 'Vehicle image upload failed');
       }
 
-      const { data: urlData } = supabase.storage
-        .from(BUCKET_NAME)
-        .getPublicUrl(storagePath);
-      const finalUrl = normalizeVehicleImageUrl(urlData?.publicUrl || '');
+      const finalUrl = normalizeVehicleImageUrl(uploadResult?.url || '');
 
       setUploadProgress({
         [fileId]: { progress: 100, status: 'completed' },
@@ -301,6 +294,7 @@ const VehicleImageUpload = ({
             url: finalUrl,
             type: 'image',
             name: file.name,
+            storagePath: uploadResult.path,
             is_cover: shotType === 'hero',
             shot_type: shotType || null,
             quality_status: 'approved',

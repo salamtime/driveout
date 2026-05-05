@@ -1,30 +1,5 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../utils/supabaseClient';
-import { TBL } from '../../config/tables';
-
-const attachVehiclesToBookings = async (bookings = []) => {
-  const vehicleIds = [...new Set((bookings || []).map((booking) => booking.vehicle_id).filter(Boolean))];
-
-  if (vehicleIds.length === 0) {
-    return (bookings || []).map((booking) => ({ ...booking, vehicle: null }));
-  }
-
-  const { data: vehicles, error: vehicleError } = await supabase
-    .from(TBL.VEHICLES)
-    .select('id, name, model, plate_number, vehicle_type, status')
-    .in('id', vehicleIds);
-
-  if (vehicleError) {
-    console.error('❌ Error fetching vehicles for bookings:', vehicleError);
-    return (bookings || []).map((booking) => ({ ...booking, vehicle: null }));
-  }
-
-  const vehicleMap = new Map((vehicles || []).map((vehicle) => [vehicle.id, vehicle]));
-  return (bookings || []).map((booking) => ({
-    ...booking,
-    vehicle: vehicleMap.get(booking.vehicle_id) || null,
-  }));
-};
+import RentalService from '../../services/RentalService';
 
 // Async thunk for fetching bookings
 export const fetchBookings = createAsyncThunk(
@@ -32,18 +7,7 @@ export const fetchBookings = createAsyncThunk(
   async (_, { rejectWithValue }) => {
     try {
       console.log('🔄 Fetching bookings from database...');
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error('❌ Error fetching bookings:', error);
-        throw error;
-      }
-
-      const bookingsWithVehicles = await attachVehiclesToBookings(data || []);
+      const bookingsWithVehicles = await RentalService.getAllRentalsDetailed();
       console.log('✅ Fetched bookings successfully:', bookingsWithVehicles?.length || 0);
       return bookingsWithVehicles || [];
     } catch (error) {
@@ -62,19 +26,7 @@ export const addBooking = createAsyncThunk(
   async (bookingData, { rejectWithValue }) => {
     try {
       console.log('➕ Adding new booking:', bookingData);
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .insert([bookingData])
-        .select('*')
-        .single();
-
-      if (error) {
-        console.error('❌ Error adding booking:', error);
-        throw error;
-      }
-
-      const [bookingWithVehicle] = await attachVehiclesToBookings([data]);
+      const bookingWithVehicle = await RentalService.createRentalRecord(bookingData);
       console.log('✅ Booking added successfully:', bookingWithVehicle);
       return bookingWithVehicle;
     } catch (error) {
@@ -93,19 +45,7 @@ export const createRentalBooking = createAsyncThunk(
   async (bookingData, { rejectWithValue }) => {
     try {
       console.log('🚀 Creating rental booking:', bookingData);
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .insert([bookingData])
-        .select('*')
-        .single();
-
-      if (error) {
-        console.error('❌ Error creating rental booking:', error);
-        throw error;
-      }
-
-      const [bookingWithVehicle] = await attachVehiclesToBookings([data]);
+      const bookingWithVehicle = await RentalService.createRentalRecord(bookingData);
       console.log('✅ Rental booking created successfully:', bookingWithVehicle);
       return bookingWithVehicle;
     } catch (error) {
@@ -121,33 +61,15 @@ export const checkBookingConflicts = createAsyncThunk(
   async ({ vehicleId, startDate, endDate, excludeBookingId }, { rejectWithValue }) => {
     try {
       console.log('🔍 Checking booking conflicts for vehicle:', vehicleId);
-      
-      let query = supabase
-        .from(TBL.RENTALS)
-        .select('id, rental_start_date, rental_end_date, rental_status')
-        .eq('vehicle_id', vehicleId)
-        .in('rental_status', ['scheduled', 'confirmed', 'active'])
-        .or(`rental_start_date.lte.${endDate},rental_end_date.gte.${startDate}`);
-
-      // Exclude current booking if updating
-      if (excludeBookingId) {
-        query = query.neq('id', excludeBookingId);
-      }
-
-      const { data, error } = await query;
-
-      if (error) {
-        console.error('❌ Error checking booking conflicts:', error);
-        throw error;
-      }
-
-      const hasConflicts = data && data.length > 0;
+      const result = await RentalService.checkRentalConflicts({
+        vehicleId,
+        startDate,
+        endDate,
+        excludeBookingId,
+      });
+      const hasConflicts = result.hasConflicts;
       console.log(`✅ Conflict check completed. Conflicts found: ${hasConflicts}`);
-      
-      return {
-        hasConflicts,
-        conflicts: data || []
-      };
+      return result;
     } catch (error) {
       console.error('❌ checkBookingConflicts failed:', error);
       return rejectWithValue(error.message);
@@ -161,23 +83,7 @@ export const startTour = createAsyncThunk(
   async (bookingId, { rejectWithValue }) => {
     try {
       console.log('🚀 Starting tour for booking:', bookingId);
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .update({ 
-          rental_status: 'active',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', bookingId)
-        .select('*')
-        .single();
-
-      if (error) {
-        console.error('❌ Error starting tour:', error);
-        throw error;
-      }
-
-      const [bookingWithVehicle] = await attachVehiclesToBookings([data]);
+      const bookingWithVehicle = await RentalService.updateRentalStatus(bookingId, 'active');
       console.log('✅ Tour started successfully:', bookingWithVehicle);
       return bookingWithVehicle;
     } catch (error) {
@@ -192,23 +98,7 @@ export const finishTour = createAsyncThunk(
   async (bookingId, { rejectWithValue }) => {
     try {
       console.log('🏁 Finishing tour for booking:', bookingId);
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .update({ 
-          rental_status: 'completed',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', bookingId)
-        .select('*')
-        .single();
-
-      if (error) {
-        console.error('❌ Error finishing tour:', error);
-        throw error;
-      }
-
-      const [bookingWithVehicle] = await attachVehiclesToBookings([data]);
+      const bookingWithVehicle = await RentalService.updateRentalStatus(bookingId, 'completed');
       console.log('✅ Tour finished successfully:', bookingWithVehicle);
       return bookingWithVehicle;
     } catch (error) {
@@ -224,20 +114,7 @@ export const updateBooking = createAsyncThunk(
   async ({ id, updates }, { rejectWithValue }) => {
     try {
       console.log('✏️ Updating booking:', id, updates);
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .update(updates)
-        .eq('id', id)
-        .select('*')
-        .single();
-
-      if (error) {
-        console.error('❌ Error updating booking:', error);
-        throw error;
-      }
-
-      const [bookingWithVehicle] = await attachVehiclesToBookings([data]);
+      const bookingWithVehicle = await RentalService.updateRentalRecord(id, updates);
       console.log('✅ Booking updated successfully:', bookingWithVehicle);
       return bookingWithVehicle;
     } catch (error) {
@@ -253,23 +130,7 @@ export const updateBookingStatus = createAsyncThunk(
   async ({ id, status }, { rejectWithValue }) => {
     try {
       console.log('📝 Updating booking status:', id, status);
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .update({ 
-          rental_status: status,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id)
-        .select('*')
-        .single();
-
-      if (error) {
-        console.error('❌ Error updating booking status:', error);
-        throw error;
-      }
-
-      const [bookingWithVehicle] = await attachVehiclesToBookings([data]);
+      const bookingWithVehicle = await RentalService.updateRentalStatus(id, status);
       console.log('✅ Booking status updated successfully:', bookingWithVehicle);
       return bookingWithVehicle;
     } catch (error) {
@@ -285,17 +146,7 @@ export const deleteBooking = createAsyncThunk(
   async (bookingId, { rejectWithValue }) => {
     try {
       console.log('🗑️ Deleting booking:', bookingId);
-      
-      const { error } = await supabase
-        .from(TBL.RENTALS)
-        .delete()
-        .eq('id', bookingId);
-
-      if (error) {
-        console.error('❌ Error deleting booking:', error);
-        throw error;
-      }
-
+      await RentalService.deleteRentalRecord(bookingId);
       console.log('✅ Booking deleted successfully:', bookingId);
       return bookingId;
     } catch (error) {

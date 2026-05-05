@@ -2,6 +2,8 @@ import { supabase } from '../lib/supabase';
 import { TABLE_NAMES } from '../config/tableNames';
 import FuelTransactionService from './FuelTransactionService';
 import { adminApiRequest } from './adminApi';
+import { buildTenantScopedStoragePath } from '../utils/storageUpload';
+import { getCurrentOrganizationId } from './OrganizationService';
 
 class UserProfileService {
   withTimeout(promise, timeoutMs = 5000, label = 'operation') {
@@ -191,11 +193,16 @@ class UserProfileService {
   async uploadProfilePicture(userId, file) {
     try {
       console.log('📸 Uploading profile picture for:', userId);
+      const organizationId = await getCurrentOrganizationId();
       
       // Create unique filename
       const fileExt = file.name.split('.').pop();
       const fileName = `${userId}_${Date.now()}.${fileExt}`;
-      const filePath = `${userId}/${fileName}`;
+      const filePath = buildTenantScopedStoragePath({
+        organizationId,
+        pathPrefix: `users/${userId}`,
+        fileName,
+      });
 
       // Upload file to Supabase storage
       const { data: uploadData, error: uploadError } = await supabase.storage

@@ -1,6 +1,11 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../utils/supabaseClient';
 import { assertCanCreateStaffUser, clearTenantRuntimeControlsCache } from '../../services/TenantLimitService';
+import {
+  addUser as addUserService,
+  deleteUser as deleteUserService,
+  getUsers as getUsersService,
+  updateUserProfile as updateUserProfileService,
+} from '../../services/UserService';
 
 // Async thunks
 export const fetchUsers = createAsyncThunk(
@@ -8,44 +13,8 @@ export const fetchUsers = createAsyncThunk(
   async (_, { rejectWithValue }) => {
     try {
       console.log('👥 Fetching users from database...');
-      
-      // Try to fetch from custom users table first
-      const { data: customUsers, error: customError } = await supabase
-        .from('users')
-        .select('*')
-        .order('created_at', { ascending: false });
-      
-      if (customUsers && customUsers.length > 0) {
-        console.log('✅ Users fetched from custom table:', customUsers.length);
-        return customUsers;
-      }
-      
-      // Fallback to auth users if no custom users
-      try {
-        const { data: authData, error: authError } = await supabase.auth.admin.listUsers();
-        
-        if (authData?.users) {
-          console.log('✅ Users fetched from auth:', authData.users.length);
-          
-          const transformedUsers = authData.users.map(user => ({
-            id: user.id,
-            email: user.email,
-            full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Unknown User',
-            role: user.user_metadata?.role || 'customer',
-            status: user.email_confirmed_at ? 'active' : 'pending',
-            created_at: user.created_at,
-            updated_at: user.updated_at,
-            phone: user.phone || null
-          }));
-          
-          return transformedUsers;
-        }
-      } catch (authError) {
-        console.warn('Auth users fetch failed:', authError);
-      }
-      
-      // Return empty array if all fail
-      return [];
+      const users = await getUsersService();
+      return users || [];
     } catch (error) {
       console.error('❌ Users fetch failed:', error);
       return rejectWithValue(error.message);
@@ -62,52 +31,26 @@ export const createUser = createAsyncThunk(
       if (normalizedRole && normalizedRole !== 'customer') {
         await assertCanCreateStaffUser();
       }
-      
-      // Create user in auth first
-      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-        email: userData.email,
-        password: userData.password,
-        email_confirm: true,
-        user_metadata: {
-          full_name: userData.full_name,
-          role: userData.role
-        }
-      });
-      
-      if (authError) {
-        console.error('❌ Auth user create error:', authError);
-        throw authError;
-      }
-      
-      // Also create in custom users table
-      const { data: customUserData, error: customError } = await supabase
-        .from('users')
-        .insert([{
-          auth_user_id: authData.user.id,
-          email: userData.email,
-          full_name: userData.full_name,
-          role: userData.role,
-          status: 'active',
-          phone: userData.phone || null
-        }])
-        .select()
-        .single();
-      
-      if (customError) {
-        console.warn('Custom user create failed:', customError);
-      }
-      
-      console.log('✅ User created successfully:', authData.user);
+
+      const { user } = await addUserService(
+        userData.email,
+        userData.password,
+        userData.full_name,
+        userData.role,
+        { phone_number: userData.phone || null }
+      );
+
+      console.log('✅ User created successfully:', user);
       clearTenantRuntimeControlsCache();
       
       return {
-        id: authData.user.id,
-        email: authData.user.email,
-        full_name: userData.full_name,
-        role: userData.role,
-        status: 'active',
-        created_at: authData.user.created_at,
-        phone: userData.phone || null
+        id: user.id,
+        email: user.email,
+        full_name: user.full_name || userData.full_name,
+        role: user.role || userData.role,
+        status: user.status || 'active',
+        created_at: user.created_at,
+        phone: user.phone || userData.phone || null
       };
     } catch (error) {
       console.error('❌ User create failed:', error);
@@ -121,40 +64,24 @@ export const updateUser = createAsyncThunk(
   async ({ id, ...updateData }, { rejectWithValue }) => {
     try {
       console.log('📝 Updating user:', id, updateData);
-      
-      // Update in auth
-      const { data: authData, error: authError } = await supabase.auth.admin.updateUserById(id, {
-        user_metadata: {
-          full_name: updateData.full_name,
-          role: updateData.role
-        }
+
+      const { user } = await updateUserProfileService(id, {
+        email: updateData.email,
+        name: updateData.full_name,
+        role: updateData.role,
+        phone_number: updateData.phone,
+        password: updateData.password,
       });
-      
-      if (authError) {
-        console.error('❌ Auth user update error:', authError);
-        throw authError;
-      }
-      
-      // Update in custom users table
-      const { data: customUserData, error: customError } = await supabase
-        .from('users')
-        .update({
-          ...updateData,
-          updated_at: new Date().toISOString()
-        })
-        .eq('auth_user_id', id)
-        .select()
-        .single();
-      
-      if (customError) {
-        console.warn('Custom user update failed:', customError);
-      }
       
       console.log('✅ User updated successfully');
       
       return {
         id,
         ...updateData,
+        email: user?.email || updateData.email,
+        full_name: user?.full_name || updateData.full_name,
+        role: user?.role || updateData.role,
+        phone: user?.phone || updateData.phone || null,
         updated_at: new Date().toISOString()
       };
     } catch (error) {
@@ -169,24 +96,7 @@ export const deleteUser = createAsyncThunk(
   async (userId, { rejectWithValue }) => {
     try {
       console.log('🗑️ Deleting user:', userId);
-      
-      // Delete from auth
-      const { error: authError } = await supabase.auth.admin.deleteUser(userId);
-      
-      if (authError) {
-        console.error('❌ Auth user delete error:', authError);
-        throw authError;
-      }
-      
-      // Delete from custom users table
-      const { error: customError } = await supabase
-        .from('users')
-        .delete()
-        .eq('auth_user_id', userId);
-      
-      if (customError) {
-        console.warn('Custom user delete failed:', customError);
-      }
+      await deleteUserService(userId);
       
       console.log('✅ User deleted successfully');
       return userId;
@@ -263,13 +173,44 @@ const usersSlice = createSlice({
       })
       .addCase(createUser.pending, (state) => {
         state.isCreating = true;
+        state.error = null;
       })
       .addCase(createUser.fulfilled, (state, action) => {
         state.users.push(action.payload);
         state.isCreating = false;
+        state.totalCount = state.users.length;
       })
-      .addCase(createUser.rejected, (state) => {
+      .addCase(createUser.rejected, (state, action) => {
         state.isCreating = false;
+        state.error = action.payload || action.error.message;
+      })
+      .addCase(updateUser.pending, (state) => {
+        state.isUpdating = true;
+        state.error = null;
+      })
+      .addCase(updateUser.fulfilled, (state, action) => {
+        const index = state.users.findIndex(user => user.id === action.payload.id);
+        if (index !== -1) {
+          state.users[index] = { ...state.users[index], ...action.payload };
+        }
+        state.isUpdating = false;
+      })
+      .addCase(updateUser.rejected, (state, action) => {
+        state.isUpdating = false;
+        state.error = action.payload || action.error.message;
+      })
+      .addCase(deleteUser.pending, (state) => {
+        state.isDeleting = true;
+        state.error = null;
+      })
+      .addCase(deleteUser.fulfilled, (state, action) => {
+        state.users = state.users.filter(user => user.id !== action.payload);
+        state.isDeleting = false;
+        state.totalCount = state.users.length;
+      })
+      .addCase(deleteUser.rejected, (state, action) => {
+        state.isDeleting = false;
+        state.error = action.payload || action.error.message;
       });
   }
 });

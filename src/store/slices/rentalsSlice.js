@@ -1,6 +1,5 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { supabase } from '../../utils/supabaseClient';
-import { TBL, COLUMNS } from '../../config/tables';
+import RentalService from '../../services/RentalService';
 
 // Helper function to get vehicle field value
 const getVehicleField = (vehicle, field) => {
@@ -13,34 +12,7 @@ export const fetchRentals = createAsyncThunk(
   'rentals/fetchRentals',
   async (_, { rejectWithValue }) => {
     try {
-      console.log(`🔧 Fetching rentals from table: ${TBL.RENTALS}`);
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .select(`
-          *,
-          vehicle:saharax_0u4w4d_vehicles(
-            id, 
-            name, 
-            model, 
-            plate_number, 
-            vehicle_type, 
-            status,
-            power_cc,
-            capacity,
-            color,
-            image_url
-          )
-        `)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error(`❌ Error fetching rentals from ${TBL.RENTALS}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully fetched ${data?.length || 0} rentals from ${TBL.RENTALS}`);
-      return data || [];
+      return await RentalService.getAllRentalsDetailed();
     } catch (error) {
       console.error(`❌ Exception fetching rentals:`, error);
       return rejectWithValue(error.message);
@@ -52,31 +24,7 @@ export const createRental = createAsyncThunk(
   'rentals/createRental',
   async (rentalData, { rejectWithValue }) => {
     try {
-      console.log(`🔧 Creating rental in table: ${TBL.RENTALS}`, rentalData);
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .insert([rentalData])
-        .select(`
-          *,
-          vehicle:saharax_0u4w4d_vehicles(
-            id, 
-            name, 
-            model, 
-            plate_number, 
-            vehicle_type, 
-            status
-          )
-        `)
-        .single();
-
-      if (error) {
-        console.error(`❌ Error creating rental in ${TBL.RENTALS}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully created rental in ${TBL.RENTALS}:`, data);
-      return data;
+      return await RentalService.createRentalRecord(rentalData);
     } catch (error) {
       console.error(`❌ Exception creating rental:`, error);
       return rejectWithValue(error.message);
@@ -88,32 +36,7 @@ export const updateRental = createAsyncThunk(
   'rentals/updateRental',
   async ({ id, updates }, { rejectWithValue }) => {
     try {
-      console.log(`🔧 Updating rental ${id} in table: ${TBL.RENTALS}`, updates);
-      
-      const { data, error } = await supabase
-        .from(TBL.RENTALS)
-        .update(updates)
-        .eq('id', id)
-        .select(`
-          *,
-          vehicle:saharax_0u4w4d_vehicles(
-            id, 
-            name, 
-            model, 
-            plate_number, 
-            vehicle_type, 
-            status
-          )
-        `)
-        .single();
-
-      if (error) {
-        console.error(`❌ Error updating rental ${id} in ${TBL.RENTALS}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully updated rental ${id} in ${TBL.RENTALS}:`, data);
-      return data;
+      return await RentalService.updateRentalRecord(id, updates);
     } catch (error) {
       console.error(`❌ Exception updating rental:`, error);
       return rejectWithValue(error.message);
@@ -125,20 +48,7 @@ export const deleteRental = createAsyncThunk(
   'rentals/deleteRental',
   async (id, { rejectWithValue }) => {
     try {
-      console.log(`🔧 Deleting rental ${id} from table: ${TBL.RENTALS}`);
-      
-      const { error } = await supabase
-        .from(TBL.RENTALS)
-        .delete()
-        .eq('id', id);
-
-      if (error) {
-        console.error(`❌ Error deleting rental ${id} from ${TBL.RENTALS}:`, error);
-        throw error;
-      }
-
-      console.log(`✅ Successfully deleted rental ${id} from ${TBL.RENTALS}`);
-      return id;
+      return await RentalService.deleteRentalRecord(id);
     } catch (error) {
       console.error(`❌ Exception deleting rental:`, error);
       return rejectWithValue(error.message);

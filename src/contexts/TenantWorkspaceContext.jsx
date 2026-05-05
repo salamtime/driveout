@@ -10,6 +10,12 @@ const TenantWorkspaceContext = createContext({
   ready: true,
   tenant: null,
   publicFeatures: DEFAULT_PUBLIC_FEATURES,
+  featureAccess: {},
+  effectiveFeatureAccess: {},
+  tenancyMode: 'shared',
+  organizationId: null,
+  organizationSlug: null,
+  planType: 'starter',
 });
 
 export const getDefaultTenantPublicFeatures = () => ({ ...DEFAULT_PUBLIC_FEATURES });

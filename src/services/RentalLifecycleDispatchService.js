@@ -35,6 +35,7 @@ export const buildRentalLifecycleDispatchKey = (eventType, rental = {}) => {
   switch (normalizedEventType) {
     case 'rental_created':
     case 'rental_started':
+    case 'rental_vehicle_replaced':
     case 'rental_completed':
     case 'rental_cancelled':
     case 'rental_overdue':
@@ -45,6 +46,9 @@ export const buildRentalLifecycleDispatchKey = (eventType, rental = {}) => {
         safeText(rental?.total),
         safeText(rental?.amountPaid),
         safeText(rental?.remaining),
+        safeText(rental?.old_vehicle_id || rental?.oldVehicle || rental?.old_vehicle_name),
+        safeText(rental?.new_vehicle_id || rental?.newVehicle || rental?.new_vehicle_name),
+        safeText(rental?.replacementReason || rental?.replacement_reason || rental?.replacement_reason_label),
         safeText(resolveDistanceValue(rental)),
       );
       break;

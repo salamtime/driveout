@@ -5,6 +5,7 @@ import React, { Fragment, useState, useEffect, useRef, useMemo, useCallback } fr
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { apiManager } from '../../services/apiManager';
+import RentalService from '../../services/RentalService';
 import FuelPricingService from '../../services/FuelPricingService';
 import FuelTransactionService from '../../services/FuelTransactionService';
 import { generateThumbnailFromBlob, uploadThumbnail } from '../../utils/thumbnailGenerator';
@@ -27,7 +28,7 @@ import { getPaymentStatusStyle, normalizePaymentStatus } from '../../config/stat
 import { useAuth } from '../../contexts/AuthContext';
 import { isAdminOrOwner, canApprovePriceOverrides, canApproveRentalExtensions, canEditRentalPrice, canEditRentalPriceWithoutApproval, canEditExtensionHistory, canEditRentalContract, hasPermission } from '../../utils/permissionHelpers';
 import PricingRulesService from '../../services/PricingRulesService';
-import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench, MapPin, MoreHorizontal, Mail, ChevronDown, ChevronUp, Calculator } from 'lucide-react';
+import { ArrowLeft, Printer, X, Upload, Play, Plus, AlertTriangle, Clock, CheckCircle, XCircle, Calendar, PlayCircle, Maximize2, User, Users, CreditCard, FileSignature, Edit, Save, DollarSign, StopCircle, Video, FileVideo, Camera, Flashlight, Info, Gauge, Package, FileText, FileImage, Receipt, Share2, Smartphone, Fuel, Loader, Wrench, MapPin, MoreHorizontal, Mail, ChevronDown, ChevronUp, Calculator, CarFront, Shield } from 'lucide-react';
 import { FaWhatsapp, FaCheck, FaFilePdf, FaFileInvoice, FaVideo } from 'react-icons/fa';
 import InvoiceTemplate from '../../components/InvoiceTemplate';
 import ContractTemplate from '../../components/ContractTemplate';
@@ -1445,6 +1446,45 @@ const buildVehicleHistorySnapshot = (vehicle) => ({
   vehicle_model_snapshot: vehicle?.model || vehicle?.vehicle_model?.model || null,
 });
 
+const VEHICLE_REPLACEMENT_REASON_OPTIONS = [
+  {
+    key: 'breakdown',
+    label: { en: 'Breakdown', fr: 'Panne' },
+    description: {
+      en: 'Move old vehicle to maintenance',
+      fr: 'Passe en maintenance',
+    },
+    tone: 'breakdown',
+  },
+  {
+    key: 'issue',
+    label: { en: 'Staff issue', fr: 'Problème staff' },
+    description: {
+      en: 'Return old vehicle to available',
+      fr: 'Remet disponible',
+    },
+    tone: 'default',
+  },
+  {
+    key: 'customer_request',
+    label: { en: 'Customer request', fr: 'Demande client' },
+    description: {
+      en: 'Return old vehicle to available',
+      fr: 'Remet disponible',
+    },
+    tone: 'default',
+  },
+  {
+    key: 'other',
+    label: { en: 'Other', fr: 'Autre' },
+    description: {
+      en: 'Return old vehicle to available',
+      fr: 'Remet disponible',
+    },
+    tone: 'default',
+  },
+];
+
 const getWeekendImpoundEstimatedReleaseDate = (impoundedAt) => {
   const impoundDate = new Date(impoundedAt || '');
   if (Number.isNaN(impoundDate.getTime())) return null;
@@ -2154,8 +2194,10 @@ export default function RentalDetails() {
   });
 const replacementResumeWorkflowRef = useRef(null);
 const lightReadyToStartSectionRef = useRef(null);
+const lightFinishSectionAutoScrollRef = useRef(null);
 const startStepRefs = useRef({});
 const previousActiveStartStepKeyRef = useRef(null);
+const restoredFinishWorkflowStateRef = useRef(null);
 const scrollToElementWithHeaderOffset = useCallback((element, offset = 112) => {
   if (typeof window === 'undefined' || !element) return;
   const rect = element.getBoundingClientRect();
@@ -2365,33 +2407,6 @@ const openReplacementResumeWorkflow = useCallback(() => {
     contract_signed_at: null,
     updated_at: new Date().toISOString(),
   });
-
-  const getVehicleSwapOpeningResetFields = () => ({
-    opening_video_url: null,
-    opening_video_thumbnail: null,
-    start_odometer: null,
-    start_engine_hours: null,
-    start_fuel_level: null,
-    updated_at: new Date().toISOString(),
-  });
-
-  const clearOpeningWorkflowArtifactsForVehicleSwap = async () => {
-    await removeStoredRentalMediaRecords(openingMedia);
-
-    clearCapturedMediaState();
-    setOpeningMedia([]);
-    setStartFuelLevel(null);
-    if (rental?.vehicle?.engine_hours !== null && rental?.vehicle?.engine_hours !== undefined) {
-      setStartEngineHours(String(rental.vehicle.engine_hours));
-    } else {
-      setStartEngineHours('');
-    }
-    if (rental?.vehicle?.current_odometer) {
-      setStartOdometer(String(rental.vehicle.current_odometer));
-    } else {
-      setStartOdometer('');
-    }
-  };
 
   const handleResetOpeningInspection = async () => {
     try {
@@ -2663,9 +2678,6 @@ const openReplacementResumeWorkflow = useCallback(() => {
     }
 
     const isReplacingActiveRental = operationalRentalStatus === 'active';
-    const pauseStartedAtValue = isReplacingActiveRental
-      ? (replacementPauseStartedAt || new Date().toISOString())
-      : null;
     const actorName =
       currentUser?.full_name ||
       currentUser?.name ||
@@ -2677,35 +2689,24 @@ const openReplacementResumeWorkflow = useCallback(() => {
     const replacementVehiclePlateDisplay = getVehiclePlateDisplay(replacementVehicle);
     const replacementReasonLabel = {
       breakdown: tr('Breakdown during rental', 'Panne pendant la location'),
-      issue: tr('Issue noticed by staff', 'Problème constaté par le personnel'),
-      customer_request: tr('Customer requested replacement', 'Remplacement demandé par le client'),
-      other: tr('Other replacement reason', 'Autre raison de remplacement'),
+      issue: tr('Issue noticed by staff', 'Problème signalé par le staff'),
+      customer_request: tr('Customer requested change', 'Demande de changement du client'),
+      other: tr('Other vehicle change', 'Autre changement de véhicule'),
     }[replacementReason] || tr('Vehicle replacement', 'Remplacement de véhicule');
+    const shouldMoveOldVehicleToMaintenance = replacementReason === 'breakdown';
+    const oldVehicleNextStatus = shouldMoveOldVehicleToMaintenance ? 'maintenance' : 'available';
 
     try {
       setIsReplacingVehicle(true);
 
-      await clearOpeningWorkflowArtifactsForVehicleSwap();
-
       const rentalUpdatePayload = {
         vehicle_id: replacementVehicle.id,
-        rental_status: isReplacingActiveRental ? 'scheduled' : rental?.rental_status || 'scheduled',
-        status: isReplacingActiveRental ? 'scheduled' : rental?.status || rental?.rental_status || 'scheduled',
-        replacement_pause_started_at: pauseStartedAtValue,
-        replacement_pause_reason: replacementReason,
-        replacement_resume_context: {
-          mode: 'vehicle_replacement',
-          was_active: isReplacingActiveRental,
-          previous_vehicle_id: currentVehicleId,
-          previous_vehicle_name: currentVehicleName,
-          replacement_vehicle_id: replacementVehicle.id,
-          replacement_vehicle_name: replacementVehicleName,
-          replaced_at: new Date().toISOString(),
-          note: replacementNote.trim() || null,
-        },
+        rental_status: isReplacingActiveRental ? 'active' : rental?.rental_status || 'scheduled',
+        status: isReplacingActiveRental ? 'active' : rental?.status || rental?.rental_status || 'scheduled',
+        replacement_pause_started_at: null,
+        replacement_pause_reason: null,
+        replacement_resume_context: null,
         replacement_previous_vehicle_id: currentVehicleId,
-        ...getWorkflowResetFields(),
-        ...getVehicleSwapOpeningResetFields(),
         updated_at: new Date().toISOString(),
       };
 
@@ -2721,12 +2722,22 @@ const openReplacementResumeWorkflow = useCallback(() => {
       const { error: replacementVehicleStatusError } = await supabase
         .from('saharax_0u4w4d_vehicles')
         .update({
-          status: 'scheduled',
+          status: isReplacingActiveRental ? 'rented' : 'scheduled',
           updated_at: new Date().toISOString(),
         })
         .eq('id', replacementVehicle.id);
 
       if (replacementVehicleStatusError) throw replacementVehicleStatusError;
+
+      const { error: oldVehicleStatusError } = await supabase
+        .from('saharax_0u4w4d_vehicles')
+        .update({
+          status: oldVehicleNextStatus,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', currentVehicleId);
+
+      if (oldVehicleStatusError) throw oldVehicleStatusError;
 
       try {
         const replacementStartedAt = new Date().toISOString();
@@ -2795,33 +2806,35 @@ const openReplacementResumeWorkflow = useCallback(() => {
       }
 
       let maintenanceRecord = null;
-      try {
-        const maintenanceResult = await MaintenanceService.createMaintenanceRecord({
-          vehicle_id: currentVehicleId,
-          maintenance_type: 'Breakdown',
-          description: `${replacementReasonLabel}. Rental ${rental.rental_id || rental.id} switched from ${currentVehiclePlateDisplay} to ${replacementVehiclePlateDisplay}.${replacementNote.trim() ? ` Note: ${replacementNote.trim()}` : ''}`,
-          status: 'scheduled',
-          scheduled_date: new Date().toISOString().split('T')[0],
-          service_date: new Date().toISOString().split('T')[0],
-          technician_name: actorName,
-          created_by: actorName,
-        });
-        maintenanceRecord = maintenanceResult?.maintenance || null;
-      } catch (maintenanceError) {
-        console.error('❌ Failed to auto-create scheduled maintenance during replacement:', maintenanceError);
-        await supabase
-          .from('saharax_0u4w4d_vehicles')
-          .update({
-            status: 'maintenance',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', currentVehicleId);
-        toast.error(
-          tr(
-            'Vehicle replaced, but the scheduled maintenance record needs follow-up.',
-            'Véhicule remplacé, mais la fiche de maintenance planifiée nécessite un suivi.'
-          )
-        );
+      if (shouldMoveOldVehicleToMaintenance) {
+        try {
+          const maintenanceResult = await MaintenanceService.createMaintenanceRecord({
+            vehicle_id: currentVehicleId,
+            maintenance_type: 'Breakdown',
+            description: `${replacementReasonLabel}. Rental ${rental.rental_id || rental.id} switched from ${currentVehiclePlateDisplay} to ${replacementVehiclePlateDisplay}.${replacementNote.trim() ? ` Note: ${replacementNote.trim()}` : ''}`,
+            status: 'scheduled',
+            scheduled_date: new Date().toISOString().split('T')[0],
+            service_date: new Date().toISOString().split('T')[0],
+            technician_name: actorName,
+            created_by: actorName,
+          });
+          maintenanceRecord = maintenanceResult?.maintenance || null;
+        } catch (maintenanceError) {
+          console.error('❌ Failed to auto-create scheduled maintenance during replacement:', maintenanceError);
+          await supabase
+            .from('saharax_0u4w4d_vehicles')
+            .update({
+              status: 'maintenance',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', currentVehicleId);
+          toast.error(
+            tr(
+              'Vehicle replaced, but the maintenance record needs follow-up.',
+              'Véhicule remplacé, mais la fiche de maintenance nécessite un suivi.'
+            )
+          );
+        }
       }
 
       try {
@@ -2843,8 +2856,9 @@ const openReplacementResumeWorkflow = useCallback(() => {
             replacement_reason: replacementReason,
             replacement_reason_label: replacementReasonLabel,
             replacement_note: replacementNote.trim() || null,
-            pause_started_at: pauseStartedAtValue,
-            replacement_mode: isReplacingActiveRental ? 'resume_required' : 'start_required',
+            pause_started_at: null,
+            replacement_mode: isReplacingActiveRental ? 'same_contract' : 'start_required',
+            old_vehicle_next_status: oldVehicleNextStatus,
             maintenance_id: maintenanceRecord?.id || null,
             maintenance_reference: maintenanceRecord ? formatMaintenanceReference(maintenanceRecord) : null,
           },
@@ -2853,29 +2867,45 @@ const openReplacementResumeWorkflow = useCallback(() => {
         console.warn('⚠️ Failed to record replacement activity:', activityError);
       }
 
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'rental_vehicle_replaced',
+        actor: 'admin',
+        rental: {
+          id: rental.id,
+          reference: updatedRental?.rental_id || rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(updatedRental || rental),
+          customer: updatedRental?.customer_name || rental.customer_name,
+          start: updatedRental?.rental_start_date || rental.rental_start_date,
+          end: updatedRental?.rental_end_date || rental.rental_end_date || updatedRental?.actual_end_date || rental.actual_end_date,
+          total: updatedRental?.total_amount || rental.total_amount || 0,
+          amountPaid: updatedRental?.deposit_amount || rental.deposit_amount || 0,
+          remaining: updatedRental?.remaining_amount || rental.remaining_amount || 0,
+          old_vehicle_id: currentVehicleId,
+          old_vehicle_name: [currentVehicleName, currentVehiclePlateDisplay].filter(Boolean).join(' • ') || currentVehicleName,
+          new_vehicle_id: replacementVehicle.id,
+          new_vehicle_name: [replacementVehicleName, replacementVehiclePlateDisplay].filter(Boolean).join(' • ') || replacementVehicleName,
+          replacement_reason: replacementReason,
+          replacement_reason_label: replacementReasonLabel,
+          replacement_note: replacementNote.trim() || null,
+        },
+      }).catch((telegramDispatchError) => {
+        console.warn('⚠️ Vehicle replacement Telegram dispatch failed (non-blocking):', telegramDispatchError);
+      });
+
       setRental((prev) => prev ? ({
         ...prev,
         ...updatedRental,
         vehicle_id: replacementVehicle.id,
         rental_status: rentalUpdatePayload.rental_status,
         status: rentalUpdatePayload.status,
-        replacement_pause_started_at: pauseStartedAtValue,
-        replacement_pause_reason: replacementReason,
-        replacement_resume_context: rentalUpdatePayload.replacement_resume_context,
+        replacement_pause_started_at: null,
+        replacement_pause_reason: null,
+        replacement_resume_context: null,
         replacement_previous_vehicle_id: currentVehicleId,
-        contract_signed: false,
-        signature_url: null,
-        contract_signed_by: null,
-        contract_signed_by_name: null,
-        contract_signed_at: null,
-        start_odometer: null,
-        start_fuel_level: null,
-        opening_video_url: null,
-        opening_video_thumbnail: null,
       }) : updatedRental);
 
       setShowReplaceVehicleDialog(false);
-      setReplacementPauseStartedAt(pauseStartedAtValue);
+      setReplacementPauseStartedAt(null);
       setSelectedReplacementVehicleId('');
       setReplacementVehicles([]);
       await loadRentalData(true);
@@ -2883,11 +2913,19 @@ const openReplacementResumeWorkflow = useCallback(() => {
       toast.success(
         tr(
           isReplacingActiveRental
-            ? `Vehicle replaced. ${currentVehicleName} moved to scheduled maintenance. Complete the opening checks, then resume the rental.`
-            : `Vehicle replaced. ${currentVehicleName} moved to scheduled maintenance. Complete the opening checks, then start the rental.`,
+            ? shouldMoveOldVehicleToMaintenance
+              ? `Vehicle replaced. ${currentVehicleName} moved to maintenance and the rental continues on ${replacementVehicleName}.`
+              : `Vehicle replaced. ${currentVehicleName} is available again and the rental continues on ${replacementVehicleName}.`
+            : shouldMoveOldVehicleToMaintenance
+              ? `Vehicle replaced. ${currentVehicleName} moved to maintenance and the rental stays on schedule.`
+              : `Vehicle replaced. ${currentVehicleName} is available again and the rental stays on schedule.`,
           isReplacingActiveRental
-            ? `${currentVehicleName} remplacé et envoyé en maintenance planifiée. Reprenez les contrôles d’ouverture puis relancez la location.`
-            : `${currentVehicleName} remplacé et envoyé en maintenance planifiée. Reprenez les contrôles d’ouverture puis démarrez la location.`
+            ? shouldMoveOldVehicleToMaintenance
+              ? `${currentVehicleName} remplacé et envoyé en maintenance. La location continue sur ${replacementVehicleName}.`
+              : `${currentVehicleName} remplacé et redevient disponible. La location continue sur ${replacementVehicleName}.`
+            : shouldMoveOldVehicleToMaintenance
+              ? `${currentVehicleName} remplacé et envoyé en maintenance. La location reste planifiée avec le véhicule de remplacement.`
+              : `${currentVehicleName} remplacé et redevient disponible. La location reste planifiée avec le véhicule de remplacement.`
         )
       );
     } catch (replacementError) {
@@ -3060,14 +3098,29 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [extensionModalOpen, setExtensionModalOpen] = useState(false);
   const [editingExtension, setEditingExtension] = useState(null);
   const [initialExtensionHours, setInitialExtensionHours] = useState(1);
+  const [quickExtensionModalPreset, setQuickExtensionModalPreset] = useState(null);
   const [extensions, setExtensions] = useState([]);
   const [loadingExtensions, setLoadingExtensions] = useState(false);
+  const [recentExtensionFeedback, setRecentExtensionFeedback] = useState(null);
+  const [extensionChargesOpen, setExtensionChargesOpen] = useState(false);
+  const [securityHoldOpen, setSecurityHoldOpen] = useState(false);
+  const [damageDepositReturnOpen, setDamageDepositReturnOpen] = useState(false);
+  const [rentalBalanceDetailsOpen, setRentalBalanceDetailsOpen] = useState(false);
   const openExtensionHandledRef = useRef(false);
+  const [telegramResendOpen, setTelegramResendOpen] = useState(false);
 
   // Late fee state
   const [lateFee, setLateFee] = useState(null);
   const [rentalHistory, setRentalHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [lightRentalInfoOpenSections, setLightRentalInfoOpenSections] = useState({
+    people: true,
+    vehicle: false,
+    schedule: true,
+    money: false,
+    media: false,
+    signature: false,
+  });
 
   // Deposit return state
   const [showDepositSignatureModal, setShowDepositSignatureModal] = useState(false);
@@ -3413,6 +3466,7 @@ const documentGenerationTimersRef = useRef(new Set());
 const rentalDetailsMountedRef = useRef(true);
 const maintenanceChargeSectionRef = useRef(null);
 const amountDueEditorRef = useRef(null);
+const priceEditorRef = useRef(null);
 const impoundReceiptInputRef = useRef(null);
 const impoundReceiptCameraInputRef = useRef(null);
 const releaseImpoundReceiptInputRef = useRef(null);
@@ -3949,12 +4003,8 @@ const calculateDailyTierPricingBreakdown = async () => {
     const endOdom = parseFloat(rental?.ending_odometer || 0);
     if (endOdom > 0 && newStart > endOdom) { toast.error(`Start (${newStart}) cannot exceed end (${endOdom})`); return; }
     try {
-      const totalKm = endOdom > 0 ? endOdom - newStart : 0;
-      await supabase.from('app_4c3a7a6153_rentals').update({
-        start_odometer: newStart,
-        total_kilometers_driven: totalKm,
-        total_distance: totalKm
-      }).eq('id', rental.id);
+      const updatedRental = await RentalService.updateRentalStartOdometer(rental.id, newStart, endOdom);
+      const totalKm = Number(updatedRental?.total_kilometers_driven || updatedRental?.total_distance || 0);
       setRental(prev => ({
         ...prev,
         start_odometer: newStart,
@@ -4205,8 +4255,7 @@ const calculateDailyTierPricingBreakdown = async () => {
         if (timingState?.isExpired && shouldAutoExpireScheduledRental(rentalData)) {
           const autoExpireKey = `${rentalData.id}:scheduled-expired`;
           finalRentalData.rental_status = 'expired';
-          supabase.from('app_4c3a7a6153_rentals').update({ rental_status: 'expired' }).eq('id', rentalData.id).then(() => {});
-          if (rentalData.vehicle_id) supabase.from('saharax_0u4w4d_vehicles').update({ status: 'available' }).eq('id', rentalData.vehicle_id).then(() => {});
+          RentalService.expireRentalAndReleaseVehicle(rentalData.id, rentalData.vehicle_id).catch(() => {});
           if (!notifiedAutoExpiredRentalsRef.current.has(autoExpireKey)) {
             notifiedAutoExpiredRentalsRef.current.add(autoExpireKey);
             toast(`⚠️ Rental ${rentalData.rental_id} auto-expired. Vehicle freed.`, { duration: 5000, icon: '❌' });
@@ -4958,6 +5007,15 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
     return approvedExtensions.reduce((sum, ext) => sum + (parseFloat(ext.extension_hours) || 0), 0);
   }, [approvedExtensions]);
 
+  const latestApprovedExtension = useMemo(() => {
+    if (approvedExtensions.length === 0) return null;
+    return [...approvedExtensions].sort((a, b) => {
+      const aTime = new Date(a?.approved_at || a?.created_at || 0).getTime();
+      const bTime = new Date(b?.approved_at || b?.created_at || 0).getTime();
+      return bTime - aTime;
+    })[0] || null;
+  }, [approvedExtensions]);
+
   const getStoredRentalChargeAmount = useCallback(() => {
     if (!rental) return 0;
     const storedTotal = parseFloat(rental.total_amount || 0) || 0;
@@ -5523,11 +5581,30 @@ Click the link above to review and approve the extension.`;
     }, 500); // Wait 500ms before starting generation (debounce)
   };
 
-  const openExtensionFlow = useCallback((suggestedHours = 1) => {
+  const openExtensionFlow = useCallback((suggestedHours = 1, options = {}) => {
     const normalizedHours = Math.max(1, Math.min(24, Math.ceil(Number(suggestedHours || 1)) || 1));
     setEditingExtension(null);
     setInitialExtensionHours(normalizedHours);
+    setQuickExtensionModalPreset(options?.preset || null);
     setExtensionModalOpen(true);
+  }, []);
+
+  const lightMoneySectionRef = useRef(null);
+
+  const focusLightMoneySection = useCallback(() => {
+    setLightRentalInfoOpenSections((prev) => ({
+      ...prev,
+      money: true,
+    }));
+
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        lightMoneySectionRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      }, 180);
+    });
   }, []);
 
   // ✅ MODIFIED: Remove auto-WhatsApp trigger from extension creation
@@ -5579,6 +5656,17 @@ Click the link above to review and approve the extension.`;
     }
     await loadRentalData(true);
     await loadExtensions(true);
+    if (extensionContext?.autoApprove) {
+      setRecentExtensionFeedback({
+        hours: parseFloat(extensionContext.extensionHours) || 0,
+        amount: parseFloat(extensionContext.extensionPrice) || 0,
+        extensionId: extensionContext.extension?.id || null,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    if (isLightRentalDetailsMode) {
+      focusLightMoneySection();
+    }
     // No automatic WhatsApp trigger here anymore
   };
 
@@ -9693,11 +9781,19 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
     const workflowRental = normalizeRentalLifecycleStatus(rental, rentalTimingSettings);
     if (!workflowRental || workflowRental.rental_status !== 'active') {
       clearFinishWorkflowState();
+      restoredFinishWorkflowStateRef.current = null;
+      return;
+    }
+
+    if (restoredFinishWorkflowStateRef.current === finishWorkflowStorageKey) {
       return;
     }
 
     const rawState = window.localStorage.getItem(finishWorkflowStorageKey);
-    if (!rawState) return;
+    if (!rawState) {
+      restoredFinishWorkflowStateRef.current = finishWorkflowStorageKey;
+      return;
+    }
 
     try {
       const parsedState = JSON.parse(rawState);
@@ -9738,11 +9834,23 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
           })
         ) ? prev : nextDraft);
       }
+      restoredFinishWorkflowStateRef.current = finishWorkflowStorageKey;
     } catch (error) {
       console.error('Failed to restore finish rental workflow state:', error);
       clearFinishWorkflowState();
+      restoredFinishWorkflowStateRef.current = null;
     }
-  }, [finishWorkflowStorageKey, rental, rental?.id, rental?.rental_status, rental?.completed_at, rental?.started_at, rental?.ending_odometer, rental?.end_engine_hours, rental?.end_fuel_level, endFuelLevel, inspectionComplete, vehicleReport?.id, finishRentalSteps.showWorkflow]);
+  }, [
+    finishWorkflowStorageKey,
+    rental?.id,
+    rental?.rental_status,
+    rental?.ending_odometer,
+    rental?.end_engine_hours,
+    rental?.end_fuel_level,
+    endFuelLevel,
+    inspectionComplete,
+    vehicleReport?.id,
+  ]);
 
   useEffect(() => {
     if (!finishWorkflowStorageKey || typeof window === 'undefined') return;
@@ -10491,6 +10599,20 @@ useEffect(() => {
   }
 }, [endFuelLevel, rental?.end_fuel_level, finishRentalSteps.showWorkflow, startFuelLevel, rental?.start_fuel_level, fuelPricePerLine, fuelChargeEnabled]);
 
+useEffect(() => {
+  if (!isLightRentalDetailsMode) return;
+  if (showEndOdometerPrompt || isEditingEndOdometer) {
+    setLightRentalInfoOpenSections((prev) => (
+      prev?.media
+        ? {
+            ...prev,
+            media: false,
+          }
+        : prev
+    ));
+  }
+}, [isEditingEndOdometer, isLightRentalDetailsMode, showEndOdometerPrompt]);
+
 
 
 
@@ -10750,6 +10872,9 @@ useEffect(() => {
   };
 
   const handleOpenClosingModal = () => {
+    if (isLightRentalDetailsMode) {
+      setLightRentalInfoSectionOpen('media', true);
+    }
     setActiveModal('closing');
     setCapturedMedia([]);
     setClosingMediaMode('photo');
@@ -10760,6 +10885,9 @@ useEffect(() => {
   };
 
   const handleOpenVehicleMediaModal = () => {
+    if (isLightRentalDetailsMode) {
+      setLightRentalInfoSectionOpen('media', true);
+    }
     setActiveModal('closing');
     setCapturedMedia([]);
     setClosingMediaMode('photo');
@@ -11090,8 +11218,7 @@ useEffect(() => {
 
       if (!isReplacementResumeFlow && timingState?.isExpired && autoExpireAllowed) {
         const autoExpireKey = `${rental.id}:scheduled-expired`;
-        await supabase.from('app_4c3a7a6153_rentals').update({ rental_status: 'expired' }).eq('id', rental.id);
-        if (rental.vehicle_id) await supabase.from('saharax_0u4w4d_vehicles').update({ status: 'available' }).eq('id', rental.vehicle_id);
+        await RentalService.expireRentalAndReleaseVehicle(rental.id, rental.vehicle_id);
         void dispatchRentalLifecycleTelegramEvent({
           eventType: 'rental_overdue',
           actor: 'admin',
@@ -12142,6 +12269,8 @@ useEffect(() => {
   };
 
   const handleEditPrice = () => {
+    setIsEditingAmountDue(false);
+    setIsPayingDueBalance(false);
     setManualPrice(rental.total_amount?.toString() || '');
     setPriceOverrideReason('');
     setIsEditingPrice(true);
@@ -12167,6 +12296,7 @@ useEffect(() => {
       0,
       Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
     );
+    setIsEditingPrice(false);
     setIsPayingDueBalance(false);
     setManualAmountDue(currentAmountDue.toString());
     setAmountDuePaymentReceivedNow('');
@@ -12197,6 +12327,7 @@ useEffect(() => {
       return;
     }
 
+    setIsEditingPrice(false);
     setIsPayingDueBalance(true);
     setAmountDuePaymentReceivedNow(currentAmountDue.toString());
     setAmountDueCompanyDiscount('');
@@ -12400,6 +12531,36 @@ useEffect(() => {
 
     return () => window.clearTimeout(timeoutId);
   }, [isEditingAmountDue]);
+
+  useEffect(() => {
+    if (!isEditingPrice) return;
+
+    const timeoutId = window.setTimeout(() => {
+      priceEditorRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }, 40);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isEditingPrice]);
+
+  useEffect(() => {
+    if (!recentExtensionFeedback) return;
+    setExtensionChargesOpen(true);
+  }, [recentExtensionFeedback]);
+
+  useEffect(() => {
+    if (showDepositSignatureModal) {
+      setDamageDepositReturnOpen(true);
+    }
+  }, [showDepositSignatureModal]);
+
+  useEffect(() => {
+    if (isEditingAmountDue || isEditingPrice || isPayingDueBalance) {
+      setRentalBalanceDetailsOpen(true);
+    }
+  }, [isEditingAmountDue, isEditingPrice, isPayingDueBalance]);
 
   const handleSaveManualPrice = async () => {
   if (RENTAL_DEBUG) {
@@ -13181,6 +13342,11 @@ useEffect(() => {
       : tr('Not recorded', 'Non enregistré');
   const hasRecordedSecurityPayment = receivedSecurityAmount > 0 && Boolean(securityHoldReceivedMethod);
   const showSecurityHoldEditor = !hasRecordedSecurityPayment || isEditingSecurityHold;
+  useEffect(() => {
+    if (showSecurityHoldEditor || isEditingSecurityHold) {
+      setSecurityHoldOpen(true);
+    }
+  }, [isEditingSecurityHold, showSecurityHoldEditor]);
   const securityHoldStatus = (() => {
     if (hasHeldSecurityDocument) {
       return {
@@ -13432,6 +13598,49 @@ useEffect(() => {
     isActive &&
     !effectiveReplacementPauseStartedAt &&
     !['completed', 'cancelled', 'no_show', 'no_show_review'].includes(rentalStatusLower);
+  const quickExtensionPackage = hasBookedKilometerPackage
+    ? (bookedKilometerPackage || appliedKilometerPackage || packageDetails || rental?.package || null)
+    : null;
+  const quickExtensionUsesPackage = Boolean(
+    quickExtensionPackage?.id &&
+    isPackagePricingEnabled(rental)
+  );
+  const quickExtensionPreset = useMemo(() => {
+    const basePreset = {
+      extensionType: rental?.rental_type === 'daily' ? 'days' : 'hours',
+      initialDays: 1,
+      usePackagePricing: false,
+      packageId: null,
+      estimatedKms: Math.max(
+        1,
+        Math.round(
+          Number(
+            rental?.estimated_kilometers ||
+            rental?.estimated_kms ||
+            rental?.package_total_included_km ||
+            150
+          ) || 150
+        )
+      ),
+    };
+
+    if (!quickExtensionUsesPackage) return basePreset;
+
+    const packageKmSeed = getConfiguredPackageTotalIncludedKilometers(rental, quickExtensionPackage);
+    return {
+      ...basePreset,
+      usePackagePricing: true,
+      packageId: quickExtensionPackage.id,
+      estimatedKms: Math.max(
+        1,
+        Math.round(
+          Number.isFinite(packageKmSeed) && packageKmSeed > 0
+            ? packageKmSeed
+            : Number(getPackageBaseIncludedKilometers(quickExtensionPackage) || basePreset.estimatedKms)
+        )
+      ),
+    };
+  }, [hasBookedKilometerPackage, packageDetails, quickExtensionPackage, quickExtensionUsesPackage, rental, bookedKilometerPackage, appliedKilometerPackage]);
   const extensionActionHours = lateExtensionSuggestion?.isChargeable
     ? lateExtensionSuggestion.suggestedHours
     : 1;
@@ -13447,6 +13656,65 @@ useEffect(() => {
         `Retard de ${formatLateExtensionDuration(lateExtensionSuggestion.minutesLate)}. Après ${lateExtensionSuggestion.thresholdMinutes} min, charge suggérée : ${lateExtensionSuggestion.suggestedHours} heure${lateExtensionSuggestion.suggestedHours > 1 ? 's' : ''} en plus.`
       )
     : '';
+  const quickExtensionContextLabel = quickExtensionUsesPackage
+    ? getKilometerPackageName(
+        quickExtensionPackage,
+        bookedPackageDisplayName || tr('package', 'forfait')
+      )
+    : `${extensionActionHours}h`;
+  const quickExtensionActionLabel = lateExtensionSuggestion?.isChargeable
+    ? tr(
+        `Quick add ${quickExtensionContextLabel}`,
+        `Ajout rapide ${quickExtensionContextLabel}`
+      )
+    : extensionActionLabel;
+  const quickExtensionActionHelper = lateExtensionSuggestion?.isChargeable
+    ? quickExtensionUsesPackage
+      ? tr(
+          `Late by ${formatLateExtensionDuration(lateExtensionSuggestion.minutesLate)}. This quick add reuses the same package family as the current rental and updates the due balance immediately.`,
+          `Retard de ${formatLateExtensionDuration(lateExtensionSuggestion.minutesLate)}. Cet ajout rapide réutilise le même forfait que la location en cours et met à jour le solde immédiatement.`
+        )
+      : tr(
+          `Late by ${formatLateExtensionDuration(lateExtensionSuggestion.minutesLate)}. Quick add repeats the next base-price hour and updates the due balance immediately.`,
+          `Retard de ${formatLateExtensionDuration(lateExtensionSuggestion.minutesLate)}. L’ajout rapide répète l’heure suivante au tarif de base et met à jour le solde immédiatement.`
+        )
+    : extensionActionHelper;
+  const lightFinishFinancialSnapshot = useMemo(() => {
+    const cards = [
+      {
+        key: 'total',
+        label: tr('Rental total', 'Total location'),
+        value: `${formatCurrency(rentalBillingSummary.grandTotal)} MAD`,
+      },
+      {
+        key: 'paid',
+        label: tr('Paid', 'Payé'),
+        value: `${formatCurrency(rentalBillingSummary.customerPaidAmount)} MAD`,
+      },
+      {
+        key: 'due',
+        label: tr('Due now', 'À payer'),
+        value: `${formatCurrency(rentalBillingSummary.balanceDue)} MAD`,
+        tone: rentalBillingSummary.balanceDue > 0 ? 'text-amber-700' : 'text-emerald-700',
+      },
+    ];
+
+    if (recentExtensionFeedback) {
+      cards.push({
+        key: 'extension',
+        label: tr('Latest extension', 'Dernière prolongation'),
+        value: `+${recentExtensionFeedback.hours}h · +${formatCurrency(recentExtensionFeedback.amount)} MAD`,
+      });
+    } else if (latestApprovedExtension) {
+      cards.push({
+        key: 'extension',
+        label: tr('Latest extension', 'Dernière prolongation'),
+        value: `+${parseFloat(latestApprovedExtension.extension_hours || 0)}h · +${formatCurrency(parseFloat(latestApprovedExtension.extension_price || 0))} MAD`,
+      });
+    }
+
+    return cards;
+  }, [latestApprovedExtension, recentExtensionFeedback, rentalBillingSummary.balanceDue, rentalBillingSummary.customerPaidAmount, rentalBillingSummary.grandTotal, tr]);
   const priceOverrideMeta = parsePriceOverrideMeta(rental?.price_override_reason);
   const effectivePriceOverrideMeta = priceOverrideMeta || priceOverrideAuditMeta;
   const rawPriceOverrideReason =
@@ -13807,6 +14075,16 @@ useEffect(() => {
   const showLightFinishRentalMobile = isLightRentalDetailsMode && isActive && finishRentalSteps.showWorkflow;
 
   useEffect(() => {
+    setLightRentalInfoOpenSections({
+      people: true,
+      vehicle: false,
+      schedule: true,
+      money: Boolean(isCompleted),
+      signature: false,
+    });
+  }, [rental?.id, isCompleted]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!showLightReadyToStartMobile) return;
     if (window.location.hash !== '#ready-to-start') return;
@@ -13822,12 +14100,16 @@ useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!showLightFinishRentalMobile) return;
 
+    const scrollKey = `${rental?.id || 'rental'}::finish`;
+    if (lightFinishSectionAutoScrollRef.current === scrollKey) return;
+    lightFinishSectionAutoScrollRef.current = scrollKey;
+
     const timeoutId = window.setTimeout(() => {
       scrollToElementWithHeaderOffset(lightFinishSectionRef.current);
     }, 120);
 
     return () => window.clearTimeout(timeoutId);
-  }, [showLightFinishRentalMobile, scrollToElementWithHeaderOffset]);
+  }, [showLightFinishRentalMobile, rental?.id, scrollToElementWithHeaderOffset]);
 
   useEffect(() => {
     if (!isEditingOdometer) {
@@ -14562,10 +14844,6 @@ useEffect(() => {
           .join(' • ') || tr('Not set', 'Non défini'),
       },
       {
-        label: tr('Return location', 'Lieu de retour'),
-        value: selectedReturnLocationName || tr('Select location below', 'Sélectionnez un lieu ci-dessous'),
-      },
-      {
         label: tr('Engine Hours', 'Heures moteur'),
         value:
           rental?.end_engine_hours !== null && rental?.end_engine_hours !== undefined
@@ -14621,9 +14899,15 @@ useEffect(() => {
           : tr('Add reading', 'Ajouter le relevé'),
         onAction: () => {
           if (finishRentalSteps.endOdometerComplete) {
+            if (isLightRentalDetailsMode) {
+              setLightRentalInfoSectionOpen('media', false);
+            }
             setIsEditingEndOdometer(true);
             setEndOdometerEditValue(rental?.ending_odometer?.toString() || '');
             return;
+          }
+          if (isLightRentalDetailsMode) {
+            setLightRentalInfoSectionOpen('media', false);
           }
           setShowEndOdometerPrompt(true);
         },
@@ -14716,33 +15000,6 @@ useEffect(() => {
                     : tr('Finish workflow is still locked.', 'Le workflow de clôture est encore verrouillé.')}
               </p>
             </div>
-            <div className="rounded-[22px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
-              <div className="mb-3 flex items-center gap-2">
-                <MapPin className="h-4 w-4 flex-shrink-0 text-violet-600" />
-                <p className="text-sm font-medium text-slate-600">
-                  {tr('Return location', 'Lieu de retour')}
-                </p>
-              </div>
-              <p className="mt-1 text-lg font-bold tracking-tight text-slate-900">
-                {selectedReturnLocationName || tr('Select location', 'Sélectionner un emplacement')}
-              </p>
-              <select
-                value={selectedReturnLocationId}
-                onChange={(e) => setSelectedReturnLocationId(e.target.value)}
-                disabled={fleetLocations.length === 0 || isFinishWorkflowSoftLocked}
-                className="mt-3 w-full rounded-2xl border border-violet-200 bg-violet-50 px-3 py-3 text-sm font-medium text-violet-700 outline-none transition-colors focus:border-violet-400 focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {fleetLocations.length === 0 ? (
-                  <option value="">{tr('No locations', 'Aucun emplacement')}</option>
-                ) : (
-                  fleetLocations.map((location) => (
-                    <option key={location.id} value={location.id}>
-                      {location.name}
-                    </option>
-                  ))
-                )}
-              </select>
-            </div>
           </div>
 
           <div className="mt-4 space-y-3">
@@ -14767,6 +15024,42 @@ useEffect(() => {
                 ) : null}
               </div>
             ) : null}
+
+            {recentExtensionFeedback ? (
+              <div className="rounded-[22px] border border-violet-200 bg-violet-50/90 px-4 py-3 text-sm text-violet-950 shadow-sm">
+                <p className="font-bold">
+                  {tr('Extension added', 'Prolongation ajoutée')}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-violet-800">
+                  {tr(
+                    `Added +${recentExtensionFeedback.hours}h for +${formatCurrency(recentExtensionFeedback.amount)} MAD. The financial breakdown below has been updated.`,
+                    `+${recentExtensionFeedback.hours}h ajoutées pour +${formatCurrency(recentExtensionFeedback.amount)} MAD. Le détail financier ci-dessous a été mis à jour.`
+                  )}
+                </p>
+                <p className="mt-1 text-xs font-semibold text-violet-950">
+                  {tr(
+                    `Updated balance due: ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`,
+                    `Nouveau solde dû : ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`
+                  )}
+                </p>
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              {lightFinishFinancialSnapshot.map((item) => (
+                <div
+                  key={item.key}
+                  className="rounded-[20px] border border-violet-100 bg-white/90 px-4 py-3 shadow-sm"
+                >
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {item.label}
+                  </p>
+                  <p className={`mt-2 text-sm font-bold ${item.tone || 'text-slate-900'}`}>
+                    {item.value}
+                  </p>
+                </div>
+              ))}
+            </div>
 
             {finishChecklistRows.map((step) => {
               const StepIcon = step.icon;
@@ -14832,7 +15125,7 @@ useEffect(() => {
                   {tr('Rental summary', 'Résumé location')}
                 </p>
                 <p className="mt-1 text-sm font-bold text-slate-900">
-                  {tr('Customer, vehicle, return location, payment, and security', 'Client, véhicule, lieu de retour, paiement et caution')}
+                  {tr('Customer, vehicle, payment, and security', 'Client, véhicule, paiement et caution')}
                 </p>
               </div>
               <div className="rounded-full bg-slate-100 p-2 text-slate-500">
@@ -14851,38 +15144,35 @@ useEffect(() => {
             )}
           </div>
 
-          {canOpenExtensionFlow ? (
-            <div className={`mt-4 rounded-2xl border px-4 py-3 shadow-sm ${
-              lateExtensionSuggestion?.isChargeable
-                ? 'border-amber-200 bg-amber-50'
-                : 'border-violet-100 bg-white/90'
-            }`}>
+          {canOpenExtensionFlow && lateExtensionSuggestion?.isChargeable ? (
+            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-sm">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className={`text-sm font-bold ${
-                    lateExtensionSuggestion?.isChargeable ? 'text-amber-800' : 'text-slate-900'
-                  }`}>
-                    {extensionActionLabel}
+                  <p className="text-sm font-bold text-amber-800">
+                    {quickExtensionActionLabel}
                   </p>
-                  <p className={`mt-1 text-xs ${
-                    lateExtensionSuggestion?.isChargeable ? 'text-amber-700' : 'text-slate-500'
-                  }`}>
-                    {extensionActionHelper || tr('Add time before closing if the customer keeps the vehicle longer.', 'Ajoutez du temps avant la clôture si le client garde le véhicule plus longtemps.')}
+                  <p className="mt-1 text-xs text-amber-700">
+                    {quickExtensionActionHelper || tr('Quick add the next overdue charge before closing this rental.', 'Ajoutez rapidement la prochaine charge de retard avant de clôturer cette location.')}
                   </p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => openExtensionFlow(extensionActionHours)}
-                  className={`inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold shadow-sm ${
-                    lateExtensionSuggestion?.isChargeable
-                      ? 'bg-amber-500 text-white hover:bg-amber-600'
-                      : 'bg-violet-600 text-white hover:bg-violet-700'
-                  }`}
+                  onClick={() => openExtensionFlow(extensionActionHours, { preset: quickExtensionPreset })}
+                  className="inline-flex items-center justify-center gap-2 rounded-full bg-amber-500 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-amber-600"
                 >
                   <Clock className="h-4 w-4" />
-                  {tr('Add extension', 'Ajouter')}
+                  {tr('Quick add', 'Ajout rapide')}
                 </button>
               </div>
+            </div>
+          ) : canOpenExtensionFlow ? (
+            <div className="mt-4 rounded-2xl border border-violet-100 bg-white/90 px-4 py-3 text-xs text-slate-500 shadow-sm">
+              <p className="font-semibold text-slate-700">
+                {tr('Need more time before closing?', 'Besoin de plus de temps avant la clôture ?')}
+              </p>
+              <p className="mt-1">
+                {tr('Open Schedule to add a regular extension before finishing the rental.', 'Ouvrez Horaire pour ajouter une prolongation normale avant de terminer la location.')}
+              </p>
             </div>
           ) : null}
 
@@ -14932,6 +15222,2207 @@ useEffect(() => {
     );
   };
 
+  const toggleLightRentalInfoSection = (sectionKey) => {
+    setLightRentalInfoOpenSections((prev) => ({
+      ...prev,
+      [sectionKey]: !prev?.[sectionKey],
+    }));
+  };
+
+  const setLightRentalInfoSectionOpen = (sectionKey, isOpen) => {
+    setLightRentalInfoOpenSections((prev) => (
+      prev?.[sectionKey] === isOpen
+        ? prev
+        : {
+            ...prev,
+            [sectionKey]: isOpen,
+          }
+    ));
+  };
+
+  const lightRentalInfoPreview = {
+    people: [
+      createdByDisplay || startedByDisplay || signedByDisplay
+        ? tr('Staff linked', 'Personnel lié')
+        : null,
+      syncedCustomerDetails.fullName || rental?.customer_name || null,
+      hasSecondDriver
+        ? tr(
+            `${secondDriversList.length} additional driver${secondDriversList.length > 1 ? 's' : ''}`,
+            `${secondDriversList.length} conducteur${secondDriversList.length > 1 ? 's supplémentaires' : ' supplémentaire'}`
+          )
+        : null,
+    ].filter(Boolean).join(' • '),
+    vehicle: [
+      rental?.vehicle?.name || rental?.vehicle?.model || tr('Vehicle linked', 'Véhicule lié'),
+      hasVehicleReplacementHistory
+        ? tr(
+            `${vehicleReplacementHistory.length} history entr${vehicleReplacementHistory.length > 1 ? 'ies' : 'y'}`,
+            `${vehicleReplacementHistory.length} entrée${vehicleReplacementHistory.length > 1 ? 's' : ''} historique`
+          )
+        : tr('No swaps yet', 'Aucun changement'),
+    ].filter(Boolean).join(' • '),
+    schedule: [
+      rental?.started_at
+        ? tr('Started live', 'Démarrée en direct')
+        : tr('Scheduled timing', 'Horaire planifié'),
+      formatRentalDurationLabel(rental, isFrench),
+      timeRemaining || null,
+    ].filter(Boolean).join(' • '),
+    money: [
+      dynamicPaymentState?.label || tr('Payment pending', 'Paiement en attente'),
+      `${formatCurrency(rentalBillingSummary?.grandTotal || 0)} MAD`,
+      rentalBillingSummary?.balanceDue > 0
+        ? `${tr('Due', 'Dû')} ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`
+        : tr('No balance due', 'Aucun solde dû'),
+    ].filter(Boolean).join(' • '),
+    media: [
+      hasCompletedVehicleMedia
+        ? tr(
+            `${completedVehicleMediaCount} media item${completedVehicleMediaCount > 1 ? 's' : ''} saved`,
+            `${completedVehicleMediaCount} média${completedVehicleMediaCount > 1 ? 's enregistrés' : ' enregistré'}`
+          )
+        : tr('No return media saved yet', 'Aucun média de retour enregistré'),
+      String(rental?.rental_status || '').toLowerCase() === 'completed'
+        ? tr('Add final vehicle photos and videos', 'Ajoutez les photos et vidéos finales du véhicule')
+        : tr('Use this step while capturing return inspection media', 'Utilisez cette étape pendant la capture des médias de retour'),
+    ].filter(Boolean).join(' • '),
+    signature: rental?.signature_url
+      ? tr('Signature saved and ready for documents', 'Signature enregistrée et prête pour les documents')
+      : tr('No customer signature saved yet', 'Aucune signature client enregistrée'),
+  };
+
+  const renderLightRentalInfoSection = ({ sectionKey, eyebrow, title, preview, icon: Icon, children, sectionRef = null }) => {
+    if (!isLightRentalDetailsMode) {
+      return <>{children}</>;
+    }
+
+    const isOpen = Boolean(lightRentalInfoOpenSections?.[sectionKey]);
+
+    return (
+      <div ref={sectionRef} className="overflow-hidden rounded-[24px] border border-violet-100 bg-white shadow-[0_12px_30px_rgba(76,29,149,0.06)]">
+        <button
+          type="button"
+          onClick={() => toggleLightRentalInfoSection(sectionKey)}
+          className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            {Icon ? (
+              <div className="mt-0.5 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border border-violet-100 bg-violet-50 text-violet-600 shadow-sm">
+                <Icon className="h-5 w-5" />
+              </div>
+            ) : null}
+            <div className="min-w-0">
+              {eyebrow ? (
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                  {eyebrow}
+                </p>
+              ) : null}
+              <p className="mt-1 text-base font-bold text-slate-900">{title}</p>
+              <p className="mt-1 text-xs text-slate-500">{preview}</p>
+            </div>
+          </div>
+          <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+            {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </div>
+        </button>
+        {isOpen ? (
+          <div className="space-y-4 border-t border-slate-100 px-4 pb-4 pt-3">
+            {children}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderAdvancedPeopleSectionBody = () => (
+    <>
+      {(createdByDisplay || startedByDisplay || signedByDisplay) && (
+        <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold text-slate-900">👤 {tr('Rental Staff', 'Personnel de location')}</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                {tr('Who created, signed, and started this rental.', 'Qui a créé, signé et démarré cette location.')}
+              </p>
+            </div>
+            <button
+              onClick={async () => {
+                if (!showHistory) await loadRentalHistory(rental.id);
+                setShowHistory((h) => !h);
+              }}
+              className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 transition hover:bg-slate-200"
+            >
+              {showHistory ? tr('Hide', 'Masquer') : `📋 ${tr('History', 'Historique')}`}
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-1 text-sm text-slate-700 sm:grid-cols-3">
+            <p><strong>{tr('Created by:', 'Créée par :')}</strong> {createdByDisplay}</p>
+            {signedByDisplay && <p><strong>{tr('Signed by:', 'Signée par :')}</strong> {signedByDisplay}</p>}
+            {startedByDisplay && <p><strong>{tr('Started by:', 'Démarrée par :')}</strong> {startedByDisplay}</p>}
+          </div>
+          {showHistory && (
+            <div className="mt-3 border-t border-violet-100 pt-3">
+              <p className="mb-2 text-xs font-semibold text-slate-500">{tr('Action History', 'Historique des actions')}</p>
+              {rentalHistory.length === 0 ? (
+                <p className="text-xs italic text-slate-400">
+                  {tr('No history yet — run SQL migration first', 'Aucun historique pour le moment — exécutez d’abord la migration SQL')}
+                </p>
+              ) : (
+                <div className="max-h-48 space-y-1 overflow-y-auto">
+                  {rentalHistory.map((log, i) => (
+                    <div key={i} className="flex gap-2 border-b border-slate-100 py-1 text-xs last:border-0">
+                      <span className="whitespace-nowrap text-slate-400">
+                        {new Date(log.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <span className="flex-1 text-slate-700">{log.description}</span>
+                      {log.user_name && <span className="whitespace-nowrap text-blue-600">{log.user_name}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <h3 className="text-lg font-semibold text-slate-900">{tr('Customer Details', 'Détails client')}</h3>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Button
+              onClick={handleContactCustomerWhatsApp}
+              size="sm"
+              className="rounded-xl border border-emerald-100 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+            >
+              <FaWhatsapp className="mr-2 h-4 w-4" />
+              {tr('WhatsApp', 'WhatsApp')}
+            </Button>
+            <Button
+              onClick={() => handleViewCustomerDetails(rental.customer_id)}
+              size="sm"
+              className="rounded-xl border border-violet-100 bg-violet-50 text-violet-700 hover:bg-violet-100"
+            >
+              <User className="mr-2 h-4 w-4" />
+              {tr('View Details', 'Voir les détails')}
+            </Button>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm text-slate-700 sm:grid-cols-2 sm:text-base">
+          <p><strong>{tr('Full Name:', 'Nom complet :')}</strong> {syncedCustomerDetails.fullName || tr('N/A', 'N/D')}</p>
+          <p><strong>{tr('Email:', 'Email :')}</strong> {syncedCustomerDetails.email || tr('N/A', 'N/D')}</p>
+          <p><strong>{tr('Phone:', 'Téléphone :')}</strong> {syncedCustomerDetails.phone || tr('N/A', 'N/D')}</p>
+          <p><strong>{tr('ID/License:', 'ID/Permis :')}</strong> {syncedCustomerDetails.licenceNumber || tr('N/A', 'N/D')}</p>
+        </div>
+
+        {!isEditingPrice && availableTelegramResendActions.length > 0 && (
+          <div className="mt-4">
+            {renderTelegramResendCompactRow()}
+          </div>
+        )}
+      </div>
+
+      {hasSecondDriver && (
+        <>
+          <Separator className="bg-violet-100" />
+          <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+            <h3 className="mb-3 text-lg font-semibold">
+              {tr('Additional Drivers', 'Conducteurs supplémentaires')} ({secondDriversList.length})
+            </h3>
+            <div className="mt-2 rounded-2xl border border-violet-100 bg-slate-50/70 p-4 text-sm text-slate-600">
+              <p>
+                {secondDriversList.length === 1
+                  ? tr('1 additional driver is linked to this rental.', '1 conducteur supplémentaire est lié à cette location.')
+                  : `${secondDriversList.length} ${tr('additional drivers are linked to this rental.', 'conducteurs supplémentaires sont liés à cette location.')}`}
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                {tr(
+                  'Open the side panel to view ID image, license details, and scanned information.',
+                  'Ouvrez le panneau latéral pour voir l’image de la pièce, les détails du permis et les informations scannées.'
+                )}
+              </p>
+            </div>
+            <Button
+              onClick={handleViewAdditionalDrivers}
+              size="sm"
+              className="mt-4 rounded-xl border border-violet-100 bg-violet-50 text-violet-700 hover:bg-violet-100"
+            >
+              <Users className="mr-2 h-4 w-4" />
+              {tr('View Additional Driver', 'Voir le conducteur supplémentaire')}{secondDriversList.length !== 1 ? 's' : ''}
+            </Button>
+          </div>
+        </>
+      )}
+    </>
+  );
+
+  const renderAdvancedVehicleSectionBody = () => (
+    <>
+      <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h3 className="text-lg font-semibold text-slate-900">{tr('Vehicle Details', 'Détails véhicule')}</h3>
+          {(isScheduled || isActive) && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={openReplaceVehicleDialog}
+              className="rounded-xl border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800"
+            >
+              <Wrench className="mr-2 h-4 w-4" />
+              {tr('Change vehicle', 'Changer de véhicule')}
+            </Button>
+          )}
+        </div>
+        {effectiveReplacementPauseStartedAt && (
+          <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p className="font-semibold">
+              {tr('Vehicle swap in progress', 'Remplacement de véhicule en cours')}
+            </p>
+            <p className="mt-1 text-xs text-amber-800">
+              {tr(
+                'Complete the opening checks on the replacement vehicle, then use Resume rental to continue without losing time.',
+                'Terminez les contrôles d’ouverture sur le véhicule de remplacement, puis utilisez Reprendre la location pour continuer sans perdre de temps.'
+              )}
+            </p>
+          </div>
+        )}
+        <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm text-slate-700 sm:grid-cols-2 sm:text-base">
+          <p><strong>{tr('Vehicle:', 'Véhicule :')}</strong> {rental.vehicle?.name}</p>
+          <p><strong>{tr('Model:', 'Modèle :')}</strong> {rental.vehicle?.model}</p>
+          <p><strong>{tr('Plate:', 'Plaque :')}</strong> {rental.vehicle?.plate_number}</p>
+          <p><strong>{tr('Type:', 'Type :')}</strong> {rental.vehicle?.vehicle_type}</p>
+          {rental.start_odometer && (
+            <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
+              {isEditingStartOdometer ? (
+                <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                  <strong className="shrink-0">{tr('Start Odometer:', 'Kilométrage départ :')}</strong>
+                  <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+                    <input
+                      type="number"
+                      value={startOdometerEditValue}
+                      onChange={e => setStartOdometerEditValue(e.target.value)}
+                      className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-sm sm:w-28 sm:flex-none"
+                      min={0}
+                      autoFocus
+                    />
+                    <span className="text-sm text-gray-500">km</span>
+                    <div className="flex items-center gap-2">
+                      <Button type="button" size="sm" onClick={handleEditStartOdometer} className="h-8 bg-blue-600 px-3 text-xs text-white">{tr('Save', 'Enregistrer')}</Button>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setIsEditingStartOdometer(false)} className="h-8 px-2 text-xs">✕</Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex w-full items-start justify-between gap-2">
+                  <p><strong>{tr('Start Odometer:', 'Kilométrage départ :')}</strong> {rental.start_odometer} km</p>
+                  {isCompleted && ['admin', 'owner', 'employee'].includes(currentUser?.role) && (
+                    <Button type="button" onClick={() => { setIsEditingStartOdometer(true); setStartOdometerEditValue(rental.start_odometer?.toString() || ''); }}
+                      size="sm" variant="ghost" className="h-6 w-6 p-0" title={tr('Edit start odometer', 'Modifier le kilométrage de départ')}>
+                      <Edit className="h-3 w-3" />
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {rental.ending_odometer && (
+            <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
+              {isEditingEndOdometer ? (
+                <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                  <strong className="shrink-0">{tr('End Odometer:', 'Kilométrage retour :')}</strong>
+                  <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+                    <input
+                      ref={endOdometerEditInputRef}
+                      type="number"
+                      value={endOdometerEditValue}
+                      onChange={e => setEndOdometerEditValue(e.target.value)}
+                      className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-sm sm:w-28 sm:flex-none"
+                      min={0}
+                      autoFocus
+                    />
+                    <span className="text-sm text-gray-500">km</span>
+                    <div className="flex items-center gap-2">
+                      <Button type="button" size="sm" onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleSaveEndOdometer(endOdometerEditValue);
+                      }} className="h-8 bg-blue-600 px-3 text-xs text-white">{tr('Save', 'Enregistrer')}</Button>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setIsEditingEndOdometer(false)} className="h-8 px-2 text-xs">✕</Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex w-full items-start justify-between gap-2">
+                  <p><strong>{tr('End Odometer:', 'Kilométrage retour :')}</strong> {rental.ending_odometer} km</p>
+                  {isCompleted && ['admin', 'owner', 'employee'].includes(currentUser?.role) && (
+                    <Button type="button" onClick={() => { setIsEditingEndOdometer(true); setEndOdometerEditValue(rental.ending_odometer?.toString() || ''); }}
+                      size="sm" variant="ghost" className="h-6 w-6 p-0" title={tr('Edit end odometer', 'Modifier le kilométrage de retour')}>
+                      <Edit className="h-3 w-3" />
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {(rental.start_engine_hours !== null && rental.start_engine_hours !== undefined) && (
+            <p><strong>{tr('Start Engine Hours:', 'Heures moteur départ :')}</strong> {Number(rental.start_engine_hours).toFixed(1)} h</p>
+          )}
+          {(rental.end_engine_hours !== null && rental.end_engine_hours !== undefined) && (
+            <p><strong>{tr('End Engine Hours:', 'Heures moteur retour :')}</strong> {Number(rental.end_engine_hours).toFixed(1)} h</p>
+          )}
+          {(() => {
+            const startHours = rental.start_engine_hours;
+            const endHours = rental.end_engine_hours;
+            if (startHours === null || startHours === undefined || endHours === null || endHours === undefined) return null;
+            const delta = Number(endHours) - Number(startHours);
+            if (!Number.isFinite(delta)) return null;
+            return (
+              <p><strong>{tr('Engine Hours Used:', 'Heures moteur utilisées :')}</strong> {delta.toFixed(1)} h</p>
+            );
+          })()}
+          {rental.total_kilometers_driven && (
+            <p><strong>{tr('Total Distance:', 'Distance totale :')}</strong> {(rental.total_kilometers_driven || 0).toFixed(2)} km</p>
+          )}
+          {(rental.start_fuel_level !== null || startFuelLevel !== null) && (
+            <div>
+              <p>
+                <strong>⛽ {tr('Fuel at Departure:', 'Carburant au départ :')}</strong>{' '}
+                <span className="font-semibold text-blue-600">{startFuelLevel ?? rental.start_fuel_level}/8</span>
+              </p>
+              <div className="mt-1 flex gap-0.5">
+                {[1,2,3,4,5,6,7,8].map(segment => (
+                  <div key={segment} className={`h-5 w-3 rounded ${segment <= (startFuelLevel ?? rental.start_fuel_level) ? 'bg-green-500' : 'bg-gray-300'}`} />
+                ))}
+              </div>
+            </div>
+          )}
+          {(rental.end_fuel_level !== null || endFuelLevel !== null) && (
+            <div>
+              <p>
+                <strong>⛽ {tr('Fuel at Return:', 'Carburant au retour :')}</strong>{' '}
+                <span className={`font-semibold ${(endFuelLevel ?? rental.end_fuel_level) >= (startFuelLevel ?? rental.start_fuel_level) ? 'text-green-600' : 'text-orange-600'}`}>
+                  {endFuelLevel ?? rental.end_fuel_level}/8
+                </span>
+                {(endFuelLevel ?? rental.end_fuel_level) >= (startFuelLevel ?? rental.start_fuel_level) && (
+                  <span className="ml-2 text-green-600">✓</span>
+                )}
+              </p>
+              <div className="mt-1 flex gap-0.5">
+                {[1,2,3,4,5,6,7,8].map(segment => (
+                  <div key={segment} className={`h-5 w-3 rounded ${segment <= (endFuelLevel || rental.end_fuel_level) ? 'bg-green-500' : 'bg-gray-300'}`} />
+                ))}
+              </div>
+            </div>
+          )}
+          {(() => {
+            const startL = startFuelLevel ?? rental.start_fuel_level ?? null;
+            const endL = endFuelLevel ?? rental.end_fuel_level ?? null;
+            const deficit = (startL !== null && endL !== null) ? Math.max(0, startL - endL) : 0;
+            const charge = getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
+            if (fuelChargeEnabled && endL !== null && deficit > 0 && charge > 0) {
+              return (
+                <p className="col-span-2">
+                  <strong>⛽ {tr('Fuel Charge:', 'Frais carburant :')}</strong>{' '}
+                  <span className="font-semibold text-red-600">{deficit} lines × {fuelPricePerLine || 0} MAD = {charge.toFixed(2)} MAD</span>
+                </p>
+              );
+            }
+            if (fuelChargeEnabled && endL !== null && deficit === 0) {
+              return (
+                <p className="col-span-2 text-sm text-green-600">
+                  <strong>⛽ {tr('Fuel:', 'Carburant :')}</strong> {tr('Returned full — no charge ✓', 'Rendu plein — aucun frais ✓')}
+                </p>
+              );
+            }
+            if (!fuelChargeEnabled && startL !== null) {
+              return (
+                <p className="col-span-2 text-sm text-green-600">
+                  <strong>⛽ {tr('Fuel:', 'Carburant :')}</strong> {tr('Included in rate ✓', 'Inclus dans le tarif ✓')}
+                </p>
+              );
+            }
+            return null;
+          })()}
+        </div>
+
+        {previousVehicleHistoryEntry && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">
+            <p className="font-semibold">{tr('Vehicle replaced during rental', 'Véhicule remplacé pendant la location')}</p>
+            <p className="mt-1 text-xs text-amber-800">
+              {tr('Previous vehicle:', 'Véhicule précédent :')}{' '}
+              <strong>
+                {[previousVehicleHistoryEntry.vehicle_name_snapshot, previousVehicleHistoryEntry.vehicle_model_snapshot, previousVehicleHistoryEntry.plate_number_snapshot].filter(Boolean).join(' · ')}
+              </strong>
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 className="text-lg font-semibold text-slate-900">{tr('Vehicle History', 'Historique du véhicule')}</h3>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+            {vehicleReplacementHistory.length} {tr('entries', 'entrées')}
+          </span>
+        </div>
+        {!hasVehicleReplacementHistory ? (
+          <p className="text-sm text-slate-500">
+            {tr('Vehicle history will appear here after the rental starts or a replacement happens.', "L'historique du véhicule apparaîtra ici après le démarrage de la location ou un remplacement.")}
+          </p>
+        ) : (
+          <div className="relative pl-8">
+            <div className="absolute bottom-1 left-[11px] top-1 w-px bg-slate-200" />
+            <div className="space-y-4">
+              {vehicleReplacementHistory.map((entry, index) => {
+                const label = [entry.vehicle_name_snapshot, entry.vehicle_model_snapshot, entry.plate_number_snapshot].filter(Boolean).join(' · ');
+                const isCurrentEntry = index === vehicleReplacementHistory.length - 1 && !entry.ended_at;
+                const entryStartLabel = index === 0 ? tr('Started rental', 'Démarrage de location') : tr('Replaced at', 'Remplacé à');
+                return (
+                  <div key={entry.id || `${entry.rental_id}-${entry.sequence_index}-${index}`} className="relative rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                    <div className={`absolute -left-[26px] top-4 h-4 w-4 rounded-full border-4 ${isCurrentEntry ? 'border-violet-500 bg-violet-100' : 'border-slate-300 bg-white'}`} />
+                    <div className="flex flex-col gap-1">
+                      <p className="text-sm font-semibold text-slate-900">{label || tr('Vehicle snapshot', 'Instantané du véhicule')}</p>
+                      <p className="text-xs text-slate-500">{entryStartLabel} · {formatVehicleHistoryDateTime(entry.started_at, isFrench)}</p>
+                      {index > 0 && entry.replacement_reason && (
+                        <p className="text-xs text-slate-600">{tr('Reason:', 'Raison :')} <span className="font-medium text-slate-700">{entry.replacement_reason}</span></p>
+                      )}
+                      {entry.changed_by && (
+                        <p className="text-xs text-slate-500">{tr('By:', 'Par :')} <span className="font-medium text-slate-700">{entry.changed_by}</span></p>
+                      )}
+                      {entry.change_note && (
+                        <p className="text-xs text-slate-500">{tr('Note:', 'Note :')} {entry.change_note}</p>
+                      )}
+                      {entry.ended_at ? (
+                        <p className="text-xs text-slate-400">{tr('Used until', 'Utilisé jusqu’au')} {formatVehicleHistoryDateTime(entry.ended_at, isFrench)}</p>
+                      ) : (
+                        <p className="text-xs font-medium text-violet-600">{tr('Current vehicle', 'Véhicule actuel')}</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {simplePricingSummary && hasBookedKilometerPackage && (
+        <div className="grid gap-4">
+          <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <Package className="h-5 w-5 text-violet-600" />
+              <h4 className="font-semibold text-violet-900">{tr('Selected package', 'Forfait sélectionné')}</h4>
+            </div>
+            <div className="space-y-3 text-sm">
+              <div className="rounded-2xl border border-violet-100 bg-white p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">{tr('Package path', 'Parcours forfait')}</p>
+                <div className="mt-3 grid gap-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-600">{tr('Original rental', 'Location initiale')}</span>
+                    <span className="text-right font-bold text-slate-900">
+                      {originalKilometerPackageName || tr('No package linked', 'Aucun forfait lié')}
+                      {bookedPackageLimitKm > 0 ? ` · ${bookedPackageLimitKm} km` : ''}
+                      {originalKilometerPackagePrice > 0 ? ` · ${formatCurrency(originalKilometerPackagePrice)} MAD` : ''}
+                    </span>
+                  </div>
+                  {kilometerPackageApplication.upgraded ? (
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                      <span className="text-emerald-700">{tr('Auto upgrade applied', 'Surclassement auto appliqué')}</span>
+                      <span className="text-right font-extrabold text-emerald-800">
+                        {appliedKilometerPackageName}
+                        {Number.isFinite(kilometerPackageApplication.appliedLimit) ? ` · ${kilometerPackageApplication.appliedLimit} km` : ` · ${tr('Unlimited', 'Illimité')}`}
+                        {appliedKilometerPackagePrice > 0 ? ` · ${formatCurrency(appliedKilometerPackagePrice)} MAD` : ''}
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-600">{tr('KM used', 'KM utilisés')}</span>
+                <span className="font-semibold text-slate-900">{Number(simplePricingSummary.kmUsed || 0).toFixed(2)} km</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-600">{tr('Applied limit', 'Limite appliquée')}</span>
+                <span className="font-semibold text-slate-900">
+                  {Number.isFinite(kilometerPackageApplication.appliedLimit) && kilometerPackageApplication.appliedLimit > 0
+                    ? `${kilometerPackageApplication.appliedLimit} km`
+                    : kilometerPackageApplication.appliedPackage
+                      ? tr('Unlimited', 'Illimité')
+                      : '—'}
+                </span>
+              </div>
+              {kilometerPackageApplication.upgraded ? (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-xs font-medium text-emerald-800">
+                  {tr(
+                    `Upgraded because ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km passed the original ${bookedPackageLimitKm} km limit. Billing now follows ${appliedKilometerPackageName} at ${formatCurrency(appliedKilometerPackagePrice)} MAD.`,
+                    `Surclassé car ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km dépasse la limite initiale de ${bookedPackageLimitKm} km. La facturation suit maintenant ${appliedKilometerPackageName} à ${formatCurrency(appliedKilometerPackagePrice)} MAD.`
+                  )}
+                </div>
+              ) : autoMatchedPackageDiffers ? (
+                <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
+                  {tr('Package upgrade is available from distance used.', 'Un surclassement forfait est disponible selon la distance utilisée.')}
+                </p>
+              ) : simplePricingSummary.packageOverflowKm > 0 ? (
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                  {tr(
+                    `Highest package reached. ${simplePricingSummary.packageOverflowKm} km sits above the current package limit and can be handled later as an overage rule.`,
+                    `Le plus grand forfait a été atteint. ${simplePricingSummary.packageOverflowKm} km dépassent la limite actuelle et pourront être traités plus tard comme règle de dépassement.`
+                  )}
+                </p>
+              ) : (
+                <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
+                  {tr('Best package selected automatically from the distance used.', 'Le meilleur forfait a été sélectionné automatiquement selon la distance utilisée.')}
+                </p>
+              )}
+              {String(rental?.rental_type || '').toLowerCase() === 'hourly' && (
+                <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700">
+                  {tr(
+                    `Late return rule: if a 1-hour rental goes more than ${simplePricingSummary.gracePeriodMinutes} minutes late, a second hour is charged automatically.`,
+                    `Règle de retard : si une location de 1 heure dépasse la période de grâce de ${simplePricingSummary.gracePeriodMinutes} minutes, une deuxième heure est facturée automatiquement.`
+                  )}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!hasBookedKilometerPackage && tierPricingBreakdown?.standardHourlyRate > 0 && (
+        <div className="grid gap-4">
+          <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <Calculator className="h-5 w-5 text-sky-600" />
+              <h4 className="font-semibold text-sky-900">{tr('Base price selected', 'Tarif de base sélectionné')}</h4>
+            </div>
+            <div className="rounded-2xl border border-sky-100 bg-white p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-500">{tr('Standard rental', 'Location standard')}</p>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <span className="text-slate-600">
+                  {tierPricingBreakdown.isDaily ? tr('Base daily price', 'Tarif journalier de base') : tr('Base hourly price', 'Tarif horaire de base')}
+                </span>
+                <span className="text-right font-extrabold text-slate-900">
+                  {tierPricingBreakdown.isDaily
+                    ? `${tierPricingBreakdown.duration} ${tierPricingBreakdown.duration > 1 ? tr('days', 'jours') : tr('day', 'jour')}`
+                    : tierPricingBreakdown.duration === 0.5
+                      ? tr('30 min', '30 min')
+                      : tierPricingBreakdown.duration === 1.5
+                        ? tr('1.5 hours', '1,5 heures')
+                        : `${tierPricingBreakdown.duration} ${tierPricingBreakdown.duration > 1 ? tr('hours', 'heures') : tr('hour', 'heure')}`} · {formatCurrency(tierPricingBreakdown.standardHourlyRate)} MAD
+                </span>
+              </div>
+              <p className="mt-2 text-xs font-medium text-sky-700">
+                {tr(
+                  'This rental follows the standard model price with no kilometer package attached.',
+                  "Cette location suit le tarif standard du modèle sans forfait kilométrique lié."
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
+  const renderAdvancedMoneySectionBody = () => (
+    <>
+      <div>
+        <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Financial Information', 'Informations financières')}</h3>
+        {!isEditingPrice && canEditLifecycleRentalPrice && (
+          <div className="mb-4 flex flex-wrap justify-end gap-2">
+            {currentAmountDueForEdit > 0 && (
+              <Button
+                type="button"
+                onClick={handlePayDueBalance}
+                size="sm"
+                className={`${PRIMARY_ACTION_BUTTON_CLASS} transition-transform duration-150 hover:scale-[1.01] active:scale-[0.97]`}
+                disabled={isSavingAmountDue}
+              >
+                {isSavingAmountDue ? (
+                  <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                ) : (
+                  <CreditCard className="mr-2 h-4 w-4" />
+                )}
+                {isSavingAmountDue
+                  ? tr('Paying Due Balance...', 'Paiement du solde...')
+                  : `${tr('Pay Due Balance', 'Payer le solde restant dû')} · ${formatCurrency(currentAmountDueForEdit)} MAD`}
+              </Button>
+            )}
+            <Button
+              type="button"
+              onClick={handleEditAmountDue}
+              size="sm"
+              variant="outline"
+              className="border-violet-200 text-violet-700 transition-transform duration-150 hover:bg-violet-50 hover:scale-[1.01] active:scale-[0.97]"
+            >
+              <DollarSign className="mr-2 h-4 w-4" />
+              {tr('Adjust Balance', 'Ajuster le solde')}
+            </Button>
+            <Button
+              type="button"
+              onClick={handleEditPrice}
+              size="sm"
+              className={`${PRIMARY_ACTION_BUTTON_CLASS} transition-transform duration-150 hover:scale-[1.01] active:scale-[0.97]`}
+            >
+              <Edit className="mr-2 h-4 w-4" />
+              {tr('Edit Rental Cost', 'Modifier le coût de location')}
+            </Button>
+          </div>
+        )}
+
+        {canOwnerAdjustCompletedRental && (
+          <div className="mb-4 rounded-[24px] border border-violet-200 bg-violet-50/80 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.08)]">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-violet-900">
+                  {tr('Post-return adjustments', 'Ajustements après retour')}
+                </p>
+                <p className="mt-1 text-xs text-violet-700">
+                  {tr(
+                    'As owner, you can still reopen the maintenance stay charge and deposit return for final corrections on this completed contract.',
+                    'En tant que propriétaire, vous pouvez encore rouvrir le séjour maintenance et le retour de caution pour corriger ce contrat terminé.'
+                  )}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="text-xs border-violet-200 text-violet-700 hover:bg-violet-100"
+                  onClick={handleEditMaintenanceStayCharge}
+                >
+                  <Wrench className="mr-1.5 h-3.5 w-3.5" />
+                  {tr('Edit Maintenance Stay Charge', 'Modifier le séjour maintenance')}
+                </Button>
+                {hasMonetaryDamageDeposit && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="text-xs border-violet-200 text-violet-700 hover:bg-violet-100"
+                    onClick={handleEditDepositReturn}
+                  >
+                    <DollarSign className="mr-1.5 h-3.5 w-3.5" />
+                    {tr('Edit Deposit Return', 'Modifier le retour de caution')}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isPendingApproval && (
+          <Alert className="mb-4 border-yellow-200 bg-yellow-50">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-yellow-600" />
+                <AlertDescription className="text-yellow-800">
+                  <strong>{tr('Pending Admin Approval', 'Approbation admin en attente')}</strong>
+                  <p className="mt-1">{tr('Manual price override requested:', 'Demande de modification manuelle du prix :')} <strong>{rental.pending_total_request} MAD</strong></p>
+                  {priceOverrideNoteText && (
+                    <p className="mt-1 text-sm">{tr('Reason:', 'Raison :')} {priceOverrideNoteText}</p>
+                  )}
+                </AlertDescription>
+              </div>
+
+              {!isAdmin && (
+                <Button
+                  onClick={handlePriceApprovalRequest}
+                  className="whitespace-nowrap bg-green-600 text-white hover:bg-green-700"
+                  size="sm"
+                  disabled={isSharing}
+                >
+                  <FaWhatsapp className="mr-2 h-4 w-4" />
+                  {isSharing ? tr('Sending...', 'Envoi...') : tr('Notify Admin via WhatsApp', 'Notifier l’admin via WhatsApp')}
+                </Button>
+              )}
+            </div>
+          </Alert>
+        )}
+
+        {isPendingApproval && isAdmin && (
+          <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+            <h4 className="mb-3 font-semibold text-blue-900">{tr('Price Approval Required', 'Approbation du prix requise')}</h4>
+            <div className="mb-3 space-y-2 text-sm">
+              <p><strong>{tr('Current Auto Price:', 'Prix auto actuel :')}</strong> {rental.total_amount} MAD</p>
+              <p><strong>{tr('Requested Manual Price:', 'Prix manuel demandé :')}</strong> {rental.pending_total_request} MAD</p>
+              {priceOverrideNoteText && (
+                <p><strong>{tr('Reason:', 'Raison :')}</strong> {priceOverrideNoteText}</p>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={handleApprovePrice} className="bg-green-600 text-white hover:bg-green-700" size="sm">
+                <CheckCircle className="mr-2 h-4 w-4" />
+                {tr('Approve', 'Approuver')}
+              </Button>
+              <Button onClick={handleDeclinePrice} variant="destructive" size="sm">
+                <XCircle className="mr-2 h-4 w-4" />
+                {tr('Decline', 'Refuser')}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {hasMeaningfulManualPriceOverride && (
+          <div className="mb-4 rounded-2xl border border-violet-200 bg-violet-50/80 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.08)]">
+            <div className="flex items-start gap-2">
+              <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-violet-600" />
+              <div className="text-sm text-violet-900">
+                <p className="font-semibold">{tr('Manual contract price applied', 'Prix manuel du contrat appliqué')}</p>
+                {effectivePriceOverrideMeta?.editedByName && (
+                  <p className="mt-1">{tr('Contract edited by:', 'Contrat modifié par :')} <strong>{effectivePriceOverrideMeta.editedByName}</strong></p>
+                )}
+                {effectivePriceOverrideMeta?.previousPrice > 0 && (
+                  <p className="mt-1">{tr('Previous contract price:', 'Prix précédent du contrat :')} <strong>{formatCurrency(effectivePriceOverrideMeta.previousPrice)} MAD</strong></p>
+                )}
+                {(effectivePriceOverrideMeta?.newPrice > 0 || rental.total_amount > 0) && (
+                  <p className="mt-1">{tr('New contract price:', 'Nouveau prix du contrat :')} <strong>{formatCurrency(effectivePriceOverrideMeta?.newPrice || rental.total_amount || 0)} MAD</strong></p>
+                )}
+                {priceOverrideNoteText && (
+                  <p className="mt-1">{tr('Override note:', 'Note de modification :')} {priceOverrideNoteText}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {amountDueAuditMeta && (
+          <div className="mb-4 rounded-[24px] border border-emerald-200 bg-emerald-50/80 p-4 shadow-[0_12px_30px_rgba(16,185,129,0.08)]">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-700">{tr('Balance resolved', 'Solde résolu')}</p>
+                <p className="mt-1 text-sm font-semibold text-emerald-950">{tr('Payment and discount recorded', 'Paiement et remise enregistrés')}</p>
+                {amountDueAuditMeta.editedByName && (
+                  <p className="mt-1 text-xs text-emerald-700">{tr('By', 'Par')} <strong>{amountDueAuditMeta.editedByName}</strong></p>
+                )}
+              </div>
+              <div className="rounded-2xl border border-emerald-200 bg-white px-4 py-3 text-right">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Final due', 'Solde final')}</p>
+                <p className="mt-1 text-2xl font-extrabold text-emerald-700">{formatCurrency(amountDueAuditMeta.newAmount || rental?.remaining_amount || 0)} MAD</p>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-4">
+              <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
+                <p className="text-xs font-medium text-slate-500">{tr('Original due', 'Solde initial')}</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(amountDueAuditMeta.previousAmount || 0)} MAD</p>
+              </div>
+              <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
+                <p className="text-xs font-medium text-slate-500">{tr('Customer paid', 'Payé client')}</p>
+                <p className="mt-1 text-lg font-bold text-emerald-700">{formatCurrency(amountDueAuditMeta.paymentReceivedNow || 0)} MAD</p>
+              </div>
+              <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
+                <p className="text-xs font-medium text-slate-500">{tr('Discount', 'Remise')}</p>
+                <p className="mt-1 text-lg font-bold text-violet-700">-{formatCurrency(amountDueAuditMeta.companyDiscount || 0)} MAD</p>
+              </div>
+              <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
+                <p className="text-xs font-medium text-slate-500">{tr('Still due', 'Encore dû')}</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(amountDueAuditMeta.newAmount || rental?.remaining_amount || 0)} MAD</p>
+              </div>
+            </div>
+            {amountDueAuditMeta.note && (
+              <p className="mt-3 text-xs text-emerald-800">{tr('Note:', 'Note :')} {amountDueAuditMeta.note}</p>
+            )}
+          </div>
+        )}
+
+        {approvedExtensions.length > 0 && (
+          <div className="mb-4 overflow-hidden rounded-[22px] border border-violet-200 bg-violet-50/80 shadow-[0_10px_24px_rgba(76,29,149,0.08)]">
+            <button
+              type="button"
+              onClick={() => setExtensionChargesOpen((prev) => !prev)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-violet-200 bg-white text-violet-700 shadow-sm">
+                  <Clock className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-violet-950">
+                    {tr('Extension charges', 'Frais de prolongation')}
+                  </p>
+                  <p className="mt-0.5 text-xs text-violet-700">
+                    {tr(
+                      `${approvedExtensions.length} extension${approvedExtensions.length > 1 ? 's' : ''} · +${totalExtendedHours}h · +${formatCurrency(totalExtensionFees)} MAD`,
+                      `${approvedExtensions.length} prolongation${approvedExtensions.length > 1 ? 's' : ''} · +${totalExtendedHours}h · +${formatCurrency(totalExtensionFees)} MAD`
+                    )}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-full bg-white/90 p-2 text-violet-700 shadow-sm">
+                {extensionChargesOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </div>
+            </button>
+
+            {extensionChargesOpen ? (
+              <div className="border-t border-violet-100 px-4 pb-4 pt-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-violet-950">
+                      {tr('Approved extensions are already included in the contract total.', 'Les prolongations approuvées sont déjà incluses dans le total du contrat.')}
+                    </p>
+                    {latestApprovedExtension && (
+                      <p className="mt-2 text-xs text-violet-700">
+                        {tr('Latest extension:', 'Dernière prolongation :')}{' '}
+                        <strong>
+                          +{parseFloat(latestApprovedExtension.extension_hours || 0)}h · {formatCurrency(parseFloat(latestApprovedExtension.extension_price || 0))} MAD
+                        </strong>
+                        {' · '}
+                        {new Date(latestApprovedExtension.approved_at || latestApprovedExtension.created_at).toLocaleString(isFrench ? 'fr-FR' : 'en-US')}
+                      </p>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:min-w-[260px] sm:grid-cols-3">
+                    <div className="rounded-2xl border border-white/70 bg-white/90 px-3 py-3 text-center">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{tr('Count', 'Nombre')}</p>
+                      <p className="mt-1 text-lg font-extrabold text-violet-700">{approvedExtensions.length}</p>
+                    </div>
+                    <div className="rounded-2xl border border-white/70 bg-white/90 px-3 py-3 text-center">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{tr('Added time', 'Temps ajouté')}</p>
+                      <p className="mt-1 text-lg font-extrabold text-violet-700">+{totalExtendedHours}h</p>
+                    </div>
+                    <div className="rounded-2xl border border-white/70 bg-white/90 px-3 py-3 text-center">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{tr('Total fees', 'Total frais')}</p>
+                      <p className="mt-1 text-lg font-extrabold text-violet-700">+{formatCurrency(totalExtensionFees)} MAD</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {isLightRentalDetailsMode && isEditingAmountDue ? (
+          renderAmountDueEditorBlock(amountDueEditorRef)
+        ) : isLightRentalDetailsMode && isEditingPrice ? (
+          renderPriceEditorBlock(priceEditorRef)
+        ) : !isEditingPrice && !isEditingAmountDue ? (
+          <div className="overflow-hidden rounded-[22px] border border-slate-200 bg-slate-50/70 shadow-[0_10px_24px_rgba(15,23,42,0.06)]">
+            <button
+              type="button"
+              onClick={() => setRentalBalanceDetailsOpen((prev) => !prev)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm">
+                  <Calculator className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-950">
+                    {tr('Rental balance details', 'Détail du solde location')}
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-600">
+                    {tr(
+                      `Base ${formatCurrency(rentalBillingSummary.baseAmount)} · Due ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`,
+                      `Base ${formatCurrency(rentalBillingSummary.baseAmount)} · Dû ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`
+                    )}
+                    {rentalBillingSummary.extensionFees > 0 ? ` · +${formatCurrency(rentalBillingSummary.extensionFees)} MAD` : ''}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-full bg-white/90 p-2 text-slate-700 shadow-sm">
+                {rentalBalanceDetailsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </div>
+            </button>
+
+            {rentalBalanceDetailsOpen ? (
+              <div className="border-t border-slate-200 px-4 pb-4 pt-3">
+                <div className="space-y-2 text-sm sm:text-base">
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">
+                      {getRentalKilometerPackage(rental, packageDetails)
+                        ? tr('Package price:', 'Prix du forfait :')
+                        : tr('Base Rental Rate:', 'Tarif de base location :')}
+                    </span>
+                    <span className="font-medium">{formatCurrency(rentalBillingSummary.baseAmount)} MAD</span>
+                  </div>
+
+                  {rentalBillingSummary.overageCharge > 0 && (
+                    <div className="flex justify-between text-red-600">
+                      <span>{tr('Overage charge:', 'Frais dépassement :')}</span>
+                      <span className="font-medium">+{formatCurrency(rentalBillingSummary.overageCharge)} MAD</span>
+                    </div>
+                  )}
+
+                  {rentalBillingSummary.extensionFees > 0 && (
+                    <div className="flex justify-between text-purple-600">
+                      <span>{tr('Extensions:', 'Prolongations :')}</span>
+                      <span className="font-medium">+{formatCurrency(rentalBillingSummary.extensionFees)} MAD</span>
+                    </div>
+                  )}
+
+                  {(() => {
+                    const startL = startFuelLevel ?? rental?.start_fuel_level ?? null;
+                    const endL = endFuelLevel ?? rental?.end_fuel_level ?? null;
+                    const deficit = (startL !== null && endL !== null) ? Math.max(0, startL - endL) : 0;
+                    const charge = fuelCharge || parseFloat(rental?.fuel_charge || 0);
+                    if (fuelChargeEnabled && endL !== null && deficit > 0 && charge > 0) {
+                      return (
+                        <div className="flex justify-between text-red-600">
+                          <span>⛽ {tr('Fuel charge:', 'Frais carburant :')}</span>
+                          <span className="font-medium">+{formatCurrency(charge)} MAD</span>
+                        </div>
+                      );
+                    }
+                    if (!fuelChargeEnabled && startL !== null) {
+                      return (
+                        <div className="flex justify-between text-sm text-green-600">
+                          <span>⛽ {tr('Fuel:', 'Carburant :')}</span>
+                          <span className="font-medium">{tr('Included ✓', 'Inclus ✓')}</span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+
+                  {rentalBillingSummary.maintenanceRepairAmount > 0 && (
+                    <div className="flex justify-between text-red-600">
+                      <span>{tr('Damage / Maintenance Bill:', 'Facture dommages / maintenance :')}</span>
+                      <span className="font-medium">+{formatCurrency(rentalBillingSummary.maintenanceRepairAmount)} MAD</span>
+                    </div>
+                  )}
+
+                  {rentalBillingSummary.maintenanceStayAmount > 0 && (
+                    <div className="flex justify-between text-orange-600">
+                      <span>{tr('Maintenance stay', 'Séjour maintenance')} ({maintenanceChargeForm.days || vehicleReport?.maintenance_daily_days || 0} {((maintenanceChargeForm.days || vehicleReport?.maintenance_daily_days || 0) === 1 ? tr('day', 'jour') : tr('days', 'jours'))} × {formatCurrency(maintenanceChargeForm.dailyRate || vehicleReport?.maintenance_daily_rate || 0)} MAD):</span>
+                      <span className="font-medium">+{formatCurrency(rentalBillingSummary.maintenanceStayAmount)} MAD</span>
+                    </div>
+                  )}
+
+                  {rentalBillingSummary.maintenanceDiscountAmount > 0 && (
+                    <div className="flex justify-between text-green-600">
+                      <span>{tr('Maintenance discount:', 'Remise maintenance :')}</span>
+                      <span className="font-medium">-{formatCurrency(rentalBillingSummary.maintenanceDiscountAmount)} MAD</span>
+                    </div>
+                  )}
+
+                  {rentalBillingSummary.impoundChargeAmount > 0 && (
+                    <div className="flex justify-between text-amber-700">
+                      <span>{isImpounded ? tr('Live additional rental time', 'Temps supplémentaire en direct') : tr('Additional rental time', 'Temps supplémentaire')} ({liveImpoundDisplay.pricingLabel || `${liveImpoundDisplay.days || 0}d ${liveImpoundDisplay.hours || 0}h`}):</span>
+                      <span className="font-medium">+{formatCurrency(Math.max(0, Number(rentalBillingSummary.impoundBaseChargeAmount || rentalBillingSummary.impoundChargeAmount || 0)))} MAD</span>
+                    </div>
+                  )}
+
+                  {rentalBillingSummary.impoundManualChargeAmount > 0 && (
+                    <div className="flex justify-between text-amber-700">
+                      <span>{tr('Additional impound charge:', 'Frais de fourrière additionnels :')}</span>
+                      <span className="font-medium">+{formatCurrency(rentalBillingSummary.impoundManualChargeAmount)} MAD</span>
+                    </div>
+                  )}
+
+                  {rentalBillingSummary.impoundDiscountAmount > 0 && (
+                    <div className="flex justify-between text-green-600">
+                      <span>{rental?.released_from_impound_at && !rental?.is_impounded ? tr('Discounted by us:', 'Remis par nous :') : tr('Impound discount:', 'Remise fourrière :')}</span>
+                      <span className="font-medium">-{formatCurrency(rentalBillingSummary.impoundDiscountAmount)} MAD</span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between border-t-2 border-gray-300 pt-2 text-lg">
+                    <span className="font-bold text-gray-900">{tr('Final Rental Total:', 'Total final location :')}</span>
+                    <span className="font-bold text-green-600">{formatCurrency(rentalBillingSummary.grandTotal)} MAD</span>
+                  </div>
+
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600">{tr('Amount Paid:', 'Montant payé :')}</span>
+                    <span className="font-medium">{formatCurrency(rentalBillingSummary.customerPaidAmount)} MAD</span>
+                  </div>
+
+                  {rentalBillingSummary.autoDepositSeizedAmount > 0 && (
+                    <div className="flex justify-between text-sm text-orange-700">
+                      <span>{tr('Security deposit seized:', 'Dépôt de garantie saisi :')}</span>
+                      <span className="font-medium">-{formatCurrency(rentalBillingSummary.autoDepositSeizedAmount)} MAD</span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between text-base">
+                    <span className="font-semibold text-gray-900">{tr('Amount Still Due:', 'Montant restant dû :')}</span>
+                    <span className={`font-bold ${rentalBillingSummary.balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>{formatCurrency(rentalBillingSummary.balanceDue)} MAD</span>
+                  </div>
+
+                  {rentalBillingSummary.autoDepositSeizedAmount > 0 && rentalBillingSummary.autoDepositReturnAmount > 0 && (
+                    <div className="flex justify-between text-sm text-sky-700">
+                      <span>{tr('Security remaining to return:', 'Caution restante à restituer :')}</span>
+                      <span className="font-medium">{formatCurrency(rentalBillingSummary.autoDepositReturnAmount)} MAD</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="mt-4 flex flex-wrap items-center gap-4">
+          <strong>{tr('Payment Status:', 'Statut du paiement :')}</strong>
+          {(() => {
+            if (isImpounded) {
+              return (
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">ESTIMATE ACTIVE</span>
+                  <span className="text-xs text-gray-500">
+                    Base rental is paid. Security deposit is covering the current impound estimate.
+                  </span>
+                </div>
+              );
+            }
+            const effectiveCoveredAmount = dynamicPaymentState.coveredAmount;
+            return (
+              <div className="flex items-center gap-2">
+                <span className={`rounded-full px-2 py-1 text-xs font-medium ${dynamicPaymentState.chipClass}`}>{dynamicPaymentState.label}</span>
+                {dynamicPaymentState.isPartial && (
+                  <span className="text-xs text-gray-500">({formatCurrency(effectiveCoveredAmount)} covered of {formatCurrency(rentalBillingSummary.grandTotal)})</span>
+                )}
+                {dynamicPaymentState.isPaid && rentalBillingSummary.autoDepositSeizedAmount > 0 && (
+                  <span className="text-xs text-gray-500">(includes {formatCurrency(rentalBillingSummary.autoDepositSeizedAmount)} MAD seized from security deposit)</span>
+                )}
+                {hasPreviouslyMarkedPaid && dynamicPaymentState.isPartial && rentalBillingSummary.balanceDue > 0 && (
+                  <Button
+                    onClick={markAsPaid}
+                    size="sm"
+                    className={`ml-2 h-8 px-3 text-xs ${SUCCESS_ACTION_BUTTON_CLASS}`}
+                    disabled={isUpdatingPayment || isPendingApproval}
+                  >
+                    {isUpdatingPayment ? (
+                      <div className="mr-1 h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    ) : (
+                      <CreditCard className="mr-1 h-3 w-3" />
+                    )}
+                    {tr('Mark Paid', 'Marquer comme payé')}
+                  </Button>
+                )}
+              </div>
+            );
+          })()}
+
+          {isPendingApproval && (
+            <span className="flex items-center gap-1 text-xs text-yellow-600">
+              <Clock className="h-3 w-3" />
+              {tr('Payment disabled during price approval', 'Paiement désactivé pendant l’approbation du prix')}
+            </span>
+          )}
+        </div>
+
+        {showSecurityHoldSection && (
+          <div className="mt-4 overflow-hidden rounded-[22px] border border-sky-200 bg-sky-50/70 shadow-[0_10px_24px_rgba(14,165,233,0.08)]">
+            <button
+              type="button"
+              onClick={() => setSecurityHoldOpen((prev) => !prev)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-700 shadow-sm">
+                  <Shield className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-sky-950">
+                    {tr('Security Hold', 'Garantie retenue')}
+                  </p>
+                  <p className="mt-0.5 text-xs text-sky-700">
+                    {tr(
+                      `${securityHoldStatus.label} · ${formatCurrency(requiredSecurityAmount)} MAD · ${securityHoldMethodLabel}`,
+                      `${securityHoldStatus.label} · ${formatCurrency(requiredSecurityAmount)} MAD · ${securityHoldMethodLabel}`
+                    )}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-full bg-white/90 p-2 text-sky-700 shadow-sm">
+                {securityHoldOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </div>
+            </button>
+
+            {securityHoldOpen ? (
+              <div className="space-y-4 border-t border-sky-100 px-4 pb-4 pt-3">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="text-base font-semibold text-slate-900">{tr('Security Hold', 'Garantie retenue')}</h4>
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${securityHoldStatus.className}`}>{securityHoldStatus.label}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                  <div className="rounded-2xl border border-sky-200 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">{tr('Required Security', 'Garantie requise')}</p>
+                    <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(requiredSecurityAmount)} MAD</p>
+                  </div>
+                  <div className="rounded-2xl border border-sky-200 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">{tr('Cash Received', 'Espèces reçues')}</p>
+                    <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(receivedSecurityAmount)} MAD</p>
+                  </div>
+                  <div className="rounded-2xl border border-sky-200 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">{tr('Held Document', 'Document retenu')}</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900">
+                      {hasHeldSecurityDocument ? (rental.damage_deposit_document_name || tr('Security document', 'Document de garantie')) : tr('None recorded', 'Aucun document enregistré')}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-sky-200 bg-white p-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">{tr('Received Via', 'Reçu via')}</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900">{securityHoldMethodLabel}</p>
+                    {securityHoldReceivedMethod && (
+                      <p className="mt-1 text-xs text-slate-500">
+                        {securityHoldReceivedMethod === 'bank_transfer'
+                          ? tr('Recorded by bank transfer', 'Enregistré par virement bancaire')
+                          : tr('Recorded in cash', 'Enregistré en espèces')}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {showSecurityHoldEditor ? (
+                  <div className="rounded-2xl border border-sky-200 bg-white p-3 shadow-[0_12px_30px_rgba(14,165,233,0.05)]">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-end">
+                      <div className="flex-1">
+                        <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-700">
+                          {tr('Update Security Received', 'Mettre à jour la garantie reçue')}
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={securityHoldAmountInput}
+                          onChange={(e) => setSecurityHoldAmountInput(normalizeMoneyInputValue(e.target.value))}
+                          placeholder="0"
+                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-medium text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        {requiredSecurityAmount > 0 && receivedSecurityAmount < requiredSecurityAmount && (
+                          <Button type="button" onClick={() => handleSaveSecurityHold(requiredSecurityAmount, 'cash')} size="sm" variant="outline" className="text-xs" disabled={isSavingSecurityHold}>
+                            {tr('Mark Full Received', 'Marquer reçu en totalité')}
+                          </Button>
+                        )}
+                        <Button type="button" onClick={() => handleSaveSecurityHold(null, 'cash')} size="sm" className={`text-xs ${PRIMARY_ACTION_BUTTON_CLASS}`} disabled={isSavingSecurityHold}>
+                          {isSavingSecurityHold ? tr('Saving...', 'Enregistrement...') : tr('Mark Cash Received', 'Marquer espèces reçues')}
+                        </Button>
+                        <Button type="button" onClick={() => handleSaveSecurityHold(null, 'bank_transfer')} size="sm" variant="outline" className="text-xs" disabled={isSavingSecurityHold}>
+                          {tr('Mark Bank Transfer', 'Marquer virement reçu')}
+                        </Button>
+                        {(receivedSecurityAmount > 0 || securityHoldAmountInput) && (
+                          <Button type="button" onClick={() => handleSaveSecurityHold(0)} size="sm" variant="outline" className="text-xs text-rose-600 hover:text-rose-700" disabled={isSavingSecurityHold}>
+                            {tr('Clear Cash', 'Effacer espèces')}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-sky-200 bg-white p-3 shadow-[0_12px_30px_rgba(14,165,233,0.05)]">
+                    <p className="text-sm text-slate-600">{tr(`Security hold recorded by ${securityHoldMethodLabel.toLowerCase()}.`, `Garantie enregistrée par ${securityHoldMethodLabel.toLowerCase()}.`)}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" size="sm" variant="outline" className="text-xs" onClick={() => setIsEditingSecurityHold(true)}>
+                        {tr('Edit Security Hold', 'Modifier la garantie')}
+                      </Button>
+                      <Button type="button" size="sm" variant="outline" className="text-xs text-rose-600 hover:text-rose-700" onClick={() => handleSaveSecurityHold(0)} disabled={isSavingSecurityHold}>
+                        {tr('Clear Cash', 'Effacer espèces')}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {(hasMonetaryDamageDeposit || hasHeldSecurityDocument || rental.deposit_returned_at) && (
+          <div className="mt-4 overflow-hidden rounded-[22px] border border-blue-200 bg-blue-50/70 shadow-[0_10px_24px_rgba(59,130,246,0.08)]">
+            <button
+              type="button"
+              onClick={() => setDamageDepositReturnOpen((prev) => !prev)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-blue-200 bg-white text-blue-700 shadow-sm">
+                  <DollarSign className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-blue-950">
+                    {tr('Damage deposit return', 'Restitution de caution')}
+                  </p>
+                  <p className="mt-0.5 text-xs text-blue-700">
+                    {rental.deposit_returned_at
+                      ? tr(
+                          `Returned · ${formatCurrency(rental.deposit_return_amount || rental.damage_deposit || 0)} MAD`,
+                          `Restituée · ${formatCurrency(rental.deposit_return_amount || rental.damage_deposit || 0)} MAD`
+                        )
+                      : tr(
+                          `${formatCurrency(rental.damage_deposit || 0)} MAD held${hasHeldSecurityDocument ? ' · document held' : ''}`,
+                          `${formatCurrency(rental.damage_deposit || 0)} MAD retenus${hasHeldSecurityDocument ? ' · document retenu' : ''}`
+                        )}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-full bg-white/90 p-2 text-blue-700 shadow-sm">
+                {damageDepositReturnOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </div>
+            </button>
+
+            {damageDepositReturnOpen ? (
+              <div className="border-t border-blue-100 px-4 pb-4 pt-3">
+                {hasMonetaryDamageDeposit && (
+                  <div className="flex justify-between border-t border-violet-100 pt-4">
+                    <div>
+                      <span className="font-medium text-gray-600">{tr('Damage Deposit (Security):', 'Caution dommages (garantie) :')}</span>
+                      {!rental.deposit_returned_at && rental.rental_status === 'completed' && (
+                        <span className="ml-2 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-700">🔒 {tr('Pending Return', 'Retour en attente')}</span>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <span className="font-bold text-blue-600">{formatCurrency(rental.damage_deposit || 0)} MAD</span>
+                      {!rental.deposit_returned_at && rentalBillingSummary.autoDepositSeizedAmount > 0 && (
+                        <div className="mt-1 text-xs text-orange-700">
+                          {isImpounded
+                            ? `${tr('Applied to estimate:', 'Appliquée à l’estimation :')} ${formatCurrency(rentalBillingSummary.autoDepositSeizedAmount)} MAD`
+                            : `${tr('Security remaining to return:', 'Caution restante à restituer :')} ${formatCurrency(rentalBillingSummary.autoDepositReturnAmount)} MAD`}
+                        </div>
+                      )}
+                      {rental.deposit_returned_at && (
+                        <div className="mt-1 text-xs text-green-600">
+                          {`✓ ${tr('Returned:', 'Retourné :')} ${formatCurrency(rental.deposit_return_amount || rental.damage_deposit)} MAD`}
+                          {rental.deposit_deduction_amount > 0 && (
+                            <span className="ml-1 text-orange-600">({tr('Deducted:', 'Déduit :')} {formatCurrency(rental.deposit_deduction_amount)} MAD)</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {hasHeldSecurityDocument && (
+                  <div className="mt-3 rounded-2xl border border-blue-100 bg-blue-50/60 p-3 shadow-[0_12px_30px_rgba(59,130,246,0.06)]">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-blue-900">{tr('Held document', 'Document retenu')}</p>
+                        <p className="truncate text-xs text-blue-700">{rental.damage_deposit_document_name || tr('Security document', 'Document de garantie')}</p>
+                      </div>
+                      {rental.damage_deposit_document_url ? (
+                        <a
+                          href={rental.damage_deposit_document_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 transition hover:bg-blue-50"
+                        >
+                          {tr('View Document', 'Voir le document')}
+                        </a>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
+
+                {rental.deposit_returned_at && (
+                  <div className="mt-4 rounded-2xl border border-green-200 bg-green-50/80 p-4 shadow-[0_12px_30px_rgba(34,197,94,0.08)]">
+                    <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <h4 className="flex items-center gap-2 font-semibold text-green-900">
+                        <DollarSign className="h-4 w-4" />
+                        {isDocumentDeposit ? tr('Document Returned', 'Document rendu') : tr('Deposit Returned', 'Caution rendue')}
+                      </h4>
+                      <Button type="button" size="sm" variant="outline" className="text-xs" onClick={handleEditDepositReturn}>
+                        {tr('Edit Deposit Return', 'Modifier le retour de caution')}
+                      </Button>
+                    </div>
+                    <div className="space-y-2">
+                      {isDocumentDeposit ? (
+                        <>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">{tr('Returned document:', 'Document rendu :')}</span>
+                            <span className="font-medium">{rental.damage_deposit_document_name || tr('Security document', 'Document de garantie')}</span>
+                          </div>
+                          <div className="flex justify-between border-t pt-2 font-bold">
+                            <span>{tr('Status:', 'Statut :')}</span>
+                            <span className="text-green-600">{tr('Returned to customer', 'Rendu au client')}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">{tr('Original Deposit:', 'Caution initiale :')}</span>
+                            <span className="font-medium">{formatCurrency(rental.damage_deposit)} MAD</span>
+                          </div>
+                          {rental.deposit_deduction_amount > 0 && (
+                            <div className="flex justify-between text-red-600">
+                              <span>{tr('Less: Applied to balance:', 'Moins : appliqué au solde :')}</span>
+                              <span className="font-medium">-{formatCurrency(rental.deposit_deduction_amount)} MAD</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between border-t pt-2 font-bold">
+                            <span>{tr('Amount Returned:', 'Montant rendu :')}</span>
+                            <span className="text-green-600">{formatCurrency(rental.deposit_return_amount || 0)} MAD</span>
+                          </div>
+                        </>
+                      )}
+
+                      {rental.deposit_deduction_reason && (
+                        <div className="mt-2 rounded border border-green-100 bg-white p-2 text-xs text-gray-600">
+                          <div className="mb-1 font-medium text-gray-700">
+                            {isDocumentDeposit ? tr('Return note:', 'Note de retour :') : tr('Applied to:', 'Appliqué à :')}
+                          </div>
+                          <div className="whitespace-pre-wrap">{rental.deposit_deduction_reason}</div>
+                        </div>
+                      )}
+
+                      <div className="pt-1 text-xs text-gray-500">{tr('Returned on:', 'Rendu le :')} {new Date(rental.deposit_returned_at).toLocaleString()}</div>
+
+                      {rental.deposit_return_signature_url && (
+                        <div className="mt-2">
+                          <p className="mb-1 text-xs text-gray-600">{tr('Return Signature:', 'Signature de retour :')}</p>
+                          <img
+                            src={rental.deposit_return_signature_url}
+                            alt={tr('Deposit Return Signature', 'Signature de restitution de la caution')}
+                            className="h-16 w-auto rounded border"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {(() => {
+          const isCompletedRental = rental.rental_status === 'completed';
+          const isInReturnWorkflow = finishRentalSteps.showWorkflow;
+          let overageCharge = 0;
+          let extraKm = 0;
+          let includedKm = 0;
+          let rate = 0;
+          const pkg = getRentalKilometerPackage(rental, packageDetails);
+          if (pkg && pkg.included_kilometers && pkg.extra_km_rate && rental.total_kilometers_driven > 0) {
+            const totalKm = rental.total_kilometers_driven || 0;
+            includedKm = getPackageTotalIncludedKilometers(rental, pkg);
+            rate = pkg.extra_km_rate;
+            extraKm = Math.max(0, totalKm - includedKm);
+            overageCharge = extraKm * rate;
+          } else if (rental.overage_charge > 0) {
+            overageCharge = rental.overage_charge;
+            extraKm = rental.extra_kilometers || 0;
+            includedKm = rental.included_kilometers_applied || 80;
+            rate = rental.extra_km_rate_applied || 2.0;
+          }
+
+          const grandTotal = rentalBillingSummary.grandTotal;
+          const depositPaid = rentalBillingSummary.depositPaid;
+          const rawBalanceDue = rentalBillingSummary.rawBalanceDue;
+          const balanceDue = rentalBillingSummary.balanceDue;
+          const displayImpoundChargeAmount = waiveImpoundExtraDailyCharge ? 0 : rentalBillingSummary.impoundChargeAmount;
+          const displayImpoundDiscountAmount = waiveImpoundExtraDailyCharge ? 0 : rentalBillingSummary.impoundDiscountAmount;
+          const damageDeposit = parseFloat(rental?.damage_deposit || 0);
+          const hasAutoDepositSeizure = rentalBillingSummary.hasAutoDepositSeizure;
+          const autoSeizedAmount = rentalBillingSummary.autoDepositSeizedAmount;
+          const impoundChargeWasWaived = waiveImpoundExtraDailyCharge && Boolean(rental?.is_impounded || rental?.impounded_at);
+          const useDeduction = hasAutoDepositSeizure
+            ? autoSeizedAmount > 0 && !rental.deposit_returned_at
+            : deductFromDeposit && rawBalanceDue > 0 && !rental.deposit_returned_at;
+          const depositReturn = useDeduction
+            ? Math.max(0, damageDeposit - (hasAutoDepositSeizure ? autoSeizedAmount : rawBalanceDue))
+            : damageDeposit;
+          const additionalOwed = hasAutoDepositSeizure ? balanceDue : Math.max(0, rawBalanceDue - damageDeposit);
+
+          if (!damageDepositReturnOpen) return null;
+          if (rental.deposit_returned_at) return null;
+          if (damageDeposit <= 0) return null;
+
+          return (
+            <div ref={depositReturnSectionRef} className="mt-4 overflow-hidden rounded-2xl border border-blue-200 bg-blue-50 shadow-[0_12px_30px_rgba(59,130,246,0.08)]">
+              <div className="border-b border-orange-200 bg-orange-50/90 px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <span className="text-xl leading-none">🔒</span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-orange-800">
+                      {hasHeldSecurityDocument && hasMonetaryDamageDeposit
+                        ? tr('Security Items Not Returned', 'Garanties non restituées')
+                        : isDocumentDeposit
+                          ? tr('Security Document Not Returned', 'Document de garantie non rendu')
+                          : tr('Deposit Not Returned', 'Caution non rendue')}
+                    </p>
+                    <p className="mt-1 text-xs text-orange-700">
+                      {hasHeldSecurityDocument && hasMonetaryDamageDeposit
+                        ? tr(
+                            'A security document and a monetary damage deposit are still being held for this rental. Review and complete the return below.',
+                            'Un document de garantie et un dépôt de garantie monétaire sont encore retenus pour cette location. Vérifiez et terminez le retour ci-dessous.'
+                          )
+                        : isDocumentDeposit
+                          ? tr(
+                              'The security document is still being held. Review and complete the return below.',
+                              'Le document de garantie est toujours retenu. Vérifiez et terminez le retour ci-dessous.'
+                            )
+                          : tr(
+                              `The ${formatCurrency(rental.damage_deposit)} MAD deposit is still being held. Review and complete the return below.`,
+                              `La caution de ${formatCurrency(rental.damage_deposit)} MAD est toujours retenue. Vérifiez et terminez le retour ci-dessous.`
+                            )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="p-4">
+                <div className="flex flex-col items-center gap-4">
+                  <h4 className="flex w-full items-center justify-center gap-2 text-center font-semibold text-blue-900">
+                    <DollarSign className="h-4 w-4" />
+                    {hasHeldSecurityDocument
+                      ? tr('Security Return', 'Restitution de garantie')
+                      : tr('Damage Deposit Return', 'Restitution de la caution dommages')}
+                  </h4>
+                  <p className="max-w-md text-center text-sm text-blue-700">
+                    {isCompletedRental
+                      ? (
+                          hasHeldSecurityDocument
+                            ? tr(
+                                'The rental has been completed. Return the held security items and confirm everything with one signature below.',
+                                'La location est terminée. Restituez les éléments de garantie retenus et confirmez le tout avec une seule signature ci-dessous.'
+                              )
+                            : tr('The rental has been completed. Process the damage deposit return below.', 'La location est terminée. Traitez la restitution de la caution ci-dessous.')
+                        )
+                      : tr('Complete the return to process the damage deposit.', 'Terminez le retour pour traiter la caution dommages.')}
+                  </p>
+                  <div className="mx-auto w-full max-w-sm space-y-4">
+                    <div className="rounded-lg border border-blue-200 bg-white p-4 text-center">
+                      <span className="block text-sm text-blue-600">{tr('Security Deposit Held', 'Caution retenue')}</span>
+                      <div className="text-2xl font-bold text-blue-600">{formatCurrency(damageDeposit)} MAD</div>
+                    </div>
+                    {rawBalanceDue > 0 && (
+                      <div className="rounded-2xl border border-blue-100 bg-white/85 px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => setDeductFromDeposit((prev) => !prev)}
+                          className="flex w-full items-center justify-between gap-3 text-left"
+                          aria-pressed={deductFromDeposit}
+                        >
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">{tr('Apply damage deposit to balance', 'Appliquer la caution dommages au solde')}</p>
+                            <p className="mt-1 text-xs text-gray-500">
+                              {balanceDue <= damageDeposit
+                                ? tr(
+                                    'Enable this only if you want to deduct the remaining balance from the held damage deposit.',
+                                    'Activez ceci seulement si vous souhaitez déduire le solde restant de la caution dommages retenue.'
+                                  )
+                                : tr(
+                                    'Enable this if you want to apply the full held damage deposit against the remaining balance.',
+                                    'Activez ceci si vous souhaitez appliquer toute la caution retenue contre le solde restant.'
+                                  )}
+                            </p>
+                          </div>
+                          <div className={`relative inline-flex h-7 w-12 flex-shrink-0 items-center rounded-full transition-colors ${deductFromDeposit ? 'bg-violet-600' : 'bg-slate-300'}`}>
+                            <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${deductFromDeposit ? 'translate-x-6' : 'translate-x-1'}`} />
+                          </div>
+                        </button>
+                      </div>
+                    )}
+
+                    {rawBalanceDue > 0 && (
+                      <div className="rounded-lg border border-blue-100 bg-white p-3">
+                        <div className="mb-2 text-center text-xs font-medium text-blue-600">{tr('Rental Balance Details', 'Détails du solde de location')}</div>
+                        <div className="space-y-1 text-sm">
+                          <div className="flex justify-between"><span>{tr('Base Rental:', 'Location de base :')}</span><span>{formatCurrency(rentalBillingSummary.baseAmount)} MAD</span></div>
+                          {overageCharge > 0 && <div className="flex justify-between text-orange-600"><span>Overage ({extraKm}km × {rate}MAD):</span><span>+{formatCurrency(overageCharge)} MAD</span></div>}
+                          {rentalBillingSummary.extensionFees > 0 && <div className="flex justify-between text-purple-600"><span>Extensions:</span><span>+{formatCurrency(rentalBillingSummary.extensionFees)} MAD</span></div>}
+                          {rentalBillingSummary.fuelChargeAmount > 0 && <div className="flex justify-between text-amber-600"><span>Fuel Charge:</span><span>+{formatCurrency(rentalBillingSummary.fuelChargeAmount)} MAD</span></div>}
+                          {rentalBillingSummary.maintenanceRepairAmount > 0 && <div className="flex justify-between text-red-600"><span>Damage / Maintenance Bill:</span><span>+{formatCurrency(rentalBillingSummary.maintenanceRepairAmount)} MAD</span></div>}
+                          {rentalBillingSummary.maintenanceStayAmount > 0 && <div className="flex justify-between text-orange-600"><span>Maintenance stay charge:</span><span>+{formatCurrency(rentalBillingSummary.maintenanceStayAmount)} MAD</span></div>}
+                          {rentalBillingSummary.maintenanceDiscountAmount > 0 && <div className="flex justify-between text-green-600"><span>Maintenance discount:</span><span>-{formatCurrency(rentalBillingSummary.maintenanceDiscountAmount)} MAD</span></div>}
+                          {displayImpoundChargeAmount > 0 && <div className="flex justify-between text-amber-700"><span>Impound extra time:</span><span>+{formatCurrency(Math.max(0, Number(rentalBillingSummary.impoundBaseChargeAmount || displayImpoundChargeAmount || 0)))} MAD</span></div>}
+                          {rentalBillingSummary.impoundManualChargeAmount > 0 && <div className="flex justify-between text-amber-700"><span>{tr('Additional impound charge:', 'Frais de fourrière additionnels :')}</span><span>+{formatCurrency(rentalBillingSummary.impoundManualChargeAmount)} MAD</span></div>}
+                          {displayImpoundDiscountAmount > 0 && <div className="flex justify-between text-green-600"><span>{rental?.released_from_impound_at && !rental?.is_impounded ? tr('Discounted by us:', 'Remis par nous :') : 'Impound discount:'}</span><span>-{formatCurrency(displayImpoundDiscountAmount)} MAD</span></div>}
+                          {impoundChargeWasWaived && <div className="rounded-md bg-green-50 px-3 py-2 text-xs text-green-700">{tr('No extra daily charge approved. Impound extra time is waived for this balance review.', 'Aucun supplément journalier approuvé. Le temps supplémentaire de mise en fourrière est annulé pour ce récapitulatif.')}</div>}
+                          <div className="mt-2 flex justify-between border-t pt-2 font-bold"><span>{tr('Grand Total:', 'Total général :')}</span><span>{formatCurrency(grandTotal)} MAD</span></div>
+                          <div className="flex justify-between text-green-600"><span>{tr('Deposit Paid:', 'Acompte versé :')}</span><span>-{formatCurrency(depositPaid)} MAD</span></div>
+                          {autoSeizedAmount > 0 && <div className="flex justify-between text-orange-700"><span>{tr('Security deposit seized:', 'Caution saisie :')}</span><span>-{formatCurrency(autoSeizedAmount)} MAD</span></div>}
+                          <div className="mt-2 flex justify-between border-t pt-2 font-bold text-red-600"><span>{autoSeizedAmount > 0 ? 'Balance Still Due:' : 'Balance Due:'}</span><span>{formatCurrency(balanceDue)} MAD</span></div>
+                        </div>
+                      </div>
+                    )}
+
+                    {hasAutoDepositSeizure ? (
+                      <div className="rounded-lg border border-orange-200 bg-white p-4">
+                        <div className="mb-3 flex items-start gap-2">
+                          <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-orange-600" />
+                          <p className="text-sm text-orange-800">
+                            {rentalBillingSummary.maintenanceChargeAmount > 0
+                              ? 'Damage deposit is automatically seized for maintenance charges.'
+                              : impoundChargeWasWaived
+                                ? 'No extra impound daily charge is being seized from the damage deposit.'
+                                : 'Damage deposit is automatically seized for impound charges.'}
+                          </p>
+                        </div>
+                        <div className="w-full border-t border-gray-200 pt-3 text-center">
+                          <div className="mb-2 text-sm text-gray-600">Automatic deposit handling:</div>
+                          <div className="mb-2 flex items-center justify-between text-base"><span>Seized from deposit:</span><span className="font-bold text-orange-700">{formatCurrency(autoSeizedAmount)} MAD</span></div>
+                          <div className="mb-3 flex items-center justify-between text-base"><span>Amount to return:</span><span className="font-bold text-green-600">{formatCurrency(depositReturn)} MAD</span></div>
+                          {additionalOwed > 0 && <div className="mb-3 text-xs text-red-600">Additional amount still owed after seizure: {formatCurrency(additionalOwed)} MAD</div>}
+                          <Button onClick={() => setShowDepositSignatureModal(true)} className={`w-full ${PRIMARY_ACTION_BUTTON_CLASS}`} size="sm">
+                            <FileSignature className="mr-2 h-4 w-4" />
+                            {tr('Review Security Return', 'Vérifier la restitution')}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : balanceDue > 0 && balanceDue <= damageDeposit ? (
+                      <div className="rounded-lg border border-blue-200 bg-white p-4">
+                        <div className="flex flex-col items-center gap-3">
+                          <div className="text-sm font-medium text-gray-700">{tr('Deduct from deposit:', 'Déduire de la caution :')} {formatCurrency(balanceDue)} MAD</div>
+                          {deductFromDeposit && (
+                            <div className="w-full border-t border-gray-200 pt-3 text-center">
+                              <div className="mb-2 text-sm text-gray-600">After deduction:</div>
+                              <div className="mb-3 flex items-center justify-between text-base"><span>Amount to return:</span><span className="font-bold text-green-600">{formatCurrency(damageDeposit - balanceDue)} MAD</span></div>
+                              <Button onClick={() => setShowDepositSignatureModal(true)} className={`w-full ${PRIMARY_ACTION_BUTTON_CLASS}`} size="sm">
+                                <FileSignature className="mr-2 h-4 w-4" />
+                                {tr('Review Security Return', 'Vérifier la restitution')}
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : balanceDue > 0 && balanceDue > damageDeposit ? (
+                      <div className="rounded-lg border border-amber-200 bg-white p-4">
+                        <div className="mb-3 flex items-start gap-2">
+                          <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600" />
+                          <p className="text-sm text-amber-800">
+                            Balance due ({formatCurrency(balanceDue)} MAD) exceeds deposit amount ({formatCurrency(damageDeposit)} MAD)
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-center gap-3">
+                          <div className="text-sm font-medium text-gray-700">{tr('Apply full deposit to balance:', 'Appliquer toute la caution au solde :')} {formatCurrency(damageDeposit)} MAD</div>
+                          {deductFromDeposit && (
+                            <div className="w-full border-t border-gray-200 pt-3 text-center">
+                              <div className="mb-2 text-sm text-gray-600">After applying deposit:</div>
+                              <div className="mb-3 flex items-center justify-between text-base"><span>Remaining balance:</span><span className="font-bold text-red-600">{formatCurrency(balanceDue - damageDeposit)} MAD</span></div>
+                              <Button onClick={() => setShowDepositSignatureModal(true)} className={`w-full ${PRIMARY_ACTION_BUTTON_CLASS}`} size="sm">
+                                <FileSignature className="mr-2 h-4 w-4" />
+                                {tr('Review Security Return', 'Vérifier la restitution')}
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {!deductFromDeposit && (
+                      <div className="text-center">
+                        <Button
+                          onClick={() => {
+                            setDeductFromDeposit(false);
+                            setShowDepositSignatureModal(true);
+                          }}
+                          className={`mx-auto w-full max-w-xs ${SUCCESS_ACTION_BUTTON_CLASS}`}
+                          size="sm"
+                        >
+                          <FileSignature className="mr-2 h-4 w-4" />
+                          {hasHeldSecurityDocument && hasMonetaryDamageDeposit
+                            ? tr('Review Security Return', 'Vérifier la restitution')
+                            : isDocumentDeposit
+                              ? tr('Review Document Return', 'Vérifier le retour du document')
+                              : tr('Review Deposit Return', 'Vérifier le retour de caution')}
+                        </Button>
+                        {balanceDue > 0 && (
+                          <p className="mt-2 flex items-center justify-center gap-1 text-xs text-amber-600">
+                            <AlertTriangle className="h-3 w-3" />
+                            Balance due of {formatCurrency(balanceDue)} MAD will still be owed
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+    </>
+  );
+
+  const renderAdvancedScheduleSectionBody = () => (
+    <>
+      <div>
+        <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Rental Period', 'Période de location')}</h3>
+        <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm text-slate-700 sm:grid-cols-2 sm:text-base">
+          <p>
+            <strong>{tr('Start:', 'Début :')}</strong>{' '}
+            {new Date(rental.started_at || rental.rental_start_date).toLocaleString(isFrench ? 'fr-FR' : 'en-US')}
+            {rental.started_at && <span className="ml-2 text-xs text-green-600">({tr('Actual', 'Réel')})</span>}
+          </p>
+          <p>
+            <strong>{tr('End:', 'Fin :')}</strong>{' '}
+            {(() => {
+              const displayEndValue = getRentalDisplayEndTime(rental);
+              const displayDate = new Date(displayEndValue || '');
+              if (Number.isNaN(displayDate.getTime())) {
+                return tr('Not scheduled', 'Non planifié');
+              }
+              return displayDate.toLocaleString(isFrench ? 'fr-FR' : 'en-US');
+            })()}
+            {(() => {
+              const hasExt = rental.extensions?.some((e) => e.status === 'approved');
+              if (hasExt) return <span className="ml-2 text-xs text-green-600">({tr('Extended', 'Prolongée')})</span>;
+              if ((String(rental?.rental_status || '').toLowerCase() === 'completed' || rental?.completed_at) && rental.actual_end_date) {
+                return <span className="ml-2 text-xs text-blue-600">({tr('Adjusted', 'Ajustée')})</span>;
+              }
+              return <span className="ml-2 text-xs text-gray-500">({tr('Scheduled', 'Planifiée')})</span>;
+            })()}
+          </p>
+          <p>
+            <strong>{tr('Type:', 'Type :')}</strong>
+            <span
+              className={`
+                ml-2 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-bold capitalize
+                ${rental.rental_type === 'hourly'
+                  ? 'border border-blue-300 bg-blue-100 text-blue-800'
+                  : rental.rental_type === 'daily'
+                    ? 'border border-green-300 bg-green-100 text-green-800'
+                    : 'border border-purple-300 bg-purple-100 text-purple-800'
+                }
+              `}
+            >
+              {rental.rental_type === 'hourly' && <Clock className="h-4 w-4" />}
+              {rental.rental_type === 'daily' && <Calendar className="h-4 w-4" />}
+              {(!rental.rental_type || rental.rental_type === 'weekly' || rental.rental_type === 'monthly') && <Calendar className="h-4 w-4" />}
+              {rental.rental_type || tr('daily', 'journalière')}
+            </span>
+            {rental.rental_type === 'hourly' && (
+              <span className="ml-2 inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm font-semibold text-violet-700">
+                {formatRentalDurationLabel(rental, isFrench)}
+              </span>
+            )}
+          </p>
+          <p><strong>{tr('Pickup:', 'Départ :')}</strong> {rental.pickup_location}</p>
+        </div>
+      </div>
+
+      <Separator className="bg-slate-100" />
+
+      <div>
+        <h3 className="mb-3 text-lg font-semibold text-slate-900">{tr('Inclusions & Add-ons', 'Inclus et options')}</h3>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm text-slate-700 sm:grid-cols-3 sm:text-base">
+          <p><strong>{tr('Insurance:', 'Assurance :')}</strong> {rental.insurance_included ? tr('Yes', 'Oui') : tr('No', 'Non')}</p>
+          <p><strong>{tr('Helmet:', 'Casque :')}</strong> {rental.helmet_included ? tr('Yes', 'Oui') : tr('No', 'Non')}</p>
+          <p><strong>{tr('Gear:', 'Équipement :')}</strong> {rental.gear_included ? tr('Yes', 'Oui') : tr('No', 'Non')}</p>
+        </div>
+      </div>
+
+      {canOpenExtensionFlow && !lateExtensionSuggestion?.isChargeable && (
+        <>
+          <Separator className="bg-slate-100" />
+
+          <div className="rounded-2xl border border-violet-200 bg-violet-50/70 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.08)]">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-600">
+                  {tr('Extension', 'Prolongation')}
+                </p>
+                <p className="mt-1 text-sm font-semibold text-violet-950">
+                  {extensionActionLabel}
+                </p>
+                <p className="mt-1 text-xs text-violet-700">
+                  {extensionActionHelper || tr('Add time here before closing if the customer keeps the vehicle longer.', 'Ajoutez du temps ici avant la clôture si le client garde le véhicule plus longtemps.')}
+                </p>
+              </div>
+              <Button
+                type="button"
+                onClick={() => openExtensionFlow(extensionActionHours)}
+                className="rounded-full bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-violet-700"
+              >
+                <Clock className="mr-2 h-4 w-4" />
+                {tr('Add extension', 'Ajouter')}
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {extensions.length > 0 && (
+        <>
+          <Separator className="bg-slate-100" />
+
+          <div>
+            <div className="mb-3">
+              <h3 className="text-lg font-semibold text-slate-900">{tr('Extension History', 'Historique des prolongations')}</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                {tr(
+                  'Review every approved, pending, or rejected time extension added to this rental.',
+                  'Consultez chaque prolongation approuvée, en attente ou refusée ajoutée à cette location.'
+                )}
+              </p>
+            </div>
+
+            <ExtensionHistory
+              extensions={extensions}
+              onApprove={isAdmin ? handleApproveExtension : undefined}
+              onReject={isAdmin ? handleRejectExtension : undefined}
+              isAdmin={isAdmin}
+              onEdit={canEditExtensionEntries ? handleEditExtension : undefined}
+              canEdit={canEditExtensionEntries}
+            />
+
+            {closingMedia.length > 0 && rental.rental_status === 'completed' && (
+              <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4 shadow-[0_12px_30px_rgba(16,185,129,0.08)]">
+                <div className="flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5 text-green-600" />
+                  <div>
+                    <h4 className="font-semibold text-green-900">{tr('Rental Completed', 'Location terminée')}</h4>
+                    <p className="mt-1 text-sm text-green-700">
+                      {tr('This rental has been completed and closed. Extensions are no longer available.', 'Cette location a été terminée et clôturée. Les prolongations ne sont plus disponibles.')}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </>
+  );
+
+  const renderAdvancedDocumentsSectionBody = () => (
+    <>
+      <div className="rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+        <h4 className="mb-2 text-base font-semibold text-gray-900">{tr('Customer Signature', 'Signature client')}</h4>
+        {rental.signature_url ? (
+          <>
+            <img
+              src={rental.signature_url}
+              alt="Customer Signature"
+              className="h-24 w-auto rounded-md border bg-gray-100 p-2"
+            />
+            <div className="mt-4">
+              <Button
+                onClick={handlePrintInvoice}
+                className={PRIMARY_ACTION_BUTTON_CLASS}
+                title={!canGenerateInvoice ? 'Please sign the contract before generating invoice' : 'Print Invoice'}
+              >
+                <Printer className="mr-2 h-4 w-4" />
+                Print Invoice
+              </Button>
+            </div>
+          </>
+        ) : (
+          <p className="text-sm text-slate-500">
+            {tr('No customer signature saved yet.', "Aucune signature client n'est encore enregistrée.")}
+          </p>
+        )}
+      </div>
+
+      {(hasHeldSecurityDocument || rental.deposit_returned_at || rental.deposit_return_signature_url) && (
+        <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4 shadow-[0_12px_30px_rgba(59,130,246,0.06)]">
+          <h4 className="mb-3 text-base font-semibold text-blue-900">
+            {tr('Security Documents', 'Documents de garantie')}
+          </h4>
+
+          {hasHeldSecurityDocument && (
+            <div className="rounded-2xl border border-blue-100 bg-white p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-blue-900">{tr('Held document', 'Document retenu')}</p>
+                  <p className="truncate text-xs text-blue-700">
+                    {rental.damage_deposit_document_name || tr('Security document', 'Document de garantie')}
+                  </p>
+                </div>
+                {rental.damage_deposit_document_url ? (
+                  <a
+                    href={rental.damage_deposit_document_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 transition hover:bg-blue-50"
+                  >
+                    {tr('View Document', 'Voir le document')}
+                  </a>
+                ) : null}
+              </div>
+            </div>
+          )}
+
+          {rental.deposit_returned_at && (
+            <div className="mt-3 rounded-2xl border border-green-200 bg-green-50/80 p-4 shadow-[0_12px_30px_rgba(34,197,94,0.08)]">
+              <p className="text-sm font-semibold text-green-900">
+                {isDocumentDeposit ? tr('Document Returned', 'Document rendu') : tr('Deposit Returned', 'Caution rendue')}
+              </p>
+
+              {rental.deposit_deduction_reason && (
+                <div className="mt-2 rounded border border-green-100 bg-white p-2 text-xs text-gray-600">
+                  <div className="mb-1 font-medium text-gray-700">
+                    {isDocumentDeposit ? tr('Return note:', 'Note de retour :') : tr('Applied to:', 'Appliqué à :')}
+                  </div>
+                  <div className="whitespace-pre-wrap">{rental.deposit_deduction_reason}</div>
+                </div>
+              )}
+
+              <div className="mt-3 text-xs text-gray-500">
+                {tr('Returned on:', 'Rendu le :')} {new Date(rental.deposit_returned_at).toLocaleString()}
+              </div>
+
+              {rental.deposit_return_signature_url && (
+                <div className="mt-3">
+                  <p className="mb-1 text-xs text-gray-600">{tr('Return Signature:', 'Signature de retour :')}</p>
+                  <img
+                    src={rental.deposit_return_signature_url}
+                    alt={tr('Deposit Return Signature', 'Signature de restitution de la caution')}
+                    className="h-16 w-auto rounded border"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+
+  const renderVehicleMediaSectionBody = () => (
+    <>
+      {isCompleted && (
+        <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)] sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-slate-900">{tr('Vehicle Media', 'Médias véhicule')}</h3>
+            <p className={`mt-1 text-sm ${isLightRentalDetailsMode && hasCompletedVehicleMedia ? 'text-emerald-700' : 'text-slate-500'}`}>
+              {isLightRentalDetailsMode && hasCompletedVehicleMedia
+                ? tr('Vehicle media saved successfully. It appears in the media area below.', 'Les médias du véhicule ont été enregistrés avec succès. Ils apparaissent dans la zone ci-dessous.')
+                : tr('Add extra photos or videos after the rental is completed. They will appear in the vehicle media area below.', 'Ajoutez des photos ou vidéos supplémentaires après la fin de la location. Elles apparaîtront dans la zone médias véhicule ci-dessous.')}
+            </p>
+          </div>
+          {isLightRentalDetailsMode && hasCompletedVehicleMedia ? (
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+              <CheckCircle className="h-4 w-4" />
+              {tr('Done', 'Terminé')}
+              <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-700 shadow-sm">
+                {completedVehicleMediaCount}
+              </span>
+            </div>
+          ) : (
+            <Button
+              type="button"
+              onClick={handleOpenVehicleMediaModal}
+              className="rounded-xl bg-violet-700 text-white hover:bg-violet-800"
+            >
+              <Camera className="mr-2 h-4 w-4" />
+              {tr('Add Vehicle Media', 'Ajouter des médias véhicule')}
+            </Button>
+          )}
+        </div>
+      )}
+      <RentalVideos
+        key={videoRefreshKey}
+        rental={rental}
+        onUpdate={handleVideoUpdate}
+        isProcessing={isProcessingVideo}
+        canDeleteMedia={currentUserRole === 'owner'}
+      />
+    </>
+  );
+
+  const renderTelegramResendCompactRow = () => (
+    <div className="mb-4 overflow-hidden rounded-[22px] border border-sky-200 bg-sky-50/70 shadow-[0_10px_24px_rgba(14,165,233,0.08)]">
+      <button
+        type="button"
+        onClick={() => setTelegramResendOpen((prev) => !prev)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+      >
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-700 shadow-sm">
+            <Share2 className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-sky-950">
+              {tr('Telegram alerts', 'Alertes Telegram')}
+            </p>
+            <p className="mt-0.5 text-xs text-sky-700">
+              {tr(
+                `${availableTelegramResendActions.length} resend action${availableTelegramResendActions.length > 1 ? 's' : ''}`,
+                `${availableTelegramResendActions.length} action${availableTelegramResendActions.length > 1 ? 's' : ''} de renvoi`
+              )}
+            </p>
+          </div>
+        </div>
+        <div className="rounded-full bg-white/90 p-2 text-sky-700 shadow-sm">
+          {telegramResendOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        </div>
+      </button>
+
+      {telegramResendOpen ? (
+        <div className="border-t border-sky-100 px-4 pb-4 pt-3">
+          <div className="flex flex-wrap gap-2">
+            {availableTelegramResendActions.map((action) => (
+              <Button
+                key={action.eventType}
+                type="button"
+                size="sm"
+                variant="outline"
+                className="rounded-full border-sky-200 bg-white text-sky-800 hover:bg-sky-100"
+                onClick={() => handleResendTelegramEvent(action.eventType, action.label)}
+                disabled={Boolean(resendingTelegramEvent)}
+              >
+                {resendingTelegramEvent === action.eventType ? (
+                  <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-sky-700 border-t-transparent" />
+                ) : (
+                  <Share2 className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                {resendingTelegramEvent === action.eventType
+                  ? tr('Sending...', 'Envoi...')
+                  : action.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  const renderAmountDueEditorBlock = (editorRef = null) => (
+    <div
+      ref={editorRef}
+      className="space-y-4 rounded-[28px] border border-violet-200 bg-[linear-gradient(180deg,rgba(250,245,255,0.96),rgba(255,255,255,0.98))] p-5 shadow-[0_20px_60px_rgba(109,40,217,0.10)]"
+    >
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
+            {isPayingDueBalance
+              ? tr('Due Balance Payment', 'Paiement du solde restant dû')
+              : tr('Balance Resolution', 'Résolution du solde')}
+          </p>
+          <h4 className="mt-1 text-lg font-semibold text-slate-900">
+            {isPayingDueBalance
+              ? tr('Pay Due Balance', 'Payer le solde restant dû')
+              : tr('Edit Amount Due', 'Modifier le montant restant dû')}
+          </h4>
+          <p className="mt-1 text-sm text-slate-500">
+            {isPayingDueBalance
+              ? tr(
+                  'Confirm the amount collected now so the contract can be closed safely without editing the rental price.',
+                  "Confirmez le montant encaissé maintenant afin de clôturer le contrat sans modifier le prix de location."
+                )
+              : tr(
+                  'Record what the customer paid, what we discounted, and confirm the final balance.',
+                  'Enregistrez ce que le client a payé, ce que nous avons remisé, puis confirmez le solde final.'
+                )}
+          </p>
+        </div>
+        <div className="rounded-full border border-violet-200 bg-white px-4 py-2 text-right shadow-sm">
+          <span className="block text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+            {tr('Current due', 'Solde actuel')}
+          </span>
+          <span className="mt-1 block text-xl font-extrabold text-slate-900">
+            {formatCurrency(currentAmountDueForEdit)} MAD
+          </span>
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[1fr_auto_1fr_auto_1fr] lg:items-stretch">
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+            {tr('Before', 'Avant')}
+          </span>
+          <p className="mt-3 text-sm font-medium text-slate-500">
+            {tr('Amount still due', 'Montant restant dû')}
+          </p>
+          <p className="mt-1 text-2xl font-extrabold text-slate-900">
+            {formatCurrency(currentAmountDueForEdit)} MAD
+          </p>
+        </div>
+
+        <div className="hidden items-center justify-center lg:flex">
+          <div className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 shadow-sm">
+            {tr('Resolve', 'Résoudre')}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 px-4 py-4 shadow-[0_16px_36px_rgba(16,185,129,0.10)]">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-600">
+            {tr('Customer paid', 'Client payé')}
+          </span>
+          <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-3 py-3">
+            <label className="mb-2 block text-xs font-medium text-slate-500">
+              {isPayingDueBalance
+                ? tr('Amount collected now', 'Montant encaissé maintenant')
+                : tr('Payment received now', 'Paiement reçu maintenant')}
+            </label>
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-emerald-600">MAD</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={amountDuePaymentReceivedNow}
+                onChange={(e) => {
+                  const normalizedValue = normalizeMoneyInputValue(e.target.value);
+                  const value = Math.max(0, Number(normalizedValue) || 0);
+                  setAmountDuePaymentReceivedNow(normalizedValue);
+                  setManualAmountDue(Math.max(0, currentAmountDueForEdit - value - amountDueCompanyDiscountValue).toString());
+                }}
+                placeholder="0"
+                className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="hidden items-center justify-center lg:flex">
+          <div className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 shadow-sm">
+            {tr('And', 'Et')}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-violet-200 bg-violet-50/90 px-4 py-4 shadow-[0_16px_36px_rgba(139,92,246,0.10)]">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">
+            {tr('We discounted', 'Nous avons remisé')}
+          </span>
+          <div className="mt-3 rounded-2xl border border-violet-200 bg-white px-3 py-3">
+            <label className="mb-2 block text-xs font-medium text-slate-500">
+              {tr('Company discount', 'Remise entreprise')}
+            </label>
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-violet-600">MAD</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={amountDueCompanyDiscount}
+                onChange={(e) => {
+                  const normalizedValue = normalizeMoneyInputValue(e.target.value);
+                  const value = Math.max(0, Number(normalizedValue) || 0);
+                  setAmountDueCompanyDiscount(normalizedValue);
+                  setManualAmountDue(Math.max(0, currentAmountDueForEdit - amountDuePaymentReceivedValue - value).toString());
+                }}
+                placeholder="0"
+                className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+        <div className="rounded-2xl border border-blue-200 bg-blue-50/80 px-4 py-4 shadow-[0_16px_36px_rgba(59,130,246,0.08)]">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-600">
+                {tr('Final balance', 'Solde final')}
+              </span>
+              <p className="mt-2 text-sm text-slate-500">
+                {tr('You can keep the auto-calculated balance or fine-tune it if needed.', 'Vous pouvez garder le solde calculé automatiquement ou l’ajuster si nécessaire.')}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                {tr('Auto-calculated', 'Calcul automatique')}
+              </p>
+              <p className="mt-1 text-2xl font-extrabold text-blue-700">
+                {formatCurrency(amountDueAutoCalculatedValue)} MAD
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 rounded-2xl border border-blue-200 bg-white px-3 py-3">
+            <label className="mb-2 block text-xs font-medium text-slate-500">
+              {isPayingDueBalance
+                ? tr('Remaining after payment', 'Restant après paiement')
+                : tr('New amount due', 'Nouveau montant restant dû')}
+            </label>
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-blue-600">MAD</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={manualAmountDue}
+                onChange={(e) => setManualAmountDue(normalizeMoneyInputValue(e.target.value))}
+                placeholder="0"
+                className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+          <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+            {tr('Internal reason', 'Raison interne')}
+          </label>
+          <textarea
+            value={amountDueOverrideReason}
+            onChange={(e) => setAmountDueOverrideReason(e.target.value)}
+            placeholder={tr('Why are we changing this balance?', 'Pourquoi modifions-nous ce solde ?')}
+            className="min-h-[132px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-300"
+            rows={5}
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+        <Button
+          onClick={handleSaveAmountDue}
+          className="rounded-2xl bg-violet-700 px-5 py-2.5 text-white shadow-[0_16px_40px_rgba(109,40,217,0.24)] hover:bg-violet-800"
+          size="default"
+          disabled={isSavingAmountDue}
+        >
+          {isSavingAmountDue ? (
+            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+          ) : (
+            <Save className="w-4 h-4 mr-2" />
+          )}
+          {isSavingAmountDue
+            ? tr('Saving...', 'Enregistrement...')
+            : isPayingDueBalance
+              ? tr('Confirm Due Payment', 'Confirmer le paiement du solde')
+              : tr('Resolve Balance', 'Valider le solde')}
+        </Button>
+        <Button
+          onClick={handleCancelEditAmountDue}
+          variant="outline"
+          size="default"
+          className="rounded-2xl border-slate-200 px-5 py-2.5"
+        >
+          <X className="w-4 h-4 mr-2" />
+          {tr('Cancel', 'Annuler')}
+        </Button>
+      </div>
+    </div>
+  );
+
+  const renderPriceEditorBlock = (editorRef = null) => (
+    <div ref={editorRef} className="space-y-3 rounded-[24px] border border-violet-200 bg-violet-50/70 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.08)]">
+      <h4 className="font-semibold text-gray-900">{tr('Edit Price', 'Modifier le prix')}</h4>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          {tr('New Price (MAD)', 'Nouveau prix (MAD)')}
+        </label>
+        <input
+          type="number"
+          value={manualPrice}
+          onChange={(e) => setManualPrice(e.target.value)}
+          placeholder={tr('Enter new price', 'Saisir le nouveau prix')}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          min="0"
+          step="0.01"
+        />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          {tr('Reason for Override', 'Raison de la modification')}
+        </label>
+        <textarea
+          value={priceOverrideReason}
+          onChange={(e) => setPriceOverrideReason(e.target.value)}
+          placeholder={tr('Enter reason for price change', 'Saisir la raison du changement de prix')}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          rows={2}
+        />
+      </div>
+      <div className="flex gap-2">
+        <Button
+          onClick={handleSaveManualPrice}
+          className="rounded-lg bg-violet-700 hover:bg-violet-800 text-white"
+          size="sm"
+          disabled={isSavingPrice}
+        >
+          {isSavingPrice ? (
+            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+          ) : (
+            <Save className="w-4 h-4 mr-2" />
+          )}
+          {isSavingPrice ? tr('Saving...', 'Enregistrement...') : tr('Save Price', 'Enregistrer le prix')}
+        </Button>
+        <Button
+          onClick={handleCancelEditPrice}
+          variant="outline"
+          size="sm"
+        >
+          <X className="w-4 h-4 mr-2" />
+          {tr('Cancel', 'Annuler')}
+        </Button>
+      </div>
+    </div>
+  );
+
 // ✅ Calculate extension totals before rendering
   return (
     <div className="min-h-screen bg-slate-50">
@@ -14954,7 +17445,13 @@ useEffect(() => {
         previousActiveStartStepKeyRef={previousActiveStartStepKeyRef}
         startStepRefs={startStepRefs}
       />
-      <div className="container mx-auto max-w-6xl px-4 pb-20 pt-6 sm:pb-8 sm:pt-8">
+      <div
+        className={`container mx-auto max-w-6xl px-4 pt-6 sm:pt-8 ${
+          isLightRentalDetailsMode
+            ? 'pb-44 sm:pb-48 lg:pb-52'
+            : 'pb-20 sm:pb-8'
+        }`}
+      >
         <div className="mb-6 rounded-[28px] border border-violet-100/90 bg-white p-4 shadow-[0_20px_55px_rgba(76,29,149,0.08)] ring-1 ring-white sm:p-6">
           <div className="flex flex-col gap-5">
             <div className="flex flex-col gap-4">
@@ -17153,39 +19650,6 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
   </div>
 </div>
 
-                    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
-                      <div className="flex items-center gap-2">
-                        <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600">
-                          <MapPin className="h-3.5 w-3.5" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-                            {tr('Returned to', 'Retourné à')}
-                          </p>
-                          <p className="truncate text-sm font-semibold text-slate-900">
-                            {selectedReturnLocationName || tr('Select location', 'Sélectionner un emplacement')}
-                          </p>
-                        </div>
-                        <select
-                          value={selectedReturnLocationId}
-                          onChange={(e) => setSelectedReturnLocationId(e.target.value)}
-                          disabled={fleetLocations.length === 0 || isFinishWorkflowSoftLocked}
-                          title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
-                          className="min-w-[118px] rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 outline-none transition-colors focus:border-violet-400 focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {fleetLocations.length === 0 ? (
-                            <option value="">{tr('No locations', 'Aucun emplacement')}</option>
-                          ) : (
-                            fleetLocations.map((location) => (
-                              <option key={location.id} value={location.id}>
-                                {location.name}
-                              </option>
-                            ))
-                          )}
-                        </select>
-                      </div>
-                    </div>
-
                     {returnWorkflowBillingResult?.overtimeAdjustment ? (
                       <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs text-emerald-900 shadow-sm">
                         <p className="font-bold">
@@ -17619,49 +20083,26 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       )}
       
       {(isScheduled || isActive || isCompleted) && (
-        <div className="mb-6" ref={rentalMediaSectionRef}>
-          {isCompleted && (
-            <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)] sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <h3 className="text-base font-semibold text-slate-900">{tr('Vehicle Media', 'Médias véhicule')}</h3>
-                <p className={`mt-1 text-sm ${isLightRentalDetailsMode && hasCompletedVehicleMedia ? 'text-emerald-700' : 'text-slate-500'}`}>
-                  {isLightRentalDetailsMode && hasCompletedVehicleMedia
-                    ? tr('Vehicle media saved successfully. It appears in the media area below.', 'Les médias du véhicule ont été enregistrés avec succès. Ils apparaissent dans la zone ci-dessous.')
-                    : tr('Add extra photos or videos after the rental is completed. They will appear in the vehicle media area below.', 'Ajoutez des photos ou vidéos supplémentaires après la fin de la location. Elles apparaîtront dans la zone médias véhicule ci-dessous.')}
-                </p>
-              </div>
-              {isLightRentalDetailsMode && hasCompletedVehicleMedia ? (
-                <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
-                  <CheckCircle className="h-4 w-4" />
-                  {tr('Done', 'Terminé')}
-                  <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-700 shadow-sm">
-                    {completedVehicleMediaCount}
-                  </span>
-                </div>
-              ) : (
-                <Button
-                  type="button"
-                  onClick={handleOpenVehicleMediaModal}
-                  className="rounded-xl bg-violet-700 text-white hover:bg-violet-800"
-                >
-                  <Camera className="mr-2 h-4 w-4" />
-                  {tr('Add Vehicle Media', 'Ajouter des médias véhicule')}
-                </Button>
-              )}
-            </div>
-          )}
-          <RentalVideos 
-            key={videoRefreshKey} 
-            rental={rental} 
-            onUpdate={handleVideoUpdate} 
-            isProcessing={isProcessingVideo} 
-            canDeleteMedia={currentUserRole === 'owner'}
-          />
-        </div>
+        isLightRentalDetailsMode ? (
+          <div className="mb-6" ref={rentalMediaSectionRef}>
+            {renderLightRentalInfoSection({
+              sectionKey: 'media',
+              eyebrow: tr('Vehicle Media', 'Médias véhicule'),
+              title: tr('Return photos and videos', 'Photos et vidéos de retour'),
+              preview: lightRentalInfoPreview.media,
+              icon: Camera,
+              children: renderVehicleMediaSectionBody(),
+            })}
+          </div>
+        ) : (
+          <div className="mb-6" ref={rentalMediaSectionRef}>
+            {renderVehicleMediaSectionBody()}
+          </div>
+        )
       )}
 
       {/* Extension History Section */}
-      {extensions.length > 0 && (
+      {!isLightRentalDetailsMode && extensions.length > 0 && (
   <div className="mb-6">
     <ExtensionHistory 
       extensions={extensions}
@@ -17689,7 +20130,62 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         </div>
       )}
 
-      <Card className="mb-6 overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+      {isLightRentalDetailsMode && (
+        <Card className="mb-6 overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+          <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/70 pb-4">
+            <CardTitle className="text-xl text-slate-900">{tr('Rental Information', 'Informations de location')}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 p-5 sm:p-6">
+            {renderLightRentalInfoSection({
+              sectionKey: 'people',
+              eyebrow: tr('People', 'Personnes'),
+              title: tr('Staff, customer, and drivers', 'Équipe, client et conducteurs'),
+              preview: lightRentalInfoPreview.people,
+              icon: Users,
+              children: renderAdvancedPeopleSectionBody(),
+            })}
+
+            {renderLightRentalInfoSection({
+              sectionKey: 'vehicle',
+              eyebrow: tr('Vehicle', 'Véhicule'),
+              title: tr('Vehicle details and history', 'Détails et historique du véhicule'),
+              preview: lightRentalInfoPreview.vehicle,
+              icon: CarFront,
+              children: renderAdvancedVehicleSectionBody(),
+            })}
+
+            {renderLightRentalInfoSection({
+              sectionKey: 'schedule',
+              eyebrow: tr('Schedule', 'Horaire'),
+              title: tr('Rental timing and inclusions', 'Période et inclusions'),
+              preview: lightRentalInfoPreview.schedule,
+              icon: Calendar,
+              children: renderAdvancedScheduleSectionBody(),
+            })}
+
+            {renderLightRentalInfoSection({
+              sectionKey: 'money',
+              eyebrow: tr('Money', 'Financier'),
+              title: tr('Financial information and payment', 'Financier et paiement'),
+              preview: lightRentalInfoPreview.money,
+              icon: CreditCard,
+              sectionRef: lightMoneySectionRef,
+              children: renderAdvancedMoneySectionBody(),
+            })}
+
+            {renderLightRentalInfoSection({
+              sectionKey: 'signature',
+              eyebrow: tr('Documents', 'Documents'),
+              title: tr('Customer signature', 'Signature client'),
+              preview: lightRentalInfoPreview.signature,
+              icon: FileSignature,
+              children: renderAdvancedDocumentsSectionBody(),
+            })}
+          </CardContent>
+        </Card>
+      )}
+
+      <Card className={`mb-6 overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)] ${isLightRentalDetailsMode ? 'hidden' : ''}`}>
         <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-slate-50 to-violet-50/70 pb-4">
           <CardTitle className="text-xl text-slate-900">{tr('Rental Information', 'Informations de location')}</CardTitle>
         </CardHeader>
@@ -18328,46 +20824,6 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <Edit className="mr-2 h-4 w-4" />
                   {tr('Edit Rental Cost', 'Modifier le coût de location')}
                 </Button>
-              </div>
-            )}
-
-            {!isEditingPrice && availableTelegramResendActions.length > 0 && (
-              <div className="mb-4 rounded-[24px] border border-sky-200 bg-sky-50/80 p-4 shadow-[0_12px_30px_rgba(14,165,233,0.08)]">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-sky-900">
-                      {tr('Resend Telegram Alert', 'Renvoyer une alerte Telegram')}
-                    </p>
-                    <p className="mt-1 text-xs text-sky-700">
-                      {tr(
-                        'If one Telegram notification was missed, resend the exact event from here without changing the contract.',
-                        "Si une notification Telegram a été manquée, renvoyez l'événement exact ici sans modifier le contrat."
-                      )}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {availableTelegramResendActions.map((action) => (
-                      <Button
-                        key={action.eventType}
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="border-sky-200 text-sky-800 hover:bg-sky-100"
-                        onClick={() => handleResendTelegramEvent(action.eventType, action.label)}
-                        disabled={Boolean(resendingTelegramEvent)}
-                      >
-                        {resendingTelegramEvent === action.eventType ? (
-                          <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-sky-700 border-t-transparent" />
-                        ) : (
-                          <Share2 className="mr-2 h-4 w-4" />
-                        )}
-                        {resendingTelegramEvent === action.eventType
-                          ? tr('Sending...', 'Envoi...')
-                          : action.label}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
               </div>
             )}
 
@@ -19370,266 +21826,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     </div>
   ) : canEditRentalPriceOverride ? (
     <div className="space-y-3">
-      {isEditingAmountDue && (
-        <div
-          ref={amountDueEditorRef}
-          className="space-y-4 rounded-[28px] border border-violet-200 bg-[linear-gradient(180deg,rgba(250,245,255,0.96),rgba(255,255,255,0.98))] p-5 shadow-[0_20px_60px_rgba(109,40,217,0.10)]"
-        >
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
-                {isPayingDueBalance
-                  ? tr('Due Balance Payment', 'Paiement du solde restant dû')
-                  : tr('Balance Resolution', 'Résolution du solde')}
-              </p>
-              <h4 className="mt-1 text-lg font-semibold text-slate-900">
-                {isPayingDueBalance
-                  ? tr('Pay Due Balance', 'Payer le solde restant dû')
-                  : tr('Edit Amount Due', 'Modifier le montant restant dû')}
-              </h4>
-              <p className="mt-1 text-sm text-slate-500">
-                {isPayingDueBalance
-                  ? tr(
-                      'Confirm the amount collected now so the contract can be closed safely without editing the rental price.',
-                      "Confirmez le montant encaissé maintenant afin de clôturer le contrat sans modifier le prix de location."
-                    )
-                  : tr(
-                      'Record what the customer paid, what we discounted, and confirm the final balance.',
-                      'Enregistrez ce que le client a payé, ce que nous avons remisé, puis confirmez le solde final.'
-                    )}
-              </p>
-            </div>
-            <div className="rounded-full border border-violet-200 bg-white px-4 py-2 text-right shadow-sm">
-              <span className="block text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-                {tr('Current due', 'Solde actuel')}
-              </span>
-              <span className="mt-1 block text-xl font-extrabold text-slate-900">
-                {formatCurrency(currentAmountDueForEdit)} MAD
-              </span>
-            </div>
-          </div>
+      {!isLightRentalDetailsMode && isEditingAmountDue && renderAmountDueEditorBlock(amountDueEditorRef)}
 
-          <div className="grid gap-3 lg:grid-cols-[1fr_auto_1fr_auto_1fr] lg:items-stretch">
-            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                {tr('Before', 'Avant')}
-              </span>
-              <p className="mt-3 text-sm font-medium text-slate-500">
-                {tr('Amount still due', 'Montant restant dû')}
-              </p>
-              <p className="mt-1 text-2xl font-extrabold text-slate-900">
-                {formatCurrency(currentAmountDueForEdit)} MAD
-              </p>
-            </div>
-
-            <div className="hidden items-center justify-center lg:flex">
-              <div className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 shadow-sm">
-                {tr('Resolve', 'Résoudre')}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 px-4 py-4 shadow-[0_16px_36px_rgba(16,185,129,0.10)]">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-600">
-                {tr('Customer paid', 'Client payé')}
-              </span>
-              <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-3 py-3">
-              <label className="mb-2 block text-xs font-medium text-slate-500">
-                  {isPayingDueBalance
-                    ? tr('Amount collected now', 'Montant encaissé maintenant')
-                    : tr('Payment received now', 'Paiement reçu maintenant')}
-              </label>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-emerald-600">MAD</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={amountDuePaymentReceivedNow}
-                    onChange={(e) => {
-                      const normalizedValue = normalizeMoneyInputValue(e.target.value);
-                      const value = Math.max(0, Number(normalizedValue) || 0);
-                      setAmountDuePaymentReceivedNow(normalizedValue);
-                      setManualAmountDue(Math.max(0, currentAmountDueForEdit - value - amountDueCompanyDiscountValue).toString());
-                    }}
-                    placeholder="0"
-                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="hidden items-center justify-center lg:flex">
-              <div className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 shadow-sm">
-                {tr('And', 'Et')}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-violet-200 bg-violet-50/90 px-4 py-4 shadow-[0_16px_36px_rgba(139,92,246,0.10)]">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">
-                {tr('We discounted', 'Nous avons remisé')}
-              </span>
-              <div className="mt-3 rounded-2xl border border-violet-200 bg-white px-3 py-3">
-              <label className="mb-2 block text-xs font-medium text-slate-500">
-                  {tr('Company discount', 'Remise entreprise')}
-              </label>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-violet-600">MAD</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={amountDueCompanyDiscount}
-                    onChange={(e) => {
-                      const normalizedValue = normalizeMoneyInputValue(e.target.value);
-                      const value = Math.max(0, Number(normalizedValue) || 0);
-                      setAmountDueCompanyDiscount(normalizedValue);
-                      setManualAmountDue(Math.max(0, currentAmountDueForEdit - amountDuePaymentReceivedValue - value).toString());
-                    }}
-                    placeholder="0"
-                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
-            <div className="rounded-2xl border border-blue-200 bg-blue-50/80 px-4 py-4 shadow-[0_16px_36px_rgba(59,130,246,0.08)]">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-600">
-                    {tr('Final balance', 'Solde final')}
-                  </span>
-                  <p className="mt-2 text-sm text-slate-500">
-                    {tr('You can keep the auto-calculated balance or fine-tune it if needed.', 'Vous pouvez garder le solde calculé automatiquement ou l’ajuster si nécessaire.')}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                    {tr('Auto-calculated', 'Calcul automatique')}
-                  </p>
-                  <p className="mt-1 text-2xl font-extrabold text-blue-700">
-                    {formatCurrency(amountDueAutoCalculatedValue)} MAD
-                  </p>
-                </div>
-              </div>
-              <div className="mt-4 rounded-2xl border border-blue-200 bg-white px-3 py-3">
-                <label className="mb-2 block text-xs font-medium text-slate-500">
-                  {isPayingDueBalance
-                    ? tr('Remaining after payment', 'Restant après paiement')
-                    : tr('New amount due', 'Nouveau montant restant dû')}
-                </label>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-blue-600">MAD</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={manualAmountDue}
-                    onChange={(e) => setManualAmountDue(normalizeMoneyInputValue(e.target.value))}
-                    placeholder="0"
-                    className="w-full border-0 bg-transparent px-0 py-0 text-2xl font-extrabold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
-              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                {tr('Internal reason', 'Raison interne')}
-              </label>
-              <textarea
-                value={amountDueOverrideReason}
-                onChange={(e) => setAmountDueOverrideReason(e.target.value)}
-                placeholder={tr('Why are we changing this balance?', 'Pourquoi modifions-nous ce solde ?')}
-                className="min-h-[132px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-300"
-                rows={5}
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-            <Button
-              onClick={handleSaveAmountDue}
-              className="rounded-2xl bg-violet-700 px-5 py-2.5 text-white shadow-[0_16px_40px_rgba(109,40,217,0.24)] hover:bg-violet-800"
-              size="default"
-              disabled={isSavingAmountDue}
-            >
-              {isSavingAmountDue ? (
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
-              ) : (
-                <Save className="w-4 h-4 mr-2" />
-              )}
-              {isSavingAmountDue
-                ? tr('Saving...', 'Enregistrement...')
-                : isPayingDueBalance
-                  ? tr('Confirm Due Payment', 'Confirmer le paiement du solde')
-                  : tr('Resolve Balance', 'Valider le solde')}
-            </Button>
-            <Button
-              onClick={handleCancelEditAmountDue}
-              variant="outline"
-              size="default"
-              className="rounded-2xl border-slate-200 px-5 py-2.5"
-            >
-              <X className="w-4 h-4 mr-2" />
-              {tr('Cancel', 'Annuler')}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {isEditingPrice && (
-        <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
-          <h4 className="font-semibold text-gray-900">{tr('Edit Price', 'Modifier le prix')}</h4>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              {tr('New Price (MAD)', 'Nouveau prix (MAD)')}
-            </label>
-            <input
-              type="number"
-              value={manualPrice}
-              onChange={(e) => setManualPrice(e.target.value)}
-              placeholder={tr('Enter new price', 'Saisir le nouveau prix')}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              min="0"
-              step="0.01"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              {tr('Reason for Override', 'Raison de la modification')}
-            </label>
-            <textarea
-              value={priceOverrideReason}
-              onChange={(e) => setPriceOverrideReason(e.target.value)}
-              placeholder={tr('Enter reason for price change', 'Saisir la raison du changement de prix')}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              rows={2}
-            />
-          </div>
-          <div className="flex gap-2">
-            <Button
-              onClick={handleSaveManualPrice}
-              className="rounded-lg bg-violet-700 hover:bg-violet-800 text-white"
-              size="sm"
-              disabled={isSavingPrice}
-            >
-              {isSavingPrice ? (
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
-              ) : (
-                <Save className="w-4 h-4 mr-2" />
-              )}
-              {isSavingPrice ? tr('Saving...', 'Enregistrement...') : tr('Save Price', 'Enregistrer le prix')}
-            </Button>
-            <Button
-              onClick={handleCancelEditPrice}
-              variant="outline"
-              size="sm"
-            >
-              <X className="w-4 h-4 mr-2" />
-              {tr('Cancel', 'Annuler')}
-            </Button>
-          </div>
-        </div>
-      )}
+      {!isLightRentalDetailsMode && isEditingPrice && renderPriceEditorBlock(priceEditorRef)}
     </div>
   ) : (
     <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg space-y-2">
@@ -22566,12 +24765,14 @@ Breakdown:
         onClose={() => {
           setExtensionModalOpen(false);
           setEditingExtension(null);
+          setQuickExtensionModalPreset(null);
         }}
         rental={rental}
         onExtensionCreated={handleExtensionCreated}
         currentUser={currentUser}
         editingExtension={editingExtension}
         initialExtensionHours={initialExtensionHours}
+        initialQuickExtensionConfig={quickExtensionModalPreset}
       />
 
       <Dialog open={showReplaceVehicleDialog} onOpenChange={(open) => { if (!open) closeReplaceVehicleDialog(); }}>
@@ -22611,16 +24812,40 @@ Breakdown:
               <label className="text-sm font-semibold text-slate-700">
                 {tr('Reason', 'Raison')}
               </label>
-              <select
-                value={replacementReason}
-                onChange={(event) => setReplacementReason(event.target.value)}
-                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
-              >
-                <option value="breakdown">{tr('Breakdown during rental', 'Panne pendant la location')}</option>
-                <option value="issue">{tr('Issue noticed by staff', 'Problème constaté par le personnel')}</option>
-                <option value="customer_request">{tr('Customer requested replacement', 'Remplacement demandé par le client')}</option>
-                <option value="other">{tr('Other', 'Autre')}</option>
-              </select>
+              <div className="grid grid-cols-2 gap-2">
+                {VEHICLE_REPLACEMENT_REASON_OPTIONS.map((option) => {
+                  const selected = replacementReason === option.key;
+                  const isBreakdown = option.tone === 'breakdown';
+
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setReplacementReason(option.key)}
+                      className={`rounded-2xl border px-3 py-3 text-left transition ${
+                        selected
+                          ? isBreakdown
+                            ? 'border-rose-300 bg-rose-50 shadow-[0_12px_30px_rgba(225,29,72,0.10)]'
+                            : 'border-violet-300 bg-violet-50 shadow-[0_12px_30px_rgba(139,92,246,0.10)]'
+                          : isBreakdown
+                            ? 'border-rose-200 bg-white hover:border-rose-300 hover:bg-rose-50/70'
+                            : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/60'
+                      }`}
+                    >
+                      <div className={`text-sm font-semibold ${
+                        selected
+                          ? isBreakdown ? 'text-rose-700' : 'text-violet-700'
+                          : 'text-slate-900'
+                      }`}>
+                        {isFrench ? option.label.fr : option.label.en}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        {isFrench ? option.description.fr : option.description.en}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -22684,10 +24909,15 @@ Breakdown:
             <Alert className="rounded-2xl border-amber-200 bg-amber-50 text-amber-900">
               <AlertTriangle className="h-4 w-4 text-amber-600" />
               <AlertDescription className="text-sm leading-6">
-                {tr(
-                  'Confirming will move the current vehicle into scheduled maintenance automatically and resume the rental timer on the replacement vehicle.',
-                  'La confirmation enverra automatiquement le véhicule actuel en maintenance planifiée et relancera le minuteur sur le véhicule de remplacement.'
-                )}
+                {replacementReason === 'breakdown'
+                  ? tr(
+                      'This vehicle will move to maintenance. The replacement keeps this rental moving.',
+                      'Ce véhicule passera en maintenance. Le véhicule de remplacement continue cette location.'
+                    )
+                  : tr(
+                      'This vehicle will return to available. The replacement keeps this rental moving.',
+                      'Ce véhicule redeviendra disponible. Le véhicule de remplacement continue cette location.'
+                    )}
               </AlertDescription>
             </Alert>
           </div>

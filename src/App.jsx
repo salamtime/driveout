@@ -138,6 +138,8 @@ const TenantWorkspaceBoot = ({ children }) => {
     detail: '',
     tenant: null,
     publicFeatures: getDefaultTenantPublicFeatures(),
+    featureAccess: {},
+    effectiveFeatureAccess: {},
   }));
 
   useEffect(() => {
@@ -151,6 +153,8 @@ const TenantWorkspaceBoot = ({ children }) => {
         detail: '',
         tenant: null,
         publicFeatures: getDefaultTenantPublicFeatures(),
+        featureAccess: {},
+        effectiveFeatureAccess: {},
       });
       return () => {
         cancelled = true;
@@ -199,6 +203,14 @@ const TenantWorkspaceBoot = ({ children }) => {
                     ...tenant.publicFeatures,
                   }
                 : getDefaultTenantPublicFeatures(),
+            featureAccess:
+              tenant?.featureAccess && typeof tenant.featureAccess === 'object'
+                ? tenant.featureAccess
+                : {},
+            effectiveFeatureAccess:
+              tenant?.effectiveFeatureAccess && typeof tenant.effectiveFeatureAccess === 'object'
+                ? tenant.effectiveFeatureAccess
+                : {},
           });
         }
       } catch (error) {
@@ -209,6 +221,8 @@ const TenantWorkspaceBoot = ({ children }) => {
             detail: host.tenantSlug ? `Workspace: ${host.tenantSlug}` : '',
             tenant: null,
             publicFeatures: getDefaultTenantPublicFeatures(),
+            featureAccess: {},
+            effectiveFeatureAccess: {},
           });
         }
       }
@@ -228,7 +242,19 @@ const TenantWorkspaceBoot = ({ children }) => {
       state.publicFeatures && typeof state.publicFeatures === 'object'
         ? state.publicFeatures
         : getDefaultTenantPublicFeatures(),
-  }), [state.publicFeatures, state.status, state.tenant]);
+    featureAccess:
+      state.featureAccess && typeof state.featureAccess === 'object'
+        ? state.featureAccess
+        : {},
+    effectiveFeatureAccess:
+      state.effectiveFeatureAccess && typeof state.effectiveFeatureAccess === 'object'
+        ? state.effectiveFeatureAccess
+        : {},
+    tenancyMode: state.tenant?.tenancyMode || 'shared',
+    organizationId: state.tenant?.organizationId || null,
+    organizationSlug: state.tenant?.organizationSlug || null,
+    planType: state.tenant?.planType || 'starter',
+  }), [state.effectiveFeatureAccess, state.featureAccess, state.publicFeatures, state.status, state.tenant]);
 
   if (state.status === 'loading') {
     return null;
@@ -256,7 +282,7 @@ const ExternalRedirect = ({ to }) => {
     <div className="flex min-h-screen items-center justify-center bg-gray-50">
       <div className="text-center">
         <div className="mb-4 text-4xl">↗</div>
-        <p className="text-base font-medium text-slate-700">Opening your private workspace…</p>
+        <p className="text-base font-medium text-slate-700">Opening your workspace…</p>
       </div>
     </div>
   );

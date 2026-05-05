@@ -5,6 +5,7 @@ import {
   PLATFORM_TENANTS_TABLE,
   PLATFORM_TENANT_PROVISIONING_JOBS_TABLE,
 } from './supabase.js';
+import { resolveTenantTenancyMode } from './tenantRegistry.js';
 
 const BUSINESS_OWNER_ACCOUNT_TYPES = new Set([
   'operator',
@@ -214,10 +215,16 @@ export default async function handler(req, res) {
 
     const businessOwners = (businessAccounts || []).map((businessAccount) => {
       const businessAccountId = String(businessAccount?.id || '').trim();
+      const tenantRecord = tenantMap.get(businessAccountId) || null;
       return {
         business_account: businessAccount,
         subscription: subscriptionMap.get(businessAccountId) || null,
-        tenant: tenantMap.get(businessAccountId) || null,
+        tenant: tenantRecord
+          ? {
+              ...tenantRecord,
+              tenancy_mode: resolveTenantTenancyMode(tenantRecord),
+            }
+          : null,
         provisioning_job: latestJobMap.get(businessAccountId) || null,
       };
     });
