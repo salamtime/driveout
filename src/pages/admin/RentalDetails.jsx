@@ -5528,7 +5528,9 @@ Click the link above to review and approve the extension.`;
   const createShortDocumentShareRecord = async ({ shareType, payload, documentType = 'other' }) => {
     const publicUrl = await createDocumentShareRecord({ shareType, payload, documentType });
     if (!publicUrl) return null;
-    return await shortenUrlService(publicUrl, rental?.id || null, documentType);
+    // Document-share records already return compact /d/:token links. Sending them
+    // back through short-links can turn a valid share into a 413 failure.
+    return publicUrl;
   };
 
 
@@ -5949,9 +5951,11 @@ Click the link above to review and approve the extension.`;
   const getContractWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('contract');
     if (!pdfUrl) return null;
-    const publicViewUrl = await buildSharedDocumentUrl('contract', { pdfUrl });
-    if (!publicViewUrl) return null;
-    return await shortenUrlService(publicViewUrl, rental?.id || null, 'contract');
+    return await createDocumentShareRecord({
+      shareType: 'contract',
+      documentType: 'contract',
+      payload: buildCompactContractSharePayload(pdfUrl),
+    });
   };
 
   const getCompactShareBrandSettings = () => {
@@ -6029,6 +6033,42 @@ Click the link above to review and approve the extension.`;
     };
   };
 
+  const buildCompactContractSharePayload = (pdfUrl) => {
+    const scalarOverrides = {
+      customer_name: contractRentalData?.customer_name,
+      customer_email: contractRentalData?.customer_email,
+      customer_phone: contractRentalData?.customer_phone,
+      customer_address: contractRentalData?.customer_address,
+      customer_nationality: contractRentalData?.customer_nationality,
+      customer_licence_number: contractRentalData?.customer_licence_number,
+      deposit_amount: contractRentalData?.deposit_amount,
+      fuel_charge: contractRentalData?.fuel_charge,
+    };
+    const overrides = Object.fromEntries(
+      Object.entries(scalarOverrides).filter(([, value]) => value !== undefined && value !== null && value !== '')
+    );
+
+    return {
+      language: documentLanguage,
+      rentalId: rental?.rental_id || rental?.id || '',
+      rentalLookupId: rental?.id || rental?.rental_id || '',
+      ...(Object.keys(overrides).length ? { overrides } : {}),
+      settings: getCompactShareBrandSettings(),
+      ...(pdfUrl ? {
+        pdfUrl,
+        links: {
+          contractPdf: pdfUrl,
+        },
+      } : {}),
+      bundle: {
+        contract: Boolean(rental?.signature_url),
+        receipt: Boolean(dynamicPaymentState.isPaid),
+        openingMedia: openingMedia.length > 0,
+        closingMedia: closingMedia.length > 0,
+      },
+    };
+  };
+
   const getReceiptWebUrl = async () => {
     const pdfUrl = await getGeneratedDocumentPublicUrl('receipt');
     if (!pdfUrl) return null;
@@ -6086,6 +6126,11 @@ Click the link above to review and approve the extension.`;
       rental?.id || null,
       'banking-info'
     );
+  };
+
+  const isOversizedShareUrl = (url) => {
+    const value = String(url || '');
+    return value.length > 4096 || /[?&]payload=/.test(value);
   };
 
   const getContractUrl = async (preferWeb = true) => {
@@ -6241,9 +6286,23 @@ Click the link above to review and approve the extension.`;
         try {
           documentsHubUrl = await getDocumentsHubShareUrl({ items: selectedItems });
         } catch (shareError) {
-          console.warn('Documents hub share unavailable, falling back to direct item links:', shareError);
+          console.warn('Documents hub share unavailable:', shareError);
           documentsHubUrl = null;
         }
+      }
+
+      if (selectedItems.length > 1 && !documentsHubUrl) {
+        throw new Error(tr(
+          'Could not create the compact public document link. Please try again.',
+          'Impossible de créer le lien public compact. Veuillez réessayer.'
+        ));
+      }
+
+      if (!documentsHubUrl && selectedItems.some((item) => isOversizedShareUrl(item.url))) {
+        throw new Error(tr(
+          'One prepared share link is too large. Please refresh and try again.',
+          'Un lien préparé est trop volumineux. Veuillez actualiser et réessayer.'
+        ));
       }
 
       const shouldUseDocumentsHub = Boolean(documentsHubUrl);
