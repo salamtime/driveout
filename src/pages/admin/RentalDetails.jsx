@@ -5526,6 +5526,7 @@ Click the link above to review and approve the extension.`;
       return;
     }
 
+    const reservedWhatsAppWindow = reserveWhatsAppWindow();
     setIsSendingWhatsApp(true);
     try {
       const contractUrl = await getContractWebUrl();
@@ -5536,8 +5537,9 @@ Click the link above to review and approve the extension.`;
       const encodedMessage = encodeURIComponent(message);
       const whatsappUrl = `https://wa.me/${syncedCustomerPhone.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
 
-      openWhatsAppUrl(whatsappUrl);
+      openWhatsAppUrl(whatsappUrl, reservedWhatsAppWindow);
     } catch (error) {
+      closeReservedWhatsAppWindow(reservedWhatsAppWindow);
       console.error('Error sending contract:', error);
       toast.error('Failed to send contract. Please try again.');
     } finally {
@@ -5552,6 +5554,7 @@ Click the link above to review and approve the extension.`;
       return;
     }
 
+    const reservedWhatsAppWindow = reserveWhatsAppWindow();
     setIsSendingWhatsApp(true);
     try {
       const receiptUrl = await getReceiptWebUrl();
@@ -5562,8 +5565,9 @@ Click the link above to review and approve the extension.`;
       const encodedMessage = encodeURIComponent(message);
       const whatsappUrl = `https://wa.me/${syncedCustomerPhone.replace(/[^0-9]/g, '')}?text=${encodedMessage}`;
 
-      openWhatsAppUrl(whatsappUrl);
+      openWhatsAppUrl(whatsappUrl, reservedWhatsAppWindow);
     } catch (error) {
+      closeReservedWhatsAppWindow(reservedWhatsAppWindow);
       console.error('Error sending receipt:', error);
       toast.error('Failed to send receipt. Please try again.');
     } finally {
@@ -6112,6 +6116,7 @@ Click the link above to review and approve the extension.`;
 
   // Handle WhatsApp selection and sending - INSTANT WEB VIEW VERSION
   const handleSendWhatsAppSelection = async (options) => {
+    const reservedWhatsAppWindow = reserveWhatsAppWindow();
     setIsSharing(true);
     setWhatsappModalOpen(false);
     toast.loading('Preparing documents…', { id: 'wa-prepare' });
@@ -6129,6 +6134,7 @@ Click the link above to review and approve the extension.`;
       // If no lines were added (no documents), don't send WhatsApp
       if (!hasDocuments) {
         toast.error('No documents selected or documents are not ready yet. Please try again in a moment.');
+        closeReservedWhatsAppWindow(reservedWhatsAppWindow);
         setIsSharing(false);
         return;
       }
@@ -6169,9 +6175,10 @@ Click the link above to review and approve the extension.`;
       if (RENTAL_DEBUG) console.log('📱 Opening WhatsApp with URL:', whatsappUrl);
       
       toast.dismiss('wa-prepare');
-      openWhatsAppUrl(whatsappUrl);
+      openWhatsAppUrl(whatsappUrl, reservedWhatsAppWindow);
       
     } catch (error) {
+      closeReservedWhatsAppWindow(reservedWhatsAppWindow);
       toast.dismiss('wa-prepare');
       console.error('❌ Error sending WhatsApp:', error);
       toast.error(`Failed to send WhatsApp message: ${error.message}`);
@@ -10755,11 +10762,31 @@ useEffect(() => {
       return url;
     }
   };
-  // Use a single same-tab navigation so browsers don't treat it like a popup burst.
-  const openWhatsAppUrl = (url) => {
+  const reserveWhatsAppWindow = () => {
+    try {
+      return window.open('', '_blank', 'noopener,noreferrer');
+    } catch {
+      return null;
+    }
+  };
+
+  const closeReservedWhatsAppWindow = (reservedWindow) => {
+    try {
+      if (reservedWindow && !reservedWindow.closed) {
+        reservedWindow.close();
+      }
+    } catch {}
+  };
+
+  // Reserve a tab synchronously on click, then navigate it after async prep completes.
+  const openWhatsAppUrl = (url, reservedWindow = null) => {
     if (RENTAL_DEBUG) console.log('🔗 Navigating to WhatsApp URL:', url);
 
     try {
+      if (reservedWindow && !reservedWindow.closed) {
+        reservedWindow.location.replace(url);
+        return;
+      }
       window.location.assign(url);
     } catch (err) {
       if (RENTAL_DEBUG) console.log('WhatsApp navigation failed');
