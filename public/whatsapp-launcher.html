@@ -59,6 +59,12 @@
         font-size: 0.95rem;
         color: #64748b;
       }
+      .button.secondary {
+        margin-left: 0.75rem;
+        border-color: #cbd5e1;
+        background: #ffffff;
+        color: #0f172a;
+      }
     </style>
   </head>
   <body>
@@ -67,22 +73,35 @@
       <p id="status">Please wait while we prepare your message.</p>
       <div id="actions" class="actions">
         <a id="open-link" class="button" href="#">Open WhatsApp</a>
-        <p class="helper">If WhatsApp did not open automatically, tap the button above.</p>
+        <a id="back-link" class="button secondary" href="/">Go Back</a>
+        <p id="helper" class="helper">If WhatsApp did not open automatically, tap the button above.</p>
       </div>
     </div>
     <script>
       (function () {
         const params = new URLSearchParams(window.location.search);
         const key = params.get("key");
+        const actions = document.getElementById("actions");
+        const openLink = document.getElementById("open-link");
+        const backLink = document.getElementById("back-link");
+        const status = document.getElementById("status");
+        const helper = document.getElementById("helper");
+        let currentUrl = null;
+
+        const showInvalidState = () => {
+          status.textContent = "This WhatsApp launch request is invalid or expired.";
+          openLink.style.display = "none";
+          backLink.textContent = "Go Back";
+          helper.textContent = "Return to the previous page and start the WhatsApp share again.";
+          actions.classList.add("ready");
+        };
+
         if (!key) {
+          showInvalidState();
           return;
         }
 
         const storageKey = "wa-launch:" + key;
-        const actions = document.getElementById("actions");
-        const openLink = document.getElementById("open-link");
-        const status = document.getElementById("status");
-        let currentUrl = null;
 
         const revealFallback = (url) => {
           if (!url) {
