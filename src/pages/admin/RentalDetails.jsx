@@ -10800,12 +10800,12 @@ useEffect(() => {
     if (RENTAL_DEBUG) console.log('🔗 Navigating to WhatsApp URL:', url);
 
     try {
-      if (reservedWindow?.reservationKey && typeof window !== 'undefined') {
-        window.localStorage.setItem(`wa-launch:${reservedWindow.reservationKey}`, url);
-        return;
-      }
       if (reservedWindow?.popup && !reservedWindow.popup.closed) {
         reservedWindow.popup.location.href = url;
+        return;
+      }
+      if (reservedWindow?.reservationKey && typeof window !== 'undefined') {
+        window.localStorage.setItem(`wa-launch:${reservedWindow.reservationKey}`, url);
         return;
       }
       window.location.href = url;
