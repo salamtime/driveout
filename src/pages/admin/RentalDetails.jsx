@@ -6064,6 +6064,7 @@ Click the link above to review and approve the extension.`;
     const compactItems = items.map((item) => ({
       key: item.key,
       url: item.url,
+      ...(item.kind ? { kind: item.kind } : {}),
     }));
 
     return await createShortDocumentShareRecord({
@@ -6099,10 +6100,11 @@ Click the link above to review and approve the extension.`;
     const selectedItems = [];
 
     if (options.contract && canShareContractDocument) {
-      const contractDocumentUrl = await getContractUrl();
+      const contractDocumentUrl = await getContractWebUrl();
       if (contractDocumentUrl) {
         selectedItems.push({
           key: 'contract',
+          kind: 'preview',
           label: tr('Rental Contract', 'Contrat de location'),
           description: tr('Open your signed rental contract securely.', 'Ouvrez votre contrat signé en toute sécurité.'),
           ctaLabel: tr('Open contract', 'Ouvrir le contrat'),

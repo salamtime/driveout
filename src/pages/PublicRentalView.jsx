@@ -80,6 +80,31 @@ const getCorrectedDisplayedPaidAmount = ({ rental }) => {
   return Math.max(0, rawPaidAmount - staleFuelCharge);
 };
 
+const fetchPublicRentalPreview = async (lookupId) => {
+  const encodedLookupId = encodeURIComponent(lookupId);
+  const endpoints = [
+    `/api/public-rentals/${encodedLookupId}`,
+    `/api/public-links?resource=public-rental&id=${encodedLookupId}`,
+  ];
+
+  let lastBody = {};
+
+  for (const endpoint of endpoints) {
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    const body = await response.json().catch(() => ({}));
+    lastBody = body;
+
+    if (response.ok && body?.rental) {
+      return body;
+    }
+  }
+
+  throw new Error(lastBody?.error || 'Failed to load shared rental preview');
+};
+
 const getWeekendImpoundEstimatedReleaseDate = (impoundedAt) => {
   const impoundDate = new Date(impoundedAt || '');
   if (Number.isNaN(impoundDate.getTime())) return null;
@@ -114,6 +139,7 @@ export default function PublicRentalView() {
   const type = searchParams.get('type') || 'contract'; // 'contract' or 'receipt'
   const documentLanguage = searchParams.get('lang') === 'en' ? 'en' : 'fr';
   const sharedPayload = searchParams.get('payload');
+  const explicitPdfUrl = searchParams.get('pdf') || null;
   const isMediaGallery = type === 'opening-media' || type === 'closing-media';
   const mediaPhase = type === 'closing-media' ? 'in' : 'out';
   const isFrench = documentLanguage === 'fr';
@@ -192,16 +218,9 @@ export default function PublicRentalView() {
           return true;
         };
 
-        const response = await fetch(`/api/public-rentals/${encodeURIComponent(id)}`, {
-          method: 'GET',
-          headers: {
-            Accept: 'application/json',
-          },
-        });
+        const body = await fetchPublicRentalPreview(id);
 
-        const body = await response.json().catch(() => ({}));
-
-        if (response.ok && hydrateFromBody(body)) {
+        if (hydrateFromBody(body)) {
           return;
         }
         setError(body?.error || tr('Rental not found', 'Location introuvable'));
@@ -362,50 +381,42 @@ export default function PublicRentalView() {
         background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(59,130,246,0.05))',
         border: '1px solid rgba(99,102,241,0.18)',
         borderRadius: 16,
-        padding: '16px 18px',
+        padding: '12px 14px',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        gap: 16,
+        gap: 12,
         flexWrap: 'wrap',
       }}
       className="no-print"
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-        <img
-          src={logoUrl || '/assets/logo.jpg'}
-          alt="SaharaX"
-          style={{ width: 54, height: 54, objectFit: 'contain', borderRadius: 14, background: '#fff', border: '1px solid rgba(148,163,184,0.2)', padding: 6 }}
-          onError={(e) => { e.target.style.display = 'none'; }}
-        />
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6366f1' }}>
-            {tr('More in your account', 'Plus dans votre compte')}
+          <div style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', lineHeight: 1.35 }}>
+            {tr('Need history, messages, or follow-up?', 'Besoin de l’historique, des messages ou du suivi ?')}
           </div>
-          <div style={{ marginTop: 4, fontSize: 16, fontWeight: 800, color: '#0f172a' }}>
-            {tr('Sign in to see more rental details', 'Connectez-vous pour voir plus de détails')}
-          </div>
-          <div style={{ marginTop: 4, color: '#64748b', fontSize: 14 }}>
-            {tr('Open your account for messages, trip history, and full rental follow-up.', 'Ouvrez votre compte pour les messages, l’historique et le suivi complet de la location.')}
+          <div style={{ marginTop: 3, color: '#64748b', fontSize: 12, fontWeight: 600, lineHeight: 1.35 }}>
+            {tr('Sign in after reviewing this shared document.', 'Connectez-vous après avoir consulté ce document partagé.')}
           </div>
         </div>
       </div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <a href="/login" style={{ padding: '10px 16px', borderRadius: 999, fontSize: 14, fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#4f46e5', color: '#fff' }}>
+        <a href="/login" style={{ padding: '8px 12px', borderRadius: 999, fontSize: 13, fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#4f46e5', color: '#fff' }}>
           {tr('Sign in', 'Se connecter')}
         </a>
-        <a href="/register" style={{ padding: '10px 16px', borderRadius: 999, fontSize: 14, fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#fff', color: '#334155', border: '1px solid #cbd5e1' }}>
+        <a href="/register" style={{ padding: '8px 12px', borderRadius: 999, fontSize: 13, fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#fff', color: '#334155', border: '1px solid #cbd5e1' }}>
           {tr('Sign up', "S'inscrire")}
         </a>
       </div>
     </div>
   );
   const printablePdfUrl =
-    type === 'receipt'
+    explicitPdfUrl ||
+    (type === 'receipt'
       ? (sharedLinks.receiptPdf || null)
       : type === 'contract'
         ? (sharedLinks.contractPdf || null)
-        : null;
+        : null);
 
   if (type === 'documents') {
     const decodedBundle =
@@ -800,9 +811,6 @@ export default function PublicRentalView() {
 
       {/* Document */}
       <div style={{ maxWidth: 980, margin: '0 auto' }}>
-        <div style={{ marginBottom: 16 }}>
-          {accountPrompt}
-        </div>
         {type === 'contract' ? (
           <ContractTemplate rental={displayRental || rental} logoUrl={logoUrl} stampUrl={stampUrl} language={documentLanguage} />
         ) : (
@@ -814,6 +822,9 @@ export default function PublicRentalView() {
             language={documentLanguage}
           />
         )}
+        <div style={{ marginTop: 16 }}>
+          {accountPrompt}
+        </div>
       </div>
 
       <style>{`

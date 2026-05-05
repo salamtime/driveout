@@ -227,6 +227,13 @@ const createLocalApiPlugin = () => ({
           return `/public-links?${nextQuery.toString()}`
         }
 
+        if (normalizedPath.startsWith('/public-rentals/')) {
+          const rentalId = normalizedPath.slice('/public-rentals/'.length)
+          nextQuery.set('resource', 'public-rental')
+          if (rentalId) nextQuery.set('id', rentalId)
+          return `/public-links?${nextQuery.toString()}`
+        }
+
         if (normalizedPath === '/telegram-alerts') {
           nextQuery.set('action', 'telegram-alerts')
           return `/messages?${nextQuery.toString()}`

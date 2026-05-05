@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { ArrowRight, Camera, FileText, Landmark, Lock, Receipt, ShieldCheck, Video } from 'lucide-react';
+import { ArrowRight, Camera, FileText, Landmark, Lock, Receipt, Video } from 'lucide-react';
 import ContractTemplate from '../components/ContractTemplate';
 import ReceiptTemplate from '../components/ReceiptTemplate';
 import i18n from '../i18n';
@@ -181,19 +181,23 @@ const publicDocumentShareStyles = `
     .public-share-account-prompt {
       flex-direction: column !important;
       align-items: stretch !important;
-      padding: 16px !important;
-      border-radius: 20px !important;
+      padding: 14px !important;
+      border-radius: 18px !important;
+      gap: 12px !important;
     }
 
     .public-share-account-actions {
       width: 100% !important;
       display: grid !important;
-      grid-template-columns: 1fr !important;
+      grid-template-columns: 1fr 1fr !important;
+      gap: 8px !important;
     }
 
     .public-share-account-button {
       width: 100% !important;
-      min-height: 44px !important;
+      min-height: 38px !important;
+      padding: 8px 10px !important;
+      font-size: 13px !important;
     }
 
     .public-share-doc-grid {
@@ -236,6 +240,10 @@ const publicDocumentShareStyles = `
   }
 
   @media (max-width: 380px) {
+    .public-share-account-actions {
+      grid-template-columns: 1fr !important;
+    }
+
     .public-share-hero-main {
       flex-direction: column !important;
     }
@@ -371,6 +379,31 @@ const renderDocumentLoadingShell = (tr) => (
   </div>
 );
 
+const fetchPublicRentalPreview = async (lookupId) => {
+  const encodedLookupId = encodeURIComponent(lookupId);
+  const endpoints = [
+    `/api/public-rentals/${encodedLookupId}`,
+    `/api/public-links?resource=public-rental&id=${encodedLookupId}`,
+  ];
+
+  let lastBody = {};
+
+  for (const endpoint of endpoints) {
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    const body = await response.json().catch(() => ({}));
+    lastBody = body;
+
+    if (response.ok && body?.rental) {
+      return body;
+    }
+  }
+
+  throw new Error(lastBody?.error || 'Failed to load shared rental preview');
+};
+
 export default function PublicDocumentShare() {
   const { token } = useParams();
   const [share, setShare] = useState(null);
@@ -411,15 +444,7 @@ export default function PublicDocumentShare() {
           (resolvedPayload?.rentalLookupId || resolvedPayload?.rentalId)
         ) {
           const lookupId = resolvedPayload?.rentalLookupId || resolvedPayload?.rentalId;
-          const rentalResponse = await fetch(`/api/public-rentals/${encodeURIComponent(lookupId)}`, {
-            method: 'GET',
-            headers: { Accept: 'application/json' },
-          });
-          const rentalBody = await rentalResponse.json().catch(() => ({}));
-
-          if (!rentalResponse.ok || !rentalBody?.rental) {
-            throw new Error(rentalBody?.error || 'Failed to load shared rental preview');
-          }
+          const rentalBody = await fetchPublicRentalPreview(lookupId);
 
           const baseRental = rentalBody.rental;
           const linkedVehicleReport =
@@ -482,8 +507,11 @@ export default function PublicDocumentShare() {
     <div style={inlinePromptStyle} className="no-print public-share-account-prompt">
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
-            {tr('Sign in to access full rental history, messages, and follow-up.', 'Connectez-vous pour accéder à l’historique, aux messages et au suivi complet.')}
+          <div style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', lineHeight: 1.35 }}>
+            {tr('Need history, messages, or follow-up?', 'Besoin de l’historique, des messages ou du suivi ?')}
+          </div>
+          <div style={{ marginTop: 3, fontSize: 12, fontWeight: 600, color: '#64748b', lineHeight: 1.35 }}>
+            {tr('Sign in after reviewing these shared items.', 'Connectez-vous après avoir consulté les éléments partagés.')}
           </div>
         </div>
       </div>
@@ -523,6 +551,23 @@ export default function PublicDocumentShare() {
   if (share.share_type === 'hub') {
     const secureLabel = tr('Secure access • Private link', 'Accès sécurisé • Lien privé');
     const availableLabel = tr(`${hubItems.length} documents available`, `${hubItems.length} documents disponibles`);
+    const getHubItemHref = (item) => {
+      if (item?.key === 'contract' && item?.kind === 'preview' && item?.url) {
+        return item.url;
+      }
+
+      if (item?.key === 'contract' && share?.rental_id) {
+        const params = new URLSearchParams({
+          type: 'contract',
+          lang: language,
+        });
+
+        return `/view/rental/${encodeURIComponent(share.rental_id)}?${params.toString()}`;
+      }
+
+      return item?.url || '#';
+    };
+
     return (
       <div style={pageWrapStyle} className="public-share-page">
         <div style={contentWrapStyle}>
@@ -556,48 +601,10 @@ export default function PublicDocumentShare() {
                 <div className="public-share-count-pill" style={{ alignSelf: 'flex-end', padding: '8px 12px', borderRadius: 999, background: 'rgba(255,255,255,0.68)', border: '1px solid rgba(196,181,253,0.45)', color: '#6d28d9', fontSize: 12, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
                   {availableLabel}
                 </div>
-                <button
-                  className="public-share-primary-action"
-                  type="button"
-                  onClick={() => {
-                    const firstUrl = hubItems[0]?.url;
-                    if (firstUrl) window.location.href = firstUrl;
-                  }}
-                  style={{
-                    border: 'none',
-                    borderRadius: 16,
-                    padding: '14px 18px',
-                    background: 'linear-gradient(135deg, #7c3aed 0%, #6366f1 100%)',
-                    color: '#fff',
-                    fontSize: 14,
-                    fontWeight: 800,
-                    boxShadow: '0 18px 34px rgba(109,40,217,0.24)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 10,
-                    cursor: 'pointer',
-                    transform: 'translateY(0)',
-                    transition: 'transform 180ms ease, box-shadow 180ms ease',
-                  }}
-                  onMouseEnter={(event) => {
-                    event.currentTarget.style.transform = 'translateY(-1px)';
-                    event.currentTarget.style.boxShadow = '0 22px 38px rgba(109,40,217,0.28)';
-                  }}
-                  onMouseLeave={(event) => {
-                    event.currentTarget.style.transform = 'translateY(0)';
-                    event.currentTarget.style.boxShadow = '0 18px 34px rgba(109,40,217,0.24)';
-                  }}
-                >
-                  <ShieldCheck size={16} />
-                  {tr('Open Securely', 'Ouvrir en sécurité')}
-                </button>
               </div>
             </div>
 
             <div className="public-share-body" style={{ padding: '0 24px 24px' }}>
-              {accountPrompt}
-              <div style={{ height: 18 }} />
               <div style={docGridStyle} className="public-share-doc-grid">
                 {hubItems.map((item) => {
                   const meta = SHARE_ITEM_META[item.key] || SHARE_ITEM_META.receipt;
@@ -606,9 +613,7 @@ export default function PublicDocumentShare() {
                     <a
                       className="public-share-doc-card"
                       key={item.key}
-                      href={item.url}
-                      target="_blank"
-                      rel="noreferrer"
+                      href={getHubItemHref(item)}
                       style={cardBaseStyle}
                       onMouseEnter={(event) => {
                         event.currentTarget.style.transform = 'translateY(-3px)';
@@ -644,6 +649,9 @@ export default function PublicDocumentShare() {
                     </a>
                   );
                 })}
+              </div>
+              <div style={{ marginTop: 16 }}>
+                {accountPrompt}
               </div>
             </div>
           </div>
@@ -711,9 +719,6 @@ export default function PublicDocumentShare() {
       </div>
 
       <div style={{ maxWidth: 980, margin: '0 auto' }}>
-        <div style={{ marginBottom: 16 }}>
-          {accountPrompt}
-        </div>
         {share.share_type === 'contract' ? (
           <ContractTemplate rental={rental} logoUrl={logoUrl} stampUrl={stampUrl} language={language} />
         ) : (
@@ -725,6 +730,9 @@ export default function PublicDocumentShare() {
             language={language}
           />
         )}
+        <div style={{ marginTop: 16 }}>
+          {accountPrompt}
+        </div>
       </div>
 
       <style>{publicDocumentShareStyles}</style>
