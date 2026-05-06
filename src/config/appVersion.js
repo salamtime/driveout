@@ -1,6 +1,6 @@
 import packageJson from '../../package.json';
 
-const REPO_BASELINE_VERSION = '9.3';
+const REPO_BASELINE_VERSION = packageJson.version;
 
 const normalizeVersion = (value) => {
   const raw = String(value || '').trim();
@@ -8,7 +8,7 @@ const normalizeVersion = (value) => {
 };
 
 export const APP_VERSION = normalizeVersion(
-  import.meta.env.VITE_APP_VERSION || REPO_BASELINE_VERSION || packageJson.version
+  import.meta.env.VITE_APP_VERSION || packageJson.version || REPO_BASELINE_VERSION
 );
 
 export const APP_VERSION_LABEL = `VER ${APP_VERSION}`;
