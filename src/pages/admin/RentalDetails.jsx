@@ -532,43 +532,34 @@ const getRentalEffectiveEndTime = (rental = {}) =>
       String(rental?.rental_status || '').toLowerCase() === 'completed' ||
       Boolean(rental?.completed_at)
     )
-      ? rental?.actual_end_date
+      ? (
+          rental?.completed_at ||
+          rental?.rental_completed_at ||
+          rental?.actual_end_date
+        )
       : null
   ) ||
   rental?.rental_end_date ||
   null;
 
 const getRentalDisplayEndTime = (rental = {}) => {
-  const actualReturnValue = rental?.actual_return_time || rental?.actual_end_time || null;
+  const actualReturnValue =
+    rental?.actual_return_time ||
+    rental?.actual_end_time ||
+    null;
   if (actualReturnValue) return actualReturnValue;
+
+  const completedAtValue =
+    String(rental?.rental_status || '').toLowerCase() === 'completed' || rental?.completed_at
+      ? (rental?.completed_at || rental?.rental_completed_at || null)
+      : null;
+  if (completedAtValue) return completedAtValue;
 
   const actualEndValue =
     String(rental?.rental_status || '').toLowerCase() === 'completed' || rental?.completed_at
       ? (rental?.actual_end_date || null)
       : null;
   const scheduledEndValue = rental?.rental_end_date || null;
-  const completedAtValue = rental?.completed_at || null;
-
-  const actualEnd = actualEndValue ? new Date(actualEndValue) : null;
-  const scheduledEnd = scheduledEndValue ? new Date(scheduledEndValue) : null;
-  const completedAt = completedAtValue ? new Date(completedAtValue) : null;
-
-  const actualEndMs = actualEnd?.getTime?.() ?? Number.NaN;
-  const scheduledEndMs = scheduledEnd?.getTime?.() ?? Number.NaN;
-  const completedAtMs = completedAt?.getTime?.() ?? Number.NaN;
-  const isHourlyRental = String(rental?.rental_type || '').toLowerCase() === 'hourly';
-
-  const completionOverwroteEndTime =
-    isHourlyRental &&
-    Number.isFinite(actualEndMs) &&
-    Number.isFinite(scheduledEndMs) &&
-    Number.isFinite(completedAtMs) &&
-    actualEndMs === completedAtMs &&
-    actualEndMs > scheduledEndMs;
-
-  if (completionOverwroteEndTime) {
-    return scheduledEndValue;
-  }
 
   return actualEndValue || scheduledEndValue || null;
 };
@@ -1348,7 +1339,9 @@ const getInlineAmountDueOverrideMeta = (rentalLike = {}) => {
       parsedReasonMeta = null;
     }
   }
-  const note = parsedReasonMeta?.note || rawReason;
+  const note = parsedReasonMeta
+    ? String(parsedReasonMeta?.note || '').trim()
+    : rawReason;
   const editedById = rentalLike?.amount_due_override_edited_by || null;
   const editedByName = rentalLike?.amount_due_override_edited_by_name || null;
   const previousAmount = Number(rentalLike?.amount_due_override_previous_amount || 0) || 0;
@@ -2025,6 +2018,7 @@ export default function RentalDetails() {
   }, [location.search]);
   const financeOverviewReturn = Boolean(location.state?.financeOverviewReturn);
   const financeOverviewLabel = String(location.state?.financeOverviewLabel || '');
+  const rentalsReturnContext = location.state?.rentalsReturnContext || null;
   const { userProfile } = useAuth();
   const isFrench = isFrenchLocale();
   const startWorkflowStorageKey = id ? `rental_start_workflow_${id}` : null;
@@ -7195,6 +7189,7 @@ Click the link above to review and approve the extension.`;
       Math.abs(storedRemainingAmount - rawBalanceDue) > 0.009;
     const balanceDue = hasManualAmountDueOverride ? storedRemainingAmount : rawBalanceDue;
     const companyDiscountAmount = Math.max(0, Number(amountDueAuditMeta?.companyDiscount || 0) || 0);
+    const finalGrandTotal = Math.max(0, grandTotal - companyDiscountAmount);
     const customerPaidAmount = Math.max(0, grandTotal - balanceDue - companyDiscountAmount - autoDepositSeizedAmount);
 
     return {
@@ -7214,7 +7209,9 @@ Click the link above to review and approve the extension.`;
       maintenanceStayAmount,
       maintenanceDiscountAmount,
       maintenanceChargeAmount,
+      grossGrandTotal: grandTotal,
       grandTotal,
+      finalGrandTotal,
       depositPaid,
       customerPaidAmount,
       rawBalanceDue,
@@ -7266,7 +7263,8 @@ Click the link above to review and approve the extension.`;
       };
     }
 
-    if (rentalBillingSummary.grandTotal > 0 && coveredAmount >= rentalBillingSummary.grandTotal) {
+    const payableTotal = rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal;
+    if (payableTotal > 0 && coveredAmount >= payableTotal) {
       return {
         status: 'paid',
         label: tr('PAID', 'PAYÉE'),
@@ -7296,7 +7294,7 @@ Click the link above to review and approve the extension.`;
       isPaid: false,
       isPartial: false,
     };
-  }, [rental, rentalBillingSummary.autoDepositSeizedAmount, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.grandTotal, tr]);
+  }, [rental, rentalBillingSummary.autoDepositSeizedAmount, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.finalGrandTotal, rentalBillingSummary.grandTotal, tr]);
 
   const paymentStepRemainingBalance = useMemo(() => {
     if (!rental) return 0;
@@ -7353,7 +7351,7 @@ Click the link above to review and approve the extension.`;
       rental?.payment_status,
       rentalBillingSummary.balanceDue
     ) === 'paid';
-    const effectiveDocumentTotal = Math.max(0, Number(rentalBillingSummary.grandTotal || 0) || 0);
+    const effectiveDocumentTotal = Math.max(0, Number((rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal ?? 0)) || 0);
     const effectiveDocumentPaid = isMarkedPaid
       ? effectiveDocumentTotal
       : Math.max(0, Number(rentalBillingSummary.depositPaid || 0) || 0);
@@ -7449,7 +7447,7 @@ Click the link above to review and approve the extension.`;
         }
       }
     };
-  }, [dynamicPaymentState.status, fuelCharge, fuelChargeEnabled, fuelPricePerLine, endFuelLevel, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, inferredShortReturnVoidedExtension, kilometerPackageApplication, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.grandTotal, vehicleReport, waiveImpoundExtraDailyCharge, tr]);
+  }, [dynamicPaymentState.status, fuelCharge, fuelChargeEnabled, fuelPricePerLine, endFuelLevel, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, inferredShortReturnVoidedExtension, kilometerPackageApplication, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.finalGrandTotal, rentalBillingSummary.grandTotal, vehicleReport, waiveImpoundExtraDailyCharge, tr]);
 
   const receiptPreviewMeta = useMemo(
     () => getReceiptPreviewMeta(receiptRentalData || rental || {}),
@@ -7462,7 +7460,7 @@ Click the link above to review and approve the extension.`;
       rental?.payment_status,
       rentalBillingSummary.balanceDue
     ) === 'paid';
-    const effectiveDocumentTotal = Math.max(0, Number(rentalBillingSummary.grandTotal || 0) || 0);
+    const effectiveDocumentTotal = Math.max(0, Number((rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal ?? 0)) || 0);
     const effectiveDocumentPaid = isMarkedPaid
       ? effectiveDocumentTotal
       : Math.max(0, Number(rentalBillingSummary.depositPaid || 0) || 0);
@@ -7503,11 +7501,11 @@ Click the link above to review and approve the extension.`;
         }
       }
     };
-  }, [dynamicPaymentState.status, endFuelLevel, fuelCharge, fuelChargeEnabled, fuelPricePerLine, inferredShortReturnVoidedExtension, linkedCustomerProfile, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.grandTotal, syncedCustomerDetails]);
+  }, [dynamicPaymentState.status, endFuelLevel, fuelCharge, fuelChargeEnabled, fuelPricePerLine, inferredShortReturnVoidedExtension, linkedCustomerProfile, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.finalGrandTotal, rentalBillingSummary.grandTotal, syncedCustomerDetails]);
 
   const isPaymentSufficient = () => {
     if (!rental) return false;
-    return dynamicPaymentState.isPaid || rentalBillingSummary.depositPaid >= rentalBillingSummary.grandTotal;
+    return dynamicPaymentState.isPaid || rentalBillingSummary.depositPaid >= (rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal);
   };
 
     // ✅ UPDATED: Calculate deposit return amount with toggle support
@@ -9303,8 +9301,14 @@ const handleFuelChargeToggle = async (enabled) => {
           reference: effectiveCompletionRental?.rental_id || rental.rental_id || '',
           vehicle: buildRentalTelegramVehicleLabel(completedRental || effectiveCompletionRental || rental),
           customer: (completedRental || effectiveCompletionRental)?.customer_name || rental.customer_name,
-          start: (completedRental || effectiveCompletionRental)?.rental_start_date || rental.rental_start_date,
-          end: actualReturnEndTime,
+          start:
+            (completedRental || effectiveCompletionRental)?.started_at ||
+            (completedRental || effectiveCompletionRental)?.actual_start_date ||
+            rental.started_at ||
+            rental.actual_start_date ||
+            (completedRental || effectiveCompletionRental)?.rental_start_date ||
+            rental.rental_start_date,
+          end: completedAt,
           completed_at: completedAt,
           total: (completedRental || effectiveCompletionRental)?.total_amount || rental.total_amount || 0,
           amountPaid: (completedRental || effectiveCompletionRental)?.deposit_amount || rental.deposit_amount || 0,
@@ -11102,14 +11106,10 @@ useEffect(() => {
   };
   const buildWhatsAppSendUrl = (phoneNumber, message) => {
     const cleanPhone = String(phoneNumber || '').replace(/\D/g, '');
-    const params = new URLSearchParams();
-    if (cleanPhone) {
-      params.set('phone', cleanPhone);
-    }
-    params.set('text', message || '');
-    const isMobileDevice = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
-    const baseUrl = isMobileDevice ? 'https://api.whatsapp.com/send' : 'https://web.whatsapp.com/send';
-    return `${baseUrl}?${params.toString()}`;
+    const encodedMessage = encodeURIComponent(message || '');
+    return cleanPhone
+      ? `https://wa.me/${cleanPhone}?text=${encodedMessage}`
+      : `https://wa.me/?text=${encodedMessage}`;
   };
 
   const openWhatsAppUrl = (url) => {
@@ -11837,8 +11837,14 @@ useEffect(() => {
           reference: effectiveCompletionRental?.rental_id || rental.rental_id || '',
           vehicle: buildRentalTelegramVehicleLabel(effectiveCompletionRental || rental),
           customer: effectiveCompletionRental?.customer_name || rental.customer_name,
-          start: effectiveCompletionRental?.rental_start_date || rental.rental_start_date,
-          end: actualReturnEndTime,
+          start:
+            effectiveCompletionRental?.started_at ||
+            effectiveCompletionRental?.actual_start_date ||
+            rental.started_at ||
+            rental.actual_start_date ||
+            effectiveCompletionRental?.rental_start_date ||
+            rental.rental_start_date,
+          end: completedAt,
           completed_at: completedAt,
           total: effectiveCompletionRental?.total_amount || rental.total_amount || 0,
           amountPaid: effectiveCompletionRental?.deposit_amount || rental.deposit_amount || 0,
@@ -12742,6 +12748,8 @@ useEffect(() => {
   const buildManualTelegramRentalPayload = (eventType) => {
     const normalizedEventType = String(eventType || '').trim().toLowerCase();
     const completedAt =
+      rental?.actual_return_time ||
+      rental?.actual_end_time ||
       rental?.completed_at ||
       rental?.rental_completed_at ||
       rental?.actual_end_date ||
@@ -12758,8 +12766,8 @@ useEffect(() => {
       reference: rental?.rental_id || '',
       vehicle: buildRentalTelegramVehicleLabel(rental),
       customer: rental?.customer_name || '',
-      start: rental?.rental_start_date || startedAt || '',
-      end: rental?.rental_end_date || rental?.actual_end_date || completedAt || '',
+      start: startedAt || rental?.rental_start_date || '',
+      end: completedAt || rental?.actual_end_date || rental?.rental_end_date || '',
       total: rental?.total_amount || 0,
       amountPaid: rental?.deposit_amount || 0,
       remaining: rental?.remaining_amount || 0,
@@ -13998,7 +14006,7 @@ useEffect(() => {
       {
         key: 'total',
         label: tr('Rental total', 'Total location'),
-        value: `${formatCurrency(rentalBillingSummary.grandTotal)} MAD`,
+        value: `${formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} MAD`,
       },
       {
         key: 'paid',
@@ -14546,6 +14554,19 @@ useEffect(() => {
     vehicle_details: rental.vehicle,
     start_date: rental.started_at ? new Date(rental.started_at).toLocaleString() : (rental.rental_start_date ? new Date(rental.rental_start_date).toLocaleString() : 'N/A'),
     end_date: rental.actual_end_date ? new Date(rental.actual_end_date).toLocaleString() : (rental.rental_end_date ? new Date(rental.rental_end_date).toLocaleString() : 'N/A'),
+  };
+
+  const handleReturnToRentals = () => {
+    if (rentalsReturnContext) {
+      navigate('/admin/rentals', {
+        state: {
+          restoreRentalsView: rentalsReturnContext,
+        },
+      });
+      return;
+    }
+
+    navigate('/admin/rentals');
   };
 
   const handleOpenRentalEdit = () => {
@@ -15614,13 +15635,21 @@ useEffect(() => {
       formatRentalDurationLabel(rental, isFrench),
       timeRemaining || null,
     ].filter(Boolean).join(' • '),
-    money: [
-      dynamicPaymentState?.label || tr('Payment pending', 'Paiement en attente'),
-      `${formatCurrency(rentalBillingSummary?.grandTotal || 0)} MAD`,
-      rentalBillingSummary?.balanceDue > 0
-        ? `${tr('Due', 'Dû')} ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`
-        : tr('No balance due', 'Aucun solde dû'),
-    ].filter(Boolean).join(' • '),
+    money: (
+      <>
+        <span>{dynamicPaymentState?.label || tr('Payment pending', 'Paiement en attente')}</span>
+        <span className="mx-1 text-slate-400">•</span>
+        <span className="font-semibold text-emerald-600">
+          {formatCurrency(rentalBillingSummary?.finalGrandTotal ?? rentalBillingSummary?.grandTotal ?? 0)} MAD
+        </span>
+        <span className="mx-1 text-slate-400">•</span>
+        <span>
+          {rentalBillingSummary?.balanceDue > 0
+            ? `${tr('Due', 'Dû')} ${formatCurrency(rentalBillingSummary.balanceDue)} MAD`
+            : tr('No balance due', 'Aucun solde dû')}
+        </span>
+      </>
+    ),
     media: [
       hasCompletedVehicleMedia
         ? tr(
@@ -15643,17 +15672,31 @@ useEffect(() => {
     }
 
     const isOpen = Boolean(lightRentalInfoOpenSections?.[sectionKey]);
+    const useActiveAccent = isOpen;
 
     return (
-      <div ref={sectionRef} className="overflow-hidden rounded-[24px] border border-violet-100 bg-white shadow-[0_12px_30px_rgba(76,29,149,0.06)]">
+      <div
+        ref={sectionRef}
+        className={`overflow-hidden rounded-[24px] border bg-white transition-[border-color,box-shadow] duration-200 ${
+          useActiveAccent
+            ? 'border-violet-200 shadow-[0_0_0_1px_rgba(139,92,246,0.14),0_18px_40px_rgba(109,40,217,0.10)]'
+            : 'border-violet-100 shadow-[0_12px_30px_rgba(76,29,149,0.06)]'
+        }`}
+      >
         <button
           type="button"
           onClick={() => toggleLightRentalInfoSection(sectionKey)}
-          className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
+          className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left transition-colors duration-200"
         >
           <div className="flex min-w-0 items-start gap-3">
             {Icon ? (
-              <div className="mt-0.5 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border border-violet-100 bg-violet-50 text-violet-600 shadow-sm">
+              <div
+                className={`mt-0.5 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border text-violet-600 shadow-sm transition-[border-color,background-color,box-shadow] duration-200 ${
+                  useActiveAccent
+                    ? 'border-violet-200 bg-violet-50/90 shadow-[0_10px_24px_rgba(109,40,217,0.10)]'
+                    : 'border-violet-100 bg-violet-50'
+                }`}
+              >
                 <Icon className="h-5 w-5" />
               </div>
             ) : null}
@@ -15664,10 +15707,16 @@ useEffect(() => {
                 </p>
               ) : null}
               <p className="mt-1 text-base font-bold text-slate-900">{title}</p>
-              <p className="mt-1 text-xs text-slate-500">{preview}</p>
+              <div className="mt-1 text-xs text-slate-500">{preview}</div>
             </div>
           </div>
-          <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+          <div
+            className={`rounded-full p-2 transition-[background-color,color,box-shadow] duration-200 ${
+              useActiveAccent
+                ? 'bg-violet-100 text-violet-600 shadow-[0_8px_18px_rgba(109,40,217,0.10)]'
+                : 'bg-slate-100 text-slate-500'
+            }`}
+          >
             {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </div>
         </button>
@@ -16612,7 +16661,7 @@ useEffect(() => {
 
                   <div className="flex justify-between border-t-2 border-gray-300 pt-2 text-lg">
                     <span className="font-bold text-gray-900">{tr('Final Rental Total:', 'Total final location :')}</span>
-                    <span className="font-bold text-green-600">{formatCurrency(rentalBillingSummary.grandTotal)} MAD</span>
+                    <span className="font-bold text-green-600">{formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} MAD</span>
                   </div>
 
                   <div className="flex justify-between text-sm">
@@ -16662,7 +16711,7 @@ useEffect(() => {
               <div className="flex items-center gap-2">
                 <span className={`rounded-full px-2 py-1 text-xs font-medium ${dynamicPaymentState.chipClass}`}>{dynamicPaymentState.label}</span>
                 {dynamicPaymentState.isPartial && (
-                  <span className="text-xs text-gray-500">({formatCurrency(effectiveCoveredAmount)} covered of {formatCurrency(rentalBillingSummary.grandTotal)})</span>
+                  <span className="text-xs text-gray-500">({formatCurrency(effectiveCoveredAmount)} covered of {formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)})</span>
                 )}
                 {dynamicPaymentState.isPaid && rentalBillingSummary.autoDepositSeizedAmount > 0 && (
                   <span className="text-xs text-gray-500">(includes {formatCurrency(rentalBillingSummary.autoDepositSeizedAmount)} MAD seized from security deposit)</span>
@@ -17244,8 +17293,13 @@ useEffect(() => {
             {(() => {
               const hasExt = rental.extensions?.some((e) => e.status === 'approved');
               if (hasExt) return <span className="ml-2 text-xs text-green-600">({tr('Extended', 'Prolongée')})</span>;
-              if ((String(rental?.rental_status || '').toLowerCase() === 'completed' || rental?.completed_at) && rental.actual_end_date) {
-                return <span className="ml-2 text-xs text-blue-600">({tr('Adjusted', 'Ajustée')})</span>;
+              if (
+                String(rental?.rental_status || '').toLowerCase() === 'completed' ||
+                rental?.completed_at ||
+                rental?.actual_return_time ||
+                rental?.actual_end_time
+              ) {
+                return <span className="ml-2 text-xs text-green-600">({tr('Actual', 'Réelle')})</span>;
               }
               return <span className="ml-2 text-xs text-gray-500">({tr('Scheduled', 'Planifiée')})</span>;
             })()}
@@ -17851,7 +17905,7 @@ useEffect(() => {
               <div className="flex items-start gap-4">
                 <button
                   type="button"
-                  onClick={() => navigate('/admin/rentals')}
+                  onClick={handleReturnToRentals}
                   className="mt-1 inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100"
                   title={tr('Back to rentals', 'Retour aux locations')}
                 >
@@ -21146,8 +21200,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
    {(() => {
      const hasExt = rental.extensions?.some(e => e.status === 'approved');
      if (hasExt) return <span className="text-green-600 text-xs ml-2">({tr('Extended', 'Prolongée')})</span>;
-     if ((String(rental?.rental_status || '').toLowerCase() === 'completed' || rental?.completed_at) && rental.actual_end_date) {
-       return <span className="text-blue-600 text-xs ml-2">({tr('Adjusted', 'Ajustée')})</span>;
+     if (
+       String(rental?.rental_status || '').toLowerCase() === 'completed' ||
+       rental?.completed_at ||
+       rental?.actual_return_time ||
+       rental?.actual_end_time
+     ) {
+       return <span className="text-green-600 text-xs ml-2">({tr('Actual', 'Réelle')})</span>;
      }
      return <span className="text-gray-500 text-xs ml-2">({tr('Scheduled', 'Planifiée')})</span>;
    })()}</p>
@@ -21896,7 +21955,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             <div className="flex justify-between pt-2 border-t-2 border-gray-300 text-lg">
               <span className="font-bold text-gray-900">{tr('Final Rental Total:', 'Total final location :')}</span>
               <span className="font-bold text-green-600">
-                {formatCurrency(rentalBillingSummary.grandTotal)} MAD
+                {formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} MAD
               </span>
             </div>
 
@@ -22269,7 +22328,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           </span>
           {dynamicPaymentState.isPartial && (
             <span className="text-xs text-gray-500">
-              ({formatCurrency(effectiveCoveredAmount)} covered of {formatCurrency(rentalBillingSummary.grandTotal)})
+              ({formatCurrency(effectiveCoveredAmount)} covered of {formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)})
             </span>
           )}
           {dynamicPaymentState.isPaid && rentalBillingSummary.autoDepositSeizedAmount > 0 && (
@@ -24845,14 +24904,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   >
                     {tr('Copy message', 'Copier le message')}
                   </Button>
-                  <Button asChild className={`${SUCCESS_ACTION_BUTTON_CLASS} flex items-center gap-2`}>
-                    <a
-                      href={pendingWhatsAppShare.url}
-                      target="_self"
-                    >
-                      <FaWhatsapp size={18} />
-                      {tr('Open WhatsApp', 'Ouvrir WhatsApp')}
-                    </a>
+                  <Button
+                    onClick={() => openWhatsAppUrl(pendingWhatsAppShare.url)}
+                    className={`${SUCCESS_ACTION_BUTTON_CLASS} flex items-center gap-2`}
+                  >
+                    <FaWhatsapp size={18} />
+                    {tr('Open WhatsApp', 'Ouvrir WhatsApp')}
                   </Button>
                 </div>
               </div>

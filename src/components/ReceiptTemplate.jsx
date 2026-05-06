@@ -737,18 +737,19 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       );
   const estimatedTotalByMonday = liveImpoundTotal + estimatedWeekendExtraAmount;
   const displayedImpoundTotal = impoundIsEstimate ? estimatedTotalByMonday : impoundChargeTotal;
-  const displayedTotalAmount = impoundIsEstimate
+  const grossDisplayedTotalAmount = impoundIsEstimate
     ? Math.max(0, totalAmount - impoundChargeTotal + estimatedTotalByMonday)
     : totalAmount;
-  const rawBalanceDue = Math.max(0, displayedTotalAmount - correctedPaidAmount);
   const savedDepositDeductionAmount = Math.max(0, Number(rental?.deposit_deduction_amount || 0));
   const autoDepositSeizedAmount = Math.min(savedDepositDeductionAmount, receiptDamageDeposit || savedDepositDeductionAmount);
+  const amountDueDiscountAmount = Math.max(0, Number(amountDueResolutionMeta?.companyDiscount || 0) || 0);
+  const displayedTotalAmount = Math.max(0, grossDisplayedTotalAmount - amountDueDiscountAmount);
+  const rawBalanceDue = Math.max(0, displayedTotalAmount - correctedPaidAmount);
   const remainingBalanceAfterDepositSeizure = Math.max(0, rawBalanceDue - autoDepositSeizedAmount);
   const remainingRefundableSecurityDeposit = Math.max(0, receivedDamageDeposit - autoDepositSeizedAmount);
-  const amountDueDiscountAmount = Math.max(0, Number(amountDueResolutionMeta?.companyDiscount || 0) || 0);
   const displayedCustomerPaidAmount = Math.max(
     0,
-    displayedTotalAmount - remainingBalanceAfterDepositSeizure - amountDueDiscountAmount - autoDepositSeizedAmount
+    displayedTotalAmount - remainingBalanceAfterDepositSeizure - autoDepositSeizedAmount
   );
   const normalizedPaymentStatus = remainingBalanceAfterDepositSeizure <= 0
     ? 'paid'
@@ -995,9 +996,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         }}>
           <div style={{
             display: 'flex',
+            flexDirection: isMobileLayout ? 'column' : 'row',
             justifyContent: 'space-between',
-            alignItems: 'flex-start',
-            gap: '12px',
+            alignItems: isMobileLayout ? 'stretch' : 'flex-start',
+            gap: isMobileLayout ? '18px' : '12px',
             flexWrap: 'wrap'
           }}>
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -1015,10 +1017,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               </div>
               {smartPricingMode === 'upgrade' ? (
                 <>
-                  <div style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.3, marginBottom: '10px', maxWidth: '760px' }}>
+                  <div style={{ fontSize: isMobileLayout ? '16px' : '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.35, marginBottom: '10px', maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr('You were upgraded to a better package to save money', 'Vous avez été basculé vers un meilleur forfait pour économiser')}
                   </div>
-                  <div style={{ fontSize: '14px', color: '#334155', lineHeight: 1.6 }}>
+                  <div style={{ fontSize: isMobileLayout ? '15px' : '14px', color: '#334155', lineHeight: 1.7, maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr(
                       `Started with ${receiptDistanceUpgrade?.originalPackageName || 'your original package'}, used ${formatReceiptKilometers(usageDistanceKm)} km, and finished on ${receiptDistanceUpgrade?.appliedPackageName || packageUsedLabel}.`,
                       `Départ avec ${receiptDistanceUpgrade?.originalPackageName || 'le forfait initial'}, ${formatReceiptKilometers(usageDistanceKm)} km utilisés, puis bascule vers ${receiptDistanceUpgrade?.appliedPackageName || packageUsedLabel}.`
@@ -1027,10 +1029,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 </>
               ) : smartPricingMode === 'tier' ? (
                 <>
-                  <div style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.3, marginBottom: '10px', maxWidth: '760px' }}>
+                  <div style={{ fontSize: isMobileLayout ? '16px' : '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.35, marginBottom: '10px', maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr('A better rate was applied automatically', 'Un meilleur tarif a été appliqué automatiquement')}
                   </div>
-                  <div style={{ fontSize: '14px', color: '#334155', lineHeight: 1.6 }}>
+                  <div style={{ fontSize: isMobileLayout ? '15px' : '14px', color: '#334155', lineHeight: 1.7, maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr(
                       `${packageUsedLabel} replaced the standard rate for this rental.`,
                       `${packageUsedLabel} a remplacé le tarif standard pour cette location.`
@@ -1039,10 +1041,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 </>
               ) : smartPricingMode === 'package' ? (
                 <>
-                  <div style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.3, marginBottom: '10px', maxWidth: '760px' }}>
+                  <div style={{ fontSize: isMobileLayout ? '16px' : '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.35, marginBottom: '10px', maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr('A kilometer package was used for this rental', 'Un forfait kilométrique a été utilisé pour cette location')}
                   </div>
-                  <div style={{ fontSize: '14px', color: '#334155', lineHeight: 1.6 }}>
+                  <div style={{ fontSize: isMobileLayout ? '15px' : '14px', color: '#334155', lineHeight: 1.7, maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr(
                       `${packageUsedLabel} covered the rental distance and time.`,
                       `${packageUsedLabel} couvre la distance et la durée de location.`
@@ -1051,10 +1053,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 </>
               ) : smartPricingMode === 'manual' ? (
                 <>
-                  <div style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.3, marginBottom: '10px', maxWidth: '760px' }}>
+                  <div style={{ fontSize: isMobileLayout ? '16px' : '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.35, marginBottom: '10px', maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr('Manual contract price applied', 'Prix manuel du contrat appliqué')}
                   </div>
-                  <div style={{ fontSize: '14px', color: '#334155', lineHeight: 1.6 }}>
+                  <div style={{ fontSize: isMobileLayout ? '15px' : '14px', color: '#334155', lineHeight: 1.7, maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr(
                       `The original calculated price was ${formatCurrency(priceOverrideMeta?.previousPrice || 0)} MAD and the final contract price was adjusted to ${formatCurrency(priceOverrideMeta?.newPrice || totalAmount)} MAD.`,
                       `Le prix calculé initial était de ${formatCurrency(priceOverrideMeta?.previousPrice || 0)} MAD et le prix final du contrat a été ajusté à ${formatCurrency(priceOverrideMeta?.newPrice || totalAmount)} MAD.`
@@ -1068,10 +1070,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 </>
               ) : (
                 <>
-                  <div style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.3, marginBottom: '10px', maxWidth: '760px' }}>
+                  <div style={{ fontSize: isMobileLayout ? '16px' : '18px', fontWeight: 700, color: '#0f172a', lineHeight: 1.35, marginBottom: '10px', maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr('Standard pricing used', 'Tarif standard utilisé')}
                   </div>
-                  <div style={{ fontSize: '14px', color: '#334155', lineHeight: 1.6 }}>
+                  <div style={{ fontSize: isMobileLayout ? '15px' : '14px', color: '#334155', lineHeight: 1.7, maxWidth: isMobileLayout ? '100%' : '760px' }}>
                     {tr(
                       'This rental followed the standard vehicle rate with no package attached.',
                       'Cette location a suivi le tarif standard du véhicule sans forfait associé.'
@@ -1081,17 +1083,18 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               )}
             </div>
             <div style={{
-              minWidth: '160px',
-              padding: '14px 16px',
+              minWidth: isMobileLayout ? '100%' : '160px',
+              width: isMobileLayout ? '100%' : 'auto',
+              padding: isMobileLayout ? '16px 18px' : '14px 16px',
               borderRadius: '14px',
               backgroundColor: effectiveSavingsAmount > 0 ? '#ffffff' : '#f8fafc',
               border: `1px solid ${effectiveSavingsAmount > 0 ? '#86efac' : '#e2e8f0'}`,
-              textAlign: 'center'
+              textAlign: isMobileLayout ? 'left' : 'center'
             }}>
               <div style={{ fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.55px', color: effectiveSavingsAmount > 0 ? '#15803d' : '#64748b', marginBottom: '8px' }}>
                 {savingsLabel}
               </div>
-              <div style={{ fontSize: '22px', fontWeight: 700, color: effectiveSavingsAmount > 0 ? '#15803d' : '#0f172a', lineHeight: 1.15 }}>
+              <div style={{ fontSize: isMobileLayout ? '20px' : '22px', fontWeight: 700, color: effectiveSavingsAmount > 0 ? '#15803d' : '#0f172a', lineHeight: 1.15 }}>
                 {effectiveSavingsAmount > 0 ? `${formatCurrency(effectiveSavingsAmount)} MAD` : '0 MAD'}
               </div>
               <div style={{ fontSize: '13px', color: '#475569', marginTop: '8px', lineHeight: 1.45 }}>
@@ -3044,10 +3047,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       }}>
         {/* Payment Status Banner - FIXED: Calculate from actual numbers, not rental.payment_status */}
         {(() => {
-          const depositPaid = correctedPaidAmount;
-          const balanceDue = Math.max(0, displayedTotalAmount - depositPaid);
-          const isActuallyPaid = displayedTotalAmount > 0 && depositPaid >= displayedTotalAmount;
-          const isPartial = depositPaid > 0 && depositPaid < displayedTotalAmount;
+          const depositPaid = displayedCustomerPaidAmount;
+          const balanceDue = remainingBalanceAfterDepositSeizure;
+          const isActuallyPaid = displayedTotalAmount > 0 && balanceDue <= 0;
+          const isPartial = depositPaid > 0 && balanceDue > 0;
 
           if (impoundIsEstimate) {
             return (

@@ -1,6 +1,7 @@
 import VehicleService from './VehicleService';
 import RentalService from './RentalService';
 import MaintenanceService from './MaintenanceService';
+import { deriveEffectiveRentalStatus } from '../utils/rentalLifecycle';
 
 const formatVehicleName = (vehicle = {}) =>
   vehicle?.model || vehicle?.name || 'Vehicle';
@@ -32,7 +33,6 @@ class DashboardWorkspaceService {
     const [
       vehicleStatsResult,
       allVehicles,
-      activeRentalsCount,
       maintenanceRows,
       totalRevenue,
       recentBookings,
@@ -40,7 +40,6 @@ class DashboardWorkspaceService {
     ] = await Promise.all([
       VehicleService.getVehicleStats(),
       VehicleService.getAllVehicles(),
-      RentalService.getActiveRentalsCount(),
       MaintenanceService.getAllMaintenanceRecords(),
       RentalService.getTotalRevenue(),
       RentalService.getRecentBookings(5),
@@ -49,6 +48,10 @@ class DashboardWorkspaceService {
 
     const vehicles = Array.isArray(allVehicles) ? allVehicles : [];
     const maintenanceRecords = Array.isArray(maintenanceRows) ? maintenanceRows : [];
+    const detailedRentals = Array.isArray(allRentalsDetailed) ? allRentalsDetailed : [];
+    const activeRentalsCount = detailedRentals.filter((rental) =>
+      String(deriveEffectiveRentalStatus(rental) || rental?.rental_status || rental?.status || '').toLowerCase() === 'active'
+    ).length;
     const openMaintenanceRows = maintenanceRecords.filter((row) =>
       ['scheduled', 'in_progress', 'pending'].includes(String(row?.status || '').toLowerCase())
     );
@@ -94,7 +97,7 @@ class DashboardWorkspaceService {
           .reduce((sum, row) => sum + Number(row?.cost || 0), 0),
       },
       recentBookings: Array.isArray(recentBookings) ? recentBookings : [],
-      upcomingRentals: mapUpcomingRentals(allRentalsDetailed),
+      upcomingRentals: mapUpcomingRentals(detailedRentals),
     };
   }
 

@@ -573,6 +573,44 @@ const getPackageRentalDurationUnits = (rental = {}) => {
   return null;
 };
 
+const getAmountDueResolutionMeta = (rental = {}) => {
+  const rawReason =
+    typeof rental?.amount_due_override_reason === 'string'
+      ? rental.amount_due_override_reason.trim()
+      : '';
+  if (!rawReason || !rawReason.startsWith('{')) return null;
+
+  try {
+    const parsed = JSON.parse(rawReason);
+    const paymentReceivedNow = Math.max(0, Number(parsed?.paymentReceivedNow || 0) || 0);
+    const companyDiscount = Math.max(0, Number(parsed?.companyDiscount || 0) || 0);
+    const previousAmount = Math.max(0, Number(rental?.amount_due_override_previous_amount || 0) || 0);
+    const newAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
+    const note = String(parsed?.note || '').trim();
+    const customerFacingNote = String(parsed?.customerFacingNote || '').trim();
+    const expectedNewAmount = Math.max(0, previousAmount - paymentReceivedNow - companyDiscount);
+
+    if (paymentReceivedNow <= 0 && companyDiscount <= 0 && !note && !customerFacingNote && previousAmount <= 0 && newAmount <= 0) {
+      return null;
+    }
+
+    if (previousAmount > 0 && Math.abs(expectedNewAmount - newAmount) > 1) {
+      return null;
+    }
+
+    return {
+      paymentReceivedNow,
+      companyDiscount,
+      previousAmount,
+      newAmount,
+      note,
+      customerFacingNote,
+    };
+  } catch {
+    return null;
+  }
+};
+
 const getRentalFinancialSnapshot = (rental) => {
   const quantity = getPackageRentalDurationUnits(rental) || 1;
   const baseTotal = rental?.use_package_pricing
@@ -585,8 +623,12 @@ const getRentalFinancialSnapshot = (rental) => {
   // must not re-run side calculations like fuel stripping or base-price fallbacks
   // unless the contract total has never been saved.
   const computedTotal = storedTotal > 0 ? storedTotal : baseTotal;
-  const grandTotal = pendingRequestedTotal > 0 ? pendingRequestedTotal : computedTotal;
-  const rawAmountPaid = Math.max(0, parseFloat(rental?.deposit_amount) || 0);
+  const amountDueResolutionMeta = getAmountDueResolutionMeta(rental);
+  const companyDiscount = Math.max(0, Number(amountDueResolutionMeta?.companyDiscount || 0) || 0);
+  const paymentReceivedNow = Math.max(0, Number(amountDueResolutionMeta?.paymentReceivedNow || 0) || 0);
+  const grossTotal = pendingRequestedTotal > 0 ? pendingRequestedTotal : computedTotal;
+  const grandTotal = Math.max(0, grossTotal - companyDiscount);
+  const rawAmountPaid = Math.max(0, (parseFloat(rental?.deposit_amount) || 0) + paymentReceivedNow);
   const storedRemainingAmount = rental?.remaining_amount;
   const cappedPaidAmount = grandTotal > 0 ? Math.min(rawAmountPaid, grandTotal) : rawAmountPaid;
   const balanceDue = Math.max(
@@ -624,6 +666,7 @@ const getRentalFinancialSnapshot = (rental) => {
   }
 
   return {
+    grossTotal,
     grandTotal,
     balanceDue,
     amountPaid,
@@ -1296,6 +1339,37 @@ const Rentals = () => {
     viewMode: 'customer'
   });
 
+  const buildRentalsReturnSnapshot = useCallback(() => ({
+    workspaceTab,
+    currentPage,
+    itemsPerPage,
+    statusFilter,
+    paymentStatusFilter,
+    searchTerm,
+    availabilityQuickFilter,
+    dateFocusFilter,
+    dateFocusAnchor,
+    customDateRange: customDateRange
+      ? {
+          start: customDateRange.start ? new Date(customDateRange.start).toISOString() : null,
+          end: customDateRange.end ? new Date(customDateRange.end).toISOString() : null,
+        }
+      : null,
+    viewMode,
+  }), [
+    availabilityQuickFilter,
+    currentPage,
+    customDateRange,
+    dateFocusAnchor,
+    dateFocusFilter,
+    itemsPerPage,
+    paymentStatusFilter,
+    searchTerm,
+    statusFilter,
+    viewMode,
+    workspaceTab,
+  ]);
+
   const applyRentalSummarySnapshot = useCallback((snapshot) => {
     if (!snapshot) return;
     setRentals((snapshot.rentals || []).map(normalizeRentalLifecycle));
@@ -1387,6 +1461,8 @@ const Rentals = () => {
             total_amount,
             deposit_amount,
             remaining_amount,
+            amount_due_override_reason,
+            amount_due_override_previous_amount,
             fuel_charge,
             end_fuel_level,
             unit_price,
@@ -1991,6 +2067,55 @@ const Rentals = () => {
   }, [location.search]);
 
   useEffect(() => {
+    const snapshot = location.state?.restoreRentalsView;
+    if (!snapshot) return;
+
+    const nextWorkspaceTab = String(snapshot.workspaceTab || getStoredRentalsWorkspace() || 'today');
+    const nextCurrentPage = Number(snapshot.currentPage) || 1;
+    const nextItemsPerPage = Number(snapshot.itemsPerPage) || 10;
+    const nextStatusFilter = String(snapshot.statusFilter || 'all');
+    const nextPaymentStatusFilter = String(snapshot.paymentStatusFilter || 'all');
+    const nextSearchTerm = String(snapshot.searchTerm || '');
+    const nextAvailabilityQuickFilter = String(snapshot.availabilityQuickFilter || 'all');
+    const nextDateFocusFilter = String(
+      snapshot.dateFocusFilter || getDefaultDateFocusForWorkspace(nextWorkspaceTab)
+    );
+    const nextDateFocusAnchor = String(snapshot.dateFocusAnchor || toDateInputValue(new Date()));
+    const nextCustomDateRange =
+      snapshot.customDateRange?.start || snapshot.customDateRange?.end
+        ? {
+            start: snapshot.customDateRange?.start ? new Date(snapshot.customDateRange.start) : null,
+            end: snapshot.customDateRange?.end ? new Date(snapshot.customDateRange.end) : null,
+          }
+        : null;
+    const nextViewMode = ['grid', 'list', 'table'].includes(String(snapshot.viewMode || ''))
+      ? String(snapshot.viewMode)
+      : 'grid';
+
+    userSelectedWorkspaceRef.current = true;
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(RENTALS_WORKSPACE_PREF_KEY, nextWorkspaceTab);
+    }
+
+    setWorkspaceTab(nextWorkspaceTab);
+    setCurrentPage(nextCurrentPage);
+    setItemsPerPage(nextItemsPerPage);
+    setStatusFilter(nextStatusFilter);
+    setPaymentStatusFilter(nextPaymentStatusFilter);
+    setSearchTerm(nextSearchTerm);
+    setAvailabilityQuickFilter(nextAvailabilityQuickFilter);
+    setDateFocusFilter(nextDateFocusFilter);
+    setDateFocusAnchor(nextDateFocusAnchor);
+    setCustomDateRange(nextCustomDateRange);
+    setViewMode(nextViewMode);
+
+    navigate(`${location.pathname}${location.search}`, {
+      replace: true,
+      state: null,
+    });
+  }, [location.pathname, location.search, location.state, navigate]);
+
+  useEffect(() => {
     const loadRentals = async () => {
       if (!hasLoadedOnce) {
         setLoading(true);
@@ -2356,9 +2481,18 @@ const Rentals = () => {
     }
   };
 
-  const handleViewRental = (rental) => {
-    navigate(`/admin/rentals/${rental.id}`);
-  };
+  const handleViewRental = useCallback((rental) => {
+    navigate(`/admin/rentals/${rental.id}`, {
+      state: {
+        rentalsReturnContext: buildRentalsReturnSnapshot(),
+      },
+    });
+  }, [buildRentalsReturnSnapshot, navigate]);
+
+  const handleOpenRentalFromAction = useCallback((event, rental) => {
+    event.stopPropagation();
+    handleViewRental(rental);
+  }, [handleViewRental]);
 
   const loadRentalDetailsDrawerContext = async (rental) => {
     if (!rental?.id) {
@@ -4157,10 +4291,7 @@ const Rentals = () => {
 )}
 {effectiveRentalStatus === 'scheduled' && !rental.pending_total_request && !canStartFromList(rental) && (
   <button
-    onClick={(e) => {
-      e.stopPropagation();
-      navigate(`/admin/rentals/${rental.id}`);
-    }}
+    onClick={(e) => handleOpenRentalFromAction(e, rental)}
     className="text-gray-400 cursor-not-allowed opacity-50"
     title={`Complete requirements: ${[
       getRentalFinancialSnapshot(rental).status !== 'PAID' ? 'Payment' : '',
@@ -4177,10 +4308,7 @@ const Rentals = () => {
                               
                               {effectiveRentalStatus === 'active' && (
                     <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  navigate(`/admin/rentals/${rental.id}`);
-                                }}
+                                onClick={(e) => handleOpenRentalFromAction(e, rental)}
                                 className="px-3 py-1.5 text-xs font-medium text-orange-600 hover:text-white hover:bg-orange-600 border border-orange-600 rounded-md transition-colors"
                                 title="Go to rental details to close"
                               >
@@ -4268,6 +4396,17 @@ const Rentals = () => {
                   const rentalAttention = getRentalAttentionState(rental);
                   const showLateArrivalRecovery = shouldShowLateArrivalRecovery(rental, effectiveRentalStatus);
                   const isCompactMobileCard = isMobileViewport && viewMode === 'grid';
+                  const hasSupplementalHeaderBadge =
+                    Boolean(rental?.is_impounded && effectiveRentalStatus !== 'impounded') ||
+                    Boolean(isNoShowCancellation(rental)) ||
+                    Boolean(rentalAttention) ||
+                    Boolean(rental.rental_status === 'completed' && rental.damage_deposit > 0 && !rental.deposit_returned_at);
+                  const stackCompactHeader =
+                    isCompactMobileCard &&
+                    (
+                      effectiveRentalStatus === 'no_show_review' ||
+                      hasSupplementalHeaderBadge
+                    );
                   const paymentSnapshot = getRentalFinancialSnapshot(rental);
                   const paymentLabel = {
                     PAID: tr('PAID', 'PAYÉE'),
@@ -4301,7 +4440,9 @@ const Rentals = () => {
                                   : 'border-amber-200 shadow-[0_18px_45px_rgba(245,158,11,0.10)] hover:border-amber-300 hover:shadow-[0_20px_50px_rgba(245,158,11,0.14)]'
                         }`}>
                         {/* Compact Header */}
-                        <div className={`mb-${isCompactMobileCard ? '2' : '2.5'} flex items-start justify-between gap-2 border-b pb-${isCompactMobileCard ? '2' : '2.5'} ${
+                        <div className={`mb-${isCompactMobileCard ? '2' : '2.5'} flex gap-2 border-b pb-${isCompactMobileCard ? '2' : '2.5'} ${
+                          stackCompactHeader ? 'flex-col items-start' : 'items-start justify-between'
+                        } ${
                           effectiveRentalStatus === 'active' ? 'border-emerald-100' :
                           effectiveRentalStatus === 'impounded' ? 'border-amber-100' :
                           effectiveRentalStatus === 'scheduled' ? 'border-blue-100' :
@@ -4316,12 +4457,18 @@ const Rentals = () => {
                               e.stopPropagation();
                               handleViewRental(rental);
                             }}
-                            className={`min-w-0 flex-1 text-left font-mono font-bold text-violet-600 transition-colors hover:text-violet-800 ${isCompactMobileCard ? 'text-[11px] leading-tight' : 'text-xs break-all'}`}
+                            className={`min-w-0 text-left font-mono font-bold text-violet-600 transition-colors hover:text-violet-800 ${
+                              stackCompactHeader
+                                ? 'w-full text-[11px] leading-tight break-all'
+                                : isCompactMobileCard
+                                  ? 'flex-1 text-[11px] leading-tight'
+                                  : 'flex-1 text-xs break-all'
+                            }`}
                             title={formatRentalId(rental)}
                           >
                             {formatRentalId(rental)}
                           </button>
-                          <div className="ml-auto flex shrink-0 flex-col items-end gap-1">
+                          <div className={`${stackCompactHeader ? 'self-start items-start' : 'ml-auto items-end'} flex shrink-0 flex-col gap-1`}>
                             {getStatusBadge(effectiveRentalStatus)}
                             {rental?.is_impounded && effectiveRentalStatus !== 'impounded' && (
                               <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-800">
@@ -4562,7 +4709,7 @@ const Rentals = () => {
       if (canStartFromList(rental)) {
         handleStartRentalFromList(rental);
       } else {
-        navigate(`/admin/rentals/${rental.id}`);
+        handleViewRental(rental);
       }
     }}
     className={`px-3 py-1.5 text-xs font-medium border rounded-md transition-colors ${
@@ -4620,10 +4767,7 @@ const Rentals = () => {
                           
                           {effectiveRentalStatus === 'active' && (
                     <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  navigate(`/admin/rentals/${rental.id}`);
-                                }}
+                                onClick={(e) => handleOpenRentalFromAction(e, rental)}
                                 className="px-3 py-1.5 text-xs font-medium text-orange-600 hover:text-white hover:bg-orange-600 border border-orange-600 rounded-md transition-colors"
                                 title={tr('Go to rental details to close', 'Aller aux détails de la location pour clôturer')}
                               >
@@ -4632,10 +4776,7 @@ const Rentals = () => {
                   )}
 
                           <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              navigate(`/admin/rentals/${rental.id}`);
-                            }}
+                            onClick={(e) => handleOpenRentalFromAction(e, rental)}
                             className="px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50 border border-violet-200 rounded-lg transition-colors"
                             title={tr('Open quick actions and rental details', 'Ouvrir les actions rapides et les détails')}
                           >

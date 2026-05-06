@@ -10157,7 +10157,13 @@ const SimplifiedRentalWizard = ({
           </button>
         )}
 
-        <div className="rounded-[22px] border border-violet-200 bg-white/95 shadow-[0_12px_28px_rgba(76,29,149,0.12)] backdrop-blur">
+        <div
+          className={`overflow-hidden rounded-[22px] border bg-white/95 backdrop-blur transition-all duration-200 ease-out ${
+            effectiveLightRentalType && lightExpandedSection === 'setup'
+              ? 'border-violet-300 ring-1 ring-violet-200 shadow-[0_18px_40px_rgba(76,29,149,0.14)]'
+              : 'border-slate-200 shadow-sm'
+          }`}
+        >
           {!effectiveLightRentalType ? (
             <div className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left">
               <div className="min-w-0 flex-1">
@@ -10201,7 +10207,11 @@ const SimplifiedRentalWizard = ({
                         {tr('Change', 'Modifier')}
                         {lightHasDurationSelection && <CheckCircle className="h-3.5 w-3.5" />}
                       </span>
-                      <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                      <span className={`inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+                        lightExpandedSection === 'setup'
+                          ? 'bg-violet-100 text-violet-700'
+                          : 'bg-slate-100 text-slate-500'
+                      }`}>
                         {lightExpandedSection === 'setup' ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                       </span>
                     </span>
@@ -10305,7 +10315,14 @@ const SimplifiedRentalWizard = ({
         </div>
 
         {lightHasDurationSelection && (
-        <div ref={vehicleStepRef} className="rounded-[22px] border border-violet-200 bg-white/95 shadow-[0_12px_28px_rgba(76,29,149,0.12)] backdrop-blur">
+        <div
+          ref={vehicleStepRef}
+          className={`overflow-hidden rounded-[22px] border bg-white/95 backdrop-blur transition-all duration-200 ease-out ${
+            lightExpandedSection === 'vehicle'
+              ? 'border-violet-300 ring-1 ring-violet-200 shadow-[0_18px_40px_rgba(76,29,149,0.14)]'
+              : 'border-slate-200 shadow-sm'
+          }`}
+        >
           <button
             type="button"
             onClick={() => setLightExpandedSection((prev) => (prev === 'vehicle' ? null : 'vehicle'))}
@@ -10317,7 +10334,11 @@ const SimplifiedRentalWizard = ({
               </p>
               <div className="mt-1 flex items-center justify-between gap-3">
                 <div className="min-w-0 flex items-center gap-3">
-                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 shadow-sm">
+                  <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl shadow-sm transition-colors ${
+                    lightExpandedSection === 'vehicle'
+                      ? 'bg-violet-50 text-violet-600'
+                      : 'bg-emerald-50 text-emerald-600'
+                  }`}>
                     <CarIcon className="h-5 w-5" />
                   </span>
                   <h3 className="truncate text-lg font-bold text-slate-900">{displayVehicleSummaryLabel}</h3>
@@ -10328,7 +10349,11 @@ const SimplifiedRentalWizard = ({
                       {tr('Change', 'Modifier')}
                       <CheckCircle className="h-3.5 w-3.5" />
                     </span>
-                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                    <span className={`inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+                      lightExpandedSection === 'vehicle'
+                        ? 'bg-violet-100 text-violet-700'
+                        : 'bg-slate-100 text-slate-500'
+                    }`}>
                       {lightExpandedSection === 'vehicle' ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                     </span>
                   </span>
@@ -10348,7 +10373,7 @@ const SimplifiedRentalWizard = ({
                 style={lightVehicleCollapseHeight !== null ? {
                   maxHeight: lightExpandedSection === 'vehicle' ? `${lightVehicleCollapseHeight}px` : '0px',
                 } : undefined}
-                className={`overflow-hidden border-t border-slate-100 bg-white/70 backdrop-blur-[2px] transition-[max-height,opacity] duration-300 ease-out [overflow-anchor:none] ${
+                className={`overflow-hidden rounded-b-[22px] border-t border-slate-100 bg-white/70 backdrop-blur-[2px] transition-[max-height,opacity] duration-300 ease-out [overflow-anchor:none] ${
                   lightExpandedSection === 'vehicle' ? 'opacity-100' : 'opacity-0'
                 }`}
               >
@@ -10508,7 +10533,7 @@ const SimplifiedRentalWizard = ({
                               {isSelected ? tr('Selected', 'Sélectionné') : isAvailable ? tr('Available', 'Disponible') : tr('Busy', 'Occupé')}
                             </span>
                           </div>
-                          <p className="mt-4 text-2xl font-bold text-slate-900">
+                          <div className="mt-4 text-2xl font-bold text-slate-900">
                             {mappedLightPrice !== undefined ? (
                               `${formatDynamicMad(mappedLightPrice)} MAD`
                             ) : (
@@ -10518,7 +10543,7 @@ const SimplifiedRentalWizard = ({
                                 duration={currentLightDurationUnits || 1}
                               />
                             )}
-                          </p>
+                          </div>
                           <p className="mt-1 text-xs font-medium text-slate-500">{selectedDurationLabel}</p>
                         </button>
                       );

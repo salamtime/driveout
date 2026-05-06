@@ -125,7 +125,7 @@ export const deriveEffectiveRentalStatus = (rental, timingSettings = DEFAULT_REN
     return rawStatus === 'cancelled' || rawStatus === 'expired' ? rawStatus : 'completed';
   }
 
-  if (rental?.started_at) {
+  if (rental?.started_at || rental?.actual_start_date) {
     return 'active';
   }
 
