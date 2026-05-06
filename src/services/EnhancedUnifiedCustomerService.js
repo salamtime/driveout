@@ -17,16 +17,40 @@ import {
 } from './OrganizationService.js';
 
 const CUSTOMER_TABLE = 'app_4c3a7a6153_customers';
+const CUSTOMER_ORG_COLUMN_CACHE_KEY = `${CUSTOMER_TABLE}:supportsOrganizationColumn`;
+let customerTableSupportsOrganizationColumn = (() => {
+  try {
+    if (typeof window === 'undefined') return true;
+    const cached = window.localStorage.getItem(CUSTOMER_ORG_COLUMN_CACHE_KEY);
+    if (cached === 'false') return false;
+  } catch (_error) {
+    // Ignore browser storage access errors.
+  }
+  return true;
+})();
 
 const isMissingOrganizationColumnError = (error) =>
   error?.code === '42703' && String(error?.message || '').includes('organization_id');
 
+const markCustomerTableWithoutOrganizationColumn = () => {
+  customerTableSupportsOrganizationColumn = false;
+  try {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(CUSTOMER_ORG_COLUMN_CACHE_KEY, 'false');
+  } catch (_error) {
+    // Ignore browser storage access errors.
+  }
+};
+
 const runCustomerReadQuery = async (buildQuery, organizationId) => {
-  const scopedResult = await (organizationId
-    ? applyOrganizationScope(buildQuery(), organizationId)
-    : buildQuery());
+  if (!organizationId || customerTableSupportsOrganizationColumn === false) {
+    return buildQuery();
+  }
+
+  const scopedResult = await applyOrganizationScope(buildQuery(), organizationId);
 
   if (organizationId && isMissingOrganizationColumnError(scopedResult.error)) {
+    markCustomerTableWithoutOrganizationColumn();
     console.warn('Customer table has no organization_id column; retrying customer read without organization filter.');
     return buildQuery();
   }
@@ -1218,13 +1242,14 @@ class EnhancedUnifiedCustomerService {
         .delete()
         .eq('id', customerId);
 
-      if (organizationId) {
+      if (organizationId && customerTableSupportsOrganizationColumn !== false) {
         query = query.eq('organization_id', organizationId);
       }
 
       let { error } = await query;
 
       if (organizationId && isMissingOrganizationColumnError(error)) {
+        markCustomerTableWithoutOrganizationColumn();
         console.warn('Customer table has no organization_id column; retrying delete without organization filter.');
         ({ error } = await supabase
           .from(CUSTOMER_TABLE)
@@ -1260,13 +1285,14 @@ class EnhancedUnifiedCustomerService {
         .delete()
         .in('id', customerIds);
 
-      if (organizationId) {
+      if (organizationId && customerTableSupportsOrganizationColumn !== false) {
         query = query.eq('organization_id', organizationId);
       }
 
       let { data, error } = await query;
 
       if (organizationId && isMissingOrganizationColumnError(error)) {
+        markCustomerTableWithoutOrganizationColumn();
         console.warn('Customer table has no organization_id column; retrying bulk delete without organization filter.');
         ({ data, error } = await supabase
           .from(CUSTOMER_TABLE)
@@ -1699,17 +1725,19 @@ class EnhancedUnifiedCustomerService {
 
   static async updateCustomerById(customerId, updates = {}, select = '*') {
     const organizationId = await requireCurrentOrganizationId();
-    const scopedPayload = {
-      ...applyOrganizationMatch({}, organizationId),
-      ...updates,
-    };
+    const scopedPayload = customerTableSupportsOrganizationColumn !== false
+      ? {
+          ...applyOrganizationMatch({}, organizationId),
+          ...updates,
+        }
+      : stripOrganizationField(updates);
 
     let query = supabase
       .from(CUSTOMER_TABLE)
       .update(scopedPayload)
       .eq('id', customerId);
 
-    if (organizationId) {
+    if (organizationId && customerTableSupportsOrganizationColumn !== false) {
       query = query.eq('organization_id', organizationId);
     }
 
@@ -1718,6 +1746,7 @@ class EnhancedUnifiedCustomerService {
     let { data, error } = await query;
 
     if (organizationId && isMissingOrganizationColumnError(error)) {
+      markCustomerTableWithoutOrganizationColumn();
       console.warn('Customer table has no organization_id column; retrying update without organization filter.');
       ({ data, error } = await supabase
         .from(CUSTOMER_TABLE)

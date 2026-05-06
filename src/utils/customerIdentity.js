@@ -100,6 +100,34 @@ export const pickMostCompleteCustomerProfile = (candidates = []) => {
   return best;
 };
 
+export const pickExactIdentityCustomerMatch = ({
+  incomingCustomer,
+  candidates,
+}) => {
+  const incoming = buildComparableCustomer(incomingCustomer);
+  const pool = Array.isArray(candidates) ? candidates : [];
+
+  const exactIdentityMatches = pool.filter((candidateRaw) => {
+    const candidate = buildComparableCustomer(candidateRaw);
+    if (!candidate.id) return false;
+
+    const hasLicenceMatch =
+      Boolean(incoming.licenceNumber) &&
+      Boolean(candidate.licenceNumber) &&
+      incoming.licenceNumber === candidate.licenceNumber;
+
+    const hasIdMatch =
+      Boolean(incoming.idNumber) &&
+      Boolean(candidate.idNumber) &&
+      incoming.idNumber === candidate.idNumber;
+
+    return hasLicenceMatch || hasIdMatch;
+  });
+
+  if (exactIdentityMatches.length === 0) return null;
+  return pickMostCompleteCustomerProfile(exactIdentityMatches);
+};
+
 export const mergeUniqueCustomersById = (...groups) => {
   const seen = new Set();
   const merged = [];

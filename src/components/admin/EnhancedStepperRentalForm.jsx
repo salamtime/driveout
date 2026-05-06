@@ -40,6 +40,7 @@ import {
   mergeUniqueCustomersById,
   normalizeCustomerIdentityFields,
   pickBestExistingCustomerMatch,
+  pickExactIdentityCustomerMatch,
   pickMostCompleteCustomerProfile,
 } from '../../utils/customerIdentity';
 
@@ -1053,7 +1054,12 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
         id_number: normalizedIdentity.idNumber || '',
       };
       const exactMatches = await enhancedUnifiedCustomerService.findMatchingCustomers(lookupCandidate);
-      const exactMatch = pickMostCompleteCustomerProfile(exactMatches);
+      const exactMatch =
+        pickExactIdentityCustomerMatch({
+          incomingCustomer: lookupCandidate,
+          candidates: exactMatches,
+        }) ||
+        pickMostCompleteCustomerProfile(exactMatches);
 
       if (exactMatch) return exactMatch;
 
@@ -2898,36 +2904,52 @@ const calculateFinancials = () => {
       }
 
       let finalCustomerId = submissionReadyFormData.customer_id;
-      const findExistingCustomerForSubmission = async () => {
-        const normalizedIdentity = normalizeCustomerIdentityFields({
-          licenceNumber: submissionReadyFormData.customer_licence_number,
-          idNumber: submissionReadyFormData.customer_id_number,
-        });
-        const licenceNumber = normalizedIdentity.licenceNumber?.trim();
-        const idNumber = normalizedIdentity.idNumber?.trim();
-        const phoneNumber = submissionReadyFormData.customer_phone?.trim();
-        const emailAddress = emailToSubmit?.trim();
-        const customerName = submissionReadyFormData.customer_name?.trim();
-        const customerDob = submissionReadyFormData.customer_dob?.trim();
+      const normalizedSubmissionIdentity = normalizeCustomerIdentityFields({
+        licenceNumber: submissionReadyFormData.customer_licence_number,
+        idNumber: submissionReadyFormData.customer_id_number,
+      });
+      const submissionLicenceNumber = normalizedSubmissionIdentity.licenceNumber?.trim();
+      const submissionIdNumber = normalizedSubmissionIdentity.idNumber?.trim();
+      const submissionPhoneNumber = submissionReadyFormData.customer_phone?.trim();
+      const submissionEmailAddress = emailToSubmit?.trim();
+      const submissionCustomerName = submissionReadyFormData.customer_name?.trim();
+      const submissionCustomerDob = submissionReadyFormData.customer_dob?.trim();
 
+      const findExistingCustomerCandidatesForSubmission = async () => {
         const exactMatches = await enhancedUnifiedCustomerService.findMatchingCustomers({
-          full_name: customerName,
-          phone: phoneNumber,
-          email: emailAddress,
-          licence_number: licenceNumber,
-          id_number: idNumber,
+          full_name: submissionCustomerName,
+          phone: submissionPhoneNumber,
+          email: submissionEmailAddress,
+          licence_number: submissionLicenceNumber,
+          id_number: submissionIdNumber,
         });
-        const exactMatch = pickMostCompleteCustomerProfile(exactMatches);
+        return exactMatches || [];
+      };
+
+      const findExistingCustomerForSubmission = async () => {
+        const exactMatches = await findExistingCustomerCandidatesForSubmission();
+        const exactMatch =
+          pickExactIdentityCustomerMatch({
+            incomingCustomer: {
+              full_name: submissionCustomerName,
+              phone: submissionPhoneNumber,
+              email: submissionEmailAddress,
+              licence_number: submissionLicenceNumber,
+              id_number: submissionIdNumber,
+            },
+            candidates: exactMatches,
+          }) ||
+          pickMostCompleteCustomerProfile(exactMatches);
         if (exactMatch?.id) return exactMatch;
 
-        if (customerName) {
+        if (submissionCustomerName) {
           const bestMatch = pickBestExistingCustomerMatch({
             incomingCustomer: {
-              full_name: customerName,
-              phone: phoneNumber,
-              date_of_birth: customerDob,
-              licence_number: licenceNumber,
-              id_number: idNumber,
+              full_name: submissionCustomerName,
+              phone: submissionPhoneNumber,
+              date_of_birth: submissionCustomerDob,
+              licence_number: submissionLicenceNumber,
+              id_number: submissionIdNumber,
               nationality: submissionReadyFormData.customer_nationality,
               email: emailToSubmit,
             },
@@ -2940,10 +2962,43 @@ const calculateFinancials = () => {
       };
 
       const findExistingCustomerForVerificationUpdate = async (currentCustomerId) => {
-        const matchedCustomer = await findExistingCustomerForSubmission();
-        if (!matchedCustomer?.id) return null;
-        if (String(matchedCustomer.id) === String(currentCustomerId || '')) return null;
-        return matchedCustomer;
+        const currentId = String(currentCustomerId || '').trim();
+        const exactMatches = await findExistingCustomerCandidatesForSubmission();
+        const alternateMatches = (exactMatches || []).filter(
+          (customer) => String(customer?.id || '').trim() !== currentId
+        );
+
+        const alternateExactMatch =
+          pickExactIdentityCustomerMatch({
+            incomingCustomer: {
+              full_name: submissionCustomerName,
+              phone: submissionPhoneNumber,
+              email: emailToSubmit,
+              licence_number: submissionLicenceNumber,
+              id_number: submissionIdNumber,
+            },
+            candidates: alternateMatches,
+          }) ||
+          pickMostCompleteCustomerProfile(alternateMatches);
+        if (alternateExactMatch?.id) return alternateExactMatch;
+
+        const alternateBestMatch = submissionCustomerName
+          ? pickBestExistingCustomerMatch({
+              incomingCustomer: {
+                full_name: submissionCustomerName,
+                phone: submissionPhoneNumber,
+                date_of_birth: submissionCustomerDob,
+                licence_number: submissionLicenceNumber,
+                id_number: submissionIdNumber,
+                nationality: submissionReadyFormData.customer_nationality,
+                email: emailToSubmit,
+              },
+              candidates: alternateMatches,
+            })
+          : null;
+
+        if (alternateBestMatch?.id) return alternateBestMatch;
+        return null;
       };
 
       const normalizeDocumentImageUrl = (value) => {
@@ -3198,21 +3253,34 @@ const calculateFinancials = () => {
           updated_at: new Date().toISOString(),
         };
 
+        const isDuplicateCustomerIdentityError = (error) =>
+          error?.code === '23505' ||
+          String(error?.message || '').includes('ux_customers_person_key');
+
+        const upsertVerificationCustomerIntoResolvedProfile = async (targetCustomerId) => {
+          const sanitizedPayload = Object.fromEntries(
+            Object.entries(verificationCustomerPayload).filter(([, value]) => value !== undefined)
+          );
+          return updateCustomerById(targetCustomerId, sanitizedPayload, '*');
+        };
+
         const { error: verificationCustomerError } = await supabase
           .from('app_4c3a7a6153_customers')
           .update(verificationCustomerPayload)
           .eq('id', finalCustomerId);
 
         if (verificationCustomerError) {
-          if (verificationCustomerError.code === '23505') {
+          if (isDuplicateCustomerIdentityError(verificationCustomerError)) {
             const conflictingRetryCustomer = await findExistingCustomerForVerificationUpdate(finalCustomerId);
             if (conflictingRetryCustomer?.id) {
               finalCustomerId = conflictingRetryCustomer.id;
 
-              const { error: retryVerificationCustomerError } = await supabase
-                .from('app_4c3a7a6153_customers')
-                .update(verificationCustomerPayload)
-                .eq('id', finalCustomerId);
+              let retryVerificationCustomerError = null;
+              try {
+                await upsertVerificationCustomerIntoResolvedProfile(finalCustomerId);
+              } catch (retryError) {
+                retryVerificationCustomerError = retryError;
+              }
 
               if (!retryVerificationCustomerError) {
                 const verificationRentalPayload = {
@@ -8232,7 +8300,18 @@ const SimplifiedRentalWizard = ({
         licence_number: licenceNumber,
         id_number: idNumber,
       });
-      persistedCustomer = pickMostCompleteCustomerProfile(exactMatches) || null;
+      persistedCustomer =
+        pickExactIdentityCustomerMatch({
+          incomingCustomer: {
+            full_name: customerName,
+            phone: phoneNumber,
+            licence_number: licenceNumber,
+            id_number: idNumber,
+          },
+          candidates: exactMatches,
+        }) ||
+        pickMostCompleteCustomerProfile(exactMatches) ||
+        null;
 
       if (persistedCustomer?.id) {
         resolvedCustomerId = String(persistedCustomer.id).trim();
@@ -10596,7 +10675,7 @@ const SimplifiedRentalWizard = ({
         )}
       </div>
 
-      <div className="sticky bottom-0 z-30 mt-6 rounded-[26px] border border-violet-200 bg-white/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
+      <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
         <div className="mb-3 flex items-center justify-between gap-3">
           {displayStickySummaryLabel ? (
             <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">
@@ -10731,10 +10810,10 @@ const SimplifiedRentalWizard = ({
   );
 
   const renderLightStepOne = () => (
-    <div className="overflow-x-hidden px-4 pb-8 pt-4 sm:px-6">
+    <div className="overflow-x-hidden px-4 pb-44 pt-4 sm:px-6 sm:pb-8">
       <div className="space-y-4">
         {!lightCustomerReady && !lightCustomerEditOpen ? (
-          <div className="flex min-h-[calc(100vh-17rem)] flex-col justify-between supports-[height:100dvh]:min-h-[calc(100dvh-17rem)]">
+          <div className="flex min-h-[calc(100vh-17rem)] flex-col supports-[height:100dvh]:min-h-[calc(100dvh-17rem)]">
             <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
@@ -10752,7 +10831,7 @@ const SimplifiedRentalWizard = ({
                 </p>
               </div>
             </div>
-            <div className="mt-4 rounded-[22px] border border-violet-100 bg-violet-50/45 p-3">
+            <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[22px] border border-violet-100 bg-violet-50/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:static sm:mt-4 sm:bg-violet-50/45 sm:shadow-none sm:backdrop-blur-0">
               <div className="space-y-2 sm:space-y-0 sm:flex sm:items-stretch sm:justify-end sm:gap-2">
                 <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-1 sm:justify-end">
                   <button
@@ -11004,7 +11083,7 @@ const SimplifiedRentalWizard = ({
               )}
             </div>
 
-            <div className="sticky bottom-0 z-30 mt-6 rounded-[26px] border border-violet-200 bg-white/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
+            <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
               <div className={`grid gap-2 sm:ml-auto sm:flex sm:w-full sm:max-w-[820px] sm:items-stretch sm:justify-end ${onCancel ? 'grid-cols-3' : 'grid-cols-2'}`}>
                 {onCancel && (
                   <button
@@ -11159,7 +11238,7 @@ const SimplifiedRentalWizard = ({
   );
 
   const renderLightStrictVerificationCaptureStep = () => (
-    <div className="overflow-x-hidden px-4 pb-8 pt-4 sm:px-6">
+    <div className="overflow-x-hidden px-4 pb-44 pt-4 sm:px-6 sm:pb-8">
       <div className="space-y-4">
         <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -11266,7 +11345,7 @@ const SimplifiedRentalWizard = ({
           </div>
         </div>
 
-        <div className="sticky bottom-0 z-30 mt-6 rounded-[26px] border border-violet-200 bg-white/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
+        <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
           <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex sm:w-full sm:max-w-[640px] sm:items-stretch sm:justify-end">
             <button
               type="button"
@@ -11488,7 +11567,7 @@ const SimplifiedRentalWizard = ({
           )}
         </div>
 
-        <div className="sticky bottom-4 z-30 mt-6 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:bottom-0">
+        <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6">
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
