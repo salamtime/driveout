@@ -1986,6 +1986,7 @@ export default function RentalDetails() {
   
   // 🔍 DEBUG: WhatsApp button click handler
   const [rental, setRental] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
   const [linkedCustomerProfile, setLinkedCustomerProfile] = useState(null);
   const [customerVerificationSummary, setCustomerVerificationSummary] = useState(null);
   const [customerVerificationEntityId, setCustomerVerificationEntityId] = useState(null);
@@ -2003,6 +2004,10 @@ export default function RentalDetails() {
   const [isReplacingVehicle, setIsReplacingVehicle] = useState(false);
   const [replacementPauseStartedAt, setReplacementPauseStartedAt] = useState(null);
   const [isMoreActionsOpen, setIsMoreActionsOpen] = useState(false);
+  const [showCustomerRiskDialog, setShowCustomerRiskDialog] = useState(false);
+  const [customerRiskMode, setCustomerRiskMode] = useState('warning');
+  const [customerRiskNote, setCustomerRiskNote] = useState('');
+  const [isSavingCustomerRisk, setIsSavingCustomerRisk] = useState(false);
   const [showCopyConfirmation, setShowCopyConfirmation] = useState(false);
   const moreActionsRef = useRef(null);
   const copyConfirmationTimeoutRef = useRef(null);
@@ -2027,6 +2032,132 @@ export default function RentalDetails() {
       toast.error(tr('Could not copy rental reference', 'Impossible de copier la référence de location'));
     }
   }, [rental?.id, rental?.rental_id, triggerCopyConfirmation]);
+
+  const handleOpenCustomerRiskDialog = useCallback(() => {
+    const scanMetadata = linkedCustomerProfile?.scan_metadata || {};
+    const nextMode = scanMetadata?.is_banned ? 'ban' : 'warning';
+    setCustomerRiskMode(nextMode);
+    setCustomerRiskNote(nextMode === 'ban'
+      ? String(scanMetadata?.ban_note || '').trim()
+      : String(scanMetadata?.admin_note || '').trim());
+    setShowCustomerRiskDialog(true);
+  }, [linkedCustomerProfile?.scan_metadata]);
+
+  const handleSaveCustomerRisk = useCallback(async () => {
+    const customerId = linkedCustomerProfile?.id || rental?.customer_id;
+    const trimmedNote = String(customerRiskNote || '').trim();
+
+    if (!customerId) {
+      toast.error(tr('Customer profile is not linked yet.', "Le profil client n'est pas encore lié."));
+      return;
+    }
+
+    if (!trimmedNote) {
+      toast.error(customerRiskMode === 'ban'
+        ? tr('Add a ban reason before saving.', 'Ajoutez une raison de bannissement avant d’enregistrer.')
+        : tr('Add a warning note before saving.', 'Ajoutez une note d’avertissement avant d’enregistrer.'));
+      return;
+    }
+
+    try {
+      setIsSavingCustomerRisk(true);
+
+      const { data: latestCustomer, error: latestCustomerError } = await supabase
+        .from('app_4c3a7a6153_customers')
+        .select('id, full_name, email, phone, address, nationality, licence_number, auth_user_id, scan_metadata')
+        .eq('id', customerId)
+        .maybeSingle();
+
+      if (latestCustomerError) throw latestCustomerError;
+
+      const existingScanMetadata = latestCustomer?.scan_metadata || linkedCustomerProfile?.scan_metadata || {};
+      const existingHistory = Array.isArray(existingScanMetadata.staff_notes_history)
+        ? existingScanMetadata.staff_notes_history
+        : [];
+      const actorName =
+        currentUser?.full_name ||
+        currentUser?.fullName ||
+        currentUser?.name ||
+        currentUser?.email ||
+        userProfile?.full_name ||
+        userProfile?.fullName ||
+        userProfile?.email ||
+        'Staff';
+      const createdAt = new Date().toISOString();
+      const historyEntry = {
+        id: `${customerRiskMode === 'ban' ? 'ban' : 'staff_note'}_${Date.now()}`,
+        note_text: trimmedNote,
+        is_alert: customerRiskMode === 'warning',
+        type: customerRiskMode === 'ban' ? 'ban' : 'warning',
+        source: 'rental_details',
+        rental_id: rental?.id || null,
+        rental_reference: rental?.rental_id || null,
+        created_at: createdAt,
+        created_by: currentUser?.id || userProfile?.id || null,
+        created_by_name: actorName,
+      };
+
+      const nextScanMetadata = {
+        ...existingScanMetadata,
+        ...(customerRiskMode === 'ban'
+          ? {
+              is_banned: true,
+              ban_note: trimmedNote,
+            }
+          : {
+              admin_note: trimmedNote,
+              show_admin_note_alert: true,
+            }),
+        staff_notes_history: [
+          historyEntry,
+          ...existingHistory,
+        ],
+      };
+
+      const { data: updatedCustomer, error: updateError } = await supabase
+        .from('app_4c3a7a6153_customers')
+        .update({
+          scan_metadata: nextScanMetadata,
+          updated_at: createdAt,
+        })
+        .eq('id', customerId)
+        .select('id, full_name, email, phone, address, nationality, licence_number, auth_user_id, scan_metadata')
+        .maybeSingle();
+
+      if (updateError) throw updateError;
+
+      setLinkedCustomerProfile(updatedCustomer || {
+        ...(latestCustomer || linkedCustomerProfile || { id: customerId }),
+        scan_metadata: nextScanMetadata,
+      });
+      setCustomerRiskNote('');
+      setShowCustomerRiskDialog(false);
+      toast.success(customerRiskMode === 'ban'
+        ? tr('Customer ban saved.', 'Bannissement client enregistré.')
+        : tr('Customer warning saved.', 'Avertissement client enregistré.'));
+    } catch (error) {
+      console.error('Failed to save customer risk from rental details:', error);
+      toast.error(error?.message || tr('Unable to save customer risk right now.', 'Impossible d’enregistrer le risque client maintenant.'));
+    } finally {
+      setIsSavingCustomerRisk(false);
+    }
+  }, [
+    currentUser?.email,
+    currentUser?.fullName,
+    currentUser?.full_name,
+    currentUser?.id,
+    currentUser?.name,
+    customerRiskMode,
+    customerRiskNote,
+    linkedCustomerProfile,
+    rental?.customer_id,
+    rental?.id,
+    rental?.rental_id,
+    userProfile?.email,
+    userProfile?.fullName,
+    userProfile?.full_name,
+    userProfile?.id,
+  ]);
 
   const handleShareRentalLink = useCallback(async () => {
     const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
@@ -2160,7 +2291,6 @@ export default function RentalDetails() {
   const [error, setError] = useState(null);
   const [timeRemaining, setTimeRemaining] = useState('');
   const [elapsedTime, setElapsedTime] = useState('');
-  const [currentUser, setCurrentUser] = useState(null);
   const [actionLoading, setActionLoading] = useState({});
   const [rentalTimingSettings, setRentalTimingSettings] = useState(DEFAULT_RENTAL_TIMING_SETTINGS);
   const [autoSendContractEmailAfterCreation, setAutoSendContractEmailAfterCreation] = useState(false);
@@ -3122,9 +3252,9 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [rentalHistory, setRentalHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [lightRentalInfoOpenSections, setLightRentalInfoOpenSections] = useState({
-    people: true,
+    people: false,
     vehicle: false,
-    schedule: true,
+    schedule: false,
     money: false,
     media: false,
     signature: false,
@@ -3367,7 +3497,7 @@ const [extraKmRate, setExtraKmRate] = useState(0);
 const [packageDetails, setPackageDetails] = useState(null);
   const [availableKmPackages, setAvailableKmPackages] = useState([]);
   const [mediaViewMode, setMediaViewMode] = useState('grid');
-  const [workspaceRentalDetailsDefaultView, setWorkspaceRentalDetailsDefaultView] = useState('standard');
+  const [workspaceRentalDetailsDefaultView, setWorkspaceRentalDetailsDefaultView] = useState('light');
   const [lightStartSummaryOpen, setLightStartSummaryOpen] = useState(false);
   const [lightActiveSummaryOpen, setLightActiveSummaryOpen] = useState(false);
   const [lightFinishSummaryOpen, setLightFinishSummaryOpen] = useState(false);
@@ -3380,10 +3510,11 @@ const [packageDetails, setPackageDetails] = useState(null);
           full_name: userProfile.full_name || userProfile.fullName || userProfile.email,
         }
       : null);
-  const rentalDetailsDefaultViewMode = canApproveRentalExtensions(resolvedViewerUser)
-    ? workspaceRentalDetailsDefaultView
+  const canToggleRentalDetailsView = canApproveRentalExtensions(resolvedViewerUser);
+  const rentalDetailsDefaultViewMode = 'light';
+  const resolvedRentalDetailsViewMode = canToggleRentalDetailsView
+    ? normalizeRentalDetailsViewMode(rentalDetailsViewQueryParam || rentalDetailsDefaultViewMode)
     : 'light';
-  const resolvedRentalDetailsViewMode = rentalDetailsViewQueryParam || rentalDetailsDefaultViewMode;
   const isLightRentalDetailsMode = resolvedRentalDetailsViewMode === 'light';
 
   const handleSwitchRentalDetailsView = useCallback((nextMode) => {
@@ -3443,7 +3574,7 @@ useEffect(() => {
       if (!cancelled) {
         setRentalTimingSettings(DEFAULT_RENTAL_TIMING_SETTINGS);
         setAutoSendContractEmailAfterCreation(false);
-        setWorkspaceRentalDetailsDefaultView('standard');
+        setWorkspaceRentalDetailsDefaultView('light');
       }
     }
   };
@@ -13918,6 +14049,33 @@ useEffect(() => {
       : customerVerificationMethod === 'manual_verification'
         ? tr('Verified manually', 'Vérifié manuellement')
         : null;
+  const customerRiskScanMetadata = linkedCustomerProfile?.scan_metadata || {};
+  const isCustomerBanned = Boolean(customerRiskScanMetadata?.is_banned);
+  const customerBanNote = String(customerRiskScanMetadata?.ban_note || '').trim();
+  const customerWarningNote = String(customerRiskScanMetadata?.admin_note || '').trim();
+  const hasCustomerWarningAlert = Boolean(customerRiskScanMetadata?.show_admin_note_alert && customerWarningNote);
+  const hasCustomerRiskAlert = isCustomerBanned || hasCustomerWarningAlert;
+  const customerRiskTitle = isCustomerBanned
+    ? tr('Customer banned', 'Client banni')
+    : tr('Staff warning', 'Avertissement équipe');
+  const customerRiskNoteText = isCustomerBanned
+    ? (customerBanNote || tr('This customer is marked as banned.', 'Ce client est marqué comme banni.'))
+    : customerWarningNote;
+  const customerRiskToneClasses = isCustomerBanned
+    ? {
+        wrapper: 'border-rose-200 bg-rose-50/90 text-rose-900',
+        icon: 'border-rose-200 bg-white text-rose-600',
+        badge: 'border-rose-200 bg-white text-rose-700',
+        note: 'text-rose-800',
+        button: 'border-rose-200 bg-white text-rose-700 hover:bg-rose-100',
+      }
+    : {
+        wrapper: 'border-amber-200 bg-amber-50/90 text-amber-900',
+        icon: 'border-amber-200 bg-white text-amber-600',
+        badge: 'border-amber-200 bg-white text-amber-700',
+        note: 'text-amber-800',
+        button: 'border-amber-200 bg-white text-amber-700 hover:bg-amber-100',
+      };
   const rawContractSignaturePresent = Boolean(rental?.contract_signed || rental?.signature_url);
   const replacementPauseStartedAtMs = effectiveReplacementPauseStartedAt
     ? new Date(effectiveReplacementPauseStartedAt).getTime()
@@ -14209,13 +14367,14 @@ useEffect(() => {
 
   useEffect(() => {
     setLightRentalInfoOpenSections({
-      people: true,
+      people: false,
       vehicle: false,
-      schedule: true,
-      money: Boolean(isCompleted),
+      schedule: false,
+      money: false,
+      media: false,
       signature: false,
     });
-  }, [rental?.id, isCompleted]);
+  }, [rental?.id]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -15385,6 +15544,9 @@ useEffect(() => {
             `${secondDriversList.length} conducteur${secondDriversList.length > 1 ? 's supplémentaires' : ' supplémentaire'}`
           )
         : null,
+      hasCustomerRiskAlert
+        ? customerRiskTitle
+        : null,
     ].filter(Boolean).join(' • '),
     vehicle: [
       rental?.vehicle?.name || rental?.vehicle?.model || tr('Vehicle linked', 'Véhicule lié'),
@@ -15468,6 +15630,43 @@ useEffect(() => {
     );
   };
 
+  const renderCustomerRiskSnapshot = () => {
+    if (!hasCustomerRiskAlert) return null;
+
+    return (
+      <div className={`mt-4 rounded-2xl border p-3 shadow-[0_12px_30px_rgba(15,23,42,0.04)] ${customerRiskToneClasses.wrapper}`}>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border ${customerRiskToneClasses.icon}`}>
+              <AlertTriangle className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-bold">{customerRiskTitle}</p>
+                <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.14em] ${customerRiskToneClasses.badge}`}>
+                  {isCustomerBanned ? tr('Ban', 'Ban') : tr('Warning', 'Alerte')}
+                </span>
+              </div>
+              {customerRiskNoteText ? (
+                <p className={`mt-1 text-sm leading-5 ${customerRiskToneClasses.note}`}>
+                  {customerRiskNoteText}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          <Button
+            type="button"
+            onClick={handleOpenCustomerRiskDialog}
+            size="sm"
+            className={`rounded-xl px-3 text-xs font-semibold ${customerRiskToneClasses.button}`}
+          >
+            {tr('Edit', 'Modifier')}
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
   const renderAdvancedPeopleSectionBody = () => (
     <>
       {(createdByDisplay || startedByDisplay || signedByDisplay) && (
@@ -15539,6 +15738,15 @@ useEffect(() => {
               <User className="mr-2 h-4 w-4" />
               {tr('View Details', 'Voir les détails')}
             </Button>
+            <Button
+              type="button"
+              onClick={handleOpenCustomerRiskDialog}
+              size="sm"
+              className="rounded-xl border border-rose-100 bg-rose-50 px-3 text-rose-700 hover:bg-rose-100"
+            >
+              <AlertTriangle className="mr-2 h-4 w-4" />
+              {tr('Risk', 'Risque')}
+            </Button>
           </div>
         </div>
         <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm text-slate-700 sm:grid-cols-2 sm:text-base">
@@ -15547,6 +15755,8 @@ useEffect(() => {
           <p><strong>{tr('Phone:', 'Téléphone :')}</strong> {syncedCustomerDetails.phone || tr('N/A', 'N/D')}</p>
           <p><strong>{tr('ID/License:', 'ID/Permis :')}</strong> {syncedCustomerDetails.licenceNumber || tr('N/A', 'N/D')}</p>
         </div>
+
+        {renderCustomerRiskSnapshot()}
 
         {!isEditingPrice && availableTelegramResendActions.length > 0 && (
           <div className="mt-4">
@@ -17734,24 +17944,26 @@ useEffect(() => {
               </div>
 
               <div className="flex items-center justify-between gap-2 pointer-events-auto sm:justify-end">
-                <button
-                  type="button"
-                  onClick={() => handleSwitchRentalDetailsView(isLightRentalDetailsMode ? 'standard' : 'light')}
-                  className={`touch-manipulation flex items-center rounded-full px-4 py-2 text-sm font-medium transition ${
-                    isLightRentalDetailsMode
-                      ? 'border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100'
-                      : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                  }`}
-                  title={
-                    isLightRentalDetailsMode
-                      ? tr('Open the full advanced rental details page', 'Ouvrir la page complète des détails de location')
-                      : tr('Switch to the light operational rental view', 'Basculer vers la vue légère opérationnelle')
-                  }
-                >
-                  {isLightRentalDetailsMode
-                    ? tr('Open advanced view', 'Ouvrir la vue avancée')
-                    : tr('Switch to light view', 'Passer à la vue light')}
-                </button>
+                {canToggleRentalDetailsView && (
+                  <button
+                    type="button"
+                    onClick={() => handleSwitchRentalDetailsView(isLightRentalDetailsMode ? 'standard' : 'light')}
+                    className={`touch-manipulation flex items-center rounded-full px-4 py-2 text-sm font-medium transition ${
+                      isLightRentalDetailsMode
+                        ? 'border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100'
+                        : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                    title={
+                      isLightRentalDetailsMode
+                        ? tr('Open the full advanced rental details page', 'Ouvrir la page complète des détails de location')
+                        : tr('Switch to the light operational rental view', 'Basculer vers la vue légère opérationnelle')
+                    }
+                  >
+                    {isLightRentalDetailsMode
+                      ? tr('Open advanced view', 'Ouvrir la vue avancée')
+                      : tr('Switch to light view', 'Passer à la vue light')}
+                  </button>
+                )}
 
                 <div className="flex items-center gap-1 rounded-2xl border border-violet-100 bg-gradient-to-r from-violet-50 to-white p-1 shadow-sm">
                   <button
@@ -20383,6 +20595,15 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     <User className="mr-2 h-4 w-4" />
                     {tr('View Details', 'Voir les détails')}
                   </Button>
+                  <Button
+                    type="button"
+                    onClick={handleOpenCustomerRiskDialog}
+                    size="sm"
+                    className="rounded-xl border border-rose-100 bg-rose-50 px-3 text-rose-700 hover:bg-rose-100"
+                  >
+                    <AlertTriangle className="mr-2 h-4 w-4" />
+                    {tr('Risk', 'Risque')}
+                  </Button>
                 </div>
               </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 mt-2 text-sm sm:text-base text-slate-700">
@@ -20391,6 +20612,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <p><strong>{tr('Phone:', 'Téléphone :')}</strong> {syncedCustomerDetails.phone || tr('N/A', 'N/D')}</p>
               <p><strong>{tr('ID/License:', 'ID/Permis :')}</strong> {syncedCustomerDetails.licenceNumber || tr('N/A', 'N/D')}</p>
             </div>
+            {renderCustomerRiskSnapshot()}
           </div>
           {hasSecondDriver && (
             <>
@@ -24976,6 +25198,87 @@ Breakdown:
         secondDrivers={customerDetailsDrawer.secondDrivers}
         viewMode={customerDetailsDrawer.viewMode}
       />
+
+      <Dialog open={showCustomerRiskDialog} onOpenChange={setShowCustomerRiskDialog}>
+        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-md overflow-hidden rounded-[28px] border border-slate-200 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.16)]">
+          <DialogHeader className="border-b border-slate-100 px-5 py-5 text-left">
+            <DialogTitle className="flex items-center gap-3 text-xl font-semibold text-slate-900">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-rose-100 bg-rose-50 text-rose-600">
+                <AlertTriangle className="h-5 w-5" />
+              </span>
+              {tr('Customer risk', 'Risque client')}
+            </DialogTitle>
+            <DialogDescription className="pt-1 text-sm text-slate-500">
+              {syncedCustomerDetails.fullName || rental?.customer_name || tr('Customer', 'Client')}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 px-5 py-5">
+            <div className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1">
+              {[
+                { key: 'warning', label: tr('Warning', 'Avertissement') },
+                { key: 'ban', label: tr('Ban', 'Bannir') },
+              ].map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => setCustomerRiskMode(option.key)}
+                  className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                    customerRiskMode === option.key
+                      ? option.key === 'ban'
+                        ? 'bg-rose-600 text-white shadow-sm'
+                        : 'bg-slate-950 text-white shadow-sm'
+                      : 'bg-transparent text-slate-600 hover:bg-white'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            <textarea
+              value={customerRiskNote}
+              onChange={(event) => setCustomerRiskNote(event.target.value)}
+              rows={5}
+              className="w-full resize-none rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
+              placeholder={customerRiskMode === 'ban'
+                ? tr('Ban reason...', 'Raison du bannissement...')
+                : tr('Warning note...', "Note d'avertissement...")}
+            />
+          </div>
+
+          <div className="flex flex-col-reverse gap-3 border-t border-slate-100 px-5 py-4 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowCustomerRiskDialog(false)}
+              disabled={isSavingCustomerRisk}
+              className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+            >
+              {tr('Cancel', 'Annuler')}
+            </Button>
+            <Button
+              type="button"
+              onClick={handleSaveCustomerRisk}
+              disabled={isSavingCustomerRisk}
+              className={`rounded-2xl text-white ${
+                customerRiskMode === 'ban'
+                  ? 'bg-rose-600 hover:bg-rose-700'
+                  : 'bg-slate-950 hover:bg-slate-800'
+              }`}
+            >
+              {isSavingCustomerRisk ? (
+                <>
+                  <Loader className="mr-2 h-4 w-4 animate-spin" />
+                  {tr('Saving...', 'Enregistrement...')}
+                </>
+              ) : customerRiskMode === 'ban'
+                ? tr('Save Ban', 'Enregistrer le bannissement')
+                : tr('Save Warning', "Enregistrer l'avertissement")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <ExtensionRequestModal
         isOpen={extensionModalOpen}

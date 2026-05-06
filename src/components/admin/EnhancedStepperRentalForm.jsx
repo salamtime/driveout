@@ -126,6 +126,15 @@ const normalizeMoneyInput = (value) => {
   return decimalPart ? `${integerPart}.${decimalPart}` : integerPart;
 };
 
+const buildCustomerProfileHref = ({ customerId, email, rentalId }) => {
+  const params = new URLSearchParams();
+  if (customerId) params.set('customerId', String(customerId).trim());
+  if (email) params.set('email', String(email).trim());
+  if (rentalId) params.set('rentalId', String(rentalId).trim());
+  const query = params.toString();
+  return query ? `/admin/customers/profile?${query}` : '/admin/customers/profile';
+};
+
 const getPackageBillingMultiplier = (durationUnits, packageDurationUnits = 1) => {
   const safeDurationUnits = Number(durationUnits || 0) || 0;
   const safePackageDurationUnits = Number(packageDurationUnits || 0) || 0;
@@ -317,6 +326,60 @@ const hasEditWorkflowChanges = (nextData = {}, initialData = {}) => {
   }
 
   return false;
+};
+
+const normalizeCustomerSuggestion = (customer = {}, source = 'database') => ({
+  id: customer.id || customer.customer_id || null,
+  name: customer.full_name || customer.customer_name || customer.name || '',
+  email: customer.email || customer.customer_email || '',
+  phone: customer.phone || customer.customer_phone || '',
+  licence_number: customer.licence_number || customer.customer_licence_number || '',
+  id_number: customer.id_number || customer.customer_id_number || '',
+  date_of_birth: customer.date_of_birth || customer.customer_dob || '',
+  nationality: customer.nationality || customer.customer_nationality || '',
+  place_of_birth: customer.place_of_birth || customer.customer_place_of_birth || '',
+  extra_images: customer.extra_images || [],
+  source,
+});
+
+const getCustomerSuggestionKey = (suggestion = {}) => {
+  if (suggestion.id) return `id:${suggestion.id}`;
+  return [
+    'customer',
+    String(suggestion.name || '').trim().toLowerCase(),
+    String(suggestion.phone || '').trim(),
+    String(suggestion.licence_number || '').trim().toLowerCase(),
+  ].join(':');
+};
+
+const mergeCustomerSuggestions = (...groups) => {
+  const suggestionMap = new Map();
+  const getSourcePriority = (source) => {
+    if (source === 'database-live') return 3;
+    if (source === 'database') return 2;
+    return 1;
+  };
+
+  groups.flat().filter(Boolean).forEach((suggestion) => {
+    const normalized = normalizeCustomerSuggestion(suggestion, suggestion.source || 'database');
+    if (!normalized.name.trim()) return;
+
+    const key = getCustomerSuggestionKey(normalized);
+    const existing = suggestionMap.get(key);
+    if (!existing) {
+      suggestionMap.set(key, normalized);
+      return;
+    }
+
+    const shouldUseNext =
+      getSourcePriority(normalized.source) >= getSourcePriority(existing.source);
+    suggestionMap.set(
+      key,
+      shouldUseNext ? { ...existing, ...normalized } : { ...normalized, ...existing }
+    );
+  });
+
+  return Array.from(suggestionMap.values());
 };
 
 // ==================== CUSTOM HOOK - ALL BUSINESS LOGIC ====================
@@ -540,6 +603,7 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
   const isManualStatusChange = useRef(false);
   const isProgrammaticChange = useRef(false);
   const customerSearchRef = useRef(null);
+  const customerSuggestionSearchTokenRef = useRef(0);
   const isProcessing = useRef(false);
   const vehicleLoadTimeout = useRef(null);
   const preserveEditFinancialTermsRef = useRef(mode === 'edit');
@@ -1740,19 +1804,7 @@ const calculateFinancials = () => {
       if (c.full_name) {
         const key = c.full_name.trim().toLowerCase();
         if (!customerMap.has(key)) {
-          customerMap.set(key, {
-            id: c.id,
-            name: c.full_name,
-            email: c.email,
-            phone: c.phone,
-            licence_number: c.licence_number,
-            id_number: c.id_number,
-            date_of_birth: c.date_of_birth,
-            nationality: c.nationality,
-            place_of_birth: c.place_of_birth,
-            extra_images: c.extra_images || [],
-            source: 'database'
-          });
+          customerMap.set(key, normalizeCustomerSuggestion(c, 'database'));
         }
       }
     });
@@ -1762,14 +1814,7 @@ const calculateFinancials = () => {
         const key = r.customer_name.trim().toLowerCase();
         const existing = customerMap.get(key);
         if (!existing) {
-          customerMap.set(key, {
-            id: r.customer_id,
-            name: r.customer_name,
-            email: r.customer_email,
-            phone: r.customer_phone,
-            licence_number: r.customer_licence_number,
-            source: 'rental'
-          });
+          customerMap.set(key, normalizeCustomerSuggestion(r, 'rental'));
         }
       }
     });
@@ -2315,13 +2360,28 @@ const calculateFinancials = () => {
       isProgrammaticChange.current = false;
       setFormData(newFormData);
 
-      if (value.length >= 2) {
+      const trimmedName = String(value || '').trim().toLowerCase();
+      const searchToken = customerSuggestionSearchTokenRef.current + 1;
+      customerSuggestionSearchTokenRef.current = searchToken;
+
+      if (trimmedName.length >= 2) {
         const customerData = getAggregatedCustomerData();
-        const trimmedName = value.trim().toLowerCase();
         const filteredSuggestions = customerData.filter(suggestion => 
-          suggestion.name.trim().toLowerCase().includes(trimmedName)
+          String(suggestion.name || '').trim().toLowerCase().includes(trimmedName)
         );
         setSuggestions(filteredSuggestions);
+
+        try {
+          const liveCustomers = await enhancedUnifiedCustomerService.searchCustomers(trimmedName);
+          if (customerSuggestionSearchTokenRef.current !== searchToken) return;
+
+          const liveSuggestions = (liveCustomers || []).map(customer =>
+            normalizeCustomerSuggestion(customer, 'database-live')
+          );
+          setSuggestions(mergeCustomerSuggestions(liveSuggestions, filteredSuggestions).slice(0, 12));
+        } catch (error) {
+          console.warn('Customer live search unavailable; using cached suggestions only:', error);
+        }
       } else {
         setSuggestions([]);
       }
@@ -2885,6 +2945,32 @@ const calculateFinancials = () => {
         if (String(matchedCustomer.id) === String(currentCustomerId || '')) return null;
         return matchedCustomer;
       };
+
+      const normalizeDocumentImageUrl = (value) => {
+        if (!value) return '';
+        if (typeof value === 'string') return value.trim();
+        if (typeof value === 'object') {
+          return String(value.url || value.public_url || value.publicUrl || value.path || '').trim();
+        }
+        return '';
+      };
+
+      const secondIdImageUrls = [
+        submissionReadyFormData.second_driver_id_image,
+        ...(Array.isArray(submissionReadyFormData.second_driver_uploaded_images)
+          ? submissionReadyFormData.second_driver_uploaded_images
+          : []),
+        ...secondDrivers.flatMap((driver) => [
+          driver?.id_scan_url,
+          driver?.customer_id_image,
+          driver?.id_image,
+          ...(Array.isArray(driver?.uploaded_images) ? driver.uploaded_images : []),
+          ...(Array.isArray(driver?.extra_images) ? driver.extra_images : []),
+        ]),
+      ]
+        .map(normalizeDocumentImageUrl)
+        .filter(Boolean);
+      const uniqueSecondIdImageUrls = [...new Set(secondIdImageUrls)];
       
       if (!finalCustomerId) {
         const customerScanHistory = Array.isArray(formData.customer_id_scan_history)
@@ -3039,6 +3125,51 @@ const calculateFinancials = () => {
             .eq('id', finalCustomerId);
           
           if (updateError) {
+          }
+        }
+      }
+
+      if (isLightVariant && uniqueSecondIdImageUrls.length > 0 && finalCustomerId) {
+        const { data: existingCustomerMedia, error: existingCustomerMediaError } = await supabase
+          .from('app_4c3a7a6153_customers')
+          .select('extra_images, scan_metadata, id_scan_url, customer_id_image')
+          .eq('id', finalCustomerId)
+          .maybeSingle();
+
+        if (existingCustomerMediaError) {
+          console.warn('Failed to load customer media before saving second ID images:', existingCustomerMediaError);
+        } else {
+          const existingExtraImageUrls = Array.isArray(existingCustomerMedia?.extra_images)
+            ? existingCustomerMedia.extra_images.map(normalizeDocumentImageUrl).filter(Boolean)
+            : [];
+          const existingSecondaryIdHistory = Array.isArray(existingCustomerMedia?.scan_metadata?.second_driver_id_history)
+            ? existingCustomerMedia.scan_metadata.second_driver_id_history.map(normalizeDocumentImageUrl).filter(Boolean)
+            : [];
+          const primaryIdUrls = new Set(
+            [
+              existingCustomerMedia?.id_scan_url,
+              existingCustomerMedia?.customer_id_image,
+              submissionReadyFormData.customer_id_image,
+            ]
+              .map(normalizeDocumentImageUrl)
+              .filter(Boolean)
+          );
+          const secondIdHistoryUrls = uniqueSecondIdImageUrls.filter((url) => !primaryIdUrls.has(url));
+
+          const { error: secondIdMediaUpdateError } = await supabase
+            .from('app_4c3a7a6153_customers')
+            .update({
+              extra_images: [...new Set([...existingExtraImageUrls, ...uniqueSecondIdImageUrls])],
+              scan_metadata: {
+                ...(existingCustomerMedia?.scan_metadata || {}),
+                second_driver_id_history: [...new Set([...existingSecondaryIdHistory, ...secondIdHistoryUrls])],
+              },
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', finalCustomerId);
+
+          if (secondIdMediaUpdateError) {
+            console.warn('Failed to persist second ID images to customer profile:', secondIdMediaUpdateError);
           }
         }
       }
@@ -3550,7 +3681,7 @@ const calculateFinancials = () => {
               email: null,
               place_of_birth: null,
               id_scan_url: submissionReadyFormData.second_driver_id_image || null,
-              extra_images: submissionReadyFormData.second_driver_uploaded_images || [],
+              extra_images: uniqueSecondIdImageUrls,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
               customer_type: 'secondary'
@@ -9621,6 +9752,33 @@ const SimplifiedRentalWizard = ({
   ]);
 
   const effectiveDrawerRental = selectedRentalForDrawer || previewRentalForDrawer;
+  const activeSecondDriver = secondDrivers[0] || null;
+  const secondDriverImageCount = Array.isArray(activeSecondDriver?.uploaded_images) && activeSecondDriver.uploaded_images.length > 0
+    ? activeSecondDriver.uploaded_images.length
+    : Array.isArray(formData.second_driver_uploaded_images) && formData.second_driver_uploaded_images.length > 0
+      ? formData.second_driver_uploaded_images.length
+      : (formData.second_driver_id_image ? 1 : 0);
+  const hasSavedSecondDriverId = Boolean(formData.second_driver_id_image || secondDriverImageCount > 0);
+  const openSecondDriverScanModal = useCallback((entryMode = 'scan') => {
+    setSecondDriverScanEntryMode(entryMode);
+    setShowSecondDriverScanModal(true);
+  }, []);
+  const clearSecondDriverIdMedia = useCallback(() => {
+    setSecondDrivers((prev) =>
+      prev.map((driver) => ({
+        ...driver,
+        id_scan_url: null,
+        customer_id_image: null,
+        uploaded_images: [],
+        extra_images: [],
+      }))
+    );
+    setFormData((prev) => ({
+      ...prev,
+      second_driver_uploaded_images: [],
+      second_driver_id_image: null,
+    }));
+  }, []);
 
   const submitVerificationOnlyFlow = async () => {
     const submissionResult = await handleSubmit();
@@ -10628,11 +10786,11 @@ const SimplifiedRentalWizard = ({
                   {formData.customer_id_image && (
                     <button
                       type="button"
-                      onClick={() => setShowIDScanModal(true)}
+                      onClick={() => openSecondDriverScanModal('scan')}
                       className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700"
                     >
                       <FileImage className="h-4 w-4" />
-                      {tr('Scan second ID', "Scanner la deuxième pièce")}
+                      {hasSavedSecondDriverId ? tr('Rescan second ID', "Scanner à nouveau la deuxième pièce") : tr('Scan second ID', "Scanner la deuxième pièce")}
                     </button>
                   )}
                 </div>
@@ -10645,6 +10803,27 @@ const SimplifiedRentalWizard = ({
                     : (formData.customer_id_capture_method || customerIdCaptureMethod) === 'saved'
                       ? tr('ID saved', 'Pièce enregistrée')
                       : tr('ID scanned', 'Pièce scannée')}
+                </div>
+              )}
+
+              {hasSavedSecondDriverId && (
+                <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-700">
+                  <span>
+                    {secondDriverImageCount > 1
+                      ? tr(`Second ID saved · ${secondDriverImageCount} photos`, `Deuxième pièce enregistrée · ${secondDriverImageCount} photos`)
+                      : tr('Second ID saved · 1 photo', 'Deuxième pièce enregistrée · 1 photo')}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      clearSecondDriverIdMedia();
+                    }}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-violet-200 bg-white text-violet-600 shadow-sm transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                    aria-label={tr('Remove second ID photos', 'Supprimer les photos de la deuxième pièce')}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
                 </div>
               )}
 
@@ -10803,11 +10982,13 @@ const SimplifiedRentalWizard = ({
                 )}
                 <button
                   type="button"
-                  onClick={() => setShowIDScanModal(true)}
+                  onClick={() => (formData.customer_id_image ? openSecondDriverScanModal('scan') : setShowIDScanModal(true))}
                   className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800 sm:min-w-[220px] sm:flex-none"
                 >
                   <FileImage className="h-5 w-5" />
-                  {formData.customer_id_image ? tr('Scan second ID', "Scanner la deuxième pièce") : tr('Scan ID', "Scanner l'identité")}
+                  {formData.customer_id_image
+                    ? (hasSavedSecondDriverId ? tr('Rescan second ID', "Scanner à nouveau la deuxième pièce") : tr('Scan second ID', "Scanner la deuxième pièce"))
+                    : tr('Scan ID', "Scanner l'identité")}
                 </button>
                 <button
                   type="button"
@@ -11067,12 +11248,12 @@ const SimplifiedRentalWizard = ({
             {formData.customer_id_image && (
               <button
                 type="button"
-                onClick={() => setShowIDScanModal(true)}
+                onClick={() => openSecondDriverScanModal('scan')}
                 className="inline-flex items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700"
                 disabled={loading || submitting || successfullySubmitted}
               >
                 <FileImage className="h-4 w-4" />
-                {tr('Scan second ID', "Scanner la deuxième pièce")}
+                {hasSavedSecondDriverId ? tr('Rescan second ID', "Scanner à nouveau la deuxième pièce") : tr('Scan second ID', "Scanner la deuxième pièce")}
               </button>
             )}
           </div>
@@ -11082,7 +11263,7 @@ const SimplifiedRentalWizard = ({
           <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex sm:w-full sm:max-w-[640px] sm:items-stretch sm:justify-end">
             <button
               type="button"
-              onClick={() => setShowIDScanModal(true)}
+              onClick={() => (formData.customer_id_image ? openSecondDriverScanModal('scan') : setShowIDScanModal(true))}
               className={`flex items-center justify-center gap-2 rounded-2xl border px-4 py-4 text-base font-bold sm:min-w-[220px] sm:flex-none ${
                 !formData.customer_id_image
                   ? 'border-violet-200 bg-violet-50 text-violet-700 animate-[pulse_0.9s_ease-in-out_infinite] shadow-[0_0_0_4px_rgba(124,58,237,0.12)]'
@@ -11091,7 +11272,9 @@ const SimplifiedRentalWizard = ({
               disabled={loading || submitting || successfullySubmitted}
             >
               <FileImage className="h-5 w-5" />
-              {formData.customer_id_image ? tr('Scan second ID', "Scanner la deuxième pièce") : tr('Scan ID', "Scanner l'identité")}
+              {formData.customer_id_image
+                ? (hasSavedSecondDriverId ? tr('Rescan second ID', "Scanner à nouveau la deuxième pièce") : tr('Scan second ID', "Scanner la deuxième pièce"))
+                : tr('Scan ID', "Scanner l'identité")}
             </button>
             <button
               type="button"
@@ -12596,14 +12779,31 @@ const SimplifiedRentalWizard = ({
       {showSecondDriverScanModal && (
         <SecondDriverIDScanModal
           isOpen={showSecondDriverScanModal}
-          title={secondDriverScanEntryMode === 'upload' ? "Téléverser l'identité du second conducteur" : "Scanner l'identité du second conducteur"}
+          title={
+            secondDriverScanEntryMode === 'upload'
+              ? tr('Upload second driver ID', "Téléverser l'identité du second conducteur")
+              : tr('Scan second driver ID', "Scanner l'identité du second conducteur")
+          }
           autoLaunchPicker={secondDriverScanEntryMode === 'upload'}
           scanOnlyMode
-          ocrEnabled={canUseOcrIdScan}
+          ocrEnabled={false}
+          initialDriverData={activeSecondDriver || {
+            id: 'light_second_driver',
+            full_name: formData.second_driver_name || '',
+            licence_number: formData.second_driver_license || '',
+            id_number: formData.second_driver_id_number || '',
+            date_of_birth: formData.second_driver_dob || '',
+            nationality: formData.second_driver_nationality || 'Moroccan',
+            id_scan_url: formData.second_driver_id_image || null,
+            customer_id_image: formData.second_driver_id_image || null,
+            uploaded_images: formData.second_driver_uploaded_images || [],
+            extra_images: (formData.second_driver_uploaded_images || []).map((image) => image?.url).filter(Boolean),
+          }}
           onClose={() => {
             setShowSecondDriverScanModal(false);
             setSecondDriverScanEntryMode('scan');
           }}
+          onDriverCleared={clearSecondDriverIdMedia}
           onDriverAdded={(driverData) => {
             const enhancedDriverData = {
               ...driverData,
@@ -12638,6 +12838,10 @@ const SimplifiedRentalWizard = ({
                 ...prev,
                 second_driver_name: enhancedDriverData.full_name || prev.second_driver_name,
                 second_driver_license: enhancedDriverData.licence_number || prev.second_driver_license,
+                second_driver_id_number: enhancedDriverData.id_number || prev.second_driver_id_number,
+                second_driver_dob: enhancedDriverData.date_of_birth || prev.second_driver_dob,
+                second_driver_nationality: enhancedDriverData.nationality || prev.second_driver_nationality,
+                second_driver_uploaded_images: enhancedDriverData.uploaded_images || prev.second_driver_uploaded_images || [],
                 second_driver_id_image:
                   enhancedDriverData.id_scan_url ||
                   enhancedDriverData.customer_id_image ||
@@ -12645,8 +12849,8 @@ const SimplifiedRentalWizard = ({
               };
             });
             toast.success(`✅ ${tr('Second driver', 'Second conducteur')} "${enhancedDriverData.full_name}" ${enhancedDriverData.id_scan_url ? tr('added with ID image', "ajouté avec une image d'identité") : tr('added without image', 'ajouté sans image')}`);
-            setActiveTab('additional');
             setSecondDriverScanEntryMode('scan');
+            setShowSecondDriverScanModal(false);
           }}
         />
       )}
@@ -12674,10 +12878,14 @@ const SimplifiedRentalWizard = ({
           setShowCustomerAlertModal(open);
         }}
       >
-        <DialogContent className="max-w-md rounded-2xl border border-amber-200 bg-white p-0 shadow-xl">
-          <DialogHeader className="border-b border-amber-100 bg-gradient-to-r from-white via-amber-50 to-white px-6 py-5">
+        <DialogContent className="max-w-md rounded-[28px] border border-slate-200 bg-white p-0 shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
+          <DialogHeader className={`border-b px-6 py-5 ${
+            customerAlert?.type === 'banned'
+              ? 'border-rose-100 bg-gradient-to-r from-white via-rose-50 to-white'
+              : 'border-violet-100 bg-gradient-to-r from-white via-violet-50 to-white'
+          }`}>
             <DialogTitle className="flex items-center gap-2 text-lg font-semibold text-slate-900">
-              <AlertCircle className="h-5 w-5 text-amber-600" />
+              <AlertCircle className={`h-5 w-5 ${customerAlert?.type === 'banned' ? 'text-rose-600' : 'text-violet-600'}`} />
               {customerAlert?.type === 'banned' ? tr('Banned Customer', 'Client banni') : tr('Customer Alert', 'Alerte client')}
             </DialogTitle>
             <DialogDescription className="pt-1 text-sm text-slate-600">
@@ -12688,8 +12896,14 @@ const SimplifiedRentalWizard = ({
           </DialogHeader>
 
           <div className="space-y-4 px-6 py-5">
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-              <p className="whitespace-pre-wrap text-sm font-medium leading-6 text-amber-900">
+            <div className={`rounded-3xl border p-4 ${
+              customerAlert?.type === 'banned'
+                ? 'border-rose-200 bg-rose-50/90'
+                : 'border-violet-200 bg-violet-50/80'
+            }`}>
+              <p className={`whitespace-pre-wrap text-sm font-medium leading-6 ${
+                customerAlert?.type === 'banned' ? 'text-rose-900' : 'text-slate-800'
+              }`}>
                 {customerAlert?.note || (customerAlert?.type === 'banned'
                   ? tr('No ban reason has been saved yet. Open the customer profile to review this customer before continuing.', "Aucune raison de bannissement n'a encore été enregistrée. Ouvrez le profil client pour examiner ce client avant de continuer.")
                   : tr('No alert note available.', "Aucune note d'alerte disponible."))}
@@ -12710,22 +12924,27 @@ const SimplifiedRentalWizard = ({
               <button
                 type="button"
                 onClick={() => setShowCustomerAlertModal(false)}
-                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
               >
                 {customerAlert?.type === 'banned' ? tr('Close', 'Fermer') : tr('Continue', 'Continuer')}
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  if (customerAlert?.type !== 'banned') {
-                    setShowCustomerAlertModal(false);
-                  }
-                  setSelectedRentalForDrawer({ id: customerAlert?.customerId || 'preview-rental-id' });
-                  setShowCustomerDrawer(true);
+                  setShowCustomerAlertModal(false);
+                  navigate(buildCustomerProfileHref({
+                    customerId: customerAlert?.customerId || formData.customer_id,
+                    email: formData.customer_email,
+                    rentalId: initialData?.id || null,
+                  }));
                 }}
-                className="rounded-xl border border-violet-700 bg-violet-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-800"
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold text-white transition ${
+                  customerAlert?.type === 'banned'
+                    ? 'bg-rose-600 hover:bg-rose-700'
+                    : 'bg-violet-600 hover:bg-violet-700'
+                }`}
               >
-                {customerAlert?.type === 'banned' ? tr('Open Customer Details', 'Ouvrir les détails du client') : tr('View Customer', 'Voir le client')}
+                {customerAlert?.type === 'banned' ? tr('Open Customer Profile', 'Ouvrir le profil client') : tr('Review Customer Profile', 'Voir le profil client')}
               </button>
             </div>
           </div>

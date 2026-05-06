@@ -60,6 +60,11 @@ import {
   isPlatformOwnerEmail,
   resolveManagedAccountType,
 } from '../utils/accountType';
+import {
+  ADMIN_EYEBROW_CLASS,
+  ADMIN_MAIN_CARD_CLASS,
+  ADMIN_OUTLINE_BUTTON_CLASS,
+} from '../utils/adminSurfaceStyles';
 import i18n from '../i18n';
 
 // Supabase client imported from lib/supabase.js
@@ -625,7 +630,7 @@ const getBusinessOwnerStatusMeta = (status, isFrench) => {
 
   return {
     label: isFrench ? 'En attente' : 'Pending',
-    badgeClass: 'bg-amber-100 text-amber-800',
+    badgeClass: 'bg-slate-100 text-slate-700',
   };
 };
 
@@ -819,7 +824,7 @@ const getUnifiedStatusMeta = (customer, isFrench) => {
     if (saasState === 'expired') {
       return {
         label: isFrench ? 'Expiré' : 'Expired',
-        badgeClass: 'bg-amber-100 text-amber-800',
+        badgeClass: 'bg-slate-100 text-slate-700',
       };
     }
 
@@ -839,7 +844,7 @@ const getUnifiedStatusMeta = (customer, isFrench) => {
 
     return {
       label: isFrench ? 'En attente' : 'Pending approval',
-      badgeClass: 'bg-amber-100 text-amber-800',
+      badgeClass: 'bg-slate-100 text-slate-700',
     };
   }
 
@@ -1739,8 +1744,8 @@ const MobileCustomerCard = ({ customer, onView, onDelete, isSelected, onSelect, 
   const accountTypeMeta = getExternalAccountTypeMeta(customer.externalAccountType, isFrench);
   
   return (
-    <div
-      className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-3 hover:shadow-md transition-shadow duration-200 cursor-pointer"
+    <article
+      className="cursor-pointer rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] transition hover:border-slate-300 hover:bg-slate-50/50"
       onClick={() => onView(customer)}
     >
       <div className="flex items-start justify-between">
@@ -1752,7 +1757,7 @@ const MobileCustomerCard = ({ customer, onView, onDelete, isSelected, onSelect, 
                 checked={isSelected}
                 onChange={() => onSelect(customer.id)}
                 onClick={(e) => e.stopPropagation()}
-                className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
               />
             </div>
           )}
@@ -1764,16 +1769,16 @@ const MobileCustomerCard = ({ customer, onView, onDelete, isSelected, onSelect, 
           <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between">
               <div className="min-w-0">
-                <h3 className="text-base font-semibold text-blue-600 truncate hover:underline">
+                <h3 className="truncate text-base font-semibold text-slate-900">
                   {customer.full_name || (isFrench ? 'Client inconnu' : 'Unknown Customer')}
                 </h3>
                 {customer.isBanned && (
                   <div className="mt-1 flex items-center gap-2">
-                    <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">
+                    <span className="rounded-full bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-800">
                       {isFrench ? 'Banni' : 'Banned'}
                     </span>
                     {customer.banNote && (
-                      <span className="text-xs text-red-700 truncate">
+                      <span className="truncate text-xs text-rose-700">
                         {customer.banNote}
                       </span>
                     )}
@@ -1781,33 +1786,33 @@ const MobileCustomerCard = ({ customer, onView, onDelete, isSelected, onSelect, 
                 )}
                 {customer.isAppAccount && (
                   <div className="mt-1 flex items-center gap-2">
-                    <span className="px-2 py-1 text-xs font-semibold rounded-full bg-blue-100 text-blue-800">
+                    <span className="rounded-full bg-violet-100 px-2 py-1 text-xs font-semibold text-violet-700">
                       {isFrench ? 'Compte app' : 'App account'}
                     </span>
                   </div>
                 )}
                 <div className="mt-1 flex items-center gap-2">
-                  <span className={`px-2 py-1 text-xs font-semibold rounded-full ${accountTypeMeta.badgeClass}`}>
+                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${accountTypeMeta.badgeClass}`}>
                     {accountTypeMeta.label}
                   </span>
                 </div>
                 {!customer.isBanned && customer.hasActiveAlertNote && (
                   <div className="mt-1 flex items-center gap-2">
-                    <span className="px-2 py-1 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">
+                    <span className="rounded-full bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-700">
                       {isFrench ? 'Alerte' : 'Warning'}
                     </span>
                     {customer.activeAlertNote && (
-                      <span className="text-xs text-amber-700 truncate">
+                      <span className="truncate text-xs text-rose-700">
                         {customer.activeAlertNote}
                       </span>
                     )}
                   </div>
                 )}
               </div>
-              <span className={`ml-2 px-2 py-1 text-xs font-semibold rounded-full flex-shrink-0 ${
+              <span className={`ml-2 flex-shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${
                 customer.status === 'Active' 
-                  ? 'bg-green-100 text-green-800' 
-                  : 'bg-yellow-100 text-yellow-800'
+                  ? 'bg-emerald-100 text-emerald-700' 
+                  : 'bg-slate-100 text-slate-700'
               }`}>
                 {customer.status === 'Active'
                   ? (isFrench ? 'Actif' : 'Active')
@@ -1816,7 +1821,7 @@ const MobileCustomerCard = ({ customer, onView, onDelete, isSelected, onSelect, 
                     : customer.status}
               </span>
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-600">
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
               <span className="inline-flex items-center">
                 <Mail className="w-3 h-3 mr-1" />
                 {customer.email || (isFrench ? 'Pas d’email' : 'No email')}
@@ -1827,11 +1832,11 @@ const MobileCustomerCard = ({ customer, onView, onDelete, isSelected, onSelect, 
               </span>
             </div>
             <div className="mt-2 flex items-center gap-3 text-xs">
-              <span className="inline-flex items-center text-gray-500">
+              <span className="inline-flex items-center text-slate-500">
                 <CreditCard className="w-3 h-3 mr-1" />
                 {formatCurrency(customer.totalSpent)}
               </span>
-              <span className="inline-flex items-center text-gray-500">
+              <span className="inline-flex items-center text-slate-500">
                 <Calendar className="w-3 h-3 mr-1" />
                 {formatDate(customer.created_at)}
               </span>
@@ -1843,26 +1848,26 @@ const MobileCustomerCard = ({ customer, onView, onDelete, isSelected, onSelect, 
             e.stopPropagation();
             setExpanded(!expanded);
           }}
-          className="ml-2 p-2 hover:bg-gray-100 rounded-lg transition-colors"
+          className="ml-2 rounded-2xl border border-slate-200 bg-slate-50/80 p-2 transition hover:bg-slate-100"
         >
-          {expanded ? <ChevronUp className="w-5 h-5 text-gray-500" /> : <ChevronDown className="w-5 h-5 text-gray-500" />}
+          {expanded ? <ChevronUp className="h-5 w-5 text-slate-500" /> : <ChevronDown className="h-5 w-5 text-slate-500" />}
         </button>
       </div>
       
       {expanded && (
-        <div className="mt-4 pt-4 border-t border-gray-100">
+        <div className="mt-4 border-t border-slate-100 pt-4">
           <div className="grid grid-cols-2 gap-3 mb-4">
-            <div className="bg-gray-50 p-2 rounded-lg">
-              <span className="text-xs text-gray-500">{isFrench ? 'Nationalité' : 'Nationality'}</span>
-              <p className="text-sm font-medium text-gray-900">{customer.nationality || (isFrench ? 'N/D' : 'N/A')}</p>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{isFrench ? 'Nationalité' : 'Nationality'}</span>
+              <p className="mt-1 text-sm font-semibold text-slate-900">{customer.nationality || (isFrench ? 'N/D' : 'N/A')}</p>
             </div>
-            <div className="bg-gray-50 p-2 rounded-lg">
-              <span className="text-xs text-gray-500">{isFrench ? 'Total locations' : 'Total Rentals'}</span>
-              <p className="text-sm font-medium text-gray-900">{customer.totalRentals || 0}</p>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{isFrench ? 'Total locations' : 'Total Rentals'}</span>
+              <p className="mt-1 text-sm font-semibold text-slate-900">{customer.totalRentals || 0}</p>
             </div>
-            <div className="bg-gray-50 p-2 rounded-lg col-span-2">
-              <span className="text-xs text-gray-500">ID client</span>
-              <p className="text-xs font-mono text-gray-600 truncate">{customer.id}</p>
+            <div className="col-span-2 rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">ID client</span>
+              <p className="mt-1 truncate font-mono text-xs text-slate-600">{customer.id}</p>
             </div>
           </div>
           
@@ -1873,7 +1878,7 @@ const MobileCustomerCard = ({ customer, onView, onDelete, isSelected, onSelect, 
                   e.stopPropagation();
                   onDelete(customer);
                 }}
-                className="flex items-center px-3 py-2 bg-red-50 text-red-600 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors"
+                className="flex items-center rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
               >
                 <Trash className="w-4 h-4 mr-1" />
                 Supprimer
@@ -1882,7 +1887,7 @@ const MobileCustomerCard = ({ customer, onView, onDelete, isSelected, onSelect, 
           </div>
         </div>
       )}
-    </div>
+    </article>
   );
 };
 
@@ -1906,14 +1911,14 @@ const BusinessOwnerCard = ({
   const missingAuthAccount = !authUserId;
 
   return (
-    <article className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_50px_-28px_rgba(15,23,42,0.35)]">
+    <article className={ADMIN_MAIN_CARD_CLASS}>
       <div className="flex items-start gap-4">
         <div className={`flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full text-lg font-bold text-white shadow-sm ${getCustomerAvatarPalette(customer)}`}>
           {initials}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-lg font-bold text-slate-950">{customer.full_name || (isFrench ? 'Compte business' : 'Business account')}</h3>
+            <h3 className="text-lg font-semibold text-slate-900">{customer.full_name || (isFrench ? 'Compte business' : 'Business account')}</h3>
             <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusMeta.badgeClass}`}>
               {statusMeta.label}
             </span>
@@ -1939,7 +1944,7 @@ const BusinessOwnerCard = ({
             </div>
           ) : null}
           {missingAuthAccount ? (
-            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+            <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-medium text-slate-700">
               {isFrench ? "Ce compte n'est pas encore lié à un utilisateur auth récupérable." : 'This account is not linked to a recoverable auth user yet.'}
             </div>
           ) : null}
@@ -4131,15 +4136,15 @@ const CustomerManagementDashboard = () => {
                   </div>
                   <div className="flex flex-wrap gap-3 text-sm">
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Phone', 'Téléphone')}</span>
+                      <span className={ADMIN_EYEBROW_CLASS}>{tr('Phone', 'Téléphone')}</span>
                       <div className="mt-1 font-semibold text-slate-800">{detailedCustomer.phone || tr('Not provided', 'Non renseigné')}</div>
                     </div>
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Email</span>
+                      <span className={ADMIN_EYEBROW_CLASS}>Email</span>
                       <div className="mt-1 font-semibold text-slate-800">{customerStaffEmail || tr('Not provided', 'Non renseigné')}</div>
                     </div>
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{tr('Rentals', 'Locations')}</span>
+                      <span className={ADMIN_EYEBROW_CLASS}>{tr('Rentals', 'Locations')}</span>
                       <div className="mt-1 font-semibold text-slate-800">{(detailedCustomer.rentalHistory || []).length}</div>
                     </div>
                   </div>
@@ -4714,7 +4719,7 @@ const CustomerManagementDashboard = () => {
                       type="button"
                       onClick={() => setEditModalOpen(false)}
                       disabled={actionLoading}
-                      className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50"
+                      className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50"
                     >
                       Annuler
                     </button>
@@ -4722,7 +4727,7 @@ const CustomerManagementDashboard = () => {
                       type="button"
                       onClick={handleEditCustomer}
                       disabled={actionLoading}
-                      className="inline-flex items-center justify-center rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
+                      className="inline-flex items-center justify-center rounded-2xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:opacity-50"
                     >
                       <Save className="mr-2 h-4 w-4" />
                       {actionLoading ? 'Enregistrement...' : 'Enregistrer les modifications'}
@@ -4738,7 +4743,7 @@ const CustomerManagementDashboard = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="pb-10">
       <AdminModuleHero
         className="w-full"
         icon={<Users className="h-8 w-8 text-white" />}
@@ -4746,42 +4751,43 @@ const CustomerManagementDashboard = () => {
         title={isFrench ? 'Vue d’ensemble des clients' : 'Customer Overview'}
         description={isFrench ? 'Gérez les profils clients, les notes, l’historique des locations et les alertes depuis un espace unifié.' : 'Manage customer profiles, notes, rental history, and alerts from one unified workspace.'}
         actions={
-          <div className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white backdrop-blur-sm">
+          <div className={ADMIN_OUTLINE_BUTTON_CLASS}>
             <User className="h-4 w-4" />
             {aggregatedData.summary.totalCustomers} {isFrench ? (aggregatedData.summary.totalCustomers === 1 ? 'client' : 'clients') : `customer${aggregatedData.summary.totalCustomers === 1 ? '' : 's'}`}
           </div>
         }
       />
 
-      <div className="mx-auto max-w-7xl px-3 py-4 md:px-6 md:py-6">
-        <div className="mb-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)] md:mb-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-wrap gap-2">
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700">
-                {aggregatedData.summary.totalCustomers} {isFrench ? 'comptes' : 'accounts'}
-              </span>
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700">
-                {aggregatedData.summary.totalActiveRentals} {isFrench ? 'locations actives' : 'active rentals'}
-              </span>
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700">
-                {formatCurrency(aggregatedData.summary.totalRevenue)}
-              </span>
+      <div className="mt-6 grid gap-6 px-4 sm:px-6 lg:px-8">
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            { label: isFrench ? 'Comptes' : 'Accounts', value: aggregatedData.summary.totalCustomers, tone: 'text-slate-950' },
+            { label: isFrench ? 'Locations actives' : 'Active rentals', value: aggregatedData.summary.totalActiveRentals, tone: 'text-emerald-700' },
+            { label: isFrench ? 'Revenus' : 'Revenue', value: formatCurrency(aggregatedData.summary.totalRevenue), tone: 'text-violet-700' },
+            { label: isFrench ? 'Lignes visibles' : 'Visible rows', value: aggregatedData.customers.length, tone: 'text-slate-950' },
+          ].map((stat) => (
+            <div key={stat.label} className={ADMIN_MAIN_CARD_CLASS}>
+              <p className={ADMIN_EYEBROW_CLASS}>{stat.label}</p>
+              <p className={`mt-3 text-2xl font-semibold tracking-[-0.02em] ${stat.tone}`}>{stat.value}</p>
             </div>
-            <p className="text-sm font-medium text-slate-500">
+          ))}
+        </section>
+
+        <section className={ADMIN_MAIN_CARD_CLASS}>
+          <div className="mb-4 flex flex-col gap-1">
+            <h2 className="text-lg font-semibold text-slate-900">{isFrench ? 'Types de comptes' : 'Account types'}</h2>
+            <p className="text-sm text-slate-500">
               {isFrench
                 ? 'Filtrez, modérez et gérez les comptes sans quitter la page.'
                 : 'Filter, moderate, and manage accounts without leaving the page.'}
             </p>
           </div>
-        </div>
-
-        <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-3 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)] md:mb-5">
           <div className="flex flex-wrap gap-2">
             {[
-              { key: 'all', label: isFrench ? 'Tous les comptes' : 'All Accounts', count: aggregatedData.summary.totalCustomers, activeClass: 'bg-slate-900 text-white' },
-              { key: 'customer', label: isFrench ? 'Clients' : 'Customers', count: aggregatedData.summary.customerAccounts, activeClass: 'bg-sky-600 text-white' },
+              { key: 'all', label: isFrench ? 'Tous les comptes' : 'All Accounts', count: aggregatedData.summary.totalCustomers, activeClass: 'bg-slate-950 text-white' },
+              { key: 'customer', label: isFrench ? 'Clients' : 'Customers', count: aggregatedData.summary.customerAccounts, activeClass: 'bg-violet-600 text-white' },
               { key: 'private_owner', label: isFrench ? 'Propriétaires privés' : 'Private Owners', count: aggregatedData.summary.privateOwners, activeClass: 'bg-violet-600 text-white' },
-              { key: 'business_owner', label: isFrench ? 'Propriétaires business' : 'Business Owners', count: aggregatedData.summary.businessOwners, activeClass: 'bg-amber-600 text-white' },
+              { key: 'business_owner', label: isFrench ? 'Propriétaires business' : 'Business Owners', count: aggregatedData.summary.businessOwners, activeClass: 'bg-violet-600 text-white' },
             ].map((option) => {
               const active = accountTypeFilter === option.key;
               const countClass = active ? 'bg-white/20 text-white' : 'bg-white text-slate-600';
@@ -4791,10 +4797,10 @@ const CustomerManagementDashboard = () => {
                   key={option.key}
                   type="button"
                   onClick={() => setAccountTypeFilter(option.key)}
-                  className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
+                  className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
                     active
                       ? option.activeClass
-                      : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                      : 'border border-slate-200 bg-slate-50/80 text-slate-700 hover:bg-slate-100'
                   }`}
                 >
                   <span>{option.label}</span>
@@ -4805,13 +4811,13 @@ const CustomerManagementDashboard = () => {
               );
             })}
           </div>
-        </div>
+        </section>
 
         {/* Mobile: Filter Toggle Button */}
         {isMobile && (
           <button
             onClick={() => setShowMobileFilters(!showMobileFilters)}
-            className="mb-4 flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-[0_14px_28px_-24px_rgba(15,23,42,0.35)]"
+            className="flex w-full items-center justify-between rounded-[28px] border border-slate-200 bg-white px-4 py-3 shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
           >
             <span className="flex items-center text-sm font-medium text-slate-700">
               <Filter className="w-4 h-4 mr-2" />
@@ -4821,11 +4827,16 @@ const CustomerManagementDashboard = () => {
           </button>
         )}
 
-        <div className={`mb-4 rounded-2xl border border-slate-200 bg-white shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)] md:mb-5 ${isMobile && !showMobileFilters ? 'hidden' : 'block'}`}>
-          <div className="border-b border-slate-100 p-4">
+        <section className={`${ADMIN_MAIN_CARD_CLASS} ${isMobile && !showMobileFilters ? 'hidden' : 'block'}`}>
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-slate-900">{isFrench ? 'Recherche et filtres' : 'Search and filters'}</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {isFrench ? 'Affinez la liste par statut, nationalité ou activité.' : 'Refine the list by status, nationality, or activity.'}
+            </p>
+          </div>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-4 md:gap-4">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
                   type="text"
                   id="customerSearch"
@@ -4833,7 +4844,7 @@ const CustomerManagementDashboard = () => {
                   placeholder={isFrench ? 'Rechercher par nom ou email...' : 'Search by name or email...'}
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-sm shadow-sm focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200 md:py-2"
+                  className="w-full rounded-2xl border border-slate-300 bg-white py-3 pl-10 pr-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
                 />
               </div>
               <select
@@ -4841,7 +4852,7 @@ const CustomerManagementDashboard = () => {
                 name="statusFilter"
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm shadow-sm focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200 md:py-2"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
               >
                 <option value="All">{isFrench ? 'Tous les statuts' : 'All Statuses'}</option>
                 <option value="pending">{isFrench ? 'En attente' : 'Pending approval'}</option>
@@ -4860,7 +4871,7 @@ const CustomerManagementDashboard = () => {
                 name="nationalityFilter"
                 value={nationalityFilter}
                 onChange={(e) => setNationalityFilter(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm shadow-sm focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200 md:py-2"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
               >
                 <option value="All">{isFrench ? 'Toutes les nationalités' : 'All Nationalities'}</option>
                 {availableNationalities.map(nat => (
@@ -4869,14 +4880,14 @@ const CustomerManagementDashboard = () => {
               </select>
               <button
                 onClick={clearFilters}
-                className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-50"
+                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
               >
                 <RefreshCw className="mr-2 h-4 w-4" />
                 {isFrench ? 'Réinitialiser' : 'Reset'}
               </button>
             </div>
 
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-5 flex flex-wrap gap-2">
               {[
                 { key: 'pending_approvals', label: isFrench ? 'Approvals en attente' : 'Pending approvals', count: aggregatedData.quickFilterCounts.pendingApprovals },
                 { key: 'no_listings', label: isFrench ? 'Sans annonces' : 'No listings', count: aggregatedData.quickFilterCounts.noListings },
@@ -4891,10 +4902,10 @@ const CustomerManagementDashboard = () => {
                     key={filterOption.key}
                     type="button"
                     onClick={() => setQuickFilter((prev) => prev === filterOption.key ? 'all' : filterOption.key)}
-                    className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                    className={`inline-flex items-center gap-2 rounded-2xl px-3 py-2 text-sm font-semibold transition ${
                       active
-                        ? 'bg-slate-900 text-white'
-                        : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                        ? 'bg-slate-950 text-white'
+                        : 'border border-slate-200 bg-slate-50/80 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     <span>{filterOption.label}</span>
@@ -4908,23 +4919,22 @@ const CustomerManagementDashboard = () => {
               <button
                 onClick={() => setShowCustomersWithoutRentalsReview(true)}
                 disabled={actionLoading || eligibleForSelectionCount === 0}
-                className="inline-flex items-center rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Users className="mr-2 h-4 w-4" />
                 {isFrench ? 'Examiner avant suppression' : 'Review before delete'}
               </button>
             </div>
-          </div>
-        </div>
+        </section>
 
         {selectedRows.length > 0 && (
-          <div className="mb-4 rounded-2xl border border-violet-200 bg-violet-50/70 px-4 py-3 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)] md:mb-5">
+          <section className={ADMIN_MAIN_CARD_CLASS}>
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <p className="text-sm font-bold text-violet-900">
+                <p className="text-sm font-semibold text-slate-900">
                   {selectedRows.length} {isFrench ? 'compte(s) sélectionné(s)' : 'selected account(s)'}
                 </p>
-                <p className="text-xs text-violet-700">
+                <p className="text-xs text-slate-500">
                   {selectedBusinessOwnerRows.length} {isFrench ? 'business owner(s)' : 'business owner(s)'} · {selectedRows.length - selectedBusinessOwnerRows.length} {isFrench ? 'autres comptes' : 'other accounts'}
                 </p>
               </div>
@@ -4933,7 +4943,7 @@ const CustomerManagementDashboard = () => {
                   type="button"
                   onClick={handleBulkApprove}
                   disabled={actionLoading || selectedBusinessOwnerRows.length === 0}
-                  className="inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center rounded-2xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isFrench ? 'Approuver la sélection' : 'Approve selected'}
                 </button>
@@ -4941,7 +4951,7 @@ const CustomerManagementDashboard = () => {
                   type="button"
                   onClick={() => setBulkRejectModalOpen(true)}
                   disabled={actionLoading || selectedBusinessOwnerRows.length === 0}
-                  className="inline-flex items-center rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isFrench ? 'Rejeter la sélection' : 'Reject selected'}
                 </button>
@@ -4949,24 +4959,24 @@ const CustomerManagementDashboard = () => {
                   type="button"
                   onClick={handleBulkDisable}
                   disabled={actionLoading}
-                  className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isFrench ? 'Désactiver la sélection' : 'Disable selected'}
                 </button>
               </div>
             </div>
-          </div>
+          </section>
         )}
 
         {accountTypeFilter === 'business_owner' ? (
           <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)] md:p-5">
+            <div className={ADMIN_MAIN_CARD_CLASS}>
               <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-500">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-500">
                     {isFrench ? 'Contrôle SaaS business owner' : 'Business Owner SaaS Control'}
                   </p>
-                  <h2 className="mt-1 text-lg font-bold text-slate-950">
+                  <h2 className="mt-1 text-lg font-semibold text-slate-900">
                     {isFrench ? 'Activation, plans, essais et cycle de vie' : 'Activation, plans, trials, and lifecycle'}
                   </h2>
                   <p className="mt-1 text-sm text-slate-500">
@@ -4975,7 +4985,7 @@ const CustomerManagementDashboard = () => {
                       : 'Manage approval, suspension, trial access, and plans from one compact control table.'}
                   </p>
                 </div>
-                <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm font-semibold text-slate-700">
                   {businessOwnerRows.length} {isFrench ? 'ligne(s) visible(s)' : 'visible row(s)'}
                 </div>
               </div>
@@ -5001,10 +5011,10 @@ const CustomerManagementDashboard = () => {
             />
           </div>
         ) : !isMobile ? (
-          <div className="relative overflow-visible rounded-2xl border border-slate-200 bg-white shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)]">
+          <div className="relative overflow-visible rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
             <div className="overflow-x-auto overflow-y-visible">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-slate-50">
+              <table className="min-w-full divide-y divide-slate-200">
+                <thead className="bg-slate-50/90">
                   <tr>
                     <th scope="col" className="p-4 text-left w-12">
                       <input
@@ -5012,25 +5022,25 @@ const CustomerManagementDashboard = () => {
                         ref={headerCheckboxRef}
                         onChange={handleSelectAll}
                         disabled={paginatedCustomers.length === 0}
-                        className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                        className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
                       />
                     </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                       {isFrench ? 'Utilisateur' : 'User'}
                     </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                       {isFrench ? 'Type' : 'Type'}
                     </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                       {isFrench ? 'Contact' : 'Contact'}
                     </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                       {isFrench ? 'Statut' : 'Status'}
                     </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                       {isFrench ? 'Activité' : 'Activity'}
                     </th>
-                    <th scope="col" className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
+                    <th scope="col" className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                       {isFrench ? 'Actions' : 'Actions'}
                     </th>
                     <th scope="col" className="hidden">
@@ -5043,9 +5053,9 @@ const CustomerManagementDashboard = () => {
                     <tr>
                       <td colSpan="7" className="px-6 py-12 text-center">
                         <div className="flex flex-col items-center">
-                          <Users className="w-12 h-12 text-gray-400 mb-3" />
-                          <p className="text-gray-500 font-medium">{isFrench ? 'Aucun client trouvé' : 'No customers found'}</p>
-                          <p className="text-gray-400 text-sm mt-1">{isFrench ? 'Essayez d’ajuster vos filtres ou votre recherche' : 'Try adjusting your filters or search terms'}</p>
+                          <Users className="w-12 h-12 text-slate-300 mb-3" />
+                          <p className="font-semibold text-slate-600">{isFrench ? 'Aucun client trouvé' : 'No customers found'}</p>
+                          <p className="mt-1 text-sm text-slate-400">{isFrench ? 'Essayez d’ajuster vos filtres ou votre recherche' : 'Try adjusting your filters or search terms'}</p>
                         </div>
                       </td>
                     </tr>
@@ -5061,7 +5071,7 @@ const CustomerManagementDashboard = () => {
                             type="checkbox"
                             checked={selectedCustomerIds.includes(customer.id)}
                             onChange={() => handleSelectCustomer(customer.id)}
-                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                            className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -5101,7 +5111,7 @@ const CustomerManagementDashboard = () => {
                               </span>
                             ) : null}
                             {customer.hasActiveAlertNote ? (
-                              <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                              <span className="inline-flex rounded-full bg-rose-100 px-2.5 py-1 text-xs font-semibold text-rose-700">
                                 {isFrench ? 'Alerte' : 'Flagged'}
                               </span>
                             ) : null}
@@ -5129,7 +5139,7 @@ const CustomerManagementDashboard = () => {
                                 type="button"
                                 onClick={() => handleApproveBusinessOwner(customer)}
                                 disabled={Boolean(businessOwnerActionLoading)}
-                                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                                className="rounded-2xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
                               >
                                 {isFrench ? 'Approuver' : 'Approve'}
                               </button>
@@ -5138,7 +5148,7 @@ const CustomerManagementDashboard = () => {
                             <button
                               type="button"
                               onClick={() => openFullPageView(customer)}
-                              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                              className="rounded-2xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
                             >
                               {isFrench ? 'Voir' : 'View'}
                             </button>
@@ -5208,11 +5218,11 @@ const CustomerManagementDashboard = () => {
           /* Mobile: Card View */
           <div className="space-y-3">
             {paginatedCustomers.length === 0 ? (
-              <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)]">
+              <div className="rounded-[28px] border border-slate-200 bg-white p-8 text-center shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
                 <div className="flex flex-col items-center">
-                  <Users className="w-16 h-16 text-gray-300 mb-3" />
-                  <p className="text-gray-500 font-medium text-lg">{isFrench ? 'Aucun client trouvé' : 'No customers found'}</p>
-                  <p className="text-gray-400 text-sm mt-1">{isFrench ? 'Essayez d’ajuster vos filtres ou votre recherche' : 'Try adjusting your filters or search terms'}</p>
+                  <Users className="mb-3 h-16 w-16 text-slate-300" />
+                  <p className="text-lg font-semibold text-slate-600">{isFrench ? 'Aucun client trouvé' : 'No customers found'}</p>
+                  <p className="mt-1 text-sm text-slate-400">{isFrench ? 'Essayez d’ajuster vos filtres ou votre recherche' : 'Try adjusting your filters or search terms'}</p>
                 </div>
               </div>
             ) : (
@@ -5233,7 +5243,7 @@ const CustomerManagementDashboard = () => {
         )}
 
         {aggregatedData.customers.length > 0 && (
-          <div className="mt-4 rounded-[1.75rem] border border-violet-100/80 bg-white px-4 py-4 shadow-[0_18px_40px_rgba(76,29,149,0.08)] md:px-5">
+          <div className="rounded-[28px] border border-slate-200 bg-white px-4 py-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)] md:px-5">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <p className="text-sm text-slate-600">
                 {isFrench ? 'Affichage de ' : 'Showing '}<span className="font-semibold text-slate-900">{((currentPage - 1) * itemsPerPage) + 1}</span>{isFrench ? ' à ' : ' to '}
@@ -5269,7 +5279,7 @@ const CustomerManagementDashboard = () => {
               >
                 {isFrench ? 'Précédent' : 'Previous'}
               </button>
-              <span className="inline-flex items-center rounded-2xl border border-violet-100 bg-violet-50/70 px-4 py-2 text-sm font-semibold text-violet-700">
+              <span className="inline-flex items-center rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-2 text-sm font-semibold text-slate-700">
                 {isFrench ? `Page ${currentPage} sur ${totalPages}` : `Page ${currentPage} of ${totalPages}`}
               </span>
               <button
@@ -5309,13 +5319,13 @@ const CustomerManagementDashboard = () => {
 
               <div className="relative z-10 flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
                 <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4 md:px-6">
-                  <div>
-                    <p className="text-xs font-bold uppercase tracking-[0.22em] text-amber-600">
-                      {isFrench ? 'À examiner' : 'Review first'}
-                    </p>
-                    <h3 className="mt-1 text-xl font-black text-slate-950">
-                      {isFrench ? 'Clients sans location' : 'Customers without rentals'}
-                    </h3>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">
+                    {isFrench ? 'À examiner' : 'Review first'}
+                  </p>
+                  <h3 className="mt-1 text-lg font-semibold text-slate-900">
+                    {isFrench ? 'Clients sans location' : 'Customers without rentals'}
+                  </h3>
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
                       {isFrench
                         ? 'Ces clients n’ont aucune location liée dans la liste actuelle. Ils peuvent être de vrais comptes clients qui n’ont pas encore réservé, donc vérifiez-les avant toute suppression.'
@@ -5347,11 +5357,11 @@ const CustomerManagementDashboard = () => {
                           className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between"
                         >
                           <div className="flex min-w-0 items-center gap-3">
-                            <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ${getCustomerAvatarPalette(customer)}`}>
+                            <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white ${getCustomerAvatarPalette(customer)}`}>
                               {getInitial(customer.full_name)}
                             </div>
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-bold text-slate-950">
+                              <p className="truncate text-sm font-semibold text-slate-900">
                                 {customer.full_name || (isFrench ? 'Client inconnu' : 'Unknown customer')}
                               </p>
                               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
@@ -5367,7 +5377,7 @@ const CustomerManagementDashboard = () => {
                             </div>
                           </div>
                           <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
                               {isFrench ? '0 location' : '0 rentals'}
                             </span>
                             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500">
@@ -5376,7 +5386,7 @@ const CustomerManagementDashboard = () => {
                             <button
                               type="button"
                               onClick={() => openFullPageView(customer)}
-                              className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700 transition hover:bg-violet-100"
+                              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
                             >
                               {isFrench ? 'Voir le profil' : 'View profile'}
                             </button>
@@ -5398,7 +5408,7 @@ const CustomerManagementDashboard = () => {
                       type="button"
                       onClick={() => setShowCustomersWithoutRentalsReview(false)}
                       disabled={actionLoading}
-                      className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                      className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50"
                     >
                       {isFrench ? 'Fermer' : 'Close'}
                     </button>
@@ -5406,7 +5416,7 @@ const CustomerManagementDashboard = () => {
                       type="button"
                       onClick={cleanupCustomersWithoutRentals}
                       disabled={actionLoading || customersWithoutRentals.length === 0}
-                      className="inline-flex items-center justify-center rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex items-center justify-center rounded-2xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <Trash2 className="mr-2 h-4 w-4" />
                       {actionLoading
@@ -5425,52 +5435,52 @@ const CustomerManagementDashboard = () => {
           <div className="fixed inset-0 z-50 overflow-y-auto">
             <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
               <div 
-                className="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75"
+                className="fixed inset-0 bg-slate-950/60 transition-opacity"
                 onClick={() => setDeleteModalOpen(false)}
               ></div>
 
-              <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+              <div className="inline-block transform overflow-hidden rounded-[28px] border border-slate-200 bg-white text-left align-bottom shadow-[0_20px_60px_rgba(15,23,42,0.18)] transition-all sm:my-8 sm:w-full sm:max-w-lg sm:align-middle">
                 <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
                   <div className="sm:flex sm:items-start">
-                    <div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
-                      <AlertCircle className="h-6 w-6 text-red-600" />
+                    <div className="mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-rose-100 text-rose-700 sm:mx-0 sm:h-10 sm:w-10">
+                      <AlertCircle className="h-6 w-6" />
                     </div>
                     <div className="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
-                      <h3 className="text-lg leading-6 font-medium text-gray-900">
+                      <h3 className="text-lg font-semibold leading-6 text-slate-900">
                         Supprimer le client
                       </h3>
                       <div className="mt-2">
                         {selectedCustomer?.totalRentals > 0 ? (
                           <>
-                            <p className="text-sm text-gray-500">
+                            <p className="text-sm text-slate-500">
                               Êtes-vous sûr de vouloir supprimer <span className="font-semibold">{selectedCustomer?.full_name}</span> ?
                             </p>
-                            <p className="mt-2 text-sm font-semibold text-red-600">
+                            <p className="mt-2 text-sm font-semibold text-rose-700">
                               Ce client est lié à {selectedCustomer.totalRentals} location{selectedCustomer.totalRentals === 1 ? '' : 's'}.
                             </p>
-                            <p className="mt-1 text-sm text-gray-600">
+                            <p className="mt-1 text-sm text-slate-600">
                               La suppression du client est bloquée tant que des locations liées existent encore. Cela protège la maintenance, la finance, le carburant, les médias et les autres enregistrements liés aux locations contre une suppression inattendue.
                             </p>
-                            <p className="mt-2 text-xs font-medium uppercase tracking-[0.16em] text-amber-600">
+                            <p className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-violet-500">
                               Propriétaire uniquement
                             </p>
                           </>
                         ) : (
                           <>
-                            <p className="text-sm text-gray-500">
+                            <p className="text-sm text-slate-500">
                               Êtes-vous sûr de vouloir supprimer <span className="font-semibold">{selectedCustomer?.full_name}</span> ?
                               Cette action est irréversible et supprimera définitivement toutes les données du client.
                             </p>
-                            <p className="mt-2 text-xs font-medium uppercase tracking-[0.16em] text-amber-600">
+                            <p className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-violet-500">
                               Propriétaire uniquement
                             </p>
                           </>
                         )}
-                        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3">
-                          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-red-700">
+                        <div className="mt-4 rounded-3xl border border-rose-200 bg-rose-50 p-3">
+                          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-rose-700">
                             Tapez `delete` pour confirmer
                           </p>
-                          <p className="mt-1 text-sm text-red-700">
+                          <p className="mt-1 text-sm text-rose-700">
                             Copiez le mot <span className="font-bold">delete</span> et collez-le ci-dessous pour continuer.
                           </p>
                           <input
@@ -5478,14 +5488,14 @@ const CustomerManagementDashboard = () => {
                             value={deleteConfirmationText}
                             onChange={(e) => setDeleteConfirmationText(e.target.value)}
                             placeholder="Tapez delete"
-                            className="mt-3 w-full rounded-md border border-red-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-200"
+                            className="mt-3 w-full rounded-2xl border border-rose-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-100"
                           />
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
-                <div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                <div className="border-t border-slate-100 bg-white px-4 py-3 sm:flex sm:flex-row-reverse sm:px-6">
                   <button
                     type="button"
                     onClick={handleDeleteCustomer}
@@ -5494,7 +5504,7 @@ const CustomerManagementDashboard = () => {
                       selectedCustomer?.totalRentals > 0 ||
                       deleteConfirmationText.trim().toLowerCase() !== 'delete'
                     }
-                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+                    className="inline-flex w-full justify-center rounded-2xl border border-transparent bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-100 sm:ml-3 sm:w-auto disabled:opacity-50"
                   >
                     {selectedCustomer?.totalRentals > 0 ? 'Lié à une location' : actionLoading ? 'Suppression...' : 'Supprimer'}
                   </button>
@@ -5505,7 +5515,7 @@ const CustomerManagementDashboard = () => {
                       setDeleteConfirmationText('');
                     }}
                     disabled={actionLoading}
-                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+                    className="mt-3 inline-flex w-full justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-violet-100 sm:mt-0 sm:ml-3 sm:w-auto disabled:opacity-50"
                   >
                     Annuler
                   </button>
@@ -5520,32 +5530,32 @@ const CustomerManagementDashboard = () => {
           <div className="fixed inset-0 z-50 overflow-y-auto">
             <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
               <div 
-                className="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75"
+                className="fixed inset-0 bg-slate-950/60 transition-opacity"
                 onClick={() => setShowBulkDeleteModal(false)}
               ></div>
 
-              <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+              <div className="inline-block transform overflow-hidden rounded-[28px] border border-slate-200 bg-white text-left align-bottom shadow-[0_20px_60px_rgba(15,23,42,0.18)] transition-all sm:my-8 sm:w-full sm:max-w-lg sm:align-middle">
                 <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
                   <div className="sm:flex sm:items-start">
-                    <div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
-                      <AlertCircle className="h-6 w-6 text-red-600" />
+                    <div className="mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-rose-100 text-rose-700 sm:mx-0 sm:h-10 sm:w-10">
+                      <AlertCircle className="h-6 w-6" />
                     </div>
                     <div className="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
-                      <h3 className="text-lg leading-6 font-medium text-gray-900">
+                      <h3 className="text-lg font-semibold leading-6 text-slate-900">
                         Supprimer plusieurs clients
                       </h3>
                       <div className="mt-2">
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-slate-500">
                           Êtes-vous sûr de vouloir supprimer les clients sélectionnés ?
                         </p>
-                        <p className="text-sm text-gray-500 mt-2">
+                        <p className="mt-2 text-sm text-slate-500">
                           <span className="font-semibold">Remarque :</span> Seuls les clients sans historique de location peuvent être supprimés. Les clients ayant des locations existantes seront ignorés automatiquement.
                         </p>
-                        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3">
-                          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-red-700">
+                        <div className="mt-4 rounded-3xl border border-rose-200 bg-rose-50 p-3">
+                          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-rose-700">
                             Tapez `delete` pour confirmer
                           </p>
-                          <p className="mt-1 text-sm text-red-700">
+                          <p className="mt-1 text-sm text-rose-700">
                             Copiez le mot <span className="font-bold">delete</span> et collez-le ci-dessous pour continuer.
                           </p>
                           <input
@@ -5553,19 +5563,19 @@ const CustomerManagementDashboard = () => {
                             value={bulkDeleteConfirmationText}
                             onChange={(e) => setBulkDeleteConfirmationText(e.target.value)}
                             placeholder="Tapez delete"
-                            className="mt-3 w-full rounded-md border border-red-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-200"
+                            className="mt-3 w-full rounded-2xl border border-rose-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-100"
                           />
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
-                <div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                <div className="border-t border-slate-100 bg-white px-4 py-3 sm:flex sm:flex-row-reverse sm:px-6">
                   <button
                     type="button"
                     onClick={confirmBulkDelete}
                     disabled={actionLoading || bulkDeleteConfirmationText.trim().toLowerCase() !== 'delete'}
-                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+                    className="inline-flex w-full justify-center rounded-2xl border border-transparent bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-100 sm:ml-3 sm:w-auto disabled:opacity-50"
                   >
                     {actionLoading ? 'Suppression...' : 'Supprimer la sélection'}
                   </button>
@@ -5576,7 +5586,7 @@ const CustomerManagementDashboard = () => {
                       setBulkDeleteConfirmationText('');
                     }}
                     disabled={actionLoading}
-                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+                    className="mt-3 inline-flex w-full justify-center rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-violet-100 sm:mt-0 sm:ml-3 sm:w-auto disabled:opacity-50"
                   >
                     Annuler
                   </button>

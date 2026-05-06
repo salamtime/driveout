@@ -1291,7 +1291,9 @@ const Rentals = () => {
   const [customerDetailsDrawer, setCustomerDetailsDrawer] = useState({
     isOpen: false,
     customerId: null,
-    rental: null
+    rental: null,
+    secondDrivers: [],
+    viewMode: 'customer'
   });
 
   const applyRentalSummarySnapshot = useCallback((snapshot) => {
@@ -1982,8 +1984,10 @@ const Rentals = () => {
     const params = new URLSearchParams(location.search);
     const statusFromUrl = params.get('status') || 'all';
     const paymentStatusFromUrl = params.get('paymentStatus') || 'all';
+    const searchFromUrl = params.get('search') || '';
     setStatusFilter(statusFromUrl);
     setPaymentStatusFilter(paymentStatusFromUrl);
+    setSearchTerm(searchFromUrl);
   }, [location.search]);
 
   useEffect(() => {
@@ -2356,13 +2360,80 @@ const Rentals = () => {
     navigate(`/admin/rentals/${rental.id}`);
   };
 
-  const handleViewCustomerDetails = (rental) => {
+  const loadRentalDetailsDrawerContext = async (rental) => {
+    if (!rental?.id) {
+      return { rental, secondDrivers: [] };
+    }
+
+    const [rentalResult, secondDriversResult] = await Promise.allSettled([
+      supabase
+        .from('app_4c3a7a6153_rentals')
+        .select(`
+          *,
+          vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*)
+        `)
+        .eq('id', rental.id)
+        .maybeSingle(),
+      supabase
+        .from('app_4c3a7a6153_rental_second_drivers')
+        .select('*')
+        .eq('rental_id', rental.id)
+    ]);
+
+    let hydratedRental = rental;
+    if (rentalResult.status === 'fulfilled' && !rentalResult.value?.error && rentalResult.value?.data) {
+      hydratedRental = normalizeRentalLifecycle({
+        ...rental,
+        ...rentalResult.value.data,
+        vehicle: rentalResult.value.data.vehicle || rental.vehicle,
+      });
+    } else if (rentalResult.status === 'fulfilled' && rentalResult.value?.error) {
+      console.warn('Failed to hydrate rental details drawer row:', rentalResult.value.error);
+    } else if (rentalResult.status === 'rejected') {
+      console.warn('Failed to hydrate rental details drawer row:', rentalResult.reason);
+    }
+
+    let secondDrivers = [];
+    if (secondDriversResult.status === 'fulfilled' && !secondDriversResult.value?.error) {
+      secondDrivers = secondDriversResult.value?.data || [];
+    } else if (secondDriversResult.status === 'fulfilled' && secondDriversResult.value?.error) {
+      console.warn('Failed to load drawer second drivers:', secondDriversResult.value.error);
+    } else if (secondDriversResult.status === 'rejected') {
+      console.warn('Failed to load drawer second drivers:', secondDriversResult.reason);
+    }
+
+    if (secondDrivers.length === 0 && hydratedRental?.second_driver_name) {
+      secondDrivers = [{
+        id: `legacy_${hydratedRental.id}`,
+        full_name: hydratedRental.second_driver_name,
+        licence_number: hydratedRental.second_driver_license || hydratedRental.second_driver_licence_number,
+        id_number: hydratedRental.second_driver_id_number,
+        date_of_birth: hydratedRental.second_driver_dob,
+        nationality: hydratedRental.second_driver_nationality,
+        id_scan_url: hydratedRental.second_driver_id_image,
+        is_legacy: true,
+      }];
+    }
+
+    return {
+      rental: {
+        ...hydratedRental,
+        second_drivers: secondDrivers,
+      },
+      secondDrivers,
+    };
+  };
+
+  const handleViewCustomerDetails = async (rental) => {
     const customerId = rental.customer_id || rental.id;
+    const drawerContext = await loadRentalDetailsDrawerContext(rental);
     
     setCustomerDetailsDrawer({
       isOpen: true,
       customerId: customerId,
-      rental: rental
+      rental: drawerContext.rental,
+      secondDrivers: drawerContext.secondDrivers,
+      viewMode: 'customer'
     });
   };
 
@@ -4833,9 +4904,11 @@ const Rentals = () => {
 
       <ViewCustomerDetailsDrawer
         isOpen={customerDetailsDrawer.isOpen}
-        onClose={() => setCustomerDetailsDrawer({ isOpen: false, customerId: null, rental: null })}
+        onClose={() => setCustomerDetailsDrawer({ isOpen: false, customerId: null, rental: null, secondDrivers: [], viewMode: 'customer' })}
         customerId={customerDetailsDrawer.customerId}
         rental={customerDetailsDrawer.rental}
+        secondDrivers={customerDetailsDrawer.secondDrivers}
+        viewMode={customerDetailsDrawer.viewMode}
       />
     </div>
   );

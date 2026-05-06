@@ -16,6 +16,24 @@ import {
   requireCurrentOrganizationId,
 } from './OrganizationService.js';
 
+const CUSTOMER_TABLE = 'app_4c3a7a6153_customers';
+
+const isMissingOrganizationColumnError = (error) =>
+  error?.code === '42703' && String(error?.message || '').includes('organization_id');
+
+const runCustomerReadQuery = async (buildQuery, organizationId) => {
+  const scopedResult = await (organizationId
+    ? applyOrganizationScope(buildQuery(), organizationId)
+    : buildQuery());
+
+  if (organizationId && isMissingOrganizationColumnError(scopedResult.error)) {
+    console.warn('Customer table has no organization_id column; retrying customer read without organization filter.');
+    return buildQuery();
+  }
+
+  return scopedResult;
+};
+
 /**
  * EnhancedUnifiedCustomerService - Complete customer management with ID scanning integration
  * 
@@ -1111,14 +1129,13 @@ class EnhancedUnifiedCustomerService {
     
     try {
       const organizationId = await getCurrentOrganizationId();
-      const { data, error } = await applyOrganizationScope(
-        supabase
-          .from('app_4c3a7a6153_customers')
+      const buildQuery = () => supabase
+          .from(CUSTOMER_TABLE)
           .select('*')
           .eq('id', customerId)
-          .single(),
-        organizationId
-      );
+          .single();
+
+      const { data, error } = await runCustomerReadQuery(buildQuery, organizationId);
       
       if (error) {
         console.error('❌ Error fetching customer:', error);
@@ -1142,24 +1159,25 @@ class EnhancedUnifiedCustomerService {
     
     try {
       const organizationId = await getCurrentOrganizationId();
-      let query = applyOrganizationScope(
-        supabase
-          .from('app_4c3a7a6153_customers')
+      const buildQuery = () => {
+        let query = supabase
+          .from(CUSTOMER_TABLE)
           .select('*')
-          .order('created_at', { ascending: false }),
-        organizationId
-      );
+          .order('created_at', { ascending: false });
       
-      // Apply filters
-      if (filters.search) {
-        query = query.or(`full_name.ilike.%${filters.search}%,phone.ilike.%${filters.search}%,email.ilike.%${filters.search}%`);
-      }
+        // Apply filters
+        if (filters.search) {
+          query = query.or(`full_name.ilike.%${filters.search}%,phone.ilike.%${filters.search}%,email.ilike.%${filters.search}%`);
+        }
       
-      if (filters.nationality) {
-        query = query.eq('nationality', filters.nationality);
-      }
-      
-      const { data, error } = await query;
+        if (filters.nationality) {
+          query = query.eq('nationality', filters.nationality);
+        }
+
+        return query;
+      };
+
+      const { data, error } = await runCustomerReadQuery(buildQuery, organizationId);
       
       if (error) {
         console.error('❌ Error fetching customers:', error);
@@ -1238,14 +1256,14 @@ class EnhancedUnifiedCustomerService {
     
     try {
       const organizationId = await getCurrentOrganizationId();
-      const { data, error } = await applyOrganizationScope(
-        supabase
-          .from('app_4c3a7a6153_customers')
+      const buildQuery = () => supabase
+          .from(CUSTOMER_TABLE)
           .select('*')
           .or(`full_name.ilike.%${searchTerm}%,phone.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,licence_number.ilike.%${searchTerm}%,id_number.ilike.%${searchTerm}%`)
-          .order('created_at', { ascending: false }),
-        organizationId
-      );
+          .order('created_at', { ascending: false })
+          .limit(20);
+
+      const { data, error } = await runCustomerReadQuery(buildQuery, organizationId);
       
       if (error) {
         console.error('❌ Error searching customers:', error);

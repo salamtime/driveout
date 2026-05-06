@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   ArrowLeft,
   BadgeCheck,
   CalendarDays,
+  CheckCircle,
   Compass,
   CreditCard,
   Download,
@@ -23,6 +24,7 @@ import {
   Clock,
   MessageSquare,
   Send,
+  Trash2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Button } from '@/components/ui/button';
@@ -36,9 +38,18 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { buildAdminMarketplaceListingPath } from '../../utils/marketplaceAdminLinks';
 import MessageWidget from '../../components/messages/MessageWidget';
-import AccountWorkspaceHero from '../../components/account/AccountWorkspaceHero';
+import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import useAdminModalFocus from '../../hooks/useAdminModalFocus';
 import { mergeCustomerScanHistory } from '../../utils/customerIdentity';
+import {
+  ADMIN_EYEBROW_CLASS,
+  ADMIN_MAIN_CARD_CLASS,
+  ADMIN_OUTLINE_BUTTON_CLASS,
+  ADMIN_SOFT_CARD_CLASS,
+} from '../../utils/adminSurfaceStyles';
+
+const CUSTOMER_TABLE = 'app_4c3a7a6153_customers';
+const SECOND_DRIVER_TABLE = 'app_4c3a7a6153_rental_second_drivers';
 
 const formatDate = (value) => {
   if (!value) return 'Not available';
@@ -64,6 +75,41 @@ const compactIdentifier = (value, prefix = 'ID') => {
 const compactCustomerId = (value) => compactIdentifier(value, 'CUST');
 const compactUserId = (value) => compactIdentifier(value, 'USER');
 const compactListingId = (value) => compactIdentifier(value, 'LIST');
+const normalizeProfilePhone = (value) => String(value || '').replace(/[^\d+]/g, '').trim();
+
+const getRentalHistoryTimestamp = (rental) => (
+  rental?.updated_at ||
+  rental?.completed_at ||
+  rental?.started_at ||
+  rental?.rental_end_date ||
+  rental?.rental_start_date ||
+  rental?.created_at ||
+  0
+);
+
+const getRentalHistoryStatus = (rental) => {
+  const normalized = String(
+    rental?.rental_status ||
+    rental?.status ||
+    rental?.payment_status ||
+    ''
+  ).trim().toLowerCase();
+
+  if (['active', 'ongoing', 'in_progress', 'started'].includes(normalized)) {
+    return 'active';
+  }
+  if (['completed', 'finished', 'closed', 'returned'].includes(normalized)) {
+    return 'completed';
+  }
+  if (['cancelled', 'canceled', 'no_show', 'rejected'].includes(normalized)) {
+    return 'cancelled';
+  }
+  if (['scheduled', 'confirmed', 'pending'].includes(normalized)) {
+    return 'scheduled';
+  }
+
+  return normalized || 'unknown';
+};
 
 const buildCustomerAccountThreadKey = ({ entityId, email }) => {
   const resolvedEntityId = String(entityId || '').trim();
@@ -105,7 +151,7 @@ const getVerificationLabel = (summary) => {
 const getVerificationTone = (label) => {
   if (label === 'Verified') return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
   if (label === 'Needs changes') return 'bg-rose-50 text-rose-700 ring-rose-200';
-  if (label === 'Pending review') return 'bg-amber-50 text-amber-700 ring-amber-200';
+  if (label === 'Pending review') return 'bg-slate-100 text-slate-600 ring-slate-200';
   return 'bg-slate-100 text-slate-600 ring-slate-200';
 };
 
@@ -131,7 +177,7 @@ const getVerificationDocumentStatusMeta = (status) => {
   }
   return {
     label: 'Pending review',
-    className: 'bg-amber-50 text-amber-700 ring-amber-200',
+    className: 'bg-slate-100 text-slate-600 ring-slate-200',
   };
 };
 
@@ -171,9 +217,46 @@ const mergeVerificationDocuments = (...groups) => {
 };
 
 const normalizeDocumentUrl = (value) => {
-  const normalized = String(value || '').trim();
+  const normalized = typeof value === 'object' && value !== null
+    ? String(value.url || value.public_url || value.publicUrl || value.path || '').trim()
+    : String(value || '').trim();
   if (!normalized || normalized === 'null' || normalized === 'undefined') return '';
   return normalized;
+};
+
+const copyTextToClipboard = async (value) => {
+  const text = String(value || '').trim();
+  if (!text) {
+    throw new Error('Nothing to copy');
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  if (typeof document === 'undefined') {
+    throw new Error('Clipboard unavailable');
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', '');
+  textArea.style.position = 'absolute';
+  textArea.style.left = '-9999px';
+  document.body.appendChild(textArea);
+  textArea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textArea);
+};
+
+const dedupeNormalizedUrls = (values = []) => (
+  [...new Set((Array.isArray(values) ? values : []).map((value) => normalizeDocumentUrl(value)).filter(Boolean))]
+);
+
+const withoutNormalizedUrl = (values = [], removedUrl = '') => {
+  const targetUrl = normalizeDocumentUrl(removedUrl);
+  return dedupeNormalizedUrls(values).filter((value) => value !== targetUrl);
 };
 
 const isImagePreviewUrl = (value) => /\.(jpg|jpeg|png|webp|gif)$/i.test(String(value || '').trim());
@@ -312,7 +395,7 @@ const buildVerificationComparisonRows = (document = {}, profile = {}) => {
 
 const getComparisonBadgeTone = (matchState) => {
   if (matchState === 'match') return 'bg-emerald-100 text-emerald-700';
-  if (matchState === 'mismatch') return 'bg-amber-100 text-amber-700';
+  if (matchState === 'mismatch') return 'bg-rose-100 text-rose-700';
   return 'bg-slate-200 text-slate-600';
 };
 
@@ -434,15 +517,15 @@ const buildVerificationIdentityFallback = (documents = []) => {
 };
 
 const SummaryCard = ({ icon: Icon, eyebrow, title, description }) => (
-  <div className="rounded-[28px] border border-violet-100 bg-white p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+  <div className={ADMIN_MAIN_CARD_CLASS}>
     <div className="flex items-start gap-3">
-      <div className="rounded-2xl bg-violet-50 p-3 text-violet-700">
+      <div className="rounded-2xl bg-violet-100 p-3 text-violet-700">
         <Icon className="h-5 w-5" />
       </div>
       <div className="min-w-0">
-        <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-400">{eyebrow}</p>
-        <h2 className="mt-2 text-lg font-black tracking-tight text-slate-950">{title}</h2>
-        <p className="mt-2 text-sm font-medium leading-6 text-slate-500">{description}</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{eyebrow}</p>
+        <h2 className="mt-2 text-lg font-semibold text-slate-900">{title}</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-500">{description}</p>
       </div>
     </div>
   </div>
@@ -452,19 +535,19 @@ const QuickActionCard = ({ icon: Icon, label, hint, href, onClick, tone = 'viole
   const toneClass =
     tone === 'emerald'
       ? 'bg-emerald-50 text-emerald-700'
-      : tone === 'amber'
-        ? 'bg-amber-50 text-amber-700'
-        : 'bg-violet-50 text-violet-700';
+    : tone === 'amber'
+        ? 'bg-slate-100 text-slate-700'
+        : 'bg-violet-100 text-violet-700';
 
   const content = (
-    <div className="rounded-[26px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)] transition hover:border-violet-200 hover:bg-violet-50/40">
+    <div className={`${ADMIN_SOFT_CARD_CLASS} transition hover:bg-slate-50`}>
       <div className="flex items-start gap-3">
         <div className={`rounded-2xl p-3 ${toneClass}`}>
           <Icon className="h-5 w-5" />
         </div>
         <div className="min-w-0">
-          <p className="text-sm font-black text-slate-950">{label}</p>
-          <p className="mt-1 text-sm font-medium leading-6 text-slate-500">{hint}</p>
+          <p className="text-sm font-semibold text-slate-900">{label}</p>
+          <p className="mt-1 text-sm leading-6 text-slate-500">{hint}</p>
         </div>
       </div>
     </div>
@@ -476,11 +559,11 @@ const QuickActionCard = ({ icon: Icon, label, hint, href, onClick, tone = 'viole
 };
 
 const SectionShell = ({ title, description, children }) => (
-  <section className="rounded-[32px] border border-violet-100 bg-white p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)] sm:p-6">
+  <section className={ADMIN_MAIN_CARD_CLASS}>
     <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
       <div>
-        <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-violet-500">{title}</p>
-        <p className="mt-2 text-sm font-medium leading-6 text-slate-500">{description}</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">{title}</p>
+        <p className="mt-2 text-sm leading-6 text-slate-500">{description}</p>
       </div>
     </div>
     <div className="mt-5">{children}</div>
@@ -490,22 +573,22 @@ const SectionShell = ({ title, description, children }) => (
 const CompactTimelineCard = ({ icon: Icon, title, meta, href, tone = 'slate' }) => {
   const toneClass =
     tone === 'violet'
-      ? 'bg-violet-50 text-violet-700'
+      ? 'bg-violet-100 text-violet-700'
       : tone === 'emerald'
         ? 'bg-emerald-50 text-emerald-700'
-        : tone === 'amber'
-          ? 'bg-amber-50 text-amber-700'
+      : tone === 'amber'
+          ? 'bg-slate-100 text-slate-700'
           : 'bg-slate-100 text-slate-700';
 
   const content = (
-    <div className="rounded-[24px] border border-slate-100 bg-slate-50/70 p-4 transition-colors hover:bg-slate-50">
+    <div className={`${ADMIN_SOFT_CARD_CLASS} transition-colors hover:bg-slate-50`}>
       <div className="flex items-start gap-3">
         <div className={`rounded-2xl p-2.5 ${toneClass}`}>
           <Icon className="h-4 w-4" />
         </div>
         <div className="min-w-0">
-          <p className="text-sm font-bold text-slate-950">{title}</p>
-          {meta ? <p className="mt-1 text-sm font-medium leading-6 text-slate-500">{meta}</p> : null}
+          <p className="text-sm font-semibold text-slate-900">{title}</p>
+          {meta ? <p className="mt-1 text-sm leading-6 text-slate-500">{meta}</p> : null}
         </div>
       </div>
     </div>
@@ -518,8 +601,8 @@ const CompactTimelineCard = ({ icon: Icon, title, meta, href, tone = 'slate' }) 
 const KeyValueGrid = ({ items }) => (
   <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
     {items.map((item) => (
-      <div key={item.label} className="rounded-[24px] border border-slate-100 bg-slate-50/70 px-4 py-4">
-        <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">{item.label}</p>
+      <div key={item.label} className="rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-4">
+        <p className={ADMIN_EYEBROW_CLASS}>{item.label}</p>
         <p className="mt-2 text-sm font-semibold text-slate-900">{item.value || 'Not available'}</p>
       </div>
     ))}
@@ -529,19 +612,19 @@ const KeyValueGrid = ({ items }) => (
 const AlertBanner = ({ tone = 'slate', title, children }) => {
   const toneClass =
     tone === 'amber'
-      ? 'border-amber-200 bg-amber-50/90 text-amber-900'
-      : tone === 'red'
-        ? 'border-red-200 bg-red-50/90 text-red-900'
-        : tone === 'emerald'
+      ? 'border-slate-200 bg-slate-50 text-slate-800'
+    : tone === 'red'
+        ? 'border-rose-200 bg-rose-50/90 text-rose-900'
+      : tone === 'emerald'
           ? 'border-emerald-200 bg-emerald-50/90 text-emerald-900'
           : 'border-slate-200 bg-slate-50 text-slate-800';
 
   return (
-    <div className={`rounded-[24px] border p-4 shadow-sm ${toneClass}`}>
+    <div className={`rounded-3xl border p-4 shadow-sm ${toneClass}`}>
       <div className="flex items-start gap-3">
         <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
         <div className="min-w-0">
-          <p className="text-sm font-bold">{title}</p>
+          <p className="text-sm font-semibold">{title}</p>
           <div className="mt-1 text-sm leading-6">{children}</div>
         </div>
       </div>
@@ -550,7 +633,7 @@ const AlertBanner = ({ tone = 'slate', title, children }) => {
 };
 
 const PreviewCard = ({ title, subtitle, imageUrl, href }) => (
-  <div className="rounded-[26px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
+  <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
     <div className="flex items-start gap-4">
       <div className="h-24 w-24 shrink-0 overflow-hidden rounded-[22px] border border-slate-100 bg-slate-50">
         {imageUrl ? (
@@ -562,15 +645,15 @@ const PreviewCard = ({ title, subtitle, imageUrl, href }) => (
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-xl font-black tracking-tight text-violet-700">{title}</p>
-        {subtitle ? <p className="mt-2 text-sm font-bold uppercase tracking-[0.22em] text-slate-400">{subtitle}</p> : null}
+        <p className="text-lg font-semibold text-slate-900">{title}</p>
+        {subtitle ? <p className={`mt-2 ${ADMIN_EYEBROW_CLASS}`}>{subtitle}</p> : null}
         {href ? (
           <div className="mt-4">
             <a
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              className={ADMIN_OUTLINE_BUTTON_CLASS}
             >
               <Eye className="h-4 w-4" />
               Open document
@@ -582,7 +665,15 @@ const PreviewCard = ({ title, subtitle, imageUrl, href }) => (
   </div>
 );
 
-const VerificationDocumentCard = ({ title, document, reviewHref, comparisonProfile }) => {
+const VerificationDocumentCard = ({
+  title,
+  document,
+  reviewHref,
+  comparisonProfile,
+  canDelete = false,
+  isDeleting = false,
+  onDelete = null,
+}) => {
   const normalizedDocumentStatus = String(document?.status || '').toLowerCase();
   const documentNeedsChange = ['rejected', 'suspended'].includes(normalizedDocumentStatus);
   const statusLabel = getVerificationLabel({
@@ -606,22 +697,22 @@ const VerificationDocumentCard = ({ title, document, reviewHref, comparisonProfi
     : 0;
 
   return (
-    <div className="rounded-[28px] border border-violet-100 bg-white p-4 shadow-[0_16px_36px_rgba(15,23,42,0.05)]">
+    <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
       <div className="flex items-start gap-4">
         <div className="h-24 w-24 shrink-0 overflow-hidden rounded-[22px] border border-slate-100 bg-slate-50">
           {previewUrl && canPreviewImage ? (
             <img src={previewUrl} alt={title} className="h-full w-full object-cover" />
           ) : (
-            <div className="flex h-full w-full items-center justify-center text-violet-300">
+            <div className="flex h-full w-full items-center justify-center text-slate-300">
               <FileBadge2 className="h-10 w-10" />
             </div>
           )}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xl font-black tracking-tight text-violet-700">{title}</p>
+            <p className="text-lg font-semibold text-slate-900">{title}</p>
             {documentNeedsChange ? (
-              <span className="inline-flex items-center rounded-full bg-rose-100 px-3 py-1 text-xs font-bold text-rose-700 ring-1 ring-rose-200">
+              <span className="inline-flex items-center rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700 ring-1 ring-rose-200">
                 Needs change
               </span>
             ) : null}
@@ -638,11 +729,11 @@ const VerificationDocumentCard = ({ title, document, reviewHref, comparisonProfi
           </div>
           {ocrAttempted ? (
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${ocrSucceeded ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+              <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${ocrSucceeded ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
                 {ocrSucceeded ? 'Scan completed' : 'OCR attempted'}
               </span>
               {confirmedFieldsCount > 0 ? (
-                <span className="inline-flex items-center rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+                <span className="inline-flex items-center rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700">
                   Customer confirmed {confirmedFieldsCount} field{confirmedFieldsCount === 1 ? '' : 's'}
                 </span>
               ) : null}
@@ -657,12 +748,12 @@ const VerificationDocumentCard = ({ title, document, reviewHref, comparisonProfi
             <div className="mt-4 rounded-[22px] border border-slate-200 bg-slate-50/80 p-4">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">Scanned details</p>
+                  <p className={ADMIN_EYEBROW_CLASS}>Scanned details</p>
                   <p className="mt-1 text-sm font-semibold text-slate-900">
                     Compare the customer profile with the scanned document values.
                   </p>
                 </div>
-                <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700">
+                <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700">
                   Admin review
                 </span>
               </div>
@@ -670,22 +761,22 @@ const VerificationDocumentCard = ({ title, document, reviewHref, comparisonProfi
                 {comparisonRows.map((row) => (
                   <div key={`${document?.id || title}-${row.key}`} className="rounded-[18px] border border-white bg-white/90 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-sm font-black text-slate-950">{row.label}</p>
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${getComparisonBadgeTone(row.matchState)}`}>
+                      <p className="text-sm font-semibold text-slate-900">{row.label}</p>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getComparisonBadgeTone(row.matchState)}`}>
                         {getComparisonBadgeLabel(row.matchState)}
                       </span>
                     </div>
                     <div className="mt-3 grid gap-3 xl:grid-cols-3">
                       <div className="min-w-0 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">Current profile</p>
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Current profile</p>
                         <p className="mt-2 min-w-0 break-all text-sm font-semibold leading-6 text-slate-900">{row.profileValue || 'Not provided'}</p>
                       </div>
                       <div className="min-w-0 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">OCR extracted</p>
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">OCR extracted</p>
                         <p className="mt-2 min-w-0 break-all text-sm font-semibold leading-6 text-slate-900">{row.extractedValue || 'Not detected'}</p>
                       </div>
                       <div className="min-w-0 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">Customer confirmed</p>
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Customer confirmed</p>
                         <p className="mt-2 min-w-0 break-all text-sm font-semibold leading-6 text-slate-900">{row.confirmedValue || 'Not provided'}</p>
                       </div>
                     </div>
@@ -700,16 +791,27 @@ const VerificationDocumentCard = ({ title, document, reviewHref, comparisonProfi
                 href={previewUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                className={ADMIN_OUTLINE_BUTTON_CLASS}
               >
                 <Eye className="h-4 w-4" />
                 Preview
               </a>
             ) : null}
+            {canDelete && onDelete ? (
+              <button
+                type="button"
+                onClick={onDelete}
+                disabled={isDeleting}
+                className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Trash2 className="h-4 w-4" />
+                {isDeleting ? 'Deleting…' : 'Delete ID'}
+              </button>
+            ) : null}
             {reviewHref ? (
               <Link
                 to={reviewHref}
-                className="inline-flex items-center gap-2 rounded-full bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700"
+                className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700"
               >
                 <ShieldCheck className="h-4 w-4" />
                 Open review
@@ -741,19 +843,24 @@ const ThreadPreviewCard = ({ thread, openHref }) => {
   const latestMessage = recentMessages[0] || null;
 
   return (
-    <div className="rounded-[26px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]">
+    <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-violet-500">Active thread</p>
-          <p className="mt-2 text-lg font-black tracking-tight text-slate-950">
-            {thread?.subject || thread?.entity_email || 'Shared customer thread'}
-          </p>
-          <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
-            {latestMessage?.body || thread?.latest_message || 'No recent message yet.'}
-          </p>
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-violet-100 bg-violet-50 text-violet-600">
+            <MessageSquare className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-violet-500">Active thread</p>
+            <p className="mt-2 text-lg font-semibold text-slate-900">
+              {thread?.subject || thread?.entity_email || 'Shared customer thread'}
+            </p>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              {latestMessage?.body || thread?.latest_message || 'No recent message yet.'}
+            </p>
+          </div>
         </div>
         <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
-          <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700">
+          <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700">
             {thread?.family ? String(thread.family).replace(/_/g, ' ') : 'shared thread'}
           </span>
           <span className="text-xs font-semibold text-slate-400">
@@ -767,7 +874,7 @@ const ThreadPreviewCard = ({ thread, openHref }) => {
           {recentMessages.map((message) => (
             <div key={message.id || `${message.created_at}-${message.body}`} className="rounded-[20px] border border-slate-100 bg-slate-50/80 px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+                <p className={ADMIN_EYEBROW_CLASS}>
                   {message.sender_name || message.sender_email || message.sender_role || 'Message'}
                 </p>
                 <p className="text-xs font-semibold text-slate-400">{formatDateTime(message.created_at)}</p>
@@ -781,7 +888,7 @@ const ThreadPreviewCard = ({ thread, openHref }) => {
       <div className="mt-4 flex justify-end">
         <Link
           to={openHref}
-          className="inline-flex items-center gap-2 rounded-full bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700"
+          className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700"
         >
           <MessageSquare className="h-4 w-4" />
           Open in Message Center
@@ -794,7 +901,7 @@ const ThreadPreviewCard = ({ thread, openHref }) => {
 const SecondDriverCard = ({ driver, index }) => {
   const imageUrl = driver?.id_scan_url || driver?.customer_id_image || driver?.id_image || '';
   return (
-    <div className="rounded-[26px] border border-violet-100 bg-slate-50/70 p-4 shadow-sm">
+    <div className={`${ADMIN_SOFT_CARD_CLASS} shadow-sm`}>
       <div className="flex items-start gap-4">
         <div className="h-20 w-20 shrink-0 overflow-hidden rounded-[20px] border border-slate-100 bg-white">
           {imageUrl ? (
@@ -807,7 +914,7 @@ const SecondDriverCard = ({ driver, index }) => {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-base font-bold text-slate-950">{driver?.full_name || `Driver ${index + 1}`}</p>
+            <p className="text-base font-semibold text-slate-900">{driver?.full_name || `Driver ${index + 1}`}</p>
             <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-semibold text-violet-700">
               Driver #{index + 1}
             </span>
@@ -863,12 +970,23 @@ const AdminCustomerProfile = () => {
   const [messageDialogOpen, setMessageDialogOpen] = useState(false);
   const [messageBody, setMessageBody] = useState('');
   const [sendingMessage, setSendingMessage] = useState(false);
-  const [activeTab, setActiveTab] = useState('rentals');
+  const [customerProfileNote, setCustomerProfileNote] = useState('');
+  const [customerBanNote, setCustomerBanNote] = useState('');
+  const [customerAlertEnabled, setCustomerAlertEnabled] = useState(false);
+  const [customerNoteHistory, setCustomerNoteHistory] = useState([]);
+  const [savingCustomerNote, setSavingCustomerNote] = useState(false);
+  const [savingCustomerBan, setSavingCustomerBan] = useState(false);
+  const [deletingDocumentKey, setDeletingDocumentKey] = useState('');
+  const [showCopyConfirmation, setShowCopyConfirmation] = useState(false);
+  const [activeTab, setActiveTab] = useState('messages');
   const [previewDocument, setPreviewDocument] = useState(null);
   const [shellCounts, setShellCounts] = useState({
     rentals: 0,
     tours: 0,
   });
+  const customerNoteTextareaRef = useRef(null);
+  const customerBanTextareaRef = useRef(null);
+  const copyConfirmationTimeoutRef = useRef(null);
   useAdminModalFocus(Boolean(previewDocument), 'customer-profile-preview');
 
   const authUserIdParam = useMemo(() => {
@@ -952,6 +1070,29 @@ const AdminCustomerProfile = () => {
 
         const resolvedAuthUserId = authUserIdParam || userRecord?.id || '';
         const resolvedEmail = candidateEmail || String(userRecord?.email || '').trim().toLowerCase();
+        const resolvedPhone = normalizeProfilePhone(
+          customerRecord?.phone ||
+          userRecord?.phone ||
+          ''
+        );
+        const resolvedLicenceNumber = String(
+          customerRecord?.licence_number ||
+          customerRecord?.scan_metadata?.customer_licence_number ||
+          customerRecord?.scan_metadata?.licence_number ||
+          ''
+        ).trim();
+        const resolvedIdNumber = String(
+          customerRecord?.id_number ||
+          customerRecord?.scan_metadata?.customer_id_number ||
+          customerRecord?.scan_metadata?.id_number ||
+          ''
+        ).trim();
+        const resolvedCustomerName = String(
+          customerRecord?.full_name ||
+          userRecord?.full_name ||
+          userRecord?.name ||
+          ''
+        ).trim();
 
         if (rentalIdParam) {
           const { data } = await supabase
@@ -995,7 +1136,40 @@ const AdminCustomerProfile = () => {
           latestRentalRecord = data || null;
         }
 
-        const [verificationResult, rentalsResult, toursResult, rentalHistoryResult, secondDriversResult, sharedThreadsResult] = await Promise.all([
+        if (!latestRentalRecord && resolvedPhone) {
+          const { data } = await supabase
+            .from(TABLE_NAMES.RENTALS)
+            .select('*')
+            .eq('customer_phone', resolvedPhone)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          latestRentalRecord = data || null;
+        }
+
+        if (!latestRentalRecord && resolvedLicenceNumber) {
+          const { data } = await supabase
+            .from(TABLE_NAMES.RENTALS)
+            .select('*')
+            .or(`customer_licence_number.ilike.${resolvedLicenceNumber},licence_number.ilike.${resolvedLicenceNumber}`)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          latestRentalRecord = data || null;
+        }
+
+        if (!latestRentalRecord && resolvedIdNumber) {
+          const { data } = await supabase
+            .from(TABLE_NAMES.RENTALS)
+            .select('*')
+            .or(`customer_id_number.ilike.${resolvedIdNumber},id_number.ilike.${resolvedIdNumber}`)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          latestRentalRecord = data || null;
+        }
+
+        const [verificationResult, rentalsResult, toursResult, rentalHistoryResult, recentRentalsResult, phoneRentalsResult, licenceRentalsResult, idNumberRentalsResult, nameRentalsResult, sharedThreadsResult] = await Promise.all([
           resolvedAuthUserId
             ? (async () => {
                 const entityVerification = await VerificationService
@@ -1048,11 +1222,50 @@ const AdminCustomerProfile = () => {
                 .ilike('customer_email', resolvedEmail)
             : Promise.resolve({ count: 0 }),
           customerRecord?.id ? getCustomerRentalHistory(customerRecord.id) : Promise.resolve({ success: true, data: [] }),
-          (rentalIdParam || latestRentalRecord?.id)
+          resolvedEmail || resolvedAuthUserId
             ? supabase
-                .from('app_4c3a7a6153_rental_second_drivers')
+                .from(TABLE_NAMES.RENTALS)
                 .select('*')
-                .eq('rental_id', rentalIdParam || latestRentalRecord?.id)
+                .or(
+                  [
+                    resolvedEmail ? `customer_email.ilike.${resolvedEmail}` : null,
+                    resolvedAuthUserId ? `booked_by_user_id.eq.${resolvedAuthUserId}` : null,
+                  ].filter(Boolean).join(',')
+                )
+                .order('created_at', { ascending: false })
+                .limit(24)
+            : Promise.resolve({ data: [] }),
+          resolvedPhone
+            ? supabase
+                .from(TABLE_NAMES.RENTALS)
+                .select('*')
+                .eq('customer_phone', resolvedPhone)
+                .order('created_at', { ascending: false })
+                .limit(24)
+            : Promise.resolve({ data: [] }),
+          resolvedLicenceNumber
+            ? supabase
+                .from(TABLE_NAMES.RENTALS)
+                .select('*')
+                .or(`customer_licence_number.ilike.${resolvedLicenceNumber},licence_number.ilike.${resolvedLicenceNumber}`)
+                .order('created_at', { ascending: false })
+                .limit(24)
+            : Promise.resolve({ data: [] }),
+          resolvedIdNumber
+            ? supabase
+                .from(TABLE_NAMES.RENTALS)
+                .select('*')
+                .or(`customer_id_number.ilike.${resolvedIdNumber},id_number.ilike.${resolvedIdNumber}`)
+                .order('created_at', { ascending: false })
+                .limit(24)
+            : Promise.resolve({ data: [] }),
+          resolvedCustomerName
+            ? supabase
+                .from(TABLE_NAMES.RENTALS)
+                .select('*')
+                .ilike('customer_name', resolvedCustomerName)
+                .order('created_at', { ascending: false })
+                .limit(24)
             : Promise.resolve({ data: [] }),
           MessageService.listSharedThreads().catch(() => ({ threads: [] })),
         ]);
@@ -1094,13 +1307,6 @@ const AdminCustomerProfile = () => {
             ...(Array.isArray(customerRecord?.customer_id_scan_history)
               ? customerRecord.customer_id_scan_history.map((url, index) => ({
                   id: `customer-history-${index}`,
-                  verification_type: 'profile_id',
-                  file_url: url,
-                }))
-              : []),
-            ...(Array.isArray(customerRecord?.scan_metadata?.id_scan_history)
-              ? customerRecord.scan_metadata.id_scan_history.map((url, index) => ({
-                  id: `customer-scan-meta-${index}`,
                   verification_type: 'profile_id',
                   file_url: url,
                 }))
@@ -1156,7 +1362,6 @@ const AdminCustomerProfile = () => {
             extra_images: customerRecord?.extra_images || [],
             scan_metadata: {
               ...(customerRecord?.scan_metadata || {}),
-              id_scan_history: mergedIdScanHistory,
             },
             _source: customerRecord ? 'rental' : 'fallback_rental',
             _rentalId: fallbackRental.id,
@@ -1179,9 +1384,7 @@ const AdminCustomerProfile = () => {
             ...customerRecord,
             customer_id_scan_history: Array.isArray(customerRecord?.customer_id_scan_history)
               ? customerRecord.customer_id_scan_history
-              : Array.isArray(customerRecord?.scan_metadata?.id_scan_history)
-                ? customerRecord.scan_metadata.id_scan_history
-                : [],
+              : [],
             isRentalBased: false,
             _source: 'profile',
             licence_number:
@@ -1228,6 +1431,29 @@ const AdminCustomerProfile = () => {
         }
 
         const safeRentalHistory = rentalHistoryResult?.success ? rentalHistoryResult.data || [] : [];
+        const safeRecentRentals = [
+          ...(Array.isArray(recentRentalsResult?.data) ? recentRentalsResult.data : []),
+          ...(Array.isArray(phoneRentalsResult?.data) ? phoneRentalsResult.data : []),
+          ...(Array.isArray(licenceRentalsResult?.data) ? licenceRentalsResult.data : []),
+          ...(Array.isArray(idNumberRentalsResult?.data) ? idNumberRentalsResult.data : []),
+          ...(Array.isArray(nameRentalsResult?.data) ? nameRentalsResult.data : []),
+        ];
+        const rentalIdsForSecondDrivers = [...new Set(
+          [
+            rentalIdParam,
+            latestRentalRecord?.id,
+            ...safeRentalHistory.map((rental) => rental?.id),
+            ...safeRecentRentals.map((rental) => rental?.id),
+          ]
+            .map((value) => String(value || '').trim())
+            .filter(Boolean)
+        )];
+        const secondDriversResult = rentalIdsForSecondDrivers.length > 0
+          ? await supabase
+              .from('app_4c3a7a6153_rental_second_drivers')
+              .select('*')
+              .in('rental_id', rentalIdsForSecondDrivers)
+          : { data: [] };
         const safeTourRows = Array.isArray(tourRowsResult?.data) ? tourRowsResult.data : [];
         const groupedTours = Array.from(
           safeTourRows.reduce((groups, row) => {
@@ -1264,7 +1490,7 @@ const AdminCustomerProfile = () => {
         setVerificationHistoryRequests(Array.isArray(verificationResult?.historyRequests) ? verificationResult.historyRequests : []);
         setLatestRental(latestRentalRecord || null);
         setCustomerData(mergedCustomerData);
-        setRentalHistory(safeRentalHistory);
+        setRentalHistory([...safeRentalHistory, ...safeRecentRentals]);
         setSecondDrivers(secondDriversResult?.data || []);
         setTourGroups(groupedTours);
         setMarketplaceListings(Array.isArray(marketplaceListingsResult?.data) ? marketplaceListingsResult.data : []);
@@ -1404,15 +1630,77 @@ const AdminCustomerProfile = () => {
     user?.email ||
     'Admin'
   ).trim();
+  const currentRole = String(
+    userProfile?.role ||
+    user?.role ||
+    user?.user_metadata?.role ||
+    ''
+  ).trim().toLowerCase();
+  const canManageCustomerAlerts = ['owner', 'admin'].includes(currentRole);
+  const canDeleteCustomerDocuments = currentRole === 'owner';
+
+  const triggerCopyConfirmation = () => {
+    setShowCopyConfirmation(true);
+    if (copyConfirmationTimeoutRef.current && typeof window !== 'undefined') {
+      window.clearTimeout(copyConfirmationTimeoutRef.current);
+    }
+    if (typeof window !== 'undefined') {
+      copyConfirmationTimeoutRef.current = window.setTimeout(() => {
+        setShowCopyConfirmation(false);
+      }, 1350);
+    }
+  };
+
+  const handleCopyCustomerReference = async () => {
+    try {
+      await copyTextToClipboard(displayCustomerId);
+      toast.success('Customer reference copied');
+      triggerCopyConfirmation();
+    } catch {
+      toast.error('Could not copy customer reference');
+    }
+  };
+
+  useEffect(() => () => {
+    if (copyConfirmationTimeoutRef.current && typeof window !== 'undefined') {
+      window.clearTimeout(copyConfirmationTimeoutRef.current);
+    }
+  }, []);
+
+  const deletedPrimaryIdUrls = useMemo(
+    () => dedupeNormalizedUrls(customerData?.scan_metadata?.deleted_primary_id_urls),
+    [customerData?.scan_metadata?.deleted_primary_id_urls]
+  );
+  const deletedSecondaryIdUrls = useMemo(
+    () => dedupeNormalizedUrls(customerData?.scan_metadata?.deleted_secondary_id_urls),
+    [customerData?.scan_metadata?.deleted_secondary_id_urls]
+  );
+  const deletedIdentityDocumentUrlSet = useMemo(
+    () => new Set([...deletedPrimaryIdUrls, ...deletedSecondaryIdUrls]),
+    [deletedPrimaryIdUrls, deletedSecondaryIdUrls]
+  );
   const customerIdScans = useMemo(() => {
+    const deletedPrimaryUrlSet = new Set(deletedPrimaryIdUrls);
     return mergeCustomerScanHistory(
       customerData?.id_scan_url,
       customerData?.customer_id_image,
-      ...(Array.isArray(customerData?.customer_id_scan_history) ? customerData.customer_id_scan_history : []),
-      ...(Array.isArray(customerData?.scan_metadata?.id_scan_history) ? customerData.scan_metadata.id_scan_history : []),
       ...rentalHistory.map((rental) => rental?.customer_id_image)
-    ).map((value) => normalizeDocumentUrl(value)).filter(Boolean);
-  }, [customerData?.customer_id_image, customerData?.customer_id_scan_history, customerData?.id_scan_url, customerData?.scan_metadata?.id_scan_history, rentalHistory]);
+    )
+      .map((value) => normalizeDocumentUrl(value))
+      .filter((value) => value && !deletedPrimaryUrlSet.has(value));
+  }, [customerData?.customer_id_image, customerData?.id_scan_url, deletedPrimaryIdUrls, rentalHistory]);
+  const customerSecondaryIdHistoryScans = useMemo(() => (
+    (() => {
+      const deletedSecondaryUrlSet = new Set(deletedSecondaryIdUrls);
+      return mergeCustomerScanHistory(
+        ...(Array.isArray(customerData?.scan_metadata?.second_driver_id_history)
+          ? customerData.scan_metadata.second_driver_id_history
+          : [])
+      )
+        .map((value) => normalizeDocumentUrl(value))
+        .filter((value) => value && !deletedSecondaryUrlSet.has(value));
+    })()
+  ), [customerData?.scan_metadata?.second_driver_id_history, deletedSecondaryIdUrls]);
   const extraImages = useMemo(() => {
     const urls = new Set();
 
@@ -1421,12 +1709,46 @@ const AdminCustomerProfile = () => {
       ...rentalHistory.flatMap((rental) => (Array.isArray(rental?.extra_images) ? rental.extra_images : [])),
     ].forEach((value) => {
       const normalized = normalizeDocumentUrl(value);
-      if (normalized) urls.add(normalized);
+      if (normalized && !deletedIdentityDocumentUrlSet.has(normalized)) urls.add(normalized);
     });
 
     return Array.from(urls);
-  }, [customerData?.extra_images, rentalHistory]);
+  }, [customerData?.extra_images, deletedIdentityDocumentUrlSet, rentalHistory]);
+  const secondDriverDocuments = useMemo(() => {
+    const documents = [];
+    const urls = new Set();
+    const deletedSecondaryUrlSet = new Set(deletedSecondaryIdUrls);
+    const pushDocument = (value, driver, index) => {
+      const normalized = normalizeDocumentUrl(value);
+      if (!normalized || urls.has(normalized) || deletedSecondaryUrlSet.has(normalized)) return;
+
+      urls.add(normalized);
+      documents.push({
+        url: normalized,
+        driverName: driver?.full_name || driver?.name || `Driver ${index + 1}`,
+        createdAt: driver?.created_at || latestRental?.created_at || null,
+      });
+    };
+
+    secondDrivers.forEach((driver, index) => {
+      pushDocument(driver?.id_scan_url, driver, index);
+      pushDocument(driver?.customer_id_image, driver, index);
+      pushDocument(driver?.id_image, driver, index);
+      if (Array.isArray(driver?.uploaded_images)) {
+        driver.uploaded_images.forEach((image) => pushDocument(image, driver, index));
+      }
+      if (Array.isArray(driver?.extra_images)) {
+        driver.extra_images.forEach((image) => pushDocument(image, driver, index));
+      }
+    });
+
+    return documents;
+  }, [deletedSecondaryIdUrls, latestRental?.created_at, secondDrivers]);
   const profileMediaDocuments = useMemo(() => {
+    const customerIdScanUrlSet = new Set(customerIdScans.map((url) => normalizeDocumentUrl(url)).filter(Boolean));
+    const secondDriverDocumentUrlSet = new Set(secondDriverDocuments.map((document) => normalizeDocumentUrl(document?.url)).filter(Boolean));
+    const secondaryHistoryUrlSet = new Set(customerSecondaryIdHistoryScans.map((url) => normalizeDocumentUrl(url)).filter(Boolean));
+
     const primaryDocs = customerIdScans.map((url, index) => ({
       id: `profile-media-${index}`,
       verification_type: 'profile_id',
@@ -1438,19 +1760,57 @@ const AdminCustomerProfile = () => {
       isProfileMediaFallback: true,
     }));
 
-    const supportingDocs = extraImages.map((url, index) => ({
-      id: `extra-media-${index}`,
-      verification_type: customerData?.licence_number ? 'driver_license' : 'supporting_document',
-      created_at: customerData?.created_at || latestRental?.created_at || null,
-      file_url: url,
-      status: effectiveVerificationSummary?.status || effectiveVerificationSummary?.verificationStatus || 'uploaded',
-      owner_email: customerData?.email || displayEmail,
-      submission_source_label: 'Supporting upload',
-      isProfileMediaFallback: true,
-    }));
+    const secondaryIdDocs = [
+      ...secondDriverDocuments.map((document, index) => ({
+        id: `second-id-media-${index}`,
+        verification_type: 'profile_id',
+        created_at: document.createdAt || customerData?.created_at || latestRental?.created_at || null,
+        file_url: document.url,
+        status: effectiveVerificationSummary?.status || effectiveVerificationSummary?.verificationStatus || 'uploaded',
+        owner_email: customerData?.email || displayEmail,
+        submission_source_label: document.driverName ? `Second ID · ${document.driverName}` : 'Second ID',
+        secondaryDriverName: document.driverName || '',
+        isSecondaryIdDocument: true,
+        isProfileMediaFallback: true,
+      })),
+      ...customerSecondaryIdHistoryScans
+        .filter((url) => !secondDriverDocumentUrlSet.has(normalizeDocumentUrl(url)))
+        .map((url, index) => ({
+          id: `second-id-history-${index}`,
+          verification_type: 'profile_id',
+          created_at: customerData?.created_at || latestRental?.created_at || null,
+          file_url: url,
+          status: effectiveVerificationSummary?.status || effectiveVerificationSummary?.verificationStatus || 'uploaded',
+          owner_email: customerData?.email || displayEmail,
+          submission_source_label: 'Second ID',
+          secondaryDriverName: '',
+          isSecondaryIdDocument: true,
+          isProfileMediaFallback: true,
+        })),
+    ];
 
-    return [...primaryDocs, ...supportingDocs];
-  }, [customerData?.created_at, customerData?.email, customerData?.licence_number, customerIdScans, displayEmail, effectiveVerificationSummary?.status, effectiveVerificationSummary?.verificationStatus, extraImages, latestRental?.created_at]);
+    const supportingDocs = extraImages
+      .filter((url) => {
+        const normalized = normalizeDocumentUrl(url);
+        if (!normalized) return false;
+        if (customerIdScanUrlSet.has(normalized)) return false;
+        if (secondDriverDocumentUrlSet.has(normalized)) return false;
+        if (secondaryHistoryUrlSet.has(normalized)) return false;
+        return true;
+      })
+      .map((url, index) => ({
+        id: `extra-media-${index}`,
+        verification_type: customerData?.licence_number ? 'driver_license' : 'supporting_document',
+        created_at: customerData?.created_at || latestRental?.created_at || null,
+        file_url: url,
+        status: effectiveVerificationSummary?.status || effectiveVerificationSummary?.verificationStatus || 'uploaded',
+        owner_email: customerData?.email || displayEmail,
+        submission_source_label: 'Supporting upload',
+        isProfileMediaFallback: true,
+      }));
+
+    return [...primaryDocs, ...secondaryIdDocs, ...supportingDocs];
+  }, [customerData?.created_at, customerData?.email, customerData?.licence_number, customerIdScans, customerSecondaryIdHistoryScans, displayEmail, effectiveVerificationSummary?.status, effectiveVerificationSummary?.verificationStatus, extraImages, latestRental?.created_at, secondDriverDocuments]);
   const verificationDocuments = useMemo(
     () => mergeVerificationDocuments(verificationRequests),
     [verificationRequests]
@@ -1469,32 +1829,94 @@ const AdminCustomerProfile = () => {
   );
   const visibleVerificationDocumentsWithLabels = useMemo(() => {
     let profileIdIndex = 0;
+    const secondaryDocumentUrlSet = new Set([
+      ...secondDriverDocuments.map((document) => normalizeDocumentUrl(document?.url)),
+      ...customerSecondaryIdHistoryScans.map((url) => normalizeDocumentUrl(url)),
+    ].filter(Boolean));
 
-    return visibleVerificationDocuments.map((document) => {
-      const type = String(document?.verification_type || '').toLowerCase();
-      if (type === 'profile_id') {
-        profileIdIndex += 1;
+    return visibleVerificationDocuments
+      .filter((document) => {
+        const normalizedFileUrl = normalizeDocumentUrl(document?.file_url);
+        if (!normalizedFileUrl) return true;
+        return !deletedIdentityDocumentUrlSet.has(normalizedFileUrl);
+      })
+      .map((document) => {
+        const type = String(document?.verification_type || '').toLowerCase();
+        const normalizedFileUrl = normalizeDocumentUrl(document?.file_url);
+        const isKnownSecondaryUrl = secondaryDocumentUrlSet.has(normalizedFileUrl);
+        if (document?.isSecondaryIdDocument) {
+          return {
+            ...document,
+            display_label: document.secondaryDriverName ? `Secondary ID · ${document.secondaryDriverName}` : 'Secondary ID',
+          };
+        }
+
+        if (isKnownSecondaryUrl) {
+          return {
+            ...document,
+            isSecondaryIdDocument: true,
+            display_label: document.secondaryDriverName ? `Secondary ID · ${document.secondaryDriverName}` : 'Secondary ID',
+          };
+        }
+
+        if (type === 'profile_id') {
+          profileIdIndex += 1;
+          return {
+            ...document,
+            isSecondaryIdDocument: profileIdIndex > 1 || Boolean(document?.isSecondaryIdDocument),
+            display_label: profileIdIndex === 1 ? 'Primary ID' : 'Secondary ID',
+          };
+        }
+
+        if (type === 'driver_license') {
+          return {
+            ...document,
+            display_label: 'Driver license',
+          };
+        }
+
         return {
           ...document,
-          display_label: profileIdIndex === 1 ? 'Primary ID' : 'Secondary ID',
+          display_label: String(document?.verification_type || 'Verification document')
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, (char) => char.toUpperCase()),
         };
-      }
+      });
+  }, [customerSecondaryIdHistoryScans, deletedIdentityDocumentUrlSet, secondDriverDocuments, visibleVerificationDocuments]);
+  const visibleVerificationHistoryDocuments = useMemo(
+    () => verificationHistoryDocuments.filter((document) => {
+      const normalizedFileUrl = normalizeDocumentUrl(document?.file_url);
+      if (!normalizedFileUrl) return true;
+      return !deletedIdentityDocumentUrlSet.has(normalizedFileUrl);
+    }),
+    [deletedIdentityDocumentUrlSet, verificationHistoryDocuments]
+  );
+  const secondaryIdVerificationDocuments = useMemo(
+    () => visibleVerificationDocumentsWithLabels.filter((document) => (
+      Boolean(document?.isSecondaryIdDocument) ||
+      String(document?.id || '').startsWith('second-id-media') ||
+      String(document?.submission_source_label || '').trim().toLowerCase().startsWith('second id') ||
+      String(document?.display_label || '').trim().toLowerCase().startsWith('secondary id')
+    )),
+    [visibleVerificationDocumentsWithLabels]
+  );
+  const primarySecondaryIdVerificationDocument = secondaryIdVerificationDocuments[0] || null;
+  const collapsedSecondaryIdVerificationDocuments = useMemo(
+    () => secondaryIdVerificationDocuments.slice(1),
+    [secondaryIdVerificationDocuments]
+  );
+  const visibleVerificationDocumentsForCards = useMemo(() => {
+    if (secondaryIdVerificationDocuments.length <= 1) {
+      return visibleVerificationDocumentsWithLabels;
+    }
 
-      if (type === 'driver_license') {
-        return {
-          ...document,
-          display_label: 'Driver license',
-        };
-      }
-
-      return {
-        ...document,
-        display_label: String(document?.verification_type || 'Verification document')
-          .replace(/_/g, ' ')
-          .replace(/\b\w/g, (char) => char.toUpperCase()),
-      };
-    });
-  }, [visibleVerificationDocuments]);
+    const secondaryIdsToCollapse = new Set(
+      collapsedSecondaryIdVerificationDocuments.map((document) => String(document?.id || document?.file_url || ''))
+    );
+    return visibleVerificationDocumentsWithLabels.filter((document) => (
+      !secondaryIdsToCollapse.has(String(document?.id || document?.file_url || ''))
+    ));
+  }, [collapsedSecondaryIdVerificationDocuments, secondaryIdVerificationDocuments.length, visibleVerificationDocumentsWithLabels]);
   const verificationComparisonProfile = useMemo(() => ({
     full_name:
       customerData?.full_name ||
@@ -1558,6 +1980,61 @@ const AdminCustomerProfile = () => {
     latestRental?.amount_due ||
     0
   );
+  const customerRentalsSearchValue = String(
+    customerData?.email ||
+    customerProfile?.email ||
+    latestRental?.customer_email ||
+    customerData?.id ||
+    customerId ||
+    customerIdQueryParam ||
+    displayName ||
+    ''
+  ).trim();
+  const customerRentalsHref = customerRentalsSearchValue
+    ? `/admin/rentals?search=${encodeURIComponent(customerRentalsSearchValue)}`
+    : '/admin/rentals';
+  const unifiedRentalHistory = useMemo(() => {
+    const rentals = [...(Array.isArray(rentalHistory) ? rentalHistory : [])];
+    if (latestRental?.id && !rentals.some((entry) => String(entry?.id || '') === String(latestRental.id))) {
+      rentals.unshift(latestRental);
+    }
+
+    const deduped = new Map();
+    rentals.forEach((entry) => {
+      const key = String(
+        entry?.id ||
+        entry?.rental_id ||
+        `${entry?.customer_id || 'customer'}-${entry?.created_at || ''}`
+      ).trim();
+      if (!key) return;
+      if (!deduped.has(key)) {
+        deduped.set(key, entry);
+      }
+    });
+
+    return Array.from(deduped.values()).sort(
+      (left, right) => new Date(getRentalHistoryTimestamp(right)).getTime() - new Date(getRentalHistoryTimestamp(left)).getTime()
+    );
+  }, [latestRental, rentalHistory]);
+  const rentalActivityTotals = useMemo(() => {
+    const counts = {
+      total: unifiedRentalHistory.length,
+      active: 0,
+      completed: 0,
+      cancelled: 0,
+      scheduled: 0,
+    };
+
+    unifiedRentalHistory.forEach((entry) => {
+      const normalizedStatus = getRentalHistoryStatus(entry);
+      if (normalizedStatus === 'active') counts.active += 1;
+      else if (normalizedStatus === 'completed') counts.completed += 1;
+      else if (normalizedStatus === 'cancelled') counts.cancelled += 1;
+      else if (normalizedStatus === 'scheduled') counts.scheduled += 1;
+    });
+
+    return counts;
+  }, [unifiedRentalHistory]);
   const systemSourceLabel = customerData?._source === 'rental'
     ? 'Rental record'
     : customerData?._source === 'fallback_rental'
@@ -1579,7 +2056,7 @@ const AdminCustomerProfile = () => {
     customerData?.has_active_alert_note
       ? {
           label: 'Staff note alert',
-          tone: 'bg-amber-50 text-amber-700 ring-amber-200',
+          tone: 'bg-rose-50 text-rose-700 ring-rose-200',
         }
       : null,
     customerData?.is_banned
@@ -1590,20 +2067,20 @@ const AdminCustomerProfile = () => {
       : null,
   ].filter(Boolean);
   const workspaceTabs = [
-    { key: 'rentals', label: 'Rentals', count: rentalHistory.length },
     { key: 'messages', label: 'Messages', count: relatedThreads.length },
-    { key: 'verification', label: 'Verification', count: visibleVerificationDocumentsWithLabels.length + verificationHistoryDocuments.length },
+    { key: 'verification', label: 'Verification', count: visibleVerificationDocumentsWithLabels.length + visibleVerificationHistoryDocuments.length },
     { key: 'listings', label: 'Listings', count: marketplaceListingCount },
   ];
-  const rentalHistoryPreview = rentalHistory.slice(0, 3);
+  const rentalHistoryPreview = unifiedRentalHistory.slice(0, 5);
   const listingsPreview = marketplaceListings.slice(0, 3);
-  const verificationHistoryPreview = [...visibleVerificationDocumentsWithLabels, ...verificationHistoryDocuments].slice(0, 4);
+  const verificationHistoryPreview = [...visibleVerificationDocumentsWithLabels, ...visibleVerificationHistoryDocuments].slice(0, 4);
   const nextActionCards = [
-    latestRentalHref
+    rentalActivityTotals.total > 0
       ? {
-          label: 'Latest rental',
-          value: latestRental ? formatDate(latestRental.rental_start_date || latestRental.created_at) : 'Open now',
-          href: latestRentalHref,
+          label: 'Rental history',
+          value: `${rentalActivityTotals.total} rental${rentalActivityTotals.total === 1 ? '' : 's'}`,
+          href: customerRentalsHref,
+          icon: CalendarDays,
         }
       : null,
     verificationReviewHref
@@ -1611,6 +2088,7 @@ const AdminCustomerProfile = () => {
           label: 'Verification queue',
           value: `${pendingVerificationCount} pending`,
           href: verificationReviewHref,
+          icon: ShieldCheck,
         }
       : null,
     primaryCustomerThreadHref
@@ -1618,11 +2096,12 @@ const AdminCustomerProfile = () => {
           label: 'Customer thread',
           value: relatedThreads.length > 0 ? `${relatedThreads.length} active` : 'Start message',
           href: primaryCustomerThreadHref,
+          icon: MessageSquare,
         }
       : null,
   ].filter(Boolean);
   const tabButtonClass = (tab) => (
-    `rounded-full px-4 py-2 text-sm font-semibold transition ${
+    `rounded-2xl px-4 py-2 text-sm font-semibold transition ${
       activeTab === tab
         ? 'bg-slate-950 text-white shadow-sm'
         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -1639,6 +2118,462 @@ const AdminCustomerProfile = () => {
     return String(document?.verification_type || 'Verification document')
       .replace(/_/g, ' ')
       .replace(/\b\w/g, (char) => char.toUpperCase());
+  };
+
+  const getDocumentIdentityKey = (document) => (
+    normalizeDocumentUrl(document?.file_url) || String(document?.id || '')
+  );
+
+  const getCustomerIdentityDocumentType = (document) => {
+    const label = String(document?.display_label || '').trim().toLowerCase();
+    if (label === 'primary id') return 'primary';
+    if (label.startsWith('secondary id') || document?.isSecondaryIdDocument) return 'secondary';
+    return null;
+  };
+
+  async function handleDeleteCustomerDocument(document) {
+    const identityType = getCustomerIdentityDocumentType(document);
+    const documentUrl = normalizeDocumentUrl(document?.file_url);
+    const documentKey = getDocumentIdentityKey(document);
+
+    if (!identityType || !documentUrl) return;
+    if (!canDeleteCustomerDocuments) {
+      toast.error('Only the owner can delete ID documents.');
+      return;
+    }
+    if (!customerProfile?.id) {
+      toast.error('Customer profile record is required before deleting documents.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete this ${identityType === 'primary' ? 'primary' : 'secondary'} ID document?`
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingDocumentKey(documentKey);
+      const existingScanMetadata = customerProfile?.scan_metadata || {};
+      const updatedAt = new Date().toISOString();
+      const nextDeletedPrimaryUrls = identityType === 'primary'
+        ? dedupeNormalizedUrls([...(existingScanMetadata?.deleted_primary_id_urls || []), documentUrl])
+        : dedupeNormalizedUrls(existingScanMetadata?.deleted_primary_id_urls);
+      const nextDeletedSecondaryUrls = identityType === 'secondary'
+        ? dedupeNormalizedUrls([...(existingScanMetadata?.deleted_secondary_id_urls || []), documentUrl])
+        : dedupeNormalizedUrls(existingScanMetadata?.deleted_secondary_id_urls);
+      const nextSecondDriverIdHistory = identityType === 'secondary'
+        ? withoutNormalizedUrl(existingScanMetadata?.second_driver_id_history, documentUrl)
+        : dedupeNormalizedUrls(existingScanMetadata?.second_driver_id_history);
+      const nextScanMetadata = {
+        ...existingScanMetadata,
+        deleted_primary_id_urls: nextDeletedPrimaryUrls,
+        deleted_secondary_id_urls: nextDeletedSecondaryUrls,
+        second_driver_id_history: nextSecondDriverIdHistory,
+      };
+      const nextIdScanUrl = identityType === 'primary' && normalizeDocumentUrl(customerProfile?.id_scan_url) === documentUrl
+        ? null
+        : customerProfile?.id_scan_url || null;
+      const nextCustomerIdImage = identityType === 'primary' && normalizeDocumentUrl(customerProfile?.customer_id_image) === documentUrl
+        ? null
+        : customerProfile?.customer_id_image || null;
+      const nextExtraImages = withoutNormalizedUrl(customerProfile?.extra_images, documentUrl);
+
+      const { error } = await supabase
+        .from(CUSTOMER_TABLE)
+        .update({
+          scan_metadata: nextScanMetadata,
+          id_scan_url: nextIdScanUrl,
+          customer_id_image: nextCustomerIdImage,
+          extra_images: nextExtraImages,
+          updated_at: updatedAt,
+        })
+        .eq('id', customerProfile.id);
+
+      if (error) throw error;
+
+      let nextSecondDriversState = secondDrivers;
+      if (identityType === 'secondary' && secondDrivers.length > 0) {
+        const mutatedDrivers = secondDrivers.map((driver) => {
+          const nextUploadedImages = withoutNormalizedUrl(driver?.uploaded_images, documentUrl);
+          const nextDriverExtraImages = withoutNormalizedUrl(driver?.extra_images, documentUrl);
+          const nextDriverPatch = {
+            id_scan_url: normalizeDocumentUrl(driver?.id_scan_url) === documentUrl ? null : driver?.id_scan_url || null,
+            customer_id_image: normalizeDocumentUrl(driver?.customer_id_image) === documentUrl ? null : driver?.customer_id_image || null,
+            id_image: normalizeDocumentUrl(driver?.id_image) === documentUrl ? null : driver?.id_image || null,
+            uploaded_images: nextUploadedImages,
+            extra_images: nextDriverExtraImages,
+          };
+          const changed = (
+            nextDriverPatch.id_scan_url !== (driver?.id_scan_url || null) ||
+            nextDriverPatch.customer_id_image !== (driver?.customer_id_image || null) ||
+            nextDriverPatch.id_image !== (driver?.id_image || null) ||
+            JSON.stringify(nextDriverPatch.uploaded_images) !== JSON.stringify(Array.isArray(driver?.uploaded_images) ? driver.uploaded_images : []) ||
+            JSON.stringify(nextDriverPatch.extra_images) !== JSON.stringify(Array.isArray(driver?.extra_images) ? driver.extra_images : [])
+          );
+
+          return changed
+            ? { ...driver, ...nextDriverPatch, _changed: true }
+            : { ...driver, _changed: false };
+        });
+
+        const changedDrivers = mutatedDrivers.filter((driver) => driver._changed && driver?.id);
+        if (changedDrivers.length > 0) {
+          await Promise.all(changedDrivers.map(async (driver) => {
+            const { _changed, ...payload } = driver;
+            const { error: updateError } = await supabase
+              .from(SECOND_DRIVER_TABLE)
+              .update({
+                id_scan_url: payload.id_scan_url,
+                customer_id_image: payload.customer_id_image,
+                id_image: payload.id_image,
+                uploaded_images: payload.uploaded_images,
+                extra_images: payload.extra_images,
+                updated_at: updatedAt,
+              })
+              .eq('id', driver.id);
+
+            if (updateError) throw updateError;
+          }));
+        }
+
+        nextSecondDriversState = mutatedDrivers.map(({ _changed, ...driver }) => driver);
+        setSecondDrivers(nextSecondDriversState);
+      }
+
+      applyUpdatedCustomerScanMetadata(nextScanMetadata, updatedAt, {
+        id_scan_url: nextIdScanUrl,
+        customer_id_image: nextCustomerIdImage,
+        extra_images: nextExtraImages,
+      });
+      if (previewDocument && getDocumentIdentityKey(previewDocument) === documentKey) {
+        setPreviewDocument(null);
+      }
+      toast.success(`${identityType === 'primary' ? 'Primary' : 'Secondary'} ID deleted.`);
+    } catch (deleteError) {
+      toast.error(deleteError?.message || 'Unable to delete this ID document right now.');
+    } finally {
+      setDeletingDocumentKey('');
+    }
+  }
+
+  const renderCompactDocumentTile = (document) => {
+    const identityType = getCustomerIdentityDocumentType(document);
+    const documentKey = getDocumentIdentityKey(document);
+    const canDeleteDocument = canDeleteCustomerDocuments && Boolean(identityType && document?.file_url);
+
+    return (
+      <div key={document.id} className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-50/80">
+      <button
+        type="button"
+        onClick={() => {
+          if (document?.file_url) setPreviewDocument(document);
+        }}
+        className="block h-44 w-full overflow-hidden bg-white sm:h-52"
+      >
+        {String(document?.file_url || '').trim() ? (
+          <img
+            src={document.file_url}
+            alt={getVerificationDocumentLabel(document)}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-slate-300">
+            <FileBadge2 className="h-10 w-10" />
+          </div>
+        )}
+      </button>
+      <div className="border-t border-slate-200 px-4 py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-slate-900">
+              {getVerificationDocumentLabel(document)}
+            </p>
+            <p className="mt-1 text-sm text-slate-500">
+              {`Submitted ${formatDate(document.created_at)}`}
+            </p>
+          </div>
+          <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${getVerificationDocumentStatusMeta(document?.status).className}`}>
+            {getVerificationDocumentStatusMeta(document?.status).label}
+          </span>
+        </div>
+        {document?.file_url ? (
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => setPreviewDocument(document)}
+              className="inline-flex items-center gap-2 text-sm font-semibold text-violet-700 hover:text-violet-800"
+            >
+              <Eye className="h-4 w-4" />
+              Open preview
+            </button>
+            {canDeleteDocument ? (
+              <button
+                type="button"
+                onClick={() => void handleDeleteCustomerDocument(document)}
+                disabled={deletingDocumentKey === documentKey}
+                className="inline-flex items-center gap-2 text-sm font-semibold text-rose-700 hover:text-rose-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Trash2 className="h-4 w-4" />
+                {deletingDocumentKey === documentKey ? 'Deleting…' : 'Delete ID'}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      </div>
+    );
+  };
+
+  const renderSecondaryIdDocumentsGroup = ({ detailed = false } = {}) => {
+    if (collapsedSecondaryIdVerificationDocuments.length === 0) return null;
+
+    return (
+      <details className={ADMIN_SOFT_CARD_CLASS}>
+        <summary className="flex cursor-pointer list-none flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-slate-900">Secondary ID documents</p>
+            <p className="mt-1 text-sm text-slate-500">
+              {collapsedSecondaryIdVerificationDocuments.length} additional second-driver ID {collapsedSecondaryIdVerificationDocuments.length === 1 ? 'photo' : 'photos'}
+            </p>
+          </div>
+          <span className="inline-flex w-fit items-center rounded-2xl bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+            Tap to expand
+          </span>
+        </summary>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          {collapsedSecondaryIdVerificationDocuments.map((document) => (
+            detailed ? (
+              <VerificationDocumentCard
+                key={document.id}
+                title={getVerificationDocumentLabel(document)}
+                document={{ ...document, owner_email: customerData?.email || displayEmail }}
+                reviewHref={verificationReviewHref}
+                comparisonProfile={verificationComparisonProfile}
+                canDelete={canDeleteCustomerDocuments && Boolean(getCustomerIdentityDocumentType(document))}
+                isDeleting={deletingDocumentKey === getDocumentIdentityKey(document)}
+                onDelete={() => void handleDeleteCustomerDocument(document)}
+              />
+            ) : renderCompactDocumentTile(document)
+          ))}
+        </div>
+      </details>
+    );
+  };
+
+  useEffect(() => {
+    setCustomerProfileNote(customerData?.active_alert_note || customerData?.scan_metadata?.admin_note || '');
+    setCustomerBanNote(customerData?.ban_note || customerData?.scan_metadata?.ban_note || '');
+    setCustomerAlertEnabled(Boolean(
+      customerData?.has_active_alert_note ||
+      customerData?.scan_metadata?.show_admin_note_alert
+    ));
+    setCustomerNoteHistory(
+      Array.isArray(customerData?.scan_metadata?.staff_notes_history)
+        ? customerData.scan_metadata.staff_notes_history
+        : []
+    );
+  }, [
+    customerData?.active_alert_note,
+    customerData?.ban_note,
+    customerData?.has_active_alert_note,
+    customerData?.scan_metadata,
+  ]);
+
+  const applyUpdatedCustomerScanMetadata = (
+    nextScanMetadata,
+    updatedAt = new Date().toISOString(),
+    extraCustomerPatch = {}
+  ) => {
+    setCustomerData((prev) => (prev ? {
+      ...prev,
+      ...extraCustomerPatch,
+      scan_metadata: nextScanMetadata,
+      has_active_alert_note: Boolean(nextScanMetadata?.show_admin_note_alert && nextScanMetadata?.admin_note),
+      active_alert_note: nextScanMetadata?.admin_note || '',
+      is_banned: Boolean(nextScanMetadata?.is_banned),
+      ban_note: nextScanMetadata?.ban_note || '',
+      updated_at: updatedAt,
+    } : prev));
+    setCustomerProfile((prev) => (prev ? {
+      ...prev,
+      ...extraCustomerPatch,
+      scan_metadata: nextScanMetadata,
+      updated_at: updatedAt,
+    } : prev));
+  };
+
+  const handleSaveCustomerNote = async () => {
+    if (!customerProfile?.id) return;
+    if (!canManageCustomerAlerts) {
+      toast.error('Only admins or owners can manage customer alerts.');
+      return;
+    }
+
+    try {
+      setSavingCustomerNote(true);
+      const trimmedNote = String(customerProfileNote || '').trim();
+      const existingHistory = Array.isArray(customerProfile?.scan_metadata?.staff_notes_history)
+        ? customerProfile.scan_metadata.staff_notes_history
+        : [];
+      const latestNote = existingHistory[0];
+      const shouldAppendHistory = trimmedNote && (
+        !latestNote ||
+        latestNote.note_text !== trimmedNote ||
+        Boolean(latestNote.is_alert) !== Boolean(customerAlertEnabled)
+      );
+      const nextHistory = shouldAppendHistory
+        ? [
+            {
+              id: `staff_note_${Date.now()}`,
+              note_text: trimmedNote,
+              is_alert: Boolean(customerAlertEnabled),
+              created_at: new Date().toISOString(),
+              created_by: user?.id || null,
+              created_by_name: adminDisplayName,
+            },
+            ...existingHistory,
+          ]
+        : existingHistory;
+      const nextScanMetadata = {
+        ...(customerProfile?.scan_metadata || {}),
+        admin_note: trimmedNote,
+        show_admin_note_alert: Boolean(customerAlertEnabled && trimmedNote),
+        staff_notes_history: nextHistory,
+      };
+
+      const { error } = await supabase
+        .from(CUSTOMER_TABLE)
+        .update({
+          scan_metadata: nextScanMetadata,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', customerProfile.id);
+
+      if (error) throw error;
+
+      setCustomerNoteHistory(nextHistory);
+      applyUpdatedCustomerScanMetadata(nextScanMetadata);
+      toast.success('Customer note saved.');
+    } catch (saveError) {
+      toast.error(saveError?.message || 'Unable to save the customer note right now.');
+    } finally {
+      setSavingCustomerNote(false);
+    }
+  };
+
+  const handleDeleteCustomerNote = async (noteId) => {
+    if (!customerProfile?.id || !noteId) return;
+    if (!canManageCustomerAlerts) {
+      toast.error('Only admins or owners can manage customer alerts.');
+      return;
+    }
+
+    try {
+      setSavingCustomerNote(true);
+      const existingHistory = Array.isArray(customerProfile?.scan_metadata?.staff_notes_history)
+        ? customerProfile.scan_metadata.staff_notes_history
+        : [];
+      const nextHistory = existingHistory.filter((note) => note?.id !== noteId);
+      const nextLatestNote = nextHistory[0] || null;
+      const nextAdminNote = nextLatestNote?.note_text || '';
+      const nextAlertEnabled = Boolean(nextLatestNote?.is_alert && nextAdminNote);
+      const nextScanMetadata = {
+        ...(customerProfile?.scan_metadata || {}),
+        admin_note: nextAdminNote,
+        show_admin_note_alert: nextAlertEnabled,
+        staff_notes_history: nextHistory,
+      };
+
+      const { error } = await supabase
+        .from(CUSTOMER_TABLE)
+        .update({
+          scan_metadata: nextScanMetadata,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', customerProfile.id);
+
+      if (error) throw error;
+
+      setCustomerProfileNote(nextAdminNote);
+      setCustomerAlertEnabled(nextAlertEnabled);
+      setCustomerNoteHistory(nextHistory);
+      applyUpdatedCustomerScanMetadata(nextScanMetadata);
+      toast.success('Customer note removed.');
+    } catch (deleteError) {
+      toast.error(deleteError?.message || 'Unable to remove the customer note right now.');
+    } finally {
+      setSavingCustomerNote(false);
+    }
+  };
+
+  const handleToggleCustomerBan = async (nextBanned) => {
+    if (!customerProfile?.id) return;
+    if (!canManageCustomerAlerts) {
+      toast.error('Only admins or owners can manage ban status.');
+      return;
+    }
+
+    try {
+      setSavingCustomerBan(true);
+      const nextBanNote = String(customerBanNote || '').trim();
+      const nextScanMetadata = {
+        ...(customerProfile?.scan_metadata || {}),
+        is_banned: Boolean(nextBanned),
+        ban_note: nextBanNote,
+      };
+
+      const { error } = await supabase
+        .from(CUSTOMER_TABLE)
+        .update({
+          scan_metadata: nextScanMetadata,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', customerProfile.id);
+
+      if (error) throw error;
+
+      applyUpdatedCustomerScanMetadata(nextScanMetadata);
+      toast.success(nextBanned ? 'Customer marked as banned.' : 'Customer ban removed.');
+    } catch (banError) {
+      toast.error(banError?.message || 'Unable to update customer ban status right now.');
+    } finally {
+      setSavingCustomerBan(false);
+    }
+  };
+
+  const handleSaveCustomerBanNote = async () => {
+    if (!customerProfile?.id) return;
+    if (!canManageCustomerAlerts) {
+      toast.error('Only admins or owners can manage ban notes.');
+      return;
+    }
+
+    try {
+      setSavingCustomerBan(true);
+      const nextBanNote = String(customerBanNote || '').trim();
+      const nextScanMetadata = {
+        ...(customerProfile?.scan_metadata || {}),
+        is_banned: Boolean(customerProfile?.scan_metadata?.is_banned),
+        ban_note: nextBanNote,
+      };
+
+      const { error } = await supabase
+        .from(CUSTOMER_TABLE)
+        .update({
+          scan_metadata: nextScanMetadata,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', customerProfile.id);
+
+      if (error) throw error;
+
+      applyUpdatedCustomerScanMetadata(nextScanMetadata);
+      toast.success('Ban note saved.');
+    } catch (banError) {
+      toast.error(banError?.message || 'Unable to save the ban note right now.');
+    } finally {
+      setSavingCustomerBan(false);
+    }
   };
 
   const refreshRelatedThreads = async () => {
@@ -1724,8 +2659,8 @@ const AdminCustomerProfile = () => {
       <div className="rounded-[1.6rem] border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-rose-500">Customer profile</p>
-            <p className="mt-2 text-lg font-black text-rose-950">Customer profile unavailable</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-rose-500">Customer profile</p>
+            <p className="mt-2 text-lg font-semibold text-rose-950">Customer profile unavailable</p>
             <p className="mt-2">{error}</p>
           </div>
           <Button
@@ -1742,98 +2677,288 @@ const AdminCustomerProfile = () => {
   }
 
   return (
-    <div className="space-y-6">
-      <section className="sticky top-4 z-20 rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-[0_16px_40px_rgba(15,23,42,0.08)] backdrop-blur sm:p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                type="button"
-                onClick={() => navigate(-1)}
-                variant="ghost"
-                className="h-9 rounded-full px-3 text-slate-600"
-              >
-                <ArrowLeft className="mr-2 h-4 w-4" />
-                Back
-              </Button>
-              <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ring-1 ${getVerificationTone(verificationLabel)}`}>
-                {verificationLabel}
-              </span>
-            </div>
-            <h1 className="mt-3 text-2xl font-black tracking-tight text-slate-950 sm:text-3xl">{displayName}</h1>
-            <p className="mt-1 text-sm font-semibold text-slate-500">{displayCustomerId}</p>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
+    <div className="pb-10">
+      <AdminModuleHero
+        icon={<User className="h-7 w-7" />}
+        eyebrow="Customer profile"
+        title={displayName}
+        description={(
+          <>
+            <button
+              type="button"
+              onClick={handleCopyCustomerReference}
+              className="inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700 shadow-sm transition hover:border-violet-300 hover:bg-violet-100 active:scale-[0.99]"
+              title="Tap to copy customer reference"
+            >
+              {displayCustomerId}
+            </button>
+            <span className="mx-2 text-slate-300">·</span>
+            <span>{displayEmail || 'No email'}</span>
+            <span className="mx-2 text-slate-300">·</span>
+            <span>{systemSourceLabel}</span>
+          </>
+        )}
+        titleClassName="break-words"
+        actions={(
+          <>
+            <Button
+              type="button"
+              onClick={() => navigate(-1)}
+              variant="outline"
+              className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+            >
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
+            <span className={`inline-flex items-center rounded-2xl px-3 py-2 text-sm font-semibold ring-1 ${getVerificationTone(verificationLabel)}`}>
+              {verificationLabel}
+            </span>
             <Button
               type="button"
               onClick={() => setMessageDialogOpen(true)}
               disabled={!canMessageCustomer}
-              className="rounded-full bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="rounded-2xl bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <Send className="mr-2 h-4 w-4" />
               Message customer
             </Button>
             {verificationReviewHref ? (
-              <Button asChild variant="outline" className="rounded-full border-slate-200 bg-white">
+              <Button asChild variant="outline" className="rounded-2xl border-slate-200 bg-white">
                 <Link to={verificationReviewHref}>Open verification</Link>
               </Button>
             ) : null}
             {latestRentalHref ? (
-              <Button asChild variant="outline" className="rounded-full border-slate-200 bg-white">
+              <Button asChild variant="outline" className="rounded-2xl border-slate-200 bg-white">
                 <Link to={latestRentalHref}>Open rental</Link>
               </Button>
             ) : null}
-          </div>
-        </div>
+          </>
+        )}
+      />
+
+      <div className="mt-6 grid gap-6 px-4 sm:px-6 lg:px-8">
         {nextActionCards.length > 0 ? (
-          <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 md:grid-cols-3">
+          <section className="grid gap-4 md:grid-cols-3">
             {nextActionCards.map((card) => (
               <Link
                 key={card.label}
                 to={card.href}
-                className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 transition hover:border-violet-200 hover:bg-white hover:shadow-sm"
+                className={`${ADMIN_MAIN_CARD_CLASS} transition hover:border-slate-300 hover:bg-slate-50/50`}
               >
-                <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">{card.label}</p>
-                <p className="mt-2 text-sm font-black text-slate-950">{card.value}</p>
+                <div className="flex items-start gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-violet-100 bg-violet-50 text-violet-600">
+                    {card.icon ? <card.icon className="h-5 w-5" /> : null}
+                  </div>
+                  <div className="min-w-0">
+                    <p className={ADMIN_EYEBROW_CLASS}>{card.label}</p>
+                    <p className="mt-3 text-lg font-semibold text-slate-900">{card.value}</p>
+                  </div>
+                </div>
               </Link>
             ))}
-          </div>
+          </section>
         ) : null}
-      </section>
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {customerData?.has_active_alert_note || customerData?.is_banned ? (
+          <section className="grid gap-4">
+            {customerData?.has_active_alert_note ? (
+              <AlertBanner tone="amber" title="Staff alert note">
+                <p className="whitespace-pre-wrap">{customerData.active_alert_note}</p>
+              </AlertBanner>
+            ) : null}
+
+            {customerData?.is_banned ? (
+              <AlertBanner tone="red" title="Banned customer">
+                <p className="whitespace-pre-wrap">{customerData.ban_note || 'This customer is currently banned. Review the verification and account notes before proceeding.'}</p>
+              </AlertBanner>
+            ) : null}
+          </section>
+        ) : null}
+
+        <details className={ADMIN_MAIN_CARD_CLASS}>
+          <summary className="flex cursor-pointer list-none flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-rose-100 bg-rose-50 text-rose-600">
+                <AlertCircle className="h-5 w-5" />
+              </div>
+              <div>
+                <p className={ADMIN_EYEBROW_CLASS}>Risk Controls</p>
+                <h2 className="mt-2 text-lg font-semibold text-slate-900">Ban & Notes</h2>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {customerData?.is_banned ? (
+                <span className="inline-flex items-center rounded-2xl bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 ring-1 ring-rose-200">
+                  Banned
+                </span>
+              ) : null}
+              {customerData?.has_active_alert_note ? (
+                <span className="inline-flex items-center rounded-2xl bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+                  Alert note
+                </span>
+              ) : null}
+              {!canManageCustomerAlerts ? (
+                <span className="inline-flex items-center rounded-2xl bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 ring-1 ring-slate-200">
+                  Admin or owner only
+                </span>
+              ) : null}
+              <span className="inline-flex items-center rounded-2xl bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+                Manage
+              </span>
+            </div>
+          </summary>
+
+          <div className="mt-5 grid gap-4 xl:grid-cols-2">
+            <div className={ADMIN_SOFT_CARD_CLASS}>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">Rental restriction</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {customerData?.is_banned ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="rounded-2xl border-slate-200 bg-white"
+                      onClick={handleSaveCustomerBanNote}
+                      disabled={savingCustomerBan || !canManageCustomerAlerts}
+                    >
+                      {savingCustomerBan ? 'Saving...' : 'Save Ban Note'}
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    className={`rounded-2xl ${customerData?.is_banned ? 'bg-rose-600 hover:bg-rose-700' : 'bg-slate-950 hover:bg-slate-800'} text-white`}
+                    onClick={() => handleToggleCustomerBan(!customerData?.is_banned)}
+                    disabled={savingCustomerBan || !canManageCustomerAlerts}
+                  >
+                    {savingCustomerBan ? 'Saving...' : customerData?.is_banned ? 'Remove Ban' : 'Mark as Banned'}
+                  </Button>
+                </div>
+              </div>
+              <textarea
+                ref={customerBanTextareaRef}
+                value={customerBanNote}
+                onChange={(event) => setCustomerBanNote(event.target.value)}
+                rows={4}
+                disabled={!canManageCustomerAlerts}
+                className="mt-4 w-full rounded-3xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                placeholder="Ban note..."
+              />
+            </div>
+
+            <div className={ADMIN_SOFT_CARD_CLASS}>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">Internal notes</p>
+                </div>
+                <Button
+                  type="button"
+                  className="rounded-2xl bg-violet-600 text-white hover:bg-violet-700"
+                  onClick={handleSaveCustomerNote}
+                  disabled={savingCustomerNote || !canManageCustomerAlerts}
+                >
+                  {savingCustomerNote ? 'Saving...' : 'Save Note'}
+                </Button>
+              </div>
+              <textarea
+                ref={customerNoteTextareaRef}
+                value={customerProfileNote}
+                onChange={(event) => setCustomerProfileNote(event.target.value)}
+                rows={5}
+                disabled={!canManageCustomerAlerts}
+                className="mt-4 w-full rounded-3xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                placeholder="Internal note..."
+              />
+              <label className="mt-3 flex items-center gap-3 text-sm font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={customerAlertEnabled}
+                  onChange={(event) => setCustomerAlertEnabled(event.target.checked)}
+                  disabled={!canManageCustomerAlerts}
+                  className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500 disabled:cursor-not-allowed"
+                />
+                Show this note as a rental alert pop-up when the customer is selected
+              </label>
+            </div>
+          </div>
+
+          {customerNoteHistory.length > 0 ? (
+            <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50/80 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">Staff note history</p>
+                </div>
+                <span className="inline-flex items-center rounded-2xl bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 ring-1 ring-slate-200">
+                  {customerNoteHistory.length} saved
+                </span>
+              </div>
+              <div className="mt-4 space-y-3">
+                {customerNoteHistory.slice(0, 5).map((note) => (
+                  <div key={note.id || `${note.created_at}-${note.note_text}`} className="rounded-3xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+                          {note.created_by_name || 'Team'} • {formatDate(note.created_at)}
+                        </p>
+                        {note.is_alert ? (
+                          <span className="mt-2 inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
+                            Rental alert
+                          </span>
+                        ) : null}
+                      </div>
+                      {canManageCustomerAlerts ? (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCustomerNote(note.id)}
+                          disabled={savingCustomerNote}
+                          className="inline-flex items-center rounded-2xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
+                        >
+                          <Trash2 className="mr-1 h-3.5 w-3.5" />
+                          Delete
+                        </button>
+                      ) : null}
+                    </div>
+                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{note.note_text}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </details>
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {[
-          { label: 'Rentals', value: shellCounts.rentals },
+          { label: 'Rentals', value: rentalActivityTotals.total },
           { label: 'Threads', value: relatedThreads.length },
           { label: 'Vehicles', value: marketplaceVehicleCount },
           { label: 'Listings', value: marketplaceListingCount },
         ].map((stat) => (
-          <div key={stat.label} className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
-            <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-400">{stat.label}</p>
-            <p className="mt-2 text-2xl font-black tracking-tight text-slate-950">{stat.value}</p>
+          <div key={stat.label} className={ADMIN_MAIN_CARD_CLASS}>
+            <p className={ADMIN_EYEBROW_CLASS}>{stat.label}</p>
+            <p className="mt-3 text-xl font-semibold tracking-[-0.02em] text-slate-900">{stat.value}</p>
           </div>
         ))}
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.1fr,0.9fr]">
-        <div className="space-y-4">
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="grid gap-6 xl:grid-cols-[1.1fr,0.9fr]">
+        <div className="space-y-6">
+          <section className={ADMIN_MAIN_CARD_CLASS}>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
                   <User className="h-5 w-5 text-slate-500" />
-                  <h2 className="text-lg font-black text-slate-950">Identity & Documents</h2>
+                  <h2 className="text-lg font-semibold text-slate-900">Identity & Documents</h2>
                 </div>
                 <p className="mt-1 text-sm text-slate-500">Core customer profile and saved ID documents together.</p>
               </div>
               {verificationReviewHref ? (
-                <Button asChild variant="outline" className="rounded-full border-slate-200 bg-white">
+                <Button asChild variant="outline" className="rounded-2xl border-slate-200 bg-white">
                   <Link to={verificationReviewHref}>Open verification</Link>
                 </Button>
               ) : null}
             </div>
-            <div className="mt-4 space-y-3 text-sm">
+            <div className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
               {[
                 ['Full name', displayName],
                 ['Phone', customerData?.phone || appUserProfile?.phone || ocrIdentityFallback.phone || 'Not available'],
@@ -1843,9 +2968,9 @@ const AdminCustomerProfile = () => {
                 ['ID number', identityFallback.id_number || 'Not available'],
                 ['Licence', identityFallback.licence_number || 'Not available'],
               ].map(([label, value]) => (
-                <div key={label} className="flex flex-col gap-1 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
-                  <span className="font-semibold text-slate-500">{label}</span>
-                  <span className="font-semibold text-slate-950">{value}</span>
+                <div key={label} className="rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-4">
+                  <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{label}</span>
+                  <p className="mt-2 break-words text-sm font-semibold text-slate-900">{value}</p>
                 </div>
               ))}
             </div>
@@ -1854,12 +2979,12 @@ const AdminCustomerProfile = () => {
                 <div>
                   <div className="flex items-center gap-2">
                     <FileCheck2 className="h-5 w-5 text-slate-500" />
-                    <h3 className="text-base font-black text-slate-950">ID Documents</h3>
+                  <h3 className="text-base font-semibold text-slate-900">ID Documents</h3>
                   </div>
                   <p className="mt-1 text-sm text-slate-500">Primary and secondary ID scans saved for this customer.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ring-1 ${getVerificationTone(verificationLabel)}`}>
+                  <span className={`inline-flex items-center rounded-2xl px-3 py-1.5 text-sm font-semibold ring-1 ${getVerificationTone(verificationLabel)}`}>
                     {verificationLabel}
                   </span>
                 </div>
@@ -1867,84 +2992,42 @@ const AdminCustomerProfile = () => {
 
               <div className="mt-5 space-y-3">
               {visibleVerificationDocumentsWithLabels.length > 0 ? (
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {visibleVerificationDocumentsWithLabels.map((document) => (
-                  <div key={document.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50/80">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (document?.file_url) setPreviewDocument(document);
-                      }}
-                      className="block h-56 w-full overflow-hidden bg-white"
-                    >
-                      {String(document?.file_url || '').trim() ? (
-                        <img
-                          src={document.file_url}
-                          alt={getVerificationDocumentLabel(document)}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-slate-300">
-                          <FileBadge2 className="h-10 w-10" />
-                        </div>
-                      )}
-                    </button>
-                    <div className="border-t border-slate-200 px-4 py-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-bold text-slate-950">
-                            {getVerificationDocumentLabel(document)}
-                          </p>
-                          <p className="mt-1 text-sm text-slate-500">
-                            {`Submitted ${formatDate(document.created_at)}`}
-                          </p>
-                        </div>
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${getVerificationDocumentStatusMeta(document?.status).className}`}>
-                          {getVerificationDocumentStatusMeta(document?.status).label}
-                        </span>
-                      </div>
-                      {document?.file_url ? (
-                        <button
-                          type="button"
-                          onClick={() => setPreviewDocument(document)}
-                          className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-violet-700 hover:text-violet-800"
-                        >
-                          <Eye className="h-4 w-4" />
-                          Open preview
-                        </button>
-                      ) : null}
+                <>
+                  {visibleVerificationDocumentsForCards.length > 0 ? (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {visibleVerificationDocumentsForCards.map((document) => renderCompactDocumentTile(document))}
                     </div>
-                  </div>
-                ))}
-                </div>
+                  ) : null}
+                  {renderSecondaryIdDocumentsGroup()}
+                </>
               ) : (
-                <div className="flex items-start gap-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                <div className="flex items-start gap-4 rounded-3xl border border-slate-200 bg-slate-50/80 p-4">
                   <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-300">
                     <FileBadge2 className="h-9 w-9" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-bold text-slate-950">No ID documents uploaded</p>
+                    <p className="text-sm font-semibold text-slate-900">No ID documents uploaded</p>
                     <p className="mt-1 text-sm text-slate-500">No customer identity documents are available yet.</p>
                   </div>
                 </div>
               )}
 
-              {verificationHistoryDocuments.length > 0 ? (
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              {visibleVerificationHistoryDocuments.length > 0 ? (
+                <div className={ADMIN_SOFT_CARD_CLASS}>
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-bold text-slate-950">Verification history</p>
+                      <p className="text-sm font-semibold text-slate-900">Verification history</p>
                       <p className="mt-1 text-sm text-slate-500">Previously approved documents kept for admin reference.</p>
                     </div>
                     <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                      {verificationHistoryDocuments.length} stored
+                      {visibleVerificationHistoryDocuments.length} stored
                     </span>
                   </div>
                   <div className="mt-4 space-y-3">
-                    {verificationHistoryDocuments.map((document) => {
+                    {visibleVerificationHistoryDocuments.map((document) => {
                       const statusMeta = getVerificationDocumentStatusMeta(document?.status);
                       return (
-                        <div key={`${document.id}-history-card`} className="flex items-start gap-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                        <div key={`${document.id}-history-card`} className="flex items-start gap-4 rounded-3xl border border-slate-200 bg-white p-4">
                           <button
                             type="button"
                             onClick={() => {
@@ -1966,7 +3049,7 @@ const AdminCustomerProfile = () => {
                           </button>
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-sm font-bold text-slate-950">{getVerificationDocumentLabel(document)}</p>
+                              <p className="text-sm font-semibold text-slate-900">{getVerificationDocumentLabel(document)}</p>
                               <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${statusMeta.className}`}>
                                 {statusMeta.label}
                               </span>
@@ -1996,16 +3079,16 @@ const AdminCustomerProfile = () => {
           </section>
         </div>
 
-        <div className="space-y-4">
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="space-y-6">
+          <section className={ADMIN_MAIN_CARD_CLASS}>
             <div className="flex items-center gap-2">
               <AlertCircle className="h-5 w-5 text-slate-500" />
-              <h2 className="text-lg font-black text-slate-950">Activity & Risk</h2>
+              <h2 className="text-lg font-semibold text-slate-900">Activity & Risk</h2>
             </div>
             <p className="mt-1 text-sm text-slate-500">Live attention signals, rental activity, and marketplace footprint.</p>
 
-            <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
-              <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-400">Needs attention</p>
+            <div className={`mt-5 ${ADMIN_SOFT_CARD_CLASS}`}>
+              <p className={ADMIN_EYEBROW_CLASS}>Needs attention</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {customerAttentionItems.length > 0 ? customerAttentionItems.map((item) => (
                   <span key={item.label} className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ring-1 ${item.tone}`}>
@@ -2020,30 +3103,79 @@ const AdminCustomerProfile = () => {
             </div>
 
             <div className="mt-4 space-y-4">
-              <div className="rounded-2xl border border-slate-100 bg-white p-4">
+              <div className={ADMIN_SOFT_CARD_CLASS}>
                 <div className="flex items-center gap-2">
                   <CalendarDays className="h-4 w-4 text-slate-500" />
-                  <h3 className="text-sm font-black text-slate-950">Rental activity</h3>
+                  <h3 className="text-sm font-semibold text-slate-900">Rental activity</h3>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  {[
+                    ['Total rentals', rentalActivityTotals.total],
+                    ['Active rentals', rentalActivityTotals.active],
+                    ['Completed rentals', rentalActivityTotals.completed],
+                    ['Cancelled rentals', rentalActivityTotals.cancelled],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                      <p className={ADMIN_EYEBROW_CLASS}>{label}</p>
+                      <p className="mt-2 text-lg font-semibold text-slate-900">{value}</p>
+                    </div>
+                  ))}
                 </div>
                 <div className="mt-4 space-y-3 text-sm">
                   {[
-                    ['Rentals', shellCounts.rentals],
                     ['Last rental', latestRental ? formatDate(latestRental.rental_start_date || latestRental.created_at) : 'Not available'],
                     ['Amount', latestRentalAmount > 0 ? `${latestRentalAmount} MAD` : 'Not available'],
                     ['Outstanding', latestRentalRemainingAmount > 0 ? `${latestRentalRemainingAmount} MAD` : '0 MAD'],
                   ].map(([label, value]) => (
                     <div key={label} className="flex items-center justify-between border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
                       <span className="font-semibold text-slate-500">{label}</span>
-                      <span className="font-semibold text-slate-950">{value}</span>
+                      <span className="font-semibold text-slate-900">{value}</span>
                     </div>
                   ))}
                 </div>
+                <div className="mt-4 border-t border-slate-200 pt-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-slate-900">Recent rental history</p>
+                    <Button asChild variant="outline" className="rounded-2xl border-slate-200 bg-white">
+                      <Link to={customerRentalsHref}>Open full rental history</Link>
+                    </Button>
+                  </div>
+                  {rentalHistoryPreview.length > 0 ? (
+                    <div className="mt-3 space-y-3">
+                      {rentalHistoryPreview.slice(0, 3).map((entry) => (
+                        <Link
+                          key={`activity-${entry.id || entry.rental_id}`}
+                          to={`/admin/rentals/${entry.id}`}
+                          className="block rounded-2xl border border-slate-200 bg-white px-4 py-3 transition hover:border-slate-300 hover:bg-slate-50/50"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-slate-900">
+                                {entry.rental_id || entry.vehicle?.name || entry.display_name || 'Rental'}
+                              </p>
+                              <p className="mt-1 text-sm text-slate-500">
+                                {formatDate(entry.rental_start_date || entry.created_at)}
+                              </p>
+                            </div>
+                            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                              {getRentalHistoryStatus(entry)}
+                            </span>
+                          </div>
+                        </Link>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4 text-sm font-medium text-slate-500">
+                      No rentals yet.
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-100 bg-white p-4">
+              <div className={ADMIN_SOFT_CARD_CLASS}>
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="h-4 w-4 text-slate-500" />
-                  <h3 className="text-sm font-black text-slate-950">Verification state</h3>
+                  <h3 className="text-sm font-semibold text-slate-900">Verification state</h3>
                 </div>
                 <div className="mt-4 flex flex-wrap items-center gap-2">
                   <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ring-1 ${getVerificationTone(verificationLabel)}`}>
@@ -2058,10 +3190,10 @@ const AdminCustomerProfile = () => {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-100 bg-white p-4">
+              <div className={ADMIN_SOFT_CARD_CLASS}>
                 <div className="flex items-center gap-2">
                   <Store className="h-4 w-4 text-slate-500" />
-                  <h3 className="text-sm font-black text-slate-950">Marketplace footprint</h3>
+                  <h3 className="text-sm font-semibold text-slate-900">Marketplace footprint</h3>
                 </div>
                 <div className="mt-4 space-y-3 text-sm">
                   {[
@@ -2072,14 +3204,14 @@ const AdminCustomerProfile = () => {
                   ].map(([label, value]) => (
                     <div key={label} className="flex items-center justify-between border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
                       <span className="font-semibold text-slate-500">{label}</span>
-                      <span className="font-semibold text-slate-950">{value}</span>
+                      <span className="font-semibold text-slate-900">{value}</span>
                     </div>
                   ))}
                 </div>
               </div>
 
-              <details className="rounded-2xl border border-slate-100 bg-white p-4">
-                <summary className="cursor-pointer list-none text-sm font-black text-slate-950">
+              <details className={ADMIN_SOFT_CARD_CLASS}>
+                <summary className="cursor-pointer list-none text-sm font-semibold text-slate-900">
                   System info
                 </summary>
                 <div className="mt-4 space-y-3 text-sm">
@@ -2090,7 +3222,7 @@ const AdminCustomerProfile = () => {
                   ].map(([label, value]) => (
                     <div key={label} className="flex items-center justify-between border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
                       <span className="font-semibold text-slate-500">{label}</span>
-                      <span className="font-semibold text-slate-950">{value}</span>
+                      <span className="font-semibold text-slate-900">{value}</span>
                     </div>
                   ))}
                 </div>
@@ -2100,17 +3232,17 @@ const AdminCustomerProfile = () => {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className={ADMIN_MAIN_CARD_CLASS}>
         <div className="flex flex-col gap-4 border-b border-slate-100 pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-lg font-black text-slate-950">Customer workspace</h2>
-            <p className="mt-1 text-sm text-slate-500">Jump into rentals, messages, verification, and listings without leaving this profile.</p>
+            <h2 className="text-lg font-semibold text-slate-900">Customer workspace</h2>
+            <p className="mt-1 text-sm text-slate-500">Quick access to customer messages, verification, and listings without leaving this profile.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             {workspaceTabs.map((tab) => (
               <button key={tab.key} type="button" onClick={() => setActiveTab(tab.key)} className={tabButtonClass(tab.key)}>
                 {tab.label}
-                <span className={`ml-2 inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-bold ${activeTab === tab.key ? 'bg-white/15 text-white' : 'bg-white text-slate-700'}`}>
+                <span className={`ml-2 inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-semibold ${activeTab === tab.key ? 'bg-white/15 text-white' : 'bg-white text-slate-700'}`}>
                   {tab.count}
                 </span>
               </button>
@@ -2119,76 +3251,64 @@ const AdminCustomerProfile = () => {
         </div>
 
         <div className="pt-5">
-          {activeTab === 'rentals' ? (
-            rentalHistory.length > 0 ? (
-              <div className="grid gap-3">
-                {rentalHistoryPreview.map((entry) => (
-                  <div key={entry.id} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <p className="text-base font-black text-slate-950">{entry.vehicle?.name || entry.display_name || 'SEGWAY'}</p>
-                        <p className="mt-1 text-sm font-medium text-slate-500">{formatDate(entry.rental_start_date || entry.created_at)}</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-950">{Number(entry.display_amount || 0)} MAD</p>
-                      </div>
-                      <Button asChild variant="outline" className="rounded-full border-slate-200 bg-white">
-                        <Link to={`/admin/rentals/${entry.id}`}>Open</Link>
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-                {rentalHistory.length > rentalHistoryPreview.length ? (
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('rentals')}
-                      className="text-sm font-semibold text-violet-700 hover:text-violet-800"
-                    >
-                      Showing latest {rentalHistoryPreview.length} of {rentalHistory.length}
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4 text-sm font-medium text-slate-500">
-                No rentals yet.
-              </div>
-            )
-          ) : null}
-
           {activeTab === 'messages' ? (
             primaryCustomerThread ? (
               <div className="space-y-4">
                 <ThreadPreviewCard thread={primaryCustomerThread} openHref={primaryCustomerThreadHref} />
               </div>
             ) : (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4 text-sm font-medium text-slate-500">
-                No messages yet.
+              <div className="rounded-3xl border border-dashed border-violet-200 bg-violet-50/60 p-5">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-violet-100 bg-white text-violet-600 shadow-sm">
+                      <MessageSquare className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Customer thread</p>
+                      <p className="mt-1 text-sm text-slate-500">No messages yet.</p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={() => setMessageDialogOpen(true)}
+                    disabled={!canMessageCustomer}
+                    className="rounded-2xl bg-violet-600 text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-300"
+                  >
+                    <Send className="mr-2 h-4 w-4" />
+                    Start message
+                  </Button>
+                </div>
               </div>
             )
           ) : null}
 
           {activeTab === 'verification' ? (
-            visibleVerificationDocumentsWithLabels.length > 0 || verificationHistoryDocuments.length > 0 ? (
+            visibleVerificationDocumentsWithLabels.length > 0 || visibleVerificationHistoryDocuments.length > 0 ? (
               <div className="space-y-4">
                 {visibleVerificationDocumentsWithLabels.length > 0 ? (
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    {visibleVerificationDocumentsWithLabels.map((document) => (
-                      <VerificationDocumentCard
-                        key={document.id}
-                        title={getVerificationDocumentLabel(document)}
-                        document={{ ...document, owner_email: customerData?.email || displayEmail }}
-                        reviewHref={verificationReviewHref}
-                        comparisonProfile={verificationComparisonProfile}
-                      />
-                    ))}
-                  </div>
+                  <>
+                    {visibleVerificationDocumentsForCards.length > 0 ? (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        {visibleVerificationDocumentsForCards.map((document) => (
+                          <VerificationDocumentCard
+                            key={document.id}
+                            title={getVerificationDocumentLabel(document)}
+                            document={{ ...document, owner_email: customerData?.email || displayEmail }}
+                            reviewHref={verificationReviewHref}
+                            comparisonProfile={verificationComparisonProfile}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                    {renderSecondaryIdDocumentsGroup({ detailed: true })}
+                  </>
                 ) : (
-                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4 text-sm font-medium text-slate-500">
+                  <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 p-4 text-sm font-medium text-slate-500">
                     No active verification documents right now. Archived approved documents will still appear below in history.
                   </div>
                 )}
-                <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                  <p className="text-sm font-bold text-slate-950">Status history</p>
+                <div className="rounded-3xl border border-slate-200 bg-slate-50/80 p-4">
+                  <p className="text-sm font-semibold text-slate-900">Status history</p>
                   <div className="mt-3 space-y-3">
                     {verificationHistoryPreview.map((document) => {
                       const statusMeta = getVerificationDocumentStatusMeta(document?.status);
@@ -2196,7 +3316,7 @@ const AdminCustomerProfile = () => {
                       return (
                         <div key={`${document.id}-history`} className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3 last:border-b-0 last:pb-0">
                           <div>
-                            <p className="text-sm font-semibold text-slate-950">{getVerificationDocumentLabel(document)}</p>
+                            <p className="text-sm font-semibold text-slate-900">{getVerificationDocumentLabel(document)}</p>
                             <p className="text-sm text-slate-500">
                               {String(document?.status || '').toLowerCase() === 'archived'
                                 ? `Archived ${formatDate(archivedAt)}`
@@ -2213,7 +3333,7 @@ const AdminCustomerProfile = () => {
                       );
                     })}
                   </div>
-                  {(visibleVerificationDocumentsWithLabels.length + verificationHistoryDocuments.length) > verificationHistoryPreview.length ? (
+                  {(visibleVerificationDocumentsWithLabels.length + visibleVerificationHistoryDocuments.length) > verificationHistoryPreview.length ? (
                     <p className="mt-3 text-sm font-medium text-slate-500">
                       Showing latest {verificationHistoryPreview.length} verification items.
                     </p>
@@ -2221,7 +3341,7 @@ const AdminCustomerProfile = () => {
                 </div>
               </div>
             ) : (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4 text-sm font-medium text-slate-500">
+              <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 p-4 text-sm font-medium text-slate-500">
                 No verification documents yet.
               </div>
             )
@@ -2231,13 +3351,13 @@ const AdminCustomerProfile = () => {
             marketplaceListings.length > 0 ? (
               <div className="grid gap-3">
                 {listingsPreview.map((listing) => (
-                  <div key={listing.id} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                  <div key={listing.id} className="rounded-3xl border border-slate-200 bg-slate-50/80 p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
-                        <p className="text-base font-black text-slate-950">{listing.title || `Listing ${compactListingId(listing.id)}`}</p>
+                        <p className="text-base font-semibold text-slate-900">{listing.title || `Listing ${compactListingId(listing.id)}`}</p>
                         <p className="mt-1 text-sm font-medium text-slate-500">{String(listing.listing_status || 'draft').replace(/_/g, ' ')}</p>
                       </div>
-                      <Button asChild variant="outline" className="rounded-full border-slate-200 bg-white">
+                      <Button asChild variant="outline" className="rounded-2xl border-slate-200 bg-white">
                         <Link to={buildAdminMarketplaceListingPath(listing.id)}>Open</Link>
                       </Button>
                     </div>
@@ -2250,7 +3370,7 @@ const AdminCustomerProfile = () => {
                 ) : null}
               </div>
             ) : (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4 text-sm font-medium text-slate-500">
+              <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 p-4 text-sm font-medium text-slate-500">
                 No listings yet.
               </div>
             )
@@ -2258,16 +3378,22 @@ const AdminCustomerProfile = () => {
         </div>
       </section>
 
-      {customerData?.has_active_alert_note ? (
-        <AlertBanner tone="amber" title="Active rental alert note">
-          <p className="whitespace-pre-wrap">{customerData.active_alert_note}</p>
-        </AlertBanner>
-      ) : null}
+      </div>
 
-      {customerData?.is_banned ? (
-        <AlertBanner tone="red" title="Banned customer">
-          <p className="whitespace-pre-wrap">{customerData.ban_note || 'This customer is currently banned. Review the verification and account notes before proceeding.'}</p>
-        </AlertBanner>
+      {showCopyConfirmation ? (
+        <div className="pointer-events-none fixed inset-0 z-[120] flex items-center justify-center px-6">
+          <div className="animate-[copy-confirm-pop_280ms_ease-out] rounded-[28px] border border-violet-200/80 bg-white/95 px-8 py-6 text-center shadow-[0_30px_80px_rgba(76,29,149,0.18)] backdrop-blur-md">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-violet-100 text-violet-700 shadow-inner">
+              <CheckCircle className="h-7 w-7" />
+            </div>
+            <p className="mt-4 text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
+              Copied
+            </p>
+            <p className="mt-2 text-lg font-bold tracking-[-0.03em] text-slate-950">
+              Customer reference copied
+            </p>
+          </div>
+        </div>
       ) : null}
 
       {previewDocument ? (
@@ -2281,7 +3407,7 @@ const AdminCustomerProfile = () => {
         >
           <DialogContent className="max-w-3xl overflow-hidden rounded-[28px] border border-slate-200 bg-white p-0 xl:left-[max(2rem,calc(50vw-32rem))] xl:right-[max(2rem,calc(50vw-32rem))] xl:top-20 xl:w-auto xl:max-w-none xl:translate-x-0 xl:translate-y-0">
             <DialogHeader className="border-b border-slate-100 px-6 py-4">
-              <DialogTitle className="text-xl font-black text-slate-950">
+              <DialogTitle className="text-xl font-semibold text-slate-900">
                 {getVerificationDocumentLabel(previewDocument)}
               </DialogTitle>
             </DialogHeader>
@@ -2311,23 +3437,23 @@ const AdminCustomerProfile = () => {
       ) : null}
 
       <Dialog open={messageDialogOpen} onOpenChange={setMessageDialogOpen}>
-          <DialogContent className="max-w-xl rounded-[32px] border border-violet-100 bg-white p-0 shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
+          <DialogContent className="max-w-xl rounded-[28px] border border-slate-200 bg-white p-0 shadow-[0_20px_60px_rgba(15,23,42,0.18)]">
           <DialogHeader className="border-b border-slate-100 px-6 py-5">
-            <DialogTitle className="text-2xl font-black tracking-tight text-slate-950">Message customer</DialogTitle>
-            <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
+            <DialogTitle className="text-xl font-semibold text-slate-900">Message customer</DialogTitle>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
               Send a direct admin note to {displayName}. This stays connected to the shared Message Center thread.
             </p>
           </DialogHeader>
 
           <div className="space-y-5 px-6 py-5">
-            <div className="rounded-[24px] border border-slate-100 bg-slate-50/70 px-4 py-4">
+            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-4">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">To</p>
+                  <p className={ADMIN_EYEBROW_CLASS}>To</p>
                   <p className="mt-2 text-sm font-semibold text-slate-900">{displayEmail}</p>
                 </div>
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">Thread</p>
+                  <p className={ADMIN_EYEBROW_CLASS}>Thread</p>
                   <p className="mt-2 text-sm font-semibold text-slate-900">
                     {primaryCustomerThread ? 'Existing shared thread' : 'New shared thread'}
                   </p>
@@ -2336,14 +3462,14 @@ const AdminCustomerProfile = () => {
             </div>
 
             {primaryCustomerThread ? (
-              <div className="rounded-[24px] border border-violet-100 bg-violet-50/60 px-4 py-4">
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-violet-500">Recent conversation</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-500">Recent conversation</p>
                     <p className="mt-2 text-sm font-semibold text-slate-900">
                       {primaryCustomerThread.subject || 'Shared customer thread'}
                     </p>
-                    <p className="mt-2 text-sm font-medium leading-6 text-slate-600">
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
                       {primaryCustomerThread.latest_message || 'No recent message yet.'}
                     </p>
                   </div>
@@ -2354,7 +3480,7 @@ const AdminCustomerProfile = () => {
                       setMessageDialogOpen(false);
                       navigate(`/admin/messages?threadKey=${encodeURIComponent(String(primaryCustomerThread.thread_key || messageThreadKey))}`);
                     }}
-                    className="rounded-full border-violet-200 bg-white text-violet-700 hover:bg-violet-100"
+                    className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
                   >
                     Open thread
                   </Button>
@@ -2363,18 +3489,18 @@ const AdminCustomerProfile = () => {
             ) : null}
 
             <div>
-              <label className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">Message</label>
+              <label className={ADMIN_EYEBROW_CLASS}>Message</label>
               <textarea
                 value={messageBody}
                 onChange={(event) => setMessageBody(event.target.value)}
                 rows={6}
                 placeholder="Write a short operational note for this customer..."
-                className="mt-3 w-full resize-none rounded-[24px] border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-900 shadow-sm outline-none transition focus:border-violet-300 focus:ring-2 focus:ring-violet-100"
+                className="mt-3 w-full resize-none rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-4 focus:ring-violet-100"
               />
             </div>
 
             {relatedThreads.length > 0 ? (
-              <div className="rounded-[24px] border border-emerald-100 bg-emerald-50/70 px-4 py-4">
+              <div className="rounded-3xl border border-emerald-200 bg-emerald-50/70 px-4 py-4">
                 <p className="text-sm font-semibold text-emerald-800">
                   This customer already has {relatedThreads.length} shared {relatedThreads.length === 1 ? 'thread' : 'threads'} linked to Message Center.
                 </p>
@@ -2387,7 +3513,7 @@ const AdminCustomerProfile = () => {
               type="button"
               variant="outline"
               onClick={() => setMessageDialogOpen(false)}
-              className="rounded-full"
+              className="rounded-2xl border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
             >
               Cancel
             </Button>
@@ -2395,7 +3521,7 @@ const AdminCustomerProfile = () => {
               type="button"
               onClick={handleSendCustomerMessage}
               disabled={sendingMessage || !messageBody.trim() || !canMessageCustomer}
-              className="rounded-full bg-violet-600 text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-300"
+              className="rounded-2xl bg-violet-600 text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-300"
             >
               <Send className="mr-2 h-4 w-4" />
               {sendingMessage ? 'Sending…' : 'Send message'}
@@ -2403,6 +3529,19 @@ const AdminCustomerProfile = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <style>{`
+        @keyframes copy-confirm-pop {
+          0% {
+            opacity: 0;
+            transform: translateY(10px) scale(0.96);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+      `}</style>
     </div>
   );
 };

@@ -446,6 +446,13 @@ const ViewCustomerDetailsDrawer = ({
   }));
   const sectionCardClass = 'rounded-[24px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]';
   const sectionTitleIconClass = 'h-4 w-4 mr-2 text-violet-600';
+  const customerProfileRentalId = rental?.id || customerData?._rentalId || '';
+  const customerProfileSearch = customerProfileRentalId
+    ? `?${new URLSearchParams({ rentalId: String(customerProfileRentalId) }).toString()}`
+    : '';
+  const customerProfileHref = customerData?.id
+    ? `/admin/customers/${encodeURIComponent(String(customerData.id))}/profile${customerProfileSearch}`
+    : '/admin/customers';
 
   return (
     <div
@@ -642,7 +649,7 @@ const ViewCustomerDetailsDrawer = ({
                 {customerData?.id && (
                   <div className="mt-4 border-t border-violet-100 pt-4">
                     <Link
-                      to={`/admin/customers/${customerData.id}`}
+                      to={customerProfileHref}
                       className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition-colors hover:bg-violet-100"
                     >
                       <Eye className="h-4 w-4" />
