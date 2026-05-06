@@ -4759,20 +4759,6 @@ const CustomerManagementDashboard = () => {
       />
 
       <div className="mt-6 grid gap-6 px-4 sm:px-6 lg:px-8">
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {[
-            { label: isFrench ? 'Comptes' : 'Accounts', value: aggregatedData.summary.totalCustomers, tone: 'text-slate-950' },
-            { label: isFrench ? 'Locations actives' : 'Active rentals', value: aggregatedData.summary.totalActiveRentals, tone: 'text-emerald-700' },
-            { label: isFrench ? 'Revenus' : 'Revenue', value: formatCurrency(aggregatedData.summary.totalRevenue), tone: 'text-violet-700' },
-            { label: isFrench ? 'Lignes visibles' : 'Visible rows', value: aggregatedData.customers.length, tone: 'text-slate-950' },
-          ].map((stat) => (
-            <div key={stat.label} className={ADMIN_MAIN_CARD_CLASS}>
-              <p className={ADMIN_EYEBROW_CLASS}>{stat.label}</p>
-              <p className={`mt-3 text-2xl font-semibold tracking-[-0.02em] ${stat.tone}`}>{stat.value}</p>
-            </div>
-          ))}
-        </section>
-
         <section className={ADMIN_MAIN_CARD_CLASS}>
           <div className="mb-4 flex flex-col gap-1">
             <h2 className="text-lg font-semibold text-slate-900">{isFrench ? 'Types de comptes' : 'Account types'}</h2>
