@@ -34,6 +34,18 @@ const runCustomerReadQuery = async (buildQuery, organizationId) => {
   return scopedResult;
 };
 
+const runCustomerLookupQuery = async (buildQuery, organizationId) => {
+  const { data, error } = await runCustomerReadQuery(buildQuery, organizationId);
+  if (error) throw error;
+  return data || [];
+};
+
+const stripOrganizationField = (payload = {}) => {
+  if (!payload || typeof payload !== 'object') return payload;
+  const { organization_id: _organizationId, ...rest } = payload;
+  return rest;
+};
+
 /**
  * EnhancedUnifiedCustomerService - Complete customer management with ID scanning integration
  * 
@@ -1201,11 +1213,24 @@ class EnhancedUnifiedCustomerService {
     
     try {
       const organizationId = await requireCurrentOrganizationId();
-      const { error } = await supabase
-        .from('app_4c3a7a6153_customers')
+      let query = supabase
+        .from(CUSTOMER_TABLE)
         .delete()
-        .eq('id', customerId)
-        .eq('organization_id', organizationId);
+        .eq('id', customerId);
+
+      if (organizationId) {
+        query = query.eq('organization_id', organizationId);
+      }
+
+      let { error } = await query;
+
+      if (organizationId && isMissingOrganizationColumnError(error)) {
+        console.warn('Customer table has no organization_id column; retrying delete without organization filter.');
+        ({ error } = await supabase
+          .from(CUSTOMER_TABLE)
+          .delete()
+          .eq('id', customerId));
+      }
       
       if (error) {
         console.error('❌ Error deleting customer:', error);
@@ -1230,11 +1255,24 @@ class EnhancedUnifiedCustomerService {
     }
     try {
       const organizationId = await requireCurrentOrganizationId();
-      const { data, error } = await supabase
-        .from('app_4c3a7a6153_customers')
+      let query = supabase
+        .from(CUSTOMER_TABLE)
         .delete()
-        .in('id', customerIds)
-        .eq('organization_id', organizationId);
+        .in('id', customerIds);
+
+      if (organizationId) {
+        query = query.eq('organization_id', organizationId);
+      }
+
+      let { data, error } = await query;
+
+      if (organizationId && isMissingOrganizationColumnError(error)) {
+        console.warn('Customer table has no organization_id column; retrying bulk delete without organization filter.');
+        ({ data, error } = await supabase
+          .from(CUSTOMER_TABLE)
+          .delete()
+          .in('id', customerIds));
+      }
 
       if (error) {
         console.error('Error during bulk customer deletion:', error);
@@ -1287,14 +1325,13 @@ class EnhancedUnifiedCustomerService {
     
     try {
       const organizationId = await getCurrentOrganizationId();
-      const { data, error } = await applyOrganizationScope(
-        supabase
-          .from('app_4c3a7a6153_customers')
-          .select('*')
-          .eq('licence_number', licenceNumber)
-          .single(),
-        organizationId
-      );
+      const buildQuery = () => supabase
+        .from(CUSTOMER_TABLE)
+        .select('*')
+        .eq('licence_number', licenceNumber)
+        .single();
+
+      const { data, error } = await runCustomerReadQuery(buildQuery, organizationId);
       
       if (error) {
         if (error.code === 'PGRST116') {
@@ -1322,14 +1359,13 @@ class EnhancedUnifiedCustomerService {
     
     try {
       const organizationId = await getCurrentOrganizationId();
-      const { data, error } = await applyOrganizationScope(
-        supabase
-          .from('app_4c3a7a6153_customers')
-          .select('*')
-          .eq('id_number', idNumber)
-          .single(),
-        organizationId
-      );
+      const buildQuery = () => supabase
+        .from(CUSTOMER_TABLE)
+        .select('*')
+        .eq('id_number', idNumber)
+        .single();
+
+      const { data, error } = await runCustomerReadQuery(buildQuery, organizationId);
       
       if (error) {
         if (error.code === 'PGRST116') {
@@ -1357,14 +1393,13 @@ class EnhancedUnifiedCustomerService {
     
     try {
       const organizationId = await getCurrentOrganizationId();
-      const { data, error } = await applyOrganizationScope(
-        supabase
-          .from('app_4c3a7a6153_customers')
-          .select('*')
-          .eq('id', customerId)
-          .single(),
-        organizationId
-      );
+      const buildQuery = () => supabase
+        .from(CUSTOMER_TABLE)
+        .select('*')
+        .eq('id', customerId)
+        .single();
+
+      const { data, error } = await runCustomerReadQuery(buildQuery, organizationId);
       
       if (error) {
         console.error('❌ DEBUG: Error fetching customer:', error);
@@ -1614,25 +1649,31 @@ class EnhancedUnifiedCustomerService {
       idNumber: criteria.id_number || criteria.idNumber,
     });
 
-    const runLookup = async (builder) => {
-      const { data, error } = await builder;
-      if (error) throw error;
-      return data || [];
-    };
-
-    const customerTable = supabase.from('app_4c3a7a6153_customers');
+    const customerTable = CUSTOMER_TABLE;
     const exactMatchGroups = await Promise.all([
       normalizedIdentity.idNumber
-        ? runLookup(applyOrganizationScope(customerTable.select('*').eq('id_number', normalizedIdentity.idNumber).limit(10), organizationId))
+        ? runCustomerLookupQuery(
+          () => supabase.from(customerTable).select('*').eq('id_number', normalizedIdentity.idNumber).limit(10),
+          organizationId
+        )
         : Promise.resolve([]),
       normalizedIdentity.licenceNumber
-        ? runLookup(applyOrganizationScope(customerTable.select('*').eq('licence_number', normalizedIdentity.licenceNumber).limit(10), organizationId))
+        ? runCustomerLookupQuery(
+          () => supabase.from(customerTable).select('*').eq('licence_number', normalizedIdentity.licenceNumber).limit(10),
+          organizationId
+        )
         : Promise.resolve([]),
       phone
-        ? runLookup(applyOrganizationScope(customerTable.select('*').eq('phone', phone).limit(10), organizationId))
+        ? runCustomerLookupQuery(
+          () => supabase.from(customerTable).select('*').eq('phone', phone).limit(10),
+          organizationId
+        )
         : Promise.resolve([]),
       email
-        ? runLookup(applyOrganizationScope(customerTable.select('*').eq('email', email).limit(10), organizationId))
+        ? runCustomerLookupQuery(
+          () => supabase.from(customerTable).select('*').eq('email', email).limit(10),
+          organizationId
+        )
         : Promise.resolve([]),
     ]);
 
@@ -1643,8 +1684,9 @@ class EnhancedUnifiedCustomerService {
 
     if (!fullName) return [];
 
-    const { data, error } = await applyOrganizationScope(
-      customerTable
+    const { data, error } = await runCustomerReadQuery(
+      () => supabase
+        .from(customerTable)
         .select('*')
         .ilike('full_name', fullName)
         .limit(5),
@@ -1657,16 +1699,33 @@ class EnhancedUnifiedCustomerService {
 
   static async updateCustomerById(customerId, updates = {}, select = '*') {
     const organizationId = await requireCurrentOrganizationId();
-    const { data, error } = await supabase
-      .from('app_4c3a7a6153_customers')
-      .update({
-        ...applyOrganizationMatch({}, organizationId),
-        ...updates,
-      })
-      .eq('id', customerId)
-      .eq('organization_id', organizationId)
-      .select(select)
-      .maybeSingle();
+    const scopedPayload = {
+      ...applyOrganizationMatch({}, organizationId),
+      ...updates,
+    };
+
+    let query = supabase
+      .from(CUSTOMER_TABLE)
+      .update(scopedPayload)
+      .eq('id', customerId);
+
+    if (organizationId) {
+      query = query.eq('organization_id', organizationId);
+    }
+
+    query = query.select(select).maybeSingle();
+
+    let { data, error } = await query;
+
+    if (organizationId && isMissingOrganizationColumnError(error)) {
+      console.warn('Customer table has no organization_id column; retrying update without organization filter.');
+      ({ data, error } = await supabase
+        .from(CUSTOMER_TABLE)
+        .update(stripOrganizationField(updates))
+        .eq('id', customerId)
+        .select(select)
+        .maybeSingle());
+    }
 
     if (error) {
       throw new Error(`Failed to update customer: ${error.message}`);

@@ -65,6 +65,8 @@ import {
   GLOBAL_TOUR_PRICING_KEY,
 } from '../../services/tourPackagePricingService';
 import VehicleModelPricingService from '../../services/VehicleModelPricingService';
+import AdminModuleHero from '../../components/admin/AdminModuleHero';
+import { ADMIN_MAIN_CARD_CLASS, ADMIN_SOFT_CARD_CLASS } from '../../utils/adminSurfaceStyles';
 
 const TOUR_PACKAGE_RULES_MARKER = '[tour_package_rules]';
 const TOUR_BOOKING_MARKER = '[tour_booking]';
@@ -298,6 +300,28 @@ const normalizeSelectedModelCounts = (currentCounts = {}, modelGroups = [], quad
     );
     nextCounts[modelId] = desired;
     assigned += desired;
+  });
+
+  return nextCounts;
+};
+
+const buildDefaultSelectedModelCounts = (modelGroups = [], quadCount = 1) => {
+  const safeQuadCount = Math.max(1, Number(quadCount || 1));
+  const nextCounts = {};
+  let assigned = 0;
+
+  modelGroups.forEach((group) => {
+    const modelId = String(group.modelId);
+    const remainingCapacity = Math.max(0, safeQuadCount - assigned);
+    const defaultCount = Math.max(
+      0,
+      Math.min(
+        Number(group.availableCount || 0),
+        remainingCapacity
+      )
+    );
+    nextCounts[modelId] = defaultCount;
+    assigned += defaultCount;
   });
 
   return nextCounts;
@@ -846,6 +870,7 @@ const ToursPage = () => {
   const [trackedTours, setTrackedTours] = useState([]);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [openTourActionGroupId, setOpenTourActionGroupId] = useState('');
+  const [hasTouchedModelSelection, setHasTouchedModelSelection] = useState(false);
   const canDeleteScheduledTour = useCallback((tour) => {
     const role = String(userProfile?.role || '').toLowerCase();
     if (!['admin', 'owner'].includes(role)) return false;
@@ -1412,15 +1437,24 @@ const ToursPage = () => {
   useEffect(() => {
     setBookingForm((prev) => {
       const normalized = normalizeSelectedModelCounts(prev.selectedModelCounts, displayModelGroups, prev.quadCount);
+      const normalizedSelectedCount = countSelectedModels(normalized);
+      const shouldAutoSeed =
+        !hasTouchedModelSelection &&
+        Boolean(prev.time) &&
+        displayModelGroups.length > 0 &&
+        normalizedSelectedCount === 0;
+      const nextSelectedModelCounts = shouldAutoSeed
+        ? buildDefaultSelectedModelCounts(displayModelGroups, prev.quadCount)
+        : normalized;
       const currentSerialized = JSON.stringify(prev.selectedModelCounts || {});
-      const nextSerialized = JSON.stringify(normalized);
+      const nextSerialized = JSON.stringify(nextSelectedModelCounts);
       if (currentSerialized === nextSerialized) return prev;
       return {
         ...prev,
-        selectedModelCounts: normalized,
+        selectedModelCounts: nextSelectedModelCounts,
       };
     });
-  }, [displayModelGroups, bookingForm.quadCount]);
+  }, [displayModelGroups, bookingForm.quadCount, hasTouchedModelSelection]);
 
   const selectedModelMix = useMemo(
     () =>
@@ -1648,6 +1682,10 @@ const ToursPage = () => {
   }, [packages.length, upcomingTours.length, todayTours]);
 
   const updateBookingForm = (field, value) => {
+    if (['packageId', 'date', 'time', 'quadCount'].includes(field)) {
+      setHasTouchedModelSelection(false);
+    }
+
     setBookingForm((prev) => {
       const next = {
         ...prev,
@@ -1772,6 +1810,7 @@ const ToursPage = () => {
     setGuestIDScanOpen(false);
     setDriverIDScanTarget(null);
     setActiveDriverQuadIndex(0);
+    setHasTouchedModelSelection(false);
     setBookingForm((prev) => ({
       ...createInitialBookingForm(),
       packageId: packages[0]?.id || '',
@@ -3261,72 +3300,108 @@ const ToursPage = () => {
 
       {activeTab === 'bookings' && (
         <div className="space-y-6 pb-32 sm:pb-24">
-          <section className="rounded-[1.75rem] border border-white bg-white p-5 shadow-[0_18px_48px_rgba(15,23,42,0.09)] sm:p-6">
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Book Tour', 'Réserver un tour')}</p>
-                <h1 className="mt-2 text-3xl font-bold text-slate-900">
-                  {canSelectTourGuide ? tr('Fast booking', 'Réservation rapide') : tr('Tour booking', 'Réservation de tour')}
-                </h1>
+          <AdminModuleHero
+            flush
+            icon={<Compass className="h-7 w-7" />}
+            eyebrow={tr('Book Tour', 'Réserver un tour')}
+            title={canSelectTourGuide ? tr('Fast booking', 'Réservation rapide') : tr('Tour booking', 'Réservation de tour')}
+            description={tr(
+              'Create a staff booking with package rules, guide assignment, rider details, and quad selection in one flow.',
+              'Créez une réservation interne avec règles de forfait, attribution du guide, détails passagers et sélection des quads dans un seul flux.'
+            )}
+            actions={canManageTourPackages ? (
+              <Link
+                to="/admin/pricing?tab=tour-pricing"
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                <Package2 className="h-4 w-4" />
+                {tr('Manage Packages', 'Gérer les forfaits')}
+              </Link>
+            ) : null}
+          />
+
+          <section className={`${ADMIN_MAIN_CARD_CLASS} space-y-5`}>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  {tr('Free Now', 'Libre maintenant')}
+                </p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">{fleetStats.freeNow}</p>
               </div>
-              <div className="grid grid-cols-3 gap-3 rounded-[1.4rem] border border-slate-200 bg-slate-50/90 p-2 shadow-inner shadow-slate-200/60">
-                <div className="rounded-xl bg-white px-4 py-3 text-center ring-1 ring-slate-200/80 shadow-sm">
-                  <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500 whitespace-nowrap">{tr('Free Now', 'Libre maintenant')}</p>
-                  <p className="mt-1 text-2xl font-semibold text-slate-900">{fleetStats.freeNow}</p>
-                </div>
-                <div className="rounded-xl bg-white px-4 py-3 text-center ring-1 ring-violet-200/80 shadow-sm">
-                  <p className="text-[11px] font-medium uppercase tracking-wide text-violet-600 whitespace-nowrap">{tr('Capacity', 'Capacité')}</p>
-                  <p className="mt-1 text-2xl font-semibold text-violet-900">{fleetStats.total}</p>
-                </div>
-                <div className="rounded-xl bg-white px-4 py-3 text-center ring-1 ring-indigo-200/80 shadow-sm">
-                  <p className="text-[11px] font-medium uppercase tracking-wide text-indigo-600 whitespace-nowrap">{tr('Reserved', 'Réservé')}</p>
-                  <p className="mt-1 text-2xl font-semibold text-indigo-900">{fleetStats.reserved}</p>
-                </div>
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  {tr('Capacity', 'Capacité')}
+                </p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">{fleetStats.total}</p>
+              </div>
+              <div className="rounded-3xl border border-slate-200 bg-slate-50/70 px-4 py-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  {tr('Reserved', 'Réservé')}
+                </p>
+                <p className="mt-2 text-2xl font-semibold text-slate-950">{fleetStats.reserved}</p>
               </div>
             </div>
 
-            <div className="mt-5 rounded-[1.5rem] border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-200/70">
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { id: 1, label: tr('Package & Time', 'Forfait & heure'), icon: Route },
-                { id: 2, label: tr('Guest & Guide', 'Client & guide'), icon: Users },
-                { id: 3, label: tr('Review & Book', 'Vérifier & réserver'), icon: CheckCircle2 },
-              ].map((step) => {
-                const Icon = step.icon;
-                const active = bookingStep === step.id;
-                const done = bookingStep > step.id;
-                return (
-                  <button
-                    key={step.id}
-                    type="button"
-                    onClick={() => {
-                      if (step.id < bookingStep || validateStep()) setBookingStep(step.id);
-                    }}
-                    className={`rounded-lg px-4 py-3 text-left transition-colors ${
-                      active
-                        ? 'bg-white text-violet-900 ring-1 ring-violet-200 shadow-sm'
-                        : done
-                          ? 'bg-violet-50 text-violet-700 ring-1 ring-violet-200'
-                          : 'bg-white text-slate-500 ring-1 ring-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Icon className="h-4 w-4" />
-                      <span className="text-xs font-semibold uppercase tracking-[0.14em]">{step.id}</span>
-                    </div>
-                    <p className="mt-2 text-sm font-medium">{step.label}</p>
-                  </button>
-                );
-              })}
-            </div>
+            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    {tr('Booking Steps', 'Étapes de réservation')}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {tr('Build the booking in three quick steps.', 'Créez la réservation en trois étapes rapides.')}
+                  </p>
+                </div>
+                <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600 ring-1 ring-slate-200">
+                  {tr(`Step ${bookingStep} of 3`, `Étape ${bookingStep} sur 3`)}
+                </span>
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2" aria-label="Tour booking steps">
+                {[
+                  { id: 1, label: tr('Package & Time', 'Forfait & heure'), icon: Route },
+                  { id: 2, label: tr('Guest & Guide', 'Client & guide'), icon: Users },
+                  { id: 3, label: tr('Review & Book', 'Vérifier & réserver'), icon: CheckCircle2 },
+                ].map((step) => {
+                  const Icon = step.icon;
+                  const active = bookingStep === step.id;
+                  const done = bookingStep > step.id;
+                  return (
+                    <button
+                      key={step.id}
+                      type="button"
+                      onClick={() => {
+                        if (step.id < bookingStep || validateStep()) setBookingStep(step.id);
+                      }}
+                      className={`inline-flex items-center gap-3 rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                        active
+                          ? 'border-violet-200 bg-white text-violet-900 shadow-sm'
+                          : done
+                            ? 'border-violet-200 bg-violet-50 text-violet-700'
+                            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className={`inline-flex h-8 w-8 items-center justify-center rounded-xl ${
+                        active
+                          ? 'bg-violet-100 text-violet-700'
+                          : done
+                            ? 'bg-violet-100 text-violet-700'
+                            : 'bg-slate-100 text-slate-500'
+                      }`}>
+                        {done ? <CheckCircle2 className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
+                      </span>
+                      <span className="text-left">{step.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </section>
 
-          <div className="rounded-[1.85rem] border border-slate-200 bg-slate-100/80 p-4 shadow-inner shadow-slate-300/60 sm:p-5">
           <div className="space-y-6">
 
             {bookingStep === 1 && (
-              <section className="space-y-6 rounded-[1.6rem] border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
+              <section className={`${ADMIN_MAIN_CARD_CLASS} space-y-6`}>
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Step 1', 'Étape 1')}</p>
@@ -3337,20 +3412,11 @@ const ToursPage = () => {
                       {tr('Loading schedule...', 'Chargement du planning...')}
                     </div>
                   )}
-                  {canManageTourPackages && (
-                    <Link
-                      to="/admin/pricing?tab=tour-pricing"
-                      className="inline-flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-medium text-violet-700 transition hover:bg-violet-100"
-                    >
-                      <Package2 className="h-4 w-4" />
-                      {tr('Manage Packages', 'Gérer les forfaits')}
-                    </Link>
-                  )}
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {packagesLoading ? (
-                    <div className="col-span-full rounded-2xl border border-slate-200 bg-slate-50/80 p-6 text-slate-500">{tr('Loading packages...', 'Chargement des forfaits...')}</div>
+                    <div className={`col-span-full ${ADMIN_SOFT_CARD_CLASS} text-slate-500`}>{tr('Loading packages...', 'Chargement des forfaits...')}</div>
                   ) : (
                     packages.map((pkg) => {
                       const selected = String(pkg.id) === String(bookingForm.packageId);
@@ -3365,8 +3431,8 @@ const ToursPage = () => {
                           }}
                           className={`rounded-[1.6rem] border-2 p-5 text-left transition-all ${
                             selected
-                              ? 'border-violet-400 bg-white shadow-[0_18px_40px_rgba(79,70,229,0.14)] ring-4 ring-violet-100'
-                              : 'border-slate-200 bg-white shadow-[0_10px_24px_rgba(15,23,42,0.05)] hover:border-violet-200 hover:bg-violet-50/20'
+                              ? 'border-violet-300 bg-white ring-2 ring-violet-100'
+                              : 'border-slate-200 bg-slate-50/70 hover:border-violet-200 hover:bg-white'
                           }`}
                         >
                           <div className="flex items-start justify-between gap-3">
@@ -3425,8 +3491,11 @@ const ToursPage = () => {
                   )}
                 </div>
 
-                <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+                <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+                  <div className="space-y-5">
+                    <div className={ADMIN_SOFT_CARD_CLASS}>
+                      <div className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+                        <div>
                     <label className="text-sm font-semibold text-slate-700">{tr('Tour Date', 'Date du tour')}</label>
                     <input
                       type="date"
@@ -3435,9 +3504,9 @@ const ToursPage = () => {
                       onChange={(event) => updateBookingForm('date', event.target.value)}
                       className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
                     />
-                  </div>
+                        </div>
 
-                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+                        <div>
                     <div className="flex items-center justify-between gap-3">
                       <label className="text-sm font-semibold text-slate-700">{tr('Departure Time', 'Heure de départ')}</label>
                       <span className="rounded-full bg-white px-3 py-1 text-xs font-medium uppercase tracking-[0.12em] text-slate-600">
@@ -3487,28 +3556,30 @@ const ToursPage = () => {
                         </span>
                       )}
                     </div>
-                  </div>
-                </div>
+                        </div>
+                      </div>
+                    </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                  <label className="text-sm font-semibold text-slate-700">{tr('How many quads?', 'Combien de quads ?')}</label>
-                  <div className="mt-3 grid grid-cols-5 gap-3">
-                    {Array.from({ length: Number(currentPackage?.maxQuads || 5) }, (_, index) => index + 1).map((count) => (
-                      <button
-                        key={count}
-                        type="button"
-                        onClick={() => updateBookingForm('quadCount', count)}
-                        className={`rounded-lg px-3 py-4 text-lg font-semibold transition-colors ${
-                          Number(bookingForm.quadCount) === count ? 'bg-violet-700 text-white' : 'bg-white text-slate-700 hover:bg-violet-50'
-                        }`}
-                      >
-                        {count}
-                      </button>
-                    ))}
+                    <div className={ADMIN_SOFT_CARD_CLASS}>
+                      <label className="text-sm font-semibold text-slate-700">{tr('How many quads?', 'Combien de quads ?')}</label>
+                      <div className="mt-3 grid grid-cols-5 gap-3">
+                        {Array.from({ length: Number(currentPackage?.maxQuads || 5) }, (_, index) => index + 1).map((count) => (
+                          <button
+                            key={count}
+                            type="button"
+                            onClick={() => updateBookingForm('quadCount', count)}
+                            className={`rounded-lg px-3 py-4 text-lg font-semibold transition-colors ${
+                              Number(bookingForm.quadCount) === count ? 'bg-violet-700 text-white' : 'bg-white text-slate-700 hover:bg-violet-50'
+                            }`}
+                          >
+                            {count}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
-                </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+                <div className={ADMIN_SOFT_CARD_CLASS}>
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div>
                       <label className="text-sm font-semibold text-slate-700">{tr('Choose quad models', 'Choisir les modèles de quad')}</label>
@@ -3520,7 +3591,7 @@ const ToursPage = () => {
                   </div>
 
                   {displayModelGroups.length === 0 ? (
-                    <div className="mt-4 rounded-lg bg-white px-4 py-4 text-sm text-slate-500">
+                    <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-4 text-sm text-slate-500">
                       {bookingForm.time
                         ? tr('No quads are available for the selected departure time.', "Aucun quad n'est disponible pour l'heure de départ sélectionnée.")
                         : tr('No active quad models are available yet.', "Aucun modèle de quad actif n'est encore disponible.")}
@@ -3544,7 +3615,7 @@ const ToursPage = () => {
                         return (
                           <div
                             key={group.modelId}
-                            className="rounded-xl border border-slate-200 bg-slate-50/70 p-4"
+                            className="rounded-2xl border border-slate-200 bg-white p-4"
                             onClick={() => {
                               if (!departureTimeSelected) {
                                 toast('Choose a departure time first.', { icon: '🕒' });
@@ -3576,6 +3647,7 @@ const ToursPage = () => {
                                       return;
                                     }
 
+                                    setHasTouchedModelSelection(true);
                                     setBookingForm((prev) => ({
                                       ...prev,
                                       selectedModelCounts: {
@@ -3602,6 +3674,7 @@ const ToursPage = () => {
                                       return;
                                     }
 
+                                    setHasTouchedModelSelection(true);
                                     setBookingForm((prev) => ({
                                       ...prev,
                                       selectedModelCounts: {
@@ -3661,6 +3734,7 @@ const ToursPage = () => {
                     </div>
                   </div>
                 </div>
+              </div>
 
                 {currentPackage && missingModelPricing.length > 0 && (
                   <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
@@ -3678,7 +3752,7 @@ const ToursPage = () => {
                     onClick={handleNextStep}
                     className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-4 text-sm font-semibold text-white transition hover:bg-violet-700"
                   >
-                    Continue
+                    {tr('Continue', 'Continuer')}
                     <ChevronRight className="h-4 w-4" />
                   </button>
                 </div>
@@ -3686,13 +3760,13 @@ const ToursPage = () => {
             )}
 
             {bookingStep === 2 && (
-              <section className="space-y-6 rounded-[1.6rem] border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
+              <section className={`${ADMIN_MAIN_CARD_CLASS} space-y-6`}>
                 <div>
                   <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">{tr('Step 2', 'Étape 2')}</p>
                   <h3 className="mt-2 text-xl font-semibold text-slate-900">{tr('Drivers and guide details', 'Détails des conducteurs et du guide')}</h3>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+                <div className={ADMIN_SOFT_CARD_CLASS}>
                   <label className="text-sm font-semibold text-slate-700">{tr('Total Riders', 'Total passagers')}</label>
                   <div className="mt-3 grid grid-cols-5 gap-3">
                     {Array.from({ length: Math.max(Number(bookingForm.quadCount || 1) * 2, 2) }, (_, index) => index + 1).map((count) => (
@@ -3720,47 +3794,59 @@ const ToursPage = () => {
                 </div>
 
                 {canSelectTourGuide ? (
-                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+                  <div className={ADMIN_SOFT_CARD_CLASS}>
                     <label className="text-sm font-semibold text-slate-700">{tr('Choose Tour Guide', 'Choisir un guide de tour')}</label>
-                    <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {guidesLoading ? (
-                        <div className="rounded-lg bg-white p-4 text-sm text-slate-500">Loading guides...</div>
-                      ) : (
-                        guides.map((guide) => (
-                          <button
-                            key={guide.id}
-                            type="button"
-                            onClick={() => updateBookingForm('guideId', guide.id)}
-                            className={`rounded-lg border px-4 py-4 text-left transition-colors ${
-                              String(bookingForm.guideId) === String(guide.id)
-                                ? 'border-violet-300 bg-violet-50'
-                                : 'border-slate-200 bg-white hover:bg-violet-50/30'
-                            }`}
-                          >
-                            <p className="font-semibold text-slate-900">{guide.name}</p>
-                            <p className="mt-1 text-sm text-slate-500 capitalize">{guide.role}</p>
-                          </button>
-                        ))
-                      )}
-                    </div>
+                    {guidesLoading ? (
+                      <div className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
+                        {tr('Loading guides...', 'Chargement des guides...')}
+                      </div>
+                    ) : (
+                      <>
+                        <select
+                          value={bookingForm.guideId || ''}
+                          onChange={(event) => updateBookingForm('guideId', event.target.value)}
+                          className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                        >
+                          <option value="">
+                            {tr('Select tour guide', 'Sélectionnez un guide')}
+                          </option>
+                          {guides.map((guide) => (
+                            <option key={guide.id} value={guide.id}>
+                              {guide.name}
+                            </option>
+                          ))}
+                        </select>
+
+                        {guides.find((guide) => String(guide.id) === String(bookingForm.guideId || '')) ? (
+                          <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/60 px-4 py-3">
+                            <p className="text-sm font-semibold text-slate-900">
+                              {guides.find((guide) => String(guide.id) === String(bookingForm.guideId || ''))?.name}
+                            </p>
+                            <p className="mt-1 text-xs capitalize text-slate-500">
+                              {guides.find((guide) => String(guide.id) === String(bookingForm.guideId || ''))?.role || tr('Guide', 'Guide')}
+                            </p>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 ) : (
-                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                    <p className="text-sm font-semibold text-slate-700">Booking Account</p>
+                  <div className={ADMIN_SOFT_CARD_CLASS}>
+                    <p className="text-sm font-semibold text-slate-700">{tr('Booking Account', 'Compte de réservation')}</p>
                     <div className="mt-3 rounded-lg border border-slate-200 bg-white px-4 py-4">
                       <p className="font-semibold text-slate-900">{currentUserDisplayName}</p>
                       <p className="mt-1 text-sm text-slate-500">
-                        This booking will automatically stay connected to your account in the activity logs.
+                        {tr('This booking will stay connected to your account in the activity logs.', "Cette réservation restera liée à votre compte dans les journaux d'activité.")}
                       </p>
                     </div>
                   </div>
                 )}
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+                <div className={ADMIN_SOFT_CARD_CLASS}>
                   <div className="flex items-start gap-3">
                     <Users className="mt-1 h-5 w-5 text-slate-700" />
                     <div className="flex-1">
-                      <h4 className="text-lg font-semibold text-slate-900">Driver roster by quad</h4>
+                      <h4 className="text-lg font-semibold text-slate-900">{tr('Driver roster by quad', 'Conducteurs par quad')}</h4>
                     </div>
                   </div>
 
@@ -3777,7 +3863,7 @@ const ToursPage = () => {
                             key={`driver-tab-${index}`}
                             type="button"
                             onClick={() => setActiveDriverQuadIndex(index)}
-                            className={`rounded-lg border px-4 py-4 text-left transition-colors ${
+                            className={`rounded-xl border px-4 py-4 text-left transition-colors ${
                               activeDriverQuadIndex === index
                                 ? 'border-violet-300 bg-violet-50 text-violet-900'
                                 : 'border-slate-200 bg-white text-slate-700 hover:bg-violet-50/30'
@@ -3797,26 +3883,26 @@ const ToursPage = () => {
                       })}
                     </div>
 
-                    <section className="rounded-[1.45rem] border border-violet-100 bg-slate-50/70 p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+                    <section className="rounded-[1.45rem] border border-violet-100 bg-slate-50/70 p-5">
                       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                         <div>
                           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-400">Quad {activeDriverQuadIndex + 1}</p>
-                          <h5 className="mt-1 text-lg font-semibold text-slate-900">Main driver required</h5>
+                          <h5 className="mt-1 text-lg font-semibold text-slate-900">{tr('Main driver required', 'Conducteur principal requis')}</h5>
                         </div>
                         <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
-                          {currentPackage?.requiresLicense ? 'Road license needed' : 'No road license needed'}
+                          {currentPackage?.requiresLicense ? tr('Road license needed', 'Permis route requis') : tr('No road license needed', 'Permis route non requis')}
                         </span>
                       </div>
 
                       <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
                         <div className="rounded-xl border border-slate-200 bg-white p-4">
-                          <label className="text-sm font-semibold text-slate-700">Driver Name</label>
+                          <label className="text-sm font-semibold text-slate-700">{tr('Driver Name', 'Nom du conducteur')}</label>
                           <input
                             type="text"
                             value={activePrimaryDriver.fullName}
                             onChange={(event) => updatePrimaryDriver(activeDriverQuadIndex, 'fullName', event.target.value)}
                             className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
-                            placeholder={`Main driver for quad ${activeDriverQuadIndex + 1}`}
+                            placeholder={tr(`Main driver for quad ${activeDriverQuadIndex + 1}`, `Conducteur principal pour quad ${activeDriverQuadIndex + 1}`)}
                           />
                           {activePrimaryDriverSearchTerm.length >= 3 ? (
                             <div className="mt-2 rounded-lg border border-slate-200 bg-white">
@@ -3873,11 +3959,7 @@ const ToursPage = () => {
                                 </div>
                               )}
                             </div>
-                          ) : (
-                            <p className="mt-2 text-xs text-slate-500">
-                              {tr('Type at least 3 letters to search Customer Management.', 'Saisissez au moins 3 lettres pour rechercher dans la gestion clients.')}
-                            </p>
-                          )}
+                          ) : null}
                         </div>
                         <div className="rounded-xl border border-slate-200 bg-white p-4">
                           <PhoneInputWithCountryCode
@@ -3886,11 +3968,6 @@ const ToursPage = () => {
                             tr={tr}
                             label={tr('WhatsApp', 'WhatsApp')}
                           />
-                          {!activePrimaryDriver.whatsapp ? (
-                            <p className="mt-2 text-xs text-slate-500">
-                              {tr('Enter WhatsApp or email to continue.', 'Saisissez WhatsApp ou e-mail pour continuer.')}
-                            </p>
-                          ) : null}
                         </div>
                         <div className="rounded-xl border border-slate-200 bg-white p-4">
                           <label className="text-sm font-semibold text-slate-700">{tr('Email', 'E-mail')}</label>
@@ -3901,9 +3978,6 @@ const ToursPage = () => {
                             className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
                             placeholder="customer@example.com"
                           />
-                          <p className="mt-2 text-xs text-slate-500">
-                            {tr('Optional if WhatsApp is entered.', "Optionnel si WhatsApp est renseigné.")}
-                          </p>
                         </div>
                         <div className="rounded-xl border border-slate-200 bg-white p-4">
                           <label className="text-sm font-semibold text-slate-700">{tr('Driver License', 'Permis conducteur')}</label>
@@ -4010,11 +4084,6 @@ const ToursPage = () => {
                                   tr={tr}
                                   label={tr('WhatsApp', 'WhatsApp')}
                                 />
-                                {!activeSecondaryDriver.whatsapp ? (
-                                  <p className="mt-2 text-xs text-slate-500">
-                                    {tr('Enter WhatsApp or email to continue.', 'Saisissez WhatsApp ou e-mail pour continuer.')}
-                                  </p>
-                                ) : null}
                               </div>
                               <div className="rounded-xl border border-slate-200 bg-white p-4">
                                 <label className="text-sm font-semibold text-slate-700">{tr('Email', 'E-mail')}</label>
@@ -4025,9 +4094,6 @@ const ToursPage = () => {
                                   className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900"
                                   placeholder="customer@example.com"
                                 />
-                                <p className="mt-2 text-xs text-slate-500">
-                                  {tr('Optional if WhatsApp is entered.', "Optionnel si WhatsApp est renseigné.")}
-                                </p>
                               </div>
                               <div className="rounded-xl border border-slate-200 bg-white p-4">
                                 <label className="text-sm font-semibold text-slate-700">{tr('Second Driver License', 'Permis du second conducteur')}</label>
@@ -4087,51 +4153,51 @@ const ToursPage = () => {
                 </div>
 
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                  <label className="text-sm font-semibold text-slate-700">Staff Notes</label>
+                <div className={ADMIN_SOFT_CARD_CLASS}>
+                  <label className="text-sm font-semibold text-slate-700">{tr('Staff Notes', "Notes de l'équipe")}</label>
                   <textarea
                     value={bookingForm.notes}
                     onChange={(event) => updateBookingForm('notes', event.target.value)}
                     rows={4}
                     className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-sm text-slate-900"
-                    placeholder="Any guest notes, arrival notes, or route comments"
+                    placeholder={tr('Any guest notes, arrival notes, or route comments', "Notes client, arrivée ou commentaires d'itinéraire")}
                   />
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                  <label className="text-sm font-semibold text-slate-700">Optional Contract</label>
+                <div className={ADMIN_SOFT_CARD_CLASS}>
+                  <label className="text-sm font-semibold text-slate-700">{tr('Optional Contract', 'Contrat optionnel')}</label>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={() => updateBookingForm('shareContract', false)}
                       className={`rounded-lg px-3 py-4 text-sm font-bold ${!bookingForm.shareContract ? 'bg-violet-700 text-white' : 'bg-white text-slate-700 hover:bg-violet-50'}`}
                     >
-                      No Contract
+                      {tr('No Contract', 'Sans contrat')}
                     </button>
                     <button
                       type="button"
                       onClick={() => updateBookingForm('shareContract', true)}
-                    className={`rounded-lg px-3 py-4 text-sm font-bold ${bookingForm.shareContract ? 'bg-violet-700 text-white' : 'bg-white text-slate-700 hover:bg-violet-50'}`}
+                      className={`rounded-lg px-3 py-4 text-sm font-bold ${bookingForm.shareContract ? 'bg-violet-700 text-white' : 'bg-white text-slate-700 hover:bg-violet-50'}`}
                     >
-                      Share Contract
+                      {tr('Share Contract', 'Partager le contrat')}
                     </button>
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <button
                     type="button"
                     onClick={() => setBookingStep(1)}
-                    className="rounded-lg bg-slate-100 px-5 py-4 text-sm font-bold text-slate-700 hover:bg-slate-200"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-5 py-4 text-sm font-bold text-slate-700 hover:bg-slate-50 sm:w-auto"
                   >
-                    Back
+                    {tr('Back', 'Retour')}
                   </button>
                   <button
                     type="button"
                     onClick={handleNextStep}
-                    className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-4 text-sm font-bold text-white hover:bg-violet-700"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-600 px-5 py-4 text-sm font-bold text-white hover:bg-violet-700 sm:w-auto"
                   >
-                    Review Booking
+                    {tr('Review Booking', 'Vérifier la réservation')}
                     <ChevronRight className="h-4 w-4" />
                   </button>
                 </div>
@@ -4139,16 +4205,16 @@ const ToursPage = () => {
             )}
 
             {bookingStep === 3 && (
-              <section className="space-y-4 rounded-[1.6rem] border border-slate-200 bg-white p-5 shadow-[0_14px_34px_rgba(15,23,42,0.07)]">
+              <section className={`${ADMIN_MAIN_CARD_CLASS} space-y-6`}>
                 <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-400">Step 3</p>
-                  <h3 className="mt-2 text-xl font-semibold text-slate-900">Review and book the tour</h3>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-violet-400">{tr('Step 3', 'Étape 3')}</p>
+                  <h3 className="mt-2 text-xl font-semibold text-slate-900">{tr('Review and book the tour', 'Vérifier et réserver le tour')}</h3>
                 </div>
 
                 <div className="grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Package</p>
-                    <p className="mt-1.5 text-base font-bold text-slate-900">{currentPackage?.name || 'No package selected'}</p>
+                  <div className={ADMIN_SOFT_CARD_CLASS}>
+                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">{tr('Package', 'Forfait')}</p>
+                    <p className="mt-1.5 text-base font-bold text-slate-900">{currentPackage?.name || tr('No package selected', 'Aucun forfait sélectionné')}</p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       <span className="rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 border border-slate-100">{currentPackage?.duration || 0}h</span>
                       <span className="rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 border border-slate-100 capitalize">{currentPackage?.routeType || 'mountain'}</span>
@@ -4156,20 +4222,20 @@ const ToursPage = () => {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Schedule</p>
+                  <div className={ADMIN_SOFT_CARD_CLASS}>
+                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">{tr('Schedule', 'Planning')}</p>
                     <p className="mt-1.5 text-base font-bold text-violet-800">{bookingForm.date} · {bookingForm.time}</p>
                     <p className="mt-1 text-sm text-slate-500">
-                      Buffer: {currentPackage
-                        ? `${currentPackage.bufferBeforeMinutes} min before / ${currentPackage.bufferAfterMinutes} min after`
+                      {tr('Buffer', 'Marge')}: {currentPackage
+                        ? tr(`${currentPackage.bufferBeforeMinutes} min before / ${currentPackage.bufferAfterMinutes} min after`, `${currentPackage.bufferBeforeMinutes} min avant / ${currentPackage.bufferAfterMinutes} min après`)
                         : 'n/a'}
                     </p>
                   </div>
                 </div>
 
                 <div className="grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Model Mix</p>
+                  <div className={ADMIN_SOFT_CARD_CLASS}>
+                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">{tr('Model Mix', 'Répartition des modèles')}</p>
                     <div className="mt-2 space-y-2">
                       {bookingPricingLines.length > 0 ? (
                         bookingPricingLines.map((line) => (
@@ -4183,32 +4249,32 @@ const ToursPage = () => {
                         ))
                       ) : (
                         <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-3 text-sm text-slate-500">
-                          No model mix selected yet.
+                          {tr('No model mix selected yet.', 'Aucune répartition de modèles sélectionnée.')}
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Pricing</p>
+                  <div className={ADMIN_SOFT_CARD_CLASS}>
+                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">{tr('Pricing', 'Tarification')}</p>
                     <p className="mt-1.5 text-2xl font-black text-violet-900">{calculatedTourTotal.toLocaleString('en-MA')} MAD</p>
-                    <p className="mt-1 text-sm text-slate-500">Based on package duration and quad model mix.</p>
+                    <p className="mt-1 text-sm text-slate-500">{tr('Based on package duration and quad model mix.', 'Basé sur la durée du forfait et la répartition des quads.')}</p>
                     {missingModelPricing.length > 0 && (
                       <p className="mt-2 text-sm font-medium text-amber-700">
-                        Missing pricing for {missingModelPricing.map((line) => line.label).join(', ')}.
+                        {tr(`Missing pricing for ${missingModelPricing.map((line) => line.label).join(', ')}.`, `Tarification manquante pour ${missingModelPricing.map((line) => line.label).join(', ')}.`)}
                       </p>
                     )}
                   </div>
                 </div>
 
                 <div className="grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Booking Contact</p>
-                    <p className="mt-1.5 text-base font-bold text-slate-900">{primaryDrivers[0]?.fullName || 'Quad 1 main driver'}</p>
+                  <div className={ADMIN_SOFT_CARD_CLASS}>
+                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">{tr('Booking Contact', 'Contact de réservation')}</p>
+                    <p className="mt-1.5 text-base font-bold text-slate-900">{primaryDrivers[0]?.fullName || tr('Quad 1 main driver', 'Conducteur principal du quad 1')}</p>
                     <p className="mt-1 text-sm text-slate-500">{primaryDrivers[0]?.whatsapp || tr('No WhatsApp', 'Aucun WhatsApp')}</p>
                   </div>
 
-                  <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                  <div className={ADMIN_SOFT_CARD_CLASS}>
                     <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">{tr('Guide & Riders', 'Guide et passagers')}</p>
                     <p className="mt-1.5 text-base font-bold text-slate-900">
                       {canSelectTourGuide
@@ -4220,17 +4286,17 @@ const ToursPage = () => {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-                  <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">Drivers by Quad</p>
+                <div className={ADMIN_SOFT_CARD_CLASS}>
+                  <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-violet-400">{tr('Drivers by Quad', 'Conducteurs par quad')}</p>
                   <div className="mt-3 grid gap-3 lg:grid-cols-2">
                     {primaryDrivers.map((driver, index) => {
                       const secondDriver = secondaryDrivers[index];
                       return (
-                        <div key={`review-driver-${index}`} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                          <p className="text-sm font-bold text-violet-700">Quad {index + 1}</p>
+                        <div key={`review-driver-${index}`} className="rounded-xl border border-slate-200 bg-white p-4">
+                          <p className="text-sm font-bold text-violet-700">{tr(`Quad ${index + 1}`, `Quad ${index + 1}`)}</p>
                           <div className="mt-2 space-y-1">
                             <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                              <span className="text-slate-400">Driver</span>
+                              <span className="text-slate-400">{tr('Driver', 'Conducteur')}</span>
                               <span className="font-medium text-slate-800 text-left break-words">{driver.fullName || '—'}</span>
                             </div>
                             <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
@@ -4238,19 +4304,19 @@ const ToursPage = () => {
                               <span className="font-medium text-slate-800 text-left break-words">{driver.whatsapp || '—'}</span>
                             </div>
                             <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                              <span className="text-slate-400">License</span>
-                              <span className="font-medium text-slate-800 text-left break-words">{driver.licenseNumber || 'Optional'}</span>
+                              <span className="text-slate-400">{tr('License', 'Permis')}</span>
+                              <span className="font-medium text-slate-800 text-left break-words">{driver.licenseNumber || tr('Optional', 'Optionnel')}</span>
                             </div>
                             <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                              <span className="text-slate-400">ID Scan</span>
+                              <span className="text-slate-400">{tr('ID Scan', "Scan d'identité")}</span>
                               <span className="font-medium text-slate-800 text-left break-words">{driver.idFileName ? tr('Captured', 'Capturé') : '—'}</span>
                             </div>
                           </div>
                           {hasAnyDriverValue(secondDriver) && (
-                            <div className="mt-2 border-t border-violet-100 pt-2 space-y-1">
-                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-400">2nd Driver</p>
+                            <div className="mt-3 border-t border-violet-100 pt-3 space-y-1">
+                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-400">{tr('2nd Driver', '2e conducteur')}</p>
                               <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-                                <span className="text-slate-400">Name</span>
+                                <span className="text-slate-400">{tr('Name', 'Nom')}</span>
                                 <span className="font-medium text-slate-800 text-left break-words">{secondDriver.fullName || '—'}</span>
                               </div>
                               <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
@@ -4265,15 +4331,15 @@ const ToursPage = () => {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 p-4 shadow-[0_8px_24px_rgba(16,185,129,0.10)]">
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/90 p-4">
                   <div className="flex items-start gap-3">
                     <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
                     <div className="flex-1">
-                      <h4 className="text-sm font-bold text-emerald-900">Automatic quad assignment preview</h4>
+                      <h4 className="text-sm font-bold text-emerald-900">{tr('Automatic quad assignment preview', 'Aperçu de l’attribution automatique')}</h4>
                       <p className="mt-1 text-sm text-emerald-700">
                         {shouldAssignVehiclesNow
-                          ? 'This tour starts within one hour, so the system assigns the selected model mix now.'
-                          : 'This future tour reserves the selected model mix now. Real quad plates will be assigned from matching available models when the tour starts.'}
+                          ? tr('This tour starts within one hour, so the system assigns the selected model mix now.', 'Ce tour démarre dans moins d’une heure, donc le système attribue maintenant les modèles sélectionnés.')
+                          : tr('This future tour reserves the selected model mix now. Real quad plates will be assigned from matching available models when the tour starts.', 'Ce tour futur réserve maintenant les modèles sélectionnés. Les plaques réelles seront attribuées au départ selon les modèles disponibles.')}
                       </p>
                     </div>
                   </div>
@@ -4281,39 +4347,38 @@ const ToursPage = () => {
                     <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                       {assignedVehiclesPreview.map((vehicle) => (
                         <div key={vehicle.id} className="rounded-xl border border-emerald-100 bg-white p-3">
-                          <p className="font-bold text-slate-900">{vehicle.plate_number || vehicle.name || 'Vehicle'}</p>
+                          <p className="font-bold text-slate-900">{vehicle.plate_number || vehicle.name || tr('Vehicle', 'Véhicule')}</p>
                           <p className="mt-0.5 text-sm text-slate-500">{vehicle.name || 'SEGWAY'} {vehicle.model || ''}</p>
                         </div>
                       ))}
                     </div>
                   ) : (
                     <div className="mt-3 rounded-xl border border-emerald-100 bg-white p-3 text-sm font-medium text-slate-600">
-                      Random available quads will be assigned at departure time.
+                      {tr('Random available quads will be assigned at departure time.', 'Des quads disponibles seront attribués au départ.')}
                     </div>
                   )}
                 </div>
 
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <button
                     type="button"
                     onClick={() => setBookingStep(2)}
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-100"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-5 py-4 text-sm font-bold text-slate-700 hover:bg-slate-50 sm:w-auto"
                   >
-                    Back
+                    {tr('Back', 'Retour')}
                   </button>
                   <button
                     type="button"
                     onClick={handleCreateTourBooking}
                     disabled={bookingSaving}
-                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-6 py-3 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-6 py-4 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-60 sm:w-auto"
                   >
-                    {bookingSaving ? 'Booking...' : 'Book Tour'}
+                    {bookingSaving ? tr('Booking...', 'Réservation...') : tr('Book Tour', 'Réserver le tour')}
                     <CheckCircle2 className="h-4 w-4" />
                   </button>
                 </div>
               </section>
             )}
-          </div>
           </div>
         </div>
       )}

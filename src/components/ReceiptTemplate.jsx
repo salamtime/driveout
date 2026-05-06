@@ -92,9 +92,48 @@ const getDisplayRentalDurationUnits = (rental) => {
   return Number(getRentalDurationUnits(rental));
 };
 
+const getCompletedHourlyElapsedMinutes = (rental) => {
+  if (rental?.rental_type !== 'hourly') return null;
+  const isCompletedRental =
+    String(rental?.rental_status || '').toLowerCase() === 'completed' ||
+    Boolean(rental?.completed_at);
+  if (!isCompletedRental) return null;
+
+  const startValue = rental?.started_at || rental?.start_date || rental?.rental_start_date;
+  const endValue = rental?.actual_end_date || rental?.end_date || rental?.rental_end_date;
+  const start = new Date(startValue || '');
+  const end = new Date(endValue || '');
+  const diffMs = end.getTime() - start.getTime();
+
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || !Number.isFinite(diffMs) || diffMs <= 0) {
+    return null;
+  }
+
+  return Math.max(1, Math.round(diffMs / 60000));
+};
+
+const formatExactHourlyDurationSummary = (minutes, tr) => {
+  const safeMinutes = Math.max(0, Math.round(Number(minutes || 0) || 0));
+  if (safeMinutes <= 0) return tr('0 min', '0 min');
+  if (safeMinutes < 60) return tr(`${safeMinutes} min`, `${safeMinutes} min`);
+
+  const hours = Math.floor(safeMinutes / 60);
+  const remainingMinutes = safeMinutes % 60;
+
+  if (remainingMinutes <= 0) {
+    return tr(`${hours} hr${hours > 1 ? 's' : ''}`, `${hours} h`);
+  }
+
+  return tr(`${hours}h ${remainingMinutes}m`, `${hours} h ${remainingMinutes} min`);
+};
+
 const formatRentalDurationSummary = (rental, tr) => {
   const duration = getDisplayRentalDurationUnits(rental);
   if (rental?.rental_type === 'hourly') {
+    const completedElapsedMinutes = getCompletedHourlyElapsedMinutes(rental);
+    if (completedElapsedMinutes) {
+      return formatExactHourlyDurationSummary(completedElapsedMinutes, tr);
+    }
     if (duration === 0.5) return tr('30 min', '30 min');
     if (duration === 1) return tr('1 hr', '1 h');
     if (duration === 1.5) return tr('1.5 hrs', '1,5 h');

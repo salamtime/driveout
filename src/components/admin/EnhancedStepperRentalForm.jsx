@@ -10596,7 +10596,7 @@ const SimplifiedRentalWizard = ({
         )}
       </div>
 
-      <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:z-20 sm:mt-6">
+      <div className="sticky bottom-0 z-30 mt-6 rounded-[26px] border border-violet-200 bg-white/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
         <div className="mb-3 flex items-center justify-between gap-3">
           {displayStickySummaryLabel ? (
             <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">
@@ -10731,37 +10731,74 @@ const SimplifiedRentalWizard = ({
   );
 
   const renderLightStepOne = () => (
-    <div className="px-4 pb-36 pt-4 sm:px-6">
+    <div className="overflow-x-hidden px-4 pb-8 pt-4 sm:px-6">
       <div className="space-y-4">
         {!lightCustomerReady && !lightCustomerEditOpen ? (
-          <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-            <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
-                  {tr('Customer', 'Client')}
+          <div className="flex min-h-[calc(100vh-17rem)] flex-col justify-between supports-[height:100dvh]:min-h-[calc(100dvh-17rem)]">
+            <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
+                    {tr('Customer', 'Client')}
+                  </p>
+                  <h3 className="mt-1 text-xl font-bold leading-tight text-slate-900">
+                    {tr('Start with ID or manual entry', "Commencez par l'identité ou la saisie manuelle")}
+                  </h3>
+                </div>
+              </div>
+              <div className="rounded-[22px] border border-dashed border-violet-200 bg-violet-50/70 px-4 py-6 text-center">
+                <p className="text-sm font-semibold text-slate-700">
+                  {tr('Choose how you want to add the customer.', 'Choisissez comment ajouter le client.')}
                 </p>
-                <h3 className="mt-1 text-xl font-bold leading-tight text-slate-900">
-                  {tr('Start with ID or manual entry', "Commencez par l'identité ou la saisie manuelle")}
-                </h3>
               </div>
             </div>
-            <div className="rounded-[22px] border border-dashed border-violet-200 bg-violet-50/70 px-4 py-6 text-center">
-              <p className="text-sm font-semibold text-slate-700">
-                {tr('Choose how you want to add the customer.', 'Choisissez comment ajouter le client.')}
-              </p>
+            <div className="mt-4 rounded-[22px] border border-violet-100 bg-violet-50/45 p-3">
+              <div className="space-y-2 sm:space-y-0 sm:flex sm:items-stretch sm:justify-end sm:gap-2">
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-1 sm:justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setShowIDScanModal(true)}
+                    className="flex min-h-[68px] items-center justify-center gap-3 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white shadow-[0_16px_36px_rgba(109,40,217,0.28)] sm:min-w-[220px]"
+                    disabled={loading || submitting || successfullySubmitted}
+                  >
+                    <FileImage className="h-5 w-5" />
+                    {tr('Scan ID', "Scanner l'identité")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLightCustomerEditOpen(true)}
+                    className="flex min-h-[68px] items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800 sm:min-w-[220px]"
+                    disabled={successfullySubmitted}
+                  >
+                    <Edit2 className="h-5 w-5" />
+                    {tr('Manual entry', 'Saisie manuelle')}
+                  </button>
+                </div>
+                {onCancel && (
+                  <button
+                    type="button"
+                    onClick={handleLightClose}
+                    className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-700 sm:w-auto sm:min-w-[180px]"
+                    disabled={loading || submitting || successfullySubmitted}
+                  >
+                    <ChevronLeft className="h-5 w-5" />
+                    {tr('Back', 'Retour')}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
+            <div className="overflow-hidden rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
                     {tr('Primary info', 'Infos principales')}
                   </p>
                   <h3 className="mt-1 text-lg font-bold text-slate-900">{tr('Customer', 'Client')}</h3>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="hidden flex-wrap items-center gap-2 sm:flex sm:justify-end">
                   {!lightCustomerReady && onCancel && (
                     <button
                       type="button"
@@ -10967,13 +11004,13 @@ const SimplifiedRentalWizard = ({
               )}
             </div>
 
-            <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:z-20 sm:mt-6">
+            <div className="sticky bottom-0 z-30 mt-6 rounded-[26px] border border-violet-200 bg-white/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
               <div className={`grid gap-2 sm:ml-auto sm:flex sm:w-full sm:max-w-[820px] sm:items-stretch sm:justify-end ${onCancel ? 'grid-cols-3' : 'grid-cols-2'}`}>
                 {onCancel && (
                   <button
                     type="button"
                     onClick={handleLightClose}
-                    className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-base font-bold text-slate-700 sm:min-w-[180px] sm:flex-none"
+                    className="flex min-w-0 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-4 text-center text-sm font-bold text-slate-700 sm:min-w-[180px] sm:flex-none sm:px-4 sm:text-base"
                     disabled={loading || submitting || successfullySubmitted}
                   >
                     <ChevronLeft className="h-5 w-5" />
@@ -10983,18 +11020,25 @@ const SimplifiedRentalWizard = ({
                 <button
                   type="button"
                   onClick={() => (formData.customer_id_image ? openSecondDriverScanModal('scan') : setShowIDScanModal(true))}
-                  className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800 sm:min-w-[220px] sm:flex-none"
+                  className="flex min-w-0 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-4 text-center text-sm font-bold text-slate-800 sm:min-w-[220px] sm:flex-none sm:px-4 sm:text-base"
                 >
-                  <FileImage className="h-5 w-5" />
-                  {formData.customer_id_image
-                    ? (hasSavedSecondDriverId ? tr('Rescan second ID', "Scanner à nouveau la deuxième pièce") : tr('Scan second ID', "Scanner la deuxième pièce"))
-                    : tr('Scan ID', "Scanner l'identité")}
+                  <FileImage className="hidden h-5 w-5 sm:block" />
+                  <span className="sm:hidden">
+                    {formData.customer_id_image
+                      ? (hasSavedSecondDriverId ? tr('Re-scan 2nd', 'Re-scan 2e') : tr('2nd ID', '2e pièce'))
+                      : tr('Scan ID', 'Scanner')}
+                  </span>
+                  <span className="hidden sm:inline">
+                    {formData.customer_id_image
+                      ? (hasSavedSecondDriverId ? tr('Rescan second ID', "Scanner à nouveau la deuxième pièce") : tr('Scan second ID', "Scanner la deuxième pièce"))
+                      : tr('Scan ID', "Scanner l'identité")}
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={handleNext}
                   disabled={!lightCustomerCanContinue}
-                  className="flex items-center justify-center gap-2 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[300px] sm:flex-1"
+                  className="flex min-w-0 items-center justify-center gap-2 rounded-2xl bg-violet-700 px-3 py-4 text-center text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[300px] sm:flex-1 sm:px-4 sm:text-base"
                 >
                   {tr('Continue', 'Continuer')}
                   <ChevronRight className="h-5 w-5" />
@@ -11004,43 +11048,6 @@ const SimplifiedRentalWizard = ({
           </div>
         )}
 
-        {!lightCustomerReady && !lightCustomerEditOpen && (
-          <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:z-20 sm:mt-6">
-            <div className="space-y-2 sm:space-y-0 sm:flex sm:items-stretch sm:justify-end sm:gap-2">
-              <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-1 sm:justify-end">
-                <button
-                  type="button"
-                  onClick={() => setShowIDScanModal(true)}
-                  className="flex min-h-[68px] items-center justify-center gap-3 rounded-2xl bg-violet-700 px-4 py-4 text-base font-bold text-white shadow-[0_16px_36px_rgba(109,40,217,0.28)] sm:min-w-[220px]"
-                  disabled={loading || submitting || successfullySubmitted}
-                >
-                  <FileImage className="h-5 w-5" />
-                  {tr('Scan ID', "Scanner l'identité")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLightCustomerEditOpen(true)}
-                  className="flex min-h-[68px] items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base font-bold text-slate-800 sm:min-w-[220px]"
-                  disabled={successfullySubmitted}
-                >
-                  <Edit2 className="h-5 w-5" />
-                  {tr('Manual entry', 'Saisie manuelle')}
-                </button>
-              </div>
-              {onCancel && (
-                <button
-                  type="button"
-                  onClick={handleLightClose}
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-base font-bold text-slate-700 sm:w-auto sm:min-w-[180px]"
-                  disabled={loading || submitting || successfullySubmitted}
-                >
-                  <ChevronLeft className="h-5 w-5" />
-                  {tr('Back', 'Retour')}
-                </button>
-              )}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -11152,7 +11159,7 @@ const SimplifiedRentalWizard = ({
   );
 
   const renderLightStrictVerificationCaptureStep = () => (
-    <div className="px-4 pb-36 pt-4 sm:px-6">
+    <div className="overflow-x-hidden px-4 pb-8 pt-4 sm:px-6">
       <div className="space-y-4">
         <div className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -11259,7 +11266,7 @@ const SimplifiedRentalWizard = ({
           </div>
         </div>
 
-        <div className="fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:z-20 sm:mt-6">
+        <div className="sticky bottom-0 z-30 mt-6 rounded-[26px] border border-violet-200 bg-white/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur">
           <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex sm:w-full sm:max-w-[640px] sm:items-stretch sm:justify-end">
             <button
               type="button"
@@ -11271,9 +11278,9 @@ const SimplifiedRentalWizard = ({
               }`}
               disabled={loading || submitting || successfullySubmitted}
             >
-              <FileImage className="h-5 w-5" />
+              <FileImage className="hidden h-5 w-5 sm:block" />
               {formData.customer_id_image
-                ? (hasSavedSecondDriverId ? tr('Rescan second ID', "Scanner à nouveau la deuxième pièce") : tr('Scan second ID', "Scanner la deuxième pièce"))
+                ? (hasSavedSecondDriverId ? tr('Re-scan 2nd', 'Re-scan 2e') : tr('2nd ID', '2e pièce'))
                 : tr('Scan ID', "Scanner l'identité")}
             </button>
             <button
@@ -12693,7 +12700,7 @@ const SimplifiedRentalWizard = ({
 
       {showIDScanModal && (
         <EnhancedUnifiedIDScanModal
-          saveWithoutOcrOnly={!canUseOcrIdScan || Boolean(formData.customer_id_image)}
+          saveWithoutOcrOnly={!canUseOcrIdScan}
           isOpen={showIDScanModal}
           onClose={() => {
             setShowIDScanModal(false);
@@ -12716,29 +12723,6 @@ const SimplifiedRentalWizard = ({
             setShowIDScanModal(false);
           }}
           onImageSaved={(savedData, imageFile) => {
-            if (formData.customer_id_image) {
-              appendSecondaryCustomerIdImage(savedData, imageFile)
-                .catch((error) => {
-                  console.error('❌ Failed to save secondary customer ID image:', error);
-                  setCustomerScanNoteTone('warning');
-                  setCustomerScanNote(
-                    tr(
-                      'Unable to save the secondary ID image. Please try again.',
-                      "Impossible d'enregistrer la pièce d'identité secondaire. Veuillez réessayer."
-                    )
-                  );
-                  toast.error(
-                    tr(
-                      'Failed to save secondary ID image.',
-                      "Échec de l'enregistrement de la pièce d'identité secondaire."
-                    )
-                  );
-                })
-                .finally(() => {
-                  setShowIDScanModal(false);
-                });
-              return;
-            }
             if (isLightVariant) {
               setLightCustomerEditOpen(true);
               setLightCustomerAdditionalOpen(false);

@@ -655,6 +655,9 @@ const EnhancedUnifiedIDScanModal = ({
         error.toLowerCase().includes('ocr est indisponible')
       )
   );
+  const showSaveImageOnlyAction = Boolean(
+    saveWithoutOcrOnly || !isOcrAvailable || isOcrUnavailableMessage
+  );
 
   return createPortal(
     <div
@@ -746,7 +749,7 @@ const EnhancedUnifiedIDScanModal = ({
                   </button>
                 )}
               </div>
-              {(allowSaveWithoutOcr || saveWithoutOcrOnly) && (
+              {showSaveImageOnlyAction && (
                 <button
                   onClick={handleSaveWithoutOcr}
                   className="w-full py-3 border border-slate-300 bg-white text-slate-700 font-semibold rounded-xl text-sm flex items-center justify-center gap-2 hover:bg-slate-50"

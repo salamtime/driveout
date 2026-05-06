@@ -208,9 +208,407 @@ const BusinessOwnerSaaSTable = ({
     );
   }
 
+  const renderExpandedContent = (row) => {
+    const tenantStatus = String(row?.tenant_status || '').toLowerCase();
+    const provisioningJobStatus = String(row?.provisioning_job_status || '').toLowerCase();
+    const provisioningDraft = provisioningDrafts[row.id] || buildProvisioningDraft(row);
+    const tenancyMode = resolveTenancyMode(row);
+    const isDedicatedTenant = tenancyMode === 'dedicated';
+    const isTenantActive = tenantStatus === 'active';
+    const manualProvisioningOpen = manualProvisioningRowId === row.id;
+    const missingProvisioningFields = getProvisioningMissingFields(provisioningDraft, tenancyMode);
+    const canCompleteProvisioning =
+      !busyAction &&
+      isDedicatedTenant &&
+      Boolean(row?.provisioning_job_id) &&
+      !isTenantActive &&
+      missingProvisioningFields.length === 0;
+
+    return (
+      <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Créé le' : 'Created at'}</div>
+              <div className="mt-1 text-sm font-semibold text-slate-900">{formatDate(row.created_at)}</div>
+            </div>
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Dernière activité' : 'Last activity'}</div>
+              <div className="mt-1 text-sm font-semibold text-slate-900">{row.lastActivityAt ? formatDate(row.lastActivityAt) : 'N/A'}</div>
+            </div>
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Facturation' : 'Billing'}</div>
+              <div className="mt-1 text-sm font-semibold text-slate-900">{String(row.billingStatus || 'none').replace('_', ' ')}</div>
+            </div>
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Essai jusqu’au' : 'Trial ends'}</div>
+              <div className="mt-1 text-sm font-semibold text-slate-900">{row.trialEndsAt ? formatDate(row.trialEndsAt) : 'N/A'}</div>
+            </div>
+          </div>
+
+          {row.rejectionReason ? (
+            <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              <div className="text-xs font-semibold uppercase tracking-wider text-rose-500">{isFrench ? 'Raison du rejet' : 'Rejection reason'}</div>
+              <div className="mt-1 font-medium">{row.rejectionReason}</div>
+            </div>
+          ) : null}
+
+          {row.suspensionReason ? (
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm text-slate-800">
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Raison de la suspension' : 'Suspension reason'}</div>
+              <div className="mt-1 font-medium">{row.suspensionReason}</div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Changer de plan' : 'Change plan'}</div>
+            <div className="mt-3">
+              <PlanSelector currentPlan={String(row.planType || 'starter').toLowerCase()} onChange={(plan) => onChangePlan(row, plan)} disabled={Boolean(busyAction)} />
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Provisionnement tenant' : 'Tenant provisioning'}</div>
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{isFrench ? 'Statut tenant' : 'Tenant status'}</div>
+                  <div className="mt-1 text-sm font-semibold text-slate-900">{tenantStatus || 'provisioning'}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{isFrench ? 'Job' : 'Job'}</div>
+                  <div className="mt-1 text-sm font-semibold text-slate-900">{provisioningJobStatus || 'queued'}</div>
+                </div>
+              </div>
+              <div className="mt-3 text-xs text-slate-500">
+                {isFrench ? 'Mode' : 'Mode'}: <span className="font-medium text-slate-700">{isDedicatedTenant ? 'dedicated' : 'shared'}</span>
+              </div>
+              {isDedicatedTenant && row?.tenant_project_ref ? (
+                <div className="mt-3 text-xs text-slate-500">
+                  {isFrench ? 'Projet' : 'Project'}: <span className="font-medium text-slate-700">{row.tenant_project_ref}</span>
+                </div>
+              ) : null}
+              {row?.provisioning_job_error ? (
+                <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+                  {row.provisioning_job_error}
+                </div>
+              ) : null}
+              {!isTenantActive ? (
+                <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800">
+                  {provisioningJobStatus === 'running'
+                    ? (isFrench
+                      ? 'Le worker de provisionnement prépare cet espace automatiquement.'
+                      : 'The provisioning worker is preparing this workspace automatically.')
+                    : (isFrench
+                      ? (isDedicatedTenant
+                        ? 'Démarrez le job automatique. Les champs techniques sont réservés au fallback d’urgence.'
+                        : 'Démarrez le job automatique. Les tenants partagés héritent du runtime partagé et ne demandent pas de clés projet dédiées.')
+                      : (isDedicatedTenant
+                        ? 'Start the automatic job. Technical fields are reserved for emergency fallback only.'
+                        : 'Start the automatic job. Shared tenants inherit the shared runtime and do not require dedicated project credentials.'))}
+                </div>
+              ) : null}
+            </div>
+
+            {canManageProvisioning ? (
+              <div className="mt-3 space-y-3">
+                <div className="grid gap-2">
+                  {!isTenantActive ? (
+                    <button
+                      type="button"
+                      onClick={() => onStartProvisioning(row)}
+                      disabled={Boolean(busyAction) || (!row?.provisioning_job_id && !row?.platform_business_account_id) || provisioningJobStatus === 'running'}
+                      className="inline-flex items-center justify-center rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm font-semibold text-sky-700 transition hover:bg-sky-100 disabled:opacity-60"
+                    >
+                      {provisioningJobStatus === 'running'
+                        ? (isFrench ? 'Provisionnement en cours' : 'Provisioning in progress')
+                        : (isFrench ? 'Démarrer automatiquement' : 'Start automatic provisioning')}
+                    </button>
+                  ) : null}
+                  {isDedicatedTenant ? (
+                    <button
+                      type="button"
+                      onClick={() => setManualProvisioningRowId(manualProvisioningOpen ? null : row.id)}
+                      className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold uppercase tracking-[0.14em] text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
+                    >
+                      {manualProvisioningOpen
+                        ? (isFrench ? 'Masquer activation d’urgence' : 'Hide emergency activation')
+                        : (isFrench ? 'Activation manuelle d’urgence' : 'Emergency manual activation')}
+                    </button>
+                  ) : null}
+                </div>
+
+                {manualProvisioningOpen && isDedicatedTenant ? (
+                  <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50/70 p-3">
+                    <p className="text-xs font-semibold leading-5 text-amber-800">
+                      {isFrench
+                        ? 'À utiliser seulement si le worker automatique n’est pas encore configuré.'
+                        : 'Use only if the automatic worker is not configured yet.'}
+                    </p>
+                    <input
+                      type="text"
+                      value={provisioningDraft.tenant_project_ref}
+                      onChange={(event) => setProvisioningDrafts((prev) => ({
+                        ...prev,
+                        [row.id]: { ...provisioningDraft, tenant_project_ref: event.target.value },
+                      }))}
+                      placeholder={isFrench ? 'Référence projet tenant' : 'Tenant project ref'}
+                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+                    />
+                    <p className="text-[11px] text-slate-500">
+                      {isFrench
+                        ? 'Utilisez la référence du projet Supabase ou du tenant privé.'
+                        : 'Use the private tenant or Supabase project reference.'}
+                    </p>
+                    <input
+                      type="url"
+                      value={provisioningDraft.tenant_app_url}
+                      onChange={(event) => setProvisioningDrafts((prev) => ({
+                        ...prev,
+                        [row.id]: { ...provisioningDraft, tenant_app_url: event.target.value },
+                      }))}
+                      placeholder={isFrench ? 'URL app tenant' : 'Tenant app URL'}
+                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+                    />
+                    <p className="text-[11px] text-slate-500">
+                      {isFrench
+                        ? 'URL du workspace privé vers lequel le business owner sera redirigé.'
+                        : 'Private workspace URL the business owner will open after provisioning.'}
+                    </p>
+                    <input
+                      type="url"
+                      value={provisioningDraft.tenant_api_url}
+                      onChange={(event) => setProvisioningDrafts((prev) => ({
+                        ...prev,
+                        [row.id]: { ...provisioningDraft, tenant_api_url: event.target.value },
+                      }))}
+                      placeholder={isFrench ? 'URL API tenant' : 'Tenant API URL'}
+                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+                    />
+                    <input
+                      type="text"
+                      value={provisioningDraft.tenant_anon_key}
+                      onChange={(event) => setProvisioningDrafts((prev) => ({
+                        ...prev,
+                        [row.id]: { ...provisioningDraft, tenant_anon_key: event.target.value },
+                      }))}
+                      placeholder={isFrench ? 'Clé anon tenant' : 'Tenant anon key'}
+                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+                    />
+                    <input
+                      type="text"
+                      value={provisioningDraft.tenant_database_name}
+                      onChange={(event) => setProvisioningDrafts((prev) => ({
+                        ...prev,
+                        [row.id]: { ...provisioningDraft, tenant_database_name: event.target.value },
+                      }))}
+                      placeholder={isFrench ? 'Nom base tenant (optionnel)' : 'Tenant database name (optional)'}
+                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+                    />
+                    <input
+                      type="text"
+                      value={provisioningDraft.schema_version}
+                      onChange={(event) => setProvisioningDrafts((prev) => ({
+                        ...prev,
+                        [row.id]: { ...provisioningDraft, schema_version: event.target.value },
+                      }))}
+                      placeholder={isFrench ? 'Version du schéma' : 'Schema version'}
+                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+                    />
+                  </div>
+                ) : null}
+
+                {manualProvisioningOpen && isDedicatedTenant ? (
+                  <div className="grid gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onCompleteProvisioning(row, provisioningDraft)}
+                      disabled={!canCompleteProvisioning}
+                      className="inline-flex items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
+                    >
+                      {isFrench ? 'Marquer tenant prêt' : 'Complete provisioning'}
+                    </button>
+                    <input
+                      type="text"
+                      value={provisioningDraft.error_message}
+                      onChange={(event) => setProvisioningDrafts((prev) => ({
+                        ...prev,
+                        [row.id]: { ...provisioningDraft, error_message: event.target.value },
+                      }))}
+                      placeholder={isFrench ? 'Raison d’échec (optionnelle)' : 'Failure reason (optional)'}
+                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onFailProvisioning(row, provisioningDraft.error_message || (isFrench ? 'Provisionnement interrompu par admin.' : 'Provisioning stopped by admin.'))}
+                      disabled={Boolean(busyAction) || !row?.provisioning_job_id}
+                      className="inline-flex items-center justify-center rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
+                    >
+                      {isFrench ? 'Marquer en échec' : 'Mark as failed'}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="grid gap-2">
+              <button
+                type="button"
+                onClick={() => onExtendTrial(row)}
+                disabled={Boolean(busyAction)}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-60"
+              >
+                <TimerReset className="h-4 w-4" />
+                <span>{isFrench ? 'Ajouter 7 jours' : 'Extend trial +7 days'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onActivateSubscription(row)}
+                disabled={Boolean(busyAction) || String(row?.subscriptionStatus || '').toLowerCase() === 'active'}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
+              >
+                <Rocket className="h-4 w-4" />
+                <span>{isFrench ? 'Activer abonnement' : 'Activate subscription'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenWorkspace(row)}
+                disabled={!row?.tenant_app_url || !isTenantActive}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-100 disabled:opacity-60"
+              >
+                <ExternalLink className="h-4 w-4" />
+                <span>{isFrench ? 'Ouvrir workspace' : 'Open workspace'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenProfile(row)}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <PlayCircle className="h-4 w-4" />
+                <span>{isFrench ? 'Voir le profil' : 'View profile'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_18px_40px_-24px_rgba(15,23,42,0.28)]">
-      <div className="overflow-x-auto">
+      <div className="space-y-3 p-3 md:hidden">
+        {normalizedRows.map((row) => {
+          const expanded = expandedRowId === row.id;
+          const statusMeta = getStatusMeta(row, isFrench);
+          const planMeta = getPlanMeta(row, isFrench);
+          const trialMeta = getTrialMeta(row, isFrench);
+          const verificationStatus = String(row?.verificationStatus || '').toLowerCase();
+          const subscriptionStatus = String(row?.subscriptionStatus || '').toLowerCase();
+          const canApprove = verificationStatus === 'pending' || verificationStatus === 'needs_info' || verificationStatus === 'rejected';
+          const canSuspend = verificationStatus === 'approved' && subscriptionStatus !== 'suspended';
+          const canReactivate = subscriptionStatus === 'suspended';
+          const ExpanderIcon = expanded ? ChevronDown : ChevronRight;
+
+          return (
+            <div key={row.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_12px_32px_-24px_rgba(15,23,42,0.28)]">
+              <div className="flex items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-rose-400 to-rose-500 text-lg font-bold text-white">
+                  {String(row?.full_name || row?.email || '?').charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-slate-900">{row.full_name || row.email}</div>
+                  <div className="truncate text-xs text-slate-500">{row.email}</div>
+                  <div className="truncate text-xs text-slate-400">{row.company_name || (isFrench ? 'Société non renseignée' : 'No company')}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExpandedRowId(expanded ? null : row.id)}
+                  className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
+                >
+                  <ExpanderIcon className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{isFrench ? 'Statut' : 'Status'}</div>
+                  <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusMeta.className}`}>
+                    {statusMeta.label}
+                  </span>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{isFrench ? 'Plan' : 'Plan'}</div>
+                  <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${planMeta.className}`}>
+                    {planMeta.label}
+                  </span>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{isFrench ? 'Essai' : 'Trial'}</div>
+                  <div className={`mt-2 text-sm font-semibold ${trialMeta.className}`}>{trialMeta.label}</div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{isFrench ? 'Activité' : 'Activity'}</div>
+                  <div className="mt-2 text-sm font-semibold text-slate-900">{row.rentalsCount || 0} {isFrench ? 'locations' : 'rentals'}</div>
+                  <div className="mt-1 text-xs text-slate-500">{getActivityLabel(row, isFrench)}</div>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {canApprove ? (
+                  <button
+                    type="button"
+                    onClick={() => onApprove(row)}
+                    disabled={Boolean(busyAction)}
+                    className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                  >
+                    {isFrench ? 'Approuver' : 'Approve'}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => onReject(row)}
+                  disabled={Boolean(busyAction)}
+                  className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
+                >
+                  {isFrench ? 'Rejeter' : 'Reject'}
+                </button>
+                {canSuspend ? (
+                  <button
+                    type="button"
+                    onClick={() => onSuspend(row)}
+                    disabled={Boolean(busyAction)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    {isFrench ? 'Suspendre' : 'Suspend'}
+                  </button>
+                ) : null}
+                {canReactivate ? (
+                  <button
+                    type="button"
+                    onClick={() => onReactivate(row)}
+                    disabled={Boolean(busyAction)}
+                    className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:bg-sky-100 disabled:opacity-60"
+                  >
+                    {isFrench ? 'Réactiver' : 'Reactivate'}
+                  </button>
+                ) : null}
+              </div>
+
+              {expanded ? (
+                <div className="mt-4 rounded-2xl bg-slate-50/60 p-3">
+                  {renderExpandedContent(row)}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="hidden overflow-x-auto md:block">
         <table className="min-w-full divide-y divide-slate-200">
           <thead className="bg-slate-50">
             <tr>
@@ -235,22 +633,7 @@ const BusinessOwnerSaaSTable = ({
               const canApprove = verificationStatus === 'pending' || verificationStatus === 'needs_info' || verificationStatus === 'rejected';
               const canSuspend = verificationStatus === 'approved' && subscriptionStatus !== 'suspended';
               const canReactivate = subscriptionStatus === 'suspended';
-              const expanderIcon = expanded ? ChevronDown : ChevronRight;
-              const ExpanderIcon = expanderIcon;
-              const tenantStatus = String(row?.tenant_status || '').toLowerCase();
-              const provisioningJobStatus = String(row?.provisioning_job_status || '').toLowerCase();
-              const provisioningDraft = provisioningDrafts[row.id] || buildProvisioningDraft(row);
-              const tenancyMode = resolveTenancyMode(row);
-              const isDedicatedTenant = tenancyMode === 'dedicated';
-              const isTenantActive = tenantStatus === 'active';
-              const manualProvisioningOpen = manualProvisioningRowId === row.id;
-              const missingProvisioningFields = getProvisioningMissingFields(provisioningDraft, tenancyMode);
-              const canCompleteProvisioning =
-                !busyAction &&
-                isDedicatedTenant &&
-                Boolean(row?.provisioning_job_id) &&
-                !isTenantActive &&
-                missingProvisioningFields.length === 0;
+              const ExpanderIcon = expanded ? ChevronDown : ChevronRight;
 
               return (
                 <React.Fragment key={row.id}>
@@ -266,7 +649,7 @@ const BusinessOwnerSaaSTable = ({
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <div className={`flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-rose-400 to-rose-500 text-lg font-bold text-white`}>
+                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-rose-400 to-rose-500 text-lg font-bold text-white">
                           {String(row?.full_name || row?.email || '?').charAt(0).toUpperCase()}
                         </div>
                         <div className="min-w-0">
@@ -343,276 +726,7 @@ const BusinessOwnerSaaSTable = ({
                   {expanded ? (
                     <tr className="bg-slate-50/60">
                       <td colSpan={8} className="px-4 py-4">
-                        <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
-                          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="grid gap-3 sm:grid-cols-2">
-                              <div>
-                                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Créé le' : 'Created at'}</div>
-                                <div className="mt-1 text-sm font-semibold text-slate-900">{formatDate(row.created_at)}</div>
-                              </div>
-                              <div>
-                                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Dernière activité' : 'Last activity'}</div>
-                                <div className="mt-1 text-sm font-semibold text-slate-900">{row.lastActivityAt ? formatDate(row.lastActivityAt) : 'N/A'}</div>
-                              </div>
-                              <div>
-                                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Facturation' : 'Billing'}</div>
-                                <div className="mt-1 text-sm font-semibold text-slate-900">{String(row.billingStatus || 'none').replace('_', ' ')}</div>
-                              </div>
-                              <div>
-                                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Essai jusqu’au' : 'Trial ends'}</div>
-                                <div className="mt-1 text-sm font-semibold text-slate-900">{row.trialEndsAt ? formatDate(row.trialEndsAt) : 'N/A'}</div>
-                              </div>
-                            </div>
-
-                            {row.rejectionReason ? (
-                              <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                                <div className="text-xs font-semibold uppercase tracking-wider text-rose-500">{isFrench ? 'Raison du rejet' : 'Rejection reason'}</div>
-                                <div className="mt-1 font-medium">{row.rejectionReason}</div>
-                              </div>
-                            ) : null}
-
-                            {row.suspensionReason ? (
-                              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm text-slate-800">
-                                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Raison de la suspension' : 'Suspension reason'}</div>
-                                <div className="mt-1 font-medium">{row.suspensionReason}</div>
-                              </div>
-                            ) : null}
-                          </div>
-
-                          <div className="space-y-4">
-                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Changer de plan' : 'Change plan'}</div>
-                              <div className="mt-3">
-                                <PlanSelector currentPlan={String(row.planType || 'starter').toLowerCase()} onChange={(plan) => onChangePlan(row, plan)} disabled={Boolean(busyAction)} />
-                              </div>
-                            </div>
-
-                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">{isFrench ? 'Provisionnement tenant' : 'Tenant provisioning'}</div>
-                              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                                <div className="grid gap-2 sm:grid-cols-2">
-                                  <div>
-                                    <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{isFrench ? 'Statut tenant' : 'Tenant status'}</div>
-                                    <div className="mt-1 text-sm font-semibold text-slate-900">{tenantStatus || 'provisioning'}</div>
-                                  </div>
-                                  <div>
-                                    <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{isFrench ? 'Job' : 'Job'}</div>
-                                    <div className="mt-1 text-sm font-semibold text-slate-900">{provisioningJobStatus || 'queued'}</div>
-                                  </div>
-                                </div>
-                                <div className="mt-3 text-xs text-slate-500">
-                                  {isFrench ? 'Mode' : 'Mode'}: <span className="font-medium text-slate-700">{isDedicatedTenant ? 'dedicated' : 'shared'}</span>
-                                </div>
-                                {isDedicatedTenant && row?.tenant_project_ref ? (
-                                  <div className="mt-3 text-xs text-slate-500">
-                                    {isFrench ? 'Projet' : 'Project'}: <span className="font-medium text-slate-700">{row.tenant_project_ref}</span>
-                                  </div>
-                                ) : null}
-                                {row?.provisioning_job_error ? (
-                                  <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
-                                    {row.provisioning_job_error}
-                                  </div>
-                                ) : null}
-                                {!isTenantActive ? (
-                                  <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800">
-                                    {provisioningJobStatus === 'running'
-                                      ? (isFrench
-                                        ? 'Le worker de provisionnement prépare cet espace automatiquement.'
-                                        : 'The provisioning worker is preparing this workspace automatically.')
-                                      : (isFrench
-                                        ? (isDedicatedTenant
-                                          ? 'Démarrez le job automatique. Les champs techniques sont réservés au fallback d’urgence.'
-                                          : 'Démarrez le job automatique. Les tenants partagés héritent du runtime partagé et ne demandent pas de clés projet dédiées.')
-                                        : (isDedicatedTenant
-                                          ? 'Start the automatic job. Technical fields are reserved for emergency fallback only.'
-                                          : 'Start the automatic job. Shared tenants inherit the shared runtime and do not require dedicated project credentials.'))}
-                                  </div>
-                                ) : null}
-                              </div>
-
-                              {canManageProvisioning ? (
-                                <div className="mt-3 space-y-3">
-                                  <div className="grid gap-2">
-                                    {!isTenantActive ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => onStartProvisioning(row)}
-                                        disabled={Boolean(busyAction) || (!row?.provisioning_job_id && !row?.platform_business_account_id) || provisioningJobStatus === 'running'}
-                                        className="inline-flex items-center justify-center rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm font-semibold text-sky-700 transition hover:bg-sky-100 disabled:opacity-60"
-                                      >
-                                        {provisioningJobStatus === 'running'
-                                          ? (isFrench ? 'Provisionnement en cours' : 'Provisioning in progress')
-                                          : (isFrench ? 'Démarrer automatiquement' : 'Start automatic provisioning')}
-                                      </button>
-                                    ) : null}
-                                    {isDedicatedTenant ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => setManualProvisioningRowId(manualProvisioningOpen ? null : row.id)}
-                                        className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold uppercase tracking-[0.14em] text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
-                                      >
-                                        {manualProvisioningOpen
-                                          ? (isFrench ? 'Masquer activation d’urgence' : 'Hide emergency activation')
-                                          : (isFrench ? 'Activation manuelle d’urgence' : 'Emergency manual activation')}
-                                      </button>
-                                    ) : null}
-                                  </div>
-
-                                  {manualProvisioningOpen && isDedicatedTenant ? (
-                                    <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50/70 p-3">
-                                      <p className="text-xs font-semibold leading-5 text-amber-800">
-                                        {isFrench
-                                          ? 'À utiliser seulement si le worker automatique n’est pas encore configuré.'
-                                          : 'Use only if the automatic worker is not configured yet.'}
-                                      </p>
-                                    <input
-                                      type="text"
-                                      value={provisioningDraft.tenant_project_ref}
-                                      onChange={(event) => setProvisioningDrafts((prev) => ({
-                                        ...prev,
-                                        [row.id]: { ...provisioningDraft, tenant_project_ref: event.target.value },
-                                      }))}
-                                      placeholder={isFrench ? 'Référence projet tenant' : 'Tenant project ref'}
-                                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-                                    />
-                                    <p className="text-[11px] text-slate-500">
-                                      {isFrench
-                                        ? 'Utilisez la référence du projet Supabase ou du tenant privé.'
-                                        : 'Use the private tenant or Supabase project reference.'}
-                                    </p>
-                                    <input
-                                      type="url"
-                                      value={provisioningDraft.tenant_app_url}
-                                      onChange={(event) => setProvisioningDrafts((prev) => ({
-                                        ...prev,
-                                        [row.id]: { ...provisioningDraft, tenant_app_url: event.target.value },
-                                      }))}
-                                      placeholder={isFrench ? 'URL app tenant' : 'Tenant app URL'}
-                                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-                                    />
-                                    <p className="text-[11px] text-slate-500">
-                                      {isFrench
-                                        ? 'URL du workspace privé vers lequel le business owner sera redirigé.'
-                                        : 'Private workspace URL the business owner will open after provisioning.'}
-                                    </p>
-                                    <input
-                                      type="url"
-                                      value={provisioningDraft.tenant_api_url}
-                                      onChange={(event) => setProvisioningDrafts((prev) => ({
-                                        ...prev,
-                                        [row.id]: { ...provisioningDraft, tenant_api_url: event.target.value },
-                                      }))}
-                                      placeholder={isFrench ? 'URL API tenant' : 'Tenant API URL'}
-                                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-                                    />
-                                    <input
-                                      type="text"
-                                      value={provisioningDraft.tenant_anon_key}
-                                      onChange={(event) => setProvisioningDrafts((prev) => ({
-                                        ...prev,
-                                        [row.id]: { ...provisioningDraft, tenant_anon_key: event.target.value },
-                                      }))}
-                                      placeholder={isFrench ? 'Clé anon tenant' : 'Tenant anon key'}
-                                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-                                    />
-                                    <input
-                                      type="text"
-                                      value={provisioningDraft.tenant_database_name}
-                                      onChange={(event) => setProvisioningDrafts((prev) => ({
-                                        ...prev,
-                                        [row.id]: { ...provisioningDraft, tenant_database_name: event.target.value },
-                                      }))}
-                                      placeholder={isFrench ? 'Nom base tenant (optionnel)' : 'Tenant database name (optional)'}
-                                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-                                    />
-                                    <input
-                                      type="text"
-                                      value={provisioningDraft.schema_version}
-                                      onChange={(event) => setProvisioningDrafts((prev) => ({
-                                        ...prev,
-                                        [row.id]: { ...provisioningDraft, schema_version: event.target.value },
-                                      }))}
-                                      placeholder={isFrench ? 'Version du schéma' : 'Schema version'}
-                                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-                                    />
-                                    </div>
-                                  ) : null}
-
-                                  {manualProvisioningOpen && isDedicatedTenant ? (
-                                    <div className="grid gap-2">
-                                    <button
-                                      type="button"
-                                      onClick={() => onCompleteProvisioning(row, provisioningDraft)}
-                                      disabled={!canCompleteProvisioning}
-                                      className="inline-flex items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
-                                    >
-                                      {isFrench ? 'Marquer tenant prêt' : 'Complete provisioning'}
-                                    </button>
-                                    <input
-                                      type="text"
-                                      value={provisioningDraft.error_message}
-                                      onChange={(event) => setProvisioningDrafts((prev) => ({
-                                        ...prev,
-                                        [row.id]: { ...provisioningDraft, error_message: event.target.value },
-                                      }))}
-                                      placeholder={isFrench ? 'Raison d’échec (optionnelle)' : 'Failure reason (optional)'}
-                                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-                                    />
-                                    <button
-                                      type="button"
-                                      onClick={() => onFailProvisioning(row, provisioningDraft.error_message || (isFrench ? 'Provisionnement interrompu par admin.' : 'Provisioning stopped by admin.'))}
-                                      disabled={Boolean(busyAction) || !row?.provisioning_job_id}
-                                      className="inline-flex items-center justify-center rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
-                                    >
-                                      {isFrench ? 'Marquer en échec' : 'Mark as failed'}
-                                    </button>
-                                  </div>
-                                  ) : null}
-                                </div>
-                              ) : null}
-                            </div>
-
-                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                              <div className="grid gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => onExtendTrial(row)}
-                                  disabled={Boolean(busyAction)}
-                                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:opacity-60"
-                                >
-                                  <TimerReset className="h-4 w-4" />
-                                  <span>{isFrench ? 'Ajouter 7 jours' : 'Extend trial +7 days'}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => onActivateSubscription(row)}
-                                  disabled={Boolean(busyAction) || subscriptionStatus === 'active'}
-                                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
-                                >
-                                  <Rocket className="h-4 w-4" />
-                                  <span>{isFrench ? 'Activer abonnement' : 'Activate subscription'}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => onOpenWorkspace(row)}
-                                  disabled={!row?.tenant_app_url || !isTenantActive}
-                                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-100 disabled:opacity-60"
-                                >
-                                  <ExternalLink className="h-4 w-4" />
-                                  <span>{isFrench ? 'Ouvrir workspace' : 'Open workspace'}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => onOpenProfile(row)}
-                                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-                                >
-                                  <PlayCircle className="h-4 w-4" />
-                                  <span>{isFrench ? 'Voir le profil' : 'View profile'}</span>
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
+                        {renderExpandedContent(row)}
                       </td>
                     </tr>
                   ) : null}

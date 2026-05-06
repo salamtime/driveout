@@ -106,6 +106,7 @@ class VehicleService {
             id,
             name,
             model,
+            vehicle_model_id,
             vehicle_type,
             plate_number,
             status,
@@ -167,6 +168,7 @@ class VehicleService {
             id,
             name,
             model,
+            vehicle_model_id,
             vehicle_type,
             plate_number,
             status
@@ -257,6 +259,7 @@ class VehicleService {
           id,
           name,
           model,
+          vehicle_model_id,
           vehicle_type,
           plate_number,
           status

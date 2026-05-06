@@ -848,11 +848,57 @@ const getDisplayRentalDurationUnits = (rental = {}) => {
   return Number(getRentalDurationUnits(rental));
 };
 
+const getCompletedHourlyElapsedMinutes = (rental = {}) => {
+  if (String(rental?.rental_type || '').toLowerCase() !== 'hourly') return null;
+  const isCompletedRental =
+    String(rental?.rental_status || '').toLowerCase() === 'completed' ||
+    Boolean(rental?.completed_at);
+  if (!isCompletedRental) return null;
+
+  const startValue = rental?.started_at || rental?.rental_start_date;
+  const endValue = getRentalDisplayEndTime(rental) || getRentalEffectiveEndTime(rental);
+  const start = new Date(startValue || '');
+  const end = new Date(endValue || '');
+  const diffMs = end.getTime() - start.getTime();
+
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || !Number.isFinite(diffMs) || diffMs <= 0) {
+    return null;
+  }
+
+  return Math.max(1, Math.round(diffMs / 60000));
+};
+
+const formatExactHourlyDurationLabel = (minutes, isFrench = false) => {
+  const safeMinutes = Math.max(0, Math.round(Number(minutes || 0) || 0));
+  const trLocal = (en, fr) => (isFrench ? fr : en);
+  if (safeMinutes <= 0) return trLocal('0 min', '0 min');
+  if (safeMinutes < 60) return trLocal(`${safeMinutes} min`, `${safeMinutes} min`);
+
+  const hours = Math.floor(safeMinutes / 60);
+  const remainingMinutes = safeMinutes % 60;
+
+  if (remainingMinutes <= 0) {
+    return trLocal(
+      `${hours} hour${hours > 1 ? 's' : ''}`,
+      `${hours} heure${hours > 1 ? 's' : ''}`
+    );
+  }
+
+  return trLocal(
+    `${hours}h ${remainingMinutes}m`,
+    `${hours} h ${remainingMinutes} min`
+  );
+};
+
 const formatRentalDurationLabel = (rental = {}, isFrench = false) => {
   const duration = getDisplayRentalDurationUnits(rental);
   const trLocal = (en, fr) => (isFrench ? fr : en);
 
   if (String(rental?.rental_type || '').toLowerCase() === 'hourly') {
+    const completedElapsedMinutes = getCompletedHourlyElapsedMinutes(rental);
+    if (completedElapsedMinutes) {
+      return formatExactHourlyDurationLabel(completedElapsedMinutes, isFrench);
+    }
     if (duration === 0.5) return trLocal('30 min', '30 min');
     if (duration === 1) return trLocal('1 hour', '1 heure');
     if (duration === 1.5) return trLocal('1.5 hours', '1,5 heure');
@@ -9126,9 +9172,7 @@ const handleFuelChargeToggle = async (enabled) => {
   };
 
   const getReturnWorkflowCloseTime = (fallbackTime) => {
-    const candidate =
-      returnWorkflowBillingResult?.calculatedAt ||
-      (finishRentalSteps.showWorkflow && rental?.actual_end_date ? rental.actual_end_date : null);
+    const candidate = returnWorkflowBillingResult?.calculatedAt;
     const parsedCandidate = candidate ? new Date(candidate) : null;
     return parsedCandidate && Number.isFinite(parsedCandidate.getTime())
       ? parsedCandidate.toISOString()
@@ -10179,10 +10223,16 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
     // Helper: compute elapsed-time string
     const calcElapsedTime = (rentalData) => {
-      if (!rentalData?.started_at || rentalData.rental_status !== 'active') return '';
-      const now = new Date(currentTimeRef.current);
+      if (!rentalData?.started_at) return '';
       const startDate = new Date(rentalData.started_at);
-      const diff = now - startDate;
+      const isCompletedRental =
+        String(rentalData?.rental_status || '').toLowerCase() === 'completed' ||
+        Boolean(rentalData?.completed_at);
+      const endSource = isCompletedRental
+        ? getRentalDisplayEndTime(rentalData) || getRentalEffectiveEndTime(rentalData) || rentalData?.completed_at
+        : null;
+      const endDate = endSource ? new Date(endSource) : new Date(currentTimeRef.current);
+      const diff = endDate - startDate;
       if (diff < 0) return '';
       const days = Math.floor(diff / (1000 * 60 * 60 * 24));
       const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
@@ -25296,7 +25346,7 @@ Breakdown:
       />
 
       <Dialog open={showReplaceVehicleDialog} onOpenChange={(open) => { if (!open) closeReplaceVehicleDialog(); }}>
-        <DialogContent className="max-w-lg rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_28px_80px_rgba(76,29,149,0.16)]">
+        <DialogContent className="max-h-[92vh] w-[calc(100vw-1.5rem)] max-w-lg overflow-y-auto rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_28px_80px_rgba(76,29,149,0.16)]">
           <DialogHeader className="border-b border-violet-100 px-6 py-5 text-left">
             <DialogTitle className="flex items-center gap-2 text-xl font-semibold text-slate-900">
               <Wrench className="h-5 w-5 text-amber-500" />
