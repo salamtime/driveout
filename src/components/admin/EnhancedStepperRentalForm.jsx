@@ -9358,6 +9358,7 @@ const SimplifiedRentalWizard = ({
         selected_package_included_km: includedKmPerUnit || null,
         selected_package_included_km_per_unit: includedKmPerUnit || null,
         selected_package_total_included_km: nextTotalIncludedKm,
+        selected_package_duration_units: packageDurationUnits,
         selected_package_extra_rate: extraRate,
         selected_package_fuel_charge_enabled: fuelChargeEnabledForPackage,
         selected_package_description: pkg.description || '',
@@ -10684,7 +10685,7 @@ const SimplifiedRentalWizard = ({
                               <div className="mt-3 rounded-xl border border-violet-200 bg-white/80 px-3 py-2 text-xs text-slate-600">
                                 <p>{tr('Extra km', 'Km extra')}: {formatDynamicMad(Number(pkg.extra_km_rate || 0))} MAD/km</p>
                                 {Boolean(pkg.fuel_charge_enabled) ? (
-                                  <p className="mt-1">{tr('Fuel not included', 'Carburant non inclus')}</p>
+                                  <p className="mt-1">{tr('Fuel charged separately', 'Carburant facturé séparément')}</p>
                                 ) : null}
                               </div>
                             )}

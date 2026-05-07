@@ -7,12 +7,60 @@ import {
   getCurrentOrganizationId,
 } from './OrganizationService';
 
+const PACKAGE_TABLE = 'app_4c3a7a6153_rental_km_packages';
+const PACKAGE_ORG_COLUMN_CACHE_KEY = `${PACKAGE_TABLE}:supportsOrganizationColumn`;
+let packageTableSupportsOrganizationColumn = (() => {
+  try {
+    if (typeof window === 'undefined') return true;
+    const cached = window.localStorage.getItem(PACKAGE_ORG_COLUMN_CACHE_KEY);
+    if (cached === 'false') return false;
+  } catch (_error) {
+    // Ignore browser storage access errors.
+  }
+  return true;
+})();
+
 const isMissingFuelChargeColumnError = (error) =>
   error?.code === 'PGRST204' &&
   String(error?.message || '').includes('fuel_charge_enabled');
 
+const isMissingOrganizationColumnError = (error) =>
+  error?.code === '42703' && String(error?.message || '').includes('organization_id');
+
 const getMissingFuelChargeColumnMessage = () =>
   'Database schema is missing rental_km_packages.fuel_charge_enabled. Apply src/migrations/add_fuel_charge_policy_to_rental_packages.sql, then try again.';
+
+const markPackageTableWithoutOrganizationColumn = () => {
+  packageTableSupportsOrganizationColumn = false;
+  try {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(PACKAGE_ORG_COLUMN_CACHE_KEY, 'false');
+  } catch (_error) {
+    // Ignore browser storage access errors.
+  }
+};
+
+const stripOrganizationField = (payload = {}) => {
+  if (!payload || typeof payload !== 'object') return payload;
+  const { organization_id: _organizationId, ...rest } = payload;
+  return rest;
+};
+
+const runPackageReadQuery = async (buildQuery, organizationId) => {
+  if (!organizationId || packageTableSupportsOrganizationColumn === false) {
+    return buildQuery();
+  }
+
+  const scopedResult = await applyOrganizationScope(buildQuery(), organizationId);
+
+  if (organizationId && isMissingOrganizationColumnError(scopedResult.error)) {
+    markPackageTableWithoutOrganizationColumn();
+    console.warn('Package table has no organization_id column; retrying package read without organization filter.');
+    return buildQuery();
+  }
+
+  return scopedResult;
+};
 
 const PackageService = {
   async createPackage(packageData) {
@@ -45,9 +93,21 @@ const PackageService = {
 
       console.log('📦 Inserting data:', dataToInsert);
 
-      const { error } = await supabase
-        .from('app_4c3a7a6153_rental_km_packages')
-        .insert([applyOrganizationMatch(dataToInsert, organizationId)]);
+      const scopedPayload = packageTableSupportsOrganizationColumn !== false
+        ? applyOrganizationMatch(dataToInsert, organizationId)
+        : stripOrganizationField(dataToInsert);
+
+      let { error } = await supabase
+        .from(PACKAGE_TABLE)
+        .insert([scopedPayload]);
+
+      if (organizationId && isMissingOrganizationColumnError(error)) {
+        markPackageTableWithoutOrganizationColumn();
+        console.warn('Package table has no organization_id column; retrying package create without organization field.');
+        ({ error } = await supabase
+          .from(PACKAGE_TABLE)
+          .insert([stripOrganizationField(dataToInsert)]));
+      }
 
       if (error) {
         console.error('❌ Supabase error:', error);
@@ -95,11 +155,29 @@ const PackageService = {
         throw new Error('Fixed amount is required');
       }
 
-      const { error } = await supabase
-        .from('app_4c3a7a6153_rental_km_packages')
-        .update(applyOrganizationMatch(dataToUpdate, organizationId))
-        .eq('id', id)
-        .eq('organization_id', organizationId);
+      const scopedPayload = packageTableSupportsOrganizationColumn !== false
+        ? applyOrganizationMatch(dataToUpdate, organizationId)
+        : stripOrganizationField(dataToUpdate);
+
+      let query = supabase
+        .from(PACKAGE_TABLE)
+        .update(scopedPayload)
+        .eq('id', id);
+
+      if (organizationId && packageTableSupportsOrganizationColumn !== false) {
+        query = query.eq('organization_id', organizationId);
+      }
+
+      let { error } = await query;
+
+      if (organizationId && isMissingOrganizationColumnError(error)) {
+        markPackageTableWithoutOrganizationColumn();
+        console.warn('Package table has no organization_id column; retrying package update without organization filter.');
+        ({ error } = await supabase
+          .from(PACKAGE_TABLE)
+          .update(stripOrganizationField(dataToUpdate))
+          .eq('id', id));
+      }
 
       if (error) {
         console.error('❌ Supabase error:', error);
@@ -122,14 +200,14 @@ const PackageService = {
   async getPackages() {
     try {
       const organizationId = await getCurrentOrganizationId();
-      const { data, error } = await applyOrganizationScope(
-        supabase
-        .from('app_4c3a7a6153_rental_km_packages')
-        .select(`
-          *,
-          vehicle_model:saharax_0u4w4d_vehicle_models(*)
-        `)
-        .order('id'),
+      const { data, error } = await runPackageReadQuery(
+        () => supabase
+          .from(PACKAGE_TABLE)
+          .select(`
+            *,
+            vehicle_model:saharax_0u4w4d_vehicle_models(*)
+          `)
+          .order('id'),
         organizationId
       );
 
@@ -177,11 +255,26 @@ const PackageService = {
         message: 'Kilometer packages are not available on this plan.',
       });
       const organizationId = await getCurrentOrganizationId();
-      const { error } = await supabase
-        .from('app_4c3a7a6153_rental_km_packages')
+
+      let query = supabase
+        .from(PACKAGE_TABLE)
         .delete()
-        .eq('id', id)
-        .eq('organization_id', organizationId);
+        .eq('id', id);
+
+      if (organizationId && packageTableSupportsOrganizationColumn !== false) {
+        query = query.eq('organization_id', organizationId);
+      }
+
+      let { error } = await query;
+
+      if (organizationId && isMissingOrganizationColumnError(error)) {
+        markPackageTableWithoutOrganizationColumn();
+        console.warn('Package table has no organization_id column; retrying package delete without organization filter.');
+        ({ error } = await supabase
+          .from(PACKAGE_TABLE)
+          .delete()
+          .eq('id', id));
+      }
 
       if (error) throw error;
       return true;

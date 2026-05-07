@@ -1204,7 +1204,7 @@ const KilometerPricingTab: React.FC = () => {
                     <span className="text-gray-600">{tr('Fuel policy:', 'Politique carburant :')}</span>
                     <span className={`font-medium ${pkg.fuel_charge_enabled ? 'text-amber-700' : 'text-emerald-700'}`}>
                       {pkg.fuel_charge_enabled
-                        ? tr('Fuel charge enabled', 'Frais carburant activés')
+                        ? tr('Fuel charged separately', 'Carburant facturé séparément')
                         : tr('Fuel included', 'Carburant inclus')}
                     </span>
                   </div>
