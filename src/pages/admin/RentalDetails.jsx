@@ -3215,6 +3215,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
     reason: '',
     note: '',
     reference: '',
+    fileNumber: '',
   });
   const [impoundChargeForm, setImpoundChargeForm] = useState({
     hours: 0,
@@ -3231,6 +3232,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [savingImpoundCharge, setSavingImpoundCharge] = useState(false);
   const [impoundReceiptUploading, setImpoundReceiptUploading] = useState(false);
   const [releaseImpoundSubmitting, setReleaseImpoundSubmitting] = useState(false);
+  const [releaseImpoundMode, setReleaseImpoundMode] = useState('resolve');
   const [releaseImpoundExceededPreview, setReleaseImpoundExceededPreview] = useState({
     days: 0,
     hours: 0,
@@ -3245,6 +3247,9 @@ const openReplacementResumeWorkflow = useCallback(() => {
     hours: 0,
     rate: 0,
     discount: 0,
+    fileNumber: '',
+    staffNote: '',
+    dailyImpoundFeePerDay: 0,
     impoundCharge: 0,
     calculatedTotal: 0,
     amountPaid: 0,
@@ -6678,10 +6683,47 @@ Click the link above to review and approve the extension.`;
     const normalizedRate = Math.max(0, Number(rate || 0));
     const normalizedDiscount = Math.max(0, Number(discount || 0));
     const normalizedDays = Math.max(0, Number(days || 0));
-    const subtotal = rentalType === 'daily' && rateMode === 'per_day'
+    const subtotal = rateMode === 'per_day'
       ? normalizedRate * normalizedDays
       : normalizedRate;
     return Math.max(0, subtotal - normalizedDiscount);
+  }, []);
+
+  const resolveImpoundDailyBaseRate = useCallback(async (rentalData) => {
+    const vehicleId = rentalData?.vehicle_id || rentalData?.vehicle?.id;
+    const vehicleModelId =
+      rentalData?.vehicle?.vehicle_model?.id ||
+      rentalData?.vehicle?.vehicle_model_id ||
+      rentalData?.vehicle_model_id;
+
+    if (vehicleModelId) {
+      const baseDailyPrice = await ExtensionPricingService.getBaseDailyPrice(vehicleModelId);
+      if (Number(baseDailyPrice || 0) > 0) {
+        return Math.max(0, Number(baseDailyPrice || 0));
+      }
+    }
+
+    const embeddedDailyPrice = Math.max(
+      0,
+      Number(
+        rentalData?.vehicle?.vehicle_model?.daily_price ||
+        rentalData?.vehicle?.daily_price ||
+        rentalData?.daily_price ||
+        0
+      ) || 0
+    );
+    if (embeddedDailyPrice > 0) {
+      return embeddedDailyPrice;
+    }
+
+    if (vehicleId) {
+      const fallbackVehicleDailyPrice = await DynamicPricingService.getDynamicPrice(vehicleId, 'daily', 1);
+      if (Number(fallbackVehicleDailyPrice || 0) > 0) {
+        return Math.max(0, Number(fallbackVehicleDailyPrice || 0));
+      }
+    }
+
+    return Math.max(0, Number(rentalData?.impound_rate || rentalData?.unit_price || 0) || 0);
   }, []);
 
   const resolveImpoundChargeSnapshot = useCallback(async (rentalData, releaseAt, discountOverride = null) => {
@@ -6689,17 +6731,17 @@ Click the link above to review and approve the extension.`;
     const releaseDate = releaseAt ? new Date(releaseAt) : new Date();
     const safeReleaseDate = Number.isNaN(releaseDate.getTime()) ? new Date() : releaseDate;
     const discount = Math.max(0, Number(discountOverride ?? rentalData?.impound_discount ?? 0));
-    const vehicleId = rentalData?.vehicle_id || rentalData?.vehicle?.id;
-    const vehicleModelId = rentalData?.vehicle?.vehicle_model?.id || rentalData?.vehicle?.vehicle_model_id || rentalData?.vehicle_model_id;
+    const baseDailyRate = await resolveImpoundDailyBaseRate(rentalData);
 
     if (!plannedEnd || Number.isNaN(plannedEnd.getTime()) || safeReleaseDate <= plannedEnd) {
       return {
         days: 0,
         hours: 0,
-        rate: 0,
+        rate: baseDailyRate,
         discount,
         total: 0,
-        pricingMode: rentalData?.rental_type === 'daily' ? 'daily' : 'hourly',
+        pricingMode: 'daily',
+        rateMode: 'per_day',
         pricingLabel: '',
       };
     }
@@ -6708,68 +6750,13 @@ Click the link above to review and approve the extension.`;
     const dayMs = 1000 * 60 * 60 * 24;
     const hourMs = 1000 * 60 * 60;
 
-    const exceededHours = Math.max(1, Math.ceil(diffMs / hourMs));
     const exceededDays = Math.max(1, Math.ceil(diffMs / dayMs));
-    let days = 0;
-    let hours = 0;
-    let pricingMode = 'hourly';
-    let rateMode = 'package';
-    let pricingLabel = '';
-    let rate = 0;
-
-    if (rentalData?.rental_type === 'daily') {
-      pricingMode = 'daily';
-      days = exceededDays;
-      hours = Math.max(0, Math.ceil((diffMs - ((exceededDays - 1) * dayMs)) / hourMs));
-      const pricing = vehicleModelId
-        ? await DynamicPricingService.getPricingForDuration(vehicleModelId, days)
-        : { price: await DynamicPricingService.getDynamicPrice(vehicleId, 'daily', days), source: 'vehicle' };
-      rate = Math.max(0, Number(pricing?.price || 0));
-      rateMode = pricing?.source === 'base_price' ? 'per_day' : 'package';
-      pricingLabel = rateMode === 'per_day'
-        ? `${days} day estimate @ ${formatCurrency(rate)} MAD/day`
-        : `${days} day pricing`;
-    } else {
-      let hourlyTierPrice = 0;
-
-      if (vehicleModelId && exceededHours < 24) {
-        const { data: hourlyTiers } = await supabase
-          .from('pricing_tiers')
-          .select('min_hours,max_hours,price_amount')
-          .eq('vehicle_model_id', vehicleModelId)
-          .eq('is_active', true);
-
-        const hasHourlyTier = Array.isArray(hourlyTiers) && hourlyTiers.some((tier) => {
-          const min = Number(tier.min_hours ?? 0);
-          const max = Number(tier.max_hours ?? 0);
-          return Number(tier.price_amount || 0) > 0 && exceededHours >= min && exceededHours <= max;
-        });
-
-        if (hasHourlyTier && vehicleId) {
-          hourlyTierPrice = await DynamicPricingService.getDynamicPrice(vehicleId, 'hourly', exceededHours);
-        }
-      }
-
-      if (hourlyTierPrice > 0 && exceededHours < 24) {
-        hours = exceededHours;
-        pricingMode = 'hourly';
-        rateMode = 'package';
-        rate = Math.max(0, Number(hourlyTierPrice || 0));
-        pricingLabel = `${hours} hour tier pricing`;
-      } else {
-        pricingMode = 'daily';
-        days = Math.max(1, Math.ceil(exceededHours / 24));
-        hours = exceededHours < 24 ? exceededHours : Math.max(0, exceededHours - ((days - 1) * 24));
-        const pricing = vehicleModelId
-          ? await DynamicPricingService.getPricingForDuration(vehicleModelId, days)
-          : { price: await DynamicPricingService.getDynamicPrice(vehicleId, 'daily', days), source: 'vehicle' };
-        rate = Math.max(0, Number(pricing?.price || 0));
-        rateMode = pricing?.source === 'base_price' ? 'per_day' : 'package';
-        pricingLabel = rateMode === 'per_day'
-          ? `${days} day estimate @ ${formatCurrency(rate)} MAD/day`
-          : `${days} day pricing`;
-      }
-    }
+    const days = exceededDays;
+    const hours = Math.max(0, Math.ceil((diffMs - ((exceededDays - 1) * dayMs)) / hourMs));
+    const pricingMode = 'daily';
+    const rateMode = 'per_day';
+    const rate = baseDailyRate;
+    const pricingLabel = `${days} day estimate @ ${formatCurrency(rate)} MAD/day`;
 
     return {
       days,
@@ -6781,7 +6768,7 @@ Click the link above to review and approve the extension.`;
       rateMode,
       pricingLabel,
     };
-  }, [calculateImpoundChargeTotal, getEffectiveRentalEndDate]);
+  }, [calculateImpoundChargeTotal, getEffectiveRentalEndDate, resolveImpoundDailyBaseRate]);
 
   const upsertVehicleReportLocally = useCallback((nextReport) => {
     setVehicleReport(nextReport);
@@ -8785,6 +8772,14 @@ const handleFuelChargeToggle = async (enabled) => {
   });
 
   const openFinishWorkflow = async () => {
+    if (isImpounded) {
+      toast.error(tr(
+        'This rental is on an unresolved towing hold. Release the hold before finishing the rental.',
+        'Cette location est sous un maintien de fourrière non résolu. Libérez la retenue avant de terminer la location.'
+      ));
+      return;
+    }
+
     const returnStartedAt = new Date().toISOString();
     let workflowRental = rental;
     let autoVoidResult = null;
@@ -12267,22 +12262,54 @@ useEffect(() => {
       reason: rental?.impound_reason || 'Police impound',
       note: rental?.impound_note || '',
       reference: rental?.impound_reference || '',
+      fileNumber: rental?.impound_file_number || '',
     });
     setShowImpoundModal(true);
   };
 
-  const openReleaseImpoundModal = async () => {
+  const openReleaseImpoundModal = async ({ adjustmentOnly = false } = {}) => {
     if (!rental?.id) return;
 
     try {
       setImpoundActionLoading(true);
-      const snapshot = await resolveImpoundChargeSnapshot(
-        rental,
-        new Date().toISOString(),
-        impoundChargeForm.discount
-      );
+      const storedDays = Math.max(0, Number(rental?.impound_charge_days || 0));
+      const storedHours = Math.max(0, Number(rental?.impound_charge_hours || 0));
+      const storedRate = Math.max(0, Number(rental?.impound_rate || 0));
+      const storedDiscount = Math.max(0, Number(rental?.impound_discount || 0));
+      const storedDailyImpoundFeePerDay = Math.max(0, Number(rental?.impound_estimated_rate || 0));
+      const storedDailyImpoundFeeTotal = Math.max(0, Number(rental?.impound_estimated_extra_amount || (storedDailyImpoundFeePerDay * storedDays) || 0));
+      const storedManualCharge = Math.max(0, Number(rental?.impound_manual_charge || 0) - storedDailyImpoundFeeTotal);
+      const shouldUseAdjustmentSnapshot = adjustmentOnly || (!isImpounded && hasImpoundChargeHistory);
+      const resolvedDailyBaseRate = await resolveImpoundDailyBaseRate(rental);
+      const effectiveStoredRate = Math.max(0, Number(storedRate || 0)) > 0
+        ? Math.max(0, Number(storedRate || 0))
+        : resolvedDailyBaseRate;
+      const snapshot = shouldUseAdjustmentSnapshot
+        ? {
+            days: storedDays,
+            hours: storedHours,
+            rate: effectiveStoredRate,
+            discount: storedDiscount,
+            total: Math.max(0, Number(rental?.impound_total || 0)),
+            amountPaid: Math.max(0, Number(rental?.impound_total || 0)),
+            manualCharge: storedManualCharge,
+            dailyImpoundFeePerDay: storedDailyImpoundFeePerDay,
+            dailyImpoundFeeTotal: storedDailyImpoundFeeTotal,
+            pricingMode: rental?.rental_type === 'daily' ? 'daily' : 'hourly',
+            rateMode: 'base_daily',
+            pricingLabel:
+              rental?.impound_estimate_pricing_label ||
+              `${storedDays || 0} day estimate @ ${formatCurrency(effectiveStoredRate)} MAD/day`,
+            discountedByUs: storedDiscount,
+          }
+        : await resolveImpoundChargeSnapshot(
+            rental,
+            new Date().toISOString(),
+            impoundChargeForm.discount
+          );
 
       setWaiveImpoundExtraDailyCharge(false);
+      setReleaseImpoundMode(shouldUseAdjustmentSnapshot ? 'adjust' : 'resolve');
       const damageDepositHeld = Math.max(0, Number(rental?.damage_deposit || 0));
       const depositApplied = Math.min(damageDepositHeld, Math.max(0, Number(snapshot.total || 0)));
       const remainingToPrepare = Math.max(0, Math.max(0, Number(snapshot.total || 0)) - depositApplied);
@@ -12300,7 +12327,10 @@ useEffect(() => {
         hours: snapshot.hours,
         rate: snapshot.rate,
         discount: snapshot.discount,
-        impoundCharge: 0,
+        fileNumber: rental?.impound_file_number || '',
+        staffNote: rental?.impound_staff_note || '',
+        dailyImpoundFeePerDay: Math.max(0, Number(snapshot.dailyImpoundFeePerDay || 0)),
+        impoundCharge: Math.max(0, Number(snapshot.manualCharge || 0)),
         calculatedTotal: snapshot.total,
         amountPaid: snapshot.total,
         pricingMode: snapshot.pricingMode,
@@ -12403,25 +12433,41 @@ useEffect(() => {
     }
   };
 
-  const applyReleaseImpoundDayChargePreset = (days) => {
+  const applyReleaseImpoundDayChargePreset = async (days) => {
     setWaiveImpoundExtraDailyCharge(false);
     setReleaseImpoundChargePreset(days);
+    const resolvedDailyBaseRate = await resolveImpoundDailyBaseRate(rental);
     setReleaseImpoundForm((current) => {
+      const dailyBaseRate = Math.max(
+        0,
+        Number(
+          resolvedDailyBaseRate ||
+          current.rate ||
+          0
+        )
+      );
+      const dailyImpoundFeePerDay = Math.max(0, Number(current.dailyImpoundFeePerDay || 0));
+      const dailyImpoundFeeTotal = dailyImpoundFeePerDay * days;
+      const towingFee = Math.max(0, Number(current.impoundCharge || 0));
       const recalculated = calculateImpoundChargeTotal(
         days,
         0,
-        current.rate,
+        dailyBaseRate,
         current.discount,
         rental?.rental_type,
-        current.rateMode
+        'per_day'
       );
 
       return {
         ...current,
         days,
         hours: 0,
+        rate: dailyBaseRate,
         calculatedTotal: recalculated,
-        amountPaid: Math.max(0, recalculated + Math.max(0, Number(current.impoundCharge || 0))),
+        amountPaid: Math.max(0, recalculated + dailyImpoundFeeTotal + towingFee),
+        pricingMode: 'daily',
+        rateMode: 'per_day',
+        pricingLabel: `${days} day estimate @ ${formatCurrency(dailyBaseRate)} MAD/day`,
       };
     });
   };
@@ -12445,14 +12491,17 @@ useEffect(() => {
       setReleaseImpoundForm((prev) => ({
         ...prev,
         receiptUrl: uploadResult.url,
-        receiptName: file.name || 'Impound receipt',
+        receiptName: file.name || 'Towing receipt',
         receiptPath: uploadResult.path,
         receiptUploadedAt: new Date().toISOString(),
       }));
-      toast.success('Impound receipt ready to save with release.');
+      toast.success(tr(
+        'Towing receipt is ready to save with this resolution.',
+        'Le reçu de fourrière est prêt à être enregistré avec cette résolution.'
+      ));
     } catch (error) {
       console.error('❌ Error uploading impound receipt:', error);
-      toast.error(error.message || 'Failed to upload impound receipt.');
+      toast.error(error.message || tr('Failed to upload towing receipt.', 'Échec du téléversement du reçu de fourrière.'));
     } finally {
       setImpoundReceiptUploading(false);
       if (releaseImpoundReceiptInputRef.current) releaseImpoundReceiptInputRef.current.value = '';
@@ -12488,6 +12537,7 @@ useEffect(() => {
         impound_reason: impoundForm.reason.trim() || 'Police impound',
         impound_note: impoundForm.note.trim() || null,
         impound_reference: impoundForm.reference.trim() || null,
+        impound_file_number: impoundForm.fileNumber.trim() || null,
         impound_charge_hours: 0,
         impound_charge_days: 0,
         impound_rate: Math.max(0, Number(rental?.unit_price || 0)),
@@ -12497,12 +12547,7 @@ useEffect(() => {
         updated_at: new Date().toISOString(),
       };
 
-      const { data, error } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .update(updatePayload)
-        .eq('id', rental.id)
-        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float')
-        .single();
+      const { data, error } = await updateRentalWithSchemaFallback(updatePayload);
 
       if (error) throw error;
 
@@ -12561,7 +12606,7 @@ useEffect(() => {
     }
   }, [calculateImpoundChargeTotal, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.rateMode, impoundChargeForm.total, rental?.id, rental?.rental_type, rental?.released_from_impound_at]);
 
-  const finalizeImpoundRelease = useCallback(async ({ waiveCharge = false, releaseOverride = null } = {}) => {
+  const finalizeImpoundRelease = useCallback(async ({ waiveCharge = false, releaseOverride = null, preserveLifecycleStatus = false } = {}) => {
     if (!rental?.id) return;
 
     const releaseAt = new Date().toISOString();
@@ -12580,12 +12625,49 @@ useEffect(() => {
           pricingLabel: '',
         }
       : releaseOverride || await resolveImpoundChargeSnapshot(rental, releaseAt, impoundChargeForm.discount);
+    const normalizedImpoundDays = Math.max(0, Number(snapshot.days || 0));
+    const normalizedDailyImpoundFeePerDay = waiveCharge ? 0 : Math.max(0, Number(snapshot.dailyImpoundFeePerDay || 0));
+    const normalizedDailyImpoundFeeTotal = waiveCharge
+      ? 0
+      : Math.max(0, Number(snapshot.dailyImpoundFeeTotal || (normalizedDailyImpoundFeePerDay * normalizedImpoundDays) || 0));
+    const normalizedTowingFee = waiveCharge ? 0 : Math.max(0, Number(snapshot.manualCharge || 0));
+    const settlementPricingLabel = waiveCharge
+      ? ''
+      : `${normalizedImpoundDays} day estimate @ ${formatCurrency(Math.max(0, Number(snapshot.rate || 0)))} MAD/day base + ${formatCurrency(normalizedDailyImpoundFeePerDay)} MAD/day impound fee`;
+    const settlementNote = waiveCharge
+      ? ''
+      : [
+          `Base rental charge ${formatCurrency(Math.max(0, Number(snapshot.total || 0)) - normalizedDailyImpoundFeeTotal - normalizedTowingFee)} MAD`,
+          `daily impound fees ${formatCurrency(normalizedDailyImpoundFeeTotal)} MAD (${formatCurrency(normalizedDailyImpoundFeePerDay)} × ${normalizedImpoundDays} day${normalizedImpoundDays === 1 ? '' : 's'})`,
+          `towing fee ${formatCurrency(normalizedTowingFee)} MAD`,
+          `discount ${formatCurrency(Math.max(0, Number(snapshot.discountedByUs ?? snapshot.discount ?? 0)))} MAD`,
+          `final charge ${formatCurrency(Math.max(0, Number(snapshot.total || 0)))} MAD`,
+        ].join(' · ');
+    const previousImpoundTotal = Math.max(0, Number(rental?.impound_total || 0) || 0);
+    const nextImpoundTotal = Math.max(0, Number(snapshot.total || 0) || 0);
+    const currentRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
+    const nextRemainingAmount = Math.max(0, currentRemainingAmount - previousImpoundTotal + nextImpoundTotal);
+    const currentDepositAmount = Math.max(0, Number(rental?.deposit_amount || 0) || 0);
+    const nextPaymentStatus = nextRemainingAmount <= 0
+      ? 'paid'
+      : (currentDepositAmount > 0 ? 'partial' : 'unpaid');
+    const shouldSaveAmountDueOverride = preserveLifecycleStatus && Math.abs(nextRemainingAmount - currentRemainingAmount) > 0.009;
+    const towingAmountDueOverrideMeta = shouldSaveAmountDueOverride
+      ? buildAmountDueEditMeta({
+          note: 'Towing / impound adjustment applied',
+          currentUser: resolvedCurrentUser || currentUser || userProfile,
+          previousAmount: currentRemainingAmount,
+          newAmount: nextRemainingAmount,
+          paymentReceivedNow: 0,
+          companyDiscount: 0,
+        })
+      : null;
 
     try {
       setImpoundActionLoading(true);
 
       const nextVehicleStatus = 'available';
-      if (rental?.vehicle_id || rental?.vehicle?.id) {
+      if (!preserveLifecycleStatus && (rental?.vehicle_id || rental?.vehicle?.id)) {
         const { error: vehicleError } = await supabase
           .from('saharax_0u4w4d_vehicles')
           .update({
@@ -12597,24 +12679,48 @@ useEffect(() => {
         if (vehicleError) throw vehicleError;
       }
 
+      const preservedLifecycleStatus = String(rental?.rental_status || rental?.status || 'scheduled').toLowerCase() || 'scheduled';
       const { data, error } = await updateRentalWithSchemaFallback({
         is_impounded: false,
-        rental_status: rental?.started_at ? 'active' : 'scheduled',
-        status: rental?.started_at ? 'active' : 'scheduled',
-        released_from_impound_at: releaseAt,
+        rental_status: preserveLifecycleStatus ? preservedLifecycleStatus : (rental?.started_at ? 'active' : 'scheduled'),
+        status: preserveLifecycleStatus ? preservedLifecycleStatus : (rental?.started_at ? 'active' : 'scheduled'),
+        released_from_impound_at: preserveLifecycleStatus
+          ? (rental?.released_from_impound_at || releaseAt)
+          : releaseAt,
         impound_charge_days: snapshot.days,
         impound_charge_hours: snapshot.hours,
         impound_rate: snapshot.rate,
-        impound_manual_charge: waiveCharge ? 0 : Math.max(0, Number(snapshot.manualCharge || 0)),
+        impound_manual_charge: waiveCharge ? 0 : Math.max(0, normalizedDailyImpoundFeeTotal + normalizedTowingFee),
         impound_discount: waiveCharge
           ? 0
           : Math.max(0, Number(snapshot.discountedByUs ?? snapshot.discount ?? 0)),
         impound_total: snapshot.total,
         impound_charge_applied_at: waiveCharge ? null : releaseAt,
+        impound_file_number: releaseImpoundForm.fileNumber?.trim() || rental?.impound_file_number || null,
+        impound_staff_note: releaseImpoundForm.staffNote?.trim() || null,
         impound_receipt_url: waiveCharge ? null : (snapshot.receiptUrl || rental?.impound_receipt_url || null),
         impound_receipt_name: waiveCharge ? null : (snapshot.receiptName || rental?.impound_receipt_name || null),
         impound_receipt_path: waiveCharge ? null : (snapshot.receiptPath || rental?.impound_receipt_path || null),
         impound_receipt_uploaded_at: waiveCharge ? null : (snapshot.receiptUploadedAt || rental?.impound_receipt_uploaded_at || null),
+        impound_estimated_rate: waiveCharge ? 0 : normalizedDailyImpoundFeePerDay,
+        impound_estimated_extra_amount: waiveCharge ? 0 : normalizedDailyImpoundFeeTotal,
+        impound_estimate_pricing_label: settlementPricingLabel,
+        impound_estimate_note: settlementNote,
+        remaining_amount: nextRemainingAmount,
+        payment_status: nextPaymentStatus,
+        amount_due_override_reason: towingAmountDueOverrideMeta
+          ? JSON.stringify({
+              note: towingAmountDueOverrideMeta.note || '',
+              paymentReceivedNow: towingAmountDueOverrideMeta.paymentReceivedNow || 0,
+              companyDiscount: towingAmountDueOverrideMeta.companyDiscount || 0,
+            })
+          : rental?.amount_due_override_reason || null,
+        amount_due_override_edited_by: towingAmountDueOverrideMeta?.editedById || rental?.amount_due_override_edited_by || null,
+        amount_due_override_edited_by_name: towingAmountDueOverrideMeta?.editedByName || rental?.amount_due_override_edited_by_name || null,
+        amount_due_override_previous_amount: towingAmountDueOverrideMeta
+          ? towingAmountDueOverrideMeta.previousAmount || 0
+          : (rental?.amount_due_override_previous_amount || 0),
+        amount_due_override_edited_at: towingAmountDueOverrideMeta?.editedAt || rental?.amount_due_override_edited_at || null,
         updated_at: new Date().toISOString(),
       });
 
@@ -12636,15 +12742,27 @@ useEffect(() => {
       setShowReleaseImpoundModal(false);
 
       if (waiveCharge) {
-        toast.success('Impound cancelled. No additional rental amount applied.');
+        toast.success(tr(
+          'Towing hold cleared. No additional rental amount applied.',
+          'Retenue de fourrière levée. Aucun montant supplémentaire appliqué.'
+        ));
       } else if (snapshot.total > 0) {
-        toast.success(`Impound released. Additional rental amount applied: ${formatCurrency(snapshot.total)} MAD.`);
+        toast.success(tr(
+          `Towing hold resolved. Additional rental amount applied: ${formatCurrency(snapshot.total)} MAD.`,
+          `Retenue de fourrière résolue. Montant supplémentaire appliqué : ${formatCurrency(snapshot.total)} MAD.`
+        ));
       } else {
-        toast.success('Impound released. No additional rental amount applied.');
+        toast.success(tr(
+          'Towing hold resolved. No additional rental amount applied.',
+          'Retenue de fourrière résolue. Aucun montant supplémentaire appliqué.'
+        ));
       }
     } catch (error) {
       console.error('❌ Error releasing rental impound:', error);
-      toast.error('Failed to release rental from impound.');
+      toast.error(tr(
+        'Failed to resolve the towing hold.',
+        'Échec de la résolution de la retenue de fourrière.'
+      ));
     } finally {
       setImpoundActionLoading(false);
     }
@@ -12658,20 +12776,34 @@ useEffect(() => {
         await finalizeImpoundRelease({ waiveCharge: true });
         return;
       }
+      if (releaseTowingReceiptRequired) {
+        toast.error(tr(
+          'Attach the towing receipt or payment proof before resolving this hold.',
+          'Joignez le reçu de fourrière ou la preuve de paiement avant de résoudre cette retenue.'
+        ));
+        return;
+      }
       await finalizeImpoundRelease({
         waiveCharge: false,
+        preserveLifecycleStatus: releaseImpoundMode === 'adjust',
         releaseOverride: {
           days: releaseImpoundForm.days,
           hours: releaseImpoundForm.hours,
           rate: releaseImpoundForm.rate,
           discount: releaseImpoundForm.discount,
           manualCharge: Math.max(0, Number(releaseImpoundForm.impoundCharge || 0)),
+          dailyImpoundFeePerDay: Math.max(0, Number(releaseImpoundForm.dailyImpoundFeePerDay || 0)),
+          dailyImpoundFeeTotal:
+            Math.max(0, Number(releaseImpoundForm.dailyImpoundFeePerDay || 0)) *
+            Math.max(0, Number(releaseImpoundForm.days || 0)),
           discountedByUs: releaseImpoundDiscountedByUs,
           amountPaid: Math.max(0, Number(releaseImpoundForm.amountPaid || 0)),
           total: Math.max(0, Number(releaseImpoundForm.amountPaid || 0)),
           pricingMode: releaseImpoundForm.pricingMode,
           pricingLabel: releaseImpoundForm.pricingLabel,
           rateMode: releaseImpoundForm.rateMode,
+          fileNumber: releaseImpoundForm.fileNumber?.trim() || rental?.impound_file_number || '',
+          staffNote: releaseImpoundForm.staffNote?.trim() || rental?.impound_staff_note || '',
           receiptUrl: releaseImpoundForm.receiptUrl,
           receiptName: releaseImpoundForm.receiptName,
           receiptPath: releaseImpoundForm.receiptPath,
@@ -13877,13 +14009,24 @@ useEffect(() => {
   const estimatedDepositAppliedForImpound = Math.min(rentalBillingSummary.damageDepositHeld, estimatedTotalByMonday);
   const estimatedRemainingToPrepare = Math.max(0, estimatedTotalByMonday - rentalBillingSummary.damageDepositHeld);
   const selectedReleaseImpoundBaseCharge = waiveImpoundExtraDailyCharge ? 0 : Math.max(0, Number(releaseImpoundForm.calculatedTotal || 0));
+  const selectedReleaseImpoundDailyFeePerDay = waiveImpoundExtraDailyCharge ? 0 : Math.max(0, Number(releaseImpoundForm.dailyImpoundFeePerDay || 0));
+  const selectedReleaseImpoundDailyFeeTotal = waiveImpoundExtraDailyCharge
+    ? 0
+    : Math.max(0, selectedReleaseImpoundDailyFeePerDay * Math.max(0, Number(releaseImpoundForm.days || 0)));
   const selectedReleaseImpoundManualCharge = waiveImpoundExtraDailyCharge ? 0 : Math.max(0, Number(releaseImpoundForm.impoundCharge || 0));
   const selectedReleaseImpoundChargeTotal = waiveImpoundExtraDailyCharge
     ? 0
-    : Math.max(0, selectedReleaseImpoundBaseCharge + selectedReleaseImpoundManualCharge);
+    : Math.max(0, selectedReleaseImpoundBaseCharge + selectedReleaseImpoundDailyFeeTotal + selectedReleaseImpoundManualCharge);
+  const releaseImpoundEstimatedTotal = waiveImpoundExtraDailyCharge ? 0 : selectedReleaseImpoundChargeTotal;
+  const releaseImpoundDepositApplied = Math.min(
+    Math.max(0, Number(rental?.damage_deposit || 0)),
+    releaseImpoundEstimatedTotal
+  );
+  const releaseImpoundRemainingToPrepare = Math.max(0, releaseImpoundEstimatedTotal - releaseImpoundDepositApplied);
+  const releaseTowingReceiptRequired = !waiveImpoundExtraDailyCharge && selectedReleaseImpoundChargeTotal > 0 && !releaseImpoundForm.receiptUrl;
   const releaseImpoundDiscountedByUs = Math.max(
     0,
-    Math.max(0, Number(releaseImpoundExceededPreview.remainingToPrepare || 0)) -
+    releaseImpoundRemainingToPrepare -
       Math.max(0, Number(releaseImpoundForm.amountPaid || 0))
   );
   const weekendEstimateMessage = waiveImpoundExtraDailyCharge
@@ -13907,6 +14050,35 @@ useEffect(() => {
     || (rental?.started_by && !isLikelyUuid(rental.started_by) ? rental.started_by : null)
     || null;
   const rentalElapsedTone = isActive ? getRentalElapsedTone(rental, currentTimeRef.current) : null;
+
+  useEffect(() => {
+    if (!showReleaseImpoundModal) return;
+
+    const estimatedTotal = waiveImpoundExtraDailyCharge
+      ? 0
+      : Math.max(0, Number(releaseImpoundForm.amountPaid || 0));
+    const damageDepositHeld = Math.max(0, Number(rental?.damage_deposit || 0));
+    const depositApplied = Math.min(damageDepositHeld, estimatedTotal);
+    const remainingToPrepare = Math.max(0, estimatedTotal - depositApplied);
+
+    setReleaseImpoundExceededPreview((prev) => ({
+      ...prev,
+      days: waiveImpoundExtraDailyCharge ? 0 : Math.max(0, Number(releaseImpoundForm.days || 0)),
+      hours: waiveImpoundExtraDailyCharge ? 0 : Math.max(0, Number(releaseImpoundForm.hours || 0)),
+      pricingLabel: waiveImpoundExtraDailyCharge ? '' : (releaseImpoundForm.pricingLabel || prev.pricingLabel || ''),
+      estimatedTotal,
+      depositApplied,
+      remainingToPrepare,
+    }));
+  }, [
+    releaseImpoundForm.amountPaid,
+    releaseImpoundForm.days,
+    releaseImpoundForm.hours,
+    releaseImpoundForm.pricingLabel,
+    rental?.damage_deposit,
+    showReleaseImpoundModal,
+    waiveImpoundExtraDailyCharge,
+  ]);
   const hasOpeningVideo = openingMedia.length > 0;
   const hasOpeningDraftMedia = capturedMedia.length > 0 || showMediaReview;
   const hasOdometerReading = Boolean(rental?.start_odometer);
@@ -14487,12 +14659,20 @@ useEffect(() => {
     (actor) => actor?.userId !== resolvedCurrentUser?.id && actor?.presenceKey !== currentWorkflowPresenceKey
   );
   const primaryFinishWorkflowActor = activeFinishWorkflowActors[0] || null;
-  const isFinishWorkflowSoftLocked = false;
+  const hasUnresolvedTowingHold = isImpounded;
+  const isFinishWorkflowSoftLocked = hasUnresolvedTowingHold;
   const finishWorkflowHandlerName = primaryFinishWorkflowActor?.name || tr('Another staff member', 'Un autre membre du personnel');
-  const finishWorkflowLockTitle = tr(
+  const finishWorkflowPresenceLockTitle = tr(
     `${finishWorkflowHandlerName} also has the finish workflow open.`,
     `${finishWorkflowHandlerName} a également le workflow de clôture ouvert.`
   );
+  const towingHoldLockTitle = tr(
+    'Vehicle is still on a towing hold. Release it before finishing the rental.',
+    'Le véhicule est toujours retenu en fourrière. Libérez-le avant de terminer la location.'
+  );
+  const finishWorkflowLockTitle = hasUnresolvedTowingHold
+    ? towingHoldLockTitle
+    : finishWorkflowPresenceLockTitle;
 
   const canStartRental = hasEffectiveContractSignature || startWorkflowSteps.every((step) => step.complete);
   const isReplacementResumeFlow = Boolean(effectiveReplacementPauseStartedAt);
@@ -14502,10 +14682,13 @@ useEffect(() => {
     String(rental?.status_change_reason || '').toLowerCase() !== 'customer_arrived' &&
     ['scheduled', 'no_show_review'].includes(operationalRentalStatus) &&
     Boolean(scheduledTimingState?.isSoftLocked);
+  const canAlwaysAccessMoreActionsMenu = ['owner', 'admin'].includes(currentUserRole);
   const hasVisibleMoreActions = Boolean(
+    canAlwaysAccessMoreActionsMenu ||
     canManageScheduledRental ||
     canCancelPreStartRental ||
     canDeleteScheduledRental ||
+    isImpounded ||
     isActive ||
     (shouldShowLateArrivalBanner && canHandleLateArrival)
   );
@@ -14520,6 +14703,20 @@ useEffect(() => {
   const showCancellationContextCard =
     rentalStatusLower === 'cancelled' &&
     String(rental?.cancellation_reason || '').trim().toLowerCase() !== 'no_show';
+  const hasResolvedTowingHold =
+    Boolean(hasImpoundRecord && !isImpounded && rental?.released_from_impound_at);
+  const canAdjustTowingFinancials =
+    ['owner', 'admin'].includes(currentUserRole) &&
+    Boolean(!isImpounded && (hasImpoundChargeHistory || isCompleted));
+  const towingHoldReasonText = String(rental?.impound_reason || '').trim();
+  const towingHoldFileNumberText = String(rental?.impound_file_number || '').trim();
+  const towingHoldReferenceText = String(rental?.impound_reference || '').trim();
+  const towingHoldNoteText = String(rental?.impound_note || '').trim();
+  const towingHoldStaffNoteText = String(rental?.impound_staff_note || '').trim();
+  const resolvedTowingChargeAmount = Math.max(0, Number(rental?.impound_total || 0));
+  const resolvedTowingDiscountAmount = Math.max(0, Number(rental?.impound_discount || 0));
+  const resolvedTowingReceiptUrl = String(rental?.impound_receipt_url || '').trim();
+  const resolvedTowingReceiptName = String(rental?.impound_receipt_name || '').trim();
   const canSignContract =
     startWorkflowStepMap.customer_verification?.complete &&
     startWorkflowStepMap.opening_media?.complete &&
@@ -15170,10 +15367,22 @@ useEffect(() => {
 
         {isImpounded && (
           <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
-            <p className="font-semibold">{tr('Vehicle is impounded.', 'Le véhicule est en fourrière.')}</p>
+            <p className="font-semibold">{tr('Vehicle is on an unresolved towing hold.', 'Le véhicule est sous une retenue de fourrière non résolue.')}</p>
             <p className="mt-1 text-xs text-amber-800">
-              {tr('The rental timer continues while the vehicle is impounded.', 'Le minuteur de location continue pendant la mise en fourrière du véhicule.')}
+              {tr(
+                'The rental timer keeps running, but this rental cannot be finished until the vehicle is released from the towing yard.',
+                'Le minuteur de location continue, mais cette location ne peut pas être terminée tant que le véhicule n’est pas libéré de la fourrière.'
+              )}
             </p>
+            {(rental?.impound_reason || rental?.impound_file_number || rental?.impound_reference || rental?.impound_note || towingHoldStaffNoteText) ? (
+              <div className="mt-2 space-y-1 text-[11px] text-amber-900">
+                {rental?.impound_reason ? <p>{tr('Reason:', 'Raison :')} <strong>{rental.impound_reason}</strong></p> : null}
+                {rental?.impound_file_number ? <p>{tr('File number:', 'Numéro de dossier :')} <strong>{rental.impound_file_number}</strong></p> : null}
+                {rental?.impound_reference ? <p>{tr('Reference:', 'Référence :')} <strong>{rental.impound_reference}</strong></p> : null}
+                {rental?.impound_note ? <p>{tr('Note:', 'Note :')} {rental.impound_note}</p> : null}
+                {towingHoldStaffNoteText ? <p>{tr('Staff note:', 'Note interne :')} {towingHoldStaffNoteText}</p> : null}
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -15320,14 +15529,16 @@ useEffect(() => {
             }
             void openFinishWorkflow();
           }}
-          disabled={effectiveReplacementPauseStartedAt ? (!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental) : false}
-          title={effectiveReplacementPauseStartedAt ? startWorkflowActionHint : undefined}
+          disabled={effectiveReplacementPauseStartedAt ? (!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental) : hasUnresolvedTowingHold}
+          title={effectiveReplacementPauseStartedAt ? startWorkflowActionHint : (hasUnresolvedTowingHold ? towingHoldLockTitle : undefined)}
           className={`mt-3 flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-4 text-base font-bold transition ${
             effectiveReplacementPauseStartedAt
               ? (!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental
                 ? 'cursor-not-allowed bg-slate-200 text-slate-500'
                 : 'bg-violet-700 text-white shadow-[0_14px_32px_rgba(76,29,149,0.24)] hover:bg-violet-800')
-              : 'bg-violet-700 text-white shadow-[0_14px_32px_rgba(76,29,149,0.24)] hover:bg-violet-800'
+              : hasUnresolvedTowingHold
+                ? 'cursor-not-allowed bg-slate-200 text-slate-500'
+                : 'bg-violet-700 text-white shadow-[0_14px_32px_rgba(76,29,149,0.24)] hover:bg-violet-800'
           }`}
         >
           {effectiveReplacementPauseStartedAt ? <PlayCircle className="h-5 w-5" /> : <StopCircle className="h-5 w-5" />}
@@ -15506,6 +15717,20 @@ useEffect(() => {
               </p>
             </div>
           </div>
+
+          {hasUnresolvedTowingHold && (
+            <div className="mt-4 rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
+              <p className="font-bold">
+                {tr('Towing hold unresolved', 'Retenue de fourrière non résolue')}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-amber-800">
+                {tr(
+                  'The finish workflow is blocked until the vehicle is released from the towing yard.',
+                  'Le workflow de clôture est bloqué tant que le véhicule n’est pas libéré de la fourrière.'
+                )}
+              </p>
+            </div>
+          )}
 
           <div className="mt-4 space-y-3">
             {returnWorkflowBillingResult?.overtimeAdjustment ? (
@@ -16673,6 +16898,70 @@ useEffect(() => {
                 </div>
               </div>
             ) : null}
+          </div>
+        )}
+
+        {hasResolvedTowingHold && (
+          <div className="mb-4 overflow-hidden rounded-[22px] border border-amber-200 bg-amber-50/80 shadow-[0_10px_24px_rgba(245,158,11,0.08)]">
+            <div className="flex items-start justify-between gap-3 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-amber-950">
+                  {tr('Towing hold settlement', 'Règlement de fourrière')}
+                </p>
+                <p className="mt-0.5 text-xs text-amber-700">
+                  {tr(
+                    `Released ${formatImpoundDateTime(rental?.released_from_impound_at)} · ${formatCurrency(resolvedTowingChargeAmount)} MAD final charge`,
+                    `Libérée ${formatImpoundDateTime(rental?.released_from_impound_at)} · ${formatCurrency(resolvedTowingChargeAmount)} MAD de frais finaux`
+                  )}
+                </p>
+              </div>
+              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-700 shadow-sm">
+                {tr('Resolved', 'Résolue')}
+              </span>
+            </div>
+            <div className="border-t border-amber-200 px-4 pb-4 pt-3">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-2xl border border-white/70 bg-white/90 px-3 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{tr('Held at', 'Retenue le')}</p>
+                  <p className="mt-1 text-sm font-bold text-slate-900">{formatImpoundDateTime(rental?.impounded_at)}</p>
+                </div>
+                <div className="rounded-2xl border border-white/70 bg-white/90 px-3 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{tr('Released at', 'Libérée le')}</p>
+                  <p className="mt-1 text-sm font-bold text-slate-900">{formatImpoundDateTime(rental?.released_from_impound_at)}</p>
+                </div>
+                <div className="rounded-2xl border border-white/70 bg-white/90 px-3 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{tr('Final charge', 'Frais finaux')}</p>
+                  <p className="mt-1 text-sm font-bold text-amber-900">{formatCurrency(resolvedTowingChargeAmount)} MAD</p>
+                </div>
+                <div className="rounded-2xl border border-white/70 bg-white/90 px-3 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{tr('Discount', 'Remise')}</p>
+                  <p className={`mt-1 text-sm font-bold ${resolvedTowingDiscountAmount > 0 ? 'text-green-700' : 'text-slate-600'}`}>
+                    {resolvedTowingDiscountAmount > 0 ? `-${formatCurrency(resolvedTowingDiscountAmount)} MAD` : tr('None', 'Aucune')}
+                  </p>
+                </div>
+              </div>
+              {(towingHoldReasonText || towingHoldReferenceText || towingHoldNoteText || towingHoldStaffNoteText || resolvedTowingReceiptUrl) ? (
+                <div className="mt-3 space-y-2 text-sm text-amber-950">
+                  {towingHoldReasonText ? <p><span className="font-semibold">{tr('Reason:', 'Raison :')}</span> {towingHoldReasonText}</p> : null}
+                  {towingHoldReferenceText ? <p><span className="font-semibold">{tr('Reference:', 'Référence :')}</span> {towingHoldReferenceText}</p> : null}
+                  {towingHoldNoteText ? <p><span className="font-semibold">{tr('Note:', 'Note :')}</span> {towingHoldNoteText}</p> : null}
+                  {towingHoldStaffNoteText ? <p><span className="font-semibold">{tr('Staff note:', 'Note interne :')}</span> {towingHoldStaffNoteText}</p> : null}
+                  {resolvedTowingReceiptUrl ? (
+                    <p>
+                      <span className="font-semibold">{tr('Proof:', 'Preuve :')}</span>{' '}
+                      <a
+                        href={resolvedTowingReceiptUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-medium text-amber-700 underline underline-offset-2"
+                      >
+                        {resolvedTowingReceiptName || tr('View attached proof', 'Voir la preuve jointe')}
+                      </a>
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
         )}
 
@@ -18143,6 +18432,55 @@ useEffect(() => {
               </div>
             )}
 
+            {hasResolvedTowingHold && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-4 shadow-sm">
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center rounded-full border border-amber-200 bg-white px-3 py-1 text-xs font-semibold tracking-[0.18em] text-amber-700">
+                      {tr('Towing hold', 'Retenue de fourrière')}
+                    </span>
+                    <span className="text-sm font-semibold text-amber-950">
+                      {tr('Resolved', 'Résolue')}
+                    </span>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="rounded-xl border border-amber-200 bg-white/80 px-3 py-3 text-sm text-amber-950">
+                      <p><span className="font-semibold">{tr('Held at:', 'Retenue le :')}</span> {formatImpoundDateTime(rental?.impounded_at)}</p>
+                      <p className="mt-1"><span className="font-semibold">{tr('Released at:', 'Libérée le :')}</span> {formatImpoundDateTime(rental?.released_from_impound_at)}</p>
+                      {towingHoldReasonText ? <p className="mt-1"><span className="font-semibold">{tr('Reason:', 'Raison :')}</span> {towingHoldReasonText}</p> : null}
+                      {towingHoldFileNumberText ? <p className="mt-1"><span className="font-semibold">{tr('File number:', 'Numéro de dossier :')}</span> {towingHoldFileNumberText}</p> : null}
+                      {towingHoldReferenceText ? <p className="mt-1"><span className="font-semibold">{tr('Reference:', 'Référence :')}</span> {towingHoldReferenceText}</p> : null}
+                      {towingHoldStaffNoteText ? <p className="mt-1"><span className="font-semibold">{tr('Staff note:', 'Note interne :')}</span> {towingHoldStaffNoteText}</p> : null}
+                    </div>
+                    <div className="rounded-xl border border-amber-200 bg-white/80 px-3 py-3 text-sm text-amber-950">
+                      <p><span className="font-semibold">{tr('Final towing charge:', 'Frais finaux de fourrière :')}</span> {formatCurrency(resolvedTowingChargeAmount)} MAD</p>
+                      {resolvedTowingDiscountAmount > 0 ? (
+                        <p className="mt-1"><span className="font-semibold">{tr('Discount applied:', 'Remise appliquée :')}</span> -{formatCurrency(resolvedTowingDiscountAmount)} MAD</p>
+                      ) : null}
+                      {resolvedTowingReceiptUrl ? (
+                        <p className="mt-1">
+                          <span className="font-semibold">{tr('Proof:', 'Preuve :')}</span>{' '}
+                          <a
+                            href={resolvedTowingReceiptUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-medium text-amber-700 underline underline-offset-2"
+                          >
+                            {resolvedTowingReceiptName || tr('View attached proof', 'Voir la preuve jointe')}
+                          </a>
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                  {towingHoldNoteText ? (
+                    <div className="rounded-xl border border-amber-200 bg-white/80 px-3 py-3 text-sm text-amber-950">
+                      <span className="font-semibold">{tr('Note:', 'Note :')}</span> {towingHoldNoteText}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            )}
+
             <div className="relative z-20 flex flex-col gap-3 pointer-events-auto lg:flex-row lg:items-center lg:justify-between">
               <div className={`grid grid-cols-3 gap-2 sm:flex sm:flex-wrap ${
                 showLightActiveRentalMobile || showLightFinishRentalMobile ? 'hidden' : ''
@@ -18291,6 +18629,32 @@ useEffect(() => {
                       <Share2 className="mr-2 h-4 w-4" />
                       {tr('Share', 'Partager')}
                     </button>
+                    {canEditLifecycleRentalPrice && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMoreActionsOpen(false);
+                            handleEditAmountDue();
+                          }}
+                          className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-violet-700 transition hover:bg-violet-50"
+                        >
+                          <DollarSign className="mr-2 h-4 w-4" />
+                          {tr('Balance adjustment', 'Ajustement du solde')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMoreActionsOpen(false);
+                            handleEditPrice();
+                          }}
+                          className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-violet-700 transition hover:bg-violet-50"
+                        >
+                          <Edit className="mr-2 h-4 w-4" />
+                          {tr('Price adjustment', 'Ajustement du prix')}
+                        </button>
+                      </>
+                    )}
                     {canCancelPreStartRental && (
                       <button
                         type="button"
@@ -18341,10 +18705,10 @@ useEffect(() => {
                         className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <AlertTriangle className="mr-2 h-4 w-4" />
-                        {tr('Impound', 'Mise en fourrière')}
+                        {tr('Towed / authority hold', 'Fourrière / retenue administrative')}
                       </button>
                     )}
-                    {isActive && isImpounded && (
+                    {isImpounded && (
                       <button
                         type="button"
                         onClick={() => {
@@ -18355,7 +18719,21 @@ useEffect(() => {
                         className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-violet-700 transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <CheckCircle className="mr-2 h-4 w-4" />
-                        {tr('Release Impound', 'Libérer la fourrière')}
+                        {tr('Resolve towing hold', 'Résoudre la retenue')}
+                      </button>
+                    )}
+                    {canAdjustTowingFinancials && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMoreActionsOpen(false);
+                          openReleaseImpoundModal({ adjustmentOnly: true });
+                        }}
+                        disabled={impoundActionLoading}
+                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-violet-700 transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Calculator className="mr-2 h-4 w-4" />
+                        {tr('Towing / impound adjustment', 'Ajustement fourrière')}
                       </button>
                     )}
                     {shouldShowLateArrivalBanner && canHandleLateArrival && (
@@ -19419,7 +19797,10 @@ useEffect(() => {
                       <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
                         <div className="flex items-start justify-between gap-3">
                           <p className="text-sm font-semibold text-amber-900">
-                            {tr('Vehicle is currently impounded. The timer keeps running so extra impound time remains billable.', 'Le véhicule est actuellement en fourrière. Le minuteur continue pour que le temps supplémentaire reste facturable.')}
+                            {tr(
+                              'Vehicle is currently on an unresolved towing hold. The timer keeps running, but this rental cannot be finished until the vehicle is released.',
+                              'Le véhicule est actuellement sous une retenue de fourrière non résolue. Le minuteur continue, mais cette location ne peut pas être terminée tant que le véhicule n’est pas libéré.'
+                            )}
                           </p>
                           {canCancelImpound && (
                             <button
@@ -19437,8 +19818,10 @@ useEffect(() => {
                         <div className="mt-1 text-xs text-amber-800 space-y-1">
                           <p>{tr('Impounded at:', 'Mise en fourrière le :')} <strong>{formatImpoundDateTime(rental?.impounded_at)}</strong></p>
                           {rental?.impound_reason && <p>{tr('Reason:', 'Raison :')} <strong>{rental.impound_reason}</strong></p>}
+                          {rental?.impound_file_number && <p>{tr('File number:', 'Numéro de dossier :')} <strong>{rental.impound_file_number}</strong></p>}
                           {rental?.impound_reference && <p>{tr('Reference:', 'Référence :')} <strong>{rental.impound_reference}</strong></p>}
                           {rental?.impound_note && <p>{tr('Note:', 'Note :')} {rental.impound_note}</p>}
+                          {towingHoldStaffNoteText && <p>{tr('Staff note:', 'Note interne :')} {towingHoldStaffNoteText}</p>}
                         </div>
                       </div>
                     )}
@@ -19514,7 +19897,13 @@ useEffect(() => {
                         <>
                           <Button 
                             onClick={() => { void openFinishWorkflow(); }}
-                            className="min-w-0 justify-center whitespace-normal bg-violet-700 px-5 py-4 text-center text-base font-semibold leading-tight text-white shadow-sm transition-all duration-200 hover:scale-[1.01] hover:bg-violet-800 rounded-lg sm:py-5 sm:text-lg"
+                            disabled={hasUnresolvedTowingHold}
+                            title={hasUnresolvedTowingHold ? towingHoldLockTitle : undefined}
+                            className={`min-w-0 justify-center whitespace-normal px-5 py-4 text-center text-base font-semibold leading-tight shadow-sm transition-all duration-200 rounded-lg sm:py-5 sm:text-lg ${
+                              hasUnresolvedTowingHold
+                                ? 'cursor-not-allowed bg-slate-200 text-slate-500'
+                                : 'bg-violet-700 text-white hover:scale-[1.01] hover:bg-violet-800'
+                            }`}
                           >
                             <StopCircle className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
                             {tr('End Now', 'Terminer maintenant')}
@@ -19560,6 +19949,20 @@ useEffect(() => {
                     </h3>
                     <p className="text-xs text-slate-500">{tr('Complete these steps to end the rental:', 'Complétez ces étapes pour terminer la location :')}</p>
                   </div>
+
+                  {hasUnresolvedTowingHold && (
+                    <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm sm:mb-4">
+                      <p className="font-bold">
+                        {tr('Towing hold unresolved', 'Retenue de fourrière non résolue')}
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-amber-800">
+                        {tr(
+                          'The vehicle must be released from the towing yard before this rental can be completed.',
+                          'Le véhicule doit être libéré de la fourrière avant que cette location puisse être terminée.'
+                        )}
+                      </p>
+                    </div>
+                  )}
 
                   
                   
@@ -24547,6 +24950,19 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
+                {tr('File number', 'Numéro de dossier')}
+              </label>
+              <input
+                type="text"
+                value={impoundForm.fileNumber}
+                onChange={(e) => setImpoundForm((prev) => ({ ...prev, fileNumber: e.target.value }))}
+                placeholder={tr('Authority or impound file number', 'Numéro de dossier de la fourrière')}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
                 Note
               </label>
               <textarea
@@ -24593,23 +25009,25 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           }
         }}
       >
-        <DialogContent className="flex max-h-[88vh] w-[calc(100vw-1.5rem)] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-0 shadow-xl sm:max-w-2xl">
+        <DialogContent className="flex max-h-[90vh] w-[calc(100vw-1.5rem)] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-0 shadow-xl sm:max-w-4xl lg:max-w-5xl">
           <DialogHeader className="border-b border-slate-100 px-4 py-3 sm:px-6 sm:py-4">
             <DialogTitle className="flex items-center gap-2 text-lg sm:text-xl">
               <CheckCircle className="w-5 h-5 text-violet-600" />
-              {tr('Release Impound', 'Libérer la fourrière')}
+              {releaseImpoundMode === 'adjust'
+                ? tr('Towing / Impound Adjustment', 'Ajustement fourrière')
+                : tr('Resolve Towing Hold', 'Résoudre la retenue de fourrière')}
             </DialogTitle>
           </DialogHeader>
 
-          <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-6">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
               <div className="rounded-lg border border-amber-100 bg-amber-50/60 p-3">
-                <div className="text-xs font-medium text-amber-700">{tr('Exceeded time', 'Temps dépassé')}</div>
+                <div className="text-xs font-medium text-amber-700">{tr('Held time', 'Temps retenu')}</div>
                 <div className="mt-1 text-lg font-semibold text-gray-900">
-                  {releaseImpoundExceededPreview.days || 0}d {releaseImpoundExceededPreview.hours || 0}h
+                  {Math.max(0, Number(releaseImpoundForm.days || 0))}d {Math.max(0, Number(releaseImpoundForm.hours || 0))}h
                 </div>
                 <div className="mt-1 text-xs text-amber-700">
-                  {releaseImpoundExceededPreview.pricingLabel || (
+                  {releaseImpoundForm.pricingLabel || (
                     rental?.rental_type === 'daily'
                       ? tr('Daily rental pricing', 'Tarification journalière')
                       : tr('Hourly tier pricing', 'Tarification horaire')
@@ -24617,21 +25035,24 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 </div>
               </div>
               <div className="rounded-lg border border-amber-100 bg-amber-50/60 p-3">
-                <div className="text-xs font-medium text-amber-700">{tr('Estimated remaining to prepare', 'Reste estimé à préparer')}</div>
+                <div className="text-xs font-medium text-amber-700">{tr('Estimated amount to prepare', 'Montant estimé à préparer')}</div>
                 <div className="mt-1 text-lg font-semibold text-gray-900">
                   {formatCurrency(
                     waiveImpoundExtraDailyCharge
                       ? 0
-                      : Math.max(0, Number(releaseImpoundExceededPreview.remainingToPrepare || 0))
+                      : releaseImpoundRemainingToPrepare
                   )} MAD
                 </div>
                 <div className="mt-1 space-y-1 text-xs text-amber-700">
                   {waiveImpoundExtraDailyCharge
-                    ? tr('Extra impound rental charge will be waived on release', 'Le supplément de fourrière sera annulé à la libération')
-                    : tr('Based on your normal rental pricing until release', 'Basé sur votre tarification normale jusqu à la libération')}
+                    ? tr('Extra towing-hold rental charge will be waived on release', 'Le supplément lié à la fourrière sera annulé à la libération')
+                    : tr('Based on the vehicle daily base price until the towing hold is released', 'Basé sur le tarif journalier de base du véhicule jusqu’à la libération de la fourrière')}
                   {!waiveImpoundExtraDailyCharge && (
                     <div className="text-[11px] text-amber-800/90">
-                      Extra rental amount {formatCurrency(Math.max(0, Number(releaseImpoundExceededPreview.estimatedTotal || 0)))} MAD minus seized security deposit {formatCurrency(Math.max(0, Number(releaseImpoundExceededPreview.depositApplied || 0)))} MAD
+                      {tr(
+                        `Extra rental amount ${formatCurrency(releaseImpoundEstimatedTotal)} MAD minus seized security deposit ${formatCurrency(releaseImpoundDepositApplied)} MAD`,
+                        `Montant locatif supplémentaire ${formatCurrency(releaseImpoundEstimatedTotal)} MAD moins la caution saisie ${formatCurrency(releaseImpoundDepositApplied)} MAD`
+                      )}
                     </div>
                   )}
                   {!waiveImpoundExtraDailyCharge && releaseImpoundDiscountedByUs > 0 && (
@@ -24645,9 +25066,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
             <div className="space-y-2">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                {tr('Charge selection', 'Sélection de facturation')}
+                {tr('Daily charge selection', 'Sélection du supplément journalier')}
               </p>
-              <div className="grid grid-cols-4 gap-2 sm:grid-cols-8">
+              <div className="grid grid-cols-4 gap-2 lg:grid-cols-8">
                 <button
                   type="button"
                   onClick={() => {
@@ -24655,7 +25076,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       setReleaseImpoundChargePreset(null);
                       setWaiveImpoundExtraDailyCharge(false);
                       setReleaseImpoundForm((current) => {
-                        const manualCharge = Math.max(0, Number(current.impoundCharge || 0));
+                        const dailyImpoundFeePerDay = Math.max(0, Number(current.dailyImpoundFeePerDay || 0));
+                        const dailyImpoundFeeTotal = dailyImpoundFeePerDay * Math.max(0, Number(current.days || 0));
+                        const manualCharge = Math.max(0, Number(current.impoundCharge || 0)) + dailyImpoundFeeTotal;
                         return {
                           ...current,
                           days: 0,
@@ -24675,6 +25098,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       days: 0,
                       hours: 0,
                       discount: 0,
+                      dailyImpoundFeePerDay: 0,
                       impoundCharge: 0,
                       calculatedTotal: 0,
                       amountPaid: 0,
@@ -24706,7 +25130,43 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {tr('File number', 'Numéro de dossier')}
+                </label>
+                <input
+                  type="text"
+                  value={releaseImpoundForm.fileNumber || ''}
+                  onChange={(e) => {
+                    const fileNumber = e.target.value;
+                    setReleaseImpoundForm((prev) => ({
+                      ...prev,
+                      fileNumber,
+                    }));
+                  }}
+                  placeholder={tr('Authority or impound file number', 'Numéro de dossier de la fourrière')}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+                />
+              </div>
+              <div className="lg:col-span-2 xl:col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {tr('Staff note', 'Note interne')}
+                </label>
+                <textarea
+                  value={releaseImpoundForm.staffNote || ''}
+                  onChange={(e) => {
+                    const staffNote = e.target.value;
+                    setReleaseImpoundForm((prev) => ({
+                      ...prev,
+                      staffNote,
+                    }));
+                  }}
+                  placeholder={tr('Internal note for staff only. This does not appear on the customer receipt.', 'Note interne réservée à l’équipe. Elle n’apparaît pas sur le reçu client.')}
+                  rows={3}
+                  className="w-full resize-none rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+                />
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   {tr('Discount (MAD)', 'Remise (MAD)')}
@@ -24731,7 +25191,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       ...prev,
                       discount,
                       calculatedTotal: recalculated,
-                      amountPaid: Math.max(0, recalculated + Math.max(0, Number(prev.impoundCharge || 0))),
+                      amountPaid: Math.max(
+                        0,
+                        recalculated +
+                          (Math.max(0, Number(prev.dailyImpoundFeePerDay || 0)) * Math.max(0, Number(prev.days || 0))) +
+                          Math.max(0, Number(prev.impoundCharge || 0))
+                      ),
                     }));
                   }}
                   className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
@@ -24739,7 +25204,33 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {tr('Impound charge (MAD)', 'Frais de fourrière (MAD)')}
+                  {tr('Daily impound fee (MAD/day)', 'Frais journaliers de fourrière (MAD/jour)')}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={waiveImpoundExtraDailyCharge ? 0 : (releaseImpoundForm.dailyImpoundFeePerDay || '')}
+                  disabled={waiveImpoundExtraDailyCharge}
+                  onChange={(e) => {
+                    const dailyImpoundFeePerDay = Math.max(0, Number(e.target.value || 0));
+                    setReleaseImpoundForm((prev) => ({
+                      ...prev,
+                      dailyImpoundFeePerDay,
+                      amountPaid: Math.max(
+                        0,
+                        Number(prev.calculatedTotal || 0) +
+                          (dailyImpoundFeePerDay * Math.max(0, Number(prev.days || 0))) +
+                          Math.max(0, Number(prev.impoundCharge || 0))
+                      ),
+                    }));
+                  }}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {tr('Towing fee (MAD)', 'Frais de fourrière (MAD)')}
                 </label>
                 <input
                   type="number"
@@ -24752,7 +25243,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     setReleaseImpoundForm((prev) => ({
                       ...prev,
                       impoundCharge,
-                      amountPaid: Math.max(0, Number(prev.calculatedTotal || 0) + impoundCharge),
+                      amountPaid: Math.max(
+                        0,
+                        Number(prev.calculatedTotal || 0) +
+                          (Math.max(0, Number(prev.dailyImpoundFeePerDay || 0)) * Math.max(0, Number(prev.days || 0))) +
+                          impoundCharge
+                      ),
                     }));
                   }}
                   className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
@@ -24760,7 +25256,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {tr('Total charge (MAD)', 'Frais totaux (MAD)')}
+                  {tr('Final towing charge (MAD)', 'Frais finaux de fourrière (MAD)')}
                 </label>
                 <input
                   type="number"
@@ -24779,7 +25275,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 />
                 {!waiveImpoundExtraDailyCharge && (
                   <p className="mt-2 text-xs text-slate-500">
-                    One-day extra charge uses the applied contract rate. Base charge {formatCurrency(selectedReleaseImpoundBaseCharge)} MAD + impound charge {formatCurrency(selectedReleaseImpoundManualCharge)} MAD = total charge {formatCurrency(Math.max(0, Number(releaseImpoundForm.amountPaid || 0)))} MAD.
+                    {tr(
+                      `Base rental charge ${formatCurrency(selectedReleaseImpoundBaseCharge)} MAD + daily impound fees ${formatCurrency(selectedReleaseImpoundDailyFeeTotal)} MAD + towing fee ${formatCurrency(selectedReleaseImpoundManualCharge)} MAD = final charge ${formatCurrency(Math.max(0, Number(releaseImpoundForm.amountPaid || 0)))} MAD.`,
+                      `Base locative ${formatCurrency(selectedReleaseImpoundBaseCharge)} MAD + frais journaliers de fourrière ${formatCurrency(selectedReleaseImpoundDailyFeeTotal)} MAD + frais de fourrière ${formatCurrency(selectedReleaseImpoundManualCharge)} MAD = frais finaux ${formatCurrency(Math.max(0, Number(releaseImpoundForm.amountPaid || 0)))} MAD.`
+                    )}
                   </p>
                 )}
               </div>
@@ -24788,11 +25287,11 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             <div className="rounded-lg border border-amber-100 bg-white p-3">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <p className="text-sm font-semibold text-gray-900">{tr('Impound receipt', 'Reçu de fourrière')}</p>
+                  <p className="text-sm font-semibold text-gray-900">{tr('Towing receipt / proof', 'Reçu / preuve de fourrière')}</p>
                   {releaseImpoundForm.receiptUrl ? (
                     <div className="mt-1 space-y-1">
                       <p className="text-sm text-gray-700">
-                        {releaseImpoundForm.receiptName || tr('Impound receipt attached', 'Reçu de fourrière joint')}
+                        {releaseImpoundForm.receiptName || tr('Towing receipt attached', 'Reçu de fourrière joint')}
                       </p>
                       <div className="flex flex-wrap items-center gap-2">
                         <a
@@ -24801,7 +25300,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                           rel="noreferrer"
                           className="text-xs font-medium text-amber-700 underline underline-offset-2"
                         >
-                          {tr('View attached receipt', 'Voir le reçu joint')}
+                          {tr('View attached proof', 'Voir la preuve jointe')}
                         </a>
                         {releaseImpoundForm.receiptUploadedAt && (
                           <span className="text-xs text-gray-500">
@@ -24811,10 +25310,19 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       </div>
                     </div>
                   ) : (
-                    <p className="mt-1 text-sm text-gray-600">{tr('Attach the impound receipt.', 'Joignez le reçu de mise en fourrière.')}</p>
+                    <p className="mt-1 text-sm text-gray-600">{tr('Attach the towing receipt or payment proof.', 'Joignez le reçu de fourrière ou la preuve de paiement.')}</p>
                   )}
                 </div>
               </div>
+
+              {releaseTowingReceiptRequired && (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  {tr(
+                    'A receipt or payment proof is required before resolving a paid towing hold.',
+                    'Un reçu ou une preuve de paiement est requis avant de résoudre une retenue de fourrière payante.'
+                  )}
+                </div>
+              )}
 
               <div className="mt-3 flex flex-wrap gap-2">
                   <input
@@ -24869,10 +25377,14 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <Button
                 type="button"
                 onClick={releaseRentalImpound}
-                disabled={releaseImpoundSubmitting || impoundReceiptUploading}
+                disabled={releaseImpoundSubmitting || impoundReceiptUploading || releaseTowingReceiptRequired}
                 className={PRIMARY_ACTION_BUTTON_CLASS}
               >
-                {releaseImpoundSubmitting ? tr('Releasing...', 'Libération...') : tr('Confirm Release', 'Confirmer la libération')}
+                {releaseImpoundSubmitting
+                  ? tr('Saving...', 'Enregistrement...')
+                  : releaseImpoundMode === 'adjust'
+                    ? tr('Save Adjustment', 'Enregistrer l’ajustement')
+                    : tr('Resolve Hold', 'Résoudre la retenue')}
               </Button>
               </div>
             </div>

@@ -709,6 +709,18 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   const impoundBaseCharge = Math.max(0, impoundChargeTotal - impoundManualCharge);
   const releasedImpoundDiscount = Boolean(rental?.released_from_impound_at && !rental?.is_impounded && impoundDiscount > 0);
   const impoundIsEstimate = Boolean(rental?.impound_is_estimate);
+  const resolvedImpoundDailyFeePerDay =
+    !impoundIsEstimate && rental?.released_from_impound_at
+      ? Number(rental?.impound_estimated_rate || 0)
+      : 0;
+  const resolvedImpoundDailyFeeTotal =
+    !impoundIsEstimate && rental?.released_from_impound_at
+      ? Number(rental?.impound_estimated_extra_amount || 0)
+      : 0;
+  const resolvedImpoundOneTimeFee =
+    !impoundIsEstimate && rental?.released_from_impound_at
+      ? Math.max(0, impoundManualCharge - resolvedImpoundDailyFeeTotal)
+      : impoundManualCharge;
   const estimatedImpoundReleaseAt = rental?.impound_estimated_release_at;
   const impoundEstimateNote = rental?.impound_estimate_note || '';
   const impoundEstimatePricingLabel = rental?.impound_estimate_pricing_label || '';
@@ -2037,6 +2049,22 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               {tr('Released from impound:', 'Sorti de fourrière le :')} {new Date(rental.released_from_impound_at).toLocaleString(isFrench ? 'fr-FR' : undefined)}
             </p>
           )}
+          {!impoundIsEstimate && rental.released_from_impound_at && (
+            <div style={{
+              marginTop: '10px',
+              padding: '10px 12px',
+              background: 'rgba(255,255,255,0.85)',
+              border: '1px solid #fde68a',
+              borderRadius: '10px'
+            }}>
+              <p style={{ fontSize: '12px', color: '#92400e', margin: 0, lineHeight: 1.6 }}>
+                {tr(
+                  `Towing hold breakdown: base rental ${formatCurrency(impoundBaseCharge)} MAD + daily impound fees ${formatCurrency(resolvedImpoundDailyFeeTotal)} MAD${resolvedImpoundDailyFeePerDay > 0 ? ` (${formatCurrency(resolvedImpoundDailyFeePerDay)} MAD/day × ${impoundChargeDays} day${impoundChargeDays === 1 ? '' : 's'})` : ''}${resolvedImpoundOneTimeFee > 0 ? ` + towing fee ${formatCurrency(resolvedImpoundOneTimeFee)} MAD` : ''}${impoundDiscount > 0 ? ` - discount ${formatCurrency(impoundDiscount)} MAD` : ''} = final towing charge ${formatCurrency(impoundChargeTotal)} MAD.`,
+                  `Détail de la fourrière : base locative ${formatCurrency(impoundBaseCharge)} MAD + frais journaliers ${formatCurrency(resolvedImpoundDailyFeeTotal)} MAD${resolvedImpoundDailyFeePerDay > 0 ? ` (${formatCurrency(resolvedImpoundDailyFeePerDay)} MAD/jour × ${impoundChargeDays} jour${impoundChargeDays === 1 ? '' : 's'})` : ''}${resolvedImpoundOneTimeFee > 0 ? ` + frais de fourrière ${formatCurrency(resolvedImpoundOneTimeFee)} MAD` : ''}${impoundDiscount > 0 ? ` - remise ${formatCurrency(impoundDiscount)} MAD` : ''} = frais finaux ${formatCurrency(impoundChargeTotal)} MAD.`
+                )}
+              </p>
+            </div>
+          )}
           {impoundIsEstimate && (
             <div style={{ marginTop: '12px' }}>
               <div style={{
@@ -2758,10 +2786,25 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                   </div>
                 )}
                 {!impoundIsEstimate && impoundManualCharge > 0 && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#92400e' }}>
-                    <span>{tr('Additional impound charge:', 'Frais de fourrière additionnels :')}</span>
-                    <span style={{ fontWeight: '600' }}>+{formatCurrency(impoundManualCharge)} MAD</span>
-                  </div>
+                  <>
+                    {resolvedImpoundDailyFeeTotal > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#92400e' }}>
+                        <span>
+                          {tr('Daily impound fees:', 'Frais journaliers de fourrière :')}
+                          {resolvedImpoundDailyFeePerDay > 0
+                            ? ` (${formatCurrency(resolvedImpoundDailyFeePerDay)} MAD/day × ${impoundChargeDays}d)`
+                            : ''}
+                        </span>
+                        <span style={{ fontWeight: '600' }}>+{formatCurrency(resolvedImpoundDailyFeeTotal)} MAD</span>
+                      </div>
+                    )}
+                    {resolvedImpoundOneTimeFee > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#92400e' }}>
+                        <span>{tr('Additional towing fee:', 'Frais de remorquage additionnels :')}</span>
+                        <span style={{ fontWeight: '600' }}>+{formatCurrency(resolvedImpoundOneTimeFee)} MAD</span>
+                      </div>
+                    )}
+                  </>
                 )}
                 {impoundIsEstimate && estimatedWeekendExtraAmount > 0 && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', color: '#b45309' }}>
@@ -2801,8 +2844,8 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
             }}>
               <span>
                 {impoundIsEstimate
-                  ? tr('ESTIMATED TOTAL BY MONDAY:', 'TOTAL ESTIME D ICI LUNDI :')
-                  : tr('GRAND TOTAL:', 'TOTAL GENERAL :')}
+                  ? tr('ESTIMATED TOTAL BY MONDAY:', 'TOTAL ESTIMÉ D ICI LUNDI :')
+                  : tr('GRAND TOTAL:', 'TOTAL GÉNÉRAL :')}
               </span>
               <span style={{ color: '#38a169' }}>{formatCurrency(displayedTotalAmount)} MAD</span>
             </div>
@@ -3071,17 +3114,25 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                   <div style={{ fontSize: '13px', color: '#7c2d12' }}>
                     {tr(
                       'Base rental is paid. The security deposit is being applied against the estimated impound charge until release.',
-                      'La location de base est payee. La caution est appliquee contre les frais d immobilisation estimes jusqu a la liberation.'
+                      'La location de base est payée. La caution est appliquée aux frais estimés d’immobilisation jusqu’à la libération.'
                     )}
                   </div>
                 </div>
                 <div style={{ fontSize: '14px', fontWeight: '700', color: remainingBalanceAfterDepositSeizure > 0 ? '#c53030' : '#15803d' }}>
-                  {tr('Estimated due now:', 'Montant estime du maintenant :')} {formatCurrency(remainingBalanceAfterDepositSeizure)} MAD
+                  {tr('Estimated due now:', 'Montant estimé à régler maintenant :')} {formatCurrency(remainingBalanceAfterDepositSeizure)} MAD
                 </div>
               </div>
             );
           }
           
+          const shouldHighlightBalanceDue = balanceDue > 0;
+          const highlightedFooterLabel = shouldHighlightBalanceDue
+            ? tr('BALANCE DUE', 'SOLDE DÛ')
+            : tr('GRAND TOTAL', 'TOTAL GÉNÉRAL');
+          const highlightedFooterAmount = shouldHighlightBalanceDue
+            ? `-${formatCurrency(balanceDue)} MAD`
+            : `${formatCurrency(displayedTotalAmount)} MAD`;
+
           return (
             <div style={{
               display: 'flex',
@@ -3112,28 +3163,28 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                   color: isActuallyPaid ? '#22543d' : isPartial ? '#7b341e' : '#c53030'
                 }}>
                   {isActuallyPaid
-                    ? tr('✅ FULLY PAID & SETTLED', '✅ ENTIEREMENT PAYE ET REGLE')
+                    ? tr('✅ FULLY PAID & SETTLED', '✅ ENTIÈREMENT PAYÉ ET RÉGLÉ')
                     : isPartial
-                      ? tr('⚠️ PARTIAL PAYMENT - BALANCE DUE', '⚠️ PAIEMENT PARTIEL - SOLDE DU')
-                      : tr('❌ UNPAID', '❌ IMPAYE')}
+                      ? tr('⚠️ PARTIAL PAYMENT - BALANCE DUE', '⚠️ PAIEMENT PARTIEL - SOLDE DÛ')
+                      : tr('❌ UNPAID', '❌ IMPAYÉ')}
                 </div>
-                {isPartial && (
+                {balanceDue > 0 && (
                   <div style={{ fontSize: '13px', color: '#7b341e', marginTop: '4px' }}>
-                    {formatCurrency(depositPaid)} MAD {tr('paid of', 'payes sur')} {formatCurrency(displayedTotalAmount)} MAD {tr('— Balance:', '- Solde :')} {formatCurrency(balanceDue)} MAD
+                    {formatCurrency(depositPaid)} MAD {tr('paid of', 'payés sur')} {formatCurrency(displayedTotalAmount)} MAD {tr('— Balance due:', '— Solde dû :')} {formatCurrency(balanceDue)} MAD
                   </div>
                 )}
               </div>
               
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: '12px', color: isActuallyPaid ? '#22543d' : isPartial ? '#7b341e' : '#c53030' }}>
-                  {tr('GRAND TOTAL', 'TOTAL GENERAL')}
+                  {highlightedFooterLabel}
                 </div>
                 <div style={{
                   fontSize: 'clamp(20px, 5vw, 28px)',
                   fontWeight: 'bold',
                   color: isActuallyPaid ? '#22543d' : isPartial ? '#7b341e' : '#c53030'
                 }}>
-                  {formatCurrency(displayedTotalAmount)} MAD
+                  {highlightedFooterAmount}
                 </div>
               </div>
             </div>
@@ -3149,10 +3200,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
           gap: '20px'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            {stampUrl && <img src={stampUrl} alt="Official Stamp" className="stamp-img" />}
+            {stampUrl && <img src={stampUrl} alt={tr('Official Stamp', 'Tampon officiel')} className="stamp-img" />}
             <div>
               <div style={{ fontSize: '14px', fontWeight: '600', color: '#2d3748' }}>
-                SaharaX Authorized Signature
+                {tr('SaharaX Authorized Signature', 'Signature autorisée SaharaX')}
               </div>
               <div style={{ fontSize: '12px', color: '#718096' }}>
                 {receiptSubtitle}
