@@ -68,6 +68,26 @@ const MOBILE_FOOTER_PRIMARY_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border b
 const MOBILE_FOOTER_SUCCESS_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 hover:border-emerald-700`;
 const MOBILE_FOOTER_DISABLED_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-slate-200 bg-slate-100 text-slate-400 shadow-none`;
 const LIGHT_RENTAL_ACTION_DOCK_CLASS = 'pointer-events-auto fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur lg:left-[calc(50vw+9.5rem)] lg:right-auto lg:w-[min(72rem,calc(100vw-21rem))] lg:-translate-x-1/2';
+const RENTAL_CANCELLATION_REASON_OPTIONS = [
+  {
+    value: 'customer_cancelled',
+    label: { en: 'Customer cancelled', fr: 'Client annulé' },
+    description: { en: 'The customer asked to cancel before the rental started.', fr: 'Le client a demandé une annulation avant le démarrage.' },
+  },
+  {
+    value: 'staff_cancelled',
+    label: { en: 'Staff cancelled', fr: 'Équipe annulé' },
+    description: { en: 'The staff cancelled the contract before handover.', fr: "L'équipe a annulé le contrat avant la remise." },
+  },
+  {
+    value: 'booking_mistake',
+    label: { en: 'Booking mistake', fr: 'Erreur de réservation' },
+    description: { en: 'The booking was created with the wrong setup or by mistake.', fr: 'La réservation a été créée avec une mauvaise configuration ou par erreur.' },
+  },
+];
+
+const getRentalCancellationReasonOption = (reason) =>
+  RENTAL_CANCELLATION_REASON_OPTIONS.find((option) => option.value === String(reason || '').trim().toLowerCase()) || null;
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
     return window.requestIdleCallback(callback, { timeout: 800 });
@@ -3242,6 +3262,10 @@ const openReplacementResumeWorkflow = useCallback(() => {
   // WhatsApp modal state
   const [whatsappModalOpen, setWhatsappModalOpen] = useState(false);
   const [pendingWhatsAppShare, setPendingWhatsAppShare] = useState(null);
+  const [showCancelRentalModal, setShowCancelRentalModal] = useState(false);
+  const [cancelRentalSubmitting, setCancelRentalSubmitting] = useState(false);
+  const [cancelRentalReason, setCancelRentalReason] = useState('customer_cancelled');
+  const [cancelRentalNote, setCancelRentalNote] = useState('');
   const [whatsappOptions, setWhatsappOptions] = useState({
     contract: true,
     receipt: true,
@@ -11950,7 +11974,112 @@ useEffect(() => {
       toast.error('Failed to complete rental. Please try again.');
     }
   };
-  const cancelRental = async () => {
+  const openCancelRentalModal = useCallback(() => {
+    setCancelRentalReason('customer_cancelled');
+    setCancelRentalNote('');
+    setShowCancelRentalModal(true);
+  }, []);
+
+  const cancelRental = async (options = {}) => {
+    const scheduledReasonValue = String(options.reason || '').trim().toLowerCase();
+    const scheduledNote = String(options.note || '').trim();
+    const scheduledReasonOption = getRentalCancellationReasonOption(scheduledReasonValue);
+    const actingUser = resolvedCurrentUser || currentUser || userProfile || user;
+    const actorName =
+      actingUser?.full_name ||
+      actingUser?.name ||
+      actingUser?.email ||
+      user?.email ||
+      'Staff';
+    const cancelledAt = new Date().toISOString();
+
+    if (scheduledReasonOption) {
+      setCancelRentalSubmitting(true);
+      try {
+        const updatePayload = {
+          rental_status: 'cancelled',
+          status: 'cancelled',
+          cancelled_at: cancelledAt,
+          cancelled_by: actingUser?.id || null,
+          cancellation_reason: scheduledReasonOption.value,
+          status_changed_at: cancelledAt,
+          status_changed_by: actorName,
+          status_change_reason: scheduledNote || null,
+          updated_at: cancelledAt,
+        };
+
+        const { error } = await supabase
+          .from('app_4c3a7a6153_rentals')
+          .update(updatePayload)
+          .eq('id', rental.id);
+
+        if (error) throw error;
+
+        if (rental.vehicle_id) {
+          const { error: vehicleError } = await supabase
+            .from('saharax_0u4w4d_vehicles')
+            .update({ status: 'available', updated_at: cancelledAt })
+            .eq('id', rental.vehicle_id);
+
+          if (vehicleError) {
+            console.error('Failed to update vehicle status:', vehicleError);
+          }
+        }
+
+        try {
+          await insertSharedActivityLog({
+            user_id: actingUser?.id || null,
+            created_by: actorName,
+            action: 'rental_cancelled',
+            description: `Cancelled rental ${rental.rental_id || rental.id}`,
+            entity_type: 'rental',
+            entity_id: rental.id,
+            details: {
+              rental_id: rental.id,
+              rental_reference: rental.rental_id || null,
+              customer_name: rental.customer_name || null,
+              vehicle_id: rental.vehicle_id || null,
+              cancelled_at: cancelledAt,
+              cancellation_reason: scheduledReasonOption.value,
+              cancellation_reason_label: isFrench ? scheduledReasonOption.label.fr : scheduledReasonOption.label.en,
+              cancellation_note: scheduledNote || null,
+            },
+          });
+        } catch (activityError) {
+          console.warn('⚠️ Failed to record rental cancellation activity:', activityError);
+        }
+
+        void dispatchRentalLifecycleTelegramEvent({
+          eventType: 'rental_cancelled',
+          actor: 'admin',
+          rental: {
+            id: rental.id,
+            reference: rental.rental_id || '',
+            vehicle: buildRentalTelegramVehicleLabel(rental),
+            customer: rental.customer_name,
+            start: rental.rental_start_date,
+            end: rental.rental_end_date,
+            total: rental.total_amount || 0,
+            cancellationReason: scheduledNote
+              ? `${isFrench ? scheduledReasonOption.label.fr : scheduledReasonOption.label.en} — ${scheduledNote}`
+              : (isFrench ? scheduledReasonOption.label.fr : scheduledReasonOption.label.en),
+          },
+        });
+
+        setShowCancelRentalModal(false);
+        setCancelRentalNote('');
+        setRental((prev) => prev ? ({ ...prev, ...updatePayload }) : prev);
+        await loadRentalData(true);
+        toast.success(tr('Rental cancelled successfully.', 'Location annulée avec succès.'));
+      } catch (err) {
+        console.error('❌ Error:', err);
+        toast.error(tr('Failed to cancel rental. Please try again.', "Échec de l'annulation de la location. Veuillez réessayer."));
+      } finally {
+        setCancelRentalSubmitting(false);
+      }
+      return;
+    }
+
     if (confirm('Are you sure you want to cancel this rental?')) {
       try {
         const { error } = await supabase
@@ -11958,8 +12087,8 @@ useEffect(() => {
           .update({
             rental_status: 'cancelled',
             status: 'cancelled',
-            cancelled_at: new Date().toISOString(),
-            cancelled_by: user?.id || null,
+            cancelled_at: cancelledAt,
+            cancelled_by: actingUser?.id || null,
           })
           .eq('id', rental.id);
 
@@ -11976,14 +12105,8 @@ useEffect(() => {
           }
         }
         try {
-          const actorName =
-            currentUser?.full_name ||
-            currentUser?.name ||
-            currentUser?.email ||
-            user?.email ||
-            'Staff';
           await insertSharedActivityLog({
-            user_id: currentUser?.id || user?.id || null,
+            user_id: actingUser?.id || null,
             created_by: actorName,
             action: 'rental_cancelled',
             description: `Cancelled rental ${rental.rental_id || rental.id}`,
@@ -11994,7 +12117,7 @@ useEffect(() => {
               rental_reference: rental.rental_id || null,
               customer_name: rental.customer_name || null,
               vehicle_id: rental.vehicle_id || null,
-              cancelled_at: new Date().toISOString(),
+              cancelled_at: cancelledAt,
             },
           });
         } catch (activityError) {
@@ -13869,6 +13992,13 @@ useEffect(() => {
       currentUserRole === 'owner' ||
       canEditRentalContract(resolvedCurrentUser)
     );
+  const canCancelPreStartRental =
+    !rental?.started_at &&
+    ['scheduled', 'no_show_review'].includes(operationalRentalStatus) &&
+    (
+      currentUserRole === 'owner' ||
+      canEditRentalContract(resolvedCurrentUser)
+    );
   const canOwnerAdjustCompletedRental = currentUserRole === 'owner' && isCompleted;
   const canDeleteScheduledRental = isScheduled && ['owner', 'admin'].includes(resolvedCurrentUser?.role);
   const canResendTelegramAlerts = ['admin', 'owner'].includes(currentUserRole);
@@ -14374,10 +14504,22 @@ useEffect(() => {
     Boolean(scheduledTimingState?.isSoftLocked);
   const hasVisibleMoreActions = Boolean(
     canManageScheduledRental ||
+    canCancelPreStartRental ||
     canDeleteScheduledRental ||
     isActive ||
     (shouldShowLateArrivalBanner && canHandleLateArrival)
   );
+  const cancellationReasonOption = getRentalCancellationReasonOption(rental?.cancellation_reason);
+  const cancellationReasonLabel = cancellationReasonOption
+    ? (isFrench ? cancellationReasonOption.label.fr : cancellationReasonOption.label.en)
+    : String(rental?.cancellation_reason || '').trim();
+  const cancellationReasonDescription = cancellationReasonOption
+    ? (isFrench ? cancellationReasonOption.description.fr : cancellationReasonOption.description.en)
+    : '';
+  const cancellationNoteText = String(rental?.status_change_reason || '').trim();
+  const showCancellationContextCard =
+    rentalStatusLower === 'cancelled' &&
+    String(rental?.cancellation_reason || '').trim().toLowerCase() !== 'no_show';
   const canSignContract =
     startWorkflowStepMap.customer_verification?.complete &&
     startWorkflowStepMap.opening_media?.complete &&
@@ -17974,6 +18116,33 @@ useEffect(() => {
               </Button>
             )}
 
+            {showCancellationContextCard && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50/90 px-4 py-4 shadow-sm">
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center rounded-full border border-rose-200 bg-white px-3 py-1 text-xs font-semibold tracking-[0.18em] text-rose-700">
+                      {tr('Cancellation', 'Annulation')}
+                    </span>
+                    {cancellationReasonLabel && (
+                      <span className="text-sm font-semibold text-rose-900">
+                        {cancellationReasonLabel}
+                      </span>
+                    )}
+                  </div>
+                  {cancellationReasonDescription && (
+                    <p className="text-sm text-rose-800">
+                      {cancellationReasonDescription}
+                    </p>
+                  )}
+                  {cancellationNoteText && (
+                    <div className="rounded-xl border border-rose-200 bg-white/80 px-3 py-3 text-sm text-rose-900">
+                      <span className="font-semibold">{tr('Note:', 'Note :')}</span> {cancellationNoteText}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="relative z-20 flex flex-col gap-3 pointer-events-auto lg:flex-row lg:items-center lg:justify-between">
               <div className={`grid grid-cols-3 gap-2 sm:flex sm:flex-wrap ${
                 showLightActiveRentalMobile || showLightFinishRentalMobile ? 'hidden' : ''
@@ -18122,6 +18291,19 @@ useEffect(() => {
                       <Share2 className="mr-2 h-4 w-4" />
                       {tr('Share', 'Partager')}
                     </button>
+                    {canCancelPreStartRental && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMoreActionsOpen(false);
+                          openCancelRentalModal();
+                        }}
+                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50"
+                      >
+                        <XCircle className="mr-2 h-4 w-4" />
+                        {tr('Cancel rental', 'Annuler la location')}
+                      </button>
+                    )}
                     {canDeleteScheduledRental && (
                       <button
                         type="button"
@@ -24694,6 +24876,108 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </Button>
               </div>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={showCancelRentalModal}
+        onOpenChange={(open) => {
+          if (cancelRentalSubmitting) return;
+          setShowCancelRentalModal(open);
+          if (!open) {
+            setCancelRentalReason('customer_cancelled');
+            setCancelRentalNote('');
+          }
+        }}
+      >
+        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-lg overflow-hidden rounded-[28px] border border-rose-100 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.16)]">
+          <DialogHeader className="border-b border-rose-100 bg-gradient-to-r from-white via-rose-50/50 to-slate-50 px-6 py-5 text-left">
+            <DialogTitle className="flex items-center gap-2 text-xl font-semibold text-slate-900">
+              <XCircle className="h-5 w-5 text-rose-600" />
+              {tr('Cancel rental', 'Annuler la location')}
+            </DialogTitle>
+            <DialogDescription className="pt-1 text-sm text-slate-500">
+              {tr(
+                'Choose why this contract is being cancelled before it starts. The reason and note will stay visible in Rental Details.',
+                "Choisissez pourquoi ce contrat est annulé avant son démarrage. La raison et la note resteront visibles dans les détails de location."
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 px-6 py-5">
+            <div className="space-y-3">
+              {RENTAL_CANCELLATION_REASON_OPTIONS.map((option) => {
+                const isSelected = cancelRentalReason === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setCancelRentalReason(option.value)}
+                    className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                      isSelected
+                        ? 'border-rose-300 bg-rose-50 shadow-[0_14px_32px_rgba(244,63,94,0.10)]'
+                        : 'border-slate-200 bg-white hover:border-rose-200 hover:bg-rose-50/40'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className={`text-sm font-semibold ${isSelected ? 'text-rose-900' : 'text-slate-900'}`}>
+                          {isFrench ? option.label.fr : option.label.en}
+                        </p>
+                        <p className={`mt-1 text-sm ${isSelected ? 'text-rose-700' : 'text-slate-500'}`}>
+                          {isFrench ? option.description.fr : option.description.en}
+                        </p>
+                      </div>
+                      <span className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+                        isSelected
+                          ? 'border-rose-500 bg-rose-500 text-white'
+                          : 'border-slate-300 bg-white text-transparent'
+                      }`}>
+                        <CheckCircle className="h-3.5 w-3.5" />
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-700">
+                {tr('Note', 'Note')} <span className="font-normal text-slate-400">{tr('(optional)', '(facultative)')}</span>
+              </label>
+              <textarea
+                value={cancelRentalNote}
+                onChange={(event) => setCancelRentalNote(event.target.value)}
+                rows={4}
+                placeholder={tr('Add a short cancellation note for your team…', "Ajoutez une courte note d'annulation pour votre équipe…")}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-rose-300 focus:ring-2 focus:ring-rose-100"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col-reverse gap-3 border-t border-slate-100 px-6 py-4 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setShowCancelRentalModal(false);
+                setCancelRentalReason('customer_cancelled');
+                setCancelRentalNote('');
+              }}
+              disabled={cancelRentalSubmitting}
+              className={SECONDARY_ACTION_BUTTON_CLASS}
+            >
+              {tr('Keep rental', 'Garder la location')}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => cancelRental({ reason: cancelRentalReason, note: cancelRentalNote })}
+              disabled={cancelRentalSubmitting}
+              className="rounded-xl border border-rose-600 bg-rose-600 px-4 py-2 font-semibold text-white shadow-sm transition-colors hover:bg-rose-700 hover:border-rose-700"
+            >
+              {cancelRentalSubmitting ? tr('Cancelling...', 'Annulation...') : tr('Confirm cancellation', "Confirmer l'annulation")}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

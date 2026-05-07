@@ -43,6 +43,7 @@ import {
   pickExactIdentityCustomerMatch,
   pickMostCompleteCustomerProfile,
 } from '../../utils/customerIdentity';
+import { PHONE_COUNTRY_CODES } from '../../constants/phoneCountryCodes';
 
 const tr = (en, fr) => (i18n.resolvedLanguage === 'fr' ? fr : en);
 const DEFAULT_BOOKING_GRACE_MINUTES = 120;
@@ -6035,35 +6036,7 @@ const PhoneInputWithCountryCode = ({
   countryCode: externalCountryCode,
   onCountryCodeChange 
 }) => {
-  const countryCodes = [
-    { code: '+212', flag: '🇲🇦', name: 'Morocco', pattern: /^\+212\s?\d{9}$/, example: '+212 6XX XXX XXX', digits: 9 },
-    { code: '+33', flag: '🇫🇷', name: 'France', pattern: /^\+33\s?\d{9}$/, example: '+33 1 XX XX XX XX', digits: 9 },
-    { code: '+34', flag: '🇪🇸', name: 'Spain', pattern: /^\+34\s?\d{9}$/, example: '+34 6XX XXX XXX', digits: 9 },
-    { code: '+32', flag: '🇧🇪', name: 'Belgium', pattern: /^\+32\s?\d{8,9}$/, example: '+32 4XX XX XX XX', digits: 9 },
-    { code: '+31', flag: '🇳🇱', name: 'Netherlands', pattern: /^\+31\s?\d{9}$/, example: '+31 6 XXXX XXXX', digits: 9 },
-    { code: '+351', flag: '🇵🇹', name: 'Portugal', pattern: /^\+351\s?\d{9}$/, example: '+351 9XX XXX XXX', digits: 9 },
-    { code: '+41', flag: '🇨🇭', name: 'Switzerland', pattern: /^\+41\s?\d{9}$/, example: '+41 7X XXX XX XX', digits: 9 },
-    { code: '+353', flag: '🇮🇪', name: 'Ireland', pattern: /^\+353\s?\d{9}$/, example: '+353 8X XXX XXXX', digits: 9 },
-    { code: '+44', flag: '🇬🇧', name: 'United Kingdom', pattern: /^\+44\s?\d{10}$/, example: '+44 7XXX XXX XXX', digits: 10 },
-    { code: '+49', flag: '🇩🇪', name: 'Germany', pattern: /^\+49\s?\d{10,11}$/, example: '+49 1XX XXX XXXX', digits: 10 },
-    { code: '+39', flag: '🇮🇹', name: 'Italy', pattern: /^\+39\s?\d{9,10}$/, example: '+39 3XX XXX XXXX', digits: 9 },
-    { code: '+1', flag: '🇺🇸', name: 'United States / Canada', pattern: /^\+1\s?\d{10}$/, example: '+1 XXX XXX XXXX', digits: 10 },
-    { code: '+90', flag: '🇹🇷', name: 'Turkey', pattern: /^\+90\s?\d{10}$/, example: '+90 5XX XXX XXXX', digits: 10 },
-    { code: '+971', flag: '🇦🇪', name: 'United Arab Emirates', pattern: /^\+971\s?\d{9}$/, example: '+971 5X XXX XXXX', digits: 9 },
-    { code: '+966', flag: '🇸🇦', name: 'Saudi Arabia', pattern: /^\+966\s?\d{9}$/, example: '+966 5X XXX XXXX', digits: 9 },
-    { code: '+974', flag: '🇶🇦', name: 'Qatar', pattern: /^\+974\s?\d{8}$/, example: '+974 XXXX XXXX', digits: 8 },
-    { code: '+965', flag: '🇰🇼', name: 'Kuwait', pattern: /^\+965\s?\d{8}$/, example: '+965 XXXX XXXX', digits: 8 },
-    { code: '+973', flag: '🇧🇭', name: 'Bahrain', pattern: /^\+973\s?\d{8}$/, example: '+973 XXXX XXXX', digits: 8 },
-    { code: '+968', flag: '🇴🇲', name: 'Oman', pattern: /^\+968\s?\d{8}$/, example: '+968 XXXX XXXX', digits: 8 },
-    { code: '+213', flag: '🇩🇿', name: 'Algeria', pattern: /^\+213\s?\d{9}$/, example: '+213 5XX XX XX XX', digits: 9 },
-    { code: '+216', flag: '🇹🇳', name: 'Tunisia', pattern: /^\+216\s?\d{8}$/, example: '+216 XX XXX XXX', digits: 8 },
-    { code: '+20', flag: '🇪🇬', name: 'Egypt', pattern: /^\+20\s?\d{10}$/, example: '+20 1XX XXX XXXX', digits: 10 },
-    { code: '+221', flag: '🇸🇳', name: 'Senegal', pattern: /^\+221\s?\d{9}$/, example: '+221 7X XXX XX XX', digits: 9 },
-    { code: '+234', flag: '🇳🇬', name: 'Nigeria', pattern: /^\+234\s?\d{10}$/, example: '+234 8XX XXX XXXX', digits: 10 },
-    { code: '+91', flag: '🇮🇳', name: 'India', pattern: /^\+91\s?\d{10}$/, example: '+91 XXXXX XXXXX', digits: 10 },
-    { code: '+92', flag: '🇵🇰', name: 'Pakistan', pattern: /^\+92\s?\d{10}$/, example: '+92 3XX XXX XXXX', digits: 10 },
-    { code: '+86', flag: '🇨🇳', name: 'China', pattern: /^\+86\s?\d{11}$/, example: '+86 1XX XXXX XXXX', digits: 11 },
-  ];
+  const countryCodes = PHONE_COUNTRY_CODES;
 
   const [countryCode, setCountryCode] = useState('+212');
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -6276,13 +6249,13 @@ const PhoneInputWithCountryCode = ({
       <label className="block text-sm font-semibold text-slate-700 mb-2">
         Phone *
       </label>
-      <div className="relative flex items-stretch rounded-lg border border-slate-200 bg-white">
+      <div className="relative flex items-stretch overflow-visible rounded-2xl border border-slate-200 bg-white transition focus-within:border-violet-400 focus-within:ring-4 focus-within:ring-violet-100">
         <div className="relative" ref={dropdownRef}>
           <button
             type="button"
             onClick={() => !disabled && setIsDropdownOpen(!isDropdownOpen)}
             disabled={disabled}
-            className={`flex h-full min-h-[56px] items-center gap-3 border-r border-slate-200 bg-slate-50 px-5 text-slate-900 transition-colors hover:bg-slate-100 ${
+            className={`flex h-full min-h-[56px] items-center gap-3 rounded-l-2xl border-r border-slate-200 bg-slate-50 px-5 text-slate-900 transition-colors hover:bg-slate-100 ${
               disabled ? 'opacity-50 cursor-not-allowed' : ''
             } ${displayError ? 'border-red-400' : ''}`}
           >
@@ -6292,18 +6265,18 @@ const PhoneInputWithCountryCode = ({
           </button>
 
           {isDropdownOpen && !disabled && (
-            <div className="absolute left-0 top-full z-20 mt-2 max-h-80 w-64 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
-              <div className="border-b border-slate-100 p-2">
+            <div className="absolute left-0 top-full z-20 mt-2 max-h-80 min-w-[18rem] w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_20px_50px_rgba(15,23,42,0.18)] sm:z-50">
+              <div className="border-b border-slate-100 p-3">
                 <div className="relative">
+                  <UserSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     placeholder="Search country..."
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 pl-9 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 pl-9 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
                     autoFocus
                   />
-                  <UserSearch className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
                 </div>
               </div>
 
@@ -6336,7 +6309,7 @@ const PhoneInputWithCountryCode = ({
           )}
         </div>
 
-        <div className="flex-1 relative">
+        <div className="relative min-w-0 flex-1">
           <Phone className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
           <input
             type="tel"
@@ -6349,7 +6322,7 @@ const PhoneInputWithCountryCode = ({
             }}
             placeholder={selectedCountry.code === '+212' ? "6XX XXX XXX" : "Phone number"}
             disabled={disabled}
-            className={`min-h-[56px] w-full bg-white px-5 py-4 pl-14 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500 ${
+            className={`min-h-[56px] w-full rounded-r-2xl bg-white px-5 py-4 pl-14 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500 ${
               displayError ? 'text-red-600 placeholder:text-red-300' : 'placeholder:text-slate-400'
             } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
           />
@@ -8841,7 +8814,7 @@ const SimplifiedRentalWizard = ({
     }
 
     requestAnimationFrame(() => {
-      setLightExpandedSection(shouldRequireExplicitPackageDecision ? 'package' : 'confirm');
+      setLightExpandedSection('package');
       lightSectionTransitionTimeoutRef.current = window.setTimeout(() => {
         setLightVehicleCollapseHeight(null);
         lightSectionTransitionTimeoutRef.current = null;
@@ -9373,7 +9346,7 @@ const SimplifiedRentalWizard = ({
     setFuelChargeEnabled(fuelChargeEnabledForPackage);
     setLightPackageDecisionMode('package');
     if (isLightVariant && currentStep === 2) {
-      setLightExpandedSection('confirm');
+      setLightExpandedSection('package');
     }
   }, [clearSelectedPackage, currentStep, isLightVariant, setFormData, setFuelChargeEnabled, syncEndDateTimeFromStart]);
 
@@ -10560,7 +10533,11 @@ const SimplifiedRentalWizard = ({
         {formData.vehicle_id && (
         <div
           ref={lightPackageStepRef}
-          className={`scroll-mt-3 rounded-[22px] border border-violet-200 bg-white/95 shadow-[0_12px_28px_rgba(76,29,149,0.12)] backdrop-blur transition-all duration-300 ease-out ${
+          className={`scroll-mt-3 rounded-[22px] border bg-white/95 backdrop-blur transition-all duration-300 ease-out ${
+            lightExpandedSection === 'package'
+              ? 'border-violet-300 ring-1 ring-violet-200 shadow-[0_18px_40px_rgba(76,29,149,0.14)]'
+              : 'border-slate-200 shadow-sm'
+          } ${
             lightFlowTransition === 'opening_package' ? 'translate-y-1 ring-4 ring-violet-100' : 'translate-y-0'
           }`}
         >
@@ -10575,7 +10552,11 @@ const SimplifiedRentalWizard = ({
               </p>
               <div className="mt-1 flex items-center justify-between gap-3">
                 <div className="min-w-0 flex flex-wrap items-center gap-3">
-                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-purple-50 text-purple-600 shadow-sm">
+                  <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl shadow-sm transition-colors ${
+                    lightExpandedSection === 'package'
+                      ? 'bg-violet-50 text-violet-600'
+                      : 'bg-purple-50 text-purple-600'
+                  }`}>
                     <DollarSign className="h-5 w-5" />
                   </span>
                   {displayPackageSummaryAccent && (
@@ -10597,7 +10578,11 @@ const SimplifiedRentalWizard = ({
                     {hasPackageDecision && <CheckCircle className="h-3.5 w-3.5" />}
                   </span>
                   {hasPackageDecision && (
-                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                    <span className={`inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+                      lightExpandedSection === 'package'
+                        ? 'bg-violet-100 text-violet-700'
+                        : 'bg-slate-100 text-slate-500'
+                    }`}>
                       {lightExpandedSection === 'package' ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                     </span>
                   )}
@@ -10605,7 +10590,11 @@ const SimplifiedRentalWizard = ({
               </div>
             </div>
             {!hasPackageDecision && (
-              <div className="rounded-full bg-slate-100 p-2 text-slate-500">
+              <div className={`rounded-full p-2 transition-colors ${
+                lightExpandedSection === 'package'
+                  ? 'bg-violet-100 text-violet-700'
+                  : 'bg-slate-100 text-slate-500'
+              }`}>
                 <ChevronDown className="h-4 w-4" />
               </div>
             )}
@@ -10701,7 +10690,7 @@ const SimplifiedRentalWizard = ({
         )}
       </div>
 
-      <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
+      <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-40 w-auto max-w-none rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:z-30 sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:w-full sm:max-w-full sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
         <div className="mb-3 flex items-center justify-between gap-3">
           {displayStickySummaryLabel ? (
             <div className="min-w-0 flex-1 rounded-2xl bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">
@@ -10857,7 +10846,7 @@ const SimplifiedRentalWizard = ({
                 </p>
               </div>
             </div>
-            <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[22px] border border-violet-100 bg-violet-50/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:static sm:mt-4 sm:bg-violet-50/45 sm:shadow-none sm:backdrop-blur-0">
+            <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-40 w-auto max-w-none rounded-[22px] border border-violet-100 bg-violet-50/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:z-30 sm:static sm:mt-4 sm:w-full sm:max-w-full sm:bg-violet-50/45 sm:shadow-none sm:backdrop-blur-0">
               <div className="space-y-2 sm:space-y-0 sm:flex sm:items-stretch sm:justify-end sm:gap-2">
                 <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-1 sm:justify-end">
                   <button
@@ -10895,7 +10884,7 @@ const SimplifiedRentalWizard = ({
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="overflow-hidden rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="overflow-visible rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
@@ -11032,7 +11021,7 @@ const SimplifiedRentalWizard = ({
               </div>
             </div>
 
-            <div className="rounded-[22px] border border-slate-200 bg-white shadow-sm">
+            <div className="overflow-visible rounded-[22px] border border-slate-200 bg-white shadow-sm">
               <button
                 type="button"
                 onClick={() => setLightCustomerAdditionalOpen((prev) => !prev)}
@@ -11109,13 +11098,13 @@ const SimplifiedRentalWizard = ({
               )}
             </div>
 
-            <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
-              <div className={`grid gap-2 sm:ml-auto sm:flex sm:w-full sm:max-w-[820px] sm:items-stretch sm:justify-end ${onCancel ? 'grid-cols-3' : 'grid-cols-2'}`}>
+            <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-40 w-auto max-w-none rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:z-30 sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:w-full sm:max-w-full sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
+              <div className={`grid gap-2 sm:mx-auto sm:w-full sm:px-1 ${onCancel ? 'grid-cols-3 sm:max-w-[820px] sm:grid-cols-[minmax(0,0.95fr)_minmax(0,1.1fr)_minmax(0,1.35fr)]' : 'grid-cols-2 sm:max-w-[640px] sm:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]'}`}>
                 {onCancel && (
                   <button
                     type="button"
                     onClick={handleLightClose}
-                    className="flex min-w-0 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-4 text-center text-sm font-bold text-slate-700 sm:min-w-[180px] sm:flex-none sm:px-4 sm:text-base"
+                    className="flex min-w-0 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-4 text-center text-sm font-bold text-slate-700 sm:px-4 sm:text-base"
                     disabled={loading || submitting || successfullySubmitted}
                   >
                     <ChevronLeft className="h-5 w-5" />
@@ -11125,7 +11114,7 @@ const SimplifiedRentalWizard = ({
                 <button
                   type="button"
                   onClick={() => (formData.customer_id_image ? openSecondDriverScanModal('scan') : setShowIDScanModal(true))}
-                  className="flex min-w-0 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-4 text-center text-sm font-bold text-slate-800 sm:min-w-[220px] sm:flex-none sm:px-4 sm:text-base"
+                  className="flex min-w-0 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-4 text-center text-sm font-bold text-slate-800 sm:px-4 sm:text-base"
                 >
                   <FileImage className="hidden h-5 w-5 sm:block" />
                   <span className="sm:hidden">
@@ -11143,7 +11132,7 @@ const SimplifiedRentalWizard = ({
                   type="button"
                   onClick={handleNext}
                   disabled={!lightCustomerCanContinue}
-                  className="flex min-w-0 items-center justify-center gap-2 rounded-2xl bg-violet-700 px-3 py-4 text-center text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[300px] sm:flex-1 sm:px-4 sm:text-base"
+                  className="flex min-w-0 items-center justify-center gap-2 rounded-2xl bg-violet-700 px-3 py-4 text-center text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 sm:px-4 sm:text-base"
                 >
                   {tr('Continue', 'Continuer')}
                   <ChevronRight className="h-5 w-5" />
@@ -11371,8 +11360,8 @@ const SimplifiedRentalWizard = ({
           </div>
         </div>
 
-        <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
-          <div className="grid grid-cols-2 gap-2 sm:ml-auto sm:flex sm:w-full sm:max-w-[640px] sm:items-stretch sm:justify-end">
+        <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-40 w-auto max-w-none rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:z-30 sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:w-full sm:max-w-full sm:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
+          <div className="grid grid-cols-2 gap-2 sm:mx-auto sm:w-full sm:max-w-[640px] sm:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] sm:px-1">
             <button
               type="button"
               onClick={() => (formData.customer_id_image ? openSecondDriverScanModal('scan') : setShowIDScanModal(true))}
@@ -11593,7 +11582,7 @@ const SimplifiedRentalWizard = ({
           )}
         </div>
 
-        <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6">
+        <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] left-4 right-4 z-40 w-auto max-w-none rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur sm:z-30 sm:sticky sm:bottom-0 sm:left-auto sm:right-auto sm:mt-6 sm:w-full sm:max-w-full">
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
@@ -11690,7 +11679,7 @@ const SimplifiedRentalWizard = ({
         </div>
       )}
 
-      <form onSubmit={handleFormSubmit} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      <form onSubmit={handleFormSubmit} className="overflow-visible rounded-xl border border-gray-200 bg-white shadow-sm">
         {currentStep === 1 && (
           isStrictCustomerVerificationCaptureMode
             ? (isLightVariant ? renderLightStrictVerificationCaptureStep() : renderStrictVerificationCaptureStep())

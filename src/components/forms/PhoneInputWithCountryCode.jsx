@@ -1,35 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Check, ChevronDown, Phone, Search } from 'lucide-react';
-
-const PHONE_COUNTRY_CODES = [
-  { code: '+212', flag: '🇲🇦', name: 'Morocco', pattern: /^\+212\s?\d{9}$/, example: '+212 6XX XXX XXX', digits: 9 },
-  { code: '+33', flag: '🇫🇷', name: 'France', pattern: /^\+33\s?\d{9}$/, example: '+33 1 XX XX XX XX', digits: 9 },
-  { code: '+34', flag: '🇪🇸', name: 'Spain', pattern: /^\+34\s?\d{9}$/, example: '+34 6XX XXX XXX', digits: 9 },
-  { code: '+32', flag: '🇧🇪', name: 'Belgium', pattern: /^\+32\s?\d{8,9}$/, example: '+32 4XX XX XX XX', digits: 9 },
-  { code: '+31', flag: '🇳🇱', name: 'Netherlands', pattern: /^\+31\s?\d{9}$/, example: '+31 6 XXXX XXXX', digits: 9 },
-  { code: '+351', flag: '🇵🇹', name: 'Portugal', pattern: /^\+351\s?\d{9}$/, example: '+351 9XX XXX XXX', digits: 9 },
-  { code: '+41', flag: '🇨🇭', name: 'Switzerland', pattern: /^\+41\s?\d{9}$/, example: '+41 7X XXX XX XX', digits: 9 },
-  { code: '+353', flag: '🇮🇪', name: 'Ireland', pattern: /^\+353\s?\d{9}$/, example: '+353 8X XXX XXXX', digits: 9 },
-  { code: '+44', flag: '🇬🇧', name: 'United Kingdom', pattern: /^\+44\s?\d{10}$/, example: '+44 7XXX XXX XXX', digits: 10 },
-  { code: '+49', flag: '🇩🇪', name: 'Germany', pattern: /^\+49\s?\d{10,11}$/, example: '+49 1XX XXX XXXX', digits: 10 },
-  { code: '+39', flag: '🇮🇹', name: 'Italy', pattern: /^\+39\s?\d{9,10}$/, example: '+39 3XX XXX XXXX', digits: 9 },
-  { code: '+1', flag: '🇺🇸', name: 'United States / Canada', pattern: /^\+1\s?\d{10}$/, example: '+1 XXX XXX XXXX', digits: 10 },
-  { code: '+90', flag: '🇹🇷', name: 'Turkey', pattern: /^\+90\s?\d{10}$/, example: '+90 5XX XXX XXXX', digits: 10 },
-  { code: '+971', flag: '🇦🇪', name: 'United Arab Emirates', pattern: /^\+971\s?\d{9}$/, example: '+971 5X XXX XXXX', digits: 9 },
-  { code: '+966', flag: '🇸🇦', name: 'Saudi Arabia', pattern: /^\+966\s?\d{9}$/, example: '+966 5X XXX XXXX', digits: 9 },
-  { code: '+974', flag: '🇶🇦', name: 'Qatar', pattern: /^\+974\s?\d{8}$/, example: '+974 XXXX XXXX', digits: 8 },
-  { code: '+965', flag: '🇰🇼', name: 'Kuwait', pattern: /^\+965\s?\d{8}$/, example: '+965 XXXX XXXX', digits: 8 },
-  { code: '+973', flag: '🇧🇭', name: 'Bahrain', pattern: /^\+973\s?\d{8}$/, example: '+973 XXXX XXXX', digits: 8 },
-  { code: '+968', flag: '🇴🇲', name: 'Oman', pattern: /^\+968\s?\d{8}$/, example: '+968 XXXX XXXX', digits: 8 },
-  { code: '+213', flag: '🇩🇿', name: 'Algeria', pattern: /^\+213\s?\d{9}$/, example: '+213 5XX XX XX XX', digits: 9 },
-  { code: '+216', flag: '🇹🇳', name: 'Tunisia', pattern: /^\+216\s?\d{8}$/, example: '+216 XX XXX XXX', digits: 8 },
-  { code: '+20', flag: '🇪🇬', name: 'Egypt', pattern: /^\+20\s?\d{10}$/, example: '+20 1XX XXX XXXX', digits: 10 },
-  { code: '+221', flag: '🇸🇳', name: 'Senegal', pattern: /^\+221\s?\d{9}$/, example: '+221 7X XXX XX XX', digits: 9 },
-  { code: '+234', flag: '🇳🇬', name: 'Nigeria', pattern: /^\+234\s?\d{10}$/, example: '+234 8XX XXX XXXX', digits: 10 },
-  { code: '+91', flag: '🇮🇳', name: 'India', pattern: /^\+91\s?\d{10}$/, example: '+91 XXXXX XXXXX', digits: 10 },
-  { code: '+92', flag: '🇵🇰', name: 'Pakistan', pattern: /^\+92\s?\d{10}$/, example: '+92 3XX XXX XXXX', digits: 10 },
-  { code: '+86', flag: '🇨🇳', name: 'China', pattern: /^\+86\s?\d{11}$/, example: '+86 1XX XXXX XXXX', digits: 11 }
-];
+import { PHONE_COUNTRY_CODES } from '../../constants/phoneCountryCodes';
 
 const defaultTr = (en) => en;
 
@@ -209,7 +180,7 @@ const PhoneInputWithCountryCode = ({ value, onChange, tr = defaultTr, label = 'P
           </button>
 
           {isDropdownOpen && (
-            <div className="absolute left-0 top-full z-20 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_20px_50px_rgba(15,23,42,0.18)]">
+            <div className="absolute left-0 top-full z-20 mt-2 max-h-80 min-w-[18rem] w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_20px_50px_rgba(15,23,42,0.18)] sm:z-50">
               <div className="border-b border-slate-100 p-3">
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />

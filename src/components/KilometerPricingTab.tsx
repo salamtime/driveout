@@ -1439,31 +1439,40 @@ const KilometerPricingTab: React.FC = () => {
                   return (
                     <section
                       key={`${page.model?.id || 'model'}-${pageIndex}`}
-                      className={`marketing-print-page flex h-[297mm] min-h-[297mm] w-[210mm] max-w-full flex-col overflow-hidden rounded-[24px] bg-white text-slate-950 shadow-2xl ${isDensePrintPage ? 'p-4' : 'p-5'}`}
+                      className="marketing-print-page flex h-[297mm] min-h-[297mm] w-[210mm] max-w-full flex-col overflow-hidden rounded-[24px] bg-white text-slate-950 shadow-2xl"
                     >
-                      <header className={`rounded-[22px] border border-violet-200 bg-[linear-gradient(145deg,#ffffff_0%,#faf5ff_46%,#eefbf7_100%)] ${isDensePrintPage ? 'px-3.5 py-1' : 'px-4 py-2'}`}>
+                      <div
+                        className="flex h-full w-full flex-col"
+                        style={{
+                          paddingTop: isDensePrintPage ? '10.5mm' : '11.5mm',
+                          paddingRight: isDensePrintPage ? '10mm' : '11mm',
+                          paddingBottom: isDensePrintPage ? '10mm' : '11mm',
+                          paddingLeft: isDensePrintPage ? '10mm' : '11mm',
+                        }}
+                      >
+                      <header className={`rounded-[22px] border border-violet-200 bg-[linear-gradient(145deg,#ffffff_0%,#faf5ff_46%,#eefbf7_100%)] ${isDensePrintPage ? 'px-3.5 py-1.5' : 'px-4 py-2.5'}`}>
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
                             <p className={`font-bold uppercase tracking-[0.34em] text-violet-600 ${isDensePrintPage ? 'text-[9px]' : 'text-[10px]'}`}>SaharaX</p>
-                            <div className="mt-1 flex flex-wrap items-end gap-x-3 gap-y-1">
-                              <h1 className={`font-black leading-none tracking-tight break-words ${isDensePrintPage ? 'text-[20px]' : 'text-[22px]'}`}>{modelName}</h1>
+                            <div className={`mt-1 flex flex-wrap items-baseline ${isDensePrintPage ? 'gap-x-4 gap-y-1.5' : 'gap-x-5 gap-y-2'}`}>
+                              <h1 className={`font-black leading-none tracking-tight break-words ${isDensePrintPage ? 'text-[26px]' : 'text-[31px]'}`}>{modelName}</h1>
                               <div className="overflow-hidden rounded-full">
                                 <svg
-                                  width={isDensePrintPage ? '234' : '252'}
-                                  height={isDensePrintPage ? '34' : '38'}
-                                  viewBox={isDensePrintPage ? '0 0 234 34' : '0 0 252 38'}
+                                  width={isDensePrintPage ? '274' : '312'}
+                                  height={isDensePrintPage ? '42' : '50'}
+                                  viewBox={isDensePrintPage ? '0 0 274 42' : '0 0 312 50'}
                                   xmlns="http://www.w3.org/2000/svg"
                                   role="img"
                                   aria-label={familyLabel}
                                   className="block"
                                 >
-                                  <rect width={isDensePrintPage ? '234' : '252'} height={isDensePrintPage ? '34' : '38'} rx={isDensePrintPage ? '17' : '19'} fill="#EDE9FE" />
+                                  <rect width={isDensePrintPage ? '274' : '312'} height={isDensePrintPage ? '42' : '50'} rx={isDensePrintPage ? '21' : '25'} fill="#EDE9FE" />
                                   <text
-                                    x={isDensePrintPage ? '117' : '126'}
-                                    y={isDensePrintPage ? '20' : '22'}
+                                    x={isDensePrintPage ? '137' : '156'}
+                                    y={isDensePrintPage ? '24' : '28'}
                                     textAnchor="middle"
                                     dominantBaseline="middle"
-                                    fontSize={isDensePrintPage ? '18' : '19'}
+                                    fontSize={isDensePrintPage ? '22' : '26'}
                                     fontWeight="900"
                                     fill="#6D28D9"
                                     letterSpacing="2.2"
@@ -1660,6 +1669,7 @@ const KilometerPricingTab: React.FC = () => {
                             </article>
                           );
                         })}
+                      </div>
                       </div>
 
                     </section>
