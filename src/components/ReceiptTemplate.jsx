@@ -427,13 +427,28 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       .sort((left, right) => Number(left.includedKilometers || 0) - Number(right.includedKilometers || 0));
   }, [kilometerPackage, kilometerPackages]);
 
+  const resolveReceiptDistanceKm = React.useCallback((source) => {
+    const directDistance = Number(
+      source?.total_kilometers_driven ??
+      source?.total_distance
+    );
+    if (Number.isFinite(directDistance) && directDistance > 0) {
+      return directDistance;
+    }
+
+    const startOdometer = Number(source?.start_odometer);
+    const endOdometer = Number(source?.ending_odometer);
+    if (Number.isFinite(startOdometer) && Number.isFinite(endOdometer) && endOdometer >= startOdometer) {
+      return endOdometer - startOdometer;
+    }
+
+    return 0;
+  }, []);
+
   const receiptSimplePricing = React.useMemo(() => {
     const startTime = rental?.started_at || rental?.start_date || rental?.rental_start_date || null;
     const endTime = rental?.actual_end_date || rental?.end_date || rental?.rental_end_date || null;
-    const totalKmUsed = rental?.total_kilometers_driven ||
-      ((rental?.ending_odometer && rental?.start_odometer)
-        ? Number(rental.ending_odometer) - Number(rental.start_odometer)
-        : 0);
+    const totalKmUsed = resolveReceiptDistanceKm(rental);
 
     const hourlyRate = rental?.rental_type === 'daily'
       ? ((Number(rental?.daily_rate || rental?.vehicle?.daily_rate || rental?.vehicle?.vehicle_model?.daily_price || 0) || 0) / 24)
@@ -449,7 +464,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       totalKmUsed,
       packages: kilometerPackage ? [kilometerPackage] : receiptPackageCatalog,
     });
-  }, [bookingGraceMinutes, kilometerPackage, receiptPackageCatalog, rental]);
+  }, [bookingGraceMinutes, kilometerPackage, receiptPackageCatalog, rental, resolveReceiptDistanceKm]);
 
   const receiptDistanceUpgrade = React.useMemo(() => {
     if (receiptPackageUpgradeSummary?.upgraded) {
@@ -641,10 +656,11 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   // Calculate overage details - Single source of truth
   const calculateOverageDetails = () => {
     if (!rental) return { hasOverage: false, extraKm: 0, overageCharge: 0, includedKm: 0, rate: 0, totalKm: 0 };
-    
+
+    const totalKm = resolveReceiptDistanceKm(rental);
     const pkg = kilometerPackage;
     if (!pkg) {
-      return { hasOverage: false, extraKm: 0, overageCharge: 0, includedKm: 0, rate: 0, totalKm: 0 };
+      return { hasOverage: false, extraKm: 0, overageCharge: 0, includedKm: 0, rate: 0, totalKm };
     }
 
     const includedKm = rental.included_kilometers_applied ||
@@ -653,10 +669,6 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     const rate = rental.extra_km_rate_applied ||
                  pkg.extra_km_rate ||
                  0;
-    
-    const totalKm = rental.total_kilometers_driven || 
-                    (rental.ending_odometer && rental.start_odometer ? 
-                     rental.ending_odometer - rental.start_odometer : 0);
     
     const extraKm = Math.max(0, totalKm - includedKm);
     const overageCharge = extraKm * rate;

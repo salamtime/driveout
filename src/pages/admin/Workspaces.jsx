@@ -66,9 +66,9 @@ const normalizeUrl = (value) => {
 const formatTenancyModeLabel = (mode, tr) => {
   const normalized = String(mode || '').trim().toLowerCase();
   if (normalized === 'dedicated') {
-    return tr('Dedicated', 'Dédié');
+    return tr('Managed Workspace', 'Espace géré');
   }
-  return tr('Shared', 'Partagé');
+  return tr('Shared Workspace', 'Espace partagé');
 };
 
 const getProjectRefFromSupabaseUrl = (value) => {
@@ -126,6 +126,26 @@ const TENANT_WORKSPACE_NAVIGATION_ITEMS = Object.freeze([
   { id: 'website', permission: 'System Settings', featureKey: 'website_editor' },
   { id: 'export', permission: 'Project Export' },
 ]);
+
+const resolveWorkspaceModeKey = (row = {}) => {
+  const normalized = String(
+    row?.tenancy_mode ||
+    row?.tenancyMode ||
+    row?.tenant?.tenancy_mode ||
+    row?.tenant?.tenancyMode ||
+    row?.tenant?.metadata?.tenancy_mode ||
+    row?.tenant?.metadata?.tenancyMode ||
+    'shared'
+  ).trim().toLowerCase();
+
+  return normalized === 'dedicated' ? 'managed' : 'shared';
+};
+
+const getWorkspaceModeBadgeTone = (modeKey = 'shared') => (
+  modeKey === 'managed'
+    ? 'border-sky-200 bg-sky-50 text-sky-700'
+    : 'border-violet-200 bg-violet-50 text-violet-700'
+);
 
 const buildTenantWorkspaceModuleAccessSummary = ({ planType = 'starter', featureAccess = {} }) => {
   const normalizedPlanType = normalizeTenantPlanType(planType);
@@ -225,6 +245,7 @@ const buildWorkspaceRows = (businessOwners = [], currentUser = null, activeTenan
     id: tenant?.id || businessAccount?.id,
     businessAccount,
     tenant,
+    tenancy_mode: String(tenant?.tenancy_mode || tenant?.metadata?.tenancy_mode || 'shared').trim().toLowerCase() || 'shared',
     subscription: entry?.subscription || {},
     provisioningJob,
     latestSchemaJob,
@@ -948,15 +969,15 @@ const WorkspaceContextCard = ({ hostContext, tenantSession, currentUser, platfor
       : hostContext.kind === 'admin'
         ? tr('Platform admin', 'Admin plateforme')
     : hostContext.kind === 'tenant'
-      ? tr('Tenant host', 'Hôte tenant')
+        ? tr('Workspace host', "Hôte de l’espace")
       : hostContext.kind === 'local'
         ? tr('Local simulation', 'Simulation locale')
         : tr('Public host', 'Hôte public');
 
-  const tenantContextLabel = tenant?.tenant_name || tenantSession?.tenantName || tenant?.tenant_slug || tenantSession?.tenantSlug || tr('No active tenant session', 'Aucune session tenant active');
+  const workspaceContextLabel = tenant?.tenant_name || tenantSession?.tenantName || tenant?.tenant_slug || tenantSession?.tenantSlug || tr('No active workspace session', 'Aucune session espace active');
   const tenantRoleLabel = tenant
-    ? tr('Tenant context linked to your signed-in account', 'Contexte tenant lié à votre compte connecté')
-    : tr('No tenant workspace linked in the current session', 'Aucun espace tenant lié dans la session actuelle');
+    ? tr('Workspace context linked to your signed-in account', 'Contexte espace lié à votre compte connecté')
+    : tr('No workspace linked in the current session', 'Aucun espace lié dans la session actuelle');
   const platformAbilityLabel = isPlatformOwner
     ? tr(
         'You can manage workspace provisioning, controls, and access delegation from this session.',
@@ -977,8 +998,8 @@ const WorkspaceContextCard = ({ hostContext, tenantSession, currentUser, platfor
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div className="max-w-2xl">
           <p className={lightEyebrowClass}>{tr('Current context', 'Contexte actuel')}</p>
-          <h3 className={lightSectionTitleClass}>{tr('Platform and tenant visibility', 'Visibilité plateforme et tenant')}</h3>
-          <p className={lightBodyClass}>{tr('Platform and tenant visibility in one place.', 'Visibilité plateforme et tenant au même endroit.')}</p>
+          <h3 className={lightSectionTitleClass}>{tr('Platform and workspace visibility', 'Visibilité plateforme et espace')}</h3>
+          <p className={lightBodyClass}>{tr('Platform and workspace visibility in one place.', 'Visibilité plateforme et espace au même endroit.')}</p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[420px]">
           <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
@@ -987,8 +1008,8 @@ const WorkspaceContextCard = ({ hostContext, tenantSession, currentUser, platfor
             <p className="mt-2 text-sm text-slate-500">{hostContext.hostname || tr('Current domain', 'Domaine actuel')}</p>
           </div>
           <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
-            <p className={lightCardEyebrowClass}>{tr('Tenant view', 'Vue tenant')}</p>
-            <p className={lightCardTitleClass}>{tenantContextLabel}</p>
+            <p className={lightCardEyebrowClass}>{tr('Workspace view', 'Vue espace')}</p>
+            <p className={lightCardTitleClass}>{workspaceContextLabel}</p>
             <p className="mt-2 text-sm text-slate-500">
               {tenant?.tenant_app_url || tenantSession?.tenantAppUrl || workspaceState || tr('Not active yet', 'Pas encore actif')}
             </p>
@@ -1004,7 +1025,7 @@ const WorkspaceContextCard = ({ hostContext, tenantSession, currentUser, platfor
         {tenant ? (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
             <UserRound className="h-3.5 w-3.5" />
-            {tr('Signed in as tenant owner', 'Connecté comme propriétaire tenant')}
+            {tr('Signed in as workspace owner', 'Connecté comme propriétaire de l’espace')}
           </span>
         ) : null}
         {currentEmail ? (
@@ -1588,11 +1609,11 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
         <AdminModuleHero
           flush
           icon={<Building2 className="h-7 w-7" />}
-          eyebrow={tr('Tenant workspace', 'Workspace tenant')}
+          eyebrow={tr('Workspace', 'Espace')}
           title={workspace.name}
           description={tr(
-            'Review provisioning, access, branding, and commercial controls for this tenant from one admin page.',
-            'Vérifiez le provisionnement, l’accès, le branding et les contrôles commerciaux de ce tenant depuis une seule page admin.'
+            'Review provisioning, access, branding, and commercial controls for this workspace from one admin page.',
+            'Vérifiez le provisionnement, l’accès, le branding et les contrôles commerciaux de cet espace depuis une seule page admin.'
           )}
           actions={(
             <div className="flex flex-wrap items-center gap-2">
@@ -1645,7 +1666,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
               <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
                 <p className={lightLabelClass}>{tr('Access', 'Accès')}</p>
                 <p className={lightCardValueClass}>{accessMode.label}</p>
-                <p className="mt-1 text-sm text-slate-500">{tr('Current role and workspace context', 'Rôle actuel et contexte workspace')}</p>
+                <p className="mt-1 text-sm text-slate-500">{tr('Current role and workspace context', "Rôle actuel et contexte de l’espace")}</p>
               </div>
             </div>
           </section>
@@ -1659,8 +1680,8 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
                 <h3 className={lightSectionHeadingClass}>{tr('Shared tenant readiness', 'Readiness du tenant partagé')}</h3>
                 <p className="mt-1 text-sm text-slate-500">
                   {tr(
-                    'This tenant uses the shared runtime, so the admin view tracks organization mapping and runtime readiness instead of dedicated infrastructure controls.',
-                    'Ce tenant utilise le runtime partagé, donc la vue admin suit le mapping organisation et la readiness runtime plutôt que les contrôles d’infrastructure dédiée.'
+                    'This shared workspace uses the shared runtime, so the admin view tracks organization mapping and runtime readiness instead of managed-infrastructure controls.',
+                    'Cet espace partagé utilise le runtime partagé, donc la vue admin suit le mapping organisation et la readiness runtime plutôt que les contrôles d’infrastructure gérée.'
                   )}
                 </p>
               </div>
@@ -1759,17 +1780,22 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{tr('Overview', 'Aperçu')}</p>
                 <p className="mt-2 text-lg font-semibold text-slate-900">{workspace.name}</p>
-                <p className="mt-1 text-sm text-slate-500">{tr('Tenant workspace summary', 'Résumé de l’espace tenant')}</p>
+                <p className="mt-1 text-sm text-slate-500">{tr('Workspace summary', "Résumé de l’espace")}</p>
               </div>
-              <WorkspaceStatusBadge status={status} />
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getWorkspaceModeBadgeTone(resolveWorkspaceModeKey(workspace))}`}>
+                  {formatTenancyModeLabel(resolveWorkspaceModeKey(workspace) === 'managed' ? 'dedicated' : 'shared', tr)}
+                </span>
+                <WorkspaceStatusBadge status={status} />
+              </div>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <div className="rounded-2xl border border-white bg-slate-50/70 px-4 py-3">
-                <p className={lightLabelClass}>{tr('Tenant name', 'Nom du tenant')}</p>
+                <p className={lightLabelClass}>{tr('Workspace name', "Nom de l’espace")}</p>
                 <p className="mt-2 text-base font-semibold text-slate-900">{workspace.name}</p>
               </div>
               <div className="rounded-2xl border border-white bg-slate-50/70 px-4 py-3">
-                <p className={lightLabelClass}>{tr('Tenant slug', 'Slug du tenant')}</p>
+                <p className={lightLabelClass}>{tr('Workspace slug', "Slug de l’espace")}</p>
                 <p className="mt-2 text-base font-semibold text-slate-900">{workspace.slug || tr('Slug not assigned yet', 'Slug pas encore assigné')}</p>
               </div>
               <div className="rounded-2xl border border-white bg-slate-50/70 px-4 py-3">
@@ -1788,7 +1814,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
               {workspace.relationship?.isCurrentTenant ? (
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-violet-700">
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  {tr('Current tenant context', 'Contexte tenant actif')}
+                  {tr('Current workspace context', "Contexte espace actif")}
                 </span>
               ) : null}
             </div>
@@ -2495,7 +2521,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
             <div className="mt-5 grid gap-3 md:grid-cols-3">
               <label className="block">
-                <span className={lightLabelClass}>{tr('Tenancy mode', 'Mode de tenancy')}</span>
+                <span className={lightLabelClass}>{tr('Workspace mode', "Mode de l’espace")}</span>
                 <select
                   value={controlsDraft.tenancy_mode}
                   onChange={(event) => setControlsDraft((prev) => ({ ...prev, tenancy_mode: event.target.value }))}
@@ -2547,12 +2573,12 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
             <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm leading-6 text-slate-600">
               {controlsDraft.tenancy_mode === 'dedicated'
                 ? tr(
-                    'Dedicated mode preserves the legacy project-per-tenant infrastructure path for isolated or premium workspaces.',
-                    'Le mode dédié préserve le chemin legacy projet-par-tenant pour les workspaces isolés ou premium.'
+                    'Managed Workspace preserves the legacy project-per-tenant infrastructure path for isolated or premium workspaces.',
+                    'Le mode Espace géré préserve le chemin legacy projet-par-tenant pour les espaces isolés ou premium.'
                   )
                 : tr(
-                    'Shared mode keeps this tenant on the default shared runtime with organization-level isolation and the standard subdomain experience.',
-                    'Le mode partagé maintient ce tenant sur le runtime partagé par défaut avec isolation au niveau organisation et expérience sous-domaine standard.'
+                    'Shared Workspace keeps this business on the default shared runtime with organization-level isolation and the standard subdomain experience.',
+                    'Le mode Espace partagé maintient cette activité sur le runtime partagé par défaut avec isolation au niveau organisation et expérience sous-domaine standard.'
                   )}
             </div>
 
@@ -3046,6 +3072,7 @@ const Workspaces = () => {
   const hostContext = useMemo(() => getHostContext(), []);
   const [rows, setRows] = useState([]);
   const [search, setSearch] = useState('');
+  const [modeFilter, setModeFilter] = useState('shared');
   const [status, setStatus] = useState('all');
   const [schemaFilter, setSchemaFilter] = useState('all');
   const [loading, setLoading] = useState(false);
@@ -3106,17 +3133,25 @@ const Workspaces = () => {
   const filteredRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return rows.filter((row) => {
+      const rowMode = resolveWorkspaceModeKey(row);
+      if (modeFilter !== 'all' && rowMode !== modeFilter) return false;
       if (status !== 'all' && row.status !== status) return false;
       if (schemaFilter !== 'all' && getSchemaFilterKeyForRow(row, tr) !== schemaFilter) return false;
       if (!needle) return true;
       return [row.name, row.ownerName, row.ownerEmail, row.slug, row.status].filter(Boolean).join(' ').toLowerCase().includes(needle);
     });
-  }, [rows, schemaFilter, search, status, tr]);
+  }, [modeFilter, rows, schemaFilter, search, status, tr]);
 
   const kpis = useMemo(() => rows.reduce((acc, row) => {
     acc[row.status] = (acc[row.status] || 0) + 1;
     return acc;
   }, {}), [rows]);
+
+  const workspaceModeCounts = useMemo(() => rows.reduce((acc, row) => {
+    const mode = resolveWorkspaceModeKey(row);
+    acc[mode] = (acc[mode] || 0) + 1;
+    return acc;
+  }, { shared: 0, managed: 0 }), [rows]);
 
   const tenantHostRegistryMessage = hostContext.kind === 'tenant' && !hostContext.isLocal;
   const activeWorkspace = useMemo(
@@ -3194,10 +3229,10 @@ const Workspaces = () => {
           flush
           icon={<Building2 className="h-7 w-7" />}
           eyebrow={tr('Platform operations', 'Opérations plateforme')}
-          title={tr('Tenant Workspaces', 'Workspaces tenants')}
+          title={tr('Workspaces', 'Espaces')}
           description={tr(
-            'Provision and manage isolated tenant workspaces.',
-            'Provisionnez et gérez les workspaces tenants isolés.'
+            'Provision and manage shared and managed workspaces.',
+            'Provisionnez et gérez les espaces partagés et gérés.'
           )}
           actions={(
             <button
@@ -3241,8 +3276,8 @@ const Workspaces = () => {
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Provisioning control', 'Contrôle du provisionnement')}</p>
-              <h2 className="text-lg font-semibold text-slate-900">{tr('Tenant workspace registry', 'Registre des workspaces tenants')}</h2>
-              <p className="mt-1 max-w-3xl text-sm text-slate-500">{tr('Open any tenant to manage it directly.', 'Ouvrez un tenant pour le gérer directement.')}</p>
+              <h2 className="text-lg font-semibold text-slate-900">{tr('Workspace registry', 'Registre des espaces')}</h2>
+              <p className="mt-1 max-w-3xl text-sm text-slate-500">{tr('Open any workspace to manage it directly.', 'Ouvrez un espace pour le gérer directement.')}</p>
             </div>
             <div className="grid gap-2 sm:grid-cols-3">
               <label className="relative">
@@ -3266,17 +3301,45 @@ const Workspaces = () => {
               </select>
             </div>
           </div>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            {[
+              ['all', tr('All', 'Tous'), rows.length],
+              ['shared', tr('Shared Workspaces', 'Espaces partagés'), workspaceModeCounts.shared],
+              ['managed', tr('Managed Workspaces', 'Espaces gérés'), workspaceModeCounts.managed],
+            ].map(([value, label, count]) => {
+              const active = modeFilter === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setModeFilter(value)}
+                  className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-semibold transition ${
+                    active
+                      ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <span>{label}</span>
+                  <span className={`inline-flex min-w-[1.75rem] items-center justify-center rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                    active ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
           <div className="mt-5">
           <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_repeat(3,minmax(0,0.6fr))]">
             <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Registry overview', 'Vue du registre')}</p>
-              <p className="mt-2 text-base font-semibold text-slate-900">{tr('Platform-managed tenant inventory', 'Inventaire des tenants gérés')}</p>
-              <p className="mt-2 text-sm text-slate-500">{tr('Search, filter, and open tenant workspaces.', 'Recherchez, filtrez et ouvrez les workspaces tenants.')}</p>
+              <p className="mt-2 text-base font-semibold text-slate-900">{tr('Platform-managed workspace inventory', 'Inventaire des espaces gérés par la plateforme')}</p>
+              <p className="mt-2 text-sm text-slate-500">{tr('Search, filter, and open shared or managed workspaces.', 'Recherchez, filtrez et ouvrez les espaces partagés ou gérés.')}</p>
             </div>
             <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Visible now', 'Visibles')}</p>
               <p className="mt-2 text-2xl font-semibold text-slate-900 tabular-nums">{filteredRows.length}</p>
-              <p className="mt-1 text-sm text-slate-500">{tr('Matching workspaces', 'Workspaces correspondants')}</p>
+              <p className="mt-1 text-sm text-slate-500">{tr('Matching workspaces', 'Espaces correspondants')}</p>
             </div>
             <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Live tenants', 'Tenants actifs')}</p>
@@ -3350,6 +3413,9 @@ const Workspaces = () => {
                       <p className="text-base font-semibold text-slate-900">{row.name}</p>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <p className="text-sm text-slate-500">{row.slug || '—'}</p>
+                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${getWorkspaceModeBadgeTone(resolveWorkspaceModeKey(row))}`}>
+                          {formatTenancyModeLabel(resolveWorkspaceModeKey(row) === 'managed' ? 'dedicated' : 'shared', tr)}
+                        </span>
                         <WorkspacePlanBadge planType={row.subscription?.plan_type} />
                         <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">
                           {rowSchemaState.schemaVersion}
@@ -3420,7 +3486,7 @@ const Workspaces = () => {
                         <Building2 className="h-6 w-6" />
                       </div>
                       <p className="mt-4 text-lg font-semibold text-slate-900">{tr('No workspaces yet.', 'Aucun espace pour le moment.')}</p>
-                      <p className="mt-3 text-sm leading-6 text-slate-500">{tr('Approved business owners will appear here once a tenant record exists.', 'Les propriétaires business approuvés apparaîtront ici après création du tenant.')}</p>
+                      <p className="mt-3 text-sm leading-6 text-slate-500">{tr('Approved business owners will appear here once a workspace record exists.', 'Les propriétaires business approuvés apparaîtront ici après création de l’espace.')}</p>
                     </td>
                   </tr>
                 ) : null}
