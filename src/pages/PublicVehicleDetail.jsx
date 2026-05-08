@@ -228,10 +228,16 @@ const TripCard = ({
 const buildVehicleChoices = (listings = [], city) => {
   const grouped = new Map();
   const normalizedCity = String(city || '').toLowerCase();
+  const genericUnknownKeys = new Set(['unknown', 'unknownmodel', 'vehicle', 'unknownvehicle']);
 
   listings.forEach((item) => {
     if (!item || item.inventorySource !== 'certified_fleet') return;
     if (normalizedCity && String(item.location?.city || '').toLowerCase() !== normalizedCity) return;
+
+    const modelKey = String(item.model || item.title || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '');
+    if (genericUnknownKeys.has(modelKey)) return;
 
     const key = String(item.model || item.title || item.id);
     if (!grouped.has(key)) {

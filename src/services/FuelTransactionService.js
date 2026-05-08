@@ -3267,25 +3267,6 @@ class FuelTransactionService {
     }
 
     if (transactionType === 'vehicle_refill') {
-      let previousVehicleRefill = null;
-      if (await this.tableExists(this.vehicleFuelRefillsTable)) {
-        const { data } = await supabase
-          .from(this.vehicleFuelRefillsTable)
-          .select('id, vehicle_id')
-          .eq('id', id)
-          .maybeSingle();
-        previousVehicleRefill = data || null;
-      }
-
-      if (!previousVehicleRefill) {
-        const { data } = await supabase
-          .from(this.fuelRefillsTable)
-          .select('id, vehicle_id')
-          .eq('id', id)
-          .maybeSingle();
-        previousVehicleRefill = data || null;
-      }
-
       const payload = {
         vehicle_id: transactionData.vehicle_id,
         liters_added: amount,

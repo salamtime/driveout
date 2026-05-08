@@ -83,6 +83,14 @@ const normalizeLookupKey = (value) =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '');
 
+const GENERIC_UNKNOWN_KEYS = new Set([
+  'unknown',
+  'unknownunknown',
+  'vehicle',
+  'unknownvehicle',
+  'vehicleunknown',
+]);
+
 const normalizeCategory = (vehicleType, modelData) =>
   safeText(vehicleType || modelData?.vehicle_type || modelData?.category || modelData?.type, 'ATV');
 
@@ -167,6 +175,36 @@ const inferVehicleModelData = (vehicleRow, modelLookups) => {
   }
 
   return null;
+};
+
+const shouldHideCertifiedFleetVehicle = (vehicleRow, modelData) => {
+  if (modelData) return false;
+
+  const rawKeys = [
+    vehicleRow?.name,
+    vehicleRow?.model,
+    [vehicleRow?.name, vehicleRow?.model].filter(Boolean).join(' '),
+  ]
+    .map((value) => normalizeLookupKey(value))
+    .filter(Boolean);
+
+  const hasGenericUnknownIdentity = rawKeys.some((key) => GENERIC_UNKNOWN_KEYS.has(key));
+  const hasNoModelLink = !safeText(vehicleRow?.vehicle_model_id);
+  const hasNoPricing =
+    formatMoney(vehicleRow?.hourly_rate ?? vehicleRow?.price ?? vehicleRow?.daily_rate) <= 0 &&
+    formatMoney(vehicleRow?.daily_rate ?? vehicleRow?.price) <= 0;
+
+  return hasNoModelLink && (hasGenericUnknownIdentity || hasNoPricing);
+};
+
+const shouldHideCertifiedFleetListing = (listing) => {
+  const modelKey = normalizeLookupKey(listing?.model || listing?.title);
+  if (GENERIC_UNKNOWN_KEYS.has(modelKey)) return true;
+
+  const titleKey = normalizeLookupKey(listing?.title);
+  if (GENERIC_UNKNOWN_KEYS.has(titleKey)) return true;
+
+  return false;
 };
 
 const normalizeLocation = (vehicleRow) => {
@@ -590,6 +628,10 @@ const fetchCertifiedFleet = async (adminClient) => {
 
   return vehicles.map((vehicle) => {
     const modelData = inferVehicleModelData(vehicle, modelLookups);
+    if (shouldHideCertifiedFleetVehicle(vehicle, modelData)) {
+      return null;
+    }
+
     const modelId = String(modelData?.id || vehicle.vehicle_model_id || '');
     const listing = buildCertifiedListing(vehicle, modelData);
     const basePrices = basePricesByModelId.get(modelId);
@@ -608,7 +650,7 @@ const fetchCertifiedFleet = async (adminClient) => {
     ]);
     const defaultDamageDepositPreset = getDefaultDamageDepositPreset(damageDepositPresets);
 
-    return {
+    const enrichedListing = {
       ...listing,
       hourlyPrice: formatMoney(basePrices?.hourly_price ?? listing.hourlyPrice),
       dailyPrice: formatMoney(basePrices?.daily_price ?? listing.dailyPrice),
@@ -623,7 +665,9 @@ const fetchCertifiedFleet = async (adminClient) => {
       defaultDamageDepositPreset,
       packageCatalog,
     };
-  });
+
+    return shouldHideCertifiedFleetListing(enrichedListing) ? null : enrichedListing;
+  }).filter(Boolean);
 };
 
 const fetchMarketplaceListings = async (adminClient, tenantScope = null) => {
