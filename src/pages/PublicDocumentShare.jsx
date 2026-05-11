@@ -453,12 +453,35 @@ export default function PublicDocumentShare() {
           const rentalBody = await fetchPublicRentalPreview(lookupId);
 
           const baseRental = rentalBody.rental;
-          const linkedVehicleReport =
-            resolvedPayload?.overrides?.vehicleReport ||
-            resolvedPayload?.overrides?.vehicle_report ||
+          const baseVehicleReport =
             baseRental?.vehicleReport ||
             baseRental?.vehicle_report ||
             null;
+          const overrideVehicleReport =
+            resolvedPayload?.overrides?.vehicleReport ||
+            resolvedPayload?.overrides?.vehicle_report ||
+            null;
+          const baseMaintenance = baseVehicleReport?.maintenance || null;
+          const overrideMaintenance = overrideVehicleReport?.maintenance || null;
+          const mergedMaintenance = (baseMaintenance || overrideMaintenance)
+            ? {
+                ...(baseMaintenance || {}),
+                ...(overrideMaintenance || {}),
+                parts: Array.isArray(overrideMaintenance?.parts) && overrideMaintenance.parts.length > 0
+                  ? overrideMaintenance.parts
+                  : (baseMaintenance?.parts || []),
+                parts_used: Array.isArray(overrideMaintenance?.parts_used) && overrideMaintenance.parts_used.length > 0
+                  ? overrideMaintenance.parts_used
+                  : (baseMaintenance?.parts_used || baseMaintenance?.parts || []),
+              }
+            : null;
+          const linkedVehicleReport = (baseVehicleReport || overrideVehicleReport)
+            ? {
+                ...(baseVehicleReport || {}),
+                ...(overrideVehicleReport || {}),
+                maintenance: mergedMaintenance,
+              }
+            : null;
 
           resolvedPayload = {
             ...resolvedPayload,
