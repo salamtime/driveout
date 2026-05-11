@@ -335,6 +335,7 @@ const normalizeCustomerSuggestion = (customer = {}, source = 'database') => ({
   name: customer.full_name || customer.customer_name || customer.name || '',
   email: customer.email || customer.customer_email || '',
   phone: customer.phone || customer.customer_phone || '',
+  secondary_phone: customer.secondary_phone || customer.customer_secondary_phone || '',
   licence_number: customer.licence_number || customer.customer_licence_number || '',
   id_number: customer.id_number || customer.customer_id_number || '',
   date_of_birth: customer.date_of_birth || customer.customer_dob || '',
@@ -396,6 +397,7 @@ const useRentalWizard = (initialData = null, mode = 'create', navigate, options 
     customer_name: '',
     customer_email: '',
     customer_phone: '',
+    secondary_phone: '',
     customer_id: null,
     customer_licence_number: '',
     customer_id_number: '',
@@ -1222,6 +1224,7 @@ const loadFuelChargeSettings = async (vehicleModelId = null, rentalType = null, 
 
     const hydratedEditData = {
       ...data,
+      secondary_phone: data.secondary_phone || data.customer_secondary_phone || '',
       deposit_amount: resolvedDepositAmount,
       damage_deposit: resolvedDamageDeposit,
       quantity_days: resolvedDuration,
@@ -2428,6 +2431,7 @@ const calculateFinancials = () => {
         customer_name: customerData.full_name || suggestion.name,
         customer_email: customerData.email || suggestion.email || '',
         customer_phone: customerData.phone || suggestion.phone || '',
+        secondary_phone: customerData.secondary_phone || suggestion.secondary_phone || '',
         customer_licence_number: customerData.licence_number || suggestion.licence_number || '',
         customer_id: customerData.id || suggestion.id,
         customer_id_number: customerData.id_number || '',
@@ -2459,6 +2463,7 @@ const calculateFinancials = () => {
         customer_name: suggestion.name,
         customer_email: !isEmailDirty ? suggestion.email || '' : prev.customer_email,
         customer_phone: !isPhoneDirty ? suggestion.phone || '' : prev.customer_phone,
+        secondary_phone: prev.secondary_phone || suggestion.secondary_phone || '',
         customer_licence_number: suggestion.licence_number || '',
         customer_id: suggestion.id || null,
       }));
@@ -2587,6 +2592,7 @@ const calculateFinancials = () => {
         customer_name: customerData.full_name || customerData.customer_name || customerData.raw_name || prev.customer_name,
         customer_email: customerData.email || customerData.customer_email || prev.customer_email,
         customer_phone: customerData.phone || customerData.customer_phone || prev.customer_phone,
+        secondary_phone: customerData.secondary_phone || customerData.customer_secondary_phone || prev.secondary_phone,
         customer_id: customerData.id || customerData.customer_id,
         customer_licence_number: customerData.licence_number || customerData.document_number || prev.customer_licence_number,
         customer_id_number: customerData.id_number || customerData.document_number || prev.customer_id_number,
@@ -2663,6 +2669,12 @@ const calculateFinancials = () => {
             scannedData.phone ||
             scannedData.customer_phone ||
             prev.customer_phone,
+          secondary_phone:
+            resolvedCustomer?.secondary_phone ||
+            resolvedCustomer?.customer_secondary_phone ||
+            scannedData.secondary_phone ||
+            scannedData.customer_secondary_phone ||
+            prev.secondary_phone,
           customer_licence_number:
             resolvedCustomer?.licence_number ||
             resolvedCustomer?.document_number ||
@@ -3041,6 +3053,7 @@ const calculateFinancials = () => {
           id: newCustomerId,
           full_name: submissionReadyFormData.customer_name,
           phone: submissionReadyFormData.customer_phone,
+          secondary_phone: submissionReadyFormData.secondary_phone || null,
           email: emailToSubmit,
           licence_number: normalizedIdentity.licenceNumber,
           id_number: normalizedIdentity.idNumber,
@@ -3094,6 +3107,7 @@ const calculateFinancials = () => {
               id: finalCustomerId,
               full_name: submissionReadyFormData.customer_name,
               phone: submissionReadyFormData.customer_phone,
+              secondary_phone: submissionReadyFormData.secondary_phone || null,
               email: emailToSubmit,
               licence_number: normalizedIdentity.licenceNumber,
               id_number: normalizedIdentity.idNumber,
@@ -3143,6 +3157,7 @@ const calculateFinancials = () => {
           const { error: scanHistoryUpdateError } = await supabase
             .from('app_4c3a7a6153_customers')
             .update({
+              secondary_phone: submissionReadyFormData.secondary_phone || null,
               scan_metadata: {
                 ...(existingCustomer?.scan_metadata || {}),
                 id_scan_history: mergedScanHistory,
@@ -3153,6 +3168,18 @@ const calculateFinancials = () => {
 
           if (scanHistoryUpdateError) {
             console.warn('Failed to persist customer ID scan history during rental submit:', scanHistoryUpdateError);
+          }
+        } else {
+          const { error: secondaryPhoneUpdateError } = await supabase
+            .from('app_4c3a7a6153_customers')
+            .update({
+              secondary_phone: submissionReadyFormData.secondary_phone || null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', finalCustomerId);
+
+          if (secondaryPhoneUpdateError) {
+            console.warn('Failed to persist customer secondary phone during rental submit:', secondaryPhoneUpdateError);
           }
         }
       }
@@ -3239,6 +3266,7 @@ const calculateFinancials = () => {
         const verificationCustomerPayload = {
           full_name: submissionReadyFormData.customer_name,
           phone: submissionReadyFormData.customer_phone,
+          secondary_phone: submissionReadyFormData.secondary_phone || null,
           email: emailToSubmit,
           licence_number: submissionReadyFormData.customer_licence_number || null,
           id_number: submissionReadyFormData.customer_id_number || null,
@@ -3852,6 +3880,7 @@ const calculateFinancials = () => {
       customer_name: '',
       customer_email: '',
       customer_phone: '',
+      secondary_phone: '',
       customer_id: null,
       vehicle_id: '',
       rental_start_date: getMoroccoTodayString(),
@@ -9635,6 +9664,20 @@ const SimplifiedRentalWizard = ({
                 )}
               </div>
 
+              <div className="rounded-lg bg-white p-4">
+                <label className="text-sm font-semibold text-slate-700">{tr('Secondary Phone (Optional)', 'Téléphone secondaire (optionnel)')}</label>
+                <input
+                  type="tel"
+                  value={formData.secondary_phone || ''}
+                  onChange={(e) => handleInputChange('secondary_phone', e.target.value)}
+                  placeholder={tr('Optional alternate phone number', 'Numéro secondaire optionnel')}
+                  disabled={successfullySubmitted}
+                  className={`mt-2 w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500 ${
+                    successfullySubmitted ? 'opacity-50 cursor-not-allowed' : ''
+                  }`}
+                />
+              </div>
+
             </div>
           </div>
         </div>
@@ -11047,6 +11090,17 @@ const SimplifiedRentalWizard = ({
                       value={formData.customer_email}
                       onChange={(e) => handleInputChange('customer_email', e.target.value)}
                       placeholder="customer@example.com"
+                      disabled={successfullySubmitted}
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700">{tr('Secondary Phone', 'Téléphone secondaire')}</label>
+                    <input
+                      type="tel"
+                      value={formData.secondary_phone || ''}
+                      onChange={(e) => handleInputChange('secondary_phone', e.target.value)}
+                      placeholder={tr('Optional alternate phone number', 'Numéro secondaire optionnel')}
                       disabled={successfullySubmitted}
                       className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-4 text-base font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-500"
                     />

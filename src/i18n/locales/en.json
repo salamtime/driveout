@@ -2947,6 +2947,7 @@
       "testFailed": "Unable to send Telegram test right now.",
       "events": {
         "rental_created": "Rental created",
+        "website_reservation_created": "Website reservation",
         "rental_started": "Rental started",
         "rental_completed": "Rental completed",
         "payment_received": "Payment received",

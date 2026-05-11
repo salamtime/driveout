@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Shield } from 'lucide-react';
+import { ChevronDown, ChevronUp, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../../contexts/AuthContext';
 import { getTenantSession } from '../../services/TenantRegistryService';
@@ -21,6 +21,7 @@ import {
 import ChangePasswordModal from './ChangePasswordModal';
 import ProfilePictureUpload from './ProfilePictureUpload';
 import ProfileSettings from './ProfileSettings';
+import PlanSelectionPanel from './PlanSelectionPanel';
 import ProfileVerificationCard from '../verification/ProfileVerificationCard';
 import LoadingSpinner from '../common/LoadingSpinner';
 import { shouldSuppressBlockingPageLoader } from '../../config/navigationShells';
@@ -38,6 +39,7 @@ const roleClassName = {
 
 const TELEGRAM_ALERT_EVENT_LABELS = {
   rental_created: 'Rental created',
+  website_reservation_created: 'Website reservation',
   rental_started: 'Rental started',
   rental_completed: 'Rental completed',
   payment_received: 'Payment received',
@@ -254,6 +256,8 @@ const BusinessOwnerSubscriptionCard = ({
   suspensionReason,
   tr,
 }) => {
+  const [planPickerOpen, setPlanPickerOpen] = useState(false);
+
   if (!isBusinessOwner) {
     return null;
   }
@@ -338,18 +342,26 @@ const BusinessOwnerSubscriptionCard = ({
       </div>
 
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        <a
-          href="/choose-plan"
-          className="inline-flex items-center justify-center rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
+        <button
+          type="button"
+          onClick={() => setPlanPickerOpen((current) => !current)}
+          className="inline-flex items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
         >
-          {planActionLabel}
-        </a>
+          <span>{planActionLabel}</span>
+          {planPickerOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        </button>
         {isTrial ? (
           <p className="text-sm font-medium text-slate-500">
             {tr('profile.subscription.trialNote', 'Select the right package before your trial expires.')}
           </p>
         ) : null}
       </div>
+
+      {planPickerOpen ? (
+        <div className="mt-5">
+          <PlanSelectionPanel embedded onPlanSaved={() => setPlanPickerOpen(false)} />
+        </div>
+      ) : null}
     </div>
   );
 };

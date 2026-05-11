@@ -222,38 +222,13 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     }));
   };
 
-  // 🚨🚨🚨 CRITICAL DEBUG: Log when component mounts and receives editingRecord
   useEffect(() => {
-    console.log('🚨🚨🚨 CRITICAL DEBUG: AddMaintenanceForm MOUNTED');
-    console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord received:', editingRecord);
-    
     if (editingRecord) {
-      console.log('🚨🚨🚨 CRITICAL DEBUG: COMPLETE EDITINGRECORD OBJECT:', JSON.stringify(editingRecord, null, 2));
-      console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord keys:', Object.keys(editingRecord));
-      
-      // 🚨🚨🚨 CRITICAL FIX: Check ALL possible cost field variations (removed external cost)
-      console.log('🚨🚨🚨 CRITICAL DEBUG: Cost field analysis:');
-      console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord.cost:', editingRecord.cost);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord.total_cost:', editingRecord.total_cost);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord.total_cost_mad:', editingRecord.total_cost_mad);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord.labor_rate_mad:', editingRecord.labor_rate_mad);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord.labor_cost_mad:', editingRecord.labor_cost_mad);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord.parts_cost_mad:', editingRecord.parts_cost_mad);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord.tax_mad:', editingRecord.tax_mad);
-      
-      // 🚨🚨🚨 CRITICAL FIX: Set form data IMMEDIATELY with enhanced cost mapping (removed external cost)
-      console.log('🚨🚨🚨 CRITICAL FIX: Setting form data IMMEDIATELY with enhanced cost mapping (no external cost)');
-      
       // FIXED: Only use existing database values, no auto-calculation
       const laborCost = editingRecord.labor_rate_mad || editingRecord.labor_cost_mad || '';
       const partsCost = editingRecord.parts_cost_mad || '';
       const taxCost = editingRecord.tax_mad || 0;
-      
-      console.log('🚨🚨🚨 CRITICAL DEBUG: Calculated costs (no external):');
-      console.log('🚨🚨🚨 CRITICAL DEBUG: laborCost:', laborCost);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: partsCost:', partsCost);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: taxCost:', taxCost);
-      
+
       const mappedData = {
         vehicle_id: editingRecord.vehicle_id?.toString() || '',
         maintenance_type: editingRecord.maintenance_type || editingRecord.type || 'Oil Change',
@@ -270,24 +245,11 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
         tax_mad: taxCost?.toString() || '',
         parts_used: [] // Will be set after inventory loads
       };
-      
-      console.log('🚨🚨🚨 CRITICAL FIX: MAPPED DATA WITH COSTS (no external):', JSON.stringify(mappedData, null, 2));
-      console.log('🚨🚨🚨 CRITICAL FIX: Setting formData now...');
-      
+
       setFormData(mappedData);
       setPreviousMaintenanceType(mappedData.maintenance_type);
-      
-      console.log('🚨🚨🚨 CRITICAL FIX: Form data set IMMEDIATELY with costs (no external)');
-      
-      // 🚨🚨🚨 CRITICAL DEBUG: Verify form data was set correctly after a short delay
-      setTimeout(() => {
-        console.log('🚨🚨🚨 CRITICAL DEBUG: VERIFYING FORM DATA AFTER SET:');
-        console.log('🚨🚨🚨 CRITICAL DEBUG: Current formData state after set:', formData);
-      }, 100);
-    } else {
-      console.log('🚨🚨🚨 CRITICAL DEBUG: NO EDITING RECORD - NEW MAINTENANCE MODE');
     }
-    
+
     loadInitialData();
   }, [editingRecord]); // Only depend on editingRecord
 
@@ -344,15 +306,8 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     setPreviousMaintenanceType(primaryMaintenanceType);
   }, [primaryMaintenanceType, formData.parts_used, inventoryItems, previousMaintenanceType]);
 
-  // 🚨🚨🚨 CRITICAL FIX: Handle parts data AFTER inventory loads
   useEffect(() => {
-    console.log('🚨🚨🚨 CRITICAL DEBUG: Parts useEffect triggered');
-    console.log('🚨🚨🚨 CRITICAL DEBUG: editingRecord exists?', !!editingRecord);
-    console.log('🚨🚨🚨 CRITICAL DEBUG: inventoryItems length:', inventoryItems.length);
-    
     if (editingRecord && inventoryItems.length > 0) {
-      console.log('🚨🚨🚨 CRITICAL DEBUG: PROCESSING PARTS DATA');
-      
       // Check multiple possible field names for parts data
       const partsData = editingRecord.parts_used || 
                        editingRecord.parts || 
@@ -360,38 +315,51 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
                        editingRecord.items_used ||
                        editingRecord.inventory_parts ||
                        [];
-      
-      console.log('🚨🚨🚨 CRITICAL DEBUG: Found parts data:', partsData);
-      
+
       if (Array.isArray(partsData) && partsData.length > 0) {
         const mappedParts = partsData.map(part => {
-          console.log('🚨🚨🚨 CRITICAL DEBUG: Processing part:', part);
+          const isInventoryPart = (part.source_type || (part.item_id ? 'inventory' : 'manual')) !== 'manual';
+          const linkedInventoryItem = isInventoryPart
+            ? inventoryItems.find(item => String(item.id) === String(part.item_id || part.id || part.inventory_item_id))
+            : null;
+          const quantity = parseFloat(part.quantity || part.qty || 1) || 0;
+          const unitCost = linkedInventoryItem
+            ? (parseFloat(linkedInventoryItem.cost_mad || 0) || 0)
+            : (parseFloat(part.unit_cost_mad || part.unit_cost || part.cost_per_unit || 0) || 0);
+          const unitPrice = linkedInventoryItem
+            ? getInventorySellPrice(linkedInventoryItem, part.unit_price_mad || part.unit_sell_mad || part.sell_price_mad || part.unit_cost_mad || part.unit_cost || part.cost_per_unit || 0)
+            : (parseFloat(part.unit_price_mad || part.unit_sell_mad || part.sell_price_mad || part.unit_cost_mad || part.unit_cost || part.cost_per_unit || 0) || 0);
+
           return {
             source_type: part.source_type || (part.item_id ? 'inventory' : 'manual'),
             item_id: part.item_id?.toString() || part.id?.toString() || part.inventory_item_id?.toString() || '',
-            quantity: part.quantity || part.qty || 1,
+            quantity,
             notes: stripFinanceSnapshot(part.notes || part.description || ''),
-            unit_cost_mad: part.unit_cost_mad || part.unit_cost || part.cost_per_unit || 0,
-            unit_price_mad: part.unit_price_mad || part.unit_sell_mad || part.sell_price_mad || part.unit_cost_mad || part.unit_cost || part.cost_per_unit || 0,
-            total_cost_mad: part.total_cost_mad || part.total_cost || part.cost || 0,
-            total_sell_mad: part.total_sell_mad || part.line_sell_total_mad || 0,
+            unit_cost_mad: unitCost,
+            unit_price_mad: unitPrice,
+            total_cost_mad: (parseFloat(part.total_cost_mad || part.total_cost || part.cost || 0) || 0) || (unitCost * quantity),
+            total_sell_mad: (parseFloat(part.total_sell_mad || part.line_sell_total_mad || 0) || 0) || (unitPrice * quantity),
             item_name: part.item_name || part.name || part.inventory_item_name || '',
             part_name: part.part_name || part.item_name || part.name || '',
             part_number: part.part_number || part.sku || ''
           };
         });
-        
-        console.log('🚨🚨🚨 CRITICAL DEBUG: Mapped parts:', mappedParts);
-        
+
         setFormData(prev => ({
           ...prev,
           parts_used: mappedParts,
           parts_cost_mad: Math.max(
             0,
             (parseFloat(prev.parts_cost_mad || 0) || 0) -
-              mappedParts.reduce((sum, part) => (
-                sum + ((parseFloat(part.quantity || 0) || 0) * (parseFloat(part.unit_cost_mad || 0) || 0))
-              ), 0)
+              mappedParts.reduce((sum, part) => {
+                const explicitLineTotal =
+                  parseFloat(part.total_sell_mad || part.line_sell_total_mad || 0) || 0;
+                if (explicitLineTotal > 0) {
+                  return sum + explicitLineTotal;
+                }
+
+                return sum + ((parseFloat(part.quantity || 0) || 0) * (parseFloat(part.unit_price_mad || part.unit_cost_mad || 0) || 0));
+              }, 0)
           ).toString()
         }));
       }
@@ -431,9 +399,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     try {
       setLoading(true);
       setLoadingItems(true);
-      
-      console.log('🚨🚨🚨 CRITICAL DEBUG: Loading initial data...');
-      
+
       // Load vehicles, pricing catalog, and inventory items
       const [vehiclesData, pricingData, itemsData] = await Promise.all([
         VehicleService.getAllVehicles(),
@@ -445,11 +411,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
       const safeVehicles = Array.isArray(vehiclesData) ? vehiclesData : [];
       const safePricing = Array.isArray(pricingData) ? pricingData : [];
       const safeItems = Array.isArray(itemsData) ? itemsData : [];
-      
-      console.log('🚨🚨🚨 CRITICAL DEBUG: Loaded vehicles:', safeVehicles.length);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: Loaded pricing:', safePricing.length);
-      console.log('🚨🚨🚨 CRITICAL DEBUG: Loaded inventory items:', safeItems.length);
-      
+
       setVehicles(safeVehicles);
       setPricingCatalog(safePricing);
       
@@ -457,9 +419,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
       // This allows editing existing records that may reference items now out of stock
       const activeItems = safeItems.filter(item => item.active);
       setInventoryItems(activeItems);
-      
-      console.log('🚨🚨🚨 CRITICAL DEBUG: Active inventory items set:', activeItems.length);
-      
+
     } catch (err) {
       console.error('❌ Error loading initial data:', err);
       setError(`Failed to load data: ${err.message}`);
@@ -560,7 +520,6 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    console.log('🚨🚨🚨 CRITICAL DEBUG: Form field changed:', name, '=', value);
     setFormData(prev => ({
       ...prev,
       [name]: value
@@ -625,7 +584,40 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
   const updatePartsUsed = (index, field, value) => {
     console.log('🔄 Updating part at index:', index, 'field:', field, 'value:', value);
     const newPartsUsed = [...formData.parts_used];
-    newPartsUsed[index] = { ...newPartsUsed[index], [field]: value };
+    const nextPart = { ...newPartsUsed[index], [field]: value };
+
+    if (field === 'item_id') {
+      const selectedItem = getItemDetails(value);
+      if (selectedItem) {
+        const unitCost = parseFloat(selectedItem.cost_mad || 0) || 0;
+        const unitPrice = getInventorySellPrice(selectedItem, nextPart.unit_price_mad);
+        nextPart.item_name = selectedItem.name || nextPart.item_name || '';
+        nextPart.part_name = selectedItem.name || nextPart.part_name || '';
+        nextPart.part_number = selectedItem.sku || nextPart.part_number || '';
+        nextPart.unit = selectedItem.unit || nextPart.unit || 'units';
+        nextPart.unit_cost_mad = unitCost;
+        nextPart.unit_price_mad = unitPrice;
+        nextPart.total_cost_mad = (parseFloat(nextPart.quantity || 0) || 0) * unitCost;
+        nextPart.total_sell_mad = (parseFloat(nextPart.quantity || 0) || 0) * unitPrice;
+      }
+    }
+
+    if (field === 'quantity') {
+      const selectedItem = (nextPart.source_type || 'inventory') === 'manual' ? null : getItemDetails(nextPart.item_id);
+      const quantity = parseFloat(value || 0) || 0;
+      const unitCost = (nextPart.source_type || 'inventory') === 'manual'
+        ? (parseFloat(nextPart.unit_cost_mad || 0) || 0)
+        : (parseFloat(selectedItem?.cost_mad || nextPart.unit_cost_mad || 0) || 0);
+      const unitPrice = (nextPart.source_type || 'inventory') === 'manual'
+        ? (parseFloat(nextPart.unit_price_mad || nextPart.unit_cost_mad || 0) || 0)
+        : getInventorySellPrice(selectedItem, nextPart.unit_price_mad);
+      nextPart.unit_cost_mad = unitCost;
+      nextPart.unit_price_mad = unitPrice;
+      nextPart.total_cost_mad = quantity * unitCost;
+      nextPart.total_sell_mad = quantity * unitPrice;
+    }
+
+    newPartsUsed[index] = nextPart;
     setFormData(prev => ({ ...prev, parts_used: newPartsUsed }));
   };
 
@@ -705,7 +697,6 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     return checks;
   };
 
-  // 🚨🚨🚨 CRITICAL FIX: Enhanced total cost calculation with debug logging (removed external cost)
   const calculateTotalCost = () => {
     const laborCost = parseFloat(formData.labor_rate_mad) || 0;
     const additionalPartsCost = parseFloat(formData.parts_cost_mad) || 0;
@@ -728,14 +719,6 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
     });
     
     const totalCost = laborCost + additionalPartsCost + tax + inventoryPartsCost + manualPartsCost;
-    
-    console.log('🚨🚨🚨 CRITICAL DEBUG: Cost calculation (no external):');
-    console.log('🚨🚨🚨 CRITICAL DEBUG: laborCost:', laborCost);
-    console.log('🚨🚨🚨 CRITICAL DEBUG: additionalPartsCost:', additionalPartsCost);
-    console.log('🚨🚨🚨 CRITICAL DEBUG: tax:', tax);
-    console.log('🚨🚨🚨 CRITICAL DEBUG: inventoryPartsCost:', inventoryPartsCost);
-    console.log('🚨🚨🚨 CRITICAL DEBUG: manualPartsCost:', manualPartsCost);
-    console.log('🚨🚨🚨 CRITICAL DEBUG: totalCost:', totalCost);
     
     return {
       laborCost,
@@ -862,7 +845,9 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
             const unitCost = item ? (item.cost_mad || 0) : (part.unit_cost_mad || 0);
             const explicitUnitPrice =
               parseFloat(part.unit_price_mad || part.unit_sell_mad || part.sell_price_mad || 0) || 0;
-            const unitPrice = explicitUnitPrice || (item ? (item.price_mad || item.cost_mad || 0) : (part.unit_cost_mad || 0));
+            const unitPrice = item
+              ? (parseFloat(item.price_mad || 0) || parseFloat(item.cost_mad || 0) || explicitUnitPrice || (part.unit_cost_mad || 0))
+              : (explicitUnitPrice || (part.unit_cost_mad || 0));
             const quantity = parseFloat(part.quantity || 0) || 0;
             return {
               ...part,
@@ -1123,23 +1108,6 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
       setShowPartsEditor(true);
     }
   }, [editingRecord, laborCost, additionalPartsCost, formData.tax_mad, formData.parts_used.length, showCostInputs, showPartsEditor]);
-
-  // 🚨🚨🚨 CRITICAL DEBUG: Log current form state continuously (removed external cost)
-  console.log('🚨🚨🚨 CRITICAL DEBUG: Current form state (render, no external):', {
-    editingRecord: !!editingRecord,
-    formDataVehicleId: formData.vehicle_id,
-    formDataMaintenanceType: formData.maintenance_type,
-    formDataStatus: formData.status,
-    formDataScheduledDate: formData.scheduled_date,
-    formDataNotes: formData.notes,
-    formDataLaborCost: formData.labor_rate_mad,
-    formDataPartsCost: formData.parts_cost_mad,
-    formDataTax: formData.tax_mad,
-    formDataPartsUsedCount: formData.parts_used.length,
-    calculatedTotalCost: totalCost,
-    vehiclesLoaded: safeVehicles.length,
-    inventoryItemsLoaded: inventoryItems.length
-  });
 
   return (
     <Card className="border-0 shadow-none">
@@ -1521,7 +1489,7 @@ const AddMaintenanceForm = ({ onCancel, onSuccess, editingRecord = null, initial
               )}
 
           {/* 🚨🚨🚨 CRITICAL FIX: Enhanced Cost Breakdown with Debug Info (REMOVED EXTERNAL COST) */}
-              {activeStep === 2 && false && (
+              {activeStep === 2 && (
           <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-blue-50 p-4 md:p-5 shadow-sm">
             <div className="mb-4">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

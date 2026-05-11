@@ -149,7 +149,12 @@ class MaintenanceService {
         organizationId
       );
 
-      if (error) throw error;
+      if (error) {
+        if (error.code === 'PGRST116') {
+          return null;
+        }
+        throw error;
+      }
 
       const parts = await MaintenancePartsService.getMaintenanceParts(recordId);
       return {
@@ -158,6 +163,9 @@ class MaintenanceService {
         parts_used: parts
       };
     } catch (error) {
+      if (error?.code === 'PGRST116') {
+        return null;
+      }
       console.error('❌ Error getting maintenance by id:', error);
       throw error;
     }
@@ -192,13 +200,13 @@ class MaintenanceService {
         { deductInventory: shouldDeductInventory, actorName }
       );
 
-      const totalCost = payload.labor_rate_mad + payload.external_cost_mad + payload.tax_mad + partsResult.totalPartsCost;
+      const totalCost = payload.cost;
 
       const { data: updatedMaintenance, error: updateError } = await supabase
         .from(this.table)
         .update({
           ...applyOrganizationMatch({}, organizationId),
-          parts_cost_mad: partsResult.totalPartsCost,
+          parts_cost_mad: payload.parts_cost_mad,
           cost: totalCost,
           updated_at: new Date().toISOString()
         })
@@ -298,14 +306,14 @@ class MaintenanceService {
             totalPartsCost: this.calculateInventoryPartsCost(existingRecord.parts_used || [])
           };
 
-      const totalCost = payload.labor_rate_mad + payload.external_cost_mad + payload.tax_mad + partsChanges.totalPartsCost;
+      const totalCost = payload.cost;
 
       const { data: updatedMaintenance, error } = await supabase
         .from(this.table)
         .update({
           ...applyOrganizationMatch({}, organizationId),
           ...payload,
-          parts_cost_mad: partsChanges.totalPartsCost,
+          parts_cost_mad: payload.parts_cost_mad,
           cost: totalCost,
           updated_at: new Date().toISOString()
         })
@@ -395,8 +403,15 @@ class MaintenanceService {
     try {
       const organizationId = await requireCurrentOrganizationId();
       const existingRecord = await this.getMaintenanceById(recordId);
+      if (!existingRecord) {
+        return {
+          success: true,
+          restoredInventory: [],
+          alreadyDeleted: true,
+        };
+      }
       const vehicleId = existingRecord?.vehicle_id || null;
-      const restoreInventory = existingRecord.status === 'completed';
+      const restoreInventory = existingRecord?.status === 'completed';
       const deletePartsResult = await MaintenancePartsService.deleteMaintenanceParts(recordId, {
         restoreInventory,
         actorName: 'Maintenance'

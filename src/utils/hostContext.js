@@ -9,6 +9,12 @@ const LOCAL_TENANT_SESSION_KEY = 'driveout.localTenantSlug';
 const LOCAL_TENANT_PORT_MAP = {
   '5174': 'owner1',
 };
+const LOCAL_TENANT_SLUG_PORT_MAP = Object.entries(LOCAL_TENANT_PORT_MAP).reduce((accumulator, [port, slug]) => {
+  if (slug) {
+    accumulator[String(slug).trim().toLowerCase()] = String(port).trim();
+  }
+  return accumulator;
+}, {});
 const FIRST_PARTY_STOREFRONT_PATHS = new Set([
   '/',
   '/website',
@@ -124,6 +130,29 @@ export const buildHostUrl = ({
         : 'driveout.io';
 
   return `https://${targetHost}${normalizedPath}${search || ''}${hash || ''}`;
+};
+
+export const buildLocalTenantUrl = ({
+  tenantSlug = null,
+  pathname = '/',
+  search = '',
+  hash = '',
+}) => {
+  const normalizedPath = pathname?.startsWith('/') ? pathname : `/${pathname || ''}`;
+  const normalizedTenantSlug = String(tenantSlug || '').trim().toLowerCase();
+  const mappedPort = normalizedTenantSlug ? LOCAL_TENANT_SLUG_PORT_MAP[normalizedTenantSlug] : '';
+
+  if (mappedPort) {
+    return `http://localhost:${mappedPort}${normalizedPath}${search || ''}${hash || ''}`;
+  }
+
+  const params = new URLSearchParams(search || '');
+  if (normalizedTenantSlug) {
+    params.set('tenant', normalizedTenantSlug);
+  }
+  const query = params.toString();
+
+  return `http://localhost:5173${normalizedPath}${query ? `?${query}` : ''}${hash || ''}`;
 };
 
 export const isTenantWorkspaceHost = (hostname = getCurrentHostname()) =>

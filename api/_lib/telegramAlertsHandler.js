@@ -8,6 +8,7 @@ const FIRST_PARTY_TENANT_SLUGS = new Set(['saharax']);
 const TELEGRAM_TIMEZONE = 'Africa/Casablanca';
 const TELEGRAM_EVENT_KEYS = [
   'rental_created',
+  'website_reservation_created',
   'rental_started',
   'rental_vehicle_replaced',
   'rental_completed',
@@ -300,6 +301,19 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         vehicle,
         ...(customerLine ? [customerLine] : []),
         ...windowLines,
+        ...(rentalIdentityLine ? [rentalIdentityLine] : []),
+        '',
+        linkLine,
+      ].join('\n');
+    case 'website_reservation_created':
+      return [
+        '🌐 Website Reservation',
+        '',
+        vehicle,
+        ...(customerLine ? [customerLine] : []),
+        ...windowLines,
+        `${total} MAD`,
+        ...(safeText(data.customerPhone || data.customer_phone) ? [`Phone: ${safeText(data.customerPhone || data.customer_phone)}`] : []),
         ...(rentalIdentityLine ? [rentalIdentityLine] : []),
         '',
         linkLine,
@@ -822,6 +836,7 @@ const getLatestOverdueReminder = async (adminClient, tenantId, rentalId) => {
 const TELEGRAM_EVENT_DEDUPLICATION_WINDOWS_MS = {
   telegram_test: 30 * 1000,
   rental_created: 2 * 60 * 1000,
+  website_reservation_created: 2 * 60 * 1000,
   rental_started: 2 * 60 * 1000,
   rental_vehicle_replaced: 2 * 60 * 1000,
   rental_completed: 2 * 60 * 1000,
@@ -841,6 +856,7 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
 
   switch (normalizedEventType) {
     case 'rental_created':
+    case 'website_reservation_created':
     case 'rental_started':
     case 'rental_vehicle_replaced':
     case 'rental_completed':

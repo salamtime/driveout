@@ -1,3 +1,5 @@
+import { buildLocalTenantUrl, getHostContext } from './hostContext';
+
 export const TENANT_ENTRY_ROUTES = Object.freeze({
   pendingApproval: '/pending-approval',
   noWorkspace: '/no-workspace',
@@ -9,6 +11,20 @@ export const TENANT_ENTRY_ROUTES = Object.freeze({
 });
 
 export const isExternalUrl = (value = '') => /^https?:\/\//i.test(String(value || '').trim());
+
+const resolveLocalTenantEntryTarget = ({ tenant = null, tenantSession = null } = {}) => {
+  const tenantSlug = String(
+    tenant?.tenant_slug ||
+    tenant?.tenantSlug ||
+    tenantSession?.tenantSlug ||
+    ''
+  ).trim().toLowerCase();
+
+  return buildLocalTenantUrl({
+    tenantSlug,
+    pathname: '/',
+  });
+};
 
 export const resolveUserEntry = ({ approved = false, tenantSession = null } = {}) => {
   if (!approved) {
@@ -55,6 +71,10 @@ export const resolveUserEntry = ({ approved = false, tenantSession = null } = {}
 
   const appUrl = String(tenant?.tenant_app_url || tenantSession?.tenantAppUrl || '').trim();
   if ((tenantStatus === 'active' || workspaceState === 'tenant_ready') && appUrl) {
+    const host = getHostContext();
+    if (host?.isLocal) {
+      return { type: 'external', target: resolveLocalTenantEntryTarget({ tenant, tenantSession }) };
+    }
     return { type: 'external', target: appUrl };
   }
 

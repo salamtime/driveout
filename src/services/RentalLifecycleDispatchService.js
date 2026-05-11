@@ -34,6 +34,7 @@ export const buildRentalLifecycleDispatchKey = (eventType, rental = {}) => {
 
   switch (normalizedEventType) {
     case 'rental_created':
+    case 'website_reservation_created':
     case 'rental_started':
     case 'rental_vehicle_replaced':
     case 'rental_completed':

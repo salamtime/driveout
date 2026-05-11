@@ -955,11 +955,84 @@ class FuelTransactionService {
       return null;
     }
 
-    const vehicleLookup = await this.getVehicleLookup((data || []).map((row) => row.vehicle_id));
-    const transactions = (data || []).map((row) => {
+    const rows = data || [];
+    const vehicleLookup = await this.getVehicleLookup(rows.map((row) => row.vehicle_id));
+    const rentalRows = rows.filter(
+      (row) =>
+        (row.transaction_type === 'rental_opening_level' || row.transaction_type === 'rental_closing_level') &&
+        row.rental_id
+    );
+    const rentalIds = rentalRows.map((row) => row.rental_id);
+    const [rentalFuelLevelsMap, rentalReferenceLookup] = await Promise.all([
+      this.getRentalFuelLevelsMap(rentalIds),
+      this.getRentalReferenceLookup(rentalIds),
+    ]);
+
+    const rentalOpeningSnapshots = new Map();
+    for (const row of [...rentalRows].sort(
+      (a, b) => new Date(a.created_at || a.transaction_date || 0) - new Date(b.created_at || b.transaction_date || 0)
+    )) {
+      if (row.transaction_type !== 'rental_opening_level' || !row.rental_id) {
+        continue;
+      }
+
+      const openingLiters =
+        row.liters_after ??
+        (row.fuel_lines_after !== null && row.fuel_lines_after !== undefined ? linesToLiters(row.fuel_lines_after) : null);
+
+      if (openingLiters !== null && openingLiters !== undefined) {
+        rentalOpeningSnapshots.set(String(row.rental_id), Number(openingLiters));
+      }
+    }
+
+    const transactions = rows.map((row) => {
       const vehicle = vehicleLookup.get(Number(row.vehicle_id)) || this.buildFeedVehicleFallback(row);
+      const rentalFuelLevels = row.rental_id ? rentalFuelLevelsMap.get(String(row.rental_id)) : null;
+      const rentalOpeningLitersFromTable =
+        rentalFuelLevels?.start_fuel_level !== null && rentalFuelLevels?.start_fuel_level !== undefined
+          ? linesToLiters(rentalFuelLevels.start_fuel_level)
+          : null;
+      const isRentalOpening = row.transaction_type === 'rental_opening_level';
+      const isRentalClosing = row.transaction_type === 'rental_closing_level';
+      const overrideFuelLinesBefore =
+        isRentalClosing && rentalFuelLevels?.start_fuel_level !== null && rentalFuelLevels?.start_fuel_level !== undefined
+          ? rentalFuelLevels.start_fuel_level
+          : row.fuel_lines_before;
+      const overrideFuelLinesAfter =
+        isRentalOpening && rentalFuelLevels?.start_fuel_level !== null && rentalFuelLevels?.start_fuel_level !== undefined
+          ? rentalFuelLevels.start_fuel_level
+          : isRentalClosing && rentalFuelLevels?.end_fuel_level !== null && rentalFuelLevels?.end_fuel_level !== undefined
+            ? rentalFuelLevels.end_fuel_level
+            : row.fuel_lines_after;
+      const overrideLitersBefore =
+        overrideFuelLinesBefore !== null && overrideFuelLinesBefore !== undefined
+          ? linesToLiters(overrideFuelLinesBefore)
+          : row.liters_before;
+      const overrideLitersAfter =
+        overrideFuelLinesAfter !== null && overrideFuelLinesAfter !== undefined
+          ? linesToLiters(overrideFuelLinesAfter)
+          : row.liters_after;
+      const derivedAmount = this.deriveRentalFuelLogAmount(
+        {
+          ...row,
+          fuel_lines_before: overrideFuelLinesBefore,
+          fuel_lines_after: overrideFuelLinesAfter,
+          liters_before: overrideLitersBefore,
+          liters_after: overrideLitersAfter,
+        },
+        row.rental_id
+          ? (rentalOpeningSnapshots.get(String(row.rental_id)) ?? rentalOpeningLitersFromTable)
+          : null
+      );
+
       return this.mapTransactionRecord({
         ...row,
+        rental_reference: row.rental_reference || (row.rental_id ? rentalReferenceLookup.get(String(row.rental_id)) || null : null),
+        fuel_lines_before: overrideFuelLinesBefore,
+        fuel_lines_after: overrideFuelLinesAfter,
+        liters_before: overrideLitersBefore,
+        liters_after: overrideLitersAfter,
+        amount: derivedAmount !== undefined ? derivedAmount : row.amount,
         vehicle,
         [this.vehiclesTable]: vehicle,
         saharax_0u4w4d_vehicles: vehicle,
@@ -1018,20 +1091,36 @@ class FuelTransactionService {
       return new Map();
     }
 
-    const { data, error } = await supabase
-      .from(RENTALS_TABLE)
-      .select('id, rental_id')
-      .in('id', uniqueRentalIds);
+    const [byInternalId, byReference] = await Promise.all([
+      supabase
+        .from(RENTALS_TABLE)
+        .select('id, rental_id')
+        .in('id', uniqueRentalIds),
+      supabase
+        .from(RENTALS_TABLE)
+        .select('id, rental_id')
+        .in('rental_id', uniqueRentalIds),
+    ]);
 
-    if (error) {
+    const rows = [
+      ...(byInternalId.data || []),
+      ...(byReference.data || []),
+    ];
+
+    if (byInternalId.error && byReference.error) {
       return new Map();
     }
 
-    return new Map(
-      (data || [])
-        .filter((row) => row?.id)
-        .map((row) => [String(row.id), row.rental_id || null])
-    );
+    const lookup = new Map();
+    for (const row of rows) {
+      if (!row?.rental_id) continue;
+      if (row.id) {
+        lookup.set(String(row.id), row.rental_id);
+      }
+      lookup.set(String(row.rental_id), row.rental_id);
+    }
+
+    return lookup;
   }
 
   async getVehicleModelsForFuelState() {
@@ -2587,21 +2676,11 @@ class FuelTransactionService {
       (linesAfter !== null && linesAfter !== undefined ? linesToLiters(linesAfter) : null);
 
     if (log.transaction_type === 'rental_opening_level') {
-      if (litersBefore !== null && litersBefore !== undefined && litersAfter !== null && litersAfter !== undefined) {
-        return roundTo(litersAfter - litersBefore, 2);
-      }
-
       return litersAfter ?? 0;
     }
 
     if (log.transaction_type === 'rental_closing_level') {
-      if (openingSnapshotLiters !== null && openingSnapshotLiters !== undefined && litersAfter !== null && litersAfter !== undefined) {
-        return roundTo(litersAfter - openingSnapshotLiters, 2);
-      }
-
-      if (litersBefore !== null && litersBefore !== undefined && litersAfter !== null && litersAfter !== undefined) {
-        return roundTo(litersAfter - litersBefore, 2);
-      }
+      return litersAfter ?? 0;
     }
 
     return undefined;
@@ -2700,7 +2779,7 @@ class FuelTransactionService {
         this.getFuelOperationLogs({
           limit: sourceFetchLimit,
           includeRentalVehicleLookup: !shouldUseFastLogPath,
-          includeRentalReferenceLookup: !shouldUseFastLogPath,
+          includeRentalReferenceLookup: true,
         }),
       ]);
       const shouldReconcileRentalSnapshots =

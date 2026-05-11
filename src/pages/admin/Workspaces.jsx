@@ -1,6 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Building2, CheckCircle2, ChevronLeft, Clock3, ExternalLink, RefreshCw, Search, ShieldAlert, ShieldCheck, UserRound } from 'lucide-react';
+import {
+  ActivitySquare,
+  BadgeCheck,
+  Building2,
+  CheckCircle2,
+  ChevronLeft,
+  Clock3,
+  ExternalLink,
+  Fingerprint,
+  LayoutDashboard,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  UserRound,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import AdminMobileStatsRow from '../../components/admin/AdminMobileStatsRow';
@@ -32,6 +49,20 @@ import {
   normalizeTenantPlanType,
 } from '../../config/tenantPlans';
 import { isTenantModuleEnabled } from '../../utils/tenantFeatureAccess';
+import {
+  ADMIN_EYEBROW_CLASS,
+  ADMIN_DANGER_BUTTON_CLASS,
+  ADMIN_INPUT_CLASS,
+  ADMIN_INSET_CARD_CLASS,
+  ADMIN_INSET_PANEL_CLASS,
+  ADMIN_LABEL_CLASS,
+  ADMIN_MAIN_CARD_CLASS,
+  ADMIN_OUTLINE_BUTTON_CLASS,
+  ADMIN_PRIMARY_BUTTON_CLASS,
+  ADMIN_SECONDARY_BUTTON_CLASS,
+  ADMIN_SECTION_HEADING_CLASS,
+  ADMIN_SUPPORTING_TEXT_CLASS,
+} from '../../utils/adminSurfaceStyles';
 
 const statusTone = {
   pending: 'border-amber-200 bg-amber-50 text-amber-700',
@@ -44,6 +75,96 @@ const statusTone = {
 
 const WORKSPACE_DETAIL_TAB_IDS = ['overview', 'owner_identity', 'audit', 'feature_access', 'upgrades'];
 const TENANCY_MODE_OPTIONS = ['shared', 'dedicated'];
+const WORKSPACE_TAB_ICON_CLASS = 'h-4 w-4 shrink-0';
+
+const WorkspaceDetailTabButton = ({ active, item, onClick }) => {
+  const Icon = item.icon;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group flex min-h-[86px] flex-1 items-start gap-3 rounded-[24px] border px-4 py-4 text-left transition ${
+        active
+          ? 'border-violet-200 bg-violet-50 shadow-[0_12px_30px_-24px_rgba(124,58,237,0.7)]'
+          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+      }`}
+    >
+      <span className={`flex h-11 w-11 items-center justify-center rounded-2xl border transition ${
+        active
+          ? 'border-violet-200 bg-white text-violet-700 shadow-sm'
+          : 'border-slate-200 bg-slate-50 text-slate-500 group-hover:text-slate-700'
+      }`}>
+        <Icon className={WORKSPACE_TAB_ICON_CLASS} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className={`block text-sm font-semibold ${active ? 'text-violet-900' : 'text-slate-900'}`}>
+          {item.label}
+        </span>
+        <span className={`mt-1 block text-xs leading-5 ${active ? 'text-violet-700/90' : 'text-slate-500'}`}>
+          {item.description}
+        </span>
+      </span>
+    </button>
+  );
+};
+
+const WorkspacePanelHeader = ({
+  icon: Icon,
+  eyebrow,
+  title,
+  description,
+  badge = null,
+  action = null,
+}) => (
+  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+    <div className="flex min-w-0 items-start gap-4">
+      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-violet-200 bg-violet-50 text-violet-700 shadow-[0_10px_30px_-24px_rgba(124,58,237,0.9)]">
+        <Icon className="h-5 w-5" />
+      </span>
+      <div className="min-w-0">
+        <p className={ADMIN_EYEBROW_CLASS}>{eyebrow}</p>
+        <h3 className={ADMIN_SECTION_HEADING_CLASS}>{title}</h3>
+        {description ? (
+          <p className={`${ADMIN_SUPPORTING_TEXT_CLASS} leading-6`}>
+            {description}
+          </p>
+        ) : null}
+      </div>
+    </div>
+    {badge || action ? (
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        {badge}
+        {action}
+      </div>
+    ) : null}
+  </div>
+);
+
+const WorkspaceRegistryStatCard = ({ icon: Icon, eyebrow, value, caption, tone = 'slate' }) => {
+  const toneClass = tone === 'violet'
+    ? 'border-violet-200 bg-violet-50 text-violet-700'
+    : tone === 'emerald'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+      : tone === 'amber'
+        ? 'border-amber-200 bg-amber-50 text-amber-700'
+        : 'border-slate-200 bg-slate-50 text-slate-600';
+
+  return (
+    <div className={ADMIN_MAIN_CARD_CLASS}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className={ADMIN_EYEBROW_CLASS}>{eyebrow}</p>
+          <p className="mt-3 text-3xl font-semibold tabular-nums text-slate-900">{value}</p>
+          <p className="mt-2 text-sm text-slate-500">{caption}</p>
+        </div>
+        <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border ${toneClass}`}>
+          <Icon className="h-5 w-5" />
+        </span>
+      </div>
+    </div>
+  );
+};
 
 const formatDate = (value) => {
   if (!value) return '—';
@@ -69,6 +190,67 @@ const formatTenancyModeLabel = (mode, tr) => {
     return tr('Managed Workspace', 'Espace géré');
   }
   return tr('Shared Workspace', 'Espace partagé');
+};
+
+const resolveWorkspaceTenancyMode = (row = {}) => {
+  const tenant = row?.tenant && typeof row.tenant === 'object' ? row.tenant : row;
+  const metadata = tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {};
+  const tenantName = String(
+    row?.name ||
+    row?.tenant_name ||
+    row?.tenantName ||
+    tenant?.tenant_name ||
+    tenant?.tenantName ||
+    ''
+  ).trim().toLowerCase();
+  const tenantSlug = String(
+    row?.slug ||
+    row?.tenant_slug ||
+    row?.tenantSlug ||
+    tenant?.tenant_slug ||
+    tenant?.tenantSlug ||
+    ''
+  ).trim().toLowerCase();
+  const tenantAppUrl = String(
+    row?.tenant_app_url ||
+    row?.tenantAppUrl ||
+    tenant?.tenant_app_url ||
+    tenant?.tenantAppUrl ||
+    ''
+  ).trim().toLowerCase();
+
+  if (
+    tenantSlug === 'saharax' ||
+    tenantName === 'saharax' ||
+    tenantName === 'saharax xtreme' ||
+    tenantAppUrl.includes('saharax.driveout.io')
+  ) {
+    return 'dedicated';
+  }
+
+  const explicitMode = String(
+    row?.tenancy_mode ||
+    row?.tenancyMode ||
+    tenant?.tenancy_mode ||
+    tenant?.tenancyMode ||
+    metadata?.tenancy_mode ||
+    metadata?.workspace_mode ||
+    ''
+  ).trim().toLowerCase();
+
+  if (explicitMode === 'shared' || explicitMode === 'dedicated') {
+    return explicitMode;
+  }
+
+  if (
+    String(tenant?.tenant_project_ref || tenant?.tenantProjectRef || '').trim() ||
+    String(tenant?.tenant_api_url || tenant?.tenantApiUrl || '').trim() ||
+    String(tenant?.tenant_anon_key || tenant?.tenantAnonKey || '').trim()
+  ) {
+    return 'dedicated';
+  }
+
+  return 'shared';
 };
 
 const getProjectRefFromSupabaseUrl = (value) => {
@@ -128,17 +310,7 @@ const TENANT_WORKSPACE_NAVIGATION_ITEMS = Object.freeze([
 ]);
 
 const resolveWorkspaceModeKey = (row = {}) => {
-  const normalized = String(
-    row?.tenancy_mode ||
-    row?.tenancyMode ||
-    row?.tenant?.tenancy_mode ||
-    row?.tenant?.tenancyMode ||
-    row?.tenant?.metadata?.tenancy_mode ||
-    row?.tenant?.metadata?.tenancyMode ||
-    'shared'
-  ).trim().toLowerCase();
-
-  return normalized === 'dedicated' ? 'managed' : 'shared';
+  return resolveWorkspaceTenancyMode(row) === 'dedicated' ? 'managed' : 'shared';
 };
 
 const getWorkspaceModeBadgeTone = (modeKey = 'shared') => (
@@ -245,7 +417,7 @@ const buildWorkspaceRows = (businessOwners = [], currentUser = null, activeTenan
     id: tenant?.id || businessAccount?.id,
     businessAccount,
     tenant,
-    tenancy_mode: String(tenant?.tenancy_mode || tenant?.metadata?.tenancy_mode || 'shared').trim().toLowerCase() || 'shared',
+    tenancy_mode: resolveWorkspaceTenancyMode(tenant),
     subscription: entry?.subscription || {},
     provisioningJob,
     latestSchemaJob,
@@ -303,6 +475,7 @@ const appendFirstPartyTenantFallback = ({ rows = [], currentUser = null, activeT
       tenant_name: 'SaharaX',
       tenant_slug: 'saharax',
       tenant_status: 'active',
+      tenancy_mode: 'dedicated',
       db_provider: 'supabase',
       tenant_project_ref: LOCAL_FIRST_PARTY_PROJECT_REF,
       tenant_api_url: LOCAL_FIRST_PARTY_SUPABASE_URL,
@@ -313,6 +486,8 @@ const appendFirstPartyTenantFallback = ({ rows = [], currentUser = null, activeT
       metadata: {
         source: 'first_party_local_fallback',
         first_party: true,
+        tenancy_mode: 'dedicated',
+        workspace_mode: 'dedicated',
       },
     },
     provisioning_job: {
@@ -891,7 +1066,7 @@ const buildControlsDraft = (workspace = {}) => {
     : {};
 
   return {
-    tenancy_mode: String(tenant?.tenancy_mode || tenant?.metadata?.tenancy_mode || 'shared').trim().toLowerCase() || 'shared',
+    tenancy_mode: resolveWorkspaceTenancyMode(tenant),
     plan_type: planType,
     subscription_status: String(subscription?.subscription_status || 'trial').trim().toLowerCase() || 'trial',
     billing_status: String(subscription?.billing_status || 'none').trim().toLowerCase() || 'none',
@@ -1070,7 +1245,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
   const [auditLoading, setAuditLoading] = useState(false);
   const [schemaActionResult, setSchemaActionResult] = useState(null);
   const [confirmSchemaApply, setConfirmSchemaApply] = useState(false);
-  const tenancyMode = String(controlsDraft?.tenancy_mode || tenant?.tenancy_mode || tenant?.metadata?.tenancy_mode || 'shared').trim().toLowerCase() || 'shared';
+  const tenancyMode = String(controlsDraft?.tenancy_mode || resolveWorkspaceTenancyMode(tenant)).trim().toLowerCase() || 'shared';
   const isDedicatedTenant = tenancyMode === 'dedicated';
   const isSharedTenant = !isDedicatedTenant;
 
@@ -1200,49 +1375,57 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
   if (!workspace) return null;
 
-  const lightSectionClass = 'rounded-[28px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]';
-  const lightInsetCardClass = 'rounded-3xl border border-slate-200 bg-slate-50/70';
-  const lightInsetSoftClass = 'rounded-2xl border border-slate-200 bg-white';
-  const lightInputClass = 'mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100';
-  const lightPrimaryButtonClass = 'inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60';
-  const lightSecondaryButtonClass = 'inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60';
-  const lightDangerButtonClass = 'inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-rose-50 hover:text-rose-700 disabled:opacity-60';
-  const lightEyebrowClass = 'text-xs font-semibold uppercase tracking-[0.18em] text-slate-500';
-  const lightLabelClass = 'text-xs font-semibold uppercase tracking-wide text-slate-500';
-  const lightSectionHeadingClass = 'mt-1 text-lg font-semibold text-slate-900';
+  const lightSectionClass = ADMIN_MAIN_CARD_CLASS.replace(' p-5', '');
+  const lightInsetCardClass = ADMIN_INSET_CARD_CLASS;
+  const lightInsetSoftClass = ADMIN_INSET_PANEL_CLASS;
+  const lightInputClass = ADMIN_INPUT_CLASS;
+  const lightPrimaryButtonClass = ADMIN_PRIMARY_BUTTON_CLASS;
+  const lightSecondaryButtonClass = ADMIN_SECONDARY_BUTTON_CLASS;
+  const lightDangerButtonClass = ADMIN_DANGER_BUTTON_CLASS;
+  const lightEyebrowClass = ADMIN_EYEBROW_CLASS;
+  const lightLabelClass = ADMIN_LABEL_CLASS;
+  const lightSectionHeadingClass = ADMIN_SECTION_HEADING_CLASS;
   const lightCardValueClass = 'mt-2 text-base font-semibold text-slate-900';
-  const lightSupportingTextClass = 'mt-1 text-sm text-slate-500';
+  const lightSupportingTextClass = ADMIN_SUPPORTING_TEXT_CLASS;
 
   const detailTabs = useMemo(() => ([
     {
       id: 'overview',
+      icon: LayoutDashboard,
       label: tr('Overview', 'Aperçu'),
-      description: tr('Provisioning, health, schema, and workspace actions.', 'Provisionnement, santé, schéma et actions workspace.'),
+      description: isDedicatedTenant
+        ? tr('Provisioning, health, schema, and workspace actions.', 'Provisionnement, santé, schéma et actions workspace.')
+        : tr('Provisioning, runtime readiness, plan, and workspace actions.', 'Provisionnement, readiness runtime, plan et actions workspace.'),
     },
     {
       id: 'owner_identity',
+      icon: Fingerprint,
       label: tr('Owner identity', 'Identité propriétaire'),
       description: tr('Owner linkage, runtime links, and tenant identity settings.', 'Lien propriétaire, liens runtime et paramètres d’identité tenant.'),
     },
     {
       id: 'audit',
+      icon: ActivitySquare,
       label: tr('Audit', 'Audit'),
       description: tr('Recent admin and access events for this tenant.', 'Événements admin et accès récents pour ce tenant.'),
     },
     {
       id: 'feature_access',
+      icon: SlidersHorizontal,
       label: tr('Feature access', 'Accès fonctionnalités'),
       description: tr('Plan, billing, and workspace feature access controls.', 'Contrôles du plan, de la facturation et de l’accès aux fonctionnalités du workspace.'),
     },
     {
       id: 'upgrades',
+      icon: Sparkles,
       label: tr('Upgrades', 'Montées en gamme'),
       description: tr('Monetization path, billing controls, and upsells.', 'Parcours de monétisation, contrôles de facturation et upsells.'),
     },
-  ]), [tr]);
+  ]), [isDedicatedTenant, tr]);
 
   const rawDetailTab = String(searchParams.get('tab') || '').trim().toLowerCase();
   const detailTab = WORKSPACE_DETAIL_TAB_IDS.includes(rawDetailTab) ? rawDetailTab : 'overview';
+  const activeDetailTabMeta = detailTabs.find((item) => item.id === detailTab) || detailTabs[0];
   const setDetailTab = (nextTab) => {
     const normalizedTab = WORKSPACE_DETAIL_TAB_IDS.includes(nextTab) ? nextTab : 'overview';
     const nextParams = new URLSearchParams(searchParams);
@@ -1620,7 +1803,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
               <button
                 type="button"
                 onClick={onBack}
-                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                className={ADMIN_OUTLINE_BUTTON_CLASS}
               >
                 <ChevronLeft className="h-4 w-4" />
                 {tr('Back to workspaces', 'Retour aux workspaces')}
@@ -1632,29 +1815,50 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           )}
         />
 
-        <section className={`${lightSectionClass} p-3`}>
-          <div className="flex flex-wrap items-stretch gap-2">
+        <section className={`${lightSectionClass} p-4`}>
+          <div className="mb-4 flex flex-col gap-1">
+            <p className={lightEyebrowClass}>{tr('Workspace navigation', 'Navigation workspace')}</p>
+            <h2 className={lightSectionHeadingClass}>{tr('Admin control areas', 'Zones de contrôle admin')}</h2>
+            <p className={lightSupportingTextClass}>
+              {tr(
+                'Each section follows the same admin surface language so workspace operations stay readable and consistent.',
+                'Chaque section suit le même langage visuel admin pour garder les opérations workspace lisibles et cohérentes.'
+              )}
+            </p>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-5">
             {detailTabs.map((item) => {
               const active = item.id === detailTab;
               return (
-                <button
+                <WorkspaceDetailTabButton
                   key={item.id}
-                  type="button"
+                  item={item}
+                  active={active}
                   onClick={() => setDetailTab(item.id)}
-                  className={`inline-flex min-h-[46px] items-center justify-center rounded-2xl border px-4 py-2 text-sm font-semibold transition ${
-                    active
-                      ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
-                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  {item.label}
-                </button>
+                />
               );
             })}
           </div>
         </section>
 
         <div className="space-y-4">
+          <section className={`${lightSectionClass} p-5`}>
+            <WorkspacePanelHeader
+              icon={activeDetailTabMeta.icon}
+              eyebrow={tr('Workspace area', 'Zone workspace')}
+              title={activeDetailTabMeta.label}
+              description={activeDetailTabMeta.description}
+              badge={(
+                <>
+                  <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getWorkspaceModeBadgeTone(resolveWorkspaceModeKey(workspace))}`}>
+                    {formatTenancyModeLabel(resolveWorkspaceModeKey(workspace) === 'managed' ? 'dedicated' : 'shared', tr)}
+                  </span>
+                  <WorkspaceStatusBadge status={status} />
+                </>
+              )}
+            />
+          </section>
+
           {detailTab === 'overview' && isDedicatedTenant ? (
           <section className={`${lightSectionClass} p-5`}>
             <div className="grid gap-4 md:grid-cols-2">
@@ -1674,31 +1878,30 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
           {detailTab === 'overview' && isSharedTenant ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className={lightEyebrowClass}>{tr('Shared runtime', 'Runtime partagé')}</p>
-                <h3 className={lightSectionHeadingClass}>{tr('Shared tenant readiness', 'Readiness du tenant partagé')}</h3>
-                <p className="mt-1 text-sm text-slate-500">
-                  {tr(
-                    'This shared workspace uses the shared runtime, so the admin view tracks organization mapping and runtime readiness instead of managed-infrastructure controls.',
-                    'Cet espace partagé utilise le runtime partagé, donc la vue admin suit le mapping organisation et la readiness runtime plutôt que les contrôles d’infrastructure gérée.'
-                  )}
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getRuntimeVerificationTone(schemaState.runtimeVerificationOk)}`}>
-                  {schemaState.runtimeVerificationOk === true
-                    ? <CheckCircle2 className="h-3.5 w-3.5" />
-                    : schemaState.runtimeVerificationOk === false
-                      ? <ShieldAlert className="h-3.5 w-3.5" />
-                      : <Clock3 className="h-3.5 w-3.5" />}
-                  {getRuntimeVerificationLabel(schemaState.runtimeVerificationOk, tr)}
-                </span>
-                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
-                  {formatTenancyModeLabel(tenancyMode, tr)}
-                </span>
-              </div>
-            </div>
+            <WorkspacePanelHeader
+              icon={ShieldCheck}
+              eyebrow={tr('Shared runtime', 'Runtime partagé')}
+              title={tr('Shared tenant readiness', 'Readiness du tenant partagé')}
+              description={tr(
+                'This shared workspace uses the shared runtime, so the admin view tracks organization mapping and runtime readiness instead of managed-infrastructure controls.',
+                'Cet espace partagé utilise le runtime partagé, donc la vue admin suit le mapping organisation et la readiness runtime plutôt que les contrôles d’infrastructure gérée.'
+              )}
+              badge={(
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getRuntimeVerificationTone(schemaState.runtimeVerificationOk)}`}>
+                    {schemaState.runtimeVerificationOk === true
+                      ? <CheckCircle2 className="h-3.5 w-3.5" />
+                      : schemaState.runtimeVerificationOk === false
+                        ? <ShieldAlert className="h-3.5 w-3.5" />
+                        : <Clock3 className="h-3.5 w-3.5" />}
+                    {getRuntimeVerificationLabel(schemaState.runtimeVerificationOk, tr)}
+                  </span>
+                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                    {formatTenancyModeLabel(tenancyMode, tr)}
+                  </span>
+                </div>
+              )}
+            />
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {[
@@ -1727,68 +1930,70 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           </section>
           ) : null}
 
-          {detailTab === 'overview' ? (
+          {detailTab === 'overview' && isDedicatedTenant ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">{tr('Access mode', 'Mode d’accès')}</p>
-                <h3 className={lightSectionHeadingClass}>{tr('Platform execution context', 'Contexte d’exécution plateforme')}</h3>
-                <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
-                  {isPlatformOwner
+            <WorkspacePanelHeader
+              icon={ShieldCheck}
+              eyebrow={tr('Access mode', 'Mode d’accès')}
+              title={tr('Platform execution context', 'Contexte d’exécution plateforme')}
+              description={
+                isPlatformOwner
+                  ? tr(
+                      'Changes from this page use platform-owner authority.',
+                      'Les changements depuis ce panneau utilisent l’autorité du propriétaire plateforme.'
+                    )
+                  : isPlatformAdmin
                     ? tr(
-                        'Changes from this page use platform-owner authority.',
-                        'Les changements depuis ce panneau utilisent l’autorité du propriétaire plateforme.'
+                        'Changes from this page use your delegated platform-admin access.',
+                        'Les changements depuis ce panneau utilisent votre accès admin plateforme délégué.'
                       )
-                    : isPlatformAdmin
-                      ? tr(
-                          'Changes from this page use your delegated platform-admin access.',
-                          'Les changements depuis ce panneau utilisent votre accès admin plateforme délégué.'
-                        )
-                      : tr(
-                          'Changes from this page follow the permissions attached to the current session.',
-                          'Les changements depuis ce panneau suivent les permissions attachées à la session actuelle.'
-                        )}
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${
-                  isPlatformOwner
-                    ? 'border border-violet-200 bg-violet-50 text-violet-700'
-                    : isPlatformAdmin
-                      ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
-                      : 'border border-slate-200 bg-slate-50 text-slate-700'
-                }`}>
-                  {isPlatformOwner
-                    ? tr('Platform owner', 'Propriétaire plateforme')
-                    : isPlatformAdmin
-                      ? tr('Platform admin', 'Admin plateforme')
-                      : tr('Session user', 'Utilisateur session')}
-                </span>
-                <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
-                  {workspace?.relationship?.isTenantOwner
-                    ? tr('Linked tenant owner', 'Propriétaire tenant lié')
-                    : tr('Platform-managed workspace', 'Workspace géré plateforme')}
-                </span>
-              </div>
-            </div>
+                    : tr(
+                        'Changes from this page follow the permissions attached to the current session.',
+                        'Les changements depuis ce panneau suivent les permissions attachées à la session actuelle.'
+                      )
+              }
+              badge={(
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${
+                    isPlatformOwner
+                      ? 'border border-violet-200 bg-violet-50 text-violet-700'
+                      : isPlatformAdmin
+                        ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border border-slate-200 bg-slate-50 text-slate-700'
+                  }`}>
+                    {isPlatformOwner
+                      ? tr('Platform owner', 'Propriétaire plateforme')
+                      : isPlatformAdmin
+                        ? tr('Platform admin', 'Admin plateforme')
+                        : tr('Session user', 'Utilisateur session')}
+                  </span>
+                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                    {workspace?.relationship?.isTenantOwner
+                      ? tr('Linked tenant owner', 'Propriétaire tenant lié')
+                      : tr('Platform-managed workspace', 'Workspace géré plateforme')}
+                  </span>
+                </div>
+              )}
+            />
           </section>
           ) : null}
 
           {detailTab === 'overview' ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{tr('Overview', 'Aperçu')}</p>
-                <p className="mt-2 text-lg font-semibold text-slate-900">{workspace.name}</p>
-                <p className="mt-1 text-sm text-slate-500">{tr('Workspace summary', "Résumé de l’espace")}</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getWorkspaceModeBadgeTone(resolveWorkspaceModeKey(workspace))}`}>
-                  {formatTenancyModeLabel(resolveWorkspaceModeKey(workspace) === 'managed' ? 'dedicated' : 'shared', tr)}
-                </span>
-                <WorkspaceStatusBadge status={status} />
-              </div>
-            </div>
+            <WorkspacePanelHeader
+              icon={BadgeCheck}
+              eyebrow={tr('Overview', 'Aperçu')}
+              title={workspace.name}
+              description={tr('Workspace summary', "Résumé de l’espace")}
+              badge={(
+                <>
+                  <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getWorkspaceModeBadgeTone(resolveWorkspaceModeKey(workspace))}`}>
+                    {formatTenancyModeLabel(resolveWorkspaceModeKey(workspace) === 'managed' ? 'dedicated' : 'shared', tr)}
+                  </span>
+                  <WorkspaceStatusBadge status={status} />
+                </>
+              )}
+            />
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <div className="rounded-2xl border border-white bg-slate-50/70 px-4 py-3">
                 <p className={lightLabelClass}>{tr('Workspace name', "Nom de l’espace")}</p>
@@ -1823,21 +2028,20 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
           {detailTab === 'owner_identity' ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className={lightEyebrowClass}>{tr('Owner identity', 'Identité propriétaire')}</p>
-                <h3 className={lightSectionHeadingClass}>{tr('Access and runtime context', 'Accès et contexte runtime')}</h3>
-                <p className="mt-1 text-sm leading-6 text-slate-500">
-                  {tr(
-                    'This section shows how the tenant is being managed from the platform side and which runtime links are currently available.',
-                    'Cette section montre comment le tenant est géré côté plateforme et quels liens runtime sont actuellement disponibles.'
-                  )}
-                </p>
-              </div>
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
-                {workspace.relationship?.isTenantOwner ? tr('Linked owner', 'Propriétaire lié') : tr('Platform managed', 'Géré plateforme')}
-              </span>
-            </div>
+            <WorkspacePanelHeader
+              icon={UserRound}
+              eyebrow={tr('Owner identity', 'Identité propriétaire')}
+              title={tr('Access and runtime context', 'Accès et contexte runtime')}
+              description={tr(
+                'This section shows how the tenant is being managed from the platform side and which runtime links are currently available.',
+                'Cette section montre comment le tenant est géré côté plateforme et quels liens runtime sont actuellement disponibles.'
+              )}
+              badge={(
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                  {workspace.relationship?.isTenantOwner ? tr('Linked owner', 'Propriétaire lié') : tr('Platform managed', 'Géré plateforme')}
+                </span>
+              )}
+            />
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
                 <p className={lightLabelClass}>{tr('Owner identity', 'Identité propriétaire')}</p>
@@ -1879,21 +2083,22 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
           {detailTab === 'overview' ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className={lightEyebrowClass}>{tr('Tenant health', 'Santé du tenant')}</p>
-                <h3 className={lightSectionHeadingClass}>{healthReport.summary}</h3>
-                <p className="mt-1 text-sm text-slate-500">{tr('Registry health summary.', 'Résumé de santé du registre.')}</p>
-              </div>
-              <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getHealthSeverityTone(healthReport.severity)}`}>
-                {healthReport.severity === 'healthy' ? <CheckCircle2 className="h-3.5 w-3.5" /> : healthReport.severity === 'critical' ? <ShieldAlert className="h-3.5 w-3.5" /> : <Clock3 className="h-3.5 w-3.5" />}
-                {healthReport.severity === 'healthy'
-                  ? tr('Healthy', 'Sain')
-                  : healthReport.severity === 'critical'
-                    ? tr('Critical', 'Critique')
-                    : tr('Needs review', 'À vérifier')}
-              </span>
-            </div>
+            <WorkspacePanelHeader
+              icon={ActivitySquare}
+              eyebrow={tr('Tenant health', 'Santé du tenant')}
+              title={healthReport.summary}
+              description={tr('Registry health summary.', 'Résumé de santé du registre.')}
+              badge={(
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getHealthSeverityTone(healthReport.severity)}`}>
+                  {healthReport.severity === 'healthy' ? <CheckCircle2 className="h-3.5 w-3.5" /> : healthReport.severity === 'critical' ? <ShieldAlert className="h-3.5 w-3.5" /> : <Clock3 className="h-3.5 w-3.5" />}
+                  {healthReport.severity === 'healthy'
+                    ? tr('Healthy', 'Sain')
+                    : healthReport.severity === 'critical'
+                      ? tr('Critical', 'Critique')
+                      : tr('Needs review', 'À vérifier')}
+                </span>
+              )}
+            />
 
             <div className="mt-4 grid gap-3">
               {healthReport.checks.map((item) => (
@@ -1931,36 +2136,37 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
           {detailTab === 'overview' ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className={lightEyebrowClass}>{tr('Schema release', 'Release schéma')}</p>
-                <h3 className={lightSectionHeadingClass}>{tr('Canonical tenant upgrade state', 'État d’upgrade canonique du tenant')}</h3>
-                <p className="mt-1 text-sm text-slate-500">{tr('Schema and runtime release controls.', 'Contrôles de release schéma et runtime.')}</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getSchemaVerificationTone(schemaState.verificationOk)}`}>
-                  {schemaState.verificationOk === true
-                    ? <CheckCircle2 className="h-3.5 w-3.5" />
-                    : schemaState.verificationOk === false
-                      ? <ShieldAlert className="h-3.5 w-3.5" />
-                      : <Clock3 className="h-3.5 w-3.5" />}
-                  {getSchemaVerificationLabel(schemaState.verificationOk, tr)}
-                </span>
-                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getRuntimeVerificationTone(schemaState.runtimeVerificationOk)}`}>
-                  {schemaState.runtimeVerificationOk === true
-                    ? <CheckCircle2 className="h-3.5 w-3.5" />
-                    : schemaState.runtimeVerificationOk === false
-                      ? <ShieldAlert className="h-3.5 w-3.5" />
-                      : <Clock3 className="h-3.5 w-3.5" />}
-                  {getRuntimeVerificationLabel(schemaState.runtimeVerificationOk, tr)}
-                </span>
-                {schemaState.releaseId ? (
-                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
-                    {formatSchemaReleaseLabel(schemaState.releaseId)}
+            <WorkspacePanelHeader
+              icon={ShieldAlert}
+              eyebrow={tr('Schema release', 'Release schéma')}
+              title={tr('Canonical tenant upgrade state', 'État d’upgrade canonique du tenant')}
+              description={tr('Schema and runtime release controls.', 'Contrôles de release schéma et runtime.')}
+              badge={(
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getSchemaVerificationTone(schemaState.verificationOk)}`}>
+                    {schemaState.verificationOk === true
+                      ? <CheckCircle2 className="h-3.5 w-3.5" />
+                      : schemaState.verificationOk === false
+                        ? <ShieldAlert className="h-3.5 w-3.5" />
+                        : <Clock3 className="h-3.5 w-3.5" />}
+                    {getSchemaVerificationLabel(schemaState.verificationOk, tr)}
                   </span>
-                ) : null}
-              </div>
-            </div>
+                  <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getRuntimeVerificationTone(schemaState.runtimeVerificationOk)}`}>
+                    {schemaState.runtimeVerificationOk === true
+                      ? <CheckCircle2 className="h-3.5 w-3.5" />
+                      : schemaState.runtimeVerificationOk === false
+                        ? <ShieldAlert className="h-3.5 w-3.5" />
+                        : <Clock3 className="h-3.5 w-3.5" />}
+                    {getRuntimeVerificationLabel(schemaState.runtimeVerificationOk, tr)}
+                  </span>
+                  {schemaState.releaseId ? (
+                    <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                      {formatSchemaReleaseLabel(schemaState.releaseId)}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            />
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {[
@@ -2014,7 +2220,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
                 onClick={() => runSchemaAction('plan')}
                 className={lightSecondaryButtonClass}
               >
-                {busy === 'schema-plan' ? tr('Planning...', 'Planification...') : tr('Plan upgrade', 'Planifier l’upgrade')}
+                {busy === 'schema-plan' ? tr('Planning...', 'Planification...') : tr('Plan schema update', 'Planifier la mise à jour schéma')}
               </button>
               <button
                 type="button"
@@ -2337,23 +2543,89 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           </section>
           ) : null}
 
+          {detailTab === 'overview' && isSharedTenant ? (
+          <section className={`${lightSectionClass} p-5`}>
+            <WorkspacePanelHeader
+              icon={Sparkles}
+              eyebrow={tr('Commercial plan', 'Plan commercial')}
+              title={tr('Shared workspace billing and upgrades', 'Facturation et upgrades de l’espace partagé')}
+              description={tr(
+                'This shared workspace uses the shared runtime. Plan upgrades, billing rules, add-ons, and feature access still work here, but dedicated schema release controls do not apply.',
+                'Cet espace partagé utilise le runtime partagé. Les upgrades de plan, règles de facturation, add-ons et accès aux fonctionnalités fonctionnent toujours ici, mais les contrôles de release schéma dédiés ne s’appliquent pas.'
+              )}
+              badge={(
+                <div className="flex flex-wrap items-center gap-2">
+                  <WorkspacePlanBadge planType={controlsDraft.plan_type} />
+                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                    {String(controlsDraft.subscription_status || 'trial')}
+                  </span>
+                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                    {String(controlsDraft.billing_status || 'none')}
+                  </span>
+                </div>
+              )}
+            />
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                [tr('Current plan', 'Plan actuel'), controlsDraft.plan_type || 'starter'],
+                [tr('Subscription', 'Abonnement'), controlsDraft.subscription_status || 'trial'],
+                [tr('Billing cycle', 'Cycle de facturation'), controlsDraft.billing_engine?.billing_cycle || 'monthly'],
+                [tr('Invoicing mode', 'Mode de facturation'), controlsDraft.billing_engine?.invoicing_mode || 'automatic'],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                  <p className={lightLabelClass}>{label}</p>
+                  <p className="mt-2 break-words text-sm font-semibold text-slate-900">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+              <p className={lightLabelClass}>{tr('Where to manage upgrades', 'Où gérer les upgrades')}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                {tr(
+                  'Use Feature access to manage plan, limits, subscription state, and modules. Use Upgrades to manage monetization rules, billing settings, add-ons, and manual commercial upgrade decisions.',
+                  'Utilisez Accès fonctionnalités pour gérer le plan, les limites, l’état d’abonnement et les modules. Utilisez Montées en gamme pour gérer les règles de monétisation, paramètres de facturation, add-ons et décisions d’upgrade commercial manuel.'
+                )}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => setDetailTab('feature_access')}
+                  className={lightSecondaryButtonClass}
+                >
+                  {tr('Open feature access', 'Ouvrir accès fonctionnalités')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailTab('upgrades')}
+                  className={lightPrimaryButtonClass}
+                >
+                  {tr('Open upgrades', 'Ouvrir montées en gamme')}
+                </button>
+              </div>
+            </div>
+          </section>
+          ) : null}
+
           {detailTab === 'audit' ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className={lightEyebrowClass}>{tr('Audit log', 'Journal d’audit')}</p>
-                <h3 className={lightSectionHeadingClass}>{tr('Recent tenant activity', 'Activité tenant récente')}</h3>
-                <p className="mt-1 text-sm text-slate-500">{tr('Recent admin and access events.', 'Événements admin et accès récents.')}</p>
-              </div>
-              <button
-                type="button"
-                onClick={loadAuditRows}
-                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-              >
-                <RefreshCw className={`mr-2 h-3.5 w-3.5 ${auditLoading ? 'animate-spin' : ''}`} />
-                {tr('Refresh', 'Rafraîchir')}
-              </button>
-            </div>
+            <WorkspacePanelHeader
+              icon={ActivitySquare}
+              eyebrow={tr('Audit log', 'Journal d’audit')}
+              title={tr('Recent tenant activity', 'Activité tenant récente')}
+              description={tr('Recent admin and access events.', 'Événements admin et accès récents.')}
+              action={(
+                <button
+                  type="button"
+                  onClick={loadAuditRows}
+                  className={ADMIN_OUTLINE_BUTTON_CLASS}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${auditLoading ? 'animate-spin' : ''}`} />
+                  {tr('Refresh', 'Rafraîchir')}
+                </button>
+              )}
+            />
 
             <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
               {auditRows.length ? auditRows.map((item) => (
@@ -2395,16 +2667,17 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
           {detailTab === 'owner_identity' ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className={lightEyebrowClass}>{tr('Tenant settings', 'Paramètres tenant')}</p>
-                <h3 className={lightSectionHeadingClass}>{tr('Branding, language, and business identity', 'Branding, langue et identité business')}</h3>
-                <p className="mt-3 text-sm text-slate-500">{tr('Workspace identity settings.', 'Paramètres d’identité du workspace.')}</p>
-              </div>
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
-                {tr('Saved in tenant metadata', 'Enregistré dans les métadonnées tenant')}
-              </span>
-            </div>
+            <WorkspacePanelHeader
+              icon={Fingerprint}
+              eyebrow={tr('Tenant settings', 'Paramètres tenant')}
+              title={tr('Branding, language, and business identity', 'Branding, langue et identité business')}
+              description={tr('Workspace identity settings.', 'Paramètres d’identité du workspace.')}
+              badge={(
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                  {tr('Saved in tenant metadata', 'Enregistré dans les métadonnées tenant')}
+                </span>
+              )}
+            />
 
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
               <label className="block">
@@ -2509,15 +2782,20 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
           {detailTab === 'feature_access' ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className={lightEyebrowClass}>{tr('Feature access', 'Accès fonctionnalités')}</p>
-                <h3 className={lightSectionHeadingClass}>{tr('Plan, billing, and workspace features', 'Plan, facturation et fonctionnalités du workspace')}</h3>
-              </div>
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
-                {enabledFeatureCount} {tr('enabled', 'actifs')}
-              </span>
-            </div>
+            <WorkspacePanelHeader
+              icon={SlidersHorizontal}
+              eyebrow={tr('Feature access', 'Accès fonctionnalités')}
+              title={tr('Plan, billing, and workspace features', 'Plan, facturation et fonctionnalités du workspace')}
+              description={tr(
+                'Tune workspace mode, plan controls, limits, and module availability with the same admin surface rules used elsewhere in platform admin.',
+                'Ajustez le mode workspace, le plan, les limites et les modules avec les mêmes règles visuelles que le reste de l’admin plateforme.'
+              )}
+              badge={(
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
+                  {enabledFeatureCount} {tr('enabled', 'actifs')}
+                </span>
+              )}
+            />
 
             <div className="mt-5 grid gap-3 md:grid-cols-3">
               <label className="block">
@@ -2680,16 +2958,17 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
           {detailTab === 'upgrades' ? (
           <section className={`${lightSectionClass} p-5`}>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className={lightEyebrowClass}>{tr('Upgrades', 'Montées en gamme')}</p>
-                <h3 className={lightSectionHeadingClass}>{tr('Monetization and add-ons', 'Monétisation et add-ons')}</h3>
-                <p className="mt-3 text-sm text-slate-500">{tr('Upgrade recommendations and billing controls.', 'Recommandations d’upgrade et contrôles de facturation.')}</p>
-              </div>
-              <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getWorkspacePlanTone(controlsDraft.plan_type).badge}`}>
-                {tr('Current plan', 'Plan actuel')}: {controlsDraft.plan_type}
-              </span>
-            </div>
+            <WorkspacePanelHeader
+              icon={Sparkles}
+              eyebrow={tr('Upgrades', 'Montées en gamme')}
+              title={tr('Monetization and add-ons', 'Monétisation et add-ons')}
+              description={tr('Upgrade recommendations and billing controls.', 'Recommandations d’upgrade et contrôles de facturation.')}
+              badge={(
+                <span className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${getWorkspacePlanTone(controlsDraft.plan_type).badge}`}>
+                  {tr('Current plan', 'Plan actuel')}: {controlsDraft.plan_type}
+                </span>
+              )}
+            />
 
             <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2936,22 +3215,26 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
 
           {detailTab === 'overview' && status !== 'active' && status !== 'suspended' ? (
             <section className={`${lightSectionClass} p-5`}>
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{tr('Provisioning pipeline', 'Pipeline de provisionnement')}</p>
-              <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
-                {status === 'pending'
-                  ? (
-                    isDedicatedTenant
-                      ? tr('Start the automatic provisioning job. The backend worker will create and connect the private tenant.', 'Démarrez le job automatique. Le worker backend créera et connectera le tenant privé.')
-                      : tr('Start the automatic provisioning job. The backend worker will prepare the shared tenant runtime, owner organization, and subdomain routing.', 'Démarrez le job automatique. Le worker backend préparera le runtime partagé, l’organisation propriétaire et le routage sous-domaine.')
-                  )
-                  : automationWasDispatched
-                    ? tr('The worker has been notified. This page refreshes automatically; when it finishes, status changes to Active and Open Tenant appears.', 'Le worker a été notifié. Cette page se rafraîchit automatiquement; quand il termine, le statut passe à Actif et Ouvrir le tenant apparaît.')
-                    : (
+              <WorkspacePanelHeader
+                icon={Clock3}
+                eyebrow={tr('Provisioning pipeline', 'Pipeline de provisionnement')}
+                title={tr('Automation and recovery controls', 'Contrôles d’automatisation et de reprise')}
+                description={
+                  status === 'pending'
+                    ? (
                       isDedicatedTenant
-                        ? tr('The tenant is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'Le tenant est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')
-                        : tr('The shared tenant is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'Le tenant partagé est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')
-                    )}
-              </p>
+                        ? tr('Start the automatic provisioning job. The backend worker will create and connect the private tenant.', 'Démarrez le job automatique. Le worker backend créera et connectera le tenant privé.')
+                        : tr('Start the automatic provisioning job. The backend worker will prepare the shared tenant runtime, owner organization, and subdomain routing.', 'Démarrez le job automatique. Le worker backend préparera le runtime partagé, l’organisation propriétaire et le routage sous-domaine.')
+                    )
+                    : automationWasDispatched
+                      ? tr('The worker has been notified. This page refreshes automatically; when it finishes, status changes to Active and Open Tenant appears.', 'Le worker a été notifié. Cette page se rafraîchit automatiquement; quand il termine, le statut passe à Actif et Ouvrir le tenant apparaît.')
+                      : (
+                        isDedicatedTenant
+                          ? tr('The tenant is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'Le tenant est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')
+                          : tr('The shared tenant is queued. Configure TENANT_PROVISIONING_WEBHOOK_URL on the backend to run this automatically.', 'Le tenant partagé est en file. Configurez TENANT_PROVISIONING_WEBHOOK_URL côté backend pour l’exécuter automatiquement.')
+                      )
+                }
+              />
 
               {isDedicatedTenant ? (
                 <button
@@ -3081,6 +3364,12 @@ const Workspaces = () => {
     () => buildHostUrl({ kind: 'admin', pathname: '/admin/workspaces' }),
     []
   );
+
+  useEffect(() => {
+    if (hostContext.kind !== 'tenant' || hostContext.isLocal) return;
+    if (typeof window === 'undefined') return;
+    window.location.replace(platformWorkspaceUrl);
+  }, [hostContext, platformWorkspaceUrl]);
 
   const load = useCallback(async () => {
     if (hostContext.kind === 'tenant' && !hostContext.isLocal) {
@@ -3239,7 +3528,7 @@ const Workspaces = () => {
               type="button"
               onClick={() => void load()}
               disabled={loading}
-              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:opacity-60"
+              className={`${ADMIN_OUTLINE_BUTTON_CLASS} disabled:opacity-60`}
             >
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
               {tr('Refresh registry', 'Actualiser le registre')}
@@ -3259,37 +3548,41 @@ const Workspaces = () => {
 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
-            ['pending', tr('Pending', 'En attente')],
-            ['provisioning', tr('Provisioning', 'Provisionnement')],
-            ['active', tr('Active', 'Actifs')],
-            ['failed', tr('Failed', 'Échoués')],
-          ].map(([key, label]) => (
-              <div key={key} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                <p className="mt-3 text-3xl font-semibold text-slate-900 tabular-nums">{kpis[key] || 0}</p>
-                <p className="mt-2 text-sm text-slate-500">{tr('Tenant workspaces', 'Espaces tenant')}</p>
-              </div>
-            ))}
+            ['pending', tr('Pending', 'En attente'), Clock3, 'amber'],
+            ['provisioning', tr('Provisioning', 'Provisionnement'), ActivitySquare, 'violet'],
+            ['active', tr('Active', 'Actifs'), CheckCircle2, 'emerald'],
+            ['failed', tr('Failed', 'Échoués'), ShieldAlert, 'slate'],
+          ].map(([key, label, icon, tone]) => (
+            <WorkspaceRegistryStatCard
+              key={key}
+              icon={icon}
+              eyebrow={label}
+              value={kpis[key] || 0}
+              caption={tr('Tenant workspaces', 'Espaces tenant')}
+              tone={tone}
+            />
+          ))}
         </div>
 
-        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+        <section className={`${ADMIN_MAIN_CARD_CLASS} space-y-5`}>
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Provisioning control', 'Contrôle du provisionnement')}</p>
-              <h2 className="text-lg font-semibold text-slate-900">{tr('Workspace registry', 'Registre des espaces')}</h2>
-              <p className="mt-1 max-w-3xl text-sm text-slate-500">{tr('Open any workspace to manage it directly.', 'Ouvrez un espace pour le gérer directement.')}</p>
-            </div>
+            <WorkspacePanelHeader
+              icon={Building2}
+              eyebrow={tr('Provisioning control', 'Contrôle du provisionnement')}
+              title={tr('Workspace registry', 'Registre des espaces')}
+              description={tr('Open any workspace to manage it directly.', 'Ouvrez un espace pour le gérer directement.')}
+            />
             <div className="grid gap-2 sm:grid-cols-3">
               <label className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tr('Search workspaces...', 'Rechercher...')} className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-9 pr-4 text-sm font-semibold text-slate-700 outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100" />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tr('Search workspaces...', 'Rechercher...')} className={`${ADMIN_INPUT_CLASS} mt-0 py-3 pl-9 pr-4`} />
               </label>
-              <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100">
+              <select value={status} onChange={(event) => setStatus(event.target.value)} className={`${ADMIN_INPUT_CLASS} mt-0`}>
                 {['all', 'pending', 'provisioning', 'active', 'failed', 'suspended'].map((item) => (
                   <option key={item} value={item}>{item === 'all' ? tr('All statuses', 'Tous les statuts') : item}</option>
                 ))}
               </select>
-              <select value={schemaFilter} onChange={(event) => setSchemaFilter(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-100">
+              <select value={schemaFilter} onChange={(event) => setSchemaFilter(event.target.value)} className={`${ADMIN_INPUT_CLASS} mt-0`}>
                 {[
                   ['all', tr('All schema states', 'Tous les états schéma')],
                   ['up_to_date', tr('Up to date', 'À jour')],
@@ -3315,13 +3608,13 @@ const Workspaces = () => {
                   onClick={() => setModeFilter(value)}
                   className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-semibold transition ${
                     active
-                      ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                      ? 'border-violet-200 bg-violet-50 text-violet-900 shadow-[0_10px_30px_-24px_rgba(124,58,237,0.9)]'
                       : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                   }`}
                 >
                   <span>{label}</span>
                   <span className={`inline-flex min-w-[1.75rem] items-center justify-center rounded-full px-2 py-0.5 text-[11px] font-bold ${
-                    active ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'
+                    active ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'
                   }`}>
                     {count}
                   </span>
@@ -3356,11 +3649,11 @@ const Workspaces = () => {
           {tenantHostRegistryMessage ? (
             <div className="mt-5 rounded-[28px] border border-amber-200 bg-amber-50/80 p-5">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">{tr('Platform registry', 'Registre plateforme')}</p>
-              <h3 className="mt-2 text-lg font-semibold text-slate-900">{tr('Open this from the platform workspace', 'Ouvrez ceci depuis le workspace plateforme')}</h3>
+              <h3 className="mt-2 text-lg font-semibold text-slate-900">{tr('Redirecting to platform workspaces', 'Redirection vers les workspaces plateforme')}</h3>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
                 {tr(
-                  'The tenant registry is managed from the platform admin host, not from inside an isolated tenant workspace. That is why this page looked empty here even though SaharaX and owner1 exist in the registry.',
-                  'Le registre des tenants est géré depuis l’hôte admin plateforme, pas depuis un workspace tenant isolé. C’est pourquoi cette page semblait vide ici alors que SaharaX et owner1 existent bien dans le registre.'
+                  'The tenant registry is managed from the platform admin host, so this page now opens the platform workspace registry automatically.',
+                  'Le registre des tenants est géré depuis l’hôte admin plateforme, donc cette page ouvre maintenant automatiquement le registre des workspaces plateforme.'
                 )}
               </p>
               <div className="mt-4">
@@ -3369,7 +3662,7 @@ const Workspaces = () => {
                   className="inline-flex items-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
                 >
                   <ExternalLink className="mr-2 h-4 w-4" />
-                  {tr('Open Platform Workspaces', 'Ouvrir les workspaces plateforme')}
+                  {tr('Continue to platform workspaces', 'Continuer vers les workspaces plateforme')}
                 </a>
               </div>
             </div>

@@ -482,6 +482,9 @@ class VehicleReportService {
 
     try {
       const maintenance = await MaintenanceService.getMaintenanceById(report.maintenance_id);
+      if (!maintenance) {
+        return this.normalizeReport(report);
+      }
       const syncedReport = await this.syncReportFromMaintenance(this.normalizeReport(report), maintenance);
       return {
         ...this.normalizeReport(syncedReport),

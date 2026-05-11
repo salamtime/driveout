@@ -88,9 +88,10 @@ const openRentalWizard = (setShowStepperForm, setWizardUiVariant, variant = 'def
 };
 
 const buildVehicleReminderLabel = (rental) => {
-  const vehicleName = rental?.vehicle?.name || '';
-  const vehicleModel = rental?.vehicle?.model || '';
-  const plateNumber = rental?.vehicle?.plate_number || '';
+  const vehicleDisplay = resolveRentalVehicleDisplay(rental);
+  const vehicleName = vehicleDisplay.name || '';
+  const vehicleModel = vehicleDisplay.model || '';
+  const plateNumber = vehicleDisplay.plateNumber || '';
 
   return [vehicleName, vehicleModel].filter(Boolean).join(' - ') || plateNumber || tr('your vehicle', 'votre véhicule');
 };
@@ -142,6 +143,139 @@ const buildVehicleHistorySnapshot = (vehicle) => ({
   vehicle_name_snapshot: vehicle?.name || vehicle?.vehicle_model?.name || null,
   vehicle_model_snapshot: vehicle?.model || vehicle?.vehicle_model?.model || null,
 });
+
+const resolveRentalVehicleDisplay = (rental) => {
+  const vehicle = rental?.vehicle || null;
+
+  return {
+    plateNumber:
+      vehicle?.plate_number ||
+      rental?.vehicle_plate_number ||
+      rental?.selected_vehicle_plate_snapshot ||
+      rental?.plate_number_snapshot ||
+      null,
+    name:
+      vehicle?.name ||
+      rental?.vehicle_name_snapshot ||
+      null,
+    model:
+      vehicle?.model ||
+      rental?.vehicle_model_snapshot ||
+      null,
+    vehicleType:
+      vehicle?.vehicle_type ||
+      rental?.vehicle_type_snapshot ||
+      null,
+  };
+};
+
+const RENTALS_BASE_SELECT = `
+  id,
+  rental_id,
+  customer_id,
+  customer_name,
+  customer_email,
+  customer_phone,
+  booking_source,
+  inventory_source,
+  booking_mode,
+  rental_type,
+  rental_status,
+  rental_start_date,
+  rental_end_date,
+  rental_start_time,
+  rental_end_time,
+  actual_end_date,
+  started_at,
+  completed_at,
+  created_at,
+  vehicle_id,
+  status,
+  payment_status,
+  approval_status,
+  pending_total_request,
+  total_amount,
+  deposit_amount,
+  remaining_amount,
+  amount_due_override_reason,
+  fuel_charge,
+  end_fuel_level,
+  unit_price,
+  quantity_days,
+  quantity_hours,
+  vehicle_plate_number,
+  package_id,
+  package_name,
+  package_rate_per_unit,
+  package_total_included_km,
+  use_package_pricing,
+  signature_url,
+  contract_signed,
+  opening_video_url,
+  start_odometer,
+  start_fuel_level,
+  damage_deposit,
+  deposit_returned_at,
+  is_impounded,
+  impounded_at,
+  released_from_impound_at,
+  vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
+    id,
+    name,
+    model,
+    plate_number,
+    status,
+    vehicle_type
+  ),
+  package:app_4c3a7a6153_rental_km_packages!package_id(
+    id,
+    name,
+    duration_units,
+    fixed_amount,
+    included_kilometers,
+    extra_km_rate
+  )
+`;
+
+const RENTALS_OPTIONAL_AUDIT_SELECT = `
+  amount_due_override_previous_amount
+`;
+
+const RENTALS_OPTIONAL_VEHICLE_SNAPSHOT_SELECT = `
+  selected_vehicle_plate_snapshot,
+  plate_number_snapshot,
+  vehicle_name_snapshot,
+  vehicle_model_snapshot
+`;
+
+const buildRentalsSelect = ({ includeAuditColumns = true, includeVehicleSnapshots = true } = {}) => `
+  ${RENTALS_BASE_SELECT}
+  ${includeAuditColumns ? `,${RENTALS_OPTIONAL_AUDIT_SELECT}` : ''}
+  ${includeVehicleSnapshots ? `,${RENTALS_OPTIONAL_VEHICLE_SNAPSHOT_SELECT}` : ''}
+`;
+
+const isMissingRentalsAuditColumnError = (error) => {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '');
+  return (
+    (code === 'PGRST204' || code === '42703') &&
+    message.includes('amount_due_override_previous_amount')
+  );
+};
+
+const isMissingRentalsVehicleSnapshotColumnError = (error) => {
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '');
+  return (
+    (code === 'PGRST204' || code === '42703') &&
+    (
+      message.includes('selected_vehicle_plate_snapshot') ||
+      message.includes('plate_number_snapshot') ||
+      message.includes('vehicle_name_snapshot') ||
+      message.includes('vehicle_model_snapshot')
+    )
+  );
+};
 
 const formatRentalWhatsAppDate = (value) => {
   const parsed = value ? new Date(value) : null;
@@ -1431,79 +1565,39 @@ const Rentals = () => {
         const to = from + limit - 1;
 
         // Now fetch paginated data
-        let query = supabase
-          .from('app_4c3a7a6153_rentals')
-          .select(`
-            id,
-            rental_id,
-            customer_id,
-            customer_name,
-            customer_email,
-            customer_phone,
-            booking_source,
-            inventory_source,
-            booking_mode,
-            rental_type,
-            rental_status,
-            rental_start_date,
-            rental_end_date,
-            rental_start_time,
-            rental_end_time,
-            actual_end_date,
-            started_at,
-            completed_at,
-            created_at,
-            vehicle_id,
-            status,
-            payment_status,
-            approval_status,
-            pending_total_request,
-            total_amount,
-            deposit_amount,
-            remaining_amount,
-            amount_due_override_reason,
-            amount_due_override_previous_amount,
-            fuel_charge,
-            end_fuel_level,
-            unit_price,
-            quantity_days,
-            quantity_hours,
-            package_id,
-            package_name,
-            package_rate_per_unit,
-            package_total_included_km,
-            use_package_pricing,
-            signature_url,
-            contract_signed,
-            opening_video_url,
-            start_odometer,
-            start_fuel_level,
-            damage_deposit,
-            deposit_returned_at,
-            is_impounded,
-            impounded_at,
-            released_from_impound_at,
-            vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
-              id,
-              name,
-              model,
-              plate_number,
-              status,
-              vehicle_type
-            ),
-            package:app_4c3a7a6153_rental_km_packages!package_id(
-              id,
-              name,
-              duration_units,
-              fixed_amount,
-              included_kilometers,
-              extra_km_rate
-            )
-          `);
+        const runRentalsQuery = async ({ includeAuditColumns = true, includeVehicleSnapshots = true } = {}) => {
+          let query = supabase
+            .from('app_4c3a7a6153_rentals')
+            .select(buildRentalsSelect({ includeAuditColumns, includeVehicleSnapshots }));
 
-        query = query.order('created_at', { ascending: false });
+          query = query.order('created_at', { ascending: false });
+          return query;
+        };
 
-        let { data, error } = await query;
+        let includeAuditColumns = true;
+        let includeVehicleSnapshots = true;
+        let { data, error } = await runRentalsQuery({
+          includeAuditColumns,
+          includeVehicleSnapshots,
+        });
+
+        if (error && isMissingRentalsAuditColumnError(error)) {
+          console.warn('Rentals table is missing amount_due_override_previous_amount; retrying without audit column.');
+          includeAuditColumns = false;
+          ({ data, error } = await runRentalsQuery({
+            includeAuditColumns,
+            includeVehicleSnapshots,
+          }));
+        }
+
+        if (error && isMissingRentalsVehicleSnapshotColumnError(error)) {
+          console.warn('Rentals table is missing vehicle snapshot columns; retrying without snapshot columns.');
+          includeVehicleSnapshots = false;
+          ({ data, error } = await runRentalsQuery({
+            includeAuditColumns,
+            includeVehicleSnapshots,
+          }));
+        }
 
         if (error) {
           console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
@@ -1604,6 +1698,9 @@ const Rentals = () => {
         .from('app_4c3a7a6153_rentals')
         .update({ 
           rental_status: 'active', 
+          status: 'active',
+          rental_start_date: actualStartTime,
+          rental_end_date: actualEndTime,
           started_at: actualStartTime,
           actual_end_date: actualEndTime,
           started_by: user?.id || null,
@@ -3229,12 +3326,12 @@ const Rentals = () => {
     return new Date(dateString).toLocaleDateString();
   };
 
-  const formatVehicleName = (vehicle) => {
-    if (!vehicle) return tr('Unknown Vehicle', 'Véhicule inconnu');
+  const formatVehicleName = (vehicleLike) => {
+    if (!vehicleLike) return tr('Unknown Vehicle', 'Véhicule inconnu');
     
     const parts = [];
-    if (vehicle.name) parts.push(vehicle.name);
-    if (vehicle.model) parts.push(vehicle.model);
+    if (vehicleLike.name) parts.push(vehicleLike.name);
+    if (vehicleLike.model) parts.push(vehicleLike.model);
     
     return parts.length > 0 ? parts.join(' ') : tr('Unknown Vehicle', 'Véhicule inconnu');
   };
@@ -3982,6 +4079,7 @@ const Rentals = () => {
                       const isImmutable = effectiveRentalStatus === 'active' || effectiveRentalStatus === 'completed';
                       const rentalAttention = getRentalAttentionState(rental);
                       const showLateArrivalRecovery = shouldShowLateArrivalRecovery(rental, effectiveRentalStatus);
+                      const vehicleDisplay = resolveRentalVehicleDisplay(rental);
                       
                       return (
                         <tr 
@@ -4047,14 +4145,14 @@ const Rentals = () => {
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2.5 py-1 shadow-sm">
                               <span className="font-mono text-sm font-extrabold tracking-wide text-slate-900">
-                                {formatPlateNumber(rental.vehicle?.plate_number)}
+                                {formatPlateNumber(vehicleDisplay.plateNumber)}
                               </span>
                             </div>
                             <div className="mt-2 text-sm font-medium text-gray-900">
-                              {formatVehicleName(rental.vehicle)}
+                              {formatVehicleName(vehicleDisplay)}
                             </div>
                             <div className="text-xs uppercase tracking-wide text-gray-500">
-                              {rental.vehicle?.vehicle_type || 'Vehicle'}
+                              {vehicleDisplay.vehicleType || 'Vehicle'}
                             </div>
                             <div className="flex items-center gap-2 mt-1">
                               {getRentalTypeBadge(rental.rental_type)}
@@ -4070,7 +4168,7 @@ const Rentals = () => {
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="text-sm font-mono font-bold tracking-wide text-slate-900 bg-slate-100 border border-slate-200 px-2.5 py-1.5 rounded-lg inline-block">
-                              {formatPlateNumber(rental.vehicle?.plate_number)}
+                              {formatPlateNumber(vehicleDisplay.plateNumber)}
                             </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
@@ -4396,6 +4494,7 @@ const Rentals = () => {
                   const rentalAttention = getRentalAttentionState(rental);
                   const showLateArrivalRecovery = shouldShowLateArrivalRecovery(rental, effectiveRentalStatus);
                   const isCompactMobileCard = isMobileViewport && viewMode === 'grid';
+                  const vehicleDisplay = resolveRentalVehicleDisplay(rental);
                   const hasSupplementalHeaderBadge =
                     Boolean(rental?.is_impounded && effectiveRentalStatus !== 'impounded') ||
                     Boolean(isNoShowCancellation(rental)) ||
@@ -4526,16 +4625,16 @@ const Rentals = () => {
                             <div className="flex-1 min-w-0">
                               <div className={`inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 shadow-sm ${isCompactMobileCard ? 'px-2 py-0.5' : 'px-2.5 py-1'}`}>
                                 <span className={`font-mono font-extrabold tracking-wide text-slate-900 ${isCompactMobileCard ? 'text-[12px]' : 'text-sm'}`}>
-                                  {formatPlateNumber(rental.vehicle?.plate_number)}
+                                  {formatPlateNumber(vehicleDisplay.plateNumber)}
                                 </span>
                               </div>
-                              <div className={`mt-1 ${isCompactMobileCard ? 'line-clamp-2 text-[12px] leading-4' : 'truncate text-sm'} font-semibold text-slate-900`}>{formatVehicleName(rental.vehicle)}</div>
+                              <div className={`mt-1 ${isCompactMobileCard ? 'line-clamp-2 text-[12px] leading-4' : 'truncate text-sm'} font-semibold text-slate-900`}>{formatVehicleName(vehicleDisplay)}</div>
                               <div className="mt-1 flex flex-wrap items-center gap-2">
                                 <span className={`inline-flex items-center rounded-full bg-slate-100 font-semibold uppercase tracking-[0.14em] text-slate-700 ${isCompactMobileCard ? 'px-1.5 py-0.5 text-[9px]' : 'px-2 py-0.5 text-[10px]'}`}>
-                                  {rental.vehicle?.model || tr('N/A', 'N/D')}
+                                  {vehicleDisplay.model || tr('N/A', 'N/D')}
                                 </span>
                                 <span className={`${isCompactMobileCard ? 'text-[9px]' : 'text-[10px]'} uppercase tracking-[0.18em] text-slate-500`}>
-                                  {rental.vehicle?.vehicle_type || tr('Vehicle', 'Véhicule')}
+                                  {vehicleDisplay.vehicleType || tr('Vehicle', 'Véhicule')}
                                 </span>
                               </div>
                             </div>

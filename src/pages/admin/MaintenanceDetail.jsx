@@ -84,6 +84,7 @@ export default function MaintenanceDetail() {
           notes: p.notes || '',
           item_name: p.inventory_item?.name || p.part_name || tr('Unknown Part', 'Pièce inconnue'),
           unit_cost_mad: p.unit_cost_mad || 0,
+          unit_price_mad: p.unit_price_mad || p.unit_cost_mad || 0,
           unit: p.inventory_item?.unit || tr('units', 'unités'),
         })),
       });
@@ -115,6 +116,7 @@ export default function MaintenanceDetail() {
           notes: p.notes || '',
           item_name: p.inventory_item?.name || p.part_name || tr('Unknown Item', 'Élément inconnu'),
           unit_cost_mad: p.unit_cost_mad || 0,
+          unit_price_mad: p.unit_price_mad || p.unit_cost_mad || 0,
         })),
         scheduled_date: full.service_date || full.scheduled_date,
         notes: full.description || full.notes || '',
@@ -356,14 +358,14 @@ export default function MaintenanceDetail() {
                     {part.notes && <p className="text-xs text-gray-500 mt-0.5">{part.notes}</p>}
                   </div>
                   <div className="text-right ml-4 shrink-0">
-                    <p className="text-sm font-semibold text-gray-900">{fmt(part.unit_cost_mad * part.quantity)}</p>
-                    <p className="text-xs text-gray-500">{fmt(part.unit_cost_mad)} / {tr('unit', 'unité')}</p>
+                    <p className="text-sm font-semibold text-gray-900">{fmt((part.unit_price_mad || part.unit_cost_mad || 0) * part.quantity)}</p>
+                    <p className="text-xs text-gray-500">{fmt(part.unit_price_mad || part.unit_cost_mad || 0)} / {tr('unit', 'unité')}</p>
                   </div>
                 </div>
               ))}
               <div className="flex justify-between items-center pt-2 border-t border-gray-200 text-sm font-semibold text-gray-800">
                 <span>{tr('Total Parts Cost', 'Coût total des pièces')}</span>
-                <span>{fmt(record.parts_used.reduce((s, p) => s + p.unit_cost_mad * p.quantity, 0))}</span>
+                <span>{fmt(record.parts_used.reduce((s, p) => s + ((p.unit_price_mad || p.unit_cost_mad || 0) * p.quantity), 0))}</span>
               </div>
             </div>
           ) : (

@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { AlertCircle, CheckCircle2, Clock3, Loader2, ShieldAlert } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { AlertCircle, CheckCircle2, Clock3, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantSession } from '../services/TenantRegistryService';
+import { isExternalUrl, resolveUserEntry } from '../utils/tenantEntryResolver';
 import i18n from '../i18n';
+import WorkspaceProgressVisualizer from '../components/auth/WorkspaceProgressVisualizer';
 
 const pageMeta = {
   '/no-workspace': {
@@ -26,8 +28,8 @@ const pageMeta = {
     icon: AlertCircle,
     title: ['We couldn’t prepare your workspace yet', "Nous n'avons pas encore pu préparer votre espace"],
     subtitle: [
-      'Your workspace is not ready yet. Your signup is still saved, and we can retry provisioning automatically as soon as the shared workspace path is available again.',
-      "Votre espace n'est pas encore prêt. Votre inscription est bien enregistrée, et nous pourrons relancer automatiquement le provisionnement dès que le parcours d'espace partagé sera de nouveau disponible.",
+      'Your signup is still saved, but the workspace setup hit a recoverable issue. We will show the reason below so you know what happened.',
+      "Votre inscription est bien enregistrée, mais la configuration de l’espace a rencontré un problème récupérable. Nous affichons la raison ci-dessous pour que vous sachiez ce qui s’est passé.",
     ],
   },
   '/workspace-suspended': {
@@ -152,12 +154,14 @@ const getProvisioningProgressModel = ({ tenantSession, userProfile, tr }) => {
 
 const WorkspaceStatusPage = ({ status = 'preparing' }) => {
   const { signOut, tenantSession: authTenantSession, userProfile } = useAuth();
+  const navigate = useNavigate();
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const pathKey = status.startsWith('/') ? status : `/workspace-${status}`;
   const meta = pageMeta[pathKey] || pageMeta['/workspace-preparing'];
   const Icon = meta.icon;
   const [tenantSession, setTenantSession] = useState(authTenantSession || null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
     if (authTenantSession) {
@@ -166,7 +170,7 @@ const WorkspaceStatusPage = ({ status = 'preparing' }) => {
   }, [authTenantSession]);
 
   useEffect(() => {
-    if (pathKey !== '/workspace-preparing' && pathKey !== '/workspace-pending') {
+    if (!['/workspace-preparing', '/workspace-pending', '/workspace-error'].includes(pathKey)) {
       return undefined;
     }
 
@@ -196,11 +200,62 @@ const WorkspaceStatusPage = ({ status = 'preparing' }) => {
     };
   }, [pathKey]);
 
+  useEffect(() => {
+    if (!tenantSession) return;
+
+    const entry = resolveUserEntry({
+      approved: true,
+      tenantSession,
+    });
+
+    if (!entry?.target) return;
+
+    if (entry.type === 'external' && isExternalUrl(entry.target)) {
+      if (typeof window !== 'undefined' && window.location.href !== entry.target) {
+        window.location.assign(entry.target);
+      }
+      return;
+    }
+
+    if (
+      entry.type === 'route' &&
+      !['/workspace-preparing', '/workspace-pending', '/workspace-error'].includes(entry.target) &&
+      entry.target !== pathKey
+    ) {
+      navigate(entry.target, { replace: true });
+    }
+  }, [navigate, pathKey, tenantSession]);
+
   const showProvisioningProgress = pathKey === '/workspace-preparing' || pathKey === '/workspace-pending';
+  const isErrorPage = pathKey === '/workspace-error';
   const progressModel = useMemo(
     () => getProvisioningProgressModel({ tenantSession, userProfile, tr }),
     [tenantSession, tr, userProfile]
   );
+  const provisioningError = String(
+    tenantSession?.tenant?.provisioning_error ||
+    tenantSession?.tenant?.metadata?.workspace_readiness?.error_message ||
+    tenantSession?.provisioningJob?.error_message ||
+    ''
+  ).trim();
+  const failedAt = String(
+    tenantSession?.tenant?.metadata?.provisioning_failed_at ||
+    tenantSession?.provisioningJob?.finished_at ||
+    ''
+  ).trim();
+  const canRetryHint = progressModel.tenancyMode === 'shared';
+
+  const refreshStatus = async () => {
+    setIsRefreshing(true);
+    try {
+      const nextSession = await getTenantSession();
+      if (nextSession) {
+        setTenantSession(nextSession);
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,#ede9fe_0,#f8fafc_34%,#f8fafc_100%)] px-4 py-10 sm:px-6">
@@ -270,6 +325,18 @@ const WorkspaceStatusPage = ({ status = 'preparing' }) => {
                   </div>
                 </div>
 
+                <WorkspaceProgressVisualizer
+                  progressPercent={progressModel.progressPercent}
+                  mode={progressModel.activeStep.key === 'ready' ? 'indeterminate' : 'determinate'}
+                  statusLabel={tr('Live orchestration', 'Orchestration en direct')}
+                  title={tr('Your workspace engine is running', 'Le moteur de votre espace est en cours')}
+                  subtitle={tr(
+                    'Provisioning, permissions, and routing are being assembled for you automatically.',
+                    'Le provisionnement, les permissions et le routage sont assemblés automatiquement pour vous.'
+                  )}
+                  steps={progressModel.steps}
+                />
+
                 <div className="grid gap-3">
                   {progressModel.steps.map((step, index) => {
                     const isComplete = step.complete;
@@ -318,14 +385,77 @@ const WorkspaceStatusPage = ({ status = 'preparing' }) => {
                 </p>
               </div>
             ) : (
-              <p className="mx-auto max-w-md text-sm font-medium leading-6 text-slate-600">
-                {isFrench
-                  ? "Votre compte ne sera pas envoyé vers l'admin principal SaharaX tant que l'espace tenant n'est pas prêt. Aucune donnée n'a été perdue pendant l'échec de provisionnement."
-                  : 'Your account will not be sent into the main SaharaX admin while the tenant workspace is not ready. No signup data was lost during this provisioning failure.'}
-              </p>
+              <div className="space-y-5 text-left">
+                <p className="mx-auto max-w-2xl text-center text-sm font-medium leading-6 text-slate-600">
+                  {isFrench
+                    ? "Votre compte ne sera pas envoyé vers l'admin principal SaharaX tant que l'espace tenant n'est pas prêt. Aucune donnée n'a été perdue pendant cet échec de provisionnement."
+                    : 'Your account will not be sent into the main SaharaX admin while the tenant workspace is not ready. No signup data was lost during this provisioning failure.'}
+                </p>
+
+                <div className="rounded-[24px] border border-rose-200 bg-rose-50/80 p-5">
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-rose-500">
+                    {tr('Provisioning issue', 'Incident de provisionnement')}
+                  </p>
+                  <p className="mt-3 text-sm font-medium leading-6 text-slate-700">
+                    {provisioningError || tr(
+                      'The workspace setup stopped before it could finish. Please refresh this page or contact support if it continues.',
+                      "La configuration de l’espace s’est arrêtée avant la fin. Veuillez actualiser cette page ou contacter le support si cela continue."
+                    )}
+                  </p>
+                  {failedAt ? (
+                    <p className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      {tr('Last failed attempt', 'Dernière tentative échouée')} · {failedAt}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">
+                    {tr('What happens next', 'Ce qui se passe ensuite')}
+                  </p>
+                  <ul className="mt-3 space-y-2 text-sm font-medium leading-6 text-slate-700">
+                    <li>
+                      {tr(
+                        'Your signup and workspace request are still saved securely.',
+                        'Votre inscription et votre demande d’espace sont toujours enregistrées en sécurité.'
+                      )}
+                    </li>
+                    <li>
+                      {canRetryHint
+                        ? tr(
+                            'This shared workspace can usually be retried once the setup path is available again.',
+                            "Cet espace partagé peut généralement être relancé dès que le parcours de configuration est de nouveau disponible."
+                          )
+                        : tr(
+                            'An admin may need to review the workspace setup before it can continue.',
+                            "Un administrateur devra peut-être vérifier la configuration de l’espace avant qu’elle puisse continuer."
+                          )}
+                    </li>
+                    <li>
+                      {tr(
+                        'Use Refresh status to check whether the workspace is ready now.',
+                        'Utilisez Actualiser le statut pour vérifier si l’espace est maintenant prêt.'
+                      )}
+                    </li>
+                  </ul>
+                </div>
+              </div>
             )}
 
             <div className="flex flex-col justify-center gap-3 sm:flex-row">
+              {isErrorPage ? (
+                <button
+                  type="button"
+                  onClick={() => { void refreshStatus(); }}
+                  disabled={isRefreshing}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-5 py-3 text-sm font-bold text-violet-700 transition hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  {isRefreshing
+                    ? tr('Refreshing status…', 'Actualisation…')
+                    : tr('Refresh status', 'Actualiser le statut')}
+                </button>
+              ) : null}
               <Link to="/website" className="inline-flex items-center justify-center rounded-2xl bg-slate-950 px-5 py-3 text-sm font-bold text-white transition hover:bg-violet-800">
                 {isFrench ? 'Retour au site' : 'Return to website'}
               </Link>

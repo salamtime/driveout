@@ -142,6 +142,7 @@ const buildTenantTelegramDraft = (tenantSession = null) => {
       : 60,
     telegram_event_types: {
       rental_created: eventTypes.rental_created !== false,
+      website_reservation_created: eventTypes.website_reservation_created !== false,
       rental_started: eventTypes.rental_started !== false,
       rental_vehicle_replaced: eventTypes.rental_vehicle_replaced !== false,
       rental_completed: eventTypes.rental_completed !== false,
@@ -1287,6 +1288,7 @@ const SettingsPage = () => {
       telegram_overdue_repeat_minutes: Math.max(0, Number(tenantTelegramForm.telegram_overdue_repeat_minutes || 0) || 0),
       telegram_event_types: {
         rental_created: Boolean(tenantTelegramForm.telegram_event_types?.rental_created),
+        website_reservation_created: Boolean(tenantTelegramForm.telegram_event_types?.website_reservation_created),
         rental_started: Boolean(tenantTelegramForm.telegram_event_types?.rental_started),
         rental_vehicle_replaced: Boolean(tenantTelegramForm.telegram_event_types?.rental_vehicle_replaced),
         rental_completed: Boolean(tenantTelegramForm.telegram_event_types?.rental_completed),
@@ -2498,6 +2500,16 @@ const SettingsPage = () => {
                 onChange={(value) => setTenantTelegramForm((current) => ({
                   ...current,
                   telegram_event_types: { ...current.telegram_event_types, rental_created: value },
+                }))}
+              />
+              <ToggleCard
+                title={isFrench ? 'Réservation site web' : 'Website reservation'}
+                description={isFrench ? "Alerte envoyée lorsqu'une réservation est créée depuis le site web." : 'Send an alert when a reservation is created from the public website.'}
+                checked={tenantTelegramForm.telegram_event_types.website_reservation_created}
+                disabled={!canEdit}
+                onChange={(value) => setTenantTelegramForm((current) => ({
+                  ...current,
+                  telegram_event_types: { ...current.telegram_event_types, website_reservation_created: value },
                 }))}
               />
               <ToggleCard

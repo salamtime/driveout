@@ -7,6 +7,25 @@ const json = (res, status, body) => res.status(status).json(body);
 
 const isCronRequest = (req) => Boolean(req.headers['x-vercel-cron']);
 
+const safeText = (value) => String(value || '').trim();
+
+const buildOverdueRentalVehicleLabel = (rental = {}) => {
+  const vehicle = rental?.vehicle && typeof rental.vehicle === 'object' ? rental.vehicle : {};
+  const vehicleModel = vehicle?.vehicle_model && typeof vehicle.vehicle_model === 'object'
+    ? vehicle.vehicle_model
+    : {};
+  const model =
+    safeText(vehicleModel.name) ||
+    safeText(vehicle.model) ||
+    safeText(vehicle.name) ||
+    'Vehicle';
+  const plate =
+    safeText(vehicle.plate_number) ||
+    safeText(rental.vehicle_plate_number);
+
+  return [model, plate].filter(Boolean).join(' • ');
+};
+
 export async function handleTelegramOverdueRemindersRequest(req, res) {
   if (req.method === 'OPTIONS') {
     res.setHeader('Allow', 'GET, POST, OPTIONS');
@@ -44,7 +63,28 @@ export async function handleTelegramOverdueRemindersRequest(req, res) {
 
     const { data: overdueRentals, error: rentalsError } = await adminClient
       .from(RENTALS_TABLE)
-      .select('id, rental_id, customer_name, rental_start_date, rental_end_date, total_amount, deposit_amount, remaining_amount, rental_status, status, vehicle_name')
+      .select(`
+        id,
+        rental_id,
+        customer_name,
+        rental_start_date,
+        rental_end_date,
+        total_amount,
+        deposit_amount,
+        remaining_amount,
+        rental_status,
+        status,
+        vehicle_plate_number,
+        vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
+          id,
+          name,
+          model,
+          plate_number,
+          vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(
+            name
+          )
+        )
+      `)
       .eq('rental_status', 'active')
       .lt('rental_end_date', nowIso)
       .order('rental_end_date', { ascending: true })
@@ -65,7 +105,7 @@ export async function handleTelegramOverdueRemindersRequest(req, res) {
           id: rental.id,
           eventType: 'rental_overdue',
           reference: rental.rental_id || '',
-          vehicle: String(rental.vehicle_name || 'Vehicle').trim(),
+          vehicle: buildOverdueRentalVehicleLabel(rental),
           customer: rental.customer_name,
           start: rental.rental_start_date,
           end: rental.rental_end_date,

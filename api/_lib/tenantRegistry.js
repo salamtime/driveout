@@ -163,13 +163,22 @@ const normalizePlatformTenantRecord = (tenant = null) => {
     return tenant;
   }
 
+  const resolvedTenancyMode = resolveTenantTenancyMode(tenant);
+
   return {
     ...tenant,
-    tenancy_mode:
-      tenant.tenancy_mode ||
-      tenant?.metadata?.tenancy_mode ||
-      tenant?.metadata?.workspace_mode ||
-      undefined,
+    tenancy_mode: resolvedTenancyMode,
+    metadata:
+      tenant?.metadata && typeof tenant.metadata === 'object'
+        ? {
+            ...tenant.metadata,
+            tenancy_mode:
+              tenant.metadata.tenancy_mode ||
+              resolvedTenancyMode,
+          }
+        : {
+            tenancy_mode: resolvedTenancyMode,
+          },
   };
 };
 

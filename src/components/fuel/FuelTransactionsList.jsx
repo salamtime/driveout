@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Plus, 
   Minus, 
@@ -17,6 +17,7 @@ import toast from 'react-hot-toast';
 import FuelTransactionService from '../../services/FuelTransactionService';
 import { useAuth } from '../../contexts/AuthContext';
 import { roundFuelLitersForDisplay } from '../../utils/formatters';
+import { linesToLiters, roundTo } from '../../utils/fuelMath';
 import { formatVehicleNameWithModel } from '../../utils/vehicleLabels';
 import { getFuelTransactionVisual } from '../../utils/fuelVisuals';
 import i18n from '../../i18n';
@@ -43,7 +44,6 @@ const FuelTransactionsList = ({
     limit: 20
   });
   const { user } = useAuth();
-  const skippedInitialFetchRef = useRef(false);
 
   useEffect(() => {
     if (!initialPageData?.success || !Array.isArray(initialPageData.transactions) || initialPageData.transactions.length === 0) {
@@ -87,21 +87,11 @@ const FuelTransactionsList = ({
       filters.fuelStation ||
       filters.location
     );
-    const canHydrateFromInitialPage =
-      !skippedInitialFetchRef.current &&
-      pagination.currentPage === 1 &&
-      !hasActiveFilters &&
-      initialPageData?.success &&
-      Array.isArray(initialPageData.transactions);
-
-    if (canHydrateFromInitialPage) {
-      skippedInitialFetchRef.current = true;
-      return;
-    }
 
     loadTransactions();
   }, [
     pagination.currentPage,
+    pagination.limit,
     filters.search,
     filters.vehicleId,
     filters.transactionType,
@@ -353,13 +343,44 @@ const FuelTransactionsList = ({
   };
 
   const getRentalReference = (transaction) => {
-    return transaction?.rental_reference || transaction?.linked_report?.rental_id || '';
+    const candidates = [
+      transaction?.rental_reference,
+      transaction?.rental_id,
+      transaction?.linked_report?.rental_reference,
+      transaction?.linked_report?.rental_id,
+    ];
+    return candidates.find((value) => /^RNT-/i.test(String(value || '').trim())) || '';
+  };
+
+  const getRentalSnapshotQuantity = (transaction) => {
+    if (!transaction) return null;
+    if (!['rental_opening_level', 'rental_closing_level'].includes(transaction.transaction_type)) {
+      return null;
+    }
+
+    const litersAfter =
+      transaction.liters_after ??
+      (transaction.fuel_lines_after !== null && transaction.fuel_lines_after !== undefined
+        ? linesToLiters(transaction.fuel_lines_after)
+        : null);
+
+    if (litersAfter === null || litersAfter === undefined) {
+      return null;
+    }
+
+    return roundTo(Number(litersAfter), 2);
   };
 
   const formatAmount = (transaction) => {
-    const numericAmount = roundFuelLitersForDisplay(transaction.amount || 0) || 0;
+    const rentalSnapshotQuantity = getRentalSnapshotQuantity(transaction);
+    if (rentalSnapshotQuantity !== null) {
+      return `${rentalSnapshotQuantity.toFixed(1)}L`;
+    }
+
+    const rawAmount =
+      transaction.amount || 0;
+    const numericAmount = roundFuelLitersForDisplay(rawAmount) || 0;
     const showSignedAmount =
-      transaction.transaction_type === 'rental_closing_level' ||
       transaction.transaction_type === 'manual_adjustment' ||
       transaction.transaction_type === 'staff_fuel_use';
 
@@ -381,11 +402,17 @@ const FuelTransactionsList = ({
       return 'text-rose-600';
     }
 
-    if (!['rental_closing_level', 'manual_adjustment'].includes(transaction.transaction_type)) {
+    if (['rental_opening_level', 'rental_closing_level'].includes(transaction.transaction_type)) {
       return 'text-gray-900';
     }
 
-    const numericAmount = roundFuelLitersForDisplay(transaction.amount || 0) || 0;
+    if (transaction.transaction_type !== 'manual_adjustment') {
+      return 'text-gray-900';
+    }
+
+    const rawAmount =
+      transaction.amount || 0;
+    const numericAmount = roundFuelLitersForDisplay(rawAmount) || 0;
     if (numericAmount > 0) return 'text-green-700';
     if (numericAmount < 0) return 'text-red-600';
     return 'text-gray-900';
@@ -395,15 +422,18 @@ const FuelTransactionsList = ({
     setPagination(prev => ({ ...prev, currentPage: newPage }));
   };
 
+  const handlePageSizeChange = (nextLimit) => {
+    setPagination((prev) => ({
+      ...prev,
+      limit: nextLimit,
+      currentPage: 1,
+      totalPages: Math.max(1, Math.ceil(prev.totalCount / nextLimit)),
+    }));
+  };
+
   const canEditTransaction = (transaction) => (
     ['tank_refill', 'tank_out', 'vehicle_refill', 'withdrawal'].includes(String(transaction?.transaction_type || '').toLowerCase())
   );
-
-  const handleLoadMore = () => {
-    if (pagination.currentPage < pagination.totalPages && !refreshing) {
-      handlePageChange(pagination.currentPage + 1);
-    }
-  };
 
   const pageStart = pagination.totalCount > 0
     ? ((pagination.currentPage - 1) * pagination.limit) + 1
@@ -588,6 +618,11 @@ const FuelTransactionsList = ({
                               {getVehiclePlate(transaction)}
                             </div>
                           )}
+                          {getRentalReference(transaction) && (
+                            <div className="text-xs font-mono text-violet-600">
+                              {getRentalReference(transaction)}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -727,16 +762,40 @@ const FuelTransactionsList = ({
 
         {transactions.length > 0 && (
           <div className="border-t border-gray-200 bg-white px-4 py-4 sm:px-6">
-            <div className="flex flex-col items-center justify-center gap-3">
-              <p className="text-sm text-gray-600">
-                {isFrench ? 'Affichage de ' : 'Showing '}
-                <span className="font-medium">{pageStart}</span>
-                {isFrench ? ' à ' : ' to '}
-                <span className="font-medium">{pageEnd}</span>
-                {isFrench ? ' sur ' : ' of '}
-                <span className="font-medium">{pagination.totalCount}</span> {isFrench ? 'transactions' : 'transactions'}
-              </p>
-              <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between lg:justify-start lg:gap-4">
+                <p className="text-sm text-gray-600">
+                  {isFrench ? 'Affichage de ' : 'Showing '}
+                  <span className="font-medium">{pageStart}</span>
+                  {isFrench ? ' à ' : ' to '}
+                  <span className="font-medium">{pageEnd}</span>
+                  {isFrench ? ' sur ' : ' of '}
+                  <span className="font-medium">{pagination.totalCount}</span> {isFrench ? 'transactions' : 'transactions'}
+                </p>
+                <label className="flex items-center gap-2 text-sm text-gray-600">
+                  <span>{isFrench ? 'Par page' : 'Per page'}</span>
+                  <select
+                    value={pagination.limit}
+                    onChange={(event) => handlePageSizeChange(Number(event.target.value))}
+                    disabled={refreshing}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 outline-none transition-colors focus:border-violet-300 focus:ring-2 focus:ring-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {[20, 50, 100].map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2 lg:justify-end">
+                <button
+                  onClick={() => handlePageChange(1)}
+                  disabled={pagination.currentPage <= 1 || refreshing}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isFrench ? 'Première page' : 'First page'}
+                </button>
                 <button
                   onClick={() => handlePageChange(Math.max(1, pagination.currentPage - 1))}
                   disabled={pagination.currentPage <= 1 || refreshing}

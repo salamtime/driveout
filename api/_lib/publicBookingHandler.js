@@ -7,6 +7,7 @@ import {
   sendResendEmail,
 } from './email.js';
 import { insertRentalEvent } from './rentalEvents.js';
+import { processTelegramRentalAlert } from './telegramAlertsHandler.js';
 import {
   buildThreadKey,
   SHARED_MESSAGES_TABLE,
@@ -30,6 +31,14 @@ const getRequestOrigin = (req) => {
   const host = forwardedHost || String(req.headers.host || '').trim();
   const proto = forwardedProto || (host.includes('localhost') ? 'http' : 'https');
   return host ? `${proto}://${host}` : 'https://saharax.driveout.io';
+};
+
+const getRequestHostname = (req) => {
+  try {
+    return new URL(getRequestOrigin(req)).hostname;
+  } catch {
+    return String(req?.headers?.host || '').split(':')[0].trim();
+  }
 };
 
 const formatDateTimeForEmail = (value, locale = 'en-MA') => {
@@ -339,6 +348,73 @@ const cleanValue = (value) => {
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 const normalizeText = (value) => String(value || '').trim();
+
+const buildWebsiteReservationVehicleLabel = ({ rental = {}, listing = {}, assignedVehicle = {} } = {}) => {
+  const vehicleModel =
+    normalizeText(rental.selected_vehicle_model_snapshot) ||
+    normalizeText(assignedVehicle.model) ||
+    normalizeText(assignedVehicle.model_name) ||
+    normalizeText(assignedVehicle.name) ||
+    normalizeText(listing.modelName) ||
+    normalizeText(listing.model_name) ||
+    normalizeText(listing.title) ||
+    'Reserved vehicle';
+  const vehicleCode =
+    normalizeText(rental.vehicle_plate_number) ||
+    normalizeText(assignedVehicle.vehicle_number) ||
+    normalizeText(assignedVehicle.plate_number) ||
+    normalizeText(assignedVehicle.code) ||
+    normalizeText(listing.vehicleNumber);
+
+  return [vehicleModel, vehicleCode].filter(Boolean).join(' • ');
+};
+
+const dispatchWebsiteReservationTelegramAlert = async ({
+  adminClient,
+  rental,
+  listing = {},
+  packageSelection = {},
+  assignedVehicle = null,
+  hostname = '',
+}) => {
+  if (!adminClient || !rental?.id) return null;
+
+  const payload = {
+    id: rental.id,
+    eventType: 'website_reservation_created',
+    reference: rental.rental_id || rental.rental_reference || '',
+    vehicle: buildWebsiteReservationVehicleLabel({ rental, listing, assignedVehicle: assignedVehicle || {} }),
+    customer: rental.customer_name || '',
+    customerPhone: rental.customer_phone || '',
+    start: rental.rental_start_date || rental.start_date || '',
+    end: rental.rental_end_date || rental.end_date || '',
+    total:
+      rental.total_amount ??
+      rental.selected_package_fixed_amount ??
+      packageSelection?.amount ??
+      listing?.priceFrom ??
+      0,
+    remaining: rental.remaining_amount ?? 0,
+    tenant_id: rental.tenant_id || listing.tenantId || listing.raw?.tenant_id || '',
+    business_account_id: rental.business_account_id || listing.businessAccountId || listing.raw?.business_account_id || '',
+    tenant_slug: rental.tenant_slug || listing.tenantSlug || listing.raw?.tenant_slug || '',
+    bookingSource: 'website',
+    createdBy: 'Website',
+  };
+
+  const result = await processTelegramRentalAlert({
+    adminClient,
+    actorUser: null,
+    payload,
+    hostname,
+  });
+
+  if (result?.status && result.status >= 400) {
+    throw new Error(result?.body?.error || result?.body?.reason || 'Website reservation Telegram alert failed');
+  }
+
+  return result?.body || result || null;
+};
 
 const toIsoDateTime = (date, time = '10:00') => {
   if (!date) return null;
@@ -1855,6 +1931,16 @@ export default async function publicBookingHandler(req, res) {
         publicOrigin: getRequestOrigin(req),
       }).catch((emailError) => {
         console.warn('certified booking confirmation email failed:', emailError?.message || emailError);
+      });
+      void dispatchWebsiteReservationTelegramAlert({
+        adminClient,
+        rental,
+        listing: body?.listing || {},
+        packageSelection: body?.packageSelection || {},
+        assignedVehicle: rental?.assigned_vehicle || null,
+        hostname: getRequestHostname(req),
+      }).catch((telegramError) => {
+        console.warn('website reservation Telegram alert failed (non-blocking):', telegramError?.message || telegramError);
       });
       return json(res, 200, rental);
     }

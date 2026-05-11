@@ -100,7 +100,13 @@ const ProtectedRoute = ({
 
   // Show loading while auth is initializing
   if (!initialized || loading) {
-    return <AuthTransitionScreen title={tr('Opening your workspace', 'Ouverture de votre espace')} description={tr('We are loading your SaharaX dashboard securely.', 'Nous chargeons votre tableau de bord SaharaX en toute sécurité.')} />;
+    return (
+      <AuthTransitionScreen
+        title={tr('Opening your workspace', 'Ouverture de votre espace')}
+        description={tr('We are loading your workspace securely.', 'Nous chargeons votre espace en toute sécurité.')}
+        badge={tr('Workspace access', 'Accès espace')}
+      />
+    );
   }
 
   // Check authentication requirement

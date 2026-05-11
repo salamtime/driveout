@@ -61,6 +61,7 @@ const PERMISSION_ROLE_PRESETS = [
 
 const TELEGRAM_ALERT_EVENT_OPTIONS = [
   { key: 'rental_created', label: 'Rental created' },
+  { key: 'website_reservation_created', label: 'Website reservation' },
   { key: 'rental_started', label: 'Rental started' },
   { key: 'rental_vehicle_replaced', label: 'Vehicle replaced' },
   { key: 'rental_completed', label: 'Rental completed' },

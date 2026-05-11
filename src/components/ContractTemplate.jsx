@@ -1452,6 +1452,60 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
             </p>
           </div>
 
+          <div style={{
+            marginBottom: '20px',
+            padding: '16px 18px',
+            borderRadius: '14px',
+            background: 'linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%)',
+            border: '1px solid #fdba74',
+            boxShadow: '0 10px 24px rgba(251, 146, 60, 0.10)'
+          }}>
+            <div style={{
+              fontSize: '12px',
+              fontWeight: '800',
+              letterSpacing: '0.7px',
+              textTransform: 'uppercase',
+              color: '#c2410c',
+              marginBottom: '10px',
+              textAlign: 'center'
+            }}>
+              {tr('Travel area rule', 'Règle de zone de circulation')}
+            </div>
+            <div className="terms-grid">
+              <div style={{
+                padding: '0 16px 0 0',
+                borderRight: '2px solid #fed7aa',
+                fontSize: '10.5px',
+                lineHeight: '1.65',
+                color: '#7c2d12'
+              }}>
+                <div style={{ fontWeight: '700', color: '#9a3412', marginBottom: '6px' }}>
+                  {tr('Important', 'Important')}
+                </div>
+                <div>
+                  {tr(
+                    'This vehicle must remain inside Tangier during the rental. Leaving Tangier is not allowed unless SaharaX staff gives approval first. If the customer needs to leave Tangier for any reason, they must contact a staff member before departure to receive authorization.',
+                    'Ce véhicule doit rester à Tanger pendant toute la durée de la location. Il est interdit de quitter Tanger sans autorisation préalable de l’équipe SaharaX. Si le client doit quitter Tanger pour quelque raison que ce soit, il doit contacter un membre du staff avant le départ afin d’obtenir une autorisation.'
+                  )}
+                </div>
+              </div>
+              <div style={{
+                padding: '0 0 0 16px',
+                fontSize: '10.5px',
+                lineHeight: '1.75',
+                color: '#7c2d12',
+                textAlign: 'right'
+              }} dir="rtl">
+                <div style={{ fontWeight: '700', color: '#9a3412', marginBottom: '6px' }}>
+                  هام
+                </div>
+                <div>
+                  يجب أن تبقى هذه المركبة داخل مدينة طنجة طوال مدة الكراء. يمنع الخروج من طنجة إلا بعد الحصول على موافقة مسبقة من فريق SaharaX. إذا احتاج الزبون إلى مغادرة طنجة لأي سبب، فيجب عليه التواصل مع أحد أعضاء الطاقم قبل المغادرة للحصول على الترخيص.
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Terms Grid - French & Arabic */}
           <div className="terms-grid">
             {/* French Terms */}

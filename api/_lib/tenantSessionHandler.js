@@ -189,13 +189,6 @@ const buildTenantWorkspaceState = ({
   }
 
   if (tenantStatus === 'failed') {
-    if (
-      automaticSignupModeEnabled &&
-      tenancyMode === 'shared' &&
-      isRetryableTenantBootstrapFailure(tenant, provisioningJob)
-    ) {
-      return 'provisioning';
-    }
     return 'failed';
   }
 
@@ -204,13 +197,6 @@ const buildTenantWorkspaceState = ({
   }
 
   if (workspaceReadiness && workspaceReadiness.ready !== true) {
-    if (
-      automaticSignupModeEnabled &&
-      tenancyMode === 'shared' &&
-      isRetryableTenantBootstrapFailure(tenant, provisioningJob)
-    ) {
-      return 'provisioning';
-    }
     return provisioningStatus === 'queued' || provisioningStatus === 'running'
       ? 'provisioning'
       : 'failed';

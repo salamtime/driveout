@@ -60,6 +60,7 @@ import {
   isPlatformOwnerEmail,
   resolveManagedAccountType,
 } from '../utils/accountType';
+import { getHostContext } from '../utils/hostContext';
 import {
   ADMIN_EYEBROW_CLASS,
   ADMIN_MAIN_CARD_CLASS,
@@ -2121,10 +2122,14 @@ const CustomerManagementDashboard = () => {
   const isFrench = isFrenchLocale();
   const navigate = useNavigate();
   const { user, hasPermission } = useAuth();
+  const hostContext = useMemo(() => getHostContext(), []);
+  const isTenantWorkspace = hostContext.kind === 'tenant';
   const canAccessBusinessOwnerRegistry = useMemo(() => {
     const role = String(user?.role || '').trim().toLowerCase();
-    return Boolean(user?.id) && (role === 'owner' || isPlatformOwnerEmail(user?.email) || hasPermission('User & Role Management'));
-  }, [hasPermission, user?.email, user?.id, user?.role]);
+    return Boolean(user?.id)
+      && !isTenantWorkspace
+      && (role === 'owner' || isPlatformOwnerEmail(user?.email) || hasPermission('User & Role Management'));
+  }, [hasPermission, isTenantWorkspace, user?.email, user?.id, user?.role]);
   const canCurrentUserEditCustomerProfile = canEditCustomerProfile(user);
   const canCurrentUserManageBan = String(user?.role || '').toLowerCase() === 'owner' || hasPermission('Customer Management');
   const [customers, setCustomers] = useState([]);
@@ -2408,7 +2413,11 @@ const CustomerManagementDashboard = () => {
         setTenantProvisioningJobs([]);
       }
 
-      setCustomers(mergedCustomers);
+      const tenantScopedCustomers = isTenantWorkspace
+        ? mergedCustomers.filter((customer) => getExternalAccountType(customer) !== 'business_owner')
+        : mergedCustomers;
+
+      setCustomers(tenantScopedCustomers);
       setLoading(false);
 
       // Keep recovered auth accounts visible in-memory even when the legacy

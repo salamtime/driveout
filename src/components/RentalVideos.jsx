@@ -65,12 +65,16 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
     }
   };
 
+  const isVehicleMediaUpload = (item) => {
+    if (!item) return false;
+    const storagePath = String(item.storage_path || '');
+    const originalFilename = String(item.original_filename || '');
+    return storagePath.includes('/vehicle/') || originalFilename.startsWith('vehicle_');
+  };
+
   const isPostCompletionMedia = (item) => {
-    if (item.phase === 'out') return false;
-    if (!Number.isFinite(completedAtMs)) return false;
-    const uploadedAtMs = item.timestamp ? new Date(item.timestamp).getTime() : NaN;
-    if (!Number.isFinite(uploadedAtMs)) return false;
-    return uploadedAtMs >= completedAtMs;
+    if (item?.phase === 'out') return false;
+    return isVehicleMediaUpload(item);
   };
 
   // Load all media (images and videos) for the rental
@@ -363,11 +367,13 @@ const RentalVideos = ({ rental, onUpdate, canDeleteMedia = false }) => {
   const getPhaseLabel = (itemOrPhase) => {
     const phase = typeof itemOrPhase === 'string' ? itemOrPhase : itemOrPhase?.phase;
     if (phase === 'out') return tr('Opening', 'Départ');
+    if (phase === 'media') return tr('Media', 'Médias');
     return isPostCompletionMedia(itemOrPhase) ? tr('Media', 'Médias') : tr('Closing', 'Retour');
   };
   const getPhaseColor = (itemOrPhase) => {
     const phase = typeof itemOrPhase === 'string' ? itemOrPhase : itemOrPhase?.phase;
     if (phase === 'out') return 'bg-green-100 text-green-800';
+    if (phase === 'media') return 'bg-violet-100 text-violet-800';
     return isPostCompletionMedia(itemOrPhase) ? 'bg-violet-100 text-violet-800' : 'bg-blue-100 text-blue-800';
   };
 

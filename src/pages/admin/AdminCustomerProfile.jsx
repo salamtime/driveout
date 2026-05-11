@@ -25,6 +25,7 @@ import {
   MessageSquare,
   Send,
   Trash2,
+  Upload,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Button } from '@/components/ui/button';
@@ -977,6 +978,7 @@ const AdminCustomerProfile = () => {
   const [savingCustomerNote, setSavingCustomerNote] = useState(false);
   const [savingCustomerBan, setSavingCustomerBan] = useState(false);
   const [deletingDocumentKey, setDeletingDocumentKey] = useState('');
+  const [uploadingCustomerDocument, setUploadingCustomerDocument] = useState(false);
   const [showCopyConfirmation, setShowCopyConfirmation] = useState(false);
   const [activeTab, setActiveTab] = useState('messages');
   const [previewDocument, setPreviewDocument] = useState(null);
@@ -987,6 +989,7 @@ const AdminCustomerProfile = () => {
   const customerNoteTextareaRef = useRef(null);
   const customerBanTextareaRef = useRef(null);
   const copyConfirmationTimeoutRef = useRef(null);
+  const customerDocumentInputRef = useRef(null);
   useAdminModalFocus(Boolean(previewDocument), 'customer-profile-preview');
 
   const authUserIdParam = useMemo(() => {
@@ -1638,6 +1641,7 @@ const AdminCustomerProfile = () => {
   ).trim().toLowerCase();
   const canManageCustomerAlerts = ['owner', 'admin'].includes(currentRole);
   const canDeleteCustomerDocuments = currentRole === 'owner';
+  const canUploadCustomerDocuments = ['owner', 'admin'].includes(currentRole);
 
   const triggerCopyConfirmation = () => {
     setShowCopyConfirmation(true);
@@ -1684,11 +1688,14 @@ const AdminCustomerProfile = () => {
     return mergeCustomerScanHistory(
       customerData?.id_scan_url,
       customerData?.customer_id_image,
+      ...(Array.isArray(customerData?.scan_metadata?.uploaded_primary_id_urls)
+        ? customerData.scan_metadata.uploaded_primary_id_urls
+        : []),
       ...rentalHistory.map((rental) => rental?.customer_id_image)
     )
       .map((value) => normalizeDocumentUrl(value))
       .filter((value) => value && !deletedPrimaryUrlSet.has(value));
-  }, [customerData?.customer_id_image, customerData?.id_scan_url, deletedPrimaryIdUrls, rentalHistory]);
+  }, [customerData?.customer_id_image, customerData?.id_scan_url, customerData?.scan_metadata?.uploaded_primary_id_urls, deletedPrimaryIdUrls, rentalHistory]);
   const customerSecondaryIdHistoryScans = useMemo(() => (
     (() => {
       const deletedSecondaryUrlSet = new Set(deletedSecondaryIdUrls);
@@ -2164,11 +2171,15 @@ const AdminCustomerProfile = () => {
       const nextSecondDriverIdHistory = identityType === 'secondary'
         ? withoutNormalizedUrl(existingScanMetadata?.second_driver_id_history, documentUrl)
         : dedupeNormalizedUrls(existingScanMetadata?.second_driver_id_history);
+      const nextUploadedPrimaryIdUrls = identityType === 'primary'
+        ? withoutNormalizedUrl(existingScanMetadata?.uploaded_primary_id_urls, documentUrl)
+        : dedupeNormalizedUrls(existingScanMetadata?.uploaded_primary_id_urls);
       const nextScanMetadata = {
         ...existingScanMetadata,
         deleted_primary_id_urls: nextDeletedPrimaryUrls,
         deleted_secondary_id_urls: nextDeletedSecondaryUrls,
         second_driver_id_history: nextSecondDriverIdHistory,
+        uploaded_primary_id_urls: nextUploadedPrimaryIdUrls,
       };
       const nextIdScanUrl = identityType === 'primary' && normalizeDocumentUrl(customerProfile?.id_scan_url) === documentUrl
         ? null
@@ -2255,6 +2266,76 @@ const AdminCustomerProfile = () => {
       setDeletingDocumentKey('');
     }
   }
+
+  const handleCustomerDocumentUpload = async (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file || !customerProfile?.id) return;
+    if (!canUploadCustomerDocuments) {
+      toast.error('Only admins or owners can upload ID documents.');
+      if (event?.target) event.target.value = '';
+      return;
+    }
+
+    try {
+      setUploadingCustomerDocument(true);
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const filePath = `customer_ids/${customerProfile.id}/${Date.now()}_${safeName}`;
+      const { data, error } = await supabase.storage
+        .from('customer-documents')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type || undefined,
+        });
+
+      if (error) throw error;
+
+      const { data: publicData } = supabase.storage
+        .from('customer-documents')
+        .getPublicUrl(data.path);
+
+      const publicUrl = String(publicData?.publicUrl || '').trim();
+      if (!publicUrl) {
+        throw new Error('Could not resolve uploaded document URL.');
+      }
+
+      const existingScanMetadata = customerProfile?.scan_metadata || {};
+      const updatedAt = new Date().toISOString();
+      const nextUploadedPrimaryIdUrls = dedupeNormalizedUrls([
+        ...(existingScanMetadata?.uploaded_primary_id_urls || []),
+        publicUrl,
+      ]);
+      const nextDeletedPrimaryUrls = withoutNormalizedUrl(existingScanMetadata?.deleted_primary_id_urls, publicUrl);
+      const nextScanMetadata = {
+        ...existingScanMetadata,
+        uploaded_primary_id_urls: nextUploadedPrimaryIdUrls,
+        deleted_primary_id_urls: nextDeletedPrimaryUrls,
+      };
+      const nextIdScanUrl = customerProfile?.id_scan_url || customerData?.id_scan_url || publicUrl;
+
+      const { error: updateError } = await supabase
+        .from(CUSTOMER_TABLE)
+        .update({
+          scan_metadata: nextScanMetadata,
+          id_scan_url: nextIdScanUrl,
+          updated_at: updatedAt,
+        })
+        .eq('id', customerProfile.id);
+
+      if (updateError) throw updateError;
+
+      applyUpdatedCustomerScanMetadata(nextScanMetadata, updatedAt, {
+        id_scan_url: nextIdScanUrl,
+      });
+      toast.success('ID document uploaded successfully.');
+    } catch (uploadError) {
+      console.error('Failed to upload customer ID document:', uploadError);
+      toast.error(uploadError?.message || 'Unable to upload this ID document right now.');
+    } finally {
+      setUploadingCustomerDocument(false);
+      if (event?.target) event.target.value = '';
+    }
+  };
 
   const renderCompactDocumentTile = (document) => {
     const identityType = getCustomerIdentityDocumentType(document);
@@ -2984,6 +3065,27 @@ const AdminCustomerProfile = () => {
                   <p className="mt-1 text-sm text-slate-500">Primary and secondary ID scans saved for this customer.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  {canUploadCustomerDocuments ? (
+                    <>
+                      <input
+                        ref={customerDocumentInputRef}
+                        type="file"
+                        accept="image/*,.pdf"
+                        className="hidden"
+                        onChange={(event) => void handleCustomerDocumentUpload(event)}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="rounded-2xl border-slate-200 bg-white"
+                        disabled={uploadingCustomerDocument}
+                        onClick={() => customerDocumentInputRef.current?.click()}
+                      >
+                        <Upload className="mr-2 h-4 w-4" />
+                        {uploadingCustomerDocument ? 'Uploading…' : 'Upload ID document'}
+                      </Button>
+                    </>
+                  ) : null}
                   <span className={`inline-flex items-center rounded-2xl px-3 py-1.5 text-sm font-semibold ring-1 ${getVerificationTone(verificationLabel)}`}>
                     {verificationLabel}
                   </span>

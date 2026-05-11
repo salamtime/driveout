@@ -7,6 +7,7 @@ import { insertTenantAuditLog } from './tenantAuditLog.js';
 import { TENANT_FEATURE_KEYS, TENANT_PLAN_ORDER } from '../../src/config/tenantPlans.js';
 import { DEFAULT_TENANCY_MODE, normalizeTenancyMode } from './tenancyMode.js';
 import {
+  resolveTenantTenancyMode,
   runPlatformTenantSelectWithModeFallback,
   runPlatformTenantUpdateWithModeFallback,
 } from './tenantRegistry.js';
@@ -78,6 +79,7 @@ const sanitizeTenantSettings = (settings = {}) => {
   if (source.telegram_event_types && typeof source.telegram_event_types === 'object') {
     const allowedTelegramEvents = [
       'rental_created',
+      'website_reservation_created',
       'rental_started',
       'rental_vehicle_replaced',
       'rental_completed',
@@ -225,10 +227,7 @@ export default async function tenantControlsHandler(req, res) {
 
     const nextTenancyMode = normalizeTenancyMode(
       tenantPatch.tenancy_mode,
-      normalizeTenancyMode(
-        existingTenant?.tenancy_mode || existingTenant?.metadata?.tenancy_mode,
-        DEFAULT_TENANCY_MODE
-      )
+      normalizeTenancyMode(resolveTenantTenancyMode(existingTenant), DEFAULT_TENANCY_MODE)
     );
 
     const subscriptionPayload = {
@@ -318,7 +317,7 @@ export default async function tenantControlsHandler(req, res) {
     if ((existingSubscription?.plan_type || 'starter') !== subscriptionPayload.plan_type) changedCoreControls.push('plan_type');
     if ((existingSubscription?.subscription_status || 'trial') !== subscriptionPayload.subscription_status) changedCoreControls.push('subscription_status');
     if ((existingSubscription?.billing_status || 'none') !== subscriptionPayload.billing_status) changedCoreControls.push('billing_status');
-    if (normalizeTenancyMode(existingTenant?.tenancy_mode || existingTenant?.metadata?.tenancy_mode, DEFAULT_TENANCY_MODE) !== nextTenancyMode) {
+    if (normalizeTenancyMode(resolveTenantTenancyMode(existingTenant), DEFAULT_TENANCY_MODE) !== nextTenancyMode) {
       changedCoreControls.push('tenancy_mode');
     }
 

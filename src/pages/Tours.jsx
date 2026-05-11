@@ -1424,7 +1424,7 @@ const Tours = () => {
                       onClick={(event) => event.stopPropagation()}
                     >
                       <div className="space-y-4">
-                        <div className="overflow-hidden rounded-[24px] border border-violet-200 bg-white shadow-[0_14px_34px_rgba(124,58,237,0.12)]">
+                        <div className="overflow-visible rounded-[24px] border border-violet-200 bg-white shadow-[0_14px_34px_rgba(124,58,237,0.12)]">
                           <button
                             type="button"
                             onClick={() => setRoadmapOpen((current) => !current)}
@@ -1601,7 +1601,7 @@ const Tours = () => {
                                 </div>
                               )}
 
-                              <div className={`overflow-hidden rounded-[22px] border ${bookingDetailsOpen ? 'border-violet-300 bg-white shadow-[0_18px_40px_rgba(124,58,237,0.18)]' : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(124,58,237,0.12)]'}`}>
+                              <div className={`overflow-visible rounded-[22px] border ${bookingDetailsOpen ? 'border-violet-300 bg-white shadow-[0_18px_40px_rgba(124,58,237,0.18)]' : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(124,58,237,0.12)]'}`}>
                                 <button
                                   type="button"
                                   onClick={() => setBookingDetailsOpen((current) => !current)}
@@ -1663,7 +1663,7 @@ const Tours = () => {
                                 ) : null}
                               </div>
 
-                              <div className={`overflow-hidden rounded-[22px] border ${contactInfoOpen ? 'border-violet-300 bg-white shadow-[0_18px_40px_rgba(124,58,237,0.18)]' : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(124,58,237,0.12)]'}`}>
+                              <div className={`relative ${contactInfoOpen ? 'z-30' : 'z-10'} overflow-visible rounded-[22px] border ${contactInfoOpen ? 'border-violet-300 bg-white shadow-[0_18px_40px_rgba(124,58,237,0.18)]' : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(124,58,237,0.12)]'}`}>
                                 <button
                                   type="button"
                                   onClick={() => setContactInfoOpen((current) => !current)}

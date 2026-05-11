@@ -871,7 +871,7 @@ export class ExtensionPricingService {
     const newEndDate = new Date(currentEndDate.getTime() + (hours * 60 * 60 * 1000));
     
     const newTotalAmount = (rental.total_amount || 0) + price;
-    const newRemainingAmount = newTotalAmount - (rental.deposit_amount || 0);
+    const newRemainingAmount = Math.max(0, newTotalAmount - (rental.deposit_amount || 0));
 
     let newQuantityHours = rental.quantity_hours || 0;
     let newQuantityDays = rental.quantity_days || 0;
@@ -891,7 +891,8 @@ export class ExtensionPricingService {
       rental_end_date: newEndDate.toISOString(),
       actual_end_date: newEndDate.toISOString(),
       total_amount: newTotalAmount,
-      remaining_amount: Math.max(newRemainingAmount, 0),
+      remaining_amount: newRemainingAmount,
+      payment_status: newRemainingAmount > 0 ? 'partial' : 'paid',
       quantity_hours: newQuantityHours,
       quantity_days: newQuantityDays,
       extension_count: extensionSummary.extensionCount,

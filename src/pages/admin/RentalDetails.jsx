@@ -741,6 +741,7 @@ const selectAppliedKilometerPackage = ({
   availablePackages = [],
   gracePeriodMinutes = DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
   totalDistance = 0,
+  allowAutoUpgrade = true,
 } = {}) => {
   if (!isPackagePricingEnabled(rental)) {
     return {
@@ -799,6 +800,28 @@ const selectAppliedKilometerPackage = ({
     ? Number(getConfiguredPackageTotalIncludedKilometers(rental, originalPackage) || 0)
     : 0;
   const originalPrice = originalPackage ? Number(getPackageDisplayTotal(rental, originalPackage) || 0) : 0;
+  if (!allowAutoUpgrade) {
+    const appliedPackage = originalPackage || null;
+    const appliedLimit = Number.isFinite(originalLimit) ? originalLimit : 0;
+    const appliedPrice = Number.isFinite(originalPrice) ? originalPrice : 0;
+    const appliedExtraRate = Number.parseFloat(appliedPackage?.extra_km_rate || rental?.extra_km_rate_applied || 0) || 0;
+    const overageKm = Number.isFinite(appliedLimit) ? Math.max(0, safeDistance - appliedLimit) : 0;
+    const overageCharge = overageKm * appliedExtraRate;
+
+    return {
+      originalPackage,
+      appliedPackage,
+      originalLimit,
+      appliedLimit,
+      originalPrice,
+      appliedPrice,
+      appliedExtraRate,
+      upgraded: false,
+      overageKm,
+      overageCharge,
+      totalDistance: safeDistance,
+    };
+  }
   const appliedOption = (
     selectedPackageId
       ? options.find((option) => String(option.pkg?.id || '') === selectedPackageId)
@@ -1027,12 +1050,14 @@ const parsePriceOverrideMeta = (rawValue) => {
 };
 
 const buildPriceOverrideMeta = ({
+  existingMeta = null,
   note,
   currentUser,
   previousPrice,
   newPrice,
   editedAt = new Date().toISOString(),
 }) => ({
+  ...(existingMeta && typeof existingMeta === 'object' ? existingMeta : {}),
   note: note || '',
   editedById: currentUser?.id || null,
   editedByName: currentUser?.full_name || currentUser?.name || currentUser?.email || null,
@@ -1040,6 +1065,11 @@ const buildPriceOverrideMeta = ({
   newPrice: Math.max(0, Number(newPrice || 0) || 0),
   editedAt,
 });
+
+const isAutoPackageUpgradeEnabledForRental = (rentalLike = {}) => {
+  const overrideMeta = parsePriceOverrideMeta(rentalLike?.price_override_reason);
+  return overrideMeta?.autoPackageUpgradeEnabled !== false;
+};
 
 const resolveDisplayedStartingOdometer = (rental, fallbackValue = null) => {
   const rentalOdometer = Number(rental?.start_odometer);
@@ -1331,6 +1361,14 @@ const buildAmountDueEditMeta = ({
   newAmount = 0,
   paymentReceivedNow = 0,
   companyDiscount = 0,
+  transportFeeAmount = 0,
+  transportFeeNote = '',
+  transportFeeReceiptUrl = null,
+  transportFeeReceiptName = '',
+  transportFeeReceiptPath = null,
+  transportFeeReceiptUploadedAt = null,
+  transportFeeEditedAt = null,
+  transportFeeEditedByName = null,
 }) => ({
   note: String(note || '').trim(),
   editedById: currentUser?.id || null,
@@ -1343,22 +1381,87 @@ const buildAmountDueEditMeta = ({
   newAmount: Number(newAmount || 0) || 0,
   paymentReceivedNow: Math.max(0, Number(paymentReceivedNow || 0) || 0),
   companyDiscount: Math.max(0, Number(companyDiscount || 0) || 0),
+  transportFeeAmount: Math.max(0, Number(transportFeeAmount || 0) || 0),
+  transportFeeNote: String(transportFeeNote || '').trim(),
+  transportFeeReceiptUrl: transportFeeReceiptUrl || null,
+  transportFeeReceiptName: String(transportFeeReceiptName || '').trim(),
+  transportFeeReceiptPath: transportFeeReceiptPath || null,
+  transportFeeReceiptUploadedAt: transportFeeReceiptUploadedAt || null,
+  transportFeeEditedAt: transportFeeEditedAt || new Date().toISOString(),
+  transportFeeEditedByName:
+    transportFeeEditedByName ||
+    currentUser?.full_name ||
+    currentUser?.name ||
+    currentUser?.email ||
+    'Staff',
   editedAt: new Date().toISOString(),
 });
 
-const getInlineAmountDueOverrideMeta = (rentalLike = {}) => {
+const getAmountDueOverrideReasonPayload = (rentalLike = {}) => {
   const rawReason =
     typeof rentalLike?.amount_due_override_reason === 'string'
       ? rentalLike.amount_due_override_reason.trim()
       : '';
-  let parsedReasonMeta = null;
-  if (rawReason.startsWith('{')) {
-    try {
-      parsedReasonMeta = JSON.parse(rawReason);
-    } catch {
-      parsedReasonMeta = null;
-    }
+  if (!rawReason) return null;
+
+  if (!rawReason.startsWith('{')) {
+    return {
+      note: rawReason,
+    };
   }
+
+  try {
+    const parsed = JSON.parse(rawReason);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const buildAmountDueOverrideReasonString = ({ rentalLike = {}, overrides = {}, clearKeys = [] } = {}) => {
+  const basePayload = { ...(getAmountDueOverrideReasonPayload(rentalLike) || {}) };
+  const mergedPayload = { ...basePayload, ...overrides };
+
+  clearKeys.forEach((key) => {
+    delete mergedPayload[key];
+  });
+
+  if (typeof mergedPayload.note === 'string') {
+    mergedPayload.note = mergedPayload.note.trim();
+  }
+  if (typeof mergedPayload.customerFacingNote === 'string') {
+    mergedPayload.customerFacingNote = mergedPayload.customerFacingNote.trim();
+  }
+  if (typeof mergedPayload.transportFeeNote === 'string') {
+    mergedPayload.transportFeeNote = mergedPayload.transportFeeNote.trim();
+  }
+  if (typeof mergedPayload.transportFeeReceiptName === 'string') {
+    mergedPayload.transportFeeReceiptName = mergedPayload.transportFeeReceiptName.trim();
+  }
+  if (typeof mergedPayload.transportFeeEditedByName === 'string') {
+    mergedPayload.transportFeeEditedByName = mergedPayload.transportFeeEditedByName.trim();
+  }
+
+  const isMeaningfulString = (value) => typeof value === 'string' && value.trim().length > 0;
+  const hasMeaningfulPayload =
+    Object.entries(mergedPayload).some(([key, value]) => {
+      if (clearKeys.includes(key)) return false;
+      if (value === null || value === undefined) return false;
+      if (typeof value === 'number') return Number.isFinite(value) && Math.abs(value) > 0.0001;
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') return value.trim().length > 0;
+      return true;
+    });
+
+  return hasMeaningfulPayload ? JSON.stringify(mergedPayload) : null;
+};
+
+const getInlineAmountDueOverrideMeta = (rentalLike = {}) => {
+  const parsedReasonMeta = getAmountDueOverrideReasonPayload(rentalLike);
+  const rawReason =
+    typeof rentalLike?.amount_due_override_reason === 'string'
+      ? rentalLike.amount_due_override_reason.trim()
+      : '';
   const note = parsedReasonMeta
     ? String(parsedReasonMeta?.note || '').trim()
     : rawReason;
@@ -1370,7 +1473,16 @@ const getInlineAmountDueOverrideMeta = (rentalLike = {}) => {
   const paymentReceivedNow = Math.max(0, Number(parsedReasonMeta?.paymentReceivedNow || 0) || 0);
   const companyDiscount = Math.max(0, Number(parsedReasonMeta?.companyDiscount || 0) || 0);
 
-  if (!note && !editedById && !editedByName && !editedAt && previousAmount <= 0 && newAmount <= 0 && paymentReceivedNow <= 0 && companyDiscount <= 0) {
+  const hasExplicitAuditFields =
+    Boolean(note) ||
+    Boolean(editedById) ||
+    Boolean(editedByName) ||
+    Boolean(editedAt) ||
+    previousAmount > 0 ||
+    paymentReceivedNow > 0 ||
+    companyDiscount > 0;
+
+  if (!hasExplicitAuditFields) {
     return null;
   }
 
@@ -1383,6 +1495,33 @@ const getInlineAmountDueOverrideMeta = (rentalLike = {}) => {
     paymentReceivedNow,
     companyDiscount,
     editedAt,
+  };
+};
+
+const getInlineTransportFeeMeta = (rentalLike = {}) => {
+  const parsedReasonMeta = getAmountDueOverrideReasonPayload(rentalLike);
+  const amount = Math.max(0, Number(parsedReasonMeta?.transportFeeAmount || 0) || 0);
+  const note = String(parsedReasonMeta?.transportFeeNote || '').trim();
+  const receiptUrl = parsedReasonMeta?.transportFeeReceiptUrl || null;
+  const receiptName = String(parsedReasonMeta?.transportFeeReceiptName || '').trim();
+  const receiptPath = parsedReasonMeta?.transportFeeReceiptPath || null;
+  const receiptUploadedAt = parsedReasonMeta?.transportFeeReceiptUploadedAt || null;
+  const editedAt = parsedReasonMeta?.transportFeeEditedAt || null;
+  const editedByName = String(parsedReasonMeta?.transportFeeEditedByName || '').trim();
+
+  if (amount <= 0 && !note && !receiptUrl && !receiptName && !receiptPath && !receiptUploadedAt) {
+    return null;
+  }
+
+  return {
+    amount,
+    note,
+    receiptUrl,
+    receiptName,
+    receiptPath,
+    receiptUploadedAt,
+    editedAt,
+    editedByName,
   };
 };
 
@@ -2047,6 +2186,15 @@ export default function RentalDetails() {
   // 🔍 DEBUG: WhatsApp button click handler
   const [rental, setRental] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
+  const resolvedCurrentUser =
+    currentUser ||
+    (userProfile
+      ? {
+          ...userProfile,
+          full_name: userProfile.full_name || userProfile.fullName || userProfile.email,
+        }
+      : null);
+  const currentUserRole = String(resolvedCurrentUser?.role || '').toLowerCase();
   const [linkedCustomerProfile, setLinkedCustomerProfile] = useState(null);
   const [customerVerificationSummary, setCustomerVerificationSummary] = useState(null);
   const [customerVerificationEntityId, setCustomerVerificationEntityId] = useState(null);
@@ -2357,6 +2505,7 @@ export default function RentalDetails() {
   
   const [openingModalOpen, setOpeningModalOpen] = useState(false);
   const [closingModalOpen, setClosingModalOpen] = useState(false);
+  const [vehicleMediaEditChoiceOpen, setVehicleMediaEditChoiceOpen] = useState(false);
   
   const [capturedMedia, setCapturedMedia] = useState([]);
   const [captureFlash, setCaptureFlash] = useState(false);
@@ -3295,6 +3444,17 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [amountDueOverrideReason, setAmountDueOverrideReason] = useState('');
   const [isSavingAmountDue, setIsSavingAmountDue] = useState(false);
   const [amountDueAuditMeta, setAmountDueAuditMeta] = useState(null);
+  const [showTransportFeeModal, setShowTransportFeeModal] = useState(false);
+  const [isSavingTransportFee, setIsSavingTransportFee] = useState(false);
+  const [transportFeeUploading, setTransportFeeUploading] = useState(false);
+  const [transportFeeForm, setTransportFeeForm] = useState({
+    amount: '',
+    note: '',
+    receiptUrl: null,
+    receiptName: '',
+    receiptPath: null,
+    receiptUploadedAt: null,
+  });
   const [resendingTelegramEvent, setResendingTelegramEvent] = useState('');
 
   // Video refresh trigger
@@ -3479,7 +3639,13 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const vehicleStillUnderMaintenance = Boolean(
     rentalAttention?.status === 'under_maintenance' ||
     (vehicleReport?.maintenance && maintenanceStatus !== 'completed') ||
-    (vehicleReport?.send_to_maintenance && !vehicleReport?.maintenance)
+    (vehicleReport?.send_to_maintenance && !vehicleReport?.maintenance) ||
+    rental?.linked_maintenance_id ||
+    ['maintenance_created', 'maintenance_in_progress'].includes(String(rental?.linked_maintenance_status || '').toLowerCase())
+  );
+  const inlineTransportFeeMeta = useMemo(
+    () => getInlineTransportFeeMeta(rental),
+    [rental?.amount_due_override_reason]
   );
   const incidentSummaryToneClass = vehicleStillUnderMaintenance
     ? 'border-orange-200 bg-orange-50 text-orange-800'
@@ -3679,6 +3845,8 @@ const impoundReceiptInputRef = useRef(null);
 const impoundReceiptCameraInputRef = useRef(null);
 const releaseImpoundReceiptInputRef = useRef(null);
 const releaseImpoundReceiptCameraInputRef = useRef(null);
+const transportFeeReceiptInputRef = useRef(null);
+const transportFeeReceiptCameraInputRef = useRef(null);
 // Clear global PDF cache on mount so stale URLs never get reused
 if (typeof window !== 'undefined') {
   window.__pdfCache = {};
@@ -3706,6 +3874,20 @@ const scheduleDocumentGeneration = useCallback((callback, delay = 0) => {
 
   documentGenerationTimersRef.current.add(timerId);
   return timerId;
+}, []);
+
+const invalidateReceiptArtifacts = useCallback(() => {
+  receiptUrlRef.current = null;
+  shortReceiptUrlRef.current = null;
+  if (typeof window !== 'undefined' && window.__pdfCache) {
+    delete window.__pdfCache.receipt;
+    delete window.__pdfCache.receiptUrl;
+  }
+  setPdfCache((prev) => ({
+    ...prev,
+    receiptUrl: null,
+    receiptGenerating: false,
+  }));
 }, []);
 
 // Capture template as high-res image using same method as handlePrintContract/Receipt
@@ -5223,6 +5405,15 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
       return bTime - aTime;
     })[0] || null;
   }, [approvedExtensions]);
+  const contractPriceOverrideMeta = useMemo(
+    () => parsePriceOverrideMeta(rental?.price_override_reason),
+    [rental?.price_override_reason]
+  );
+  const hasManualContractPriceOverride = useMemo(() => {
+    const nextPrice = Math.max(0, Number(contractPriceOverrideMeta?.newPrice || 0) || 0);
+    const previousPrice = Math.max(0, Number(contractPriceOverrideMeta?.previousPrice || 0) || 0);
+    return nextPrice > 0 || previousPrice > 0;
+  }, [contractPriceOverrideMeta]);
 
   const getStoredRentalChargeAmount = useCallback(() => {
     if (!rental) return 0;
@@ -5240,7 +5431,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
     // The saved rental row is the source of truth after manual contract edits.
     // For package rentals, do not recalculate from the original package config
     // when we already have a stored contract amount on the rental itself.
-    if (storedRentalCharge > 0) {
+    if (storedRentalCharge > 0 && hasManualContractPriceOverride) {
       return Math.max(0, storedRentalCharge - extensionFees);
     }
 
@@ -5261,7 +5452,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
 
     const duration = rental.quantity_days ?? 1;
     return rental.use_package_pricing ? (Number(rental.unit_price || 0) || 0) : (rental.unit_price || 0) * duration;
-  }, [getStoredRentalChargeAmount, rental, totalExtensionFees, packageDetails]);
+  }, [getStoredRentalChargeAmount, hasManualContractPriceOverride, rental, totalExtensionFees, packageDetails]);
 
   const bookedKilometerPackage = useMemo(
     () => getRentalKilometerPackage(rental, packageDetails),
@@ -5314,6 +5505,10 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
     return Number(getConfiguredPackageTotalIncludedKilometers(rental, bookedKilometerPackage) || 0);
   }, [bookedKilometerPackage, hasBookedKilometerPackage, rental]);
 
+  const autoPackageUpgradeEnabled = useMemo(
+    () => isAutoPackageUpgradeEnabledForRental(rental),
+    [rental?.price_override_reason]
+  );
   const autoMatchedPackage = hasBookedKilometerPackage ? (simplePricingSummary?.selectedPackage || null) : null;
   const autoMatchedPackageDiffers =
     Boolean(bookedKilometerPackage?.id && autoMatchedPackage?.id) &&
@@ -5342,9 +5537,10 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
         availablePackages: availableKmPackages,
         gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
         totalDistance: Number(rental?.total_kilometers_driven || rental?.total_distance || 0) || 0,
+        allowAutoUpgrade: autoPackageUpgradeEnabled,
       });
     },
-    [availableKmPackages, bookedKilometerPackage, hasBookedKilometerPackage, packageDetails, rental, rentalTimingSettings?.graceMinutes]
+    [autoPackageUpgradeEnabled, availableKmPackages, bookedKilometerPackage, hasBookedKilometerPackage, packageDetails, rental, rentalTimingSettings?.graceMinutes]
   );
   const appliedKilometerPackage = kilometerPackageApplication.appliedPackage || bookedKilometerPackage || null;
   const appliedKilometerPackageName = getKilometerPackageName(
@@ -5860,16 +6056,19 @@ Click the link above to review and approve the extension.`;
         const currentExtensionCount = parseFloat(prev.extension_count) || 0;
         const currentExtendedHours = parseFloat(prev.total_extended_hours) || 0;
         const currentExtensionPrice = parseFloat(prev.total_extension_price) || 0;
+        const nextTotalAmount = (parseFloat(prev.total_amount) || 0) + extensionPrice;
+        const nextRemainingAmount = Math.max(
+          0,
+          nextTotalAmount - (parseFloat(prev.deposit_amount) || 0)
+        );
 
         return {
           ...prev,
           rental_end_date: extensionContext.newEndDate,
           actual_end_date: extensionContext.newEndDate,
-          total_amount: (parseFloat(prev.total_amount) || 0) + extensionPrice,
-          remaining_amount: Math.max(
-            0,
-            ((parseFloat(prev.total_amount) || 0) + extensionPrice) - (parseFloat(prev.deposit_amount) || 0)
-          ),
+          total_amount: nextTotalAmount,
+          remaining_amount: nextRemainingAmount,
+          payment_status: nextRemainingAmount > 0 ? 'partial' : 'paid',
           quantity_hours: isHourlyRental
             ? currentQuantityHours + extensionHours
             : (currentQuantityDays + (extensionHours / 24)) * 24,
@@ -5955,6 +6154,7 @@ Click the link above to review and approve the extension.`;
       
       // Calculate new totals
       const newTotalAmount = (parseFloat(currentRental.total_amount) || 0) + (parseFloat(extension.extension_price) || 0);
+      const newRemainingAmount = Math.max(0, newTotalAmount - (parseFloat(currentRental.deposit_amount) || 0));
       
       // Calculate new quantity
       let newQuantityHours = currentRental.quantity_hours || 0;
@@ -5977,7 +6177,8 @@ Click the link above to review and approve the extension.`;
           rental_end_date: newEndDate.toISOString(),
           actual_end_date: newEndDate.toISOString(), // Also update actual_end_date
           total_amount: newTotalAmount,
-          remaining_amount: Math.max(0, newTotalAmount - (parseFloat(currentRental.deposit_amount) || 0)),
+          remaining_amount: newRemainingAmount,
+          payment_status: newRemainingAmount > 0 ? 'partial' : 'paid',
           quantity_hours: newQuantityHours,
           quantity_days: newQuantityDays,
           extension_count: nextExtensionCount,
@@ -7115,6 +7316,7 @@ Click the link above to review and approve the extension.`;
           availablePackages: availableKmPackages,
           gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
           totalDistance: totalDrivenKm,
+          allowAutoUpgrade: autoPackageUpgradeEnabled,
         })
       : {
           originalPackage: null,
@@ -7135,6 +7337,25 @@ Click the link above to review and approve the extension.`;
     const overageCharge = pkg ? packageApplication.overageCharge : 0;
     const fuelChargeAmount = getEffectiveFuelChargeAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
     const extensionFees = parseFloat(totalExtensionFees || 0);
+    const recalculatedBaseAmount = (() => {
+      if (pkg && rental?.use_package_pricing) {
+        return Math.max(0, Number(packageAppliedPrice || getPackageDisplayTotal(rental, pkg) || 0) || 0);
+      }
+
+      if (rental?.rental_type === 'hourly') {
+        const duration = getRentalDurationUnits(rental);
+        if (rental.use_package_pricing || isFlatHourlyTierRental(rental, packageDetails)) {
+          return Number(rental.unit_price || 0) || 0;
+        }
+        return Math.max(0, (Number(rental.unit_price || 0) || 0) * duration);
+      }
+
+      const duration = Number(rental?.quantity_days ?? 1) || 1;
+      return rental?.use_package_pricing
+        ? (Number(rental?.unit_price || 0) || 0)
+        : Math.max(0, (Number(rental?.unit_price || 0) || 0) * duration);
+    })();
+    const recalculatedContractSubtotal = Math.max(0, recalculatedBaseAmount + extensionFees);
     const hasActiveImpoundRecord = Boolean(rental?.is_impounded || rental?.impounded_at);
     const hasReleasedImpoundCharge = Boolean(
       rental?.released_from_impound_at &&
@@ -7172,19 +7393,55 @@ Click the link above to review and approve the extension.`;
         : hasReleasedImpoundCharge
           ? Math.max(0, Number(rental.impound_discount ?? 0))
           : 0;
+    const transportFeeAmount = Math.max(0, Number(inlineTransportFeeMeta?.amount || 0) || 0);
     const maintenanceRepairAmount = getLinkedMaintenanceRepairAmount();
     const maintenanceStayAmount = getLinkedMaintenanceStayAmount();
     const maintenanceChargeAmount = maintenanceRepairAmount + maintenanceStayAmount;
     const maintenanceDiscountAmount = maintenanceChargeForm.enabled
       ? (parseFloat(maintenanceChargeForm.discount || 0) || 0)
       : 0;
-    const effectiveRentalChargeAmount = pkg && rental.use_package_pricing
-      ? (packageAppliedPrice || baseAmount) + extensionFees
-      : rentalChargeAmount;
-    const effectiveBaseAmount = pkg && rental.use_package_pricing
-      ? (packageAppliedPrice || baseAmount)
-      : baseAmount;
-    const grandTotal = effectiveRentalChargeAmount + overageCharge + fuelChargeAmount + impoundChargeAmount + maintenanceChargeAmount;
+    const hasStoredRentalChargeAmount = rentalChargeAmount > 0;
+    const shouldTrustStoredRentalChargeForPricing =
+      hasStoredRentalChargeAmount && hasManualContractPriceOverride;
+    const storedRentalChargeIncludesOverage = shouldTrustStoredRentalChargeForPricing &&
+      overageCharge > 0 &&
+      Math.abs(rentalChargeAmount - (recalculatedContractSubtotal + overageCharge)) < 0.01;
+    const ancillaryChargeAmount =
+      fuelChargeAmount +
+      impoundChargeAmount +
+      maintenanceChargeAmount +
+      transportFeeAmount;
+    const recalculatedRentalSubtotal = Math.max(0, recalculatedContractSubtotal + overageCharge);
+    const storedRentalChargeIncludesAncillaryCharges = shouldTrustStoredRentalChargeForPricing &&
+      ancillaryChargeAmount > 0 &&
+      Math.abs(rentalChargeAmount - (recalculatedRentalSubtotal + ancillaryChargeAmount)) < 0.01;
+    const effectiveRentalChargeAmount = shouldTrustStoredRentalChargeForPricing
+      ? (
+          storedRentalChargeIncludesAncillaryCharges
+            ? recalculatedRentalSubtotal
+            : rentalChargeAmount
+        )
+      : recalculatedContractSubtotal;
+    const effectiveBaseAmount = shouldTrustStoredRentalChargeForPricing && !storedRentalChargeIncludesAncillaryCharges
+      ? Math.max(
+          0,
+          rentalChargeAmount -
+            extensionFees -
+            (storedRentalChargeIncludesOverage ? overageCharge : 0)
+        )
+      : recalculatedBaseAmount;
+    const effectiveOverageCharge =
+      shouldTrustStoredRentalChargeForPricing &&
+      (storedRentalChargeIncludesOverage || storedRentalChargeIncludesAncillaryCharges)
+        ? 0
+        : overageCharge;
+    const grandTotal =
+      effectiveRentalChargeAmount +
+      effectiveOverageCharge +
+      fuelChargeAmount +
+      impoundChargeAmount +
+      maintenanceChargeAmount +
+      transportFeeAmount;
     const rawDisplayedPaidAmount = getCorrectedDisplayedPaidAmount({ rental, endFuelLevel, fuelCharge, fuelChargeEnabled });
     const depositPaid = grandTotal > 0
       ? Math.min(rawDisplayedPaidAmount, grandTotal)
@@ -7195,13 +7452,29 @@ Click the link above to review and approve the extension.`;
     const autoDepositReturnAmount = damageDepositHeld;
     const hasAutoDepositSeizure = false;
     const storedRemainingAmount = Math.max(0, parseFloat(rental?.remaining_amount || 0) || 0);
-    const hasManualAmountDueOverride =
-      Boolean(amountDueAuditMeta) ||
-      Math.abs(storedRemainingAmount - rawBalanceDue) > 0.009;
+    const hasManualAmountDueOverride = Boolean(amountDueAuditMeta);
     const balanceDue = hasManualAmountDueOverride ? storedRemainingAmount : rawBalanceDue;
-    const companyDiscountAmount = Math.max(0, Number(amountDueAuditMeta?.companyDiscount || 0) || 0);
+    const explicitCompanyDiscountAmount = Math.max(0, Number(amountDueAuditMeta?.companyDiscount || 0) || 0);
+    const inferredCompanyDiscountAmount =
+      amountDueAuditMeta &&
+      explicitCompanyDiscountAmount <= 0 &&
+      storedRemainingAmount <= 0 &&
+      depositPaid > 0 &&
+      grandTotal - depositPaid > 0.009
+        ? Math.max(0, grandTotal - depositPaid)
+        : 0;
+    const companyDiscountAmount = Math.max(explicitCompanyDiscountAmount, inferredCompanyDiscountAmount);
+    const balanceResolutionPreviousAmount = amountDueAuditMeta
+      ? Math.max(
+          0,
+          Number(amountDueAuditMeta.previousAmount || 0) || 0
+        ) + inferredCompanyDiscountAmount
+      : 0;
     const finalGrandTotal = Math.max(0, grandTotal - companyDiscountAmount);
-    const customerPaidAmount = Math.max(0, grandTotal - balanceDue - companyDiscountAmount - autoDepositSeizedAmount);
+    const customerPaidAmount = Math.max(
+      0,
+      Math.min(depositPaid, grandTotal - balanceDue - companyDiscountAmount - autoDepositSeizedAmount)
+    );
 
     return {
       baseAmount: effectiveBaseAmount,
@@ -7209,13 +7482,18 @@ Click the link above to review and approve the extension.`;
       appliedPackagePrice: packageAppliedPrice,
       appliedPackageName: getKilometerPackageName(pkg, ''),
       packageWasUpgraded: Boolean(packageApplication.upgraded),
-      overageCharge,
+      overageCharge: effectiveOverageCharge,
+      overageKm: pkg ? Math.max(0, Number(packageApplication.overageKm || 0) || 0) : 0,
+      overageRate: pkg ? Math.max(0, Number(packageApplication.appliedExtraRate || 0) || 0) : 0,
+      overageDisplayCharge: pkg ? Math.max(0, Number(overageCharge || 0) || 0) : 0,
+      overageIncludedInContract: Boolean(storedRentalChargeIncludesOverage || storedRentalChargeIncludesAncillaryCharges),
       extensionFees,
       fuelChargeAmount,
       impoundChargeAmount,
       impoundBaseChargeAmount,
       impoundManualChargeAmount,
       impoundDiscountAmount,
+      transportFeeAmount,
       maintenanceRepairAmount,
       maintenanceStayAmount,
       maintenanceDiscountAmount,
@@ -7226,13 +7504,15 @@ Click the link above to review and approve the extension.`;
       depositPaid,
       customerPaidAmount,
       rawBalanceDue,
+      balanceResolutionPreviousAmount,
+      companyDiscountAmount,
       damageDepositHeld,
       autoDepositSeizedAmount,
       autoDepositReturnAmount,
       hasAutoDepositSeizure,
       balanceDue,
     };
-  }, [amountDueAuditMeta, availableKmPackages, calculateImpoundChargeTotal, endFuelLevel, fuelCharge, fuelChargeEnabled, getBaseRentalAmountExcludingExtensions, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.rateMode, impoundChargeForm.total, maintenanceChargeForm.discount, maintenanceChargeForm.enabled, maintenanceChargeForm.total, packageDetails, rental, totalExtensionFees, vehicleReport, waiveImpoundExtraDailyCharge]);
+  }, [amountDueAuditMeta, autoPackageUpgradeEnabled, availableKmPackages, calculateImpoundChargeTotal, endFuelLevel, fuelCharge, fuelChargeEnabled, getBaseRentalAmountExcludingExtensions, hasManualContractPriceOverride, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.rateMode, impoundChargeForm.total, inlineTransportFeeMeta?.amount, maintenanceChargeForm.discount, maintenanceChargeForm.enabled, maintenanceChargeForm.total, packageDetails, rental, totalExtensionFees, vehicleReport, waiveImpoundExtraDailyCharge]);
 
   const dynamicPaymentState = useMemo(() => {
     if (!rental) {
@@ -7324,6 +7604,25 @@ Click the link above to review and approve the extension.`;
     rentalBillingSummary.balanceDue
   ) === 'paid';
 
+  const receiptResolvedAmountDueMeta = useMemo(() => {
+    if (!amountDueAuditMeta && !rentalBillingSummary.companyDiscountAmount && !inlineTransportFeeMeta) return null;
+    return {
+      ...(amountDueAuditMeta || {}),
+      previousAmount: Math.max(0, Number(rentalBillingSummary.balanceResolutionPreviousAmount || amountDueAuditMeta?.previousAmount || 0) || 0),
+      paymentReceivedNow: Math.max(0, Number(amountDueAuditMeta?.paymentReceivedNow || 0) || 0),
+      companyDiscount: Math.max(0, Number(rentalBillingSummary.companyDiscountAmount || amountDueAuditMeta?.companyDiscount || 0) || 0),
+      newAmount: Math.max(0, Number(amountDueAuditMeta?.newAmount ?? rental?.remaining_amount ?? 0) || 0),
+      transportFeeAmount: Math.max(0, Number(inlineTransportFeeMeta?.amount || 0) || 0),
+      transportFeeNote: inlineTransportFeeMeta?.note || '',
+      transportFeeReceiptUrl: inlineTransportFeeMeta?.receiptUrl || null,
+      transportFeeReceiptName: inlineTransportFeeMeta?.receiptName || '',
+      transportFeeReceiptPath: inlineTransportFeeMeta?.receiptPath || null,
+      transportFeeReceiptUploadedAt: inlineTransportFeeMeta?.receiptUploadedAt || null,
+      transportFeeEditedAt: inlineTransportFeeMeta?.editedAt || null,
+      transportFeeEditedByName: inlineTransportFeeMeta?.editedByName || null,
+    };
+  }, [amountDueAuditMeta, inlineTransportFeeMeta, rental?.remaining_amount, rentalBillingSummary.balanceResolutionPreviousAmount, rentalBillingSummary.companyDiscountAmount]);
+
   const receiptRentalData = useMemo(() => {
     if (!rental) return null;
 
@@ -7406,6 +7705,7 @@ Click the link above to review and approve the extension.`;
       ...rental,
       vehicleReport: linkedVehicleReport,
       vehicle_report: linkedVehicleReport,
+      amount_due_resolution_meta: receiptResolvedAmountDueMeta,
       total_amount: effectiveDocumentTotal,
       unit_price: receiptAppliedPackageRate || rental?.unit_price,
       package: receiptAppliedPackage || rental?.package,
@@ -7458,7 +7758,7 @@ Click the link above to review and approve the extension.`;
         }
       }
     };
-  }, [dynamicPaymentState.status, fuelCharge, fuelChargeEnabled, fuelPricePerLine, endFuelLevel, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, inferredShortReturnVoidedExtension, kilometerPackageApplication, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.finalGrandTotal, rentalBillingSummary.grandTotal, vehicleReport, waiveImpoundExtraDailyCharge, tr]);
+  }, [dynamicPaymentState.status, fuelCharge, fuelChargeEnabled, fuelPricePerLine, endFuelLevel, impoundChargeForm.days, impoundChargeForm.discount, impoundChargeForm.hours, impoundChargeForm.rate, impoundChargeForm.total, impoundEstimatePreview, inferredShortReturnVoidedExtension, kilometerPackageApplication, receiptResolvedAmountDueMeta, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.finalGrandTotal, rentalBillingSummary.grandTotal, vehicleReport, waiveImpoundExtraDailyCharge, tr]);
 
   const receiptPreviewMeta = useMemo(
     () => getReceiptPreviewMeta(receiptRentalData || rental || {}),
@@ -9607,9 +9907,130 @@ const loadFuelChargeSettings = async () => {
       availablePackages: availableKmPackages,
       gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
       totalDistance,
+      allowAutoUpgrade: autoPackageUpgradeEnabled,
     }),
-    [availableKmPackages, packageDetails, rental, rentalTimingSettings?.graceMinutes]
+    [autoPackageUpgradeEnabled, availableKmPackages, packageDetails, rental, rentalTimingSettings?.graceMinutes]
   );
+
+  const [isSavingAutoPackageUpgradePreference, setIsSavingAutoPackageUpgradePreference] = useState(false);
+  const canToggleAutoPackageUpgrade =
+    hasBookedKilometerPackage &&
+    autoMatchedPackageDiffers &&
+    (
+      ['owner', 'admin', 'employee', 'staff', 'support', 'business_owner', 'guide'].includes(currentUserRole) ||
+      hasRentalManagementAccess
+    );
+
+  const handleToggleAutoPackageUpgrade = useCallback(async (nextEnabled) => {
+    if (!rental?.id || !bookedKilometerPackage || isSavingAutoPackageUpgradePreference) return;
+
+    setIsSavingAutoPackageUpgradePreference(true);
+    try {
+      const totalDistance = Math.max(0, Number(rental?.total_kilometers_driven || rental?.total_distance || 0) || 0);
+      const packageApplication = selectAppliedKilometerPackage({
+        rental,
+        bookedPackage: bookedKilometerPackage,
+        packageDetails,
+        availablePackages: availableKmPackages,
+        gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
+        totalDistance,
+        allowAutoUpgrade: nextEnabled,
+      });
+      const appliedPackage = packageApplication.appliedPackage || bookedKilometerPackage || null;
+      const packagePrice = Math.max(0, Number(packageApplication.appliedPrice || 0) || 0);
+      const overageCharge = Math.max(0, Number(packageApplication.overageCharge || 0) || 0);
+      const appliedLimit = Number.isFinite(packageApplication.appliedLimit)
+        ? Math.max(0, Number(packageApplication.appliedLimit || 0))
+        : null;
+      const extraRate = Math.max(0, Number(packageApplication.appliedExtraRate || 0) || 0);
+      const rentalSubtotal =
+        packagePrice +
+        overageCharge +
+        Math.max(0, Number(rentalBillingSummary.extensionFees || 0) || 0);
+      const grossGrandTotal =
+        rentalSubtotal +
+        Math.max(0, Number(rentalBillingSummary.fuelChargeAmount || 0) || 0) +
+        Math.max(0, Number(rentalBillingSummary.impoundChargeAmount || 0) || 0) +
+        Math.max(0, Number(rentalBillingSummary.maintenanceChargeAmount || 0) || 0) +
+        Math.max(0, Number(rentalBillingSummary.transportFeeAmount || 0) || 0);
+      const companyDiscountAmount = Math.max(0, Number(rentalBillingSummary.companyDiscountAmount || 0) || 0);
+      const finalGrandTotal = Math.max(0, grossGrandTotal - companyDiscountAmount);
+      const customerPaidAmount = Math.max(
+        0,
+        Number(rentalBillingSummary.customerPaidAmount || rentalBillingSummary.depositPaid || rental?.deposit_amount || 0) || 0
+      );
+      const remainingAmount = Math.max(0, finalGrandTotal - customerPaidAmount);
+      const existingMeta = parsePriceOverrideMeta(rental?.price_override_reason) || {};
+      const nextMeta = {
+        ...existingMeta,
+        autoPackageUpgradeEnabled: Boolean(nextEnabled),
+        autoPackageUpgradeEditedAt: new Date().toISOString(),
+        autoPackageUpgradeEditedById: resolvedCurrentUser?.id || currentUser?.id || null,
+        autoPackageUpgradeEditedByName:
+          resolvedCurrentUser?.full_name ||
+          resolvedCurrentUser?.name ||
+          resolvedCurrentUser?.email ||
+          currentUser?.full_name ||
+          currentUser?.name ||
+          currentUser?.email ||
+          null,
+      };
+
+      const updateData = {
+        total_amount: rentalSubtotal,
+        remaining_amount: remainingAmount,
+        payment_status: remainingAmount > 0 ? (customerPaidAmount > 0 ? 'partial' : 'unpaid') : 'paid',
+        overage_charge: overageCharge,
+        included_kilometers_applied: appliedLimit,
+        package_total_included_km: appliedLimit,
+        extra_km_rate_applied: appliedPackage ? extraRate : null,
+        unit_price: appliedPackage ? Number(getPackageRatePerUnit(rental, appliedPackage) || rental.unit_price || 0) : rental.unit_price,
+        price_override_reason: JSON.stringify(nextMeta),
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: updateError } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update(updateData)
+        .eq('id', rental.id);
+
+      if (updateError) throw updateError;
+
+      setRental((prev) => prev ? {
+        ...prev,
+        ...updateData,
+      } : prev);
+
+      toast.success(
+        nextEnabled
+          ? tr('Auto package upgrade enabled and totals recalculated.', 'Surclassement auto activé et totaux recalculés.')
+          : tr('Auto package upgrade disabled. Original package restored and overage recalculated.', 'Surclassement auto désactivé. Le forfait initial est rétabli et le dépassement recalculé.')
+      );
+      await loadRentalData(true);
+    } catch (error) {
+      console.error('Failed to toggle auto package upgrade:', error);
+      toast.error(`${tr('Could not update package pricing mode', 'Impossible de mettre à jour le mode tarifaire du forfait')}: ${error.message}`);
+    } finally {
+      setIsSavingAutoPackageUpgradePreference(false);
+    }
+  }, [
+    availableKmPackages,
+    bookedKilometerPackage,
+    currentUser,
+    isSavingAutoPackageUpgradePreference,
+    packageDetails,
+    rental,
+    rentalBillingSummary.companyDiscountAmount,
+    rentalBillingSummary.customerPaidAmount,
+    rentalBillingSummary.depositPaid,
+    rentalBillingSummary.extensionFees,
+    rentalBillingSummary.fuelChargeAmount,
+    rentalBillingSummary.impoundChargeAmount,
+    rentalBillingSummary.maintenanceChargeAmount,
+    rentalBillingSummary.transportFeeAmount,
+    rentalTimingSettings?.graceMinutes,
+    resolvedCurrentUser,
+  ]);
 
   const handleEndOdometerSubmit = async (rawValue = null) => {
     const { normalizedValue, parsedValue: endOdometerValue } = resolveEndOdometerValue(rawValue);
@@ -10930,7 +11351,7 @@ useEffect(() => {
    */
   const uploadFromGallery = async (targetPhase = null, targetMode = null) => {
     const resolvedPhase = targetPhase || activeModal || 'opening';
-    const resolvedMode = targetMode || (resolvedPhase === 'closing' ? closingMediaMode : openingMediaMode) || 'video';
+    const resolvedMode = targetMode || ((resolvedPhase === 'closing' || resolvedPhase === 'vehicle') ? closingMediaMode : openingMediaMode) || 'video';
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = resolvedMode === 'photo'
@@ -11221,13 +11642,20 @@ useEffect(() => {
     if (isLightRentalDetailsMode) {
       setLightRentalInfoSectionOpen('media', true);
     }
-    setActiveModal('closing');
+    setActiveModal('vehicle');
     setCapturedMedia([]);
     setClosingMediaMode('photo');
     setIsCapturingPhoto(false);
     setIsRecording(false);
     setRequiresClosingInspectionReview(false);
     setClosingModalOpen(true);
+  };
+
+  const handleOpenVehicleMediaEditChooser = () => {
+    if (isLightRentalDetailsMode) {
+      setLightRentalInfoSectionOpen('media', true);
+    }
+    setVehicleMediaEditChoiceOpen(true);
   };
 
   const handleCancelClosingInspectionModal = () => {
@@ -11363,7 +11791,7 @@ useEffect(() => {
 
       // Update rental record with first video URL for backward compatibility
       const firstVideo = uploadedMedia.find(m => !m.isImage);
-      if (firstVideo) {
+      if (firstVideo && type !== 'vehicle') {
         const updateField = type === 'opening' ? 'opening_video_url' : 'closing_video_url';
         const thumbField = type === 'opening' ? 'opening_video_thumbnail' : 'closing_video_thumbnail';
         
@@ -11410,7 +11838,7 @@ useEffect(() => {
       
       const mediaSuccessLabel = type === 'opening'
         ? tr('Opening condition', 'État de départ')
-        : String(rental?.rental_status || '').toLowerCase() === 'completed'
+        : type === 'vehicle'
           ? tr('Vehicle media', 'Médias véhicule')
           : tr('Closing condition', 'État de retour');
       toast.success(`${mediaSuccessLabel}: ${mediaTypes.join(' and ')} uploaded successfully!`);
@@ -11424,7 +11852,7 @@ useEffect(() => {
         await broadcastRentalWorkflowUpdate('start', 'opening_media', {
           media_phase: 'out',
         });
-      } else {
+      } else if (type === 'closing') {
         await broadcastRentalWorkflowUpdate('finish', 'closing_inspection', {
           media_phase: 'in',
           showWorkflow: true,
@@ -11604,18 +12032,18 @@ useEffect(() => {
         actualEndTime = currentEnd
           ? new Date(currentEnd.getTime() + pauseDurationMs).toISOString()
           : new Date(now.getTime() + duration * (rentalType === 'hourly' ? 3600000 : 86400000)).toISOString();
-      } else if (minutesLate > 0) {
+      } else {
+        // Once a scheduled reservation is started, the active rental window begins now.
+        // Early arrivals should not inherit extra time before the scheduled pickup slot.
         actualStartTime = now.toISOString();
         actualEndTime = new Date(now.getTime() + duration * (rentalType === 'hourly' ? 3600000 : 86400000)).toISOString();
-      } else {
-        actualStartTime = scheduledStart.toISOString();
-        actualEndTime = rental.rental_end_date;
       }
 
       const { data: updatedRental, error: rentalError } = await supabase
         .from('app_4c3a7a6153_rentals')
         .update({
           rental_status: 'active', status: 'active', started_at: actualStartTime,
+          ...(!isReplacementResumeFlow ? { rental_start_date: actualStartTime } : {}),
           actual_end_date: actualEndTime, rental_end_date: actualEndTime,
           quantity_days: duration, quantity_hours: rentalType === 'hourly' ? duration : null,
           late_start_minutes: !isReplacementResumeFlow && minutesLate > 0 ? minutesLate : 0,
@@ -11735,6 +12163,7 @@ useEffect(() => {
         ...updatedRental,
         rental_status: 'active',
         started_at: actualStartTime,
+        ...(!isReplacementResumeFlow ? { rental_start_date: actualStartTime } : {}),
         actual_end_date: actualEndTime,
         rental_end_date: actualEndTime,
         replacement_pause_started_at: null,
@@ -12509,6 +12938,171 @@ useEffect(() => {
     }
   };
 
+  const openTransportFeeModal = useCallback(() => {
+    setTransportFeeForm({
+      amount:
+        inlineTransportFeeMeta?.amount > 0
+          ? String(Math.round((Number(inlineTransportFeeMeta.amount || 0) + Number.EPSILON) * 100) / 100)
+          : '',
+      note: inlineTransportFeeMeta?.note || '',
+      receiptUrl: inlineTransportFeeMeta?.receiptUrl || null,
+      receiptName: inlineTransportFeeMeta?.receiptName || '',
+      receiptPath: inlineTransportFeeMeta?.receiptPath || null,
+      receiptUploadedAt: inlineTransportFeeMeta?.receiptUploadedAt || null,
+    });
+    setShowTransportFeeModal(true);
+  }, [inlineTransportFeeMeta]);
+
+  const handleTransportFeeReceiptUpload = async (file) => {
+    if (!file || !rental?.id) return;
+
+    try {
+      setTransportFeeUploading(true);
+
+      const uploadResult = await uploadFile(file, {
+        bucket: 'rental-documents',
+        pathPrefix: `transport-fee-receipts/${rental.id}`,
+        optimizationProfile: 'document',
+      });
+
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || 'Failed to upload transport receipt');
+      }
+
+      setTransportFeeForm((prev) => ({
+        ...prev,
+        receiptUrl: uploadResult.url,
+        receiptName: file.name || 'Transport receipt',
+        receiptPath: uploadResult.path,
+        receiptUploadedAt: new Date().toISOString(),
+      }));
+      toast.success(
+        tr(
+          'Transport receipt is ready to save with this adjustment.',
+          "Le reçu de transport est prêt à être enregistré avec cet ajustement."
+        )
+      );
+    } catch (error) {
+      console.error('❌ Error uploading transport receipt:', error);
+      toast.error(
+        error.message ||
+          tr(
+            'Failed to upload transport receipt.',
+            "Échec du téléversement du reçu de transport."
+          )
+      );
+    } finally {
+      setTransportFeeUploading(false);
+      if (transportFeeReceiptInputRef.current) transportFeeReceiptInputRef.current.value = '';
+      if (transportFeeReceiptCameraInputRef.current) transportFeeReceiptCameraInputRef.current.value = '';
+    }
+  };
+
+  const saveTransportFeeAdjustment = useCallback(async () => {
+    const actingUser = resolvedCurrentUser || currentUser || userProfile;
+    if (!rental?.id || currentUserRole !== 'owner') return false;
+
+    const nextTransportFeeAmount = Math.max(0, Number(transportFeeForm.amount || 0) || 0);
+    const previousTransportFeeAmount = Math.max(0, Number(inlineTransportFeeMeta?.amount || 0) || 0);
+    const currentRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
+    const nextRemainingAmount = Math.max(
+      0,
+      currentRemainingAmount - previousTransportFeeAmount + nextTransportFeeAmount
+    );
+    const depositPaid = Math.max(0, Number(rental?.deposit_amount || 0) || 0);
+    const nextPaymentStatus = nextRemainingAmount <= 0 ? 'paid' : (depositPaid > 0 ? 'partial' : 'unpaid');
+    const transportNote = String(transportFeeForm.note || '').trim();
+    const transportEditedAt = new Date().toISOString();
+    const transportEditedByName =
+      actingUser?.full_name ||
+      actingUser?.name ||
+      actingUser?.email ||
+      'Staff';
+    const clearTransportFeeKeys = nextTransportFeeAmount <= 0
+      ? [
+          'transportFeeAmount',
+          'transportFeeNote',
+          'transportFeeReceiptUrl',
+          'transportFeeReceiptName',
+          'transportFeeReceiptPath',
+          'transportFeeReceiptUploadedAt',
+          'transportFeeEditedAt',
+          'transportFeeEditedByName',
+        ]
+      : [];
+
+    const nextReasonString = buildAmountDueOverrideReasonString({
+      rentalLike: rental,
+      overrides: nextTransportFeeAmount > 0
+        ? {
+            transportFeeAmount: nextTransportFeeAmount,
+            transportFeeNote: transportNote,
+            transportFeeReceiptUrl: transportFeeForm.receiptUrl || null,
+            transportFeeReceiptName: transportFeeForm.receiptName || '',
+            transportFeeReceiptPath: transportFeeForm.receiptPath || null,
+            transportFeeReceiptUploadedAt: transportFeeForm.receiptUploadedAt || null,
+            transportFeeEditedAt: transportEditedAt,
+            transportFeeEditedByName: transportEditedByName,
+          }
+        : {},
+      clearKeys: clearTransportFeeKeys,
+    });
+
+    try {
+      setIsSavingTransportFee(true);
+
+      const { data, error } = await updateRentalWithSchemaFallback({
+        remaining_amount: nextRemainingAmount,
+        payment_status: nextPaymentStatus,
+        amount_due_override_reason: nextReasonString,
+        updated_at: new Date().toISOString(),
+      });
+
+      if (error) throw error;
+
+      setRental(data);
+      setShowTransportFeeModal(false);
+      toast.success(
+        nextTransportFeeAmount > 0
+          ? tr(
+              `Transport fee saved: ${formatCurrency(nextTransportFeeAmount)} MAD.`,
+              `Frais de transport enregistrés : ${formatCurrency(nextTransportFeeAmount)} MAD.`
+            )
+          : tr(
+              'Transport fee removed from this rental.',
+              'Frais de transport supprimés de cette location.'
+            )
+      );
+      return true;
+    } catch (error) {
+      console.error('❌ Error saving transport fee adjustment:', error);
+      toast.error(
+        error.message ||
+          tr(
+            'Failed to save transport fee adjustment.',
+            "Échec de l'enregistrement des frais de transport."
+          )
+      );
+      return false;
+    } finally {
+      setIsSavingTransportFee(false);
+    }
+  }, [
+    currentUser,
+    currentUserRole,
+    inlineTransportFeeMeta?.amount,
+    rental,
+    resolvedCurrentUser,
+    transportFeeForm.amount,
+    transportFeeForm.note,
+    transportFeeForm.receiptName,
+    transportFeeForm.receiptPath,
+    transportFeeForm.receiptUploadedAt,
+    transportFeeForm.receiptUrl,
+    updateRentalWithSchemaFallback,
+    userProfile,
+  ]);
+
   const markRentalImpounded = async () => {
     if (!rental?.id) return;
 
@@ -12709,10 +13303,21 @@ useEffect(() => {
         remaining_amount: nextRemainingAmount,
         payment_status: nextPaymentStatus,
         amount_due_override_reason: towingAmountDueOverrideMeta
-          ? JSON.stringify({
-              note: towingAmountDueOverrideMeta.note || '',
-              paymentReceivedNow: towingAmountDueOverrideMeta.paymentReceivedNow || 0,
-              companyDiscount: towingAmountDueOverrideMeta.companyDiscount || 0,
+          ? buildAmountDueOverrideReasonString({
+              rentalLike: rental,
+              overrides: {
+                note: towingAmountDueOverrideMeta.note || '',
+                paymentReceivedNow: towingAmountDueOverrideMeta.paymentReceivedNow || 0,
+                companyDiscount: towingAmountDueOverrideMeta.companyDiscount || 0,
+                transportFeeAmount: Math.max(0, Number(inlineTransportFeeMeta?.amount || 0) || 0),
+                transportFeeNote: inlineTransportFeeMeta?.note || '',
+                transportFeeReceiptUrl: inlineTransportFeeMeta?.receiptUrl || null,
+                transportFeeReceiptName: inlineTransportFeeMeta?.receiptName || '',
+                transportFeeReceiptPath: inlineTransportFeeMeta?.receiptPath || null,
+                transportFeeReceiptUploadedAt: inlineTransportFeeMeta?.receiptUploadedAt || null,
+                transportFeeEditedAt: inlineTransportFeeMeta?.editedAt || null,
+                transportFeeEditedByName: inlineTransportFeeMeta?.editedByName || null,
+              },
             })
           : rental?.amount_due_override_reason || null,
         amount_due_override_edited_by: towingAmountDueOverrideMeta?.editedById || rental?.amount_due_override_edited_by || null,
@@ -13176,6 +13781,7 @@ useEffect(() => {
     if (canApplyPriceDirectly) {
       const previousPrice = Math.max(0, parseFloat(rental.total_amount || rental.unit_price || 0) || 0);
       const overrideMeta = buildPriceOverrideMeta({
+        existingMeta: parsePriceOverrideMeta(rental?.price_override_reason),
         note: priceOverrideReason || '',
         currentUser: actingUser,
         previousPrice,
@@ -13279,26 +13885,63 @@ useEffect(() => {
         0,
         Number(rental?.remaining_amount ?? rentalBillingSummary?.balanceDue ?? 0) || 0
       );
+      const existingResolutionMeta = amountDueAuditMeta || getInlineAmountDueOverrideMeta(rental) || null;
+      const isChainedResolution =
+        Boolean(existingResolutionMeta) &&
+        Math.abs((Number(existingResolutionMeta?.newAmount || 0) || 0) - previousAmountDue) < 0.01;
       const depositPaid = Math.max(0, parseFloat(rental?.deposit_amount || 0) || 0);
       const updatedDepositPaid = depositPaid + paymentReceivedNow;
       const nextPaymentStatus = nextAmountDue <= 0 ? 'paid' : (depositPaid > 0 ? 'partial' : 'unpaid');
+      const mergedPreviousAmount = isChainedResolution
+        ? Math.max(previousAmountDue, Number(existingResolutionMeta?.previousAmount || 0) || 0)
+        : previousAmountDue;
+      const mergedPaymentReceivedNow = isChainedResolution
+        ? Math.max(0, Number(existingResolutionMeta?.paymentReceivedNow || 0) || 0) + paymentReceivedNow
+        : paymentReceivedNow;
+      const mergedCompanyDiscount = isChainedResolution
+        ? Math.max(0, Number(existingResolutionMeta?.companyDiscount || 0) || 0) + companyDiscount
+        : companyDiscount;
+      const mergedReason = String(
+        reason ||
+        existingResolutionMeta?.note ||
+        ''
+      ).trim();
       const overrideMeta = buildAmountDueEditMeta({
-        note: reason || '',
+        note: mergedReason,
         currentUser: actingUser,
-        previousAmount: previousAmountDue,
+        previousAmount: mergedPreviousAmount,
         newAmount: nextAmountDue,
-        paymentReceivedNow,
-        companyDiscount,
+        paymentReceivedNow: mergedPaymentReceivedNow,
+        companyDiscount: mergedCompanyDiscount,
+        transportFeeAmount: Math.max(0, Number(inlineTransportFeeMeta?.amount || 0) || 0),
+        transportFeeNote: inlineTransportFeeMeta?.note || '',
+        transportFeeReceiptUrl: inlineTransportFeeMeta?.receiptUrl || null,
+        transportFeeReceiptName: inlineTransportFeeMeta?.receiptName || '',
+        transportFeeReceiptPath: inlineTransportFeeMeta?.receiptPath || null,
+        transportFeeReceiptUploadedAt: inlineTransportFeeMeta?.receiptUploadedAt || null,
+        transportFeeEditedAt: inlineTransportFeeMeta?.editedAt || null,
+        transportFeeEditedByName: inlineTransportFeeMeta?.editedByName || null,
       });
 
       const rentalAmountDueUpdate = {
         deposit_amount: updatedDepositPaid,
         remaining_amount: nextAmountDue,
         payment_status: nextAmountDue <= 0 ? 'paid' : (updatedDepositPaid > 0 ? 'partial' : nextPaymentStatus),
-        amount_due_override_reason: JSON.stringify({
-          note: overrideMeta.note || '',
-          paymentReceivedNow: overrideMeta.paymentReceivedNow || 0,
-          companyDiscount: overrideMeta.companyDiscount || 0,
+        amount_due_override_reason: buildAmountDueOverrideReasonString({
+          rentalLike: rental,
+          overrides: {
+            note: overrideMeta.note || '',
+            paymentReceivedNow: overrideMeta.paymentReceivedNow || 0,
+            companyDiscount: overrideMeta.companyDiscount || 0,
+            transportFeeAmount: overrideMeta.transportFeeAmount || 0,
+            transportFeeNote: overrideMeta.transportFeeNote || '',
+            transportFeeReceiptUrl: overrideMeta.transportFeeReceiptUrl || null,
+            transportFeeReceiptName: overrideMeta.transportFeeReceiptName || '',
+            transportFeeReceiptPath: overrideMeta.transportFeeReceiptPath || null,
+            transportFeeReceiptUploadedAt: overrideMeta.transportFeeReceiptUploadedAt || null,
+            transportFeeEditedAt: overrideMeta.transportFeeEditedAt || null,
+            transportFeeEditedByName: overrideMeta.transportFeeEditedByName || null,
+          },
         }),
         amount_due_override_edited_by: overrideMeta.editedById || null,
         amount_due_override_edited_by_name: overrideMeta.editedByName || null,
@@ -13372,6 +14015,7 @@ useEffect(() => {
       }
 
       setRental(updatedRental);
+      invalidateReceiptArtifacts();
       setAmountDueAuditMeta({
         note: overrideMeta.note,
         editedById: overrideMeta.editedById,
@@ -13388,6 +14032,7 @@ useEffect(() => {
       setAmountDuePaymentReceivedNow('');
       setAmountDueCompanyDiscount('');
       setAmountDueOverrideReason('');
+      scheduleDocumentGeneration(generateAndCacheReceiptPDF, 250);
       toast.success(
         isShortcutPayment || isPayingDueBalance
           ? tr('Due balance paid successfully.', 'Solde restant dû payé avec succès.')
@@ -13505,6 +14150,7 @@ useEffect(() => {
       const newPrice = parseFloat(rental.pending_total_request);
       const previousPrice = Math.max(0, parseFloat(rental.total_amount || rental.unit_price || 0) || 0);
       const overrideMeta = buildPriceOverrideMeta({
+        existingMeta: parsePriceOverrideMeta(rental?.price_override_reason),
         note: typeof rental.price_override_reason === 'string' ? rental.price_override_reason : '',
         currentUser,
         previousPrice,
@@ -14131,21 +14777,12 @@ useEffect(() => {
 
   
   const secondDriversList = getSecondDrivers(rental);
-  const resolvedCurrentUser =
-    currentUser ||
-    (userProfile
-      ? {
-          ...userProfile,
-          full_name: userProfile.full_name || userProfile.fullName || userProfile.email,
-        }
-      : null);
   const isPendingApproval = rental?.approval_status === 'pending';
   const hasAppliedManualPriceOverride = ['approved', 'auto'].includes(String(rental?.approval_status || '').toLowerCase());
   const isAdmin = canApproveRentalExtensions(resolvedCurrentUser);
   const canEditExtensionEntries = canEditExtensionHistory(resolvedCurrentUser);
   const canCancelImpound = ['owner', 'admin'].includes(resolvedCurrentUser?.role);
   const canEditImpoundDiscount = ['owner', 'admin', 'employee'].includes(resolvedCurrentUser?.role);
-  const currentUserRole = String(resolvedCurrentUser?.role || '').toLowerCase();
   const hasRentalManagementAccess = hasPermission('Rental Management', resolvedCurrentUser);
   const canHandleLateArrival =
     ['owner', 'admin', 'employee', 'guide', 'business_owner', 'staff', 'support'].includes(currentUserRole) ||
@@ -14171,7 +14808,8 @@ useEffect(() => {
       currentUserRole === 'owner' ||
       canEditRentalContract(resolvedCurrentUser)
     );
-  const canOwnerAdjustCompletedRental = currentUserRole === 'owner' && isCompleted;
+  const canOwnerAdjustCompletedRental =
+    currentUserRole === 'owner' && (isCompleted || vehicleStillUnderMaintenance);
   const canDeleteScheduledRental = isScheduled && ['owner', 'admin'].includes(resolvedCurrentUser?.role);
   const canResendTelegramAlerts = ['admin', 'owner'].includes(currentUserRole);
   const availableTelegramResendActions = useMemo(() => {
@@ -16031,7 +16669,307 @@ useEffect(() => {
     signature: rental?.signature_url
       ? tr('Signature saved and ready for documents', 'Signature enregistrée et prête pour les documents')
       : tr('No customer signature saved yet', 'Aucune signature client enregistrée'),
+    report: shouldShowVehicleReport
+      ? [
+          String(vehicleReport?.severity || tr('reported', 'signalé')).replace(/_/g, ' '),
+          vehicleReport?.maintenance?.id
+            ? tr('Maintenance linked', 'Maintenance liée')
+            : (vehicleReport?.send_to_maintenance
+                ? tr('Maintenance requested', 'Maintenance demandée')
+                : tr('Inspection saved', 'Inspection enregistrée')),
+        ].filter(Boolean).join(' • ')
+      : '',
   };
+
+  const renderVehicleReportSectionBody = () => (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-gray-400">{tr('Report Type', 'Type de rapport')}</p>
+          <p className="mt-1 font-medium text-gray-900">{String(vehicleReport.report_type || 'damage').replace(/_/g, ' ')}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-wide text-gray-400">{tr('Photos / Media', 'Photos / médias')}</p>
+          <p className="mt-1 font-medium text-gray-900">{vehicleReport.photos?.length || 0} {tr('linked item(s)', 'élément(s) lié(s)')}</p>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-violet-100 bg-slate-50/70 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+        <p className="text-xs uppercase tracking-wide text-slate-400">{tr('Inspection Note', "Note d'inspection")}</p>
+        <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">{vehicleReport.description || tr('No description recorded.', 'Aucune description enregistrée.')}</p>
+      </div>
+
+      {vehicleReport.maintenance ? (
+        <div className="space-y-3 rounded-[24px] border border-orange-200 bg-orange-50/80 p-4 shadow-[0_12px_30px_rgba(249,115,22,0.08)]">
+          {(() => {
+            const maintenanceParts = Array.isArray(vehicleReport.maintenance.parts_used)
+              ? vehicleReport.maintenance.parts_used
+              : [];
+            const maintenanceSummaryItems = [
+              vehicleReport.maintenance.maintenance_type || null,
+              ...maintenanceParts
+                .map((part) => part.item_name || part.part_name)
+                .filter(Boolean)
+                .slice(0, 3)
+            ];
+            const uniqueSummaryItems = [...new Set(maintenanceSummaryItems)];
+            const hasMoreParts = maintenanceParts.length > 3;
+
+            return uniqueSummaryItems.length > 0 ? (
+              <div className="rounded-2xl border border-orange-200 bg-white/80 p-3">
+                <p className="text-xs uppercase tracking-wide text-gray-500">Work performed</p>
+                <p className="mt-1 text-sm font-medium text-gray-900">
+                  {uniqueSummaryItems.join(' • ')}
+                  {hasMoreParts ? ' • more items' : ''}
+                </p>
+              </div>
+            ) : null;
+          })()}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-gray-900">Linked Maintenance</p>
+              <p className="mt-1 text-xs text-gray-600">
+                {vehicleReport.maintenance.maintenance_type || 'Repair'} • {vehicleReport.maintenance.status || 'scheduled'}
+              </p>
+              <p className="mt-1 text-xs text-orange-700">
+                Ref: {formatMaintenanceReference(vehicleReport.maintenance.id)}
+              </p>
+            </div>
+            <Badge className="bg-orange-100 text-orange-800">
+              {vehicleReport.maintenance.status || 'scheduled'}
+            </Badge>
+          </div>
+          {vehicleReport.maintenance.status === 'completed' ? (
+            <div className="rounded-2xl border border-green-200 bg-green-50/80 p-3">
+              <p className="text-sm font-semibold text-green-900">Repair completed</p>
+              <p className="mt-1 text-xs text-green-700">
+                The linked Quad Maintenance record is complete. This rental is now ready to be reviewed and closed with the final bill.
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-orange-200 bg-white/80 p-3">
+              <p className="text-sm font-semibold text-orange-900">Vehicle under maintenance</p>
+              <p className="mt-1 text-xs text-orange-700">
+                Finish the linked Quad Maintenance record to pull the final repair total back into this rental and close it with confidence.
+              </p>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+            <div>
+              <p className="text-xs text-gray-500">Parts</p>
+              <p className="font-medium text-gray-900">{formatCurrency(vehicleReport.maintenance.parts_cost_mad || 0)} MAD</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Labor</p>
+              <p className="font-medium text-gray-900">{formatCurrency(vehicleReport.maintenance.labor_rate_mad || 0)} MAD</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">External</p>
+              <p className="font-medium text-gray-900">{formatCurrency(vehicleReport.maintenance.external_cost_mad || 0)} MAD</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Total Bill</p>
+              <p className="font-semibold text-gray-900">{formatCurrency(vehicleReport.maintenance.cost || 0)} MAD</p>
+            </div>
+          </div>
+          {vehicleReport.customer_chargeable && (
+            <div
+              ref={maintenanceChargeSectionRef}
+              className="space-y-3 rounded-[24px] border border-blue-200 bg-blue-50/80 p-4 shadow-[0_12px_30px_rgba(59,130,246,0.08)]"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-blue-900">Maintenance stay charge</p>
+                  <p className="mt-1 text-xs text-blue-700">
+                    Uses the saved rate first, then falls back to the vehicle model tier or base daily price.
+                  </p>
+                </div>
+                <Badge className="bg-blue-100 text-blue-800">
+                  {getMaintenanceStayRateSourceLabel(maintenanceChargeForm.source)}
+                </Badge>
+              </div>
+
+              <button
+                type="button"
+                disabled={maintenanceChargeLocked}
+                onClick={() => {
+                  setMaintenanceChargeForm((prev) => ({
+                    ...prev,
+                    enabled: !prev.enabled,
+                    total: !prev.enabled
+                      ? calculateMaintenanceStayTotal(prev.days, prev.dailyRate, prev.discount)
+                      : 0,
+                  }));
+                }}
+                className={`flex w-full items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-white/85 px-4 py-3 text-left transition-colors ${
+                  maintenanceChargeLocked ? 'cursor-not-allowed opacity-60' : 'hover:bg-blue-50/70 active:scale-[0.998]'
+                }`}
+                aria-pressed={maintenanceChargeForm.enabled}
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-gray-900">{tr('Enable maintenance stay charge', 'Activer le séjour maintenance')}</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {tr('Turn this off to remove the extra maintenance day charge from the customer bill.', 'Désactivez ceci pour retirer le supplément de séjour maintenance de la facture client.')}
+                  </p>
+                </div>
+                <div
+                  className={`relative inline-flex h-8 w-14 flex-shrink-0 items-center rounded-full transition-colors ${
+                    maintenanceChargeForm.enabled ? 'bg-violet-600' : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-6 w-6 transform rounded-full bg-white shadow-sm transition-transform ${
+                      maintenanceChargeForm.enabled ? 'translate-x-7' : 'translate-x-1'
+                    }`}
+                  />
+                </div>
+              </button>
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-700">Days in maintenance</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={maintenanceChargeForm.days || ''}
+                    disabled={maintenanceChargeLocked || !maintenanceChargeForm.enabled}
+                    onChange={(e) => {
+                      const days = Math.max(1, parseInt(e.target.value || '1', 10) || 1);
+                      setMaintenanceChargeForm(prev => ({
+                        ...prev,
+                        days,
+                        total: prev.enabled ? calculateMaintenanceStayTotal(days, prev.dailyRate, prev.discount) : 0,
+                        source: prev.source === 'none' ? 'manual' : prev.source,
+                      }));
+                    }}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-700">Daily rate (MAD)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={maintenanceChargeForm.dailyRate || ''}
+                    disabled={maintenanceChargeLocked || !maintenanceChargeForm.enabled}
+                    onChange={(e) => {
+                      const dailyRate = Math.max(0, Number(e.target.value || 0));
+                      setMaintenanceChargeForm(prev => ({
+                        ...prev,
+                        dailyRate,
+                        total: prev.enabled ? calculateMaintenanceStayTotal(prev.days, dailyRate, prev.discount) : 0,
+                        source: 'manual',
+                      }));
+                    }}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-700">Employee discount (MAD)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={maintenanceChargeForm.discount || ''}
+                    disabled={maintenanceChargeLocked || !maintenanceChargeForm.enabled}
+                    onChange={(e) => {
+                      const discount = Math.max(0, Number(e.target.value || 0));
+                      setMaintenanceChargeForm(prev => ({
+                        ...prev,
+                        discount,
+                        total: prev.enabled ? calculateMaintenanceStayTotal(prev.days, prev.dailyRate, discount) : 0,
+                      }));
+                    }}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+                <div className="rounded-2xl border border-blue-100 bg-white/85 p-3">
+                  <p className="text-xs text-gray-500">Stay subtotal</p>
+                  <p className="mt-1 font-semibold text-gray-900">
+                    {formatCurrency(maintenanceChargeForm.enabled ? ((maintenanceChargeForm.days || 0) * (maintenanceChargeForm.dailyRate || 0)) : 0)} MAD
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-blue-100 bg-white/85 p-3">
+                  <p className="text-xs text-gray-500">Discount</p>
+                  <p className="mt-1 font-semibold text-green-700">
+                    -{formatCurrency(maintenanceChargeForm.enabled ? (maintenanceChargeForm.discount || 0) : 0)} MAD
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-blue-100 bg-white/85 p-3">
+                  <p className="text-xs text-gray-500">Stay charge total</p>
+                  <p className="mt-1 font-semibold text-blue-900">
+                    {formatCurrency(maintenanceChargeForm.total || 0)} MAD
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-blue-700">
+                  Final customer charge = maintenance bill {formatCurrency(vehicleReport.maintenance.cost || 0)} MAD + stay charge {formatCurrency(maintenanceChargeForm.total || 0)} MAD
+                  {maintenanceChargeLocked ? ' • Contract completed, charge setup locked.' : ''}
+                </p>
+                <Button
+                  type="button"
+                  onClick={saveMaintenanceChargeConfig}
+                  disabled={savingMaintenanceCharge || maintenanceChargeLocked}
+                  className="rounded-2xl bg-violet-600 text-xs text-white shadow-sm hover:bg-violet-700"
+                >
+                  <Save className="mr-1.5 h-3 w-3" />
+                  {savingMaintenanceCharge
+                    ? tr('Saving...', 'Enregistrement...')
+                    : maintenanceChargeLocked
+                      ? tr('Charge setup locked', 'Configuration de frais verrouillée')
+                      : tr('Register charge configuration', 'Enregistrer la configuration des frais')}
+                </Button>
+              </div>
+            </div>
+          )}
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button
+              type="button"
+              onClick={() => navigate(`/admin/maintenance?maintenanceId=${vehicleReport.maintenance.id}`)}
+              className="rounded-2xl border border-slate-200 bg-white text-xs text-slate-700 shadow-sm hover:bg-slate-50 hover:text-slate-900"
+            >
+              <Wrench className="mr-1.5 h-3 w-3" />
+              {tr('Open in Quad Maintenance', 'Ouvrir dans Quad Maintenance')}
+            </Button>
+          </div>
+        </div>
+      ) : vehicleReport.send_to_maintenance ? (
+        <div className="rounded-2xl border border-yellow-200 bg-yellow-50/80 p-3 text-sm text-yellow-800 shadow-[0_12px_30px_rgba(234,179,8,0.08)]">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <span>Maintenance has been requested for this report and will appear here once the linked record is available.</span>
+            <Button
+              type="button"
+              onClick={() => navigate(`/admin/maintenance?action=create&reportId=${vehicleReport.id}&vehicleId=${rental.vehicle_id}&rentalId=${rental.id}`)}
+              className="rounded-2xl border border-slate-200 bg-white text-xs text-slate-700 shadow-sm hover:bg-slate-50 hover:text-slate-900"
+            >
+              <Wrench className="mr-1.5 h-3 w-3" />
+              {tr('Open in Quad Maintenance', 'Ouvrir dans Quad Maintenance')}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {vehicleReport.customer_chargeable && (
+        <div className="rounded-2xl border border-blue-200 bg-blue-50/80 p-3 shadow-[0_12px_30px_rgba(59,130,246,0.08)]">
+          <p className="text-sm font-medium text-blue-900">
+            Customer chargeable amount: {formatCurrency(vehicleReport.customer_charge_amount || vehicleReport.maintenance_cost_total || 0)} MAD
+          </p>
+          {(vehicleReport.maintenance_daily_total || 0) > 0 && (
+            <p className="mt-1 text-xs text-blue-700">
+              Includes maintenance stay charge of {formatCurrency(vehicleReport.maintenance_daily_total || 0)} MAD
+              {vehicleReport.maintenance_daily_discount > 0 ? ` after ${formatCurrency(vehicleReport.maintenance_daily_discount)} MAD discount` : ''}.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
 
   const renderLightRentalInfoSection = ({ sectionKey, eyebrow, title, preview, icon: Icon, children, sectionRef = null }) => {
     if (!isLightRentalDetailsMode) {
@@ -16535,6 +17473,26 @@ useEffect(() => {
                       {originalKilometerPackagePrice > 0 ? ` · ${formatCurrency(originalKilometerPackagePrice)} MAD` : ''}
                     </span>
                   </div>
+                  {canToggleAutoPackageUpgrade ? (
+                    <button
+                      type="button"
+                      onClick={() => handleToggleAutoPackageUpgrade(!autoPackageUpgradeEnabled)}
+                      disabled={isSavingAutoPackageUpgradePreference}
+                      className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left transition hover:border-violet-300 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-900">{tr('Auto package upgrade', 'Surclassement auto du forfait')}</p>
+                        <p className="text-xs text-slate-500">
+                          {autoPackageUpgradeEnabled
+                            ? tr('Automatic best-package matching is active for this rental.', 'Le meilleur forfait automatique est actif pour cette location.')
+                            : tr('Billing is locked to the original booked package and overage rules apply.', 'La facturation reste sur le forfait réservé d’origine et les règles de dépassement s’appliquent.')}
+                        </p>
+                      </div>
+                      <div className={`relative inline-flex h-7 w-12 flex-shrink-0 items-center rounded-full transition-colors ${autoPackageUpgradeEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+                        <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${autoPackageUpgradeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                      </div>
+                    </button>
+                  ) : null}
                   {kilometerPackageApplication.upgraded ? (
                     <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
                       <span className="text-emerald-700">{tr('Auto upgrade applied', 'Surclassement auto appliqué')}</span>
@@ -16566,6 +17524,13 @@ useEffect(() => {
                   {tr(
                     `Upgraded because ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km passed the original ${bookedPackageLimitKm} km limit. Billing now follows ${appliedKilometerPackageName} at ${formatCurrency(appliedKilometerPackagePrice)} MAD.`,
                     `Surclassé car ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km dépasse la limite initiale de ${bookedPackageLimitKm} km. La facturation suit maintenant ${appliedKilometerPackageName} à ${formatCurrency(appliedKilometerPackagePrice)} MAD.`
+                  )}
+                </div>
+              ) : !autoPackageUpgradeEnabled && simplePricingSummary.packageOverflowKm > 0 ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs font-medium text-amber-800">
+                  {tr(
+                    `Auto upgrade is disabled. This rental stays on ${originalKilometerPackageName}, so ${kilometerPackageApplication.overageKm} km will be billed as overage at ${formatCurrency(kilometerPackageApplication.appliedExtraRate)} MAD/km.`,
+                    `Le surclassement auto est désactivé. Cette location reste sur ${originalKilometerPackageName}, donc ${kilometerPackageApplication.overageKm} km seront facturés en dépassement à ${formatCurrency(kilometerPackageApplication.appliedExtraRate)} MAD/km.`
                   )}
                 </div>
               ) : autoMatchedPackageDiffers ? (
@@ -16688,8 +17653,12 @@ useEffect(() => {
                 </p>
                 <p className="mt-1 text-xs text-violet-700">
                   {tr(
-                    'As owner, you can still reopen the maintenance stay charge and deposit return for final corrections on this completed contract.',
-                    'En tant que propriétaire, vous pouvez encore rouvrir le séjour maintenance et le retour de caution pour corriger ce contrat terminé.'
+                    vehicleStillUnderMaintenance
+                      ? 'As owner, you can still add transport, maintenance-stay, and deposit corrections while this vehicle remains under maintenance.'
+                      : 'As owner, you can still reopen the maintenance stay charge and deposit return for final corrections on this completed contract.',
+                    vehicleStillUnderMaintenance
+                      ? 'En tant que propriétaire, vous pouvez encore ajouter des frais de transport, corriger le séjour maintenance et ajuster la caution pendant que ce véhicule reste en maintenance.'
+                      : 'En tant que propriétaire, vous pouvez encore rouvrir le séjour maintenance et le retour de caution pour corriger ce contrat terminé.'
                   )}
                 </p>
               </div>
@@ -16701,9 +17670,21 @@ useEffect(() => {
                   className="text-xs border-violet-200 text-violet-700 hover:bg-violet-100"
                   onClick={handleEditMaintenanceStayCharge}
                 >
-                  <Wrench className="mr-1.5 h-3.5 w-3.5" />
-                  {tr('Edit Maintenance Stay Charge', 'Modifier le séjour maintenance')}
-                </Button>
+                    <Wrench className="mr-1.5 h-3.5 w-3.5" />
+                    {tr('Edit Maintenance Stay Charge', 'Modifier le séjour maintenance')}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="text-xs border-violet-200 text-violet-700 hover:bg-violet-100"
+                    onClick={openTransportFeeModal}
+                  >
+                    <Receipt className="mr-1.5 h-3.5 w-3.5" />
+                    {inlineTransportFeeMeta?.amount > 0
+                      ? tr('Edit Transport Fee', 'Modifier les frais de transport')
+                      : tr('Add Transport Fee', 'Ajouter des frais de transport')}
+                  </Button>
                 {hasMonetaryDamageDeposit && (
                   <Button
                     type="button"
@@ -16718,6 +17699,38 @@ useEffect(() => {
                 )}
               </div>
             </div>
+            {inlineTransportFeeMeta?.amount > 0 && (
+              <div className="mt-3 rounded-2xl border border-sky-200 bg-white/90 p-3 text-xs text-slate-700 shadow-sm">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="font-semibold text-sky-900">
+                      {tr('Transport fee saved', 'Frais de transport enregistrés')} · {formatCurrency(inlineTransportFeeMeta.amount)} MAD
+                    </p>
+                    {inlineTransportFeeMeta?.note && (
+                      <p className="mt-1 text-slate-600">
+                        {tr('Staff note:', 'Note équipe :')} {inlineTransportFeeMeta.note}
+                      </p>
+                    )}
+                    {inlineTransportFeeMeta?.editedByName && (
+                      <p className="mt-1 text-slate-500">
+                        {tr('Saved by', 'Enregistré par')} {inlineTransportFeeMeta.editedByName}
+                      </p>
+                    )}
+                  </div>
+                  {inlineTransportFeeMeta?.receiptUrl && (
+                    <a
+                      href={inlineTransportFeeMeta.receiptUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 font-semibold text-sky-700 hover:bg-sky-100"
+                    >
+                      <FileImage className="h-3.5 w-3.5" />
+                      {tr('View receipt', 'Voir le reçu')}
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -16814,7 +17827,7 @@ useEffect(() => {
             <div className="mt-4 grid gap-2 sm:grid-cols-4">
               <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
                 <p className="text-xs font-medium text-slate-500">{tr('Original due', 'Solde initial')}</p>
-                <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(amountDueAuditMeta.previousAmount || 0)} MAD</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(rentalBillingSummary.balanceResolutionPreviousAmount || amountDueAuditMeta.previousAmount || 0)} MAD</p>
               </div>
               <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
                 <p className="text-xs font-medium text-slate-500">{tr('Customer paid', 'Payé client')}</p>
@@ -16822,7 +17835,7 @@ useEffect(() => {
               </div>
               <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
                 <p className="text-xs font-medium text-slate-500">{tr('Discount', 'Remise')}</p>
-                <p className="mt-1 text-lg font-bold text-violet-700">-{formatCurrency(amountDueAuditMeta.companyDiscount || 0)} MAD</p>
+                <p className="mt-1 text-lg font-bold text-violet-700">-{formatCurrency(rentalBillingSummary.companyDiscountAmount || amountDueAuditMeta.companyDiscount || 0)} MAD</p>
               </div>
               <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
                 <p className="text-xs font-medium text-slate-500">{tr('Still due', 'Encore dû')}</p>
@@ -17010,10 +18023,31 @@ useEffect(() => {
                     <span className="font-medium">{formatCurrency(rentalBillingSummary.baseAmount)} MAD</span>
                   </div>
 
-                  {rentalBillingSummary.overageCharge > 0 && (
+                  {(rentalBillingSummary.overageDisplayCharge > 0 || rentalBillingSummary.overageKm > 0) && (
                     <div className="flex justify-between text-red-600">
-                      <span>{tr('Overage charge:', 'Frais dépassement :')}</span>
-                      <span className="font-medium">+{formatCurrency(rentalBillingSummary.overageCharge)} MAD</span>
+                      <span>
+                        {rentalBillingSummary.overageKm > 0 && rentalBillingSummary.overageRate > 0
+                          ? tr(
+                              `Overage charge (${rentalBillingSummary.overageKm} km × ${formatCurrency(rentalBillingSummary.overageRate)} MAD/km)${rentalBillingSummary.overageIncludedInContract ? ' · included in contract total' : ''}:`,
+                              `Frais dépassement (${rentalBillingSummary.overageKm} km × ${formatCurrency(rentalBillingSummary.overageRate)} MAD/km)${rentalBillingSummary.overageIncludedInContract ? ' · inclus dans le total du contrat' : ''} :`
+                            )
+                          : tr('Overage charge:', 'Frais dépassement :')}
+                      </span>
+                      <span className="font-medium">+{formatCurrency(rentalBillingSummary.overageDisplayCharge || rentalBillingSummary.overageCharge)} MAD</span>
+                    </div>
+                  )}
+
+                  {rentalBillingSummary.companyDiscountAmount > 0 && (
+                    <div className="flex justify-between text-violet-600">
+                      <span>{tr('Company discount applied:', 'Remise entreprise appliquée :')}</span>
+                      <span className="font-medium">-{formatCurrency(rentalBillingSummary.companyDiscountAmount)} MAD</span>
+                    </div>
+                  )}
+
+                  {rentalBillingSummary.transportFeeAmount > 0 && (
+                    <div className="flex justify-between text-sky-700">
+                      <span>{tr('Transport fee:', 'Frais de transport :')}</span>
+                      <span className="font-medium">+{formatCurrency(rentalBillingSummary.transportFeeAmount)} MAD</span>
                     </div>
                   )}
 
@@ -17091,13 +18125,13 @@ useEffect(() => {
                   )}
 
                   <div className="flex justify-between border-t-2 border-gray-300 pt-2 text-lg">
-                    <span className="font-bold text-gray-900">{tr('Final Rental Total:', 'Total final location :')}</span>
-                    <span className="font-bold text-green-600">{formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} MAD</span>
+                    <span className="font-semibold text-gray-900">{tr('Final Rental Total:', 'Total final location :')}</span>
+                    <span className="font-semibold text-gray-900">{formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} MAD</span>
                   </div>
 
                   <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">{tr('Amount Paid:', 'Montant payé :')}</span>
-                    <span className="font-medium">{formatCurrency(rentalBillingSummary.customerPaidAmount)} MAD</span>
+                    <span className="font-bold text-green-700">{tr('Amount Paid:', 'Montant payé :')}</span>
+                    <span className="font-bold text-green-700">{formatCurrency(rentalBillingSummary.customerPaidAmount)} MAD</span>
                   </div>
 
                   {rentalBillingSummary.autoDepositSeizedAmount > 0 && (
@@ -17941,36 +18975,60 @@ useEffect(() => {
     </>
   );
 
+  const canManageVehicleMedia = currentUserRole === 'owner' || currentUserRole === 'admin';
+  const showVehicleMediaEditorCard = canManageVehicleMedia && (isCompleted || Boolean(vehicleReport?.maintenance_id) || hasCompletedVehicleMedia);
+
   const renderVehicleMediaSectionBody = () => (
     <>
-      {isCompleted && (
+      {showVehicleMediaEditorCard && (
         <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)] sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <h3 className="text-base font-semibold text-slate-900">{tr('Vehicle Media', 'Médias véhicule')}</h3>
             <p className={`mt-1 text-sm ${isLightRentalDetailsMode && hasCompletedVehicleMedia ? 'text-emerald-700' : 'text-slate-500'}`}>
               {isLightRentalDetailsMode && hasCompletedVehicleMedia
                 ? tr('Vehicle media saved successfully. It appears in the media area below.', 'Les médias du véhicule ont été enregistrés avec succès. Ils apparaissent dans la zone ci-dessous.')
-                : tr('Add extra photos or videos after the rental is completed. They will appear in the vehicle media area below.', 'Ajoutez des photos ou vidéos supplémentaires après la fin de la location. Elles apparaîtront dans la zone médias véhicule ci-dessous.')}
+                : vehicleReport?.maintenance_id
+                  ? tr('Add or remove vehicle photos and videos while this rental is under maintenance. They will appear in the vehicle media area below.', 'Ajoutez ou supprimez des photos et vidéos du véhicule pendant que cette location est en maintenance. Elles apparaîtront dans la zone médias véhicule ci-dessous.')
+                  : tr('Add extra photos or videos after the rental is completed. They will appear in the vehicle media area below.', 'Ajoutez des photos ou vidéos supplémentaires après la fin de la location. Elles apparaîtront dans la zone médias véhicule ci-dessous.')}
             </p>
+            {hasCompletedVehicleMedia ? (
+              <p className="mt-2 text-xs text-slate-500">
+                {tr('Use Edit Vehicle Media to add more files, or delete items directly in the gallery below.', 'Utilisez Modifier les médias véhicule pour ajouter des fichiers, ou supprimez des éléments directement dans la galerie ci-dessous.')}
+              </p>
+            ) : null}
           </div>
-          {isLightRentalDetailsMode && hasCompletedVehicleMedia ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
-              <CheckCircle className="h-4 w-4" />
-              {tr('Done', 'Terminé')}
-              <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-700 shadow-sm">
-                {completedVehicleMediaCount}
-              </span>
-            </div>
-          ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            {hasCompletedVehicleMedia ? (
+              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+                <CheckCircle className="h-4 w-4" />
+                {tr('Done', 'Terminé')}
+                <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-700 shadow-sm">
+                  {completedVehicleMediaCount}
+                </span>
+              </div>
+            ) : null}
+            {hasCompletedVehicleMedia ? (
+              <Button
+                type="button"
+                onClick={handleOpenVehicleMediaEditChooser}
+                variant="outline"
+                className="rounded-xl border-violet-200 text-violet-700 hover:bg-violet-50"
+              >
+                <Edit className="mr-2 h-4 w-4" />
+                {tr('Edit Vehicle Media', 'Modifier les médias véhicule')}
+              </Button>
+            ) : null}
             <Button
               type="button"
               onClick={handleOpenVehicleMediaModal}
               className="rounded-xl bg-violet-700 text-white hover:bg-violet-800"
             >
               <Camera className="mr-2 h-4 w-4" />
-              {tr('Add Vehicle Media', 'Ajouter des médias véhicule')}
+              {hasCompletedVehicleMedia
+                ? tr('Add More Media', 'Ajouter plus de médias')
+                : tr('Add Vehicle Media', 'Ajouter des médias véhicule')}
             </Button>
-          )}
+          </div>
         </div>
       )}
       <RentalVideos
@@ -17978,8 +19036,79 @@ useEffect(() => {
         rental={rental}
         onUpdate={handleVideoUpdate}
         isProcessing={isProcessingVideo}
-        canDeleteMedia={currentUserRole === 'owner'}
+        canDeleteMedia={canManageVehicleMedia}
       />
+
+      <Dialog open={vehicleMediaEditChoiceOpen} onOpenChange={setVehicleMediaEditChoiceOpen}>
+        <DialogContent className="w-[min(92vw,32rem)] max-w-[32rem] overflow-hidden rounded-[28px] border border-violet-100 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.18)]">
+          <div className="border-b border-violet-100 bg-[linear-gradient(135deg,rgba(245,243,255,0.96),rgba(255,255,255,0.98))] px-6 py-5">
+            <DialogHeader className="space-y-2 text-left">
+              <DialogTitle className="text-xl font-semibold text-slate-900">
+                {tr('Choose what to edit', 'Choisissez quoi modifier')}
+              </DialogTitle>
+              <DialogDescription className="text-sm text-slate-500">
+                {tr(
+                  'Select whether you want to update the closing condition evidence or add extra vehicle media.',
+                  'Sélectionnez si vous souhaitez mettre à jour les preuves de l’état de retour ou ajouter des médias véhicule supplémentaires.'
+                )}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+
+          <div className="space-y-3 px-6 py-5">
+            <button
+              type="button"
+              onClick={() => {
+                setVehicleMediaEditChoiceOpen(false);
+                handleOpenOpeningModal();
+              }}
+              className="block w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-left text-emerald-900 transition hover:bg-emerald-100"
+            >
+              <div className="font-semibold">{tr('Edit Opening Condition', 'Modifier l’état de départ')}</div>
+              <div className="mt-1 text-sm text-emerald-800">
+                {tr(
+                  'Update the inspection photos and videos that prove the vehicle condition at handoff.',
+                  "Mettez à jour les photos et vidéos d'inspection qui prouvent l'état du véhicule au départ."
+                )}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setVehicleMediaEditChoiceOpen(false);
+                handleOpenClosingModal();
+              }}
+              className="block w-full rounded-2xl border border-blue-200 bg-blue-50 px-4 py-4 text-left text-blue-900 transition hover:bg-blue-100"
+            >
+              <div className="font-semibold">{tr('Edit Closing Condition', 'Modifier l’état de retour')}</div>
+              <div className="mt-1 text-sm text-blue-800">
+                {tr(
+                  'Update the inspection photos and videos that prove the vehicle condition at return.',
+                  "Mettez à jour les photos et vidéos d'inspection qui prouvent l'état du véhicule au retour."
+                )}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setVehicleMediaEditChoiceOpen(false);
+                handleOpenVehicleMediaModal();
+              }}
+              className="block w-full rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-left text-violet-900 transition hover:bg-violet-100"
+            >
+              <div className="font-semibold">{tr('Edit Vehicle Media', 'Modifier les médias véhicule')}</div>
+              <div className="mt-1 text-sm text-violet-800">
+                {tr(
+                  'Add extra vehicle photos or videos that are separate from the closing inspection.',
+                  "Ajoutez des photos ou vidéos véhicule supplémentaires séparées de l'inspection de retour."
+                )}
+              </div>
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 
@@ -20812,308 +21941,37 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       </Card>
 
       {shouldShowVehicleReport && (
-        <div ref={vehicleReportSectionRef}>
-        <Card className="mb-6 overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
-          <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-rose-50/40 to-violet-50/60">
-            <CardTitle className="flex items-center justify-between gap-3 text-base sm:text-lg">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-600" />
-                <span>Vehicle Report</span>
-              </div>
-              <Badge className="bg-red-100 text-red-800">
-                {String(vehicleReport.severity || 'reported').replace(/_/g, ' ')}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4 pt-5">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-gray-400">{tr('Report Type', 'Type de rapport')}</p>
-                <p className="mt-1 font-medium text-gray-900">{String(vehicleReport.report_type || 'damage').replace(/_/g, ' ')}</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-wide text-gray-400">{tr('Photos / Media', 'Photos / médias')}</p>
-                <p className="mt-1 font-medium text-gray-900">{vehicleReport.photos?.length || 0} {tr('linked item(s)', 'élément(s) lié(s)')}</p>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-violet-100 bg-slate-50/70 p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
-              <p className="text-xs uppercase tracking-wide text-slate-400">{tr('Inspection Note', "Note d'inspection")}</p>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">{vehicleReport.description || tr('No description recorded.', 'Aucune description enregistrée.')}</p>
-            </div>
-
-            {vehicleReport.maintenance ? (
-              <div className="space-y-3 rounded-[24px] border border-orange-200 bg-orange-50/80 p-4 shadow-[0_12px_30px_rgba(249,115,22,0.08)]">
-                {(() => {
-                  const maintenanceParts = Array.isArray(vehicleReport.maintenance.parts_used)
-                    ? vehicleReport.maintenance.parts_used
-                    : [];
-                  const maintenanceSummaryItems = [
-                    vehicleReport.maintenance.maintenance_type || null,
-                    ...maintenanceParts
-                      .map((part) => part.item_name || part.part_name)
-                      .filter(Boolean)
-                      .slice(0, 3)
-                  ];
-                  const uniqueSummaryItems = [...new Set(maintenanceSummaryItems)];
-                  const hasMoreParts = maintenanceParts.length > 3;
-
-                  return uniqueSummaryItems.length > 0 ? (
-                    <div className="rounded-2xl border border-orange-200 bg-white/80 p-3">
-                      <p className="text-xs uppercase tracking-wide text-gray-500">Work performed</p>
-                      <p className="mt-1 text-sm font-medium text-gray-900">
-                        {uniqueSummaryItems.join(' • ')}
-                        {hasMoreParts ? ' • more items' : ''}
-                      </p>
-                    </div>
-                  ) : null;
-                })()}
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-semibold text-gray-900">Linked Maintenance</p>
-                    <p className="text-xs text-gray-600 mt-1">
-                      {vehicleReport.maintenance.maintenance_type || 'Repair'} • {vehicleReport.maintenance.status || 'scheduled'}
-                    </p>
-                    <p className="text-xs text-orange-700 mt-1">
-                      Ref: {formatMaintenanceReference(vehicleReport.maintenance.id)}
-                    </p>
+        isLightRentalDetailsMode ? (
+          <div className="mb-6" ref={vehicleReportSectionRef}>
+            {renderLightRentalInfoSection({
+              sectionKey: 'report',
+              eyebrow: tr('Vehicle Report', 'Rapport véhicule'),
+              title: tr('Inspection report and maintenance', 'Rapport d’inspection et maintenance'),
+              preview: lightRentalInfoPreview.report,
+              icon: AlertTriangle,
+              children: renderVehicleReportSectionBody(),
+            })}
+          </div>
+        ) : (
+          <div ref={vehicleReportSectionRef}>
+            <Card className="mb-6 overflow-hidden rounded-[28px] border border-violet-100/90 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+              <CardHeader className="border-b border-violet-100 bg-gradient-to-r from-white via-rose-50/40 to-violet-50/60">
+                <CardTitle className="flex items-center justify-between gap-3 text-base sm:text-lg">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-red-600" />
+                    <span>Vehicle Report</span>
                   </div>
-                  <Badge className="bg-orange-100 text-orange-800">
-                    {vehicleReport.maintenance.status || 'scheduled'}
+                  <Badge className="bg-red-100 text-red-800">
+                    {String(vehicleReport.severity || 'reported').replace(/_/g, ' ')}
                   </Badge>
-                </div>
-                {vehicleReport.maintenance.status === 'completed' ? (
-                  <div className="rounded-2xl border border-green-200 bg-green-50/80 p-3">
-                    <p className="text-sm font-semibold text-green-900">Repair completed</p>
-                    <p className="mt-1 text-xs text-green-700">
-                      The linked Quad Maintenance record is complete. This rental is now ready to be reviewed and closed with the final bill.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-orange-200 bg-white/80 p-3">
-                    <p className="text-sm font-semibold text-orange-900">Vehicle under maintenance</p>
-                    <p className="mt-1 text-xs text-orange-700">
-                      Finish the linked Quad Maintenance record to pull the final repair total back into this rental and close it with confidence.
-                    </p>
-                  </div>
-                )}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                  <div>
-                    <p className="text-xs text-gray-500">Parts</p>
-                    <p className="font-medium text-gray-900">{formatCurrency(vehicleReport.maintenance.parts_cost_mad || 0)} MAD</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Labor</p>
-                    <p className="font-medium text-gray-900">{formatCurrency(vehicleReport.maintenance.labor_rate_mad || 0)} MAD</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">External</p>
-                    <p className="font-medium text-gray-900">{formatCurrency(vehicleReport.maintenance.external_cost_mad || 0)} MAD</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Total Bill</p>
-                    <p className="font-semibold text-gray-900">{formatCurrency(vehicleReport.maintenance.cost || 0)} MAD</p>
-                  </div>
-                </div>
-                {vehicleReport.customer_chargeable && (
-                  <div
-                    ref={maintenanceChargeSectionRef}
-                    className="space-y-3 rounded-[24px] border border-blue-200 bg-blue-50/80 p-4 shadow-[0_12px_30px_rgba(59,130,246,0.08)]"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-blue-900">Maintenance stay charge</p>
-                        <p className="mt-1 text-xs text-blue-700">
-                          Uses the saved rate first, then falls back to the vehicle model tier or base daily price.
-                        </p>
-                      </div>
-                      <Badge className="bg-blue-100 text-blue-800">
-                        {getMaintenanceStayRateSourceLabel(maintenanceChargeForm.source)}
-                      </Badge>
-                    </div>
-
-                    <button
-                      type="button"
-                      disabled={maintenanceChargeLocked}
-                      onClick={() => {
-                        setMaintenanceChargeForm((prev) => ({
-                          ...prev,
-                          enabled: !prev.enabled,
-                          total: !prev.enabled
-                            ? calculateMaintenanceStayTotal(prev.days, prev.dailyRate, prev.discount)
-                            : 0,
-                        }));
-                      }}
-                      className={`flex w-full items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-white/85 px-4 py-3 text-left transition-colors ${
-                        maintenanceChargeLocked ? 'cursor-not-allowed opacity-60' : 'hover:bg-blue-50/70 active:scale-[0.998]'
-                      }`}
-                      aria-pressed={maintenanceChargeForm.enabled}
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-900">{tr('Enable maintenance stay charge', 'Activer le séjour maintenance')}</p>
-                        <p className="mt-1 text-xs text-gray-500">
-                          {tr('Turn this off to remove the extra maintenance day charge from the customer bill.', 'Désactivez ceci pour retirer le supplément de séjour maintenance de la facture client.')}
-                        </p>
-                      </div>
-                      <div
-                        className={`relative inline-flex h-8 w-14 flex-shrink-0 items-center rounded-full transition-colors ${
-                          maintenanceChargeForm.enabled ? 'bg-violet-600' : 'bg-slate-300'
-                        }`}
-                      >
-                        <span
-                          className={`inline-block h-6 w-6 transform rounded-full bg-white shadow-sm transition-transform ${
-                            maintenanceChargeForm.enabled ? 'translate-x-7' : 'translate-x-1'
-                          }`}
-                        />
-                      </div>
-                    </button>
-
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">Days in maintenance</label>
-                        <input
-                          type="number"
-                          min="1"
-                          value={maintenanceChargeForm.days || ''}
-                          disabled={maintenanceChargeLocked || !maintenanceChargeForm.enabled}
-                          onChange={(e) => {
-                            const days = Math.max(1, parseInt(e.target.value || '1', 10) || 1);
-                            setMaintenanceChargeForm(prev => ({
-                              ...prev,
-                              days,
-                              total: prev.enabled ? calculateMaintenanceStayTotal(days, prev.dailyRate, prev.discount) : 0,
-                              source: prev.source === 'none' ? 'manual' : prev.source,
-                            }));
-                          }}
-                          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">Daily rate (MAD)</label>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={maintenanceChargeForm.dailyRate || ''}
-                          disabled={maintenanceChargeLocked || !maintenanceChargeForm.enabled}
-                          onChange={(e) => {
-                            const dailyRate = Math.max(0, Number(e.target.value || 0));
-                            setMaintenanceChargeForm(prev => ({
-                              ...prev,
-                              dailyRate,
-                              total: prev.enabled ? calculateMaintenanceStayTotal(prev.days, dailyRate, prev.discount) : 0,
-                              source: 'manual',
-                            }));
-                          }}
-                          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">Employee discount (MAD)</label>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={maintenanceChargeForm.discount || ''}
-                          disabled={maintenanceChargeLocked || !maintenanceChargeForm.enabled}
-                          onChange={(e) => {
-                            const discount = Math.max(0, Number(e.target.value || 0));
-                            setMaintenanceChargeForm(prev => ({
-                              ...prev,
-                              discount,
-                              total: prev.enabled ? calculateMaintenanceStayTotal(prev.days, prev.dailyRate, discount) : 0,
-                            }));
-                          }}
-                          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
-                      <div className="rounded-2xl border border-blue-100 bg-white/85 p-3">
-                        <p className="text-xs text-gray-500">Stay subtotal</p>
-                        <p className="mt-1 font-semibold text-gray-900">
-                          {formatCurrency(maintenanceChargeForm.enabled ? ((maintenanceChargeForm.days || 0) * (maintenanceChargeForm.dailyRate || 0)) : 0)} MAD
-                        </p>
-                      </div>
-                      <div className="rounded-2xl border border-blue-100 bg-white/85 p-3">
-                        <p className="text-xs text-gray-500">Discount</p>
-                        <p className="mt-1 font-semibold text-green-700">
-                          -{formatCurrency(maintenanceChargeForm.enabled ? (maintenanceChargeForm.discount || 0) : 0)} MAD
-                        </p>
-                      </div>
-                      <div className="rounded-2xl border border-blue-100 bg-white/85 p-3">
-                        <p className="text-xs text-gray-500">Stay charge total</p>
-                        <p className="mt-1 font-semibold text-blue-900">
-                          {formatCurrency(maintenanceChargeForm.total || 0)} MAD
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                      <p className="text-xs text-blue-700">
-                        Final customer charge = maintenance bill {formatCurrency(vehicleReport.maintenance.cost || 0)} MAD + stay charge {formatCurrency(maintenanceChargeForm.total || 0)} MAD
-                        {maintenanceChargeLocked ? ' • Contract completed, charge setup locked.' : ''}
-                      </p>
-                      <Button
-                        type="button"
-                        onClick={saveMaintenanceChargeConfig}
-                        disabled={savingMaintenanceCharge || maintenanceChargeLocked}
-                        className="rounded-2xl bg-violet-600 text-xs text-white shadow-sm hover:bg-violet-700"
-                      >
-                        <Save className="w-3 h-3 mr-1.5" />
-                        {savingMaintenanceCharge
-                          ? tr('Saving...', 'Enregistrement...')
-                          : maintenanceChargeLocked
-                            ? tr('Charge setup locked', 'Configuration de frais verrouillée')
-                            : tr('Register charge configuration', 'Enregistrer la configuration des frais')}
-                      </Button>
-                    </div>
-                  </div>
-                )}
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <Button
-                    type="button"
-                    onClick={() => navigate(`/admin/maintenance?maintenanceId=${vehicleReport.maintenance.id}`)}
-                    className="rounded-2xl border border-slate-200 bg-white text-xs text-slate-700 shadow-sm hover:bg-slate-50 hover:text-slate-900"
-                  >
-                    <Wrench className="w-3 h-3 mr-1.5" />
-                    {tr('Open in Quad Maintenance', 'Ouvrir dans Quad Maintenance')}
-                  </Button>
-                </div>
-              </div>
-            ) : vehicleReport.send_to_maintenance ? (
-              <div className="rounded-2xl border border-yellow-200 bg-yellow-50/80 p-3 text-sm text-yellow-800 shadow-[0_12px_30px_rgba(234,179,8,0.08)]">
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                  <span>Maintenance has been requested for this report and will appear here once the linked record is available.</span>
-                  <Button
-                    type="button"
-                    onClick={() => navigate(`/admin/maintenance?action=create&reportId=${vehicleReport.id}&vehicleId=${rental.vehicle_id}&rentalId=${rental.id}`)}
-                    className="rounded-2xl border border-slate-200 bg-white text-xs text-slate-700 shadow-sm hover:bg-slate-50 hover:text-slate-900"
-                  >
-                    <Wrench className="w-3 h-3 mr-1.5" />
-                    {tr('Open in Quad Maintenance', 'Ouvrir dans Quad Maintenance')}
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
-            {vehicleReport.customer_chargeable && (
-              <div className="rounded-2xl border border-blue-200 bg-blue-50/80 p-3 shadow-[0_12px_30px_rgba(59,130,246,0.08)]">
-                <p className="text-sm font-medium text-blue-900">
-                  Customer chargeable amount: {formatCurrency(vehicleReport.customer_charge_amount || vehicleReport.maintenance_cost_total || 0)} MAD
-                </p>
-                {(vehicleReport.maintenance_daily_total || 0) > 0 && (
-                  <p className="mt-1 text-xs text-blue-700">
-                    Includes maintenance stay charge of {formatCurrency(vehicleReport.maintenance_daily_total || 0)} MAD
-                    {vehicleReport.maintenance_daily_discount > 0 ? ` after ${formatCurrency(vehicleReport.maintenance_daily_discount)} MAD discount` : ''}.
-                  </p>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        </div>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-5">
+                {renderVehicleReportSectionBody()}
+              </CardContent>
+            </Card>
+          </div>
+        )
       )}
       
       {(isScheduled || isActive || isCompleted) && (
@@ -21658,6 +22516,26 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                             {originalKilometerPackagePrice > 0 ? ` · ${formatCurrency(originalKilometerPackagePrice)} MAD` : ''}
                           </span>
                         </div>
+                        {canToggleAutoPackageUpgrade ? (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleAutoPackageUpgrade(!autoPackageUpgradeEnabled)}
+                            disabled={isSavingAutoPackageUpgradePreference}
+                            className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left transition hover:border-violet-300 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-slate-900">{tr('Auto package upgrade', 'Surclassement auto du forfait')}</p>
+                              <p className="text-xs text-slate-500">
+                                {autoPackageUpgradeEnabled
+                                  ? tr('Automatic best-package matching is active for this rental.', 'Le meilleur forfait automatique est actif pour cette location.')
+                                  : tr('Billing is locked to the original booked package and overage rules apply.', 'La facturation reste sur le forfait réservé d’origine et les règles de dépassement s’appliquent.')}
+                              </p>
+                            </div>
+                            <div className={`relative inline-flex h-7 w-12 flex-shrink-0 items-center rounded-full transition-colors ${autoPackageUpgradeEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+                              <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${autoPackageUpgradeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                            </div>
+                          </button>
+                        ) : null}
                         {kilometerPackageApplication.upgraded ? (
                           <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
                             <span className="text-emerald-700">{tr('Auto upgrade applied', 'Surclassement auto appliqué')}</span>
@@ -21691,6 +22569,13 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         {tr(
                           `Upgraded because ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km passed the original ${bookedPackageLimitKm} km limit. Billing now follows ${appliedKilometerPackageName} at ${formatCurrency(appliedKilometerPackagePrice)} MAD.`,
                           `Surclassé car ${Number(simplePricingSummary.kmUsed || 0).toFixed(0)} km dépasse la limite initiale de ${bookedPackageLimitKm} km. La facturation suit maintenant ${appliedKilometerPackageName} à ${formatCurrency(appliedKilometerPackagePrice)} MAD.`
+                        )}
+                      </div>
+                    ) : !autoPackageUpgradeEnabled && simplePricingSummary.packageOverflowKm > 0 ? (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs font-medium text-amber-800">
+                        {tr(
+                          `Auto upgrade is disabled. This rental stays on ${originalKilometerPackageName}, so ${kilometerPackageApplication.overageKm} km will be billed as overage at ${formatCurrency(kilometerPackageApplication.appliedExtraRate)} MAD/km.`,
+                          `Le surclassement auto est désactivé. Cette location reste sur ${originalKilometerPackageName}, donc ${kilometerPackageApplication.overageKm} km seront facturés en dépassement à ${formatCurrency(kilometerPackageApplication.appliedExtraRate)} MAD/km.`
                         )}
                       </div>
                     ) : autoMatchedPackageDiffers ? (
@@ -21885,8 +22770,12 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     </p>
                     <p className="mt-1 text-xs text-violet-700">
                       {tr(
-                        'As owner, you can still reopen the maintenance stay charge and deposit return for final corrections on this completed contract.',
-                        'En tant que propriétaire, vous pouvez encore rouvrir le séjour maintenance et le retour de caution pour corriger ce contrat terminé.'
+                        vehicleStillUnderMaintenance
+                          ? 'As owner, you can still add transport, maintenance-stay, and deposit corrections while this vehicle remains under maintenance.'
+                          : 'As owner, you can still reopen the maintenance stay charge and deposit return for final corrections on this completed contract.',
+                        vehicleStillUnderMaintenance
+                          ? 'En tant que propriétaire, vous pouvez encore ajouter des frais de transport, corriger le séjour maintenance et ajuster la caution pendant que ce véhicule reste en maintenance.'
+                          : 'En tant que propriétaire, vous pouvez encore rouvrir le séjour maintenance et le retour de caution pour corriger ce contrat terminé.'
                       )}
                     </p>
                   </div>
@@ -21900,6 +22789,18 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     >
                       <Wrench className="mr-1.5 h-3.5 w-3.5" />
                       {tr('Edit Maintenance Stay Charge', 'Modifier le séjour maintenance')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="text-xs border-violet-200 text-violet-700 hover:bg-violet-100"
+                      onClick={openTransportFeeModal}
+                    >
+                      <Receipt className="mr-1.5 h-3.5 w-3.5" />
+                      {inlineTransportFeeMeta?.amount > 0
+                        ? tr('Edit Transport Fee', 'Modifier les frais de transport')
+                        : tr('Add Transport Fee', 'Ajouter des frais de transport')}
                     </Button>
                     {hasMonetaryDamageDeposit && (
                       <Button
@@ -21915,6 +22816,38 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                     )}
                   </div>
                 </div>
+                {inlineTransportFeeMeta?.amount > 0 && (
+                  <div className="mt-3 rounded-2xl border border-sky-200 bg-white/90 p-3 text-xs text-slate-700 shadow-sm">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="font-semibold text-sky-900">
+                          {tr('Transport fee saved', 'Frais de transport enregistrés')} · {formatCurrency(inlineTransportFeeMeta.amount)} MAD
+                        </p>
+                        {inlineTransportFeeMeta?.note && (
+                          <p className="mt-1 text-slate-600">
+                            {tr('Staff note:', 'Note équipe :')} {inlineTransportFeeMeta.note}
+                          </p>
+                        )}
+                        {inlineTransportFeeMeta?.editedByName && (
+                          <p className="mt-1 text-slate-500">
+                            {tr('Saved by', 'Enregistré par')} {inlineTransportFeeMeta.editedByName}
+                          </p>
+                        )}
+                      </div>
+                      {inlineTransportFeeMeta?.receiptUrl && (
+                        <a
+                          href={inlineTransportFeeMeta.receiptUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 font-semibold text-sky-700 hover:bg-sky-100"
+                        >
+                          <FileImage className="h-3.5 w-3.5" />
+                          {tr('View receipt', 'Voir le reçu')}
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
   
@@ -22042,7 +22975,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       <div className="mt-4 grid gap-2 sm:grid-cols-4">
         <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
           <p className="text-xs font-medium text-slate-500">{tr('Original due', 'Solde initial')}</p>
-          <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(amountDueAuditMeta.previousAmount || 0)} MAD</p>
+          <p className="mt-1 text-lg font-bold text-slate-900">{formatCurrency(rentalBillingSummary.balanceResolutionPreviousAmount || amountDueAuditMeta.previousAmount || 0)} MAD</p>
         </div>
         <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
           <p className="text-xs font-medium text-slate-500">{tr('Customer paid', 'Payé client')}</p>
@@ -22053,7 +22986,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
           <p className="text-xs font-medium text-slate-500">{tr('Discount', 'Remise')}</p>
           <p className="mt-1 text-lg font-bold text-violet-700">
-            -{formatCurrency(amountDueAuditMeta.companyDiscount || 0)} MAD
+            -{formatCurrency(rentalBillingSummary.companyDiscountAmount || amountDueAuditMeta.companyDiscount || 0)} MAD
           </p>
         </div>
         <div className="rounded-2xl border border-white/70 bg-white/85 px-3 py-3">
@@ -22106,6 +23039,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
     availablePackages: availableKmPackages,
     gracePeriodMinutes: rentalTimingSettings?.graceMinutes ?? DEFAULT_RENTAL_TIMING_SETTINGS.graceMinutes,
     totalDistance: rental.total_kilometers_driven || 0,
+    allowAutoUpgrade: autoPackageUpgradeEnabled,
   });
   const displayIncludedKilometers = Number.isFinite(packageApplication.appliedLimit)
     ? Number(packageApplication.appliedLimit || includedKilometers || 0)
@@ -22357,13 +23291,36 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
 
         {/* Overage Charge - Only once */}
         {(() => {
-          return rentalBillingSummary.overageCharge > 0 ? (
+          const showOverageBreakdown =
+            rentalBillingSummary.overageDisplayCharge > 0 || rentalBillingSummary.overageKm > 0;
+          return showOverageBreakdown ? (
             <div className="flex justify-between text-red-600">
-              <span>{tr('Overage charge:', 'Frais dépassement :')}</span>
-              <span className="font-medium">+{formatCurrency(rentalBillingSummary.overageCharge)} MAD</span>
+              <span>
+                {rentalBillingSummary.overageKm > 0 && rentalBillingSummary.overageRate > 0
+                  ? tr(
+                      `Overage charge (${rentalBillingSummary.overageKm} km × ${formatCurrency(rentalBillingSummary.overageRate)} MAD/km)${rentalBillingSummary.overageIncludedInContract ? ' · included in contract total' : ''}:`,
+                      `Frais dépassement (${rentalBillingSummary.overageKm} km × ${formatCurrency(rentalBillingSummary.overageRate)} MAD/km)${rentalBillingSummary.overageIncludedInContract ? ' · inclus dans le total du contrat' : ''} :`
+                    )
+                  : tr('Overage charge:', 'Frais dépassement :')}
+              </span>
+              <span className="font-medium">+{formatCurrency(rentalBillingSummary.overageDisplayCharge || rentalBillingSummary.overageCharge)} MAD</span>
             </div>
           ) : null;
         })()}
+
+        {rentalBillingSummary.companyDiscountAmount > 0 && (
+          <div className="flex justify-between text-violet-600">
+            <span>{tr('Company discount applied:', 'Remise entreprise appliquée :')}</span>
+            <span className="font-medium">-{formatCurrency(rentalBillingSummary.companyDiscountAmount)} MAD</span>
+          </div>
+        )}
+
+        {rentalBillingSummary.transportFeeAmount > 0 && (
+          <div className="flex justify-between text-sky-700">
+            <span>{tr('Transport fee:', 'Frais de transport :')}</span>
+            <span className="font-medium">+{formatCurrency(rentalBillingSummary.transportFeeAmount)} MAD</span>
+          </div>
+        )}
 
         {rentalBillingSummary.extensionFees > 0 && (
           <div className="flex justify-between text-purple-600">
@@ -22538,15 +23495,15 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         ) : (
           <>
             <div className="flex justify-between pt-2 border-t-2 border-gray-300 text-lg">
-              <span className="font-bold text-gray-900">{tr('Final Rental Total:', 'Total final location :')}</span>
-              <span className="font-bold text-green-600">
+              <span className="font-semibold text-gray-900">{tr('Final Rental Total:', 'Total final location :')}</span>
+              <span className="font-semibold text-gray-900">
                 {formatCurrency(rentalBillingSummary.finalGrandTotal ?? rentalBillingSummary.grandTotal)} MAD
               </span>
             </div>
 
             <div className="flex justify-between text-sm">
-              <span className="text-gray-600">{tr('Amount Paid:', 'Montant payé :')}</span>
-              <span className="font-medium">{formatCurrency(rentalBillingSummary.customerPaidAmount)} MAD</span>
+              <span className="font-bold text-green-700">{tr('Amount Paid:', 'Montant payé :')}</span>
+              <span className="font-bold text-green-700">{formatCurrency(rentalBillingSummary.customerPaidAmount)} MAD</span>
             </div>
 
             {rentalBillingSummary.autoDepositSeizedAmount > 0 && (
@@ -23998,7 +24955,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
       <div className="flex items-center justify-between">
         <DialogTitle className="flex items-center gap-2 text-base">
           <Video className="w-4 h-4 text-blue-600" />
-          {String(rental?.rental_status || '').toLowerCase() === 'completed'
+          {activeModal === 'vehicle'
+            ? tr('Vehicle Media', 'Médias véhicule')
+            : String(rental?.rental_status || '').toLowerCase() === 'completed'
             ? tr('Vehicle Media', 'Médias véhicule')
             : tr('Closing Condition', 'État de retour')}
         </DialogTitle>
@@ -24185,7 +25144,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 <div className="bg-white rounded-lg p-4 shadow-sm">
                   <button
                     onClick={async () => {
-                      setActiveModal('closing');
+                      setActiveModal(activeModal === 'vehicle' ? 'vehicle' : 'closing');
                       setIsCapturingPhoto(true);
                       await startPhotoPreview('closing');
                     }}
@@ -24196,7 +25155,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   </button>
 
                   <button
-                    onClick={() => uploadFromGallery('closing', 'photo')}
+                    onClick={() => uploadFromGallery(activeModal === 'vehicle' ? 'vehicle' : 'closing', 'photo')}
                     className="w-full py-4 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-medium text-lg flex items-center justify-center gap-2 mt-3"
                   >
                     <Upload className="w-5 h-5" />
@@ -24208,7 +25167,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {capturedMedia.length > 0 && (
                   <div className="sticky bottom-0 bg-white border-t p-4 mt-4 shadow-lg">
                     <button
-                      onClick={() => saveMedia('closing')}
+                      onClick={() => saveMedia(activeModal === 'vehicle' ? 'vehicle' : 'closing')}
                       disabled={isProcessingVideo}
                       className="w-full py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold text-lg flex items-center justify-center gap-2"
                     >
@@ -24417,7 +25376,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   <Button
                     onClick={async () => {
                       try {
-                        setActiveModal('closing');
+                        setActiveModal(activeModal === 'vehicle' ? 'vehicle' : 'closing');
                         if (closingVideoRef.current?.srcObject) {
                           closingVideoRef.current.srcObject.getTracks().forEach(t => t.stop());
                           closingVideoRef.current.srcObject = null;
@@ -24440,7 +25399,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   </Button>
                   
                   <Button
-                    onClick={() => uploadFromGallery('closing', 'video')}
+                    onClick={() => uploadFromGallery(activeModal === 'vehicle' ? 'vehicle' : 'closing', 'video')}
                     className="w-full py-4 bg-gray-600 hover:bg-gray-700 text-white rounded-xl font-medium text-lg flex items-center justify-center gap-2"
                     disabled={isRecording || isConverting}
                   >
@@ -24453,7 +25412,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {capturedMedia.length > 0 && (
                   <div className="sticky bottom-0 bg-white border-t p-4 mt-4 shadow-lg rounded-lg">
                     <Button
-                      onClick={() => saveMedia('closing')}
+                      onClick={() => saveMedia(activeModal === 'vehicle' ? 'vehicle' : 'closing')}
                       className="w-full py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold text-lg flex items-center justify-center gap-2"
                       disabled={isProcessingVideo}
                     >
@@ -25388,6 +26347,180 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </Button>
               </div>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={showTransportFeeModal}
+        onOpenChange={(open) => {
+          if (!isSavingTransportFee && !transportFeeUploading) {
+            setShowTransportFeeModal(open);
+          }
+        }}
+      >
+        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-2xl overflow-hidden rounded-[28px] border border-sky-100 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.16)]">
+          <DialogHeader className="border-b border-sky-100 bg-gradient-to-r from-white via-sky-50/50 to-slate-50 px-6 py-5 text-left">
+            <DialogTitle className="flex items-center gap-3 text-xl font-semibold text-slate-900">
+              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-100 text-sky-700">
+                <Receipt className="h-5 w-5" />
+              </span>
+              {inlineTransportFeeMeta?.amount > 0
+                ? tr('Edit transport fee', 'Modifier les frais de transport')
+                : tr('Add transport fee', 'Ajouter des frais de transport')}
+            </DialogTitle>
+            <DialogDescription className="pt-2 text-sm text-slate-600">
+              {tr(
+                'Use this for post-return transport or towing movement costs linked to the maintenance workflow. The amount will increase the customer balance due.',
+                'Utilisez ceci pour les frais de transport ou de déplacement après retour liés à la maintenance. Le montant augmentera le solde dû par le client.'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 px-6 py-5">
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_220px]">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  {tr('Current due balance', 'Solde dû actuel')}
+                </p>
+                <p className="mt-2 text-3xl font-extrabold text-slate-950">
+                  {formatCurrency(rental?.remaining_amount || 0)} MAD
+                </p>
+                <p className="mt-2 text-xs text-slate-500">
+                  {tr(
+                    'Saving this fee adds it to the financial balance and keeps it visible in rental details.',
+                    "L'enregistrement ajoute ce montant au solde financier et le garde visible dans les détails de location."
+                  )}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-sky-200 bg-sky-50/80 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
+                  {tr('Saved fee', 'Frais enregistrés')}
+                </p>
+                <p className="mt-2 text-3xl font-extrabold text-sky-900">
+                  {formatCurrency(inlineTransportFeeMeta?.amount || 0)} MAD
+                </p>
+                <p className="mt-2 text-xs text-sky-700">
+                  {tr(
+                    'Edit or replace the amount any time while closing maintenance-related costs.',
+                    'Modifiez ou remplacez le montant à tout moment pendant la clôture des coûts de maintenance.'
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-slate-900">
+                  {tr('Transport fee amount (MAD)', 'Montant des frais de transport (MAD)')}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={transportFeeForm.amount}
+                  onChange={(event) => setTransportFeeForm((prev) => ({ ...prev, amount: event.target.value }))}
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-base font-semibold text-slate-900 shadow-sm outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                  placeholder={tr('Enter amount', 'Saisir le montant')}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-slate-900">
+                  {tr('Receipt attachment', 'Pièce jointe du reçu')}
+                </label>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                  <input
+                    ref={transportFeeReceiptCameraInputRef}
+                    type="file"
+                    accept="image/*,application/pdf"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(event) => handleTransportFeeReceiptUpload(event.target.files?.[0])}
+                  />
+                  <input
+                    ref={transportFeeReceiptInputRef}
+                    type="file"
+                    accept="image/*,application/pdf"
+                    className="hidden"
+                    onChange={(event) => handleTransportFeeReceiptUpload(event.target.files?.[0])}
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="rounded-xl border-slate-200 bg-white"
+                      onClick={() => transportFeeReceiptCameraInputRef.current?.click()}
+                      disabled={transportFeeUploading}
+                    >
+                      <Camera className="mr-2 h-4 w-4" />
+                      {transportFeeUploading ? tr('Uploading...', 'Téléversement...') : tr('Take Photo', 'Prendre une photo')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="rounded-xl border-slate-200 bg-white"
+                      onClick={() => transportFeeReceiptInputRef.current?.click()}
+                      disabled={transportFeeUploading}
+                    >
+                      <Upload className="mr-2 h-4 w-4" />
+                      {tr('Import Receipt', 'Importer le reçu')}
+                    </Button>
+                  </div>
+                  {transportFeeForm.receiptName && (
+                    <div className="mt-3 rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm text-slate-700">
+                      <p className="font-semibold text-sky-900">{transportFeeForm.receiptName}</p>
+                      {transportFeeForm.receiptUploadedAt && (
+                        <p className="mt-1 text-xs text-slate-500">
+                          {tr('Uploaded', 'Téléversé')} · {new Date(transportFeeForm.receiptUploadedAt).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-900">
+                {tr('Staff note', "Note de l'équipe")}
+              </label>
+              <textarea
+                rows={4}
+                value={transportFeeForm.note}
+                onChange={(event) => setTransportFeeForm((prev) => ({ ...prev, note: event.target.value }))}
+                className="w-full resize-none rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                placeholder={tr(
+                  'Explain why the transport fee was added. This note stays only in rental details.',
+                  "Expliquez pourquoi les frais de transport ont été ajoutés. Cette note reste uniquement dans les détails de location."
+                )}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap justify-end gap-3 border-t border-slate-100 bg-slate-50/60 px-6 py-4">
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-xl border-slate-200 bg-white"
+              onClick={() => setShowTransportFeeModal(false)}
+              disabled={isSavingTransportFee || transportFeeUploading}
+            >
+              {tr('Cancel', 'Annuler')}
+            </Button>
+            <Button
+              type="button"
+              onClick={saveTransportFeeAdjustment}
+              className="rounded-xl bg-sky-600 text-white hover:bg-sky-700"
+              disabled={isSavingTransportFee || transportFeeUploading}
+            >
+              <Save className="mr-2 h-4 w-4" />
+              {isSavingTransportFee
+                ? tr('Saving...', 'Enregistrement...')
+                : Number(transportFeeForm.amount || 0) > 0
+                  ? tr('Save Transport Fee', 'Enregistrer les frais de transport')
+                  : tr('Remove Transport Fee', 'Supprimer les frais de transport')}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

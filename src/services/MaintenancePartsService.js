@@ -68,6 +68,13 @@ class MaintenancePartsService {
     const unitCost = inventoryItem
       ? (parseFloat(inventoryItem.cost_mad || 0) || 0)
       : (parseFloat(part.unit_cost_mad || 0) || 0);
+    const explicitLineSellTotal =
+      parseFloat(
+        part.total_sell_mad ||
+        part.line_sell_total_mad ||
+        parsedNotes.financeSnapshot?.line_sell_total_mad ||
+        0
+      ) || 0;
     const explicitUnitPrice =
       parseFloat(
         part.unit_price_mad ||
@@ -76,11 +83,22 @@ class MaintenancePartsService {
         parsedNotes.financeSnapshot?.unit_price_mad ||
         0
       ) || 0;
-    const unitPrice = explicitUnitPrice || (
-      inventoryItem
-        ? (parseFloat(inventoryItem.price_mad || 0) || unitCost)
-        : unitCost
-    );
+    const lineDerivedUnitPrice =
+      quantity > 0 && explicitLineSellTotal > 0
+        ? (explicitLineSellTotal / quantity)
+        : 0;
+    const unitPrice = inventoryItem
+      ? (
+          parseFloat(inventoryItem.price_mad || 0) ||
+          explicitUnitPrice ||
+          lineDerivedUnitPrice ||
+          unitCost
+        )
+      : (
+          explicitUnitPrice ||
+          lineDerivedUnitPrice ||
+          unitCost
+        );
     const financeSnapshot = {
       unit_price_mad: unitPrice,
       line_cost_total_mad: quantity * unitCost,

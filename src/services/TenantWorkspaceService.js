@@ -43,6 +43,44 @@ export const TENANT_WORKSPACE_MODULES = Object.freeze([
   'staff',
 ]);
 
+const resolveWorkspaceTenancyMode = (tenant = {}) => {
+  const metadata = tenant?.metadata && typeof tenant.metadata === 'object' ? tenant.metadata : {};
+  const tenantName = String(tenant?.tenant_name || tenant?.tenantName || '').trim().toLowerCase();
+  const tenantSlug = String(tenant?.tenant_slug || tenant?.tenantSlug || '').trim().toLowerCase();
+  const tenantAppUrl = String(tenant?.tenant_app_url || tenant?.tenantAppUrl || '').trim().toLowerCase();
+
+  if (
+    tenantSlug === 'saharax' ||
+    tenantName === 'saharax' ||
+    tenantName === 'saharax xtreme' ||
+    tenantAppUrl.includes('saharax.driveout.io')
+  ) {
+    return 'dedicated';
+  }
+
+  const explicitMode = String(
+    tenant?.tenancy_mode ||
+    tenant?.tenancyMode ||
+    metadata?.tenancy_mode ||
+    metadata?.workspace_mode ||
+    ''
+  ).trim().toLowerCase();
+
+  if (explicitMode === 'shared' || explicitMode === 'dedicated') {
+    return explicitMode;
+  }
+
+  if (
+    String(tenant?.tenant_project_ref || tenant?.tenantProjectRef || '').trim() ||
+    String(tenant?.tenant_api_url || tenant?.tenantApiUrl || '').trim() ||
+    String(tenant?.tenant_anon_key || tenant?.tenantAnonKey || '').trim()
+  ) {
+    return 'dedicated';
+  }
+
+  return 'shared';
+};
+
 export const buildTenantWorkspaceBootstrap = ({
   tenant = null,
   subscription = null,
@@ -50,7 +88,7 @@ export const buildTenantWorkspaceBootstrap = ({
 } = {}) => {
   const planType = normalizeTenantPlanType(subscription?.plan_type || subscription?.planType || 'starter');
   const limits = getTenantPlanLimits(planType);
-  const tenancyMode = tenant?.tenancy_mode || tenant?.tenancyMode || 'shared';
+  const tenancyMode = resolveWorkspaceTenancyMode(tenant);
   const isDedicated = String(tenancyMode).trim().toLowerCase() === 'dedicated';
 
   return {

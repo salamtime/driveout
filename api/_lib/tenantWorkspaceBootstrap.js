@@ -11,6 +11,7 @@ import {
 } from './tenantSchemaMutationGuard.js';
 import {
   APP_USERS_TABLE,
+  getSharedSupabaseTenantConfig,
   ORGANIZATIONS_TABLE,
   ORGANIZATION_MEMBERS_TABLE,
 } from './supabase.js';
@@ -320,6 +321,234 @@ const buildOwnerPermissionsObject = () => ({
   Settings: true,
 });
 
+const isMissingPostgrestColumnError = (error, columnName) => {
+  const normalizedColumn = String(columnName || '').trim().toLowerCase();
+  const message = String(error?.message || '').trim().toLowerCase();
+  const details = String(error?.details || '').trim().toLowerCase();
+  const code = String(error?.code || '').trim().toUpperCase();
+
+  return (
+    code === 'PGRST204' ||
+    code === '42703' ||
+    message.includes(`could not find the '${normalizedColumn}' column`) ||
+    message.includes(`column ${normalizedColumn}`) ||
+    details.includes(`column ${normalizedColumn}`) ||
+    message.includes('schema cache') ||
+    details.includes('schema cache')
+  );
+};
+
+const upsertSharedWorkspaceOwnerUser = async ({ adminClient, userPayload }) => {
+  const actorEmail = String(userPayload?.email || 'system').trim() || 'system';
+  const attempts = [
+    { ...userPayload, changed_by: actorEmail, updated_by: actorEmail },
+    { ...userPayload, changed_by: actorEmail },
+    userPayload,
+  ];
+
+  let lastResult = null;
+  for (const payload of attempts) {
+    const result = await adminClient
+      .from(APP_USERS_TABLE)
+      .upsert(payload, { onConflict: 'id' });
+
+    if (!result?.error) {
+      return result;
+    }
+
+    lastResult = result;
+    const canRetryWithoutActorColumn =
+      isMissingPostgrestColumnError(result.error, 'changed_by') ||
+      isMissingPostgrestColumnError(result.error, 'updated_by');
+
+    if (!canRetryWithoutActorColumn) {
+      return result;
+    }
+  }
+
+  return lastResult;
+};
+
+const upsertWithAuditActorFallback = async ({
+  adminClient,
+  table,
+  payload,
+  onConflict,
+  select = null,
+  single = false,
+  actorEmail = 'system',
+}) => {
+  const normalizedActorEmail = String(actorEmail || 'system').trim() || 'system';
+  const attempts = [
+    { ...payload, changed_by: normalizedActorEmail, updated_by: normalizedActorEmail },
+    { ...payload, changed_by: normalizedActorEmail },
+    payload,
+  ];
+
+  let lastResult = null;
+
+  for (const attemptPayload of attempts) {
+    let query = adminClient
+      .from(table)
+      .upsert(attemptPayload, onConflict ? { onConflict } : undefined);
+
+    if (select) {
+      query = query.select(select);
+      if (single) {
+        query = query.single();
+      }
+    }
+
+    const result = await query;
+    if (!result?.error) {
+      return result;
+    }
+
+    lastResult = result;
+    const canRetryWithoutActorColumn =
+      isMissingPostgrestColumnError(result.error, 'changed_by') ||
+      isMissingPostgrestColumnError(result.error, 'updated_by');
+
+    if (!canRetryWithoutActorColumn) {
+      return result;
+    }
+  }
+
+  return lastResult;
+};
+
+const updateWithAuditActorFallback = async ({
+  adminClient,
+  table,
+  values,
+  actorEmail = 'system',
+  match = {},
+}) => {
+  const normalizedActorEmail = String(actorEmail || 'system').trim() || 'system';
+  const attempts = [
+    { ...values, changed_by: normalizedActorEmail, updated_by: normalizedActorEmail },
+    { ...values, changed_by: normalizedActorEmail },
+    values,
+  ];
+
+  let lastResult = null;
+
+  for (const attemptValues of attempts) {
+    let query = adminClient.from(table).update(attemptValues);
+
+    for (const [column, value] of Object.entries(match || {})) {
+      query = query.eq(column, value);
+    }
+
+    const result = await query;
+    if (!result?.error) {
+      return result;
+    }
+
+    lastResult = result;
+    const canRetryWithoutActorColumn =
+      isMissingPostgrestColumnError(result.error, 'changed_by') ||
+      isMissingPostgrestColumnError(result.error, 'updated_by');
+
+    if (!canRetryWithoutActorColumn) {
+      return result;
+    }
+  }
+
+  return lastResult;
+};
+
+const buildSharedWorkspaceAuditColumnsSql = () => `begin;
+alter table public.${quoteIdent(APP_USERS_TABLE)}
+  add column if not exists changed_by text,
+  add column if not exists updated_by text;
+
+alter table public.${quoteIdent(ORGANIZATIONS_TABLE)}
+  add column if not exists changed_by text,
+  add column if not exists updated_by text;
+
+alter table public.${quoteIdent(ORGANIZATION_MEMBERS_TABLE)}
+  add column if not exists changed_by text,
+  add column if not exists updated_by text;
+
+create or replace function public.log_user_access_change()
+returns trigger
+language plpgsql
+security definer
+as $function$
+declare
+  actor_user_id uuid := coalesce(auth.uid(), NEW.id, OLD.id);
+begin
+  if (TG_OP = 'UPDATE' AND OLD.access_enabled != NEW.access_enabled) then
+    insert into public.app_b30c02e74da644baad4668e3587d86b1_user_access_log (
+      user_id,
+      changed_by,
+      action,
+      reason
+    ) values (
+      NEW.id,
+      actor_user_id,
+      case when NEW.access_enabled then 'enabled' else 'disabled' end,
+      'Access status changed'
+    );
+  end if;
+
+  if (TG_OP = 'UPDATE' AND OLD.role != NEW.role) then
+    insert into public.app_b30c02e74da644baad4668e3587d86b1_user_access_log (
+      user_id,
+      changed_by,
+      action,
+      reason
+    ) values (
+      NEW.id,
+      actor_user_id,
+      'role_changed',
+      'Role changed from ' || OLD.role || ' to ' || NEW.role
+    );
+  end if;
+
+  return NEW;
+end;
+$function$;
+
+grant select, insert, update, delete on table public.${quoteIdent(ORGANIZATIONS_TABLE)} to service_role;
+grant select, insert, update, delete on table public.${quoteIdent(ORGANIZATION_MEMBERS_TABLE)} to service_role;
+
+notify pgrst, 'reload schema';
+commit;`;
+
+const ensureSharedWorkspaceAuditColumns = async () => {
+  const managementToken = getManagementToken();
+  if (!managementToken) {
+    return {
+      ensured: false,
+      skipped: true,
+      reason: 'missing_management_token',
+    };
+  }
+
+  const { projectRef } = getSharedSupabaseTenantConfig();
+  if (!projectRef) {
+    return {
+      ensured: false,
+      skipped: true,
+      reason: 'missing_project_ref',
+    };
+  }
+
+  await runProjectManagementSql({
+    projectRef,
+    query: buildSharedWorkspaceAuditColumnsSql(),
+    readOnly: false,
+  });
+
+  return {
+    ensured: true,
+    skipped: false,
+    projectRef,
+  };
+};
+
 const buildWorkspaceRuntimeSeedSql = ({
   tenantName,
   tenantSlug,
@@ -577,11 +806,14 @@ export const seedSharedBusinessWorkspaceRuntime = async ({
     };
   }
 
+  await ensureSharedWorkspaceAuditColumns();
+
   const workspaceName = String(tenantName || ownerFullName || ownerEmailText || 'Business Workspace').trim();
   const ownerName = String(ownerFullName || ownerEmailText).trim() || ownerEmailText;
   const workspaceSlugBase = slugify(tenantSlug || tenantName || ownerEmailText.split('@')[0], 'workspace');
   const workspaceSlug = `${workspaceSlugBase.slice(0, 42)}-${ownerId.replace(/-/g, '').slice(0, 8)}`;
   const ownerPermissions = buildOwnerPermissionsObject();
+  const actorEmail = ownerEmailText;
 
   const userPayload = {
     id: ownerId,
@@ -596,15 +828,17 @@ export const seedSharedBusinessWorkspaceRuntime = async ({
   if (trialStartedAt) userPayload.trial_started_at = trialStartedAt;
   if (trialEndsAt) userPayload.trial_ends_at = trialEndsAt;
 
-  const { error: userUpsertError } = await adminClient
-    .from(APP_USERS_TABLE)
-    .upsert(userPayload, { onConflict: 'id' });
+  const { error: userUpsertError } = await upsertSharedWorkspaceOwnerUser({
+    adminClient,
+    userPayload,
+  });
 
   if (userUpsertError) throw userUpsertError;
 
-  const { data: organization, error: organizationError } = await adminClient
-    .from(ORGANIZATIONS_TABLE)
-    .upsert({
+  const { data: organization, error: organizationError } = await upsertWithAuditActorFallback({
+    adminClient,
+    table: ORGANIZATIONS_TABLE,
+    payload: {
       name: workspaceName,
       slug: workspaceSlug,
       owner_user_id: ownerId,
@@ -612,9 +846,12 @@ export const seedSharedBusinessWorkspaceRuntime = async ({
       organization_status: 'active',
       is_platform_organization: false,
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'slug' })
-    .select('id')
-    .single();
+    },
+    onConflict: 'slug',
+    select: 'id',
+    single: true,
+    actorEmail,
+  });
 
   if (organizationError) throw organizationError;
 
@@ -623,25 +860,32 @@ export const seedSharedBusinessWorkspaceRuntime = async ({
     throw new Error('Shared workspace organization could not be resolved');
   }
 
-  const { error: primaryOrganizationError } = await adminClient
-    .from(APP_USERS_TABLE)
-    .update({
+  const { error: primaryOrganizationError } = await updateWithAuditActorFallback({
+    adminClient,
+    table: APP_USERS_TABLE,
+    values: {
       primary_organization_id: organizationId,
       updated_at: new Date().toISOString(),
-    })
-    .eq('id', ownerId);
+    },
+    actorEmail,
+    match: { id: ownerId },
+  });
 
   if (primaryOrganizationError) throw primaryOrganizationError;
 
-  const { error: membershipError } = await adminClient
-    .from(ORGANIZATION_MEMBERS_TABLE)
-    .upsert({
+  const { error: membershipError } = await upsertWithAuditActorFallback({
+    adminClient,
+    table: ORGANIZATION_MEMBERS_TABLE,
+    payload: {
       organization_id: organizationId,
       user_id: ownerId,
       member_role: 'org_owner',
       membership_status: 'active',
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'organization_id,user_id' });
+    },
+    onConflict: 'organization_id,user_id',
+    actorEmail,
+  });
 
   if (membershipError) throw membershipError;
 

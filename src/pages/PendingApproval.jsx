@@ -4,7 +4,9 @@ import { AlertCircle, Clock3, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { getTenantSession } from '../services/TenantRegistryService';
 import { hasBusinessOwnerRequest, isBusinessOwnerAccountType } from '../utils/accountType';
+import { resolveUserEntry } from '../utils/tenantEntryResolver';
 import i18n from '../i18n';
+import WorkspaceProgressVisualizer from '../components/auth/WorkspaceProgressVisualizer';
 
 const statusToneMap = {
   pending: 'border-amber-200 bg-amber-50 text-amber-800',
@@ -104,8 +106,12 @@ const PendingApproval = () => {
 
   useEffect(() => {
     if (tenantSession?.workspaceState === 'tenant_ready') {
-      if (tenantSession?.tenantAppUrl) {
-        window.location.href = tenantSession.tenantAppUrl;
+      const entry = resolveUserEntry({
+        approved: true,
+        tenantSession,
+      });
+      if (entry?.target) {
+        window.location.href = entry.target;
         return;
       }
       navigate('/business/workspace', { replace: true });
@@ -177,12 +183,12 @@ const PendingApproval = () => {
     if (showsAutomaticWorkspacePreparation || displayStatus === 'approved') {
       return {
         icon: Clock3,
-        title: tr('Your business workspace is being prepared', 'Votre espace business est en cours de préparation'),
+        title: tr('Your workspace is almost ready', 'Votre espace est presque prêt'),
         description: tr(
-          'We are preparing your DriveOut workspace automatically. Keep this page open and we will take you in as soon as everything is ready.',
-          "Nous préparons automatiquement votre espace DriveOut. Gardez cette page ouverte et nous vous y emmènerons dès que tout sera prêt."
+          'We are finishing your DriveOut workspace automatically. Keep this page open and we will bring you in as soon as everything is ready.',
+          "Nous finalisons automatiquement votre espace DriveOut. Gardez cette page ouverte et nous vous y emmènerons dès que tout sera prêt."
         ),
-        badge: tr('Preparing workspace', 'Préparation de l’espace'),
+        badge: tr('Workspace setup', 'Configuration de l’espace'),
       };
     }
 
@@ -206,15 +212,15 @@ const PendingApproval = () => {
         <div className="overflow-hidden rounded-[34px] border border-white/80 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.12)]">
           <div className="bg-gradient-to-br from-slate-950 via-violet-950 to-violet-700 px-6 py-8 text-white sm:px-8">
             <p className="text-xs font-bold uppercase tracking-[0.26em] text-violet-200">
-              {tr('Business Owner Activation', 'Activation propriétaire business')}
+              {tr('Business workspace setup', 'Configuration de l’espace business')}
             </p>
             <h1 className="mt-3 text-3xl font-black tracking-tight">
-              {tr('DriveOut business access', 'Accès business DriveOut')}
+              {tr('Your DriveOut workspace', 'Votre espace DriveOut')}
             </h1>
             <p className="mt-3 max-w-2xl text-sm font-medium text-violet-100">
               {tr(
-                'Your business workspace is created automatically after signup. We are finishing the tenant setup and will redirect you once it is ready.',
-                "Votre espace business est créé automatiquement après l’inscription. Nous terminons la configuration du tenant et vous redirigerons dès qu’il sera prêt."
+                'Your workspace is created automatically after signup. We are finishing the setup and will redirect you as soon as it is ready.',
+                "Votre espace est créé automatiquement après l’inscription. Nous terminons la configuration et vous redirigerons dès qu’il sera prêt."
               )}
             </p>
           </div>
@@ -250,16 +256,16 @@ const PendingApproval = () => {
               {showsAutomaticWorkspacePreparation || displayStatus === 'approved' ? (
                 <div className="mt-5 rounded-2xl border border-violet-200 bg-white px-4 py-4">
                   <p className="text-xs font-bold uppercase tracking-[0.18em] text-violet-500">
-                    {tr('Provisioning status', 'Statut du provisionnement')}
+                    {tr('Setup status', 'Statut de configuration')}
                   </p>
                   <p className="mt-2 text-sm font-medium text-slate-700">
                     {tenantSession?.workspaceState === 'tenant_ready'
-                      ? tr('Your tenant workspace is ready. Redirecting now.', 'Votre espace tenant est prêt. Redirection en cours.')
+                      ? tr('Your business workspace is ready. Redirecting now.', 'Votre espace business est prêt. Redirection en cours.')
                       : tenantSession?.workspaceState === 'provisioning'
-                        ? tr('Your tenant workspace is currently provisioning.', 'Votre espace tenant est actuellement en cours de provisionnement.')
+                        ? tr('Your workspace is currently being prepared.', 'Votre espace est actuellement en cours de préparation.')
                         : tenantSession?.workspaceState === 'pending'
-                        ? tr('Your tenant workspace request has been accepted and setup is starting.', 'La demande de votre espace tenant est acceptée et la configuration démarre.')
-                          : tr('Your tenant workspace is being prepared automatically. This can take a few minutes on the first setup.', 'Votre espace tenant est en cours de préparation automatique. Cela peut prendre quelques minutes lors de la première configuration.')}
+                        ? tr('Your workspace request has been accepted and setup is starting.', 'La demande de votre espace est acceptée et la configuration démarre.')
+                          : tr('Your workspace is being prepared automatically. This can take a few minutes on the first setup.', 'Votre espace est en cours de préparation automatique. Cela peut prendre quelques minutes lors de la première configuration.')}
                   </p>
                   {tenantSession?.tenantName ? (
                     <p className="mt-2 text-sm text-slate-500">
@@ -271,6 +277,51 @@ const PendingApproval = () => {
                       {tr('Job status', 'Statut du job')} : {tenantSession.provisioningJob.job_status}
                     </p>
                   ) : null}
+                </div>
+              ) : null}
+
+              {showsAutomaticWorkspacePreparation || displayStatus === 'approved' ? (
+                <div className="mt-5">
+                  <WorkspaceProgressVisualizer
+                    mode={tenantSession?.workspaceState === 'tenant_ready' ? 'indeterminate' : 'determinate'}
+                    progressPercent={
+                      tenantSession?.workspaceState === 'tenant_ready'
+                        ? 100
+                        : tenantSession?.workspaceState === 'provisioning'
+                          ? 72
+                          : tenantSession?.workspaceState === 'pending'
+                            ? 32
+                            : 18
+                    }
+                    statusLabel={tr('Behind the scenes', 'En arrière-plan')}
+                    title={tr('We are assembling your workspace', 'Nous assemblons votre espace')}
+                    subtitle={tr(
+                      'Access, modules, and workspace routing are being prepared automatically so you can enter as soon as it is ready.',
+                      'Les accès, modules et le routage de l’espace sont préparés automatiquement pour que vous puissiez entrer dès qu’il est prêt.'
+                    )}
+                    steps={[
+                      {
+                        key: 'request',
+                        label: tr('Request accepted', 'Demande acceptée'),
+                        complete: ['pending', 'provisioning', 'tenant_ready'].includes(tenantSession?.workspaceState),
+                      },
+                      {
+                        key: 'workspace',
+                        label: tr('Preparing workspace', 'Préparation espace'),
+                        complete: ['provisioning', 'tenant_ready'].includes(tenantSession?.workspaceState),
+                      },
+                      {
+                        key: 'modules',
+                        label: tr('Loading modules', 'Chargement modules'),
+                        complete: tenantSession?.workspaceState === 'tenant_ready',
+                      },
+                      {
+                        key: 'open',
+                        label: tr('Opening access', 'Ouverture accès'),
+                        complete: false,
+                      },
+                    ]}
+                  />
                 </div>
               ) : null}
             </div>

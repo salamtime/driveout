@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Calendar, Car, Fuel, DollarSign, FileText, Image as ImageIcon, Truck, Database, Download, User, History } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { linesToLiters, roundTo } from '../../utils/fuelMath';
 import { formatVehicleLabel } from '../../utils/vehicleLabels';
 import { getFuelTransactionVisual } from '../../utils/fuelVisuals';
 import i18n from '../../i18n';
@@ -74,7 +75,13 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
   };
 
   const getRentalReference = () => {
-    return transaction.rental_reference || transaction.linked_report?.rental_id || '';
+    const candidates = [
+      transaction.rental_reference,
+      transaction.rental_id,
+      transaction.linked_report?.rental_reference,
+      transaction.linked_report?.rental_id,
+    ];
+    return candidates.find((value) => /^RNT-/i.test(String(value || '').trim())) || '';
   };
 
   const getRentalLinkTarget = () => {
@@ -83,6 +90,18 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
 
   // Get quantity
   const getQuantity = () => {
+    if (transaction.transaction_type === 'rental_opening_level' || transaction.transaction_type === 'rental_closing_level') {
+      const litersAfter =
+        transaction.liters_after ??
+        (transaction.fuel_lines_after !== null && transaction.fuel_lines_after !== undefined
+          ? linesToLiters(transaction.fuel_lines_after)
+          : null);
+
+      if (litersAfter !== null) {
+        return roundTo(Number(litersAfter), 2);
+      }
+    }
+
     if (transaction.transaction_type === 'manual_adjustment') {
       const litersBefore = Number(transaction.liters_before);
       const litersAfter = Number(transaction.liters_after);
@@ -94,6 +113,29 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
       return `-${Number(transaction.amount || transaction.liters || 0).toFixed(2)}`;
     }
     return transaction.amount || transaction.liters || transaction.liters_added || 0;
+  };
+
+  const getRentalFuelUsedDuringRental = () => {
+    if (transaction.transaction_type !== 'rental_closing_level') {
+      return null;
+    }
+
+    const litersBefore =
+      transaction.liters_before ??
+      (transaction.fuel_lines_before !== null && transaction.fuel_lines_before !== undefined
+        ? linesToLiters(transaction.fuel_lines_before)
+        : null);
+    const litersAfter =
+      transaction.liters_after ??
+      (transaction.fuel_lines_after !== null && transaction.fuel_lines_after !== undefined
+        ? linesToLiters(transaction.fuel_lines_after)
+        : null);
+
+    if (litersBefore === null || litersAfter === null) {
+      return null;
+    }
+
+    return roundTo(Number(litersBefore) - Number(litersAfter), 2);
   };
 
   const getQuantityUnit = () => {
@@ -223,11 +265,18 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
       <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b">
-          <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            {getIcon()}
-            <span>{transactionVisual.emoji}</span>
-            {getTitle()}
-          </h3>
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+              {getIcon()}
+              <span>{transactionVisual.emoji}</span>
+              {getTitle()}
+            </h3>
+            {getRentalReference() ? (
+              <div className="mt-2 text-sm font-mono text-violet-700">
+                {tr('Rental Contract', 'Contrat de location')}: {getRentalReference()}
+              </div>
+            ) : null}
+          </div>
           <button
             onClick={onClose}
             className="text-gray-500 hover:text-gray-700 transition-colors"
@@ -294,6 +343,16 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
               <p className="text-sm text-gray-900">{getQuantity()} {getQuantityUnit()}</p>
             </div>
           </div>
+
+          {transaction.transaction_type === 'rental_closing_level' && getRentalFuelUsedDuringRental() !== null ? (
+            <div className="flex items-start gap-3">
+              <Fuel className="h-5 w-5 text-gray-400 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-gray-700">{tr('Fuel Used During Rental', 'Carburant utilisé pendant la location')}</p>
+                <p className="text-sm text-gray-900">{getRentalFuelUsedDuringRental()} L</p>
+              </div>
+            </div>
+          ) : null}
 
           <div className="flex items-start gap-3">
             <DollarSign className="h-5 w-5 text-gray-400 mt-0.5" />

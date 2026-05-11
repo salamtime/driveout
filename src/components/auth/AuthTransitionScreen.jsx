@@ -1,6 +1,7 @@
 import React from 'react';
 import { ShieldCheck } from 'lucide-react';
 import i18n from '../../i18n';
+import WorkspaceProgressVisualizer from './WorkspaceProgressVisualizer';
 
 const AuthTransitionScreen = ({
   title,
@@ -19,7 +20,7 @@ const AuthTransitionScreen = ({
             <div className="relative">
               <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-100 backdrop-blur-sm">
                 <ShieldCheck className="h-3.5 w-3.5" />
-                {badge || tr('Saharax Workspace', 'Espace Saharax')}
+                {badge || tr('Workspace access', 'Accès espace')}
               </div>
 
               <div className="mt-8 max-w-xl">
@@ -27,26 +28,29 @@ const AuthTransitionScreen = ({
                   {title || tr('Preparing secure access', 'Préparation de l’accès sécurisé')}
                 </h1>
                 <p className="mt-4 max-w-lg text-base leading-7 text-violet-100 sm:text-lg">
-                  {description || tr('We are loading your SaharaX workspace.', 'Nous préparons votre espace SaharaX.')}
+                  {description || tr('We are loading your workspace.', 'Nous préparons votre espace.')}
                 </p>
               </div>
             </div>
           </section>
 
           <section className="flex items-center justify-center bg-white/90 px-6 py-12 sm:px-8 lg:px-10 lg:py-14">
-            <div className="text-center">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-violet-50 shadow-inner shadow-violet-100">
-                <div className="h-8 w-8 animate-spin rounded-full border-4 border-violet-200 border-t-violet-600" />
-              </div>
-              <p className="mt-6 text-sm font-semibold uppercase tracking-[0.22em] text-violet-500">
-                {tr('Secure transition', 'Transition sécurisée')}
-              </p>
-              <p className="mt-3 max-w-sm text-sm leading-6 text-slate-500">
-                {tr(
-                  'Please wait a moment while we take you to the right workspace.',
-                  'Veuillez patienter pendant que nous vous redirigeons vers le bon espace.'
+            <div className="w-full max-w-md">
+              <WorkspaceProgressVisualizer
+                mode="indeterminate"
+                statusLabel={tr('Secure transition', 'Transition sécurisée')}
+                title={tr('Preparing your access lane', 'Préparation de votre accès')}
+                subtitle={tr(
+                  'We are validating your workspace, permissions, and destination behind the scenes.',
+                  'Nous validons votre espace, vos permissions et votre destination en arrière-plan.'
                 )}
-              </p>
+                steps={[
+                  { key: 'auth', label: tr('Checking identity', 'Vérification identité') },
+                  { key: 'workspace', label: tr('Matching workspace', 'Association espace') },
+                  { key: 'access', label: tr('Loading permissions', 'Chargement accès') },
+                  { key: 'open', label: tr('Opening dashboard', 'Ouverture tableau') },
+                ]}
+              />
             </div>
           </section>
         </div>
