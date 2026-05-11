@@ -16718,7 +16718,7 @@ useEffect(() => {
 
             return uniqueSummaryItems.length > 0 ? (
               <div className="rounded-2xl border border-orange-200 bg-white/80 p-3">
-                <p className="text-xs uppercase tracking-wide text-gray-500">Work performed</p>
+                <p className="text-xs uppercase tracking-wide text-gray-500">Maintenance details</p>
                 <p className="mt-1 text-sm font-medium text-gray-900">
                   {uniqueSummaryItems.join(' • ')}
                   {hasMoreParts ? ' • more items' : ''}

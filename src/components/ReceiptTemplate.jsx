@@ -2651,7 +2651,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
             )}
             
             {/* Extensions */}
-            {rental.extensions && rental.extensions.length > 0 && (
+            {approvedExtensionTotal > 0 && (
               <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
                 <td style={{ padding: '12px' }}>
                   <div style={{ fontWeight: '600', color: '#805ad5' }}>{tr('Extension Fees', "Frais d'extension")}</div>
@@ -2660,8 +2660,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                   </div>
                 </td>
                 <td style={{ padding: '12px', textAlign: 'right', color: '#805ad5', fontWeight: '600' }}>
-                  +{formatCurrency(rental.extensions.reduce((sum, ext) => 
-                    ext.status === 'approved' ? sum + (ext.extension_price || 0) : sum, 0))}
+                  +{formatCurrency(approvedExtensionTotal)}
                 </td>
               </tr>
             )}
@@ -2739,7 +2738,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 </div>
                 {maintenanceSummaryItems.length > 0 && (
                   <div style={{ marginBottom: '10px', color: '#4a5568', fontSize: '12px' }}>
-                    <span style={{ fontWeight: '600' }}>{tr('Work performed:', 'Travaux effectués :')}</span>{' '}
+                    <span style={{ fontWeight: '600' }}>{tr('Maintenance details:', 'Détails de maintenance :')}</span>{' '}
                     {maintenanceSummaryItems.map((item) => translateMaintenanceSummaryItem(item, tr)).join(' • ')}
                     {linkedMaintenanceParts.length > 4
                       ? ` • ${tr('more items', "plus d'articles")}`
