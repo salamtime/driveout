@@ -2,6 +2,112 @@ begin;
 
 create extension if not exists pgcrypto;
 
+create or replace function public.app_current_organization_id()
+returns uuid
+language sql
+stable
+as $$
+  select coalesce(
+    (
+      select u.primary_organization_id
+      from public.app_b30c02e74da644baad4668e3587d86b1_users u
+      where u.id = auth.uid()
+    ),
+    (
+      select m.organization_id
+      from public.app_organization_members m
+      where m.user_id = auth.uid()
+        and m.membership_status = 'active'
+      order by m.created_at asc
+      limit 1
+    )
+  );
+$$;
+
+create or replace function public.app_is_platform_admin()
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if to_regclass('public.platform_admin_accounts') is null then
+    return false;
+  end if;
+
+  return exists (
+    select 1
+    from public.platform_admin_accounts admin_accounts
+    where admin_accounts.auth_user_id = auth.uid()
+      and admin_accounts.access_enabled = true
+      and admin_accounts.platform_role in ('platform_owner', 'platform_admin')
+  );
+end;
+$$;
+
+create or replace function public.app_has_current_organization_access(v_organization_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    v_organization_id is not null
+    and (
+      public.app_is_platform_admin()
+      or (
+        v_organization_id = public.app_current_organization_id()
+        and (
+          exists (
+            select 1
+            from public.app_b30c02e74da644baad4668e3587d86b1_users users
+            where users.id = auth.uid()
+              and users.primary_organization_id = v_organization_id
+          )
+          or exists (
+            select 1
+            from public.app_organization_members members
+            where members.user_id = auth.uid()
+              and members.organization_id = v_organization_id
+              and members.membership_status = 'active'
+          )
+        )
+      )
+    );
+$$;
+
+create or replace function public.app_can_manage_current_organization(v_organization_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    v_organization_id is not null
+    and (
+      public.app_is_platform_admin()
+      or (
+        v_organization_id = public.app_current_organization_id()
+        and exists (
+          select 1
+          from public.app_organization_members members
+          where members.user_id = auth.uid()
+            and members.organization_id = v_organization_id
+            and members.membership_status = 'active'
+            and members.member_role in ('org_owner', 'org_admin', 'operations_manager')
+        )
+      )
+    );
+$$;
+
+grant execute on function public.app_current_organization_id() to authenticated, service_role;
+grant execute on function public.app_is_platform_admin() to authenticated, service_role;
+grant execute on function public.app_has_current_organization_access(uuid) to authenticated, service_role;
+grant execute on function public.app_can_manage_current_organization(uuid) to authenticated, service_role;
+
 create or replace function public.app_has_current_organization_access_text(v_organization_id text)
 returns boolean
 language plpgsql
