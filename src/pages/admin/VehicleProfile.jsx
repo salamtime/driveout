@@ -490,7 +490,7 @@ const VehicleProfile = () => {
             setVehicle(cachedVehicleProfile);
             syncFormData(cachedVehicleProfile);
             setVehicleDocuments(cachedVehicleProfile?.documents || []);
-            syncDispositionForm(VehicleDispositionService.getVehicleDisposition(vehicleId));
+            syncDispositionForm(await VehicleDispositionService.getVehicleDisposition(vehicleId));
             setAnnualTaxRecords([]);
             setVehicleFinanceLoading(true);
             setLoading(false);
@@ -520,7 +520,7 @@ const VehicleProfile = () => {
         writeCachedVehicleProfile(vehicleId, enrichedVehicleData);
         syncFormData(enrichedVehicleData);
         setVehicleDocuments(enrichedVehicleData?.documents || []);
-        syncDispositionForm(VehicleDispositionService.getVehicleDisposition(vehicleId));
+        syncDispositionForm(await VehicleDispositionService.getVehicleDisposition(vehicleId));
         try {
           setAnnualTaxRecords(await VehicleAnnualTaxService.listForVehicle(vehicleId));
         } catch (annualTaxError) {
@@ -817,7 +817,7 @@ const VehicleProfile = () => {
     if (!vehicleId) return;
     setDispositionSaving(true);
     try {
-      const savedRecord = VehicleDispositionService.upsertDisposition(vehicleId, {
+      const savedRecord = await VehicleDispositionService.upsertDisposition(vehicleId, {
         event_type: dispositionForm.event_type,
         event_date: dispositionForm.event_date || new Date().toISOString().split('T')[0],
         sale_price_mad: dispositionForm.sale_price_mad,
@@ -826,32 +826,18 @@ const VehicleProfile = () => {
         proof_name: dispositionForm.proof_name,
         notes: dispositionForm.notes,
       });
-      if (savedRecord.event_type === 'sold' && vehicle?.id) {
-        const saleSnapshotPayload = {
-          status: 'sold',
-          sold_date: savedRecord.event_date || null,
-          sale_price_mad: savedRecord.sale_price_mad || 0,
-          sold_buyer_name: savedRecord.buyer_name || null,
-          sale_proof_url: savedRecord.proof_url || null,
-          sale_proof_name: savedRecord.proof_name || null,
-          sale_notes: savedRecord.notes || null,
-          updated_at: new Date().toISOString(),
-        };
-        const { error: saleSnapshotError } = await supabase
-          .from(TBL.VEHICLES)
-          .update(saleSnapshotPayload)
-          .eq('id', vehicle.id);
-
-        if (saleSnapshotError?.message?.includes('sold_date') || saleSnapshotError?.message?.includes('sale_') || saleSnapshotError?.message?.includes('sold_buyer')) {
-          await supabase
-            .from(TBL.VEHICLES)
-            .update({ status: 'sold', updated_at: new Date().toISOString() })
-            .eq('id', vehicle.id);
-        }
-
-        setVehicle((current) => current ? { ...current, ...saleSnapshotPayload } : current);
-        setFormData((current) => ({ ...current, status: 'sold' }));
-      }
+      const dispositionSnapshotPayload = {
+        status: savedRecord.event_type === 'disposed' ? 'disposed' : 'sold',
+        sold_date: savedRecord.event_date || null,
+        sale_price_mad: savedRecord.sale_price_mad || 0,
+        sold_buyer_name: savedRecord.buyer_name || null,
+        sale_proof_url: savedRecord.proof_url || null,
+        sale_proof_name: savedRecord.proof_name || null,
+        sale_notes: savedRecord.notes || null,
+        updated_at: new Date().toISOString(),
+      };
+      setVehicle((current) => current ? { ...current, ...dispositionSnapshotPayload } : current);
+      setFormData((current) => ({ ...current, status: dispositionSnapshotPayload.status }));
       syncDispositionForm(savedRecord);
       setDispositionEditing(false);
     } finally {
@@ -859,9 +845,21 @@ const VehicleProfile = () => {
     }
   };
 
-  const handleDeleteDisposition = () => {
+  const handleDeleteDisposition = async () => {
     if (!vehicleId) return;
-    VehicleDispositionService.deleteDisposition(vehicleId);
+    await VehicleDispositionService.deleteDisposition(vehicleId);
+    setVehicle((current) => current ? ({
+      ...current,
+      status: 'available',
+      sold_date: null,
+      sale_price_mad: null,
+      sold_buyer_name: null,
+      sale_proof_url: null,
+      sale_proof_name: null,
+      sale_notes: null,
+      updated_at: new Date().toISOString(),
+    }) : current);
+    setFormData((current) => ({ ...current, status: 'available' }));
     syncDispositionForm(null);
     setDispositionEditing(false);
   };

@@ -577,7 +577,7 @@ const VehicleManagement: React.FC = () => {
         console.error('Fleet locations fetch failed:', locationError);
         return [];
       });
-      setVehicleDispositions(VehicleDispositionService.listDispositions());
+      setVehicleDispositions(await VehicleDispositionService.listDispositions());
       const locationNameById = new Map(
         (fetchedLocations || []).map((fleetLocation: FleetLocation) => [String(fleetLocation.id), fleetLocation.name])
       );

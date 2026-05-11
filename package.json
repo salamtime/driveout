@@ -22,6 +22,7 @@
     "audit:owner1:cleanup-plan": "node tmp/prepare_owner1_exact_clone_cleanup_guarded.mjs",
     "audit:owner1:exact-clone-plan": "node tmp/exact_zero_owner1_clone_guarded.mjs",
     "audit:shared-tenancy:isolation": "node scripts/audit-shared-tenant-isolation.mjs",
+    "audit:fleet:visibility": "node scripts/audit-vehicle-operational-visibility.mjs",
     "deploy:production": "node scripts/deploy-production.mjs",
     "deploy:production:tenant-release": "node scripts/deploy-production-with-tenant-release.mjs",
     "deploy:preview:hobby": "node scripts/deploy-preview-hobby.mjs",

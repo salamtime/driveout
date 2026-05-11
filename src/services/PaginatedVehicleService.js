@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { assertCanCreateVehicle, clearTenantRuntimeControlsCache } from './TenantLimitService';
+import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
 
 export class PaginatedVehicleService {
   constructor() {
@@ -63,9 +64,13 @@ export class PaginatedVehicleService {
 
       console.log(`✅ Fetched ${vehicles?.length || 0} vehicles (page ${page}/${totalPages})`);
       
+      const visibleVehicles = (vehicles || []).filter(
+        (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
+      );
+
       return {
-        data: vehicles || [],
-        total: count || 0,
+        data: visibleVehicles,
+        total: visibleVehicles.length,
         pages: totalPages,
         currentPage: page,
         pageSize
@@ -227,7 +232,7 @@ export class PaginatedVehicleService {
 
       const { data: vehicles, error } = await supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('id, name, model, vehicle_type, plate_number, status')
+        .select('id, name, model, vehicle_type, plate_number, status, registration_number, organization_id, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, current_odometer, engine_hours, vehicle_model_id')
         .or(`name.ilike.%${searchTerm}%,model.ilike.%${searchTerm}%,vehicle_type.ilike.%${searchTerm}%,plate_number.ilike.%${searchTerm}%`)
         .limit(limit);
 
@@ -236,7 +241,7 @@ export class PaginatedVehicleService {
         return [];
       }
 
-      return vehicles || [];
+      return (vehicles || []).filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle));
     } catch (error) {
       console.error('❌ Error in searchVehicles:', error);
       return [];
@@ -269,7 +274,9 @@ export class PaginatedVehicleService {
       }
 
       const bookedVehicleIds = bookedVehicles?.map(b => b.vehicle_id) || [];
-      const availableVehicles = allVehicles?.filter(v => !bookedVehicleIds.includes(v.id)) || [];
+      const availableVehicles = (allVehicles || [])
+        .filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle))
+        .filter(v => !bookedVehicleIds.includes(v.id)) || [];
 
       console.log(`✅ Found ${availableVehicles.length} available vehicles`);
       return availableVehicles;

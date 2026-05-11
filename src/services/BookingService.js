@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
 
 export class BookingService {
   constructor() {
@@ -13,7 +14,7 @@ export class BookingService {
       // Get all vehicles first
       let vehicleQuery = supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('id, name, model, plate_number, vehicle_type, year')
+        .select('id, name, model, plate_number, vehicle_type, year, registration_number, organization_id, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, current_odometer, engine_hours, vehicle_model_id')
         .eq('status', 'available');
 
       if (vehicleType) {
@@ -41,7 +42,8 @@ export class BookingService {
 
       const conflictingVehicleIds = conflictingBookings?.map(b => b.vehicle_id) || [];
       
-      const availableVehicles = vehicles
+      const availableVehicles = (vehicles || [])
+        .filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle))
         .filter(vehicle => !conflictingVehicleIds.includes(vehicle.id))
         .map(vehicle => ({
           id: vehicle.id,

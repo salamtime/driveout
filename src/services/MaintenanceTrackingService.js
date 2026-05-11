@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import MaintenanceService from './MaintenanceService';
+import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
 
 class MaintenanceTrackingService {
   // Table references
@@ -456,7 +457,7 @@ class MaintenanceTrackingService {
       
       const { data, error } = await supabase
         .from(this.VEHICLES_TABLE)
-        .select('id, name, model, plate_number, vehicle_type, status, current_odometer, next_oil_change_odometer')
+        .select('id, name, model, plate_number, vehicle_type, status, current_odometer, next_oil_change_odometer, registration_number, organization_id, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, engine_hours, vehicle_model_id')
         .order('name');
 
       if (error) {
@@ -469,8 +470,11 @@ class MaintenanceTrackingService {
         return [];
       }
 
-      console.log('✅ Vehicles loaded:', (data || []).length);
-      return data || [];
+      const visibleVehicles = (data || []).filter(
+        (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
+      );
+      console.log('✅ Vehicles loaded:', visibleVehicles.length);
+      return visibleVehicles;
     } catch (err) {
       console.error({
         message: err?.message,

@@ -11,6 +11,7 @@ import {
   applyOrganizationScope,
   getCurrentOrganizationId,
 } from './OrganizationService';
+import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
 
 class FuelService {
   constructor() {
@@ -680,7 +681,17 @@ class FuelService {
           status,
           plate_number,
           model,
+          registration_number,
+          organization_id,
+          sold_date,
+          sale_price_mad,
+          sold_buyer_name,
+          sale_notes,
+          sale_proof_url,
+          sale_proof_name,
+          vehicle_model_id,
           current_odometer,
+          engine_hours,
           created_at,
           updated_at
         `)
@@ -711,7 +722,9 @@ class FuelService {
       }
 
       // Transform vehicles with enhanced logging
-      const transformedVehicles = vehicles.map((vehicle, index) => {
+      const transformedVehicles = vehicles
+        .filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle))
+        .map((vehicle, index) => {
         const transformed = {
           id: vehicle.id,
           name: vehicle.name || `Vehicle ${vehicle.id}`,
@@ -732,8 +745,8 @@ class FuelService {
           model: transformed.model
         });
         
-        return transformed;
-      });
+          return transformed;
+        });
 
       console.log('✅ ===== REAL VEHICLES SUCCESSFULLY TRANSFORMED =====');
       console.log('📊 FINAL RESULT:', {
