@@ -6361,10 +6361,18 @@ Click the link above to review and approve the extension.`;
 
   const getCompactShareBrandSettings = () => {
     const compactSettings = {};
+    const publicOrigin = getPublicAppOrigin();
     const addSetting = (key, value) => {
       const normalized = String(value || '').trim();
-      if (/^https?:\/\//i.test(normalized) && normalized.length <= 2048) {
+      if (!normalized || normalized.length > 2048) return;
+
+      if (/^https?:\/\//i.test(normalized)) {
         compactSettings[key] = normalized;
+        return;
+      }
+
+      if (normalized.startsWith('/')) {
+        compactSettings[key] = `${publicOrigin}${normalized}`;
       }
     };
 
