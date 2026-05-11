@@ -7797,6 +7797,58 @@ Click the link above to review and approve the extension.`;
     [receiptRentalData, rental]
   );
 
+  const receiptSharedPreviewData = useMemo(() => {
+    if (!rental) return null;
+
+    const linkedReport = vehicleReport || rental?.vehicleReport || rental?.vehicle_report || null;
+    const scalarOverrides = {
+      deposit_amount: receiptRentalData?.deposit_amount,
+      fuel_charge: receiptRentalData?.fuel_charge,
+      payment_status: receiptRentalData?.payment_status,
+      start_fuel_level: receiptRentalData?.start_fuel_level,
+      end_fuel_level: receiptRentalData?.end_fuel_level,
+      ...(receiptRentalData?.impound_is_estimate
+        ? {
+            impound_charge_days: receiptRentalData?.impound_charge_days,
+            impound_charge_hours: receiptRentalData?.impound_charge_hours,
+            impound_rate: receiptRentalData?.impound_rate,
+            impound_manual_charge: receiptRentalData?.impound_manual_charge,
+            impound_discount: receiptRentalData?.impound_discount,
+            impound_total: receiptRentalData?.impound_total,
+            impound_live_charge_days: receiptRentalData?.impound_live_charge_days,
+            impound_live_charge_hours: receiptRentalData?.impound_live_charge_hours,
+            impound_live_rate: receiptRentalData?.impound_live_rate,
+            impound_live_discount: receiptRentalData?.impound_live_discount,
+            impound_live_total: receiptRentalData?.impound_live_total,
+            impound_is_estimate: receiptRentalData?.impound_is_estimate,
+            impound_estimated_release_at: receiptRentalData?.impound_estimated_release_at,
+            impound_estimate_note: receiptRentalData?.impound_estimate_note,
+            impound_extra_daily_charge_waived: receiptRentalData?.impound_extra_daily_charge_waived,
+            impound_estimate_weekend_carry: receiptRentalData?.impound_estimate_weekend_carry,
+            impound_estimate_pricing_label: receiptRentalData?.impound_estimate_pricing_label,
+            impound_estimated_days_total: receiptRentalData?.impound_estimated_days_total,
+            impound_estimated_hours_total: receiptRentalData?.impound_estimated_hours_total,
+            impound_estimated_rate: receiptRentalData?.impound_estimated_rate,
+            impound_estimated_discount: receiptRentalData?.impound_estimated_discount,
+            impound_estimated_total: receiptRentalData?.impound_estimated_total,
+            impound_estimated_extra_days: receiptRentalData?.impound_estimated_extra_days,
+            impound_estimated_extra_amount: receiptRentalData?.impound_estimated_extra_amount,
+          }
+        : {}),
+    };
+
+    const filteredOverrides = Object.fromEntries(
+      Object.entries(scalarOverrides).filter(([, value]) => value !== undefined && value !== null && value !== '')
+    );
+
+    return {
+      ...rental,
+      ...filteredOverrides,
+      vehicleReport: linkedReport,
+      vehicle_report: linkedReport,
+    };
+  }, [receiptRentalData, rental, vehicleReport]);
+
   const contractRentalData = useMemo(() => {
     if (!rental) return null;
     const isMarkedPaid = normalizePaymentStatus(
@@ -7845,6 +7897,30 @@ Click the link above to review and approve the extension.`;
       }
     };
   }, [dynamicPaymentState.status, endFuelLevel, fuelCharge, fuelChargeEnabled, fuelPricePerLine, inferredShortReturnVoidedExtension, linkedCustomerProfile, rental, rentalBillingSummary.balanceDue, rentalBillingSummary.depositPaid, rentalBillingSummary.finalGrandTotal, rentalBillingSummary.grandTotal, syncedCustomerDetails]);
+
+  const contractSharedPreviewData = useMemo(() => {
+    if (!rental) return null;
+
+    const scalarOverrides = {
+      customer_name: contractRentalData?.customer_name,
+      customer_email: contractRentalData?.customer_email,
+      customer_phone: contractRentalData?.customer_phone,
+      customer_address: contractRentalData?.customer_address,
+      customer_nationality: contractRentalData?.customer_nationality,
+      customer_licence_number: contractRentalData?.customer_licence_number,
+      deposit_amount: contractRentalData?.deposit_amount,
+      fuel_charge: contractRentalData?.fuel_charge,
+    };
+
+    const filteredOverrides = Object.fromEntries(
+      Object.entries(scalarOverrides).filter(([, value]) => value !== undefined && value !== null && value !== '')
+    );
+
+    return {
+      ...rental,
+      ...filteredOverrides,
+    };
+  }, [contractRentalData, rental]);
 
   const isPaymentSufficient = () => {
     if (!rental) return false;
@@ -26656,7 +26732,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             <div className="h-full overflow-auto p-2 sm:p-4">
               <div className="bg-white p-3 sm:p-6">
                 <div ref={contractTemplateRef}>
-                  <ContractTemplate rental={contractRentalData} logoUrl={logoUrl} stampUrl={stampUrl} language={documentLanguage} />
+                  <ContractTemplate rental={contractSharedPreviewData} logoUrl={logoUrl} stampUrl={stampUrl} language={documentLanguage} />
                 </div>
               </div>
             </div>
@@ -26681,7 +26757,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         style={{ position: 'fixed', left: '-9999px', top: 0, width: '794px', opacity: 0, zIndex: -9999, pointerEvents: 'none' }}
         aria-hidden="true"
       >
-        <ContractTemplate rental={contractRentalData} logoUrl={logoUrl} stampUrl={stampUrl} language={documentLanguage} />
+        <ContractTemplate rental={contractSharedPreviewData} logoUrl={logoUrl} stampUrl={stampUrl} language={documentLanguage} />
       </div>
 
 
@@ -26715,7 +26791,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               <div className="bg-white p-3 sm:p-6">
                 <div ref={receiptTemplateRef}>
                   <ReceiptTemplate 
-            rental={receiptRentalData} 
+            rental={receiptSharedPreviewData} 
             logoUrl={logoUrl} 
             stampUrl={stampUrl} 
             bookingGraceMinutes={rentalTimingSettings.graceMinutes}
@@ -26746,7 +26822,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         aria-hidden="true"
       >
         <ReceiptTemplate
-          rental={receiptRentalData}
+          rental={receiptSharedPreviewData}
           logoUrl={logoUrl}
           stampUrl={stampUrl}
           bookingGraceMinutes={rentalTimingSettings.graceMinutes}
@@ -27529,7 +27605,7 @@ Breakdown:
         pointerEvents: 'none',
         opacity: 0
       }} aria-hidden="true">
-        <ContractTemplate rental={contractRentalData} logoUrl={logoUrl} stampUrl={stampUrl} language={documentLanguage} />
+        <ContractTemplate rental={contractSharedPreviewData} logoUrl={logoUrl} stampUrl={stampUrl} language={documentLanguage} />
       </div>
       <div ref={receiptShareRef} style={{
         position: 'absolute',
@@ -27540,7 +27616,7 @@ Breakdown:
         opacity: 0
       }} aria-hidden="true">
         <ReceiptTemplate 
-          rental={receiptRentalData} 
+          rental={receiptSharedPreviewData} 
           logoUrl={logoUrl} 
           stampUrl={stampUrl}
           bookingGraceMinutes={rentalTimingSettings.graceMinutes}
