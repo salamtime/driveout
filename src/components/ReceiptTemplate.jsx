@@ -384,8 +384,26 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   const [isMobileLayout, setIsMobileLayout] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth <= 640 : false
   );
-  const vehicleName = rental.vehicle?.name || rental.vehicle_details?.name || "N/A";
-  const plateNumber = rental.vehicle?.plate_number || rental.vehicle_details?.plate_number || "N/A";
+  const vehicleName = (
+    rental.vehicle?.name ||
+    rental.vehicle?.model ||
+    rental.vehicle_details?.name ||
+    rental.vehicle_details?.model ||
+    rental.vehicle_name_snapshot ||
+    rental.vehicle_model_snapshot ||
+    rental.selected_vehicle_name_snapshot ||
+    rental.selected_vehicle_model_snapshot ||
+    rental.vehicle_label_snapshot ||
+    'N/A'
+  );
+  const plateNumber = (
+    rental.vehicle?.plate_number ||
+    rental.vehicle_details?.plate_number ||
+    rental.vehicle_plate_number ||
+    rental.selected_vehicle_plate_snapshot ||
+    rental.plate_number_snapshot ||
+    'N/A'
+  );
   const vehicleModelId = rental.vehicle?.vehicle_model?.id || rental.vehicle?.vehicle_model_id;
   const isFinalPaymentReceipt =
     String(rental?.payment_status || '').toLowerCase() === 'paid' &&
