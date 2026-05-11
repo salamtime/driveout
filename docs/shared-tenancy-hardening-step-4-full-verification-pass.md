@@ -11,6 +11,30 @@ The goal is to prove that one shared tenant cannot read or mutate another tenant
 - an older client bundle is open
 - a future query path misses an explicit `organization_id` filter
 
+## Mandatory Guardrail Command
+
+Run this before and after every shared-tenant or RLS release:
+
+```bash
+npm run audit:shared-tenancy:isolation
+```
+
+This command uses real SaharaX/platform and OFFROAD auth sessions. It fails the release if:
+
+- SaharaX loses access to its legacy `organization_id = null` rental rows.
+- OFFROAD can read SaharaX legacy rows.
+- OFFROAD can read platform-owned rows.
+- OFFROAD visible totals differ from its own-organization totals.
+- any protected table is missing forced RLS or the expected scoped policies.
+
+The minimum expected SaharaX legacy rental count defaults to `100`. Override it only for an intentional legacy-data migration:
+
+```bash
+SAHARAX_MIN_LEGACY_RENTALS=100 npm run audit:shared-tenancy:isolation
+```
+
+Do not apply a tenant/RLS release if this command exits non-zero.
+
 ## Current Step 4 Status
 
 As of May 11, 2026:

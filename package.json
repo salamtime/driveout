@@ -21,6 +21,7 @@
     "audit:owner1:sync-plan": "node -e \"import('./tmp/owner1_schema_baseline.mjs').then(async (baseline) => { const scope = await import('./tmp/owner1_schema_sync_scope.mjs'); console.log(JSON.stringify({ baseline: baseline.OWNER1_SCHEMA_BASELINE, scope }, null, 2)); })\"",
     "audit:owner1:cleanup-plan": "node tmp/prepare_owner1_exact_clone_cleanup_guarded.mjs",
     "audit:owner1:exact-clone-plan": "node tmp/exact_zero_owner1_clone_guarded.mjs",
+    "audit:shared-tenancy:isolation": "node scripts/audit-shared-tenant-isolation.mjs",
     "deploy:production": "node scripts/deploy-production.mjs",
     "deploy:production:tenant-release": "node scripts/deploy-production-with-tenant-release.mjs",
     "deploy:preview:hobby": "node scripts/deploy-preview-hobby.mjs",
