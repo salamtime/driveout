@@ -66,6 +66,10 @@ const buildDispositionFromVehicle = (vehicle) => {
 };
 
 class VehicleDispositionService {
+  constructor() {
+    this.dispositionCache = [];
+  }
+
   canUseStorage() {
     return typeof window !== 'undefined' && Boolean(window.localStorage);
   }
@@ -93,7 +97,7 @@ class VehicleDispositionService {
     }
   }
 
-  async listDispositions() {
+  async refreshDispositions() {
     const organizationId = await getCurrentOrganizationId();
     const { data, error } = await applyOrganizationScope(
       supabase
@@ -107,13 +111,19 @@ class VehicleDispositionService {
 
     if (error) {
       console.error('Failed to load vehicle dispositions from database:', error);
-      return [];
+      return this.dispositionCache;
     }
 
-    return (data || [])
+    this.dispositionCache = (data || [])
       .map(buildDispositionFromVehicle)
       .filter(Boolean)
       .sort((a, b) => new Date(b.event_date || b.updated_at || 0).getTime() - new Date(a.event_date || a.updated_at || 0).getTime());
+
+    return this.dispositionCache;
+  }
+
+  listDispositions() {
+    return Array.isArray(this.dispositionCache) ? [...this.dispositionCache] : [];
   }
 
   async getVehicleDisposition(vehicleId) {
