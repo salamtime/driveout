@@ -931,11 +931,28 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
           : `Weekend estimate assumes the vehicle remains held until Monday before release can happen. This adds ${estimatedWeekendExtraDays} more rental day${estimatedWeekendExtraDays === 1 ? '' : 's'} beyond the live charge already running.`
       )
     : '';
+  const linkedMaintenanceParts = linkedMaintenance
+    ? (
+        Array.isArray(linkedMaintenance.parts_used) && linkedMaintenance.parts_used.length > 0
+          ? linkedMaintenance.parts_used
+          : (
+              Array.isArray(linkedMaintenance.parts) && linkedMaintenance.parts.length > 0
+                ? linkedMaintenance.parts
+                : []
+            )
+      )
+    : [];
   const maintenanceSummaryItems = linkedMaintenance
     ? [...new Set([
         linkedMaintenance.maintenance_type || null,
-        ...((Array.isArray(linkedMaintenance.parts_used) ? linkedMaintenance.parts_used : [])
-          .map((part) => part.item_name || part.part_name)
+        ...(linkedMaintenanceParts
+          .map((part) => (
+            part?.item_name ||
+            part?.part_name ||
+            part?.inventory_item?.name ||
+            part?.name ||
+            null
+          ))
           .filter(Boolean)
           .slice(0, 4))
       ].filter(Boolean))]
@@ -2720,7 +2737,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                   <div style={{ marginBottom: '10px', color: '#4a5568', fontSize: '12px' }}>
                     <span style={{ fontWeight: '600' }}>{tr('Work performed:', 'Travaux effectués :')}</span>{' '}
                     {maintenanceSummaryItems.map((item) => translateMaintenanceSummaryItem(item, tr)).join(' • ')}
-                    {Array.isArray(linkedMaintenance.parts_used) && linkedMaintenance.parts_used.length > 4
+                    {linkedMaintenanceParts.length > 4
                       ? ` • ${tr('more items', "plus d'articles")}`
                       : ''}
                   </div>
@@ -2738,7 +2755,11 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                   <span style={{ fontWeight: '600' }}>{formatCurrency(linkedMaintenance.external_cost_mad || 0)} MAD</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c53030' }}>
-                  <span>{tr('Maintenance Total:', 'Total maintenance :')}</span>
+                  <span>
+                    {linkedVehicleReport?.customer_chargeable
+                      ? tr('Customer maintenance charge:', 'Montant maintenance facturé au client :')
+                      : tr('Maintenance Total:', 'Total maintenance :')}
+                  </span>
                   <span style={{ fontWeight: '700' }}>{formatCurrency(linkedMaintenance.cost || 0)} MAD</span>
                 </div>
                 {maintenanceStayCharge > 0 && (
@@ -2759,12 +2780,6 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                       </div>
                     )}
                   </>
-                )}
-                {linkedVehicleReport?.customer_chargeable && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px', color: '#2b6cb0' }}>
-                    <span>{tr('Customer Charge:', 'Montant client :')}</span>
-                    <span style={{ fontWeight: '700' }}>{formatCurrency(maintenanceChargeAmount)} MAD</span>
-                  </div>
                 )}
               </div>
             )}
