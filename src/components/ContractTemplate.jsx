@@ -105,8 +105,8 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
     rental.linkedCustomerProfile?.customer_phone ||
     "N/A";
   const license = rental.customer_license_number || rental.customer_licence_number || "N/A";
-  const startDate = rental.started_at || rental.start_date || rental.rental_start_date;
-  const endDate = rental.actual_end_date || rental.end_date || rental.rental_end_date;
+  const startDate = rental.rental_start_date || rental.started_at || rental.start_date;
+  const endDate = rental.rental_end_date || rental.actual_end_date || rental.end_date;
   
   // Check if rental has a package
   const hasPackage = isPackagePricingEnabled(rental) && !!(rental.package || rental.package_id);
@@ -310,26 +310,6 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
     });
   }, [contractPackageCatalog, rental]);
 
-  const contractDistanceUpgrade = React.useMemo(() => {
-    if (!contractPricingFlow?.selectedPackage || contractPackageCatalog.length < 2) return null;
-    const finalLimit = Number(contractPricingFlow.packageLimitKm || 0);
-    const finalIndex = contractPackageCatalog.findIndex((pkg) => Number(pkg.includedKilometers || 0) === finalLimit);
-    if (finalIndex <= 0) return null;
-
-    const previousPackage = contractPackageCatalog[finalIndex - 1];
-    const previousLimit = Number(previousPackage?.includedKilometers || 0);
-    const kmUsed = Number(contractPricingFlow.kmUsed || 0);
-    if (kmUsed <= previousLimit) return null;
-
-    return {
-      previousPackage,
-      previousLimit,
-      finalPackage: contractPricingFlow.selectedPackage,
-      finalLimit,
-      kmUsed,
-    };
-  }, [contractPackageCatalog, contractPricingFlow]);
-
   const formatContractDate = (dateString) => {
     if (!dateString) return 'N/A';
     try {
@@ -338,6 +318,22 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
         hour: '2-digit', minute: '2-digit'
       });
     } catch { return dateString; }
+  };
+
+  const formatContractScheduleDateTime = (dateString) => {
+    if (!dateString) return tr('Not scheduled', 'Non planifié');
+    try {
+      const date = new Date(dateString);
+      if (Number.isNaN(date.getTime())) return tr('Not scheduled', 'Non planifié');
+      return date.toLocaleString(isFrench ? 'fr-FR' : 'en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return dateString;
+    }
   };
 
   const getCorrectSignatureUrl = (url) => {
@@ -543,10 +539,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
     if (!hasPackage || !packageBreakdown) return null;
 
     const bookedPlanName = packageBreakdown.name;
-    const finalPlanName = contractPricingFlow?.selectedPackage?.name || bookedPlanName;
     const kmUsed = Number(contractPricingFlow?.kmUsed || 0);
-    const finalLimit = Number(contractPricingFlow?.packageLimitKm || packageBreakdown.totalIncludedKm || 0);
-    const overflowKm = Number(contractPricingFlow?.packageOverflowKm || 0);
 
     return (
       <div style={{
@@ -617,56 +610,7 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
             </div>
           </div>
 
-          <div style={{ background: 'white', borderRadius: '10px', padding: '12px', border: '1px solid #e2e8f0' }}>
-            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
-              {tr('Final distance plan', 'Plan distance final')}
-            </div>
-            <div style={{ fontSize: '14px', fontWeight: '700', color: '#0f172a' }}>
-              {finalPlanName}
-            </div>
-            <div style={{ fontSize: '12px', color: '#475569', marginTop: '4px' }}>
-              {tr(`Included limit: ${finalLimit} km`, `Limite incluse : ${finalLimit} km`)}
-            </div>
-          </div>
         </div>
-
-        {contractDistanceUpgrade ? (
-          <div style={{
-            marginTop: '12px',
-            padding: '12px',
-            background: '#ecfeff',
-            border: '1px solid #a5f3fc',
-            borderRadius: '10px'
-          }}>
-            <div style={{ fontSize: '12px', fontWeight: '700', color: '#155e75', marginBottom: '4px' }}>
-              {tr('Automatic distance-plan update', 'Mise à jour automatique du plan distance')}
-            </div>
-            <div style={{ fontSize: '12px', color: '#155e75', lineHeight: 1.6 }}>
-              {tr(
-                `The trip finished above the ${contractDistanceUpgrade.previousLimit} km plan, so the rental moved to the next valid plan at ${contractDistanceUpgrade.finalLimit} km to match the real mileage.`,
-                `Le trajet a dépassé le plan de ${contractDistanceUpgrade.previousLimit} km, donc la location est passée au plan valable suivant à ${contractDistanceUpgrade.finalLimit} km pour correspondre au kilométrage réel.`
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        {overflowKm > 0 ? (
-          <div style={{
-            marginTop: '12px',
-            padding: '12px',
-            background: '#fff7ed',
-            border: '1px solid #fdba74',
-            borderRadius: '10px',
-            fontSize: '12px',
-            color: '#9a3412',
-            lineHeight: 1.6
-          }}>
-            {tr(
-              `${overflowKm} km still sits above the current distance plan and may be handled separately on the financial receipt.`,
-              `${overflowKm} km dépasse encore le plan distance actuel et pourra être traité séparément sur le reçu financier.`
-            )}
-          </div>
-        ) : null}
       </div>
     );
   };
@@ -1156,15 +1100,15 @@ const ContractTemplate = ({ rental, logoUrl, stampUrl, language = 'fr' }) => {
                   <span style={{ fontSize: '15px', fontWeight: '600', color: '#2d3748' }}>{plateNumber}</span>
                 </div>
                 <div style={{ marginTop: '8px', padding: '12px', background: 'white', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                  <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '8px' }}>{tr('Rental Period', 'Période de location')}</div>
+                  <div style={{ fontSize: '12px', color: '#4a5568', marginBottom: '8px' }}>{tr('Schedule', 'Planning')}</div>
                   <div style={{ fontSize: '13px' }}>
                     <div style={{ marginBottom: '6px' }}>
-                      <span style={{ color: '#718096' }}>{tr('From: ', 'Du : ')}</span>
-                      <span style={{ fontWeight: '600' }}>{formatContractDate(startDate)}</span>
+                      <span style={{ color: '#718096' }}>{tr('Start: ', 'Début : ')}</span>
+                      <span style={{ fontWeight: '600' }}>{formatContractScheduleDateTime(startDate)}</span>
                     </div>
                     <div>
-                      <span style={{ color: '#718096' }}>{tr('To: ', 'Au : ')}</span>
-                      <span style={{ fontWeight: '600' }}>{formatContractDate(endDate)}</span>
+                      <span style={{ color: '#718096' }}>{tr('End: ', 'Fin : ')}</span>
+                      <span style={{ fontWeight: '600' }}>{formatContractScheduleDateTime(endDate)}</span>
                     </div>
                   </div>
                 </div>
