@@ -27,6 +27,10 @@ import WebsiteBookingLifecycleService from '../services/WebsiteBookingLifecycleS
 import VehicleDispositionService from '../services/VehicleDispositionService';
 import useAdminModalFocus from '../hooks/useAdminModalFocus';
 import useFuelRealtimeSync from '../hooks/useFuelRealtimeSync';
+import {
+  isVehicleLifecycleArchived,
+  isVehiclePlaceholderRecord,
+} from '../utils/vehicleLifecycleVisibility';
 
 const scheduleBackgroundTask = (callback: () => void) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -1299,39 +1303,50 @@ const VehicleManagement: React.FC = () => {
       }),
     [vehicles, impoundedVehicleIds, vehicleModelsById]
   );
+  const visibleFleetVehicles = useMemo(
+    () => displayVehicles.filter((vehicle) => !isVehiclePlaceholderRecord(vehicle)),
+    [displayVehicles]
+  );
   const dispositionByVehicleId = useMemo(
     () => new Map(vehicleDispositions.map((record) => [String(record.vehicle_id), record])),
     [vehicleDispositions]
   );
 
-  const filteredVehicles = useMemo(() => displayVehicles.filter(vehicle => {
-    if (vehicle.status === 'out_of_service' || vehicle.status === 'sold' || vehicle.status === 'disposed' || dispositionByVehicleId.has(String(vehicle.id))) return false;
+  const filteredVehicles = useMemo(() => visibleFleetVehicles.filter(vehicle => {
+    if (
+      vehicle.status === 'out_of_service' ||
+      vehicle.status === 'sold' ||
+      vehicle.status === 'disposed' ||
+      dispositionByVehicleId.has(String(vehicle.id)) ||
+      isVehicleLifecycleArchived(vehicle)
+    ) return false;
     const normalizedSearchTerm = deferredSearchTerm.toLowerCase();
-    const matchesSearch = vehicle.name.toLowerCase().includes(normalizedSearchTerm) ||
-                         vehicle.model.toLowerCase().includes(normalizedSearchTerm) ||
-                         vehicle.plate_number.toLowerCase().includes(normalizedSearchTerm);
+    const matchesSearch = String(vehicle.name || '').toLowerCase().includes(normalizedSearchTerm) ||
+                         String(vehicle.model || '').toLowerCase().includes(normalizedSearchTerm) ||
+                         String(vehicle.plate_number || '').toLowerCase().includes(normalizedSearchTerm);
     const matchesStatus = statusFilter === 'all' || vehicle.status === statusFilter;
     const matchesType = typeFilter === 'all' || vehicle.vehicle_type === typeFilter;
     return matchesSearch && matchesStatus && matchesType;
-  }), [displayVehicles, dispositionByVehicleId, deferredSearchTerm, statusFilter, typeFilter]);
+  }), [visibleFleetVehicles, dispositionByVehicleId, deferredSearchTerm, statusFilter, typeFilter]);
 
-  const archivedVehicles = useMemo(() => displayVehicles
+  const archivedVehicles = useMemo(() => visibleFleetVehicles
     .filter((vehicle) => {
       const disposition = dispositionByVehicleId.get(String(vehicle.id));
-      return Boolean(disposition) || vehicle.status === 'sold' || vehicle.status === 'disposed';
+      return Boolean(disposition) || isVehicleLifecycleArchived(vehicle);
     })
     .map((vehicle) => ({
       ...vehicle,
       disposition: dispositionByVehicleId.get(String(vehicle.id)) || null,
-    })), [displayVehicles, dispositionByVehicleId]);
+    })), [visibleFleetVehicles, dispositionByVehicleId]);
 
   // Filter out of service vehicles
-  const outOfServiceVehicles = displayVehicles.filter(vehicle => {
+  const outOfServiceVehicles = visibleFleetVehicles.filter(vehicle => {
     if (vehicle.status !== 'out_of_service') return false;
 
-    const matchesSearch = vehicle.name.toLowerCase().includes(oosSearchTerm.toLowerCase()) ||
-                         vehicle.plate_number.toLowerCase().includes(oosSearchTerm.toLowerCase()) ||
-                         vehicle.registration_number.toLowerCase().includes(oosSearchTerm.toLowerCase());
+    const normalizedSearch = oosSearchTerm.toLowerCase();
+    const matchesSearch = String(vehicle.name || '').toLowerCase().includes(normalizedSearch) ||
+                         String(vehicle.plate_number || '').toLowerCase().includes(normalizedSearch) ||
+                         String(vehicle.registration_number || '').toLowerCase().includes(normalizedSearch);
     
     const matchesModel = oosModelFilter === 'all' || vehicle.model.toLowerCase().includes(oosModelFilter.toLowerCase());
     const matchesType = oosTypeFilter === 'all' || vehicle.vehicle_type === oosTypeFilter;

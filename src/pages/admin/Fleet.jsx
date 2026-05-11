@@ -6,6 +6,7 @@ import FleetLocationService from '../../services/FleetLocationService';
 import { normalizeVehicleImageUrl } from '../../utils/vehicleImage';
 import AdminModuleHero from '../../components/admin/AdminModuleHero';
 import i18n from '../../i18n';
+import { shouldHideVehicleFromOperationalViews } from '../../utils/vehicleLifecycleVisibility';
 
 /**
  * VehiclesPage - Vehicle OS entry with unified list
@@ -28,7 +29,11 @@ const FleetPage = () => {
           FleetLocationService.listLocations(),
         ]);
         if (!isMounted) return;
-        setVehicles(Array.isArray(vehicleRows) ? vehicleRows : []);
+        setVehicles(
+          Array.isArray(vehicleRows)
+            ? vehicleRows.filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle))
+            : []
+        );
         setLocations(Array.isArray(locationRows) ? locationRows : []);
       } catch (error) {
         console.error('Failed to load vehicles list', error);

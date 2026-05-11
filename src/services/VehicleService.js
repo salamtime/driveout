@@ -5,6 +5,7 @@ import {
   applyOrganizationScope,
   getCurrentOrganizationId,
 } from './OrganizationService';
+import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
 
 const DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES = 120;
 const isExpiredScheduledConflict = (rentalLike, graceMinutes = DEFAULT_SCHEDULED_RENTAL_GRACE_MINUTES) => {
@@ -109,9 +110,19 @@ class VehicleService {
             vehicle_model_id,
             vehicle_type,
             plate_number,
+            registration_number,
+            current_odometer,
+            engine_hours,
+            organization_id,
             status,
             image_url,
-            location_id
+            location_id,
+            sold_date,
+            sale_price_mad,
+            sold_buyer_name,
+            sale_notes,
+            sale_proof_url,
+            sale_proof_name
           `)
           .order('name', { ascending: true }),
           organizationId
@@ -119,8 +130,14 @@ class VehicleService {
 
         if (error) throw error;
         
-        console.log(`✅ Loaded ${data?.length || 0} vehicles from database table`);
-        return data || [];
+        const operationalVehicles = (data || []).filter(
+          (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
+        );
+
+        console.log(
+          `✅ Loaded ${operationalVehicles.length} operational vehicles from database table (${data?.length || 0} raw)`
+        );
+        return operationalVehicles;
       });
 
       this.setCache(cacheKey, result);
@@ -171,7 +188,17 @@ class VehicleService {
             vehicle_model_id,
             vehicle_type,
             plate_number,
-            status
+            registration_number,
+            current_odometer,
+            engine_hours,
+            organization_id,
+            status,
+            sold_date,
+            sale_price_mad,
+            sold_buyer_name,
+            sale_notes,
+            sale_proof_url,
+            sale_proof_name
           `)
           .eq('status', 'available')
           .order('name', { ascending: true }),
@@ -180,7 +207,9 @@ class VehicleService {
 
         if (error) throw error;
 
-        let availableVehicles = vehicles || [];
+        let availableVehicles = (vehicles || []).filter(
+          (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
+        );
 
         // Additional date-based filtering if dates provided
         if (startDate && endDate) {
@@ -516,20 +545,24 @@ class VehicleService {
       const { data: vehicles, error } = await applyOrganizationScope(
         supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('status'),
+        .select('status, vehicle_model_id, organization_id, plate_number, registration_number, current_odometer, engine_hours, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, name, model'),
         organizationId
       );
 
       if (error) throw error;
 
+      const visibleVehicles = (vehicles || []).filter(
+        (vehicle) => !shouldHideVehicleFromOperationalViews(vehicle)
+      );
+
       const stats = {
-        total: vehicles.length,
-        available: vehicles.filter(v => v.status === 'available').length,
-        rented: vehicles.filter(v => v.status === 'rented').length,
-        reserved: vehicles.filter(v => v.status === 'reserved').length,
-        maintenance: vehicles.filter(v => v.status === 'maintenance').length,
-        out_of_service: vehicles.filter(v => v.status === 'out_of_service').length,
-        byStatus: this.groupBy(vehicles, 'status')
+        total: visibleVehicles.length,
+        available: visibleVehicles.filter(v => v.status === 'available').length,
+        rented: visibleVehicles.filter(v => v.status === 'rented').length,
+        reserved: visibleVehicles.filter(v => v.status === 'reserved').length,
+        maintenance: visibleVehicles.filter(v => v.status === 'maintenance').length,
+        out_of_service: visibleVehicles.filter(v => v.status === 'out_of_service').length,
+        byStatus: this.groupBy(visibleVehicles, 'status')
       };
 
       this.setCache(cacheKey, stats);
@@ -571,7 +604,18 @@ class VehicleService {
           model,
           vehicle_type,
           plate_number,
-          status
+          registration_number,
+          current_odometer,
+          engine_hours,
+          vehicle_model_id,
+          organization_id,
+          status,
+          sold_date,
+          sale_price_mad,
+          sold_buyer_name,
+          sale_notes,
+          sale_proof_url,
+          sale_proof_name
         `)
         .or(`name.ilike.%${searchTerm}%,model.ilike.%${searchTerm}%,plate_number.ilike.%${searchTerm}%`)
         .order('name', { ascending: true }),
@@ -580,7 +624,10 @@ class VehicleService {
 
       if (error) throw error;
 
-      return { success: true, vehicles: vehicles || [] };
+      return {
+        success: true,
+        vehicles: (vehicles || []).filter((vehicle) => !shouldHideVehicleFromOperationalViews(vehicle))
+      };
     } catch (error) {
       console.error('❌ Error searching vehicles:', error);
       return { success: false, error: error.message, vehicles: [] };
