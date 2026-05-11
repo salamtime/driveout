@@ -512,8 +512,8 @@ export default function PublicDocumentShare() {
   const payload = share?.payload || {};
   const rental = payload?.rental || null;
   const normalizedSettings = normalizePublicDocumentSettings(payload?.settings || {});
-  const logoUrl = normalizedSettings.logoUrl || null;
-  const stampUrl = normalizedSettings.stampUrl || null;
+  const logoUrl = normalizedSettings.logoUrl || '/assets/logo.jpg';
+  const stampUrl = normalizedSettings.stampUrl || '/assets/stamp.png';
   const printablePdfUrl = payload?.pdfUrl || null;
   const accountPrompt = (
     <div style={inlinePromptStyle} className="no-print public-share-account-prompt">

@@ -9562,22 +9562,6 @@ const handleFuelChargeToggle = async (enabled) => {
 
       const effectiveCompletionRental = overtimeRental || completionRental || rental;
       const actualReturnEndTime = billingCloseTime;
-      const currentPaymentStatus = normalizePaymentStatus(
-        effectiveCompletionRental?.payment_status,
-        effectiveCompletionRental?.remaining_amount
-      );
-      const currentRemainingAmount = Math.max(0, Number(effectiveCompletionRental?.remaining_amount || 0) || 0);
-      if (currentPaymentStatus !== 'paid' && currentRemainingAmount > 0) {
-        openDueBalancePaymentEditor();
-        toast.error(
-          tr(
-            'Payment required before closing. Record the due balance first.',
-            "Paiement requis avant la clôture. Enregistrez d'abord le solde restant dû."
-          )
-        );
-        return;
-      }
-
       const updateData = {
         rental_status: 'completed', 
         status: 'completed',
@@ -12282,21 +12266,6 @@ useEffect(() => {
       });
       const actualReturnEndTime = billingCloseTime;
       const effectiveCompletionRental = overtimeRental || completionRental || rental;
-      const currentPaymentStatus = normalizePaymentStatus(
-        effectiveCompletionRental?.payment_status,
-        effectiveCompletionRental?.remaining_amount
-      );
-      const currentRemainingAmount = Math.max(0, Number(effectiveCompletionRental?.remaining_amount || 0) || 0);
-      if (currentPaymentStatus !== 'paid' && currentRemainingAmount > 0) {
-        openDueBalancePaymentEditor();
-        toast.error(
-          tr(
-            'Payment required before closing. Record the due balance first.',
-            "Paiement requis avant la clôture. Enregistrez d'abord le solde restant dû."
-          )
-        );
-        return;
-      }
       const { error } = await supabase
         .from('app_4c3a7a6153_rentals')
         .update({ 
