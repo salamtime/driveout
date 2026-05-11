@@ -91,7 +91,23 @@ export default async function publicRentalHandler(req, res) {
         .eq('id', latestVehicleReport.maintenance_id)
         .maybeSingle();
 
-      linkedMaintenance = maintenanceRow || null;
+      if (maintenanceRow) {
+        const { data: maintenancePartsRows } = await adminClient
+          .from('app_687f658e98_maintenance_parts')
+          .select(`
+            *,
+            inventory_item:saharax_0u4w4d_inventory_items(id, name, sku, unit)
+          `)
+          .eq('maintenance_id', latestVehicleReport.maintenance_id);
+
+        linkedMaintenance = {
+          ...maintenanceRow,
+          parts: maintenancePartsRows || [],
+          parts_used: maintenancePartsRows || [],
+        };
+      } else {
+        linkedMaintenance = null;
+      }
     }
 
     const hydratedRental = {
