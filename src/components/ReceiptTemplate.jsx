@@ -2754,14 +2754,6 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                   <span>{tr('External:', 'Externe :')}</span>
                   <span style={{ fontWeight: '600' }}>{formatCurrency(linkedMaintenance.external_cost_mad || 0)} MAD</span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#c53030' }}>
-                  <span>
-                    {linkedVehicleReport?.customer_chargeable
-                      ? tr('Customer maintenance charge:', 'Montant maintenance facturé au client :')
-                      : tr('Maintenance Total:', 'Total maintenance :')}
-                  </span>
-                  <span style={{ fontWeight: '700' }}>{formatCurrency(linkedMaintenance.cost || 0)} MAD</span>
-                </div>
                 {maintenanceStayCharge > 0 && (
                   <>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px', color: '#dd6b20' }}>
