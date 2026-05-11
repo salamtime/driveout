@@ -404,6 +404,12 @@ const fetchPublicRentalPreview = async (lookupId) => {
   throw new Error(lastBody?.error || 'Failed to load shared rental preview');
 };
 
+const normalizePublicDocumentSettings = (settings = {}) => ({
+  ...settings,
+  logoUrl: settings?.logoUrl || settings?.logo_url || null,
+  stampUrl: settings?.stampUrl || settings?.stamp_url || null,
+});
+
 export default function PublicDocumentShare() {
   const { token } = useParams();
   const [share, setShare] = useState(null);
@@ -462,17 +468,22 @@ export default function PublicDocumentShare() {
               vehicleReport: linkedVehicleReport,
               vehicle_report: linkedVehicleReport,
             },
-            settings: {
+            settings: normalizePublicDocumentSettings({
               ...(rentalBody?.settings || {}),
               ...(resolvedPayload?.settings || {}),
-            },
+            }),
           };
         }
 
         if (!cancelled) {
           setShare({
             ...nextShare,
-            payload: resolvedPayload || {},
+            payload: resolvedPayload
+              ? {
+                  ...resolvedPayload,
+                  settings: normalizePublicDocumentSettings(resolvedPayload?.settings || {}),
+                }
+              : {},
           });
         }
       } catch (err) {
@@ -500,8 +511,9 @@ export default function PublicDocumentShare() {
 
   const payload = share?.payload || {};
   const rental = payload?.rental || null;
-  const logoUrl = payload?.settings?.logoUrl || null;
-  const stampUrl = payload?.settings?.stampUrl || null;
+  const normalizedSettings = normalizePublicDocumentSettings(payload?.settings || {});
+  const logoUrl = normalizedSettings.logoUrl || null;
+  const stampUrl = normalizedSettings.stampUrl || null;
   const printablePdfUrl = payload?.pdfUrl || null;
   const accountPrompt = (
     <div style={inlinePromptStyle} className="no-print public-share-account-prompt">
