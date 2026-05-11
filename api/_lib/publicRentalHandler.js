@@ -92,13 +92,15 @@ export default async function publicRentalHandler(req, res) {
         .maybeSingle();
 
       if (maintenanceRow) {
-        const { data: maintenancePartsRows } = await adminClient
+        const { data: maintenancePartsRows, error: maintenancePartsError } = await adminClient
           .from('app_687f658e98_maintenance_parts')
-          .select(`
-            *,
-            inventory_item:saharax_0u4w4d_inventory_items(id, name, sku, unit)
-          `)
-          .eq('maintenance_id', latestVehicleReport.maintenance_id);
+          .select('*')
+          .eq('maintenance_id', maintenanceRow.id)
+          .order('created_at', { ascending: true });
+
+        if (maintenancePartsError) {
+          throw maintenancePartsError;
+        }
 
         linkedMaintenance = {
           ...maintenanceRow,
