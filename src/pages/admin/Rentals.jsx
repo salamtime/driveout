@@ -156,11 +156,18 @@ const resolveRentalVehicleDisplay = (rental) => {
       null,
     name:
       vehicle?.name ||
+      vehicle?.vehicle_model?.name ||
+      vehicle?.vehicle_model?.model ||
       rental?.vehicle_name_snapshot ||
+      rental?.selected_vehicle_name_snapshot ||
+      rental?.vehicle_label_snapshot ||
       null,
     model:
       vehicle?.model ||
+      vehicle?.vehicle_model?.model ||
+      vehicle?.vehicle_model?.name ||
       rental?.vehicle_model_snapshot ||
+      rental?.selected_vehicle_model_snapshot ||
       null,
     vehicleType:
       vehicle?.vehicle_type ||
@@ -244,8 +251,11 @@ const RENTALS_OPTIONAL_AUDIT_SELECT = `
 const RENTALS_OPTIONAL_VEHICLE_SNAPSHOT_SELECT = `
   selected_vehicle_plate_snapshot,
   plate_number_snapshot,
+  selected_vehicle_name_snapshot,
+  selected_vehicle_model_snapshot,
   vehicle_name_snapshot,
-  vehicle_model_snapshot
+  vehicle_model_snapshot,
+  vehicle_label_snapshot
 `;
 
 const buildRentalsSelect = ({ includeAuditColumns = true, includeVehicleSnapshots = true } = {}) => `
@@ -271,8 +281,11 @@ const isMissingRentalsVehicleSnapshotColumnError = (error) => {
     (
       message.includes('selected_vehicle_plate_snapshot') ||
       message.includes('plate_number_snapshot') ||
+      message.includes('selected_vehicle_name_snapshot') ||
+      message.includes('selected_vehicle_model_snapshot') ||
       message.includes('vehicle_name_snapshot') ||
-      message.includes('vehicle_model_snapshot')
+      message.includes('vehicle_model_snapshot') ||
+      message.includes('vehicle_label_snapshot')
     )
   );
 };
