@@ -1,158 +1,248 @@
 ## Shared Tenancy Hardening Step 4: Full Verification Pass
 
-This pass is the final shared-tenancy verification sweep after the blocker-closure and hardening phases.
+This step is the operational verification pass for shared-tenant isolation after the emergency containment work.
 
-It does not claim “nothing is left.”
+It is intentionally stricter than the earlier architecture-only audit.
 
-It freezes what is now verified end to end, and it records the exact remaining residual callers that still sit outside the clean shared-tenancy contract.
+The goal here is not to say "looks better."
 
-## Verified Pass Areas
+The goal is to prove that one shared tenant cannot read or mutate another tenant's data, even if:
+- a page still has a direct caller
+- an older client bundle is open
+- a future query path misses an explicit `organization_id` filter
 
-### 1. Shared runtime contract
+## Current Step 4 Status
+
+As of May 11, 2026:
+
+- Step 1 containment is deployed for `Rentals.jsx`
+- Step 2 code audit confirmed the risk is systemic
+- Step 3 database hardening migration now exists locally:
+  - [harden_shared_tenant_data_rls.sql](/Users/amrani/Desktop/rental-system-frontend/src/migrations/harden_shared_tenant_data_rls.sql)
+
+### Important limitation
+
+This step cannot honestly certify production isolation until the Step 3 migration is:
+
+1. pushed
+2. applied to the live database
+3. verified against at least two shared tenants
+
+So the current Step 4 outcome is:
+
+- **pre-apply verification runbook complete**
+- **live certification still blocked on migration apply**
+
+## What Step 4 Verifies
+
+Step 4 must prove all four of these:
+
+1. Shared tenants cannot read each other's data
+2. Shared tenants cannot write into each other's data
+3. Public/shared surfaces do not leak another tenant's documents or records
+4. A missed frontend query filter is still stopped by RLS
+
+## Pre-Apply Findings Confirmed In This Pass
+
+### 1. Shared RLS foundation already exists
 
 Verified in:
-- `api/_lib/tenantSessionHandler.js`
-- `api/_lib/tenantWorkspaceConfigHandler.js`
-- `src/contexts/TenantWorkspaceContext.jsx`
-
-Confirmed runtime/shared contract includes:
-- `tenant_id`
-- `tenant_slug`
-- `tenancy_mode`
-- `organization_id`
-- `plan_type`
-- `effective_feature_access`
-- `workspace_state`
-
-### 2. Shared-vs-dedicated coexistence
-
-Verified in:
-- `src/pages/admin/Workspaces.jsx`
-- `api/_lib/tenantWorkspaceConfigHandler.js`
-- `api/_lib/tenantSessionHandler.js`
+- [create_shared_tenant_workspace_rls.sql](/Users/amrani/Desktop/rental-system-frontend/src/migrations/create_shared_tenant_workspace_rls.sql)
 
 Confirmed:
-- shared tenants no longer depend on dedicated project credentials for health/readiness
-- dedicated tenants still preserve legacy infrastructure controls
-- shared and dedicated mode can coexist without the UI treating shared tenants as broken dedicated tenants
+- organization-aware helper policies already exist for the main shared-tenant core
+- many important tenant tables are already intended to be organization-scoped
 
-### 3. Public route feature gating
-
-Verified in:
-- `src/App.jsx`
-
-Confirmed:
-- `public_storefront` gates public storefront surfaces
-- `online_booking` gates booking/request routes
-- tenant public host flows now resolve through shared workspace config instead of per-tenant project assumptions
-
-### 4. Public marketplace and boost-link tenant boundary
+### 2. Legacy permissive policies still exist in later migrations
 
 Verified in:
-- `api/_lib/publicCatalogHandler.js`
-- `api/marketplace-listings.js`
-- `api/growth-links.js`
+- [create_receive_funds_entries.sql](/Users/amrani/Desktop/rental-system-frontend/src/migrations/create_receive_funds_entries.sql)
+- [create_finance_expenses.sql](/Users/amrani/Desktop/rental-system-frontend/src/migrations/create_finance_expenses.sql)
+- [create_team_tasks.sql](/Users/amrani/Desktop/rental-system-frontend/src/migrations/create_team_tasks.sql)
+- [enable_activity_log_rls.sql](/Users/amrani/Desktop/rental-system-frontend/src/migrations/enable_activity_log_rls.sql)
+- [fix_saharax_first_party_workspace_schema.sql](/Users/amrani/Desktop/rental-system-frontend/src/migrations/fix_saharax_first_party_workspace_schema.sql)
+- [harden_pricing_management_rls.sql](/Users/amrani/Desktop/rental-system-frontend/src/migrations/harden_pricing_management_rls.sql)
 
 Confirmed:
-- shared tenant public catalog reads are organization-scoped
-- shared tenant moderation reads/writes are organization-scoped
-- shared boost link redirects and booking attribution are tenant-bound
+- later migrations reintroduced `using (true)` / `with check (true)` on some shared tables
+- some finance tables use `organization_id text`, not `uuid`
+- this means code discipline alone is not enough
 
-### 5. Storage scoping foundation
+### 3. The hardening migration closes the known database holes
 
 Verified in:
-- `src/utils/storageUpload.js`
-- `src/services/DocumentService.js`
-- `src/services/VehicleImageService.js`
-- `src/services/UserProfileService.js`
-- `src/components/VehicleImageUpload.jsx`
-- `src/components/VehicleImageUpload.tsx`
-- `src/services/InventoryService.js`
-- `src/components/VehicleRefillModal.jsx`
-- `src/components/FuelRefillModal.jsx`
-- `src/components/SignaturePadModal.jsx`
-- `src/services/videoCaptureService.js`
+- [harden_shared_tenant_data_rls.sql](/Users/amrani/Desktop/rental-system-frontend/src/migrations/harden_shared_tenant_data_rls.sql)
 
 Confirmed:
-- the main active upload surfaces now write new files under tenant-scoped prefixes
-- legacy flat paths are still readable where migration fallback is required
+- RLS is reasserted and forced for shared tenant core tables
+- text-based organization tables now use safe helper functions
+- shared finance tables no longer need permissive authenticated access
 
-### 6. Plan and feature access contract
+## Live Verification Checklist After Migration Apply
 
-Verified in:
-- `src/config/tenantPlans.js`
-- `src/App.jsx`
-- `src/pages/admin/Workspaces.jsx`
-- `api/_lib/tenantWorkspaceConfigHandler.js`
-- `api/_lib/tenantSessionHandler.js`
+Use at least two shared tenants for every pass:
 
-Confirmed:
-- plan defaults still feed effective feature access
-- public feature access now flows through the shared workspace contract
-- workspace admin still exposes the effective feature matrix while respecting tenancy mode
+- `SaharaX`
+- `OFFROAD`
 
-## Residual Gaps Still Present
+Use separate browser sessions:
 
-The shared foundation is now coherent, but these remaining direct callers still sit outside the clean organization-aware service layer.
+- normal window for tenant A
+- incognito/private window for tenant B
 
-### Tenant-critical page/component direct data callers
+Never verify both tenants in the same authenticated browser profile.
 
-Representative remaining surfaces:
-- `src/pages/admin/Fleet.jsx`
-- `src/pages/admin/Dashboard.jsx`
-- `src/pages/admin/RentalDetails.jsx`
-- `src/components/admin/EnhancedStepperRentalForm.jsx`
-- `src/components/admin/ViewCustomerDetailsDrawer.jsx`
-- `src/components/maintenance/AddMaintenanceForm.jsx`
-- `src/components/maintenance/src/components/maintenance/AddMaintenanceForm.jsx`
+### A. Session identity verification
 
-Why they still matter:
-- they perform direct `supabase.from(...)` reads/writes against tenant tables
-- they rely on RLS rather than the normalized organization-aware service layer
-- they are not yet as cleanly shared-mode disciplined as the hardened service-backed paths
+For each tenant host, verify:
 
-### Remaining non-core storage helpers and utility paths
+1. User profile shows the correct workspace identity
+2. `organization_id` in `/api/me/profile` belongs to that tenant only
+3. Host/session mismatch does not silently fall back to another workspace
 
-Representative remaining surfaces:
-- `src/components/common/ImageUpload.jsx`
-- `src/pages/admin/UserManagement.jsx` (public URL composition only)
-- `src/pages/admin/Settings.jsx` (branding bucket URL composition only)
-- `src/components/admin/pricing/TourPackagesWorkspace.jsx` (storage removal flow)
+Expected result:
+- `offroad.driveout.io` resolves only OFFROAD organization context
+- `saharax.driveout.io` resolves only SaharaX organization context
 
-Why they are residual rather than immediate blockers:
-- these are not the main shared-tenancy risk paths anymore
-- but they still need a final consistency pass so every storage caller follows one tenant-scoped convention
+### B. Rentals isolation
 
-### Platform-only or cross-workspace utility services that still need explicit classification
+Check:
+- rentals list
+- rental details
+- receipt preview
+- contract preview
+- shared receipt/contract link
 
-Representative surfaces:
-- `src/services/PlatformExperienceService.js`
-- `src/services/UrlShortenerService.js`
-- some finance/reporting utility services and diagnostics
+Expected result:
+- OFFROAD cannot see SaharaX rental IDs, customers, vehicles, totals, receipts, contracts
+- SaharaX cannot see OFFROAD rental IDs, customers, vehicles, totals, receipts, contracts
 
-Why they are listed separately:
-- some of these may be legitimate platform-level surfaces rather than tenant-workspace surfaces
-- they still need explicit classification so they are not mistaken for shared tenant business data
+Specific negative test:
+- open a known SaharaX rental id while logged into OFFROAD
+- expected outcome: no row / permission denial / not found
 
-## Verification Verdict
+### C. Vehicles isolation
 
-Current verdict:
+Check:
+- fleet list
+- vehicle profile
+- vehicle history
+- maintenance links from vehicle pages
 
-- shared-tenancy architecture: **verified**
-- shared runtime contract: **verified**
-- public/shared host boundary: **verified**
-- dedicated/shared coexistence: **verified**
-- complete app-wide service normalization: **not yet fully finished**
+Expected result:
+- vehicle plates and models shown in a tenant workspace belong only to that workspace organization
+- no cross-tenant vehicle history appears
 
-## Practical Outcome
+### D. Customers isolation
 
-The project is now past the architecture-risk phase.
+Check:
+- customer list
+- customer profile
+- customer search / autocomplete from rental form
 
-What remains is mostly:
-- final page-level service normalization
-- final utility/storage consistency cleanup
-- optional browser/live QA by tenancy mode and plan level
+Expected result:
+- OFFROAD customer search never returns SaharaX customers
+- SaharaX customer search never returns OFFROAD customers
 
-That means shared tenancy is no longer blocked by missing architecture.
+### E. Maintenance isolation
 
-It is now limited by the last direct page-level callers that still need to be brought under the same disciplined service/query pattern.
+Check:
+- maintenance list
+- maintenance detail
+- linked maintenance from rental details
+
+Expected result:
+- maintenance refs from one tenant are unreadable from another tenant
+- linked maintenance lookups fail closed rather than silently showing foreign data
+
+### F. Finance isolation
+
+Check:
+- receive funds
+- finance expenses
+- daily summaries
+- any bank-deposit / receive-funds history
+
+Expected result:
+- no finance row from one tenant appears in another tenant
+- text-based `organization_id` tables are still isolated correctly
+
+This area is especially important because:
+- `app_4c3a7a6153_receive_funds_entries`
+- `finance_expenses`
+
+were previously using permissive RLS patterns.
+
+### G. Tasks and notifications isolation
+
+Check:
+- team tasks list
+- task comments
+- task notifications
+
+Expected result:
+- only task rows from the current organization appear
+- comments and notifications do not bridge tenants
+
+### H. Public/shared document isolation
+
+Check:
+- shared receipt links
+- shared contract links
+- short links
+
+Expected result:
+- shared public document links resolve only their own rental and tenant branding
+- no tenant can use a foreign short link to discover another tenant's data
+
+### I. Write protection test
+
+While logged into tenant A:
+
+1. try to update a record known to belong to tenant B
+2. try to delete a record known to belong to tenant B
+3. try to insert a tenant-owned row with tenant B's `organization_id`
+
+Expected result:
+- RLS blocks all of them
+
+This is the most important proof that the database layer is truly doing its job.
+
+## Pass/Fail Criteria
+
+Step 4 can only be marked complete when all of the following are true:
+
+1. The Step 3 migration is applied to the live database
+2. Two shared tenants are tested side by side
+3. Cross-tenant reads fail
+4. Cross-tenant writes fail
+5. Public shared document links do not leak foreign tenant data
+6. No tenant-critical page is still showing another tenant's rows
+
+## Current Residual Risks Even After This Step
+
+Even after the migration is applied, these areas still deserve extra watch because they contain direct callers or complex relationship lookups:
+
+- [RentalDetails.jsx](/Users/amrani/Desktop/rental-system-frontend/src/pages/admin/RentalDetails.jsx)
+- [EnhancedStepperRentalForm.jsx](/Users/amrani/Desktop/rental-system-frontend/src/components/admin/EnhancedStepperRentalForm.jsx)
+- [VehicleRefillService.js](/Users/amrani/Desktop/rental-system-frontend/src/services/VehicleRefillService.js)
+- [receiveFundsService.js](/Users/amrani/Desktop/rental-system-frontend/src/services/receiveFundsService.js)
+- [financeApiV2.ts](/Users/amrani/Desktop/rental-system-frontend/src/services/financeApiV2.ts)
+- [Alerts.jsx](/Users/amrani/Desktop/rental-system-frontend/src/pages/admin/Alerts.jsx)
+
+These should not block the RLS rollout, but they should remain on the hardening queue for explicit code-path cleanup.
+
+## Step 4 Outcome
+
+Current outcome:
+
+- verification runbook: **complete**
+- live database certification: **blocked until Step 3 is pushed and applied**
+
+That means Step 4 is operationally ready, but it is not honest to call shared tenancy certified yet.
+
+The next required move is:
+
+1. push the Step 3 migration
+2. apply it to staging and production databases
+3. execute this checklist against at least `SaharaX` and `OFFROAD`
