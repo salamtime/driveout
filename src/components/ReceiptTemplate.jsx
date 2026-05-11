@@ -127,6 +127,17 @@ const formatExactHourlyDurationSummary = (minutes, tr) => {
   return tr(`${hours}h ${remainingMinutes}m`, `${hours} h ${remainingMinutes} min`);
 };
 
+const formatReceiptScheduleDateTime = (value, isFrench, tr) => {
+  const date = new Date(value || '');
+  if (Number.isNaN(date.getTime())) return tr('Not scheduled', 'Non planifié');
+  return date.toLocaleString(isFrench ? 'fr-FR' : 'en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
 const formatRentalDurationSummary = (rental, tr) => {
   const duration = getDisplayRentalDurationUnits(rental);
   if (rental?.rental_type === 'hourly') {
@@ -1090,6 +1101,20 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
       : { bg: '#fee2e2', fg: '#b91c1c' };
 
   const PricingStoryDisplay = () => {
+    const packageDurationUnitLabel = packageBreakdown?.isDaily
+      ? tr('day', 'jour')
+      : tr('hour', 'heure');
+    const packageDurationLabel = packageBreakdown
+      ? `${packageBreakdown.duration} ${packageDurationUnitLabel}${packageBreakdown.duration > 1 ? 's' : ''}`
+      : formatRentalDurationSummary(rental, tr);
+    const packageCoverageLabel = (
+      hasPackage &&
+      packageBreakdown?.includedKm > 0 &&
+      packageBreakdown?.totalIncludedKm > 0
+    )
+      ? `${formatReceiptKilometers(packageBreakdown.includedKm)} km/${packageDurationUnitLabel} × ${packageBreakdown.duration} ${packageDurationUnitLabel}${packageBreakdown.duration > 1 ? 's' : ''} = ${formatReceiptKilometers(packageBreakdown.totalIncludedKm)} km ${tr('included', 'inclus')}`
+      : null;
+
     const detailsRows = [
       {
         label: getRentalKilometerPackage(rental)
@@ -1132,27 +1157,23 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
           }]
         : []),
       {
-        label: tr('Rental amount', 'Montant location'),
-        value: `${formatCurrency(displayedRentalOnlyAmount)} MAD`,
-      },
-      {
         label: tr('Total paid', 'Total payé'),
         value: `${formatCurrency(displayedCustomerPaidAmount)} MAD`,
+      },
+      {
+        label: tr('Rental duration', 'Durée de location'),
+        value: packageDurationLabel,
       },
       {
         label: tr('Package used', 'Forfait utilisé'),
         value: packageUsedLabel,
       },
-      ...(effectiveSavingsKind === 'package_base' && packageVsBaseStandardTotal > 0
+      ...(packageCoverageLabel
         ? [{
-            label: tr('Standard base price', 'Prix de base standard'),
-            value: `${formatCurrency(packageVsBaseStandardTotal)} MAD`,
+            label: tr('Included kilometers', 'Kilomètres inclus'),
+            value: packageCoverageLabel,
           }]
         : []),
-      {
-        label: savingsLabel,
-        value: effectiveSavingsAmount > 0 ? `${formatCurrency(effectiveSavingsAmount)} MAD` : tr('None', 'Aucune'),
-      },
       {
         label: tr('Deposit', 'Caution'),
         value: `${formatCurrency(receivedDamageDeposit > 0 ? receivedDamageDeposit : receiptDamageDeposit)} MAD`,
@@ -1205,48 +1226,6 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
                 </div>
               ))}
             </div>
-
-            {effectiveSavingsKind === 'package_upgrade' && (
-              <div style={{ marginBottom: '16px', padding: '14px', borderRadius: '12px', backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0' }}>
-                <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#15803d', marginBottom: '8px' }}>
-                  {tr('Smart pricing math', 'Calcul tarif intelligent')}
-                </div>
-                <div style={{ fontSize: '13px', color: '#334155', lineHeight: 1.7 }}>
-                  <div>{tr('Initial package:', 'Forfait initial :')} {receiptDistanceUpgrade?.originalPackageName || '-'} • {formatReceiptKilometers(packageOriginalLimitKm)} km • {formatCurrency(packageOriginalPrice)} MAD</div>
-                  <div>{tr('Actual usage:', 'Utilisation réelle :')} {formatReceiptKilometers(usageDistanceKm)} km</div>
-                  <div>{tr('Extra km without upgrade:', 'Km supplémentaires sans surclassement :')} {formatReceiptKilometers(packageExtraKmWithoutUpgrade)} km × {formatCurrency(packageExtraKmRate)} MAD = {formatCurrency(packageExtraKmCostWithoutUpgrade)} MAD</div>
-                  <div>{tr('Cost without upgrade:', 'Coût sans surclassement :')} {formatCurrency(packageOriginalPrice)} + {formatCurrency(packageExtraKmCostWithoutUpgrade)} = {formatCurrency(packageCostWithoutUpgrade)} MAD</div>
-                  <div>{tr('Upgraded package:', 'Forfait surclassé :')} {receiptDistanceUpgrade?.appliedPackageName || packageUsedLabel} • {formatReceiptKilometers(receiptDistanceUpgrade?.appliedPackageLimitKm || 0)} km • {formatCurrency(packageAppliedPrice)} MAD</div>
-                  <div style={{ fontWeight: 800, color: '#15803d' }}>{tr('You saved:', 'Économie :')} {formatCurrency(effectiveSavingsAmount)} MAD</div>
-                </div>
-              </div>
-            )}
-
-            {effectiveSavingsKind === 'package_base' && (
-              <div style={{ marginBottom: '16px', padding: '14px', borderRadius: '12px', backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0' }}>
-                <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#15803d', marginBottom: '8px' }}>
-                  {tr('Package savings math', 'Calcul des économies du forfait')}
-                </div>
-                <div style={{ fontSize: '13px', color: '#334155', lineHeight: 1.7 }}>
-                  <div>{tr('Standard base total:', 'Total au tarif de base :')} {formatCurrency(packageVsBaseStandardTotal)} MAD</div>
-                  <div>{tr('Package total applied:', 'Total du forfait appliqué :')} {formatCurrency(packageAppliedPrice)} MAD</div>
-                  <div style={{ fontWeight: 800, color: '#15803d' }}>{tr('You saved:', 'Économie :')} {formatCurrency(packageVsBaseSavings)} MAD</div>
-                </div>
-              </div>
-            )}
-
-            {effectiveSavingsKind === 'tier' && (
-              <div style={{ marginBottom: '16px', padding: '14px', borderRadius: '12px', backgroundColor: '#eef2ff', border: '1px solid #c7d2fe' }}>
-                <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#4338ca', marginBottom: '8px' }}>
-                  {tr('Savings math', 'Calcul des économies')}
-                </div>
-                <div style={{ fontSize: '13px', color: '#334155', lineHeight: 1.7 }}>
-                  <div>{tr('Standard total:', 'Total standard :')} {formatCurrency(tierPricingBreakdown?.standardTotal || 0)} MAD</div>
-                  <div>{tr('Applied total:', 'Total appliqué :')} {formatCurrency(tierPricingBreakdown?.tierTotal || 0)} MAD</div>
-                  <div style={{ fontWeight: 800, color: '#15803d' }}>{tr('You saved:', 'Économie :')} {formatCurrency(effectiveSavingsAmount)} MAD</div>
-                </div>
-              </div>
-            )}
 
             {hasMeaningfulManualPriceOverride && (
               <div style={{ marginBottom: '16px', padding: '14px', borderRadius: '12px', backgroundColor: '#eff6ff', border: '1px solid #bfdbfe' }}>
@@ -2300,7 +2279,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
         </div>
       </div>
 
-      {/* Rental Period */}
+      {/* Schedule */}
       <div style={{
         padding: '20px',
         backgroundColor: '#f7fafc',
@@ -2315,33 +2294,19 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
           letterSpacing: '0.5px',
           marginBottom: '16px'
         }}>
-          {tr('Rental Period', 'Période de location')}
+          {tr('Schedule', 'Planning')}
         </div>
         <div className="flex-row" style={{ display: 'flex', gap: '24px' }}>
           <div style={{ flex: 1 }}>
-            <div style={{ color: '#718096', fontSize: '12px', marginBottom: '4px' }}>{tr('Start Date & Time', 'Date et heure de départ')}</div>
+            <div style={{ color: '#718096', fontSize: '12px', marginBottom: '4px' }}>{tr('Start', 'Début')}</div>
             <div style={{ fontSize: '15px', fontWeight: '600' }}>
-              {rental.started_at || rental.rental_start_date ? 
-                new Date(rental.started_at || rental.rental_start_date).toLocaleString(isFrench ? 'fr-FR' : 'en-GB', { 
-                  day: '2-digit', 
-                  month: 'short', 
-                  year: 'numeric',
-                  hour: '2-digit', 
-                  minute: '2-digit' 
-                }) : 'N/A'}
+              {formatReceiptScheduleDateTime(rental.rental_start_date || rental.started_at, isFrench, tr)}
             </div>
           </div>
           <div style={{ flex: 1 }}>
-            <div style={{ color: '#718096', fontSize: '12px', marginBottom: '4px' }}>{tr('End Date & Time', 'Date et heure de fin')}</div>
+            <div style={{ color: '#718096', fontSize: '12px', marginBottom: '4px' }}>{tr('End', 'Fin')}</div>
             <div style={{ fontSize: '15px', fontWeight: '600' }}>
-              {rental.actual_end_date || rental.rental_end_date ? 
-                new Date(rental.actual_end_date || rental.rental_end_date).toLocaleString(isFrench ? 'fr-FR' : 'en-GB', { 
-                  day: '2-digit', 
-                  month: 'short', 
-                  year: 'numeric',
-                  hour: '2-digit', 
-                  minute: '2-digit' 
-                }) : 'N/A'}
+              {formatReceiptScheduleDateTime(rental.rental_end_date || rental.actual_end_date, isFrench, tr)}
             </div>
           </div>
         </div>
