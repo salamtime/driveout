@@ -739,6 +739,11 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
     return basePrice + overage + extensions + fuel + maintenanceCharge + impoundCharge + transportFee;
   };
 
+  const approvedExtensionTotal = rental.extensions?.reduce(
+    (sum, ext) => (ext.status === 'approved' ? sum + (ext.extension_price || 0) : sum),
+    0
+  ) || 0;
+
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
       style: 'decimal',
@@ -2697,7 +2702,7 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
             
             {hasOverage && (
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', color: '#c53030' }}>
-                <span>{tr('Overage Charge:', 'Frais de dépassement :')}</span>
+                <span>{tr('Kilometer Overage:', 'Dépassement kilométrique :')}</span>
                 <span style={{ fontWeight: '600' }}>+{formatCurrency(effectiveOverageCharge)} MAD</span>
               </div>
             )}
@@ -2716,11 +2721,10 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
               </div>
             )}
             
-            {rental.extensions && rental.extensions.length > 0 && (
+            {approvedExtensionTotal > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', color: '#805ad5' }}>
                 <span>{tr('Extensions:', 'Extensions :')}</span>
-                <span style={{ fontWeight: '600' }}>+{formatCurrency(rental.extensions.reduce((sum, ext) => 
-                  ext.status === 'approved' ? sum + (ext.extension_price || 0) : sum, 0))} MAD</span>
+                <span style={{ fontWeight: '600' }}>+{formatCurrency(approvedExtensionTotal)} MAD</span>
               </div>
             )}
 
