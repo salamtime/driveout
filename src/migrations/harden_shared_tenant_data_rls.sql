@@ -55,151 +55,196 @@ $$;
 grant execute on function public.app_has_current_organization_access_text(text) to authenticated, service_role;
 grant execute on function public.app_can_manage_current_organization_text(text) to authenticated, service_role;
 
-alter table public.app_organizations enable row level security;
-alter table public.app_organization_members enable row level security;
-alter table public.app_b30c02e74da644baad4668e3587d86b1_users enable row level security;
-alter table public.app_b30c02e74da644baad4668e3587d86b1_user_module_access enable row level security;
+do $$
+begin
+  if to_regclass('public.app_organizations') is not null then
+    execute 'alter table public.app_organizations enable row level security';
+    execute 'alter table public.app_organizations force row level security';
 
-alter table public.app_organizations force row level security;
-alter table public.app_organization_members force row level security;
-alter table public.app_b30c02e74da644baad4668e3587d86b1_users force row level security;
-alter table public.app_b30c02e74da644baad4668e3587d86b1_user_module_access force row level security;
+    execute 'drop policy if exists "shared tenant organizations select" on public.app_organizations';
+    execute 'drop policy if exists "shared tenant organizations insert" on public.app_organizations';
+    execute 'drop policy if exists "shared tenant organizations update" on public.app_organizations';
+    execute 'drop policy if exists "shared tenant organizations delete" on public.app_organizations';
 
-drop policy if exists "shared tenant organizations select" on public.app_organizations;
-drop policy if exists "shared tenant organizations insert" on public.app_organizations;
-drop policy if exists "shared tenant organizations update" on public.app_organizations;
-drop policy if exists "shared tenant organizations delete" on public.app_organizations;
+    execute $policy$
+      create policy "shared tenant organizations select"
+      on public.app_organizations
+      for select
+      to authenticated
+      using (public.app_has_current_organization_access(id))
+    $policy$;
 
-create policy "shared tenant organizations select"
-on public.app_organizations
-for select
-to authenticated
-using (public.app_has_current_organization_access(id));
+    execute $policy$
+      create policy "shared tenant organizations insert"
+      on public.app_organizations
+      for insert
+      to authenticated
+      with check (public.app_is_platform_admin())
+    $policy$;
 
-create policy "shared tenant organizations insert"
-on public.app_organizations
-for insert
-to authenticated
-with check (public.app_is_platform_admin());
+    execute $policy$
+      create policy "shared tenant organizations update"
+      on public.app_organizations
+      for update
+      to authenticated
+      using (public.app_can_manage_current_organization(id))
+      with check (public.app_can_manage_current_organization(id))
+    $policy$;
 
-create policy "shared tenant organizations update"
-on public.app_organizations
-for update
-to authenticated
-using (public.app_can_manage_current_organization(id))
-with check (public.app_can_manage_current_organization(id));
+    execute $policy$
+      create policy "shared tenant organizations delete"
+      on public.app_organizations
+      for delete
+      to authenticated
+      using (public.app_is_platform_admin())
+    $policy$;
+  end if;
 
-create policy "shared tenant organizations delete"
-on public.app_organizations
-for delete
-to authenticated
-using (public.app_is_platform_admin());
+  if to_regclass('public.app_organization_members') is not null then
+    execute 'alter table public.app_organization_members enable row level security';
+    execute 'alter table public.app_organization_members force row level security';
 
-drop policy if exists "shared tenant organization members select" on public.app_organization_members;
-drop policy if exists "shared tenant organization members insert" on public.app_organization_members;
-drop policy if exists "shared tenant organization members update" on public.app_organization_members;
-drop policy if exists "shared tenant organization members delete" on public.app_organization_members;
+    execute 'drop policy if exists "shared tenant organization members select" on public.app_organization_members';
+    execute 'drop policy if exists "shared tenant organization members insert" on public.app_organization_members';
+    execute 'drop policy if exists "shared tenant organization members update" on public.app_organization_members';
+    execute 'drop policy if exists "shared tenant organization members delete" on public.app_organization_members';
 
-create policy "shared tenant organization members select"
-on public.app_organization_members
-for select
-to authenticated
-using (public.app_has_current_organization_access(organization_id));
+    execute $policy$
+      create policy "shared tenant organization members select"
+      on public.app_organization_members
+      for select
+      to authenticated
+      using (public.app_has_current_organization_access(organization_id))
+    $policy$;
 
-create policy "shared tenant organization members insert"
-on public.app_organization_members
-for insert
-to authenticated
-with check (public.app_can_manage_current_organization(organization_id));
+    execute $policy$
+      create policy "shared tenant organization members insert"
+      on public.app_organization_members
+      for insert
+      to authenticated
+      with check (public.app_can_manage_current_organization(organization_id))
+    $policy$;
 
-create policy "shared tenant organization members update"
-on public.app_organization_members
-for update
-to authenticated
-using (public.app_can_manage_current_organization(organization_id))
-with check (public.app_can_manage_current_organization(organization_id));
+    execute $policy$
+      create policy "shared tenant organization members update"
+      on public.app_organization_members
+      for update
+      to authenticated
+      using (public.app_can_manage_current_organization(organization_id))
+      with check (public.app_can_manage_current_organization(organization_id))
+    $policy$;
 
-create policy "shared tenant organization members delete"
-on public.app_organization_members
-for delete
-to authenticated
-using (public.app_can_manage_current_organization(organization_id));
+    execute $policy$
+      create policy "shared tenant organization members delete"
+      on public.app_organization_members
+      for delete
+      to authenticated
+      using (public.app_can_manage_current_organization(organization_id))
+    $policy$;
+  end if;
 
-drop policy if exists "shared tenant users select" on public.app_b30c02e74da644baad4668e3587d86b1_users;
-drop policy if exists "shared tenant users insert" on public.app_b30c02e74da644baad4668e3587d86b1_users;
-drop policy if exists "shared tenant users update" on public.app_b30c02e74da644baad4668e3587d86b1_users;
-drop policy if exists "shared tenant users delete" on public.app_b30c02e74da644baad4668e3587d86b1_users;
+  if to_regclass('public.app_b30c02e74da644baad4668e3587d86b1_users') is not null then
+    execute 'alter table public.app_b30c02e74da644baad4668e3587d86b1_users enable row level security';
+    execute 'alter table public.app_b30c02e74da644baad4668e3587d86b1_users force row level security';
 
-create policy "shared tenant users select"
-on public.app_b30c02e74da644baad4668e3587d86b1_users
-for select
-to authenticated
-using (
-  auth.uid() = id
-  or public.app_has_current_organization_access(primary_organization_id)
-);
+    execute 'drop policy if exists "shared tenant users select" on public.app_b30c02e74da644baad4668e3587d86b1_users';
+    execute 'drop policy if exists "shared tenant users insert" on public.app_b30c02e74da644baad4668e3587d86b1_users';
+    execute 'drop policy if exists "shared tenant users update" on public.app_b30c02e74da644baad4668e3587d86b1_users';
+    execute 'drop policy if exists "shared tenant users delete" on public.app_b30c02e74da644baad4668e3587d86b1_users';
 
-create policy "shared tenant users insert"
-on public.app_b30c02e74da644baad4668e3587d86b1_users
-for insert
-to authenticated
-with check (
-  auth.uid() = id
-  or public.app_is_platform_admin()
-  or public.app_can_manage_current_organization(primary_organization_id)
-);
+    execute $policy$
+      create policy "shared tenant users select"
+      on public.app_b30c02e74da644baad4668e3587d86b1_users
+      for select
+      to authenticated
+      using (
+        auth.uid() = id
+        or public.app_has_current_organization_access(primary_organization_id)
+      )
+    $policy$;
 
-create policy "shared tenant users update"
-on public.app_b30c02e74da644baad4668e3587d86b1_users
-for update
-to authenticated
-using (
-  auth.uid() = id
-  or public.app_can_manage_current_organization(primary_organization_id)
-)
-with check (
-  auth.uid() = id
-  or public.app_can_manage_current_organization(primary_organization_id)
-);
+    execute $policy$
+      create policy "shared tenant users insert"
+      on public.app_b30c02e74da644baad4668e3587d86b1_users
+      for insert
+      to authenticated
+      with check (
+        auth.uid() = id
+        or public.app_is_platform_admin()
+        or public.app_can_manage_current_organization(primary_organization_id)
+      )
+    $policy$;
 
-create policy "shared tenant users delete"
-on public.app_b30c02e74da644baad4668e3587d86b1_users
-for delete
-to authenticated
-using (public.app_is_platform_admin());
+    execute $policy$
+      create policy "shared tenant users update"
+      on public.app_b30c02e74da644baad4668e3587d86b1_users
+      for update
+      to authenticated
+      using (
+        auth.uid() = id
+        or public.app_can_manage_current_organization(primary_organization_id)
+      )
+      with check (
+        auth.uid() = id
+        or public.app_can_manage_current_organization(primary_organization_id)
+      )
+    $policy$;
 
-drop policy if exists "shared tenant user module access select" on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access;
-drop policy if exists "shared tenant user module access insert" on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access;
-drop policy if exists "shared tenant user module access update" on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access;
-drop policy if exists "shared tenant user module access delete" on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access;
+    execute $policy$
+      create policy "shared tenant users delete"
+      on public.app_b30c02e74da644baad4668e3587d86b1_users
+      for delete
+      to authenticated
+      using (public.app_is_platform_admin())
+    $policy$;
+  end if;
 
-create policy "shared tenant user module access select"
-on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access
-for select
-to authenticated
-using (
-  auth.uid() = user_id
-  or public.app_has_current_organization_access(organization_id)
-);
+  if to_regclass('public.app_b30c02e74da644baad4668e3587d86b1_user_module_access') is not null then
+    execute 'alter table public.app_b30c02e74da644baad4668e3587d86b1_user_module_access enable row level security';
+    execute 'alter table public.app_b30c02e74da644baad4668e3587d86b1_user_module_access force row level security';
 
-create policy "shared tenant user module access insert"
-on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access
-for insert
-to authenticated
-with check (public.app_can_manage_current_organization(organization_id));
+    execute 'drop policy if exists "shared tenant user module access select" on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access';
+    execute 'drop policy if exists "shared tenant user module access insert" on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access';
+    execute 'drop policy if exists "shared tenant user module access update" on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access';
+    execute 'drop policy if exists "shared tenant user module access delete" on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access';
 
-create policy "shared tenant user module access update"
-on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access
-for update
-to authenticated
-using (public.app_can_manage_current_organization(organization_id))
-with check (public.app_can_manage_current_organization(organization_id));
+    execute $policy$
+      create policy "shared tenant user module access select"
+      on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access
+      for select
+      to authenticated
+      using (
+        auth.uid() = user_id
+        or public.app_has_current_organization_access(organization_id)
+      )
+    $policy$;
 
-create policy "shared tenant user module access delete"
-on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access
-for delete
-to authenticated
-using (public.app_can_manage_current_organization(organization_id));
+    execute $policy$
+      create policy "shared tenant user module access insert"
+      on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access
+      for insert
+      to authenticated
+      with check (public.app_can_manage_current_organization(organization_id))
+    $policy$;
+
+    execute $policy$
+      create policy "shared tenant user module access update"
+      on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access
+      for update
+      to authenticated
+      using (public.app_can_manage_current_organization(organization_id))
+      with check (public.app_can_manage_current_organization(organization_id))
+    $policy$;
+
+    execute $policy$
+      create policy "shared tenant user module access delete"
+      on public.app_b30c02e74da644baad4668e3587d86b1_user_module_access
+      for delete
+      to authenticated
+      using (public.app_can_manage_current_organization(organization_id))
+    $policy$;
+  end if;
+end $$;
 
 do $$
 declare
