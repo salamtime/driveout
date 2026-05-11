@@ -22,6 +22,8 @@ import { fetchSystemSettings } from '../../services/systemSettingsApi';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { buildRentalTelegramVehicleLabel } from '../../utils/rentalTelegram';
+import { getScopedOrganizationId, applyOrganizationScope } from '../../services/OrganizationService';
+import { getHostContext } from '../../utils/hostContext';
 import { toast } from 'sonner';
 
 const scheduleBackgroundTask = (callback) => {
@@ -1118,6 +1120,9 @@ const Rentals = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, hasFeature } = useAuth();
+  const hostContext = useMemo(() => getHostContext(), []);
+  const organizationId = useMemo(() => getScopedOrganizationId(user), [user]);
+  const isTenantWorkspace = hostContext.kind === 'tenant';
   const isFrench = isFrenchLocale();
   const canUseWhatsAppTools = hasFeature('whatsapp_tools');
   const warmRentalsSnapshot = useMemo(() => appWarmupService.getWarmRentalsSnapshot(), []);
@@ -1571,6 +1576,9 @@ const Rentals = () => {
     activeRentalsFetchRef.current = (async () => {
       try {
         isFetchingRentalsRef.current = true;
+        if (isTenantWorkspace && !organizationId) {
+          throw new Error('Workspace organization context is missing. Rentals are blocked to protect tenant isolation.');
+        }
         const normalizedStatusFilter = String(currentStatusFilter || '').toLowerCase();
 
         // Calculate range for pagination
@@ -1583,6 +1591,7 @@ const Rentals = () => {
             .from('app_4c3a7a6153_rentals')
             .select(buildRentalsSelect({ includeAuditColumns, includeVehicleSnapshots }));
 
+          query = applyOrganizationScope(query, organizationId);
           query = query.order('created_at', { ascending: false });
           return query;
         };
@@ -1707,7 +1716,7 @@ const Rentals = () => {
       const actualEndTime = new Date(now.getTime() + originalDuration).toISOString();
 
       // Update rental status to active
-      const { data: updatedRental, error: updateError } = await supabase
+      let startRentalQuery = supabase
         .from('app_4c3a7a6153_rentals')
         .update({ 
           rental_status: 'active', 
@@ -1719,7 +1728,11 @@ const Rentals = () => {
           started_by: user?.id || null,
           started_by_name: actorName,
         })
-        .eq('id', rental.id)
+        .eq('id', rental.id);
+
+      startRentalQuery = applyOrganizationScope(startRentalQuery, organizationId);
+
+      const { data: updatedRental, error: updateError } = await startRentalQuery
         .select(`
           *,
           vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
@@ -1761,10 +1774,12 @@ const Rentals = () => {
 
       // Update vehicle status
       if (rental.vehicle_id) {
-        await supabase
+        let vehicleStatusQuery = supabase
           .from('saharax_0u4w4d_vehicles')
           .update({ status: 'rented' })
           .eq('id', rental.vehicle_id);
+        vehicleStatusQuery = applyOrganizationScope(vehicleStatusQuery, organizationId);
+        await vehicleStatusQuery;
       }
 
       try {
