@@ -387,6 +387,8 @@ const ReceiptTemplate = ({ rental, logoUrl, stampUrl, bookingGraceMinutes = DEFA
   const vehicleName = (
     rental.vehicle?.name ||
     rental.vehicle?.model ||
+    rental.vehicle?.vehicle_model?.model ||
+    rental.vehicle?.vehicle_model?.name ||
     rental.vehicle_details?.name ||
     rental.vehicle_details?.model ||
     rental.vehicle_name_snapshot ||

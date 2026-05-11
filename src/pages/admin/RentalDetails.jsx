@@ -7700,6 +7700,23 @@ Click the link above to review and approve the extension.`;
     const effectiveQuantityDays = String(rental?.rental_type || '').toLowerCase() === 'hourly'
       ? effectiveQuantityHours
       : Math.max(0, (parseFloat(rental?.quantity_days || 0) || 0) - (inferredVoidedHours / 24));
+    const resolvedReceiptVehicleName =
+      rental?.vehicle?.name ||
+      rental?.vehicle?.model ||
+      rental?.vehicle?.vehicle_model?.model ||
+      rental?.vehicle?.vehicle_model?.name ||
+      rental?.vehicle_name_snapshot ||
+      rental?.vehicle_model_snapshot ||
+      rental?.selected_vehicle_name_snapshot ||
+      rental?.selected_vehicle_model_snapshot ||
+      rental?.vehicle_label_snapshot ||
+      null;
+    const resolvedReceiptPlateNumber =
+      rental?.vehicle?.plate_number ||
+      rental?.vehicle_plate_number ||
+      rental?.selected_vehicle_plate_snapshot ||
+      rental?.plate_number_snapshot ||
+      null;
 
     return {
       ...rental,
@@ -7750,8 +7767,15 @@ Click the link above to review and approve the extension.`;
       impound_estimated_total: estimatedTotal,
       impound_estimated_extra_days: estimatedExtraDays,
       impound_estimated_extra_amount: estimatedExtraAmount,
+      vehicle_name_snapshot: rental?.vehicle_name_snapshot || resolvedReceiptVehicleName,
+      vehicle_model_snapshot: rental?.vehicle_model_snapshot || rental?.vehicle?.model || rental?.vehicle?.vehicle_model?.model || null,
+      vehicle_plate_number: rental?.vehicle_plate_number || resolvedReceiptPlateNumber,
+      plate_number_snapshot: rental?.plate_number_snapshot || resolvedReceiptPlateNumber,
       vehicle: {
         ...rental?.vehicle,
+        name: rental?.vehicle?.name || resolvedReceiptVehicleName,
+        model: rental?.vehicle?.model || rental?.vehicle?.vehicle_model?.model || rental?.vehicle_model_snapshot || null,
+        plate_number: rental?.vehicle?.plate_number || resolvedReceiptPlateNumber,
         vehicle_model: {
           ...rental?.vehicle?.vehicle_model,
           fuel_price: fuelPricePerLine || rental?.vehicle?.vehicle_model?.fuel_price || 0
