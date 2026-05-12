@@ -3243,6 +3243,12 @@ class FuelTransactionService {
         : unitPrice > 0 && amount > 0
           ? roundTo(unitPrice * amount, 2)
           : 0;
+    const requestedFinalFuelLines =
+      transactionData.fuel_lines_after !== undefined &&
+      transactionData.fuel_lines_after !== null &&
+      transactionData.fuel_lines_after !== ''
+        ? Number(transactionData.fuel_lines_after)
+        : null;
 
     if (transactionType === 'staff_fuel_use') {
       const vehicleId = transactionData.vehicle_id;
@@ -3466,9 +3472,17 @@ class FuelTransactionService {
 
       const currentState = await this.getVehicleFuelState(transactionData.vehicle_id);
       const nextLiters = roundTo((currentState.current_fuel_liters || 0) + amount, 3);
+      const normalizedTargetState =
+        requestedFinalFuelLines !== null && Number.isFinite(requestedFinalFuelLines)
+          ? normalizeFuelState({
+              lines: requestedFinalFuelLines,
+              tankCapacityLiters: currentState.tank_capacity_liters,
+            })
+          : null;
       const syncedState = await this.syncVehicleFuelState({
         vehicleId: transactionData.vehicle_id,
-        liters: nextLiters,
+        liters: normalizedTargetState?.liters ?? nextLiters,
+        lines: normalizedTargetState?.lines ?? null,
         source: 'vehicle_refill',
         transactionId: data.id,
         tankCapacityLiters: currentState.tank_capacity_liters,
@@ -3589,9 +3603,17 @@ class FuelTransactionService {
 
         const currentState = await this.getVehicleFuelState(transactionData.vehicle_id);
         const nextLiters = roundTo((currentState.current_fuel_liters || 0) + amount, 3);
+        const normalizedTargetState =
+          requestedFinalFuelLines !== null && Number.isFinite(requestedFinalFuelLines)
+            ? normalizeFuelState({
+                lines: requestedFinalFuelLines,
+                tankCapacityLiters: currentState.tank_capacity_liters,
+              })
+            : null;
         const syncedState = await this.syncVehicleFuelState({
           vehicleId: transactionData.vehicle_id,
-          liters: nextLiters,
+          liters: normalizedTargetState?.liters ?? nextLiters,
+          lines: normalizedTargetState?.lines ?? null,
           source: 'withdrawal',
           transactionId: data.id,
           tankCapacityLiters: currentState.tank_capacity_liters,
@@ -4304,9 +4326,25 @@ class FuelTransactionService {
         .maybeSingle();
 
       if (!directError && directState) {
+        const resolvedTankCapacityLiters =
+          resolveTankCapacityLiters(
+            directState.tank_capacity_liters,
+            DEFAULT_VEHICLE_TANK_LITERS,
+          ) || DEFAULT_VEHICLE_TANK_LITERS;
+        const normalized = normalizeFuelState({
+          liters: directState.current_fuel_liters,
+          lines: directState.current_fuel_lines,
+          tankCapacityLiters: resolvedTankCapacityLiters,
+          maxLines: directState.max_fuel_lines || DEFAULT_FUEL_LINES,
+        });
+
         return {
           ...directState,
           id: vehicleId,
+          current_fuel_liters: normalized.liters,
+          current_fuel_lines: normalized.lines,
+          max_fuel_lines: normalized.maxLines,
+          tank_capacity_liters: resolvedTankCapacityLiters,
           last_fuel_source: directState.last_source || 'unknown',
           last_fuel_update_at: directState.last_updated_at || null,
         };

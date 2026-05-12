@@ -922,9 +922,10 @@ const AddFuelTransactionModal = ({
     setFormData((prev) => ({
       ...prev,
       amount: requestedLiters > 0 ? String(requestedLiters) : '',
+      fuel_lines_after: String(safeTargetLines),
     }));
 
-    setErrors((prev) => ({ ...prev, amount: '' }));
+    setErrors((prev) => ({ ...prev, amount: '', fuel_lines_after: '' }));
   };
 
   const selectedStaffRemainingLines = formData.fuel_lines_after !== ''
