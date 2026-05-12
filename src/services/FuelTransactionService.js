@@ -549,7 +549,42 @@ class FuelTransactionService {
     };
   }
 
-  async updateTankCurrentVolume(nextVolume) {
+  buildTankAvailabilityError({ requestedLiters, availableLiters } = {}) {
+    const requested = roundToHalfLiter(Number(requestedLiters || 0));
+    const available = roundToHalfLiter(Number(availableLiters || 0));
+    return `Insufficient fuel in the main tank. Requested ${requested.toFixed(1)}L but only ${available.toFixed(1)}L is available right now.`;
+  }
+
+  async ensureSufficientTankVolume(requestedLiters, { availableLitersOverride = null } = {}) {
+    const liveTank = await this.getFuelTankData();
+    const availableLiters = availableLitersOverride !== null && availableLitersOverride !== undefined
+      ? Number(availableLitersOverride || 0)
+      : Number(liveTank?.current_volume_liters || 0);
+    const safeAvailableLiters = roundToHalfLiter(Math.max(0, availableLiters));
+    const safeRequestedLiters = roundToHalfLiter(Math.max(0, Number(requestedLiters || 0)));
+
+    if (safeRequestedLiters > safeAvailableLiters) {
+      return {
+        success: false,
+        error: this.buildTankAvailabilityError({
+          requestedLiters: safeRequestedLiters,
+          availableLiters: safeAvailableLiters,
+        }),
+        tank: liveTank,
+        availableLiters: safeAvailableLiters,
+        requestedLiters: safeRequestedLiters,
+      };
+    }
+
+    return {
+      success: true,
+      tank: liveTank,
+      availableLiters: safeAvailableLiters,
+      requestedLiters: safeRequestedLiters,
+    };
+  }
+
+  async updateTankCurrentVolume(nextVolume, { rejectNegative = false } = {}) {
     if (!(await this.tableExists(this.fuelTankTable))) {
       return { success: false, error: 'Fuel tank table not available' };
     }
@@ -561,6 +596,16 @@ class FuelTransactionService {
     }
 
     const capacity = Number(tank.capacity || tank.capacity_liters || this.defaultTankSettings.capacity);
+    const requestedVolume = Number(nextVolume || 0);
+    if (rejectNegative && requestedVolume < 0) {
+      return {
+        success: false,
+        error: this.buildTankAvailabilityError({
+          requestedLiters: Math.abs(requestedVolume),
+          availableLiters: Number(tank?.current_volume_liters || 0),
+        }),
+      };
+    }
     const safeVolume = Math.max(0, roundTo(Math.min(capacity, Number(nextVolume) || 0), 2));
 
     const { data, error } = await supabase
@@ -580,10 +625,10 @@ class FuelTransactionService {
     return { success: true, tank: data || { ...tank, current_volume_liters: safeVolume } };
   }
 
-  async adjustTankCurrentVolume(deltaLiters) {
+  async adjustTankCurrentVolume(deltaLiters, options = {}) {
     const tank = await this.getFuelTankData();
     const current = Number(tank?.current_volume_liters || 0);
-    return this.updateTankCurrentVolume(current + Number(deltaLiters || 0));
+    return this.updateTankCurrentVolume(current + Number(deltaLiters || 0), options);
   }
 
   async adjustTankLevel({
@@ -3468,6 +3513,11 @@ class FuelTransactionService {
     }
 
     if (transactionType === 'withdrawal' || transactionType === 'tank_out') {
+      const tankVolumeCheck = await this.ensureSufficientTankVolume(amount);
+      if (!tankVolumeCheck.success) {
+        return { success: false, error: tankVolumeCheck.error };
+      }
+
       const tankAverageUnitCost = await this.getCurrentTankAverageUnitCost();
       const transferUnitPrice =
         transactionType === 'withdrawal'
@@ -3531,7 +3581,11 @@ class FuelTransactionService {
       }
 
       if (transactionType === 'withdrawal') {
-        await this.adjustTankCurrentVolume(-amount);
+        const tankAdjustmentResult = await this.adjustTankCurrentVolume(-amount, { rejectNegative: true });
+        if (!tankAdjustmentResult.success) {
+          await supabase.from(this.fuelWithdrawalsTable).delete().eq('id', data.id);
+          return { success: false, error: tankAdjustmentResult.error };
+        }
 
         const currentState = await this.getVehicleFuelState(transactionData.vehicle_id);
         const nextLiters = roundTo((currentState.current_fuel_liters || 0) + amount, 3);
@@ -3565,7 +3619,11 @@ class FuelTransactionService {
           this.getVehicleFuelUsageSummary(transactionData.vehicle_id, { persist: true }),
         ], 'withdrawal follow-up');
       } else {
-        await this.adjustTankCurrentVolume(-amount);
+        const tankAdjustmentResult = await this.adjustTankCurrentVolume(-amount, { rejectNegative: true });
+        if (!tankAdjustmentResult.success) {
+          await supabase.from(this.fuelWithdrawalsTable).delete().eq('id', data.id);
+          return { success: false, error: tankAdjustmentResult.error };
+        }
         this.runBackgroundFuelTasks([
           this.logFuelOperation({
             transaction_type: 'tank_out',
@@ -3752,9 +3810,18 @@ class FuelTransactionService {
     if (transactionType === 'withdrawal' || transactionType === 'tank_out') {
       const { data: previousWithdrawal } = await supabase
         .from(this.fuelWithdrawalsTable)
-        .select('id, liters_taken, vehicle_id, unit_price, total_cost')
+        .select('id, liters_taken, vehicle_id, unit_price, total_cost, withdrawal_date, odometer_reading, filled_by, notes, transaction_type')
         .eq('id', id)
         .maybeSingle();
+
+      const previousAmount = Number(previousWithdrawal?.liters_taken || 0);
+      const liveTank = await this.getFuelTankData();
+      const tankVolumeCheck = await this.ensureSufficientTankVolume(amount, {
+        availableLitersOverride: Number(liveTank?.current_volume_liters || 0) + previousAmount,
+      });
+      if (!tankVolumeCheck.success) {
+        return { success: false, error: tankVolumeCheck.error };
+      }
 
       const tankAverageUnitCost = await this.getCurrentTankAverageUnitCost();
       const transferUnitPrice =
@@ -3820,8 +3887,21 @@ class FuelTransactionService {
         return { success: false, error: error.message };
       }
 
-      const previousAmount = Number(previousWithdrawal?.liters_taken || 0);
-      await this.adjustTankCurrentVolume(-(amount - previousAmount));
+      const tankAdjustmentResult = await this.adjustTankCurrentVolume(-(amount - previousAmount), { rejectNegative: true });
+      if (!tankAdjustmentResult.success) {
+        await updateWithPayload({
+          vehicle_id: previousWithdrawal?.vehicle_id || null,
+          liters_taken: previousAmount,
+          unit_price: Number(previousWithdrawal?.unit_price || 0) || null,
+          total_cost: Number(previousWithdrawal?.total_cost || 0) || null,
+          withdrawal_date: previousWithdrawal?.withdrawal_date || null,
+          odometer_reading: previousWithdrawal?.odometer_reading || null,
+          filled_by: previousWithdrawal?.filled_by || null,
+          notes: previousWithdrawal?.notes || null,
+          transaction_type: previousWithdrawal?.transaction_type || transactionType,
+        });
+        return { success: false, error: tankAdjustmentResult.error };
+      }
 
       this.invalidateFuelCaches({
         entity: 'fuel_transaction',

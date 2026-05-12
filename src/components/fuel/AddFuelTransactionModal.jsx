@@ -369,7 +369,9 @@ const AddFuelTransactionModal = ({
       const normalizedValue = normalizeDecimalInput(value);
       const numericAmount = Number(normalizedValue);
       const roundedAmount = Number.isFinite(numericAmount) ? roundToHalfLiter(numericAmount) : 0;
-      const safeAmount = maxVehicleLiters > 0 ? Math.min(roundedAmount, roundToHalfLiter(maxVehicleLiters)) : roundedAmount;
+      const safeAmount = formData.transaction_type === 'vehicle_refill' && maxVehicleLiters > 0
+        ? Math.min(roundedAmount, roundToHalfLiter(maxVehicleLiters))
+        : roundedAmount;
 
       setFormData((prev) => {
         if (prev.transaction_type === 'withdrawal') {
@@ -396,6 +398,28 @@ const AddFuelTransactionModal = ({
           ...prev,
           [name]: ''
         }));
+      }
+
+      if (formData.transaction_type === 'withdrawal' && normalizedValue !== '') {
+        const nextErrors = {};
+        if (currentTankLiters > 0 && safeAmount > roundToHalfLiter(currentTankLiters)) {
+          nextErrors.amount = tr(
+            `Only ${roundToHalfLiter(currentTankLiters).toFixed(1)}L is available in the main tank right now.`,
+            `Seulement ${roundToHalfLiter(currentTankLiters).toFixed(1)}L est disponible dans la cuve principale pour le moment.`
+          );
+        } else if (maxVehicleLiters > 0 && safeAmount > roundToHalfLiter(maxVehicleLiters)) {
+          nextErrors.amount = tr(
+            `You can only reach ${maxReachableTransferLines}/8 right now (${roundToHalfLiter(maxVehicleLiters).toFixed(1)}L max).`,
+            `Vous pouvez atteindre seulement ${maxReachableTransferLines}/8 pour le moment (${roundToHalfLiter(maxVehicleLiters).toFixed(1)}L max).`
+          );
+        }
+
+        if (Object.keys(nextErrors).length > 0) {
+          setErrors((prev) => ({
+            ...prev,
+            ...nextErrors,
+          }));
+        }
       }
       return;
     }
@@ -675,6 +699,21 @@ const AddFuelTransactionModal = ({
       newErrors.amount = `Maximum ${currentTankLiters}L disponibles`;
     }
 
+    if (formData.transaction_type === 'withdrawal') {
+      const requestedAmount = roundToHalfLiter(Number(formData.amount || 0));
+      if (requestedAmount > roundToHalfLiter(currentTankLiters)) {
+        newErrors.amount = tr(
+          `Only ${roundToHalfLiter(currentTankLiters).toFixed(1)}L is available in the main tank right now.`,
+          `Seulement ${roundToHalfLiter(currentTankLiters).toFixed(1)}L est disponible dans la cuve principale pour le moment.`
+        );
+      } else if (requestedAmount > 0 && requestedAmount > roundToHalfLiter(maxVehicleLiters)) {
+        newErrors.amount = tr(
+          `You can only reach ${maxReachableTransferLines}/8 right now (${roundToHalfLiter(maxVehicleLiters).toFixed(1)}L max).`,
+          `Vous pouvez atteindre seulement ${maxReachableTransferLines}/8 pour le moment (${roundToHalfLiter(maxVehicleLiters).toFixed(1)}L max).`
+        );
+      }
+    }
+
     if (
       (formData.transaction_type === 'tank_refill' || formData.transaction_type === 'vehicle_refill') &&
       (!formData.unit_price || parseFloat(normalizeDecimalInput(formData.unit_price)) <= 0)
@@ -851,6 +890,12 @@ const AddFuelTransactionModal = ({
   const maxReachableTransferLines = maxVehicleLiters > 0
     ? litersToLines(roundTo(currentVehicleLiters + maxVehicleLiters, 3), currentVehicleTankCapacity, DEFAULT_FUEL_LINES)
     : currentVehicleLines;
+  const hasLimitedTransferRange = formData.transaction_type === 'withdrawal'
+    && maxVehicleLiters > 0
+    && maxReachableTransferLines < DEFAULT_FUEL_LINES;
+  const maximumReachableTransferLineLabel = maxVehicleLiters > 0
+    ? `${maxReachableTransferLines}/8`
+    : `${currentVehicleLines}/8`;
   const selectedTransferTargetLines = formData.amount
     ? litersToLines(roundTo(currentVehicleLiters + Number(formData.amount || 0), 3), currentVehicleTankCapacity, DEFAULT_FUEL_LINES)
     : null;
@@ -861,16 +906,25 @@ const AddFuelTransactionModal = ({
     const safeTargetLines = Math.max(0, Math.min(DEFAULT_FUEL_LINES, Number(targetLines) || 0));
     const targetLiters = linesToLiters(safeTargetLines, currentVehicleTankCapacity, DEFAULT_FUEL_LINES);
     const litersNeeded = Math.max(0, roundToHalfLiter(targetLiters - currentVehicleLiters));
-    const maxAllowedLiters = maxVehicleLiters > 0 ? Math.min(roundToHalfLiter(maxVehicleLiters), litersNeeded) : litersNeeded;
+    const requestedLiters = roundToHalfLiter(litersNeeded);
+
+    if (formData.transaction_type === 'withdrawal' && requestedLiters > roundToHalfLiter(maxVehicleLiters || 0)) {
+      setErrors((prev) => ({
+        ...prev,
+        amount: tr(
+          `Not enough fuel in the main tank. Maximum reachable level right now: ${maximumReachableTransferLineLabel} (${roundToHalfLiter(maxVehicleLiters).toFixed(1)}L max).`,
+          `Pas assez de carburant dans la cuve principale. Niveau maximum atteignable maintenant : ${maximumReachableTransferLineLabel} (${roundToHalfLiter(maxVehicleLiters).toFixed(1)}L max).`
+        ),
+      }));
+      return;
+    }
 
     setFormData((prev) => ({
       ...prev,
-      amount: maxAllowedLiters > 0 ? String(maxAllowedLiters) : '',
+      amount: requestedLiters > 0 ? String(requestedLiters) : '',
     }));
 
-    if (errors.amount) {
-      setErrors((prev) => ({ ...prev, amount: '' }));
-    }
+    setErrors((prev) => ({ ...prev, amount: '' }));
   };
 
   const selectedStaffRemainingLines = formData.fuel_lines_after !== ''
@@ -1393,6 +1447,20 @@ const AddFuelTransactionModal = ({
                         {tr('Current:', 'Actuel :')} {currentVehicleLines}/8
                       </span>
                     </div>
+                    <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-semibold">{tr('Maximum reachable right now', 'Maximum atteignable maintenant')}</span>
+                        <span className="font-semibold">
+                          {maximumReachableTransferLineLabel}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs font-medium text-amber-800">
+                        {tr(
+                          `${roundToHalfLiter(currentTankLiters).toFixed(1)}L is available in the main tank, so the transfer cannot go beyond ${maximumReachableTransferLineLabel}.`,
+                          `${roundToHalfLiter(currentTankLiters).toFixed(1)}L est disponible dans la cuve principale, donc le transfert ne peut pas dépasser ${maximumReachableTransferLineLabel}.`
+                        )}
+                      </p>
+                    </div>
                     <div className="grid grid-cols-4 gap-2">
                       {Array.from({ length: DEFAULT_FUEL_LINES }, (_, index) => index + 1).map((line) => {
                         const isDisabled = isVehicleFullForTransfer || line <= currentVehicleLines || line > maxReachableTransferLines;
@@ -1422,10 +1490,14 @@ const AddFuelTransactionModal = ({
                       className={`mt-3 w-full rounded-xl border px-4 py-3 text-base font-bold transition ${
                         selectedTransferTargetLines === DEFAULT_FUEL_LINES
                           ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
-                          : 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                          : hasLimitedTransferRange
+                            ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                            : 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
                       } disabled:cursor-not-allowed disabled:opacity-50`}
                     >
-                      Full
+                      {hasLimitedTransferRange
+                        ? tr(`Full not reachable now (max ${maximumReachableTransferLineLabel})`, `Plein impossible maintenant (max ${maximumReachableTransferLineLabel})`)
+                        : 'Full'}
                     </button>
                   </div>
 
@@ -1561,6 +1633,11 @@ const AddFuelTransactionModal = ({
                 </div>
                 {(isVehicleFullForTransfer || litersPickerOptions.length === 0) && (
                   <p className="mt-2 text-xs font-medium text-red-600">{tr('Vehicle tank is full.', 'Le réservoir du véhicule est plein.')}</p>
+                )}
+                {!isVehicleFullForTransfer && maxVehicleLiters <= 0 && (
+                  <p className="mt-2 text-xs font-medium text-red-600">
+                    {tr('No fuel is available in the main tank for a transfer right now.', "Aucun carburant n'est disponible dans la cuve principale pour un transfert pour le moment.")}
+                  </p>
                 )}
               </>
             ) : (
