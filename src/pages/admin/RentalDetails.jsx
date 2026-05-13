@@ -3580,6 +3580,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [cancelRentalNote, setCancelRentalNote] = useState('');
   const [showVehicleIssueResolutionModal, setShowVehicleIssueResolutionModal] = useState(false);
   const [vehicleIssueSubmitting, setVehicleIssueSubmitting] = useState(false);
+  const [finishResolutionMode, setFinishResolutionMode] = useState('standard');
   const [vehicleIssueForm, setVehicleIssueForm] = useState({
     refundOutcome: 'full',
     refundStatus: 'pending',
@@ -3755,6 +3756,26 @@ const openReplacementResumeWorkflow = useCallback(() => {
   });
   const [savingMaintenanceCharge, setSavingMaintenanceCharge] = useState(false);
   const notifiedAutoExpiredRentalsRef = useRef(new Set());
+  const initializeVehicleIssueResolutionForm = useCallback(() => {
+    const paidAmount = Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0);
+    const refundableAmount = Math.min(
+      paidAmount,
+      Math.max(0, Number(rental?.total_amount || 0) || 0) || paidAmount
+    );
+
+    setVehicleIssueForm({
+      refundOutcome: refundableAmount > 0 ? 'full' : 'none',
+      refundStatus: refundableAmount > 0 ? 'pending' : 'completed',
+      refundAmount: refundableAmount > 0 ? String(refundableAmount) : '',
+      refundDestination: 'original_payment_method',
+      vehicleAction: 'maintenance',
+      internalNote: '',
+      customerMessage: tr(
+        'We cancelled this rental because the assigned vehicle is not operational. We will follow up with your refund immediately.',
+        "Nous avons annulé cette location parce que le véhicule assigné n'est pas opérationnel. Nous revenons vers vous immédiatement pour le remboursement."
+      ),
+    });
+  }, [rental, tr]);
 
   const hasClosingInspectionMedia = closingMedia.length > 0;
   const reportRequired = vehicleReportDraft.enabled;
@@ -9449,6 +9470,8 @@ const handleFuelChargeToggle = async (enabled) => {
       setShowEndFuelModal(false);
       setRequiresClosingInspectionReview(closingMedia.length > 0);
       setReturnWorkflowBillingResult(null);
+      setFinishResolutionMode('standard');
+      setShowVehicleIssueResolutionModal(false);
 
       const nextState = {
         showWorkflow: false,
@@ -12622,6 +12645,7 @@ useEffect(() => {
         end_odometer: true,
         final_payment: true,
       });
+      setFinishResolutionMode('standard');
       clearFinishWorkflowState();
       await ensureCompletedRentalPersistence({
         rentalId: rental.id,
@@ -12656,26 +12680,17 @@ useEffect(() => {
   }, []);
 
   const openVehicleIssueResolutionModal = useCallback(() => {
-    const paidAmount = Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0);
-    const refundableAmount = Math.min(
-      paidAmount,
-      Math.max(0, Number(rental?.total_amount || 0) || 0) || paidAmount
-    );
-
-    setVehicleIssueForm({
-      refundOutcome: refundableAmount > 0 ? 'full' : 'none',
-      refundStatus: refundableAmount > 0 ? 'pending' : 'completed',
-      refundAmount: refundableAmount > 0 ? String(refundableAmount) : '',
-      refundDestination: 'original_payment_method',
-      vehicleAction: 'maintenance',
-      internalNote: '',
-      customerMessage: tr(
-        'We cancelled this rental because the assigned vehicle is not operational. We will follow up with your refund immediately.',
-        "Nous avons annulé cette location parce que le véhicule assigné n'est pas opérationnel. Nous revenons vers vous immédiatement pour le remboursement."
-      ),
-    });
+    initializeVehicleIssueResolutionForm();
     setShowVehicleIssueResolutionModal(true);
-  }, [rental, tr]);
+  }, [initializeVehicleIssueResolutionForm]);
+
+  const openVehicleIssueFinishWorkflow = useCallback(async () => {
+    initializeVehicleIssueResolutionForm();
+    setFinishResolutionMode('vehicle_issue');
+    if (!finishRentalSteps.showWorkflow) {
+      await openFinishWorkflow();
+    }
+  }, [finishRentalSteps.showWorkflow, initializeVehicleIssueResolutionForm, openFinishWorkflow]);
 
   const resolveVehicleIssueCancellation = useCallback(async () => {
     if (!rental?.id) return;
@@ -12797,6 +12812,7 @@ useEffect(() => {
       });
 
       setShowVehicleIssueResolutionModal(false);
+      setFinishResolutionMode('standard');
       setRental((prev) => prev ? ({ ...prev, ...updatePayload }) : prev);
       await loadRentalData(true);
       toast.success(tr('Vehicle issue cancellation saved.', 'Annulation pour problème véhicule enregistrée.'));
@@ -15819,6 +15835,12 @@ useEffect(() => {
   const showLightReadyToStartMobile = isLightRentalDetailsMode && showStartChecklistWorkflow;
   const showLightActiveRentalMobile = isLightRentalDetailsMode && isActive && !finishRentalSteps.showWorkflow;
   const showLightFinishRentalMobile = isLightRentalDetailsMode && isActive && finishRentalSteps.showWorkflow;
+  const finishWorkflowCoreStepsComplete =
+    closingInspectionStepComplete &&
+    finishRentalSteps.endOdometerComplete &&
+    finishRentalSteps.endEngineHoursComplete &&
+    finishRentalSteps.endFuelComplete;
+  const isVehicleIssueFinishFlow = finishResolutionMode === 'vehicle_issue';
 
   useEffect(() => {
     setLightRentalInfoOpenSections({
@@ -16585,6 +16607,7 @@ useEffect(() => {
               openReplacementResumeWorkflow();
               return;
             }
+            setFinishResolutionMode('standard');
             void openFinishWorkflow();
           }}
           disabled={effectiveReplacementPauseStartedAt ? (!canStartRental || isStartWorkflowSoftLocked || isWorkflowDisabled() || isStartingRental) : hasUnresolvedTowingHold}
@@ -16604,6 +16627,22 @@ useEffect(() => {
             ? (isStartingRental ? tr('Resuming...', 'Reprise...') : tr('Resume rental', 'Reprendre la location'))
             : tr('End now', 'Terminer maintenant')}
         </button>
+        {!effectiveReplacementPauseStartedAt && (
+          <button
+            type="button"
+            onClick={() => { void openVehicleIssueFinishWorkflow(); }}
+            disabled={hasUnresolvedTowingHold}
+            title={hasUnresolvedTowingHold ? towingHoldLockTitle : undefined}
+            className={`mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border px-5 py-3 text-sm font-semibold transition ${
+              hasUnresolvedTowingHold
+                ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+                : 'border-amber-200 bg-amber-50 text-amber-800 shadow-sm hover:bg-amber-100'
+            }`}
+          >
+            <Wrench className="h-4 w-4" />
+            {tr('Return With Vehicle Issue', 'Retour avec problème véhicule')}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -16968,6 +17007,32 @@ useEffect(() => {
             {nextFinishWorkflowStep ? finishWorkflowNextStepHint : tr('All finish steps are complete.', 'Toutes les étapes de clôture sont terminées.')}
           </div>
 
+          {isVehicleIssueFinishFlow && (
+            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 shadow-sm">
+              <p className="font-semibold text-amber-900">
+                {tr('Vehicle issue return path selected', 'Parcours retour avec problème véhicule sélectionné')}
+              </p>
+              <p className="mt-1 leading-5">
+                {lightFinishCanComplete
+                  ? tr(
+                      'Your return readings are complete. Use the action below to confirm the refund and vehicle resolution.',
+                      'Vos relevés de retour sont complets. Utilisez l’action ci-dessous pour confirmer le remboursement et la résolution du véhicule.'
+                    )
+                  : tr(
+                      'Complete all return steps first. The refund and vehicle resolution will open after inspection, odometer, engine hours, and fuel are done.',
+                      'Terminez d’abord toutes les étapes de retour. Le remboursement et la résolution du véhicule s’ouvriront après l’inspection, le kilométrage, les heures moteur et le carburant.'
+                    )}
+              </p>
+              <button
+                type="button"
+                onClick={() => setFinishResolutionMode('standard')}
+                className="mt-3 inline-flex items-center justify-center rounded-full border border-amber-200 bg-white px-3 py-2 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100"
+              >
+                {tr('Finish normally instead', 'Terminer normalement à la place')}
+              </button>
+            </div>
+          )}
+
           <div className="mt-4 flex justify-center">
             <button
               type="button"
@@ -16990,6 +17055,10 @@ useEffect(() => {
             type="button"
             onClick={async () => {
               try {
+                if (isVehicleIssueFinishFlow) {
+                  openVehicleIssueResolutionModal();
+                  return;
+                }
                 await finalizeRentalCompletion();
               } catch (err) {
                 toast.error(`Failed: ${err.message}`);
@@ -17002,8 +17071,10 @@ useEffect(() => {
                 : 'cursor-not-allowed bg-slate-200 text-slate-500'
             }`}
           >
-            <CheckCircle className="h-5 w-5" />
-            {tr('Finish rental', 'Terminer la location')}
+            {isVehicleIssueFinishFlow ? <Wrench className="h-5 w-5" /> : <CheckCircle className="h-5 w-5" />}
+            {isVehicleIssueFinishFlow
+              ? tr('Continue to resolution', 'Continuer vers la résolution')
+              : tr('Finish rental', 'Terminer la location')}
           </button>
         </div>
       </div>
@@ -20266,19 +20337,6 @@ useEffect(() => {
                         {tr('Cancel rental', 'Annuler la location')}
                       </button>
                     )}
-                    {isActive && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsMoreActionsOpen(false);
-                          openVehicleIssueResolutionModal();
-                        }}
-                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50"
-                      >
-                        <Wrench className="mr-2 h-4 w-4" />
-                        {tr('Cancel due to vehicle issue', 'Annuler pour problème véhicule')}
-                      </button>
-                    )}
                     {canDeleteScheduledRental && (
                       <button
                         type="button"
@@ -20290,19 +20348,6 @@ useEffect(() => {
                       >
                         <XCircle className="mr-2 h-4 w-4" />
                         {tr('Delete', 'Supprimer')}
-                      </button>
-                    )}
-                    {isActive && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsMoreActionsOpen(false);
-                          openVehicleIssueResolutionModal();
-                        }}
-                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
-                      >
-                        <XCircle className="mr-2 h-4 w-4" />
-                        {tr('Cancel active rental', 'Annuler la location active')}
                       </button>
                     )}
                     {isActive && !isImpounded && (
@@ -21507,7 +21552,10 @@ useEffect(() => {
                       ) : (
                         <>
                           <Button 
-                            onClick={() => { void openFinishWorkflow(); }}
+                            onClick={() => {
+                              setFinishResolutionMode('standard');
+                              void openFinishWorkflow();
+                            }}
                             disabled={hasUnresolvedTowingHold}
                             title={hasUnresolvedTowingHold ? towingHoldLockTitle : undefined}
                             className={`min-w-0 justify-center whitespace-normal px-5 py-4 text-center text-base font-semibold leading-tight shadow-sm transition-all duration-200 rounded-lg sm:py-5 sm:text-lg ${
@@ -21518,6 +21566,18 @@ useEffect(() => {
                           >
                             <StopCircle className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
                             {tr('End Now', 'Terminer maintenant')}
+                          </Button>
+
+                          <Button
+                            type="button"
+                            onClick={() => { void openVehicleIssueFinishWorkflow(); }}
+                            disabled={hasUnresolvedTowingHold}
+                            title={hasUnresolvedTowingHold ? towingHoldLockTitle : undefined}
+                            variant="outline"
+                            className="min-w-0 justify-center whitespace-normal border-amber-200 bg-amber-50 px-5 py-4 text-center text-base font-semibold leading-tight text-amber-700 shadow-sm transition-all duration-200 hover:bg-amber-100 hover:text-amber-800 rounded-lg sm:py-5 sm:text-lg"
+                          >
+                            <Wrench className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
+                            {tr('Return With Vehicle Issue', 'Retour avec problème véhicule')}
                           </Button>
                           
                           {canOpenExtensionFlow && (
@@ -22353,10 +22413,39 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                       </div>
                     )}
 
-                    {/* Complete Rental — appears inline once all 3 steps done */}
-                    {closingInspectionStepComplete &&
-                     finishRentalSteps.endOdometerComplete &&
-                     finishRentalSteps.endFuelComplete && (
+                    {isVehicleIssueFinishFlow && (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-4 text-sm text-amber-900 shadow-sm">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <p className="font-semibold">
+                              {tr('Vehicle issue return workflow', 'Flux de retour avec problème véhicule')}
+                            </p>
+                            <p className="mt-1 text-xs leading-5 text-amber-800">
+                              {finishWorkflowCoreStepsComplete
+                                ? tr(
+                                    'Return details are complete. You can now confirm the refund and vehicle resolution below.',
+                                    'Les détails de retour sont complets. Vous pouvez maintenant confirmer le remboursement et la résolution du véhicule ci-dessous.'
+                                  )
+                                : tr(
+                                    'Complete inspection, ending odometer, engine hours, and fuel first. Refund and vehicle resolution unlock after the return data is complete.',
+                                    'Complétez d’abord l’inspection, le kilométrage, les heures moteur et le carburant. Le remboursement et la résolution du véhicule se débloquent ensuite.'
+                                  )}
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setFinishResolutionMode('standard')}
+                            className="border-white/70 bg-white/80 text-amber-800 hover:bg-white"
+                          >
+                            {tr('Finish normally instead', 'Terminer normalement à la place')}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Complete Rental / Vehicle Issue Resolution */}
+                    {finishWorkflowCoreStepsComplete && (
                       <div className="pt-1 space-y-2">
                         {/* Balance warning */}
                         {(() => {
@@ -22386,18 +22475,184 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                             </p>
                           </div>
                         )}
-                        <Button
-                          onClick={async () => {
-                            try { await finalizeRentalCompletion(); }
-                            catch (err) { toast.error(`Failed: ${err.message}`); }
-                          }}
-                          disabled={isFinishWorkflowSoftLocked}
-                          className="bg-green-600 hover:bg-green-700 text-white py-3 text-sm font-semibold shadow-lg w-full"
-                          title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
-                        >
-                          <CheckCircle className="w-4 h-4 mr-2" />
-                          Complete Rental
-                        </Button>
+
+                        {isVehicleIssueFinishFlow ? (
+                          <div className="space-y-5 rounded-2xl border border-amber-200 bg-white p-4 shadow-[0_16px_40px_rgba(245,158,11,0.12)]">
+                            <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-4">
+                              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">
+                                    {tr('Recommended refund', 'Remboursement recommandé')}
+                                  </p>
+                                  <p className="mt-1 text-lg font-semibold text-amber-950">
+                                    {formatCurrency(Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0))} MAD
+                                  </p>
+                                </div>
+                                <div className="text-sm text-amber-800">
+                                  {tr('Collected from customer so far', 'Déjà encaissé auprès du client')}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="grid gap-5 lg:grid-cols-2">
+                              <div className="space-y-3">
+                                <label className="text-sm font-semibold text-slate-700">{tr('Refund outcome', 'Décision de remboursement')}</label>
+                                <div className="space-y-2">
+                                  {VEHICLE_ISSUE_REFUND_OUTCOME_OPTIONS.map((option) => {
+                                    const isSelected = vehicleIssueForm.refundOutcome === option.value;
+                                    return (
+                                      <button
+                                        key={option.value}
+                                        type="button"
+                                        onClick={() => setVehicleIssueForm((prev) => ({
+                                          ...prev,
+                                          refundOutcome: option.value,
+                                          refundStatus: option.value === 'none' ? 'completed' : prev.refundStatus,
+                                          refundAmount: option.value === 'none'
+                                            ? ''
+                                            : prev.refundAmount || String(Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0)),
+                                        }))}
+                                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                                          isSelected
+                                            ? 'border-amber-300 bg-amber-50 shadow-[0_14px_32px_rgba(245,158,11,0.10)]'
+                                            : 'border-slate-200 bg-white hover:border-amber-200 hover:bg-amber-50/40'
+                                        }`}
+                                      >
+                                        <p className={`text-sm font-semibold ${isSelected ? 'text-amber-900' : 'text-slate-900'}`}>
+                                          {isFrench ? option.label.fr : option.label.en}
+                                        </p>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              <div className="space-y-3">
+                                <label className="text-sm font-semibold text-slate-700">{tr('Vehicle action', 'Action véhicule')}</label>
+                                <div className="space-y-2">
+                                  {VEHICLE_ISSUE_VEHICLE_ACTION_OPTIONS.map((option) => {
+                                    const isSelected = vehicleIssueForm.vehicleAction === option.value;
+                                    return (
+                                      <button
+                                        key={option.value}
+                                        type="button"
+                                        onClick={() => setVehicleIssueForm((prev) => ({ ...prev, vehicleAction: option.value }))}
+                                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                                          isSelected
+                                            ? 'border-slate-300 bg-slate-100 shadow-[0_14px_32px_rgba(15,23,42,0.08)]'
+                                            : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                                        }`}
+                                      >
+                                        <p className={`text-sm font-semibold ${isSelected ? 'text-slate-900' : 'text-slate-800'}`}>
+                                          {isFrench ? option.label.fr : option.label.en}
+                                        </p>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+
+                            {vehicleIssueForm.refundOutcome !== 'none' && (
+                              <div className="grid gap-4 lg:grid-cols-3">
+                                <div className="space-y-2">
+                                  <label className="text-sm font-semibold text-slate-700">{tr('Refund amount', 'Montant remboursé')}</label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={vehicleIssueForm.refundAmount}
+                                    onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, refundAmount: event.target.value }))}
+                                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                                  />
+                                </div>
+
+                                <div className="space-y-2">
+                                  <label className="text-sm font-semibold text-slate-700">{tr('Refund status', 'Statut remboursement')}</label>
+                                  <select
+                                    value={vehicleIssueForm.refundStatus}
+                                    onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, refundStatus: event.target.value }))}
+                                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                                  >
+                                    {VEHICLE_ISSUE_REFUND_STATUS_OPTIONS.map((option) => (
+                                      <option key={option.value} value={option.value}>
+                                        {isFrench ? option.label.fr : option.label.en}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                <div className="space-y-2">
+                                  <label className="text-sm font-semibold text-slate-700">{tr('Destination', 'Destination')}</label>
+                                  <select
+                                    value={vehicleIssueForm.refundDestination}
+                                    onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, refundDestination: event.target.value }))}
+                                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                                  >
+                                    {VEHICLE_ISSUE_REFUND_DESTINATION_OPTIONS.map((option) => (
+                                      <option key={option.value} value={option.value}>
+                                        {isFrench ? option.label.fr : option.label.en}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="grid gap-4 lg:grid-cols-2">
+                              <div className="space-y-2">
+                                <label className="text-sm font-semibold text-slate-700">
+                                  {tr('Internal note', 'Note interne')} <span className="text-rose-500">*</span>
+                                </label>
+                                <textarea
+                                  value={vehicleIssueForm.internalNote}
+                                  onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, internalNote: event.target.value }))}
+                                  rows={4}
+                                  placeholder={tr('Explain what failed on the vehicle and what the team must follow up on…', 'Expliquez ce qui a lâché sur le véhicule et ce que l’équipe doit suivre…')}
+                                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-sm font-semibold text-slate-700">
+                                  {tr('Customer message preview', 'Aperçu message client')}
+                                </label>
+                                <textarea
+                                  value={vehicleIssueForm.customerMessage}
+                                  onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, customerMessage: event.target.value }))}
+                                  rows={4}
+                                  placeholder={tr('Optional customer-facing explanation…', 'Explication facultative côté client…')}
+                                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                                />
+                              </div>
+                            </div>
+
+                            <Button
+                              type="button"
+                              onClick={resolveVehicleIssueCancellation}
+                              disabled={isFinishWorkflowSoftLocked || vehicleIssueSubmitting}
+                              className="w-full rounded-xl border border-amber-600 bg-amber-600 py-3 text-sm font-semibold text-white shadow-lg transition-colors hover:border-amber-700 hover:bg-amber-700"
+                              title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
+                            >
+                              <Wrench className="mr-2 h-4 w-4" />
+                              {vehicleIssueSubmitting
+                                ? tr('Resolving...', 'Traitement...')
+                                : tr('Confirm vehicle issue resolution', 'Confirmer la résolution du problème véhicule')}
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            onClick={async () => {
+                              try { await finalizeRentalCompletion(); }
+                              catch (err) { toast.error(`Failed: ${err.message}`); }
+                            }}
+                            disabled={isFinishWorkflowSoftLocked}
+                            className="bg-green-600 hover:bg-green-700 text-white py-3 text-sm font-semibold shadow-lg w-full"
+                            title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
+                          >
+                            <CheckCircle className="w-4 h-4 mr-2" />
+                            Complete Rental
+                          </Button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -27128,7 +27383,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
           setShowVehicleIssueResolutionModal(open);
         }}
       >
-        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-2xl overflow-hidden rounded-[28px] border border-amber-100 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.16)]">
+        <DialogContent className="flex max-h-[92dvh] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-[24px] border border-amber-100 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.16)] sm:mx-auto sm:w-[calc(100vw-1.5rem)] sm:max-w-2xl sm:rounded-[28px]">
           <DialogHeader className="border-b border-amber-100 bg-gradient-to-r from-white via-amber-50/60 to-slate-50 px-6 py-5 text-left">
             <DialogTitle className="flex items-center gap-2 text-xl font-semibold text-slate-900">
               <Wrench className="h-5 w-5 text-amber-600" />
@@ -27142,7 +27397,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-5 px-6 py-5">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+            <div className="space-y-5">
             <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-4">
               <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -27288,9 +27544,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 />
               </div>
             </div>
+            </div>
           </div>
 
-          <div className="flex flex-col-reverse gap-3 border-t border-slate-100 px-6 py-4 sm:flex-row sm:justify-end">
+          <div className="flex flex-col-reverse gap-3 border-t border-slate-100 bg-white px-4 py-4 sm:flex-row sm:justify-end sm:px-6">
             <Button
               type="button"
               variant="outline"
