@@ -751,6 +751,24 @@ const getBlockingRentals = async (adminClient, vehicleIds, excludeRentalId = nul
   });
 };
 
+const getListingModelId = (listing = {}) =>
+  String(listing?.vehicleModelId || listing?.raw?.vehicle_model_id || '').trim();
+
+const getListingModelName = (listing = {}) =>
+  String(
+    listing?.modelName ||
+    listing?.model ||
+    listing?.raw?.model ||
+    ''
+  ).trim();
+
+const getListingBrandName = (listing = {}) =>
+  String(
+    listing?.brand ||
+    listing?.raw?.name ||
+    ''
+  ).trim();
+
 const chooseBestVehicle = async ({
   adminClient,
   anchorListing,
@@ -824,20 +842,123 @@ const chooseBestVehicle = async ({
 const isSameVehicleIntent = (row, listing, assignedVehicle) => {
   const rowVehicle = row?.vehicle || {};
   const rowModelId = String(rowVehicle?.vehicle_model_id || row?.vehicle_model_id || '');
-  const listingModelId = String(listing?.vehicleModelId || listing?.raw?.vehicle_model_id || '');
+  const listingModelId = getListingModelId(listing);
   if (rowModelId && listingModelId && rowModelId === listingModelId) {
     return true;
   }
 
-  const rowModel = String(rowVehicle?.model || row?.vehicle?.model || '').trim().toLowerCase();
-  const listingModel = String(listing?.model || assignedVehicle?.model || '').trim().toLowerCase();
+  const rowModel = String(
+    rowVehicle?.model ||
+    row?.vehicle?.model ||
+    row?.selected_vehicle_model_snapshot ||
+    row?.vehicle_model_snapshot ||
+    ''
+  ).trim().toLowerCase();
+  const listingModel = String(
+    getListingModelName(listing) ||
+    assignedVehicle?.model ||
+    ''
+  ).trim().toLowerCase();
   if (rowModel && listingModel && rowModel === listingModel) {
     return true;
   }
 
   const rowType = String(rowVehicle?.vehicle_type || '').trim().toLowerCase();
   const listingType = String(listing?.category || listing?.raw?.vehicle_type || '').trim().toLowerCase();
-  return Boolean(rowType && listingType && rowType === listingType);
+  return Boolean(!listingModelId && !listingModel && rowType && listingType && rowType === listingType);
+};
+
+const getModelReservationAvailability = async ({
+  adminClient,
+  listing,
+  requestedStart,
+  requestedEnd,
+  excludeRentalId = null,
+}) => {
+  const requestStart = toDate(requestedStart);
+  const requestEnd = toDate(requestedEnd);
+  if (!requestStart || !requestEnd) {
+    throw new Error('Invalid booking window for availability.');
+  }
+
+  await cleanupExpiredWebsiteBookingLocks(adminClient).catch(() => {});
+
+  const candidates = await getFleetCandidates(adminClient, listing);
+  if (candidates.length === 0) {
+    return {
+      candidateCount: 0,
+      blockingCount: 0,
+      availableCount: 0,
+      candidates: [],
+      blockingRows: [],
+      reason: 'No eligible vehicles available.',
+    };
+  }
+
+  let query = adminClient
+    .from('app_4c3a7a6153_rentals')
+    .select(`
+      id,
+      vehicle_id,
+      vehicle_model_id,
+      rental_start_date,
+      rental_end_date,
+      rental_status,
+      customer_name,
+      booking_source,
+      website_booking_status,
+      is_vehicle_locked,
+      hold_expires_at,
+      selected_vehicle_model_snapshot,
+      vehicle_model_snapshot,
+      vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(
+        id,
+        model,
+        vehicle_type,
+        vehicle_model_id
+      )
+    `)
+    .lte('rental_start_date', requestedEnd)
+    .gte('rental_end_date', requestedStart)
+    .not('rental_status', 'in', '(cancelled,completed,expired,void)');
+
+  if (excludeRentalId) {
+    query = query.neq('id', excludeRentalId);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const candidateIds = new Set(candidates.map((vehicle) => String(vehicle.id)));
+  const blockingRows = (data || []).filter((row) => {
+    const rowStart = toDate(row.rental_start_date);
+    const rowEnd = toDate(row.rental_end_date, '23:59');
+    if (!windowsOverlap(requestStart, requestEnd, rowStart, rowEnd)) return false;
+
+    const shouldBlock = String(row?.booking_source || '').toLowerCase() === WEBSITE_BOOKING_SOURCE
+      ? shouldRentalBlockInventory(row, new Date())
+      : !isExpiredScheduledConflict(row, DEFAULT_SCHEDULED_GRACE_MINUTES) &&
+        shouldRentalBlockInventory(row, new Date());
+
+    if (!shouldBlock) return false;
+
+    if (row?.vehicle_id && candidateIds.has(String(row.vehicle_id))) {
+      return true;
+    }
+
+    return isSameVehicleIntent(row, listing, null);
+  });
+
+  return {
+    candidateCount: candidates.length,
+    blockingCount: blockingRows.length,
+    availableCount: Math.max(0, candidates.length - blockingRows.length),
+    candidates,
+    blockingRows,
+    reason: blockingRows.length >= candidates.length
+      ? 'All matching vehicles are protected by other bookings.'
+      : null,
+  };
 };
 
 const findExistingWebsiteBooking = async ({
@@ -1240,18 +1361,17 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
 
   await cleanupExpiredWebsiteBookingLocks(adminClient).catch(() => {});
 
-  const assignment = await chooseBestVehicle({
+  const availability = await getModelReservationAvailability({
     adminClient,
-    anchorListing: listing,
+    listing,
     requestedStart: startIso,
     requestedEnd: endIso,
   });
 
-  if (!assignment.assignedVehicle) {
-    throw createHttpError(409, assignment.reason || 'This vehicle is no longer available for the selected period.');
+  if (availability.availableCount <= 0) {
+    throw createHttpError(409, availability.reason || 'This vehicle model is no longer available for the selected period.');
   }
-
-  const assignedVehicle = assignment.assignedVehicle;
+  const assignedVehicle = null;
   const lifecycleFields = buildWebsiteBookingUpdate({
     bookingSecurityOption,
     websiteBookingStatus,
@@ -1274,6 +1394,9 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
   }
 
   const totalAmount = Number(packageSelection?.amount || 0) || Number(listing.priceFrom || 0);
+  const listingModelId = cleanValue(getListingModelId(listing));
+  const listingBrandName = cleanValue(getListingBrandName(listing));
+  const listingModelName = cleanValue(getListingModelName(listing));
   const basePayload = {
     customer_id: cleanValue(linkedCustomer.customerId),
     customer_name: resolvedCustomerName,
@@ -1281,7 +1404,12 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
     customer_phone: resolvedCustomerPhone,
     customer_licence_number: resolvedCustomerLicenseNumber,
     customer_id_image: resolvedLicenseDocumentUrl,
-    vehicle_id: assignedVehicle?.id || listing.sourceId,
+    vehicle_id: null,
+    vehicle_model_id: listingModelId,
+    selected_vehicle_name_snapshot: listingBrandName,
+    selected_vehicle_model_snapshot: listingModelName,
+    vehicle_name_snapshot: listingBrandName,
+    vehicle_model_snapshot: listingModelName,
     rental_start_date: startIso,
     rental_end_date: endIso,
     rental_start_time: cleanValue(toLocalTimeValue(localStart)),
@@ -1334,7 +1462,12 @@ const createCertifiedBooking = async (adminClient, payload, { user = null } = {}
       customer_name: resolvedCustomerName,
       customer_email: resolvedCustomerEmail,
       customer_phone: resolvedCustomerPhone,
-      vehicle_id: assignedVehicle?.id || listing.sourceId,
+      vehicle_id: null,
+      vehicle_model_id: listingModelId,
+      selected_vehicle_name_snapshot: listingBrandName,
+      selected_vehicle_model_snapshot: listingModelName,
+      vehicle_name_snapshot: listingBrandName,
+      vehicle_model_snapshot: listingModelName,
       rental_start_date: startIso,
       rental_end_date: endIso,
       total_amount: totalAmount,

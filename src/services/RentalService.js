@@ -4,6 +4,7 @@ import {
   applyOrganizationScope,
   getCurrentOrganizationId,
   requireCurrentOrganizationId,
+  shouldScopeSharedTenantData,
 } from './OrganizationService';
 
 const RENTAL_SELECT = `
@@ -23,14 +24,21 @@ const RENTAL_SELECT = `
 `;
 
 class RentalService {
-  async getActiveRentalsCount() {
+  async applyReadScope(query) {
     const organizationId = await getCurrentOrganizationId();
-    const { count, error } = await applyOrganizationScope(
+    if (!shouldScopeSharedTenantData()) {
+      return query;
+    }
+
+    return applyOrganizationScope(query, organizationId);
+  }
+
+  async getActiveRentalsCount() {
+    const { count, error } = await this.applyReadScope(
       supabase
       .from('app_4c3a7a6153_rentals')
       .select('*', { count: 'exact', head: true })
-      .eq('rental_status', 'active'),
-      organizationId
+      .eq('rental_status', 'active')
     );
     if (error) {
       console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
@@ -40,13 +48,11 @@ class RentalService {
   }
 
   async getTotalRevenue() {
-    const organizationId = await getCurrentOrganizationId();
-    const { data, error } = await applyOrganizationScope(
+    const { data, error } = await this.applyReadScope(
       supabase
       .from('app_4c3a7a6153_rentals')
       .select('total_amount')
-      .eq('payment_status', 'paid'),
-      organizationId
+      .eq('payment_status', 'paid')
     );
     if (error) {
       console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
@@ -56,14 +62,12 @@ class RentalService {
   }
 
   async getRecentBookings(limit = 5) {
-    const organizationId = await getCurrentOrganizationId();
-    const { data, error } = await applyOrganizationScope(
+    const { data, error } = await this.applyReadScope(
       supabase
       .from("app_4c3a7a6153_rentals")
       .select("*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*)")
       .order("created_at", { ascending: false })
-      .limit(limit),
-      organizationId
+      .limit(limit)
     );
     if (error) {
       console.error('❌ Error fetching recent bookings', { message: error.message, details: error.details, hint: error.hint, code: error.code });
@@ -75,14 +79,12 @@ class RentalService {
   async getRevenueTrend(days = 7) {
     const date = new Date();
     date.setDate(date.getDate() - days);
-    const organizationId = await getCurrentOrganizationId();
-    const { data, error } = await applyOrganizationScope(
+    const { data, error } = await this.applyReadScope(
       supabase
       .from('app_4c3a7a6153_rentals')
       .select('created_at, total_amount')
       .eq('payment_status', 'paid')
-      .gte('created_at', date.toISOString()),
-      organizationId
+      .gte('created_at', date.toISOString())
     );
     if (error) {
       console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
@@ -92,12 +94,10 @@ class RentalService {
   }
 
   async getAllRentals() {
-    const organizationId = await getCurrentOrganizationId();
-    const { data, error } = await applyOrganizationScope(
+    const { data, error } = await this.applyReadScope(
       supabase
       .from('app_4c3a7a6153_rentals')
-      .select('vehicle_id'),
-      organizationId
+      .select('vehicle_id')
     );
     if (error) {
       console.error('❌ Supabase Error', { message: error.message, details: error.details, hint: error.hint, code: error.code });
@@ -107,13 +107,11 @@ class RentalService {
   }
 
   async getAllRentalsDetailed() {
-    const organizationId = await requireCurrentOrganizationId();
-    const { data, error } = await applyOrganizationScope(
+    const { data, error } = await this.applyReadScope(
       supabase
         .from('app_4c3a7a6153_rentals')
         .select(RENTAL_SELECT)
-        .order('created_at', { ascending: false }),
-      organizationId
+        .order('created_at', { ascending: false })
     );
     if (error) {
       console.error('❌ Error fetching rentals', { message: error.message, details: error.details, hint: error.hint, code: error.code });
@@ -123,14 +121,12 @@ class RentalService {
   }
 
   async getRentalById(id) {
-    const organizationId = await requireCurrentOrganizationId();
-    const { data, error } = await applyOrganizationScope(
+    const { data, error } = await this.applyReadScope(
       supabase
         .from('app_4c3a7a6153_rentals')
         .select(RENTAL_SELECT)
         .eq('id', id)
-        .maybeSingle(),
-      organizationId
+        .maybeSingle()
     );
     if (error) {
       console.error('❌ Error fetching rental by id', { message: error.message, details: error.details, hint: error.hint, code: error.code });
@@ -141,16 +137,14 @@ class RentalService {
 
   async getLatestRentalByCustomerId(customerId) {
     if (!customerId) return null;
-    const organizationId = await requireCurrentOrganizationId();
-    const { data, error } = await applyOrganizationScope(
+    const { data, error } = await this.applyReadScope(
       supabase
         .from('app_4c3a7a6153_rentals')
         .select('*')
         .eq('customer_id', customerId)
         .order('created_at', { ascending: false })
         .limit(1)
-        .maybeSingle(),
-      organizationId
+        .maybeSingle()
     );
     if (error) {
       console.error('❌ Error fetching latest customer rental', { message: error.message, details: error.details, hint: error.hint, code: error.code });

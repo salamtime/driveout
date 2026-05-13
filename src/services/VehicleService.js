@@ -4,6 +4,7 @@ import {
   applyOrganizationMatch,
   applyOrganizationScope,
   getCurrentOrganizationId,
+  shouldScopeSharedTenantData,
 } from './OrganizationService';
 import { shouldHideVehicleFromOperationalViews } from '../utils/vehicleLifecycleVisibility';
 
@@ -34,6 +35,14 @@ class VehicleService {
       timestamp: null,
       TTL: 30000 // 30 seconds cache for available vehicles
     };
+  }
+
+  async applyReadScope(query, columnName = 'organization_id') {
+    const organizationId = await getCurrentOrganizationId();
+    if (!shouldScopeSharedTenantData()) {
+      return query;
+    }
+    return applyOrganizationScope(query, organizationId, columnName);
   }
 
   // =================== CACHE MANAGEMENT ===================
@@ -97,10 +106,9 @@ class VehicleService {
 
     try {
       console.log('🔄 Loading vehicles from actual database table...');
-      const organizationId = await getCurrentOrganizationId();
 
       const result = await this.withRetry(async () => {
-        const { data, error } = await applyOrganizationScope(
+        const { data, error } = await this.applyReadScope(
           supabase
           .from('saharax_0u4w4d_vehicles')
           .select(`
@@ -124,8 +132,7 @@ class VehicleService {
             sale_proof_url,
             sale_proof_name
           `)
-          .order('name', { ascending: true }),
-          organizationId
+          .order('name', { ascending: true })
         );
 
         if (error) throw error;
@@ -176,9 +183,7 @@ class VehicleService {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         console.log(`🚗 Loading available vehicles (attempt ${attempt + 1})...`);
-        const organizationId = await getCurrentOrganizationId();
-
-        const { data: vehicles, error } = await applyOrganizationScope(
+        const { data: vehicles, error } = await this.applyReadScope(
           supabase
           .from('saharax_0u4w4d_vehicles')
           .select(`
@@ -201,8 +206,7 @@ class VehicleService {
             sale_proof_name
           `)
           .eq('status', 'available')
-          .order('name', { ascending: true }),
-          organizationId
+          .order('name', { ascending: true })
         );
 
         if (error) throw error;
@@ -215,13 +219,12 @@ class VehicleService {
         if (startDate && endDate) {
           console.log('🔍 Applying additional date-based filtering...');
           
-          const { data: conflictingRentals } = await applyOrganizationScope(
+          const { data: conflictingRentals } = await this.applyReadScope(
             supabase
             .from('app_4c3a7a6153_rentals')
             .select('vehicle_id')
             .or(`and(rental_start_date.lte.${endDate},rental_end_date.gte.${startDate})`)
-            .in('rental_status', ['scheduled', 'active', 'confirmed']),
-            organizationId
+            .in('rental_status', ['scheduled', 'active', 'confirmed'])
           );
 
           const activeConflicts = (conflictingRentals || []).filter((rental) => !isExpiredScheduledConflict(rental));
@@ -279,9 +282,7 @@ class VehicleService {
 
     try {
       console.log('🔍 Loading vehicle details...', id);
-      const organizationId = await getCurrentOrganizationId();
-
-      const { data: vehicle, error } = await applyOrganizationScope(
+      const { data: vehicle, error } = await this.applyReadScope(
         supabase
         .from('saharax_0u4w4d_vehicles')
         .select(`
@@ -294,8 +295,7 @@ class VehicleService {
           status
         `)
         .eq('id', id)
-        .single(),
-        organizationId
+        .single()
       );
 
       if (error) throw error;
@@ -318,8 +318,7 @@ class VehicleService {
     }
 
     try {
-      const organizationId = await getCurrentOrganizationId();
-      const { data: vehicle, error } = await applyOrganizationScope(
+      const { data: vehicle, error } = await this.applyReadScope(
         supabase
         .from('saharax_0u4w4d_vehicles')
         .select('*')
@@ -327,8 +326,7 @@ class VehicleService {
         .eq('plate_number', normalizedPlateNumber)
         .order('id', { ascending: false })
         .limit(1)
-        .maybeSingle(),
-        organizationId
+        .maybeSingle()
       );
 
       if (error) throw error;
@@ -349,16 +347,14 @@ class VehicleService {
     }
 
     try {
-      const organizationId = await getCurrentOrganizationId();
-      const { data: vehicle, error } = await applyOrganizationScope(
+      const { data: vehicle, error } = await this.applyReadScope(
         supabase
         .from('saharax_0u4w4d_vehicles')
         .select('*')
         .eq('plate_number', normalizedPlateNumber)
         .order('id', { ascending: false })
         .limit(1)
-        .maybeSingle(),
-        organizationId
+        .maybeSingle()
       );
 
       if (error) throw error;
@@ -540,13 +536,10 @@ class VehicleService {
 
     try {
       console.log('📊 Loading vehicle statistics from database table...');
-      const organizationId = await getCurrentOrganizationId();
-
-      const { data: vehicles, error } = await applyOrganizationScope(
+      const { data: vehicles, error } = await this.applyReadScope(
         supabase
         .from('saharax_0u4w4d_vehicles')
-        .select('status, vehicle_model_id, organization_id, plate_number, registration_number, current_odometer, engine_hours, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, name, model'),
-        organizationId
+        .select('status, vehicle_model_id, organization_id, plate_number, registration_number, current_odometer, engine_hours, sold_date, sale_price_mad, sold_buyer_name, sale_notes, sale_proof_url, sale_proof_name, name, model')
       );
 
       if (error) throw error;

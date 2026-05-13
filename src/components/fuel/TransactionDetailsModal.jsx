@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { linesToLiters, roundTo } from '../../utils/fuelMath';
 import { formatVehicleLabel } from '../../utils/vehicleLabels';
 import { getFuelTransactionVisual } from '../../utils/fuelVisuals';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
 import i18n from '../../i18n';
 
 const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 'vehicle' }) => {
@@ -11,6 +12,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
   const isFrench = i18n.resolvedLanguage === 'fr';
   const tr = (en, fr) => (isFrench ? fr : en);
   const [imageError, setImageError] = useState(false);
+  const [isInvoicePreviewOpen, setIsInvoicePreviewOpen] = useState(false);
   const isFinancialTransaction = transaction.is_financial_expense !== false && Number(transaction.cost || transaction.total_cost || 0) > 0;
 
   if (!isOpen || !transaction) return null;
@@ -216,7 +218,7 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
             onError={() => {
               setImageError(true);
             }}
-            onClick={() => window.open(imageUrl, '_blank')}
+            onClick={() => setIsInvoicePreviewOpen(true)}
           />
         ) : (
           <div className="flex items-center justify-center h-48 bg-gray-100 rounded border">
@@ -451,6 +453,53 @@ const TransactionDetailsModal = ({ isOpen, onClose, transaction, modalType = 've
           </button>
         </div>
       </div>
+
+      {invoiceUrl && !imageError && (
+        <Dialog open={isInvoicePreviewOpen} onOpenChange={setIsInvoicePreviewOpen}>
+          <DialogContent className="max-w-5xl max-h-[95vh] p-0 bg-black/95">
+            <DialogHeader className="absolute top-0 left-0 right-0 z-10 p-4 bg-gradient-to-b from-black/70 to-transparent">
+              <div className="flex items-center justify-between text-white">
+                <DialogTitle className="flex items-center gap-2">
+                  <ImageIcon className="w-5 h-5" />
+                  {getMediaLabel()}
+                </DialogTitle>
+                <button
+                  type="button"
+                  onClick={() => setIsInvoicePreviewOpen(false)}
+                  className="rounded-full p-2 text-white transition-colors hover:bg-white/20"
+                  aria-label={tr('Close image preview', "Fermer l'aperçu image")}
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <DialogDescription className="sr-only">
+                {tr('Invoice image preview', "Aperçu de l'image de facture")}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="relative flex min-h-[400px] items-center justify-center p-4">
+              <img
+                src={invoiceUrl}
+                alt={getMediaLabel()}
+                className="max-h-[80vh] max-w-full rounded object-contain"
+              />
+            </div>
+
+            <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/70 to-transparent">
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => handleDownloadImage(invoiceUrl)}
+                  className="inline-flex items-center gap-2 rounded-md border border-white/30 bg-white/10 px-3 py-2 text-sm text-white transition-colors hover:bg-white/20"
+                >
+                  <Download className="h-4 w-4" />
+                  {tr('Download', 'Télécharger')}
+                </button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 };

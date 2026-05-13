@@ -41,6 +41,7 @@ const TELEGRAM_ALERT_EVENT_LABELS = {
   rental_created: 'Rental created',
   website_reservation_created: 'Website reservation',
   rental_started: 'Rental started',
+  rental_vehicle_replaced: 'Vehicle replaced',
   rental_completed: 'Rental completed',
   payment_received: 'Payment received',
   rental_overdue: 'Rental overdue',

@@ -73,7 +73,7 @@ const statusTone = {
   archived: 'border-slate-300 bg-slate-100 text-slate-700',
 };
 
-const WORKSPACE_DETAIL_TAB_IDS = ['overview', 'owner_identity', 'audit', 'feature_access', 'upgrades'];
+const WORKSPACE_DETAIL_TAB_IDS = ['overview', 'owner_identity', 'feature_access', 'upgrades', 'platform_controls'];
 const TENANCY_MODE_OPTIONS = ['shared', 'dedicated'];
 const WORKSPACE_TAB_ICON_CLASS = 'h-4 w-4 shrink-0';
 
@@ -251,6 +251,42 @@ const resolveWorkspaceTenancyMode = (row = {}) => {
   }
 
   return 'shared';
+};
+
+const buildWorkspaceAttentionSummary = (row, tr) => {
+  const schemaState = buildSchemaWorkspaceState(row);
+  const billingStatus = String(row?.subscription?.billing_status || '').trim().toLowerCase();
+  const workspaceStatus = String(row?.status || '').trim().toLowerCase();
+
+  if (billingStatus === 'failed') {
+    return {
+      label: tr('Billing issue', 'Problème facturation'),
+      tone: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+
+  if (workspaceStatus === 'failed' || workspaceStatus === 'provisioning' || workspaceStatus === 'pending') {
+    return {
+      label: tr('Provisioning issue', 'Problème provisionnement'),
+      tone: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+
+  if (workspaceStatus === 'suspended') {
+    return {
+      label: tr('Suspended', 'Suspendu'),
+      tone: 'border-slate-300 bg-slate-100 text-slate-700',
+    };
+  }
+
+  if (schemaState.verificationOk === false || schemaState.runtimeVerificationOk === false) {
+    return {
+      label: tr('Upgrade review needed', 'Upgrade à vérifier'),
+      tone: 'border-violet-200 bg-violet-50 text-violet-700',
+    };
+  }
+
+  return null;
 };
 
 const getProjectRefFromSupabaseUrl = (value) => {
@@ -1393,33 +1429,31 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
       id: 'overview',
       icon: LayoutDashboard,
       label: tr('Overview', 'Aperçu'),
-      description: isDedicatedTenant
-        ? tr('Provisioning, health, schema, and workspace actions.', 'Provisionnement, santé, schéma et actions workspace.')
-        : tr('Provisioning, runtime readiness, plan, and workspace actions.', 'Provisionnement, readiness runtime, plan et actions workspace.'),
+      description: tr('Workspace summary, owner context, and business status.', 'Résumé workspace, contexte propriétaire et statut business.'),
     },
     {
       id: 'owner_identity',
       icon: Fingerprint,
-      label: tr('Owner identity', 'Identité propriétaire'),
-      description: tr('Owner linkage, runtime links, and tenant identity settings.', 'Lien propriétaire, liens runtime et paramètres d’identité tenant.'),
-    },
-    {
-      id: 'audit',
-      icon: ActivitySquare,
-      label: tr('Audit', 'Audit'),
-      description: tr('Recent admin and access events for this tenant.', 'Événements admin et accès récents pour ce tenant.'),
+      label: tr('Workspace settings', 'Paramètres workspace'),
+      description: tr('Owner linkage, runtime links, branding, and business identity.', 'Lien propriétaire, liens runtime, branding et identité business.'),
     },
     {
       id: 'feature_access',
       icon: SlidersHorizontal,
-      label: tr('Feature access', 'Accès fonctionnalités'),
-      description: tr('Plan, billing, and workspace feature access controls.', 'Contrôles du plan, de la facturation et de l’accès aux fonctionnalités du workspace.'),
+      label: tr('Billing & access', 'Facturation & accès'),
+      description: tr('Plan, billing state, limits, and workspace feature controls.', 'Plan, état de facturation, limites et contrôles des fonctionnalités du workspace.'),
     },
     {
       id: 'upgrades',
       icon: Sparkles,
       label: tr('Upgrades', 'Montées en gamme'),
       description: tr('Monetization path, billing controls, and upsells.', 'Parcours de monétisation, contrôles de facturation et upsells.'),
+    },
+    {
+      id: 'platform_controls',
+      icon: ShieldAlert,
+      label: tr('Platform controls', 'Contrôles plateforme'),
+      description: tr('Provisioning, runtime health, schema release, and audit activity.', 'Provisionnement, santé runtime, release schéma et activité d’audit.'),
     },
   ]), [isDedicatedTenant, tr]);
 
@@ -1876,7 +1910,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           </section>
           ) : null}
 
-          {detailTab === 'overview' && isSharedTenant ? (
+          {detailTab === 'platform_controls' && isSharedTenant ? (
           <section className={`${lightSectionClass} p-5`}>
             <WorkspacePanelHeader
               icon={ShieldCheck}
@@ -1930,7 +1964,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           </section>
           ) : null}
 
-          {detailTab === 'overview' && isDedicatedTenant ? (
+          {detailTab === 'platform_controls' && isDedicatedTenant ? (
           <section className={`${lightSectionClass} p-5`}>
             <WorkspacePanelHeader
               icon={ShieldCheck}
@@ -1978,7 +2012,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           </section>
           ) : null}
 
-          {detailTab === 'overview' ? (
+          {detailTab === 'platform_controls' ? (
           <section className={`${lightSectionClass} p-5`}>
             <WorkspacePanelHeader
               icon={BadgeCheck}
@@ -2030,11 +2064,11 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           <section className={`${lightSectionClass} p-5`}>
             <WorkspacePanelHeader
               icon={UserRound}
-              eyebrow={tr('Owner identity', 'Identité propriétaire')}
-              title={tr('Access and runtime context', 'Accès et contexte runtime')}
+              eyebrow={tr('Workspace settings', 'Paramètres workspace')}
+              title={tr('Owner context and workspace identity', 'Contexte propriétaire et identité workspace')}
               description={tr(
-                'This section shows how the tenant is being managed from the platform side and which runtime links are currently available.',
-                'Cette section montre comment le tenant est géré côté plateforme et quels liens runtime sont actuellement disponibles.'
+                'Manage the business identity here. Runtime and platform controls stay in Platform controls.',
+                'Gérez ici l’identité business. Le runtime et les contrôles plateforme restent dans Contrôles plateforme.'
               )}
               badge={(
                 <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
@@ -2070,18 +2104,18 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
                 </div>
               ))}
             </div>
-            <div className={`${lightInsetSoftClass} px-3 py-3 text-sm font-semibold leading-6 text-slate-600`}>
+            <div className={`${lightInsetSoftClass} mt-4 px-3 py-3 text-sm font-semibold leading-6 text-slate-600`}>
               {accessMode.note}
             </div>
           {(tenant?.provisioning_error || job?.error_message) ? (
-              <div className="rounded-2xl border border-rose-100 bg-rose-50 px-3 py-3 text-sm font-semibold text-rose-700">
+              <div className="mt-4 rounded-2xl border border-rose-100 bg-rose-50 px-3 py-3 text-sm font-semibold text-rose-700">
                 {tenant?.provisioning_error || job?.error_message}
               </div>
             ) : null}
           </section>
           ) : null}
 
-          {detailTab === 'overview' ? (
+          {detailTab === 'platform_controls' ? (
           <section className={`${lightSectionClass} p-5`}>
             <WorkspacePanelHeader
               icon={ActivitySquare}
@@ -2134,7 +2168,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           </section>
           ) : null}
 
-          {detailTab === 'overview' ? (
+          {detailTab === 'platform_controls' ? (
           <section className={`${lightSectionClass} p-5`}>
             <WorkspacePanelHeader
               icon={ShieldAlert}
@@ -2543,78 +2577,13 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           </section>
           ) : null}
 
-          {detailTab === 'overview' && isSharedTenant ? (
-          <section className={`${lightSectionClass} p-5`}>
-            <WorkspacePanelHeader
-              icon={Sparkles}
-              eyebrow={tr('Commercial plan', 'Plan commercial')}
-              title={tr('Shared workspace billing and upgrades', 'Facturation et upgrades de l’espace partagé')}
-              description={tr(
-                'This shared workspace uses the shared runtime. Plan upgrades, billing rules, add-ons, and feature access still work here, but dedicated schema release controls do not apply.',
-                'Cet espace partagé utilise le runtime partagé. Les upgrades de plan, règles de facturation, add-ons et accès aux fonctionnalités fonctionnent toujours ici, mais les contrôles de release schéma dédiés ne s’appliquent pas.'
-              )}
-              badge={(
-                <div className="flex flex-wrap items-center gap-2">
-                  <WorkspacePlanBadge planType={controlsDraft.plan_type} />
-                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
-                    {String(controlsDraft.subscription_status || 'trial')}
-                  </span>
-                  <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
-                    {String(controlsDraft.billing_status || 'none')}
-                  </span>
-                </div>
-              )}
-            />
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {[
-                [tr('Current plan', 'Plan actuel'), controlsDraft.plan_type || 'starter'],
-                [tr('Subscription', 'Abonnement'), controlsDraft.subscription_status || 'trial'],
-                [tr('Billing cycle', 'Cycle de facturation'), controlsDraft.billing_engine?.billing_cycle || 'monthly'],
-                [tr('Invoicing mode', 'Mode de facturation'), controlsDraft.billing_engine?.invoicing_mode || 'automatic'],
-              ].map(([label, value]) => (
-                <div key={label} className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
-                  <p className={lightLabelClass}>{label}</p>
-                  <p className="mt-2 break-words text-sm font-semibold text-slate-900">{value}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-4 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
-              <p className={lightLabelClass}>{tr('Where to manage upgrades', 'Où gérer les upgrades')}</p>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                {tr(
-                  'Use Feature access to manage plan, limits, subscription state, and modules. Use Upgrades to manage monetization rules, billing settings, add-ons, and manual commercial upgrade decisions.',
-                  'Utilisez Accès fonctionnalités pour gérer le plan, les limites, l’état d’abonnement et les modules. Utilisez Montées en gamme pour gérer les règles de monétisation, paramètres de facturation, add-ons et décisions d’upgrade commercial manuel.'
-                )}
-              </p>
-              <div className="mt-4 flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  onClick={() => setDetailTab('feature_access')}
-                  className={lightSecondaryButtonClass}
-                >
-                  {tr('Open feature access', 'Ouvrir accès fonctionnalités')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDetailTab('upgrades')}
-                  className={lightPrimaryButtonClass}
-                >
-                  {tr('Open upgrades', 'Ouvrir montées en gamme')}
-                </button>
-              </div>
-            </div>
-          </section>
-          ) : null}
-
-          {detailTab === 'audit' ? (
+          {detailTab === 'platform_controls' ? (
           <section className={`${lightSectionClass} p-5`}>
             <WorkspacePanelHeader
               icon={ActivitySquare}
-              eyebrow={tr('Audit log', 'Journal d’audit')}
-              title={tr('Recent tenant activity', 'Activité tenant récente')}
-              description={tr('Recent admin and access events.', 'Événements admin et accès récents.')}
+              eyebrow={tr('Platform activity', 'Activité plateforme')}
+              title={tr('Recent admin and access events', 'Événements admin et accès récents')}
+              description={tr('Review recent actions, access activity, and operational follow-up for this workspace.', 'Vérifiez les actions récentes, l’activité d’accès et le suivi opérationnel pour ce workspace.')}
               action={(
                 <button
                   type="button"
@@ -2784,11 +2753,11 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           <section className={`${lightSectionClass} p-5`}>
             <WorkspacePanelHeader
               icon={SlidersHorizontal}
-              eyebrow={tr('Feature access', 'Accès fonctionnalités')}
-              title={tr('Plan, billing, and workspace features', 'Plan, facturation et fonctionnalités du workspace')}
+              eyebrow={tr('Billing & access', 'Facturation & accès')}
+              title={tr('Plan, billing state, and workspace access', 'Plan, état de facturation et accès workspace')}
               description={tr(
-                'Tune workspace mode, plan controls, limits, and module availability with the same admin surface rules used elsewhere in platform admin.',
-                'Ajustez le mode workspace, le plan, les limites et les modules avec les mêmes règles visuelles que le reste de l’admin plateforme.'
+                'Use this tab for the commercial basics. Upgrade recommendations and monetization actions stay in Upgrades.',
+                'Utilisez cet onglet pour les bases commerciales. Les recommandations d’upgrade et actions de monétisation restent dans Montées en gamme.'
               )}
               badge={(
                 <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700">
@@ -2797,7 +2766,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
               )}
             />
 
-            <div className="mt-5 grid gap-3 md:grid-cols-3">
+            <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <label className="block">
                 <span className={lightLabelClass}>{tr('Workspace mode', "Mode de l’espace")}</span>
                 <select
@@ -2848,25 +2817,16 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
               </label>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm leading-6 text-slate-600">
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm font-semibold leading-6 text-slate-700">
               {controlsDraft.tenancy_mode === 'dedicated'
-                ? tr(
-                    'Managed Workspace preserves the legacy project-per-tenant infrastructure path for isolated or premium workspaces.',
-                    'Le mode Espace géré préserve le chemin legacy projet-par-tenant pour les espaces isolés ou premium.'
-                  )
-                : tr(
-                    'Shared Workspace keeps this business on the default shared runtime with organization-level isolation and the standard subdomain experience.',
-                    'Le mode Espace partagé maintient cette activité sur le runtime partagé par défaut avec isolation au niveau organisation et expérience sous-domaine standard.'
-                  )}
+                ? tr('Managed workspace: isolated or premium setup.', 'Espace géré : configuration isolée ou premium.')
+                : tr('Shared workspace: standard shared-runtime setup.', 'Espace partagé : configuration standard sur runtime partagé.')}
             </div>
 
             <div className={`mt-5 ${lightInsetCardClass} p-4`}>
-              <p className={lightEyebrowClass}>{tr('Module access', 'Accès modules')}</p>
+              <p className={lightEyebrowClass}>{tr('Core modules', 'Modules principaux')}</p>
               <p className="mt-2 text-sm text-slate-500">
-                {tr(
-                  'These switches control the core workspace modules that appear across the tenant admin.',
-                  'Ces bascules contrôlent les modules principaux du workspace visibles dans l’admin du tenant.'
-                )}
+                {tr('Show or hide the main modules for this workspace.', 'Affichez ou masquez les modules principaux de ce workspace.')}
               </p>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 {moduleFeatureDefinitions.map(([key, label]) => (
@@ -2900,12 +2860,9 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
             </div>
 
             <div className={`mt-5 ${lightInsetCardClass} p-4`}>
-              <p className={lightEyebrowClass}>{tr('Advanced and add-on access', 'Accès avancé et add-ons')}</p>
+              <p className={lightEyebrowClass}>{tr('Premium and add-ons', 'Premium et add-ons')}</p>
               <p className="mt-2 text-sm text-slate-500">
-                {tr(
-                  'Use these switches for premium capabilities, public booking surfaces, and upsell-ready add-ons.',
-                  'Utilisez ces bascules pour les capacités premium, les surfaces de réservation publiques et les add-ons monétisables.'
-                )}
+                {tr('Control premium capabilities and add-on-ready access here.', 'Contrôlez ici les capacités premium et les accès prêts pour add-ons.')}
               </p>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 {advancedFeatureDefinitions.map(([key, label]) => (
@@ -3213,7 +3170,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
           </section>
           ) : null}
 
-          {detailTab === 'overview' && status !== 'active' && status !== 'suspended' ? (
+          {detailTab === 'platform_controls' && status !== 'active' && status !== 'suspended' ? (
             <section className={`${lightSectionClass} p-5`}>
               <WorkspacePanelHeader
                 icon={Clock3}
@@ -3280,7 +3237,7 @@ const WorkspaceDetailPage = ({ workspace, onBack, onUpdated, platformAccess }) =
             </section>
           ) : null}
 
-          {detailTab === 'overview' && (status === 'failed' || status === 'active') ? (
+          {detailTab === 'platform_controls' && (status === 'failed' || status === 'active') ? (
             <label className="block">
               <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{tr('Admin note', 'Note admin')}</span>
               <textarea
@@ -3623,29 +3580,6 @@ const Workspaces = () => {
             })}
           </div>
           <div className="mt-5">
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_repeat(3,minmax(0,0.6fr))]">
-            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Registry overview', 'Vue du registre')}</p>
-              <p className="mt-2 text-base font-semibold text-slate-900">{tr('Platform-managed workspace inventory', 'Inventaire des espaces gérés par la plateforme')}</p>
-              <p className="mt-2 text-sm text-slate-500">{tr('Search, filter, and open shared or managed workspaces.', 'Recherchez, filtrez et ouvrez les espaces partagés ou gérés.')}</p>
-            </div>
-            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Visible now', 'Visibles')}</p>
-              <p className="mt-2 text-2xl font-semibold text-slate-900 tabular-nums">{filteredRows.length}</p>
-              <p className="mt-1 text-sm text-slate-500">{tr('Matching workspaces', 'Espaces correspondants')}</p>
-            </div>
-            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Live tenants', 'Tenants actifs')}</p>
-              <p className="mt-2 text-2xl font-semibold text-slate-900 tabular-nums">{kpis.active || 0}</p>
-              <p className="mt-1 text-sm text-slate-500">{tr('Ready now', 'Prêts maintenant')}</p>
-            </div>
-            <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Needs attention', 'À surveiller')}</p>
-              <p className="mt-2 text-2xl font-semibold text-slate-900 tabular-nums">{(kpis.provisioning || 0) + (kpis.failed || 0) + (kpis.suspended || 0)}</p>
-              <p className="mt-1 text-sm text-slate-500">{tr('Provisioning or blocked', 'Provisionnement ou bloqué')}</p>
-            </div>
-          </div>
-
           {tenantHostRegistryMessage ? (
             <div className="mt-5 rounded-[28px] border border-amber-200 bg-amber-50/80 p-5">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">{tr('Platform registry', 'Registre plateforme')}</p>
@@ -3698,37 +3632,16 @@ const Workspaces = () => {
                   <tr key={row.id} tabIndex={0} role="button" onClick={() => navigate(`/admin/workspaces/${row.id}`)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') navigate(`/admin/workspaces/${row.id}`); }} className="cursor-pointer transition hover:bg-slate-50 focus:bg-slate-50 focus:outline-none">
                     <td className="px-4 py-4">
                       {(() => {
-                        const rowSchemaState = buildSchemaWorkspaceState(row);
-                        const rowSchemaStatus = buildSchemaStatusSummary(rowSchemaState, tr);
-                        const rowRuntimeStatus = buildRuntimeStatusSummary(rowSchemaState, tr);
+                        const workspaceMode = resolveWorkspaceModeKey(row);
                         return (
                           <>
                       <p className="text-base font-semibold text-slate-900">{row.name}</p>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <p className="text-sm text-slate-500">{row.slug || '—'}</p>
-                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${getWorkspaceModeBadgeTone(resolveWorkspaceModeKey(row))}`}>
-                          {formatTenancyModeLabel(resolveWorkspaceModeKey(row) === 'managed' ? 'dedicated' : 'shared', tr)}
+                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${getWorkspaceModeBadgeTone(workspaceMode)}`}>
+                          {formatTenancyModeLabel(workspaceMode === 'managed' ? 'dedicated' : 'shared', tr)}
                         </span>
                         <WorkspacePlanBadge planType={row.subscription?.plan_type} />
-                        <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">
-                          {rowSchemaState.schemaVersion}
-                        </span>
-                        {rowSchemaState.releaseId ? (
-                          <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">
-                            {formatSchemaReleaseLabel(rowSchemaState.releaseId)}
-                          </span>
-                        ) : null}
-                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${rowSchemaStatus.tone}`}>
-                          {rowSchemaStatus.label}
-                        </span>
-                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${rowRuntimeStatus.tone}`}>
-                          {rowRuntimeStatus.label}
-                        </span>
-                        {row.latestSchemaJob ? (
-                          <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${getSchemaJobStatusTone(row.latestSchemaJob.job_status)}`}>
-                            {getSchemaJobTypeLabel(row.latestSchemaJob.job_type, tr)}
-                          </span>
-                        ) : null}
                       </div>
                           </>
                         );
@@ -3751,21 +3664,15 @@ const Workspaces = () => {
                     <td className="px-4 py-4 text-sm text-slate-500">{formatDate(row.createdAt)}</td>
                     <td className="px-4 py-4">
                       {(() => {
-                        const rowSchemaState = buildSchemaWorkspaceState(row);
-                        const rowSchemaStatus = buildSchemaStatusSummary(rowSchemaState, tr);
-                        const rowRuntimeStatus = buildRuntimeStatusSummary(rowSchemaState, tr);
+                        const attention = buildWorkspaceAttentionSummary(row, tr);
                         return (
                           <div className="flex flex-wrap items-center gap-2">
                             <WorkspaceStatusBadge status={row.status} />
-                            <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-                              {String(row.subscription?.subscription_status || 'trial').trim().toLowerCase()}
-                            </span>
-                            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${rowSchemaStatus.tone}`}>
-                              {rowSchemaStatus.label}
-                            </span>
-                            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${rowRuntimeStatus.tone}`}>
-                              {rowRuntimeStatus.label}
-                            </span>
+                            {attention ? (
+                              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${attention.tone}`}>
+                                {attention.label}
+                              </span>
+                            ) : null}
                           </div>
                         );
                       })()}

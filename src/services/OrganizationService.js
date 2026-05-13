@@ -1,4 +1,5 @@
 import { adminApiRequest } from './adminApi';
+import { getHostContext, isFirstPartyTenantHost } from '../utils/hostContext';
 
 export const BUSINESS_TENANT_TABLES = Object.freeze([
   'saharax_0u4w4d_vehicles',
@@ -33,6 +34,9 @@ export const applyOrganizationScope = (query, organizationId, columnName = 'orga
 
   return query.eq(columnName, organizationId);
 };
+
+export const shouldScopeSharedTenantData = (hostContext = getHostContext()) =>
+  hostContext?.kind === 'tenant' && !isFirstPartyTenantHost(hostContext);
 
 export const applyOrganizationMatch = (payload, organizationId, columnName = 'organization_id') => {
   if (!organizationId) {

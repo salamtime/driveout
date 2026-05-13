@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { formatMaintenanceReference } from '../utils/maintenanceReference';
 import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../utils/simpleRentalPricing';
+import { buildRentalBookedPackageSnapshot } from '../utils/rentalPackageSnapshot';
 import i18n from '../i18n';
 
 const DEFAULT_BOOKING_GRACE_MINUTES = 120;
@@ -29,17 +30,21 @@ const RECEIPT_BANKING_DETAILS = {
 
 const getRentalKilometerPackage = (rental) => {
   if (!isPackagePricingEnabled(rental)) return null;
-  const pkg = rental?.package;
+  const pkg = buildRentalBookedPackageSnapshot(rental, rental?.package);
   if (!pkg) return null;
 
   const hasLinkedPackage = Boolean(
     rental?.package_id ||
     rental?.selected_package_id ||
-    rental?.package?.id
+    rental?.package?.id ||
+    rental?.package_name ||
+    rental?.selected_package_name ||
+    pkg?.id
   );
   const hasKmConfig =
     pkg.included_kilometers !== null && pkg.included_kilometers !== undefined ||
-    pkg.extra_km_rate !== null && pkg.extra_km_rate !== undefined;
+    pkg.extra_km_rate !== null && pkg.extra_km_rate !== undefined ||
+    pkg.total_included_kilometers_snapshot !== null && pkg.total_included_kilometers_snapshot !== undefined;
 
   return hasLinkedPackage && hasKmConfig ? pkg : null;
 };
@@ -54,6 +59,7 @@ const getPackageTotalIncludedKilometers = (rental, pkg = null) => {
   if (!resolvedPackage) return 0;
 
   const appliedIncludedKm = Number.parseFloat(
+    resolvedPackage?.total_included_kilometers_snapshot ??
     rental?.included_kilometers_applied ??
     rental?.package_total_included_km ??
     rental?.selected_package_total_included_km ??

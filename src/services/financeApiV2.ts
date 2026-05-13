@@ -3,6 +3,7 @@ import { normalizePaymentStatus } from '../config/statusColors';
 import VehicleDispositionService from './VehicleDispositionService';
 import sharedQueryCacheService from './SharedQueryCacheService';
 import { fetchTourBookings } from './tourBookingService';
+import { getRentalCollectedAmount } from '../utils/rentalFinancials';
 
 const TOUR_BOOKING_MARKER = '[tour_booking]';
 const VEHICLE_REPORTS_TABLE = 'app_4c3a7a6153_vehicle_reports';
@@ -19,7 +20,10 @@ const FINANCE_RENTAL_COLUMNS = [
   'payment_status',
   'total_amount',
   'deposit_amount',
+  'deposit_deduction_amount',
   'remaining_amount',
+  'amount_due_override_reason',
+  'amount_due_override_previous_amount',
   'rental_start_date',
   'rental_end_date',
   'actual_end_date',
@@ -54,6 +58,7 @@ const FINANCE_MAINTENANCE_PART_COLUMNS = 'maintenance_id,unit_cost_mad,quantity,
 const FINANCE_FUEL_REFILL_COLUMNS = '*';
 const FINANCE_FUEL_WITHDRAWAL_COLUMNS = 'id,vehicle_id,withdrawal_date,created_at,liters_taken,unit_price,total_cost';
 const FINANCE_RENTAL_FUEL_SNAPSHOT_COLUMNS = 'rental_id,linked_fuel_consumed_liters,linked_fuel_average_unit_cost,linked_fuel_expense_total,linked_fuel_synced_at';
+const FINANCE_EXPENSE_COLUMNS = 'id,category,subcategory,description,amount,expense_date,status,created_by,created_by_display_name,created_by_name,invoice_url,reference_type,reference_id,notes,created_at,updated_at,organization_id,workspace_id,vehicle_id';
 
 export interface Vehicle {
   id: string;
@@ -556,6 +561,7 @@ type FinanceContext = {
   reportByRentalId: Map<string, any>;
   maintenanceFinance: any[];
   maintenanceByRentalId: Map<string, any>;
+  financeExpenses: any[];
   fuelRefills: any[];
   fuelWithdrawals: any[];
   tourVehicleSnapshots: any[];
@@ -766,8 +772,50 @@ class FinanceApiServiceV2 {
     return match ? match[0].toUpperCase() : null;
   }
 
+  private extractRentalLookupValue(value: any): string | null {
+    if (!value) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+
+    const explicitReferenceMatch = text.match(/Rental reference:\s*([A-Z0-9-]{8,}|[a-f0-9-]{8,})/i);
+    if (explicitReferenceMatch?.[1]) {
+      return explicitReferenceMatch[1].trim();
+    }
+
+    const rentalReferenceMatch = text.match(/RNT-[A-Z0-9-]+/i);
+    if (rentalReferenceMatch?.[0]) {
+      return rentalReferenceMatch[0].toUpperCase();
+    }
+
+    const uuidMatch = text.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
+    if (uuidMatch?.[0]) {
+      return uuidMatch[0];
+    }
+
+    return null;
+  }
+
   private normalizeRentalReference(value: any): string {
     return String(value || '').trim().toUpperCase();
+  }
+
+  private summarizeMaintenanceDescription(rawDescription: any, publicRentalReference: string | null = null): string {
+    const summary = String(rawDescription || '')
+      .replace(/Vehicle report ID:\s*[^\n|]+/gi, '')
+      .replace(/Rental reference:\s*[^\n|]+/gi, publicRentalReference ? `Rental ${publicRentalReference}` : '')
+      .replace(/\n+/g, ' • ')
+      .replace(/\s*\|\s*/g, ' • ')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/ • /g, ' • ')
+      .replace(/^•\s*/g, '')
+      .replace(/\s*•\s*$/g, '')
+      .trim();
+
+    if (!summary && publicRentalReference) {
+      return `Rental ${publicRentalReference}`;
+    }
+
+    return summary;
   }
 
   private parseTourBookingMeta(rawNotes: any) {
@@ -1160,7 +1208,7 @@ class FinanceApiServiceV2 {
       maintenanceRevenue: 0,
       total: Math.max(0, this.toNumber(rental.revenue))
     };
-    const revenue = Math.round(this.toNumber(revenueBreakdown.total));
+    const revenue = Math.round(Math.max(0, this.toNumber(rental.revenue)));
     const maintenanceCosts = Math.round(this.toNumber(rental.linkedMaintenanceCosts));
     const partsConsumedCost = Math.round(this.toNumber(rental.linkedPartsConsumedCosts));
     const inventoryCosts = Math.round(this.toNumber(rental.linkedInventoryCosts));
@@ -1384,6 +1432,7 @@ class FinanceApiServiceV2 {
     maintenance: any[],
     maintenanceParts: any[],
     inventoryItems: any[],
+    rawFinanceExpenses: any[],
     rawFuelRefills: any[],
     rawVehicleFuelRefills: any[],
     fuelWithdrawals: any[],
@@ -1418,6 +1467,26 @@ class FinanceApiServiceV2 {
     const reportByRentalId = new Map<string, any>();
     const inventoryItemMap = new Map<string, any>(inventoryItems.map((item: any) => [String(item.id), item]));
     const maintenancePartsByMaintenanceId = new Map<string, any[]>();
+    const rentalReferenceLookup = new Map<string, string>();
+    const rentalRecordIdLookup = new Map<string, string>();
+
+    rawRentals.forEach((rental: any) => {
+      const publicReference = String(rental.rental_id || rental.linked_display_id || rental.id || '').trim();
+      const recordId = String(rental.id || '').trim();
+
+      [recordId, rental.rental_id, rental.linked_display_id]
+        .filter(Boolean)
+        .forEach((key: any) => {
+          const normalizedKey = this.normalizeRentalReference(key);
+          if (!normalizedKey) return;
+          if (publicReference) {
+            rentalReferenceLookup.set(normalizedKey, publicReference.toUpperCase());
+          }
+          if (recordId) {
+            rentalRecordIdLookup.set(normalizedKey, recordId);
+          }
+        });
+    });
 
     rawVehicleReports.forEach((report: any) => {
       const rentalKey = this.normalizeRentalReference(report.rental_id);
@@ -1466,7 +1535,21 @@ class FinanceApiServiceV2 {
       const partsConsumedCost = Math.max(0, partsCost);
       const inventoryCost = 0;
       const partsMargin = Math.max(0, partsSellTotal - partsCost);
-      const linkedRentalId = this.parseLinkedRentalId(record.rental_id || record.description);
+      const rawLinkedRentalLookupValue =
+        this.extractRentalLookupValue(record.rental_id) ||
+        this.extractRentalLookupValue(record.description);
+      const normalizedLinkedRentalLookupValue = rawLinkedRentalLookupValue
+        ? this.normalizeRentalReference(rawLinkedRentalLookupValue)
+        : '';
+      const linkedRentalReference = normalizedLinkedRentalLookupValue
+        ? rentalReferenceLookup.get(normalizedLinkedRentalLookupValue) ||
+          this.parseLinkedRentalId(rawLinkedRentalLookupValue)
+        : this.parseLinkedRentalId(record.rental_id || record.description);
+      const linkedRentalRecordId = normalizedLinkedRentalLookupValue
+        ? rentalRecordIdLookup.get(normalizedLinkedRentalLookupValue) || null
+        : null;
+      const linkedRentalId = linkedRentalReference ? this.normalizeRentalReference(linkedRentalReference) : null;
+      const description = this.summarizeMaintenanceDescription(record.description, linkedRentalReference || null);
 
       return {
         id: String(record.id),
@@ -1483,8 +1566,10 @@ class FinanceApiServiceV2 {
         totalCost,
         partsMargin,
         billedRevenue: linkedRentalId ? totalCost + partsMargin : 0,
-        description: record.description || '',
-        status: record.status || 'scheduled'
+        description,
+        status: record.status || 'scheduled',
+        linkedRentalReference: linkedRentalReference || null,
+        linkedRentalRecordId
       };
     });
 
@@ -1554,11 +1639,17 @@ class FinanceApiServiceV2 {
           linkedVehicleReport,
           linkedMaintenance
         );
-        const depositAppliedAmount = Math.max(0, this.toNumber(rental.deposit_deduction_amount));
-        const collectedAmount = Math.max(0, this.toNumber(rental.deposit_amount));
+        const billedAmount = Math.max(0, Math.round(this.toNumber(revenueBreakdown.total)));
+        const collectedAmount = Math.max(0, Math.round(this.toNumber(getRentalCollectedAmount(rental))));
         const recognizedAt = this.getRecognizedIncomingDate(
           rental,
           rental.rental_start_date || rental.created_at
+        );
+        const remainingAmount = Math.max(
+          0,
+          Math.round(
+            this.toNumber(rental.remaining_amount) || Math.max(0, billedAmount - collectedAmount)
+          )
         );
 
         return {
@@ -1570,11 +1661,12 @@ class FinanceApiServiceV2 {
           vehicleId: String(rental.vehicle_id || ''),
           status: rental.rental_status || rental.status || 'scheduled',
           paymentStatus: normalizePaymentStatus(rental.payment_status, rental.remaining_amount),
-          revenue: Math.round(revenueBreakdown.total),
+          revenue: collectedAmount,
+          billedRevenue: billedAmount,
           revenueBreakdown,
           recognizedAt,
-          paidAmount: collectedAmount + depositAppliedAmount,
-          remainingAmount: Math.max(0, Math.round(revenueBreakdown.total - (collectedAmount + depositAppliedAmount))),
+          paidAmount: collectedAmount,
+          remainingAmount,
           refundAmount: normalizePaymentStatus(rental.payment_status, rental.remaining_amount) === 'refunded' ? this.toNumber(rental.total_amount) : 0,
           linkedMaintenanceRevenue: revenueBreakdown.maintenanceRevenue,
           linkedMaintenanceCosts: linkedMaintenance.maintenanceCost,
@@ -1678,6 +1770,7 @@ class FinanceApiServiceV2 {
       reportByRentalId,
       maintenanceFinance,
       maintenanceByRentalId,
+      financeExpenses: Array.isArray(rawFinanceExpenses) ? rawFinanceExpenses : [],
       fuelRefills,
       fuelWithdrawals,
       tourVehicleSnapshots: rawTourVehicleSnapshots,
@@ -1700,6 +1793,7 @@ class FinanceApiServiceV2 {
           maintenance,
           maintenanceParts,
           inventoryItems,
+          financeExpenses,
           rawFuelRefills,
           fuelRefills,
           fuelWithdrawals,
@@ -1750,6 +1844,11 @@ class FinanceApiServiceV2 {
             'overview inventory items'
           ),
           this.loadOptionalContextSlice(
+            this.safeLoadTable('finance_expenses', FINANCE_EXPENSE_COLUMNS),
+            [],
+            'overview finance expenses'
+          ),
+          this.loadOptionalContextSlice(
             Promise.resolve([]),
             [],
             'overview fuel refills'
@@ -1785,6 +1884,7 @@ class FinanceApiServiceV2 {
           maintenance,
           maintenanceParts,
           inventoryItems,
+          financeExpenses,
           rawFuelRefills,
           fuelRefills,
           fuelWithdrawals,
@@ -1817,6 +1917,7 @@ class FinanceApiServiceV2 {
           maintenance,
           maintenanceParts,
           inventoryItems,
+          financeExpenses,
           rawFuelRefills,
           fuelRefills,
           fuelWithdrawals,
@@ -1830,6 +1931,7 @@ class FinanceApiServiceV2 {
           this.loadOptionalContextSlice(this.safeLoadTable('app_687f658e98_maintenance', FINANCE_MAINTENANCE_COLUMNS), [], 'maintenance'),
           this.loadOptionalContextSlice(this.safeLoadTable('app_687f658e98_maintenance_parts', FINANCE_MAINTENANCE_PART_COLUMNS), [], 'maintenance parts'),
           this.loadOptionalContextSlice(this.safeLoadTable('saharax_0u4w4d_inventory_items'), [], 'inventory items'),
+          this.loadOptionalContextSlice(this.safeLoadTable('finance_expenses', FINANCE_EXPENSE_COLUMNS), [], 'finance expenses'),
           this.loadOptionalContextSlice(Promise.resolve([]), [], 'fuel refills'),
           this.loadOptionalContextSlice(this.safeLoadTable('vehicle_fuel_refills', FINANCE_FUEL_REFILL_COLUMNS), [], 'vehicle fuel refills'),
           this.loadOptionalContextSlice(this.safeLoadTable('fuel_withdrawals', FINANCE_FUEL_WITHDRAWAL_COLUMNS), [], 'fuel withdrawals'),
@@ -1846,6 +1948,7 @@ class FinanceApiServiceV2 {
           maintenance,
           maintenanceParts,
           inventoryItems,
+          financeExpenses,
           rawFuelRefills,
           fuelRefills,
           fuelWithdrawals,
@@ -1885,6 +1988,18 @@ class FinanceApiServiceV2 {
   private buildVehicleDisplay(vehicleId: string, context: FinanceContext) {
     const labels = this.getVehicleLabel(context.vehicleMap.get(String(vehicleId)));
     return `${labels.plateNumber} • ${labels.vehicleModel}`;
+  }
+
+  private buildExpenseSubtitle(expense: any, context: FinanceContext) {
+    const parts = [];
+    if (expense?.vehicle_id) {
+      parts.push(this.buildVehicleDisplay(String(expense.vehicle_id), context));
+    }
+    const category = String(expense?.category || '').trim();
+    const subcategory = String(expense?.subcategory || '').trim();
+    const categoryLabel = [category, subcategory].filter(Boolean).join(' • ');
+    if (categoryLabel) parts.push(categoryLabel);
+    return parts.join(' • ');
   }
 
   private rentalMatchesFilters(rental: any, filters: FinanceFiltersV2, lifetime = false) {
@@ -2089,47 +2204,32 @@ class FinanceApiServiceV2 {
     const tourRows = this.buildTourPLRowsFromContext(context, filters);
     const maintenanceRows = context.maintenanceFinance.filter((record) => this.maintenanceMatchesFilters(record, filters));
     const standaloneMaintenanceRows = maintenanceRows.filter((row: any) => !row.linkedRentalId);
-    const dispositionRecords = this.getDispositionRecords(filters);
-    const totalRevenue = rentalRows.reduce((sum, row) => sum + row.revenue, 0)
-      + tourRows.reduce((sum, row) => sum + this.toNumber(row.revenue), 0)
-      + standaloneMaintenanceRows.reduce((sum: number, row: any) => sum + row.billedRevenue, 0);
-    const maintenanceCosts = rentalRows.reduce((sum, row) => sum + row.maintenanceCosts, 0)
-      + tourRows.reduce((sum, row) => sum + row.maintenanceCosts, 0)
-      + standaloneMaintenanceRows.reduce((sum: number, row: any) => sum + row.maintenanceCost, 0);
-    const inventoryCosts = rentalRows.reduce((sum, row) => sum + row.inventoryCosts, 0)
-      + standaloneMaintenanceRows.reduce((sum: number, row: any) => sum + row.inventoryCost, 0);
-    const taxes = rentalRows.reduce((sum, row) => sum + row.taxes, 0)
-      + standaloneMaintenanceRows.reduce((sum: number, row: any) => sum + row.tax, 0);
-    const fuelCosts = rentalRows.reduce((sum, row) => sum + row.fuelCosts, 0)
-      + tourRows.reduce((sum, row) => sum + row.fuelCosts, 0);
-    const purchaseCosts = context.vehicles.reduce((sum: number, vehicle: any) => {
-      if (filters.vehicleIds.length > 0 && !filters.vehicleIds.map(String).includes(String(vehicle.id))) {
-        return sum;
-      }
-      if (!this.isDateInRange(vehicle.purchase_date, filters.startDate, filters.endDate)) {
-        return sum;
-      }
-      return sum + this.toNumber(vehicle.purchase_cost_mad);
-    }, 0);
-    const disposalLosses = dispositionRecords.reduce((sum: number, record: any) => {
-      return sum + (record.event_type === 'disposed' ? this.toNumber(record.sale_price_mad) : 0);
-    }, 0);
-    const dispositionRevenue = dispositionRecords.reduce((sum: number, record: any) => {
-      return sum + (record.event_type === 'sold' ? this.toNumber(record.sale_price_mad) : 0);
-    }, 0);
-    const damageRecoveryRevenue = rentalRows.reduce((sum, row) => sum + row.maintenanceRevenue, 0)
-      + standaloneMaintenanceRows.reduce((sum: number, row: any) => sum + row.billedRevenue, 0);
+    const ledger = this.getUnifiedLedgerFromContext(context, filters);
+    const maintenanceCosts = ledger.rows
+      .filter((row) => row.direction === 'outgoing' && row.sourceType === 'maintenance')
+      .reduce((sum, row) => sum + this.toNumber(row.amount), 0);
+    const inventoryCosts = ledger.rows
+      .filter((row) => row.direction === 'outgoing' && row.sourceType === 'inventory')
+      .reduce((sum, row) => sum + this.toNumber(row.amount), 0);
+    const fuelCosts = ledger.rows
+      .filter((row) => row.direction === 'outgoing' && ['fuel', 'tank_in', 'direct_fill', 'transfer'].includes(String(row.sourceType || '')))
+      .reduce((sum, row) => sum + this.toNumber(row.amount), 0);
+    const otherCosts = ledger.rows
+      .filter((row) => row.direction === 'outgoing' && ['purchase', 'disposed'].includes(String(row.sourceType || '')))
+      .reduce((sum, row) => sum + this.toNumber(row.amount), 0);
+    const damageRecoveryRevenue = ledger.rows
+      .filter((row) => row.direction === 'incoming' && row.sourceType === 'damage_recovery')
+      .reduce((sum, row) => sum + this.toNumber(row.amount), 0);
     const partsMarginRevenue = maintenanceRows.reduce((sum: number, row: any) => sum + row.partsMargin, 0);
-    const totalExpenses = maintenanceCosts + inventoryCosts + fuelCosts + purchaseCosts + disposalLosses;
     return {
-      totalRevenue: Math.round(totalRevenue + dispositionRevenue),
-      totalExpenses: Math.round(totalExpenses),
+      totalRevenue: Math.round(ledger.incomingTotal),
+      totalExpenses: Math.round(ledger.outgoingTotal),
       maintenanceCosts: Math.round(maintenanceCosts),
       fuelCosts: Math.round(fuelCosts),
       inventoryCosts: Math.round(inventoryCosts),
-      otherCosts: Math.round(purchaseCosts + disposalLosses),
-      taxes: Math.round(taxes),
-      grossProfit: Math.round(totalRevenue + dispositionRevenue - totalExpenses - taxes),
+      otherCosts: Math.round(otherCosts),
+      taxes: Math.round(ledger.taxesTotal),
+      grossProfit: Math.round(ledger.netTotal),
       damageRecoveryRevenue: Math.round(damageRecoveryRevenue),
       partsMarginRevenue: Math.round(partsMarginRevenue)
     };
@@ -2809,10 +2909,12 @@ class FinanceApiServiceV2 {
         const partsConsumedCost = Math.round(record.partsConsumedCost || record.inventoryCost || 0);
         const billedRecovery = Math.round(record.billedRevenue || 0);
         const laborExternalCost = Math.max(0, maintenanceCost - partsConsumedCost);
+        const linkedRentalRecordId = String(record.linkedRentalRecordId || '').trim();
+        const linkedRentalReference = String(record.linkedRentalReference || '').trim();
 
         return {
           id: String(record.id),
-          title: record.description || 'Maintenance',
+          title: record.description || (linkedRentalReference ? `Rental ${linkedRentalReference}` : 'Maintenance'),
           vehicleDisplay: this.buildVehicleDisplay(record.vehicleId, context),
           billedRecovery,
           maintenanceCost,
@@ -2821,8 +2923,8 @@ class FinanceApiServiceV2 {
           netRecovery: billedRecovery - maintenanceCost,
           date: record.date,
           status: record.status,
-          linkedRentalId: record.linkedRentalId || undefined,
-          href: record.linkedRentalId ? `/admin/rentals/${record.linkedRentalId}` : `/admin/maintenance?maintenanceId=${record.id}`
+          linkedRentalId: linkedRentalReference || record.linkedRentalId || undefined,
+          href: linkedRentalRecordId ? `/admin/rentals/${linkedRentalRecordId}` : `/admin/maintenance?maintenanceId=${record.id}`
         };
       });
 
@@ -3174,6 +3276,7 @@ class FinanceApiServiceV2 {
 
     context.maintenanceFinance
       .filter((record) => this.maintenanceMatchesFilters(record, dayFilters))
+      .filter((record) => !record.linkedRentalId)
       .filter((record) => this.normalizeDate(record.date) === date)
       .forEach((record) => {
         if (record.billedRevenue > 0) {
@@ -3238,6 +3341,33 @@ class FinanceApiServiceV2 {
             href: `/admin/maintenance?maintenanceId=${record.id}`
           });
         }
+      });
+
+    context.financeExpenses
+      .filter((expense: any) => String(expense?.status || 'active').toLowerCase() !== 'reversed')
+      .filter((expense: any) => this.isDateInRange(expense.expense_date || expense.created_at, date, date))
+      .filter((expense: any) => {
+        if (dayFilters.vehicleIds.length === 0) return true;
+        return expense.vehicle_id && dayFilters.vehicleIds.map(String).includes(String(expense.vehicle_id));
+      })
+      .forEach((expense: any) => {
+        const amount = Math.round(this.toNumber(expense.amount));
+        if (amount <= 0) return;
+        rows.push({
+          id: `day-finance-expense-${expense.id}`,
+          title: expense.description || 'Manual expense',
+          subtitle: this.buildExpenseSubtitle(expense, context),
+          amount,
+          direction: 'outgoing',
+          date,
+          sourceType: 'finance_expense',
+          vehicleId: expense.vehicle_id ? String(expense.vehicle_id) : undefined,
+          href: '/admin/finance',
+          meta: {
+            category: expense.category || '',
+            subcategory: expense.subcategory || ''
+          }
+        });
       });
 
     context.fuelRefills
@@ -3842,7 +3972,7 @@ class FinanceApiServiceV2 {
         .filter((entry) => this.rentalMatchesFilters(entry, filters))
         .map((entry) => {
           const raw = entry.raw || {};
-          const paidAmount = Math.max(0, this.toNumber(raw.deposit_amount));
+          const paidAmount = Math.max(0, this.toNumber(entry.paidAmount));
           const totalAmount = Math.max(0, this.toNumber(entry.revenue));
           const remainingAmount = Math.max(0, this.toNumber(entry.remainingAmount));
           const securitySnapshot = this.getRentalSecuritySnapshot(raw);
@@ -4574,6 +4704,7 @@ class FinanceApiServiceV2 {
 
     context.maintenanceFinance
       .filter((record) => this.maintenanceMatchesFilters(record, filters))
+      .filter((record) => !record.linkedRentalId)
       .forEach((record) => {
         const date = this.normalizeDate(record.date);
         if (record.billedRevenue > 0) {
@@ -4638,6 +4769,33 @@ class FinanceApiServiceV2 {
             href: `/admin/maintenance?maintenanceId=${record.id}`
           });
         }
+      });
+
+    context.financeExpenses
+      .filter((expense: any) => String(expense?.status || 'active').toLowerCase() !== 'reversed')
+      .filter((expense: any) => this.isDateInRange(expense.expense_date || expense.created_at, filters.startDate, filters.endDate))
+      .filter((expense: any) => {
+        if (filters.vehicleIds.length === 0) return true;
+        return expense.vehicle_id && filters.vehicleIds.map(String).includes(String(expense.vehicle_id));
+      })
+      .forEach((expense: any) => {
+        const amount = Math.round(this.toNumber(expense.amount));
+        if (amount <= 0) return;
+        rows.push({
+          id: `ledger-finance-expense-${expense.id}`,
+          title: expense.description || 'Manual expense',
+          subtitle: this.buildExpenseSubtitle(expense, context),
+          amount,
+          direction: 'outgoing',
+          date: this.normalizeDate(expense.expense_date || expense.created_at),
+          sourceType: 'finance_expense',
+          vehicleId: expense.vehicle_id ? String(expense.vehicle_id) : undefined,
+          href: '/admin/finance',
+          meta: {
+            category: expense.category || '',
+            subcategory: expense.subcategory || ''
+          }
+        });
       });
 
     context.fuelRefills
@@ -4742,6 +4900,55 @@ class FinanceApiServiceV2 {
   async getCostBreakdown(type: string, filters: FinanceFiltersV2): Promise<FinanceBreakdownData> {
     const context = await this.getFinanceContext();
     const period = `${filters.startDate} – ${filters.endDate}`;
+
+    if (['revenue', 'incoming', 'expenses', 'outgoing', 'profit', 'net', 'tax', 'taxes'].includes(type)) {
+      const ledger = this.getUnifiedLedgerFromContext(context, filters);
+      const normalizedRows = ledger.rows.map((row) => ({
+        ...row,
+        amount: Math.round(this.toNumber(row.amount)),
+      }));
+
+      if (type === 'revenue' || type === 'incoming') {
+        const rows = normalizedRows.filter((row) => row.direction === 'incoming');
+        return {
+          type,
+          title: type === 'incoming' ? 'Incoming' : 'Revenue',
+          total: rows.reduce((sum, row) => sum + row.amount, 0),
+          period,
+          rows,
+        };
+      }
+
+      if (type === 'expenses' || type === 'outgoing') {
+        const rows = normalizedRows.filter((row) => row.direction === 'outgoing');
+        return {
+          type,
+          title: type === 'outgoing' ? 'Outgoing' : 'Expenses',
+          total: rows.reduce((sum, row) => sum + row.amount, 0),
+          period,
+          rows,
+        };
+      }
+
+      if (type === 'tax' || type === 'taxes') {
+        const rows = normalizedRows.filter((row) => row.direction === 'tax');
+        return {
+          type,
+          title: 'Taxes',
+          total: rows.reduce((sum, row) => sum + row.amount, 0),
+          period,
+          rows,
+        };
+      }
+
+      return {
+        type,
+        title: type === 'net' ? 'Net Breakdown' : 'Net Profit Breakdown',
+        total: Math.round(ledger.netTotal),
+        period,
+        rows: normalizedRows,
+      };
+    }
 
     if (type === 'maintenance') {
       const rows = context.maintenanceFinance

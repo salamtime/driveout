@@ -24,6 +24,12 @@ import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifec
 import { buildRentalTelegramVehicleLabel } from '../../utils/rentalTelegram';
 import { getScopedOrganizationId, applyOrganizationScope } from '../../services/OrganizationService';
 import { getHostContext, isFirstPartyTenantHost } from '../../utils/hostContext';
+import {
+  getRentalCollectedAmount as getRentalCollectedAmountShared,
+  getRentalCollectedAmountInWindow,
+  getRentalCompanyDiscountAmount,
+  parseAmountDueResolutionMeta
+} from '../../utils/rentalFinancials';
 import { toast } from 'sonner';
 
 const scheduleBackgroundTask = (callback) => {
@@ -206,6 +212,7 @@ const RENTALS_BASE_SELECT = `
   total_amount,
   deposit_amount,
   remaining_amount,
+  deposit_deduction_amount,
   amount_due_override_reason,
   fuel_charge,
   end_fuel_level,
@@ -259,6 +266,8 @@ const RENTALS_OPTIONAL_VEHICLE_SNAPSHOT_SELECT = `
   vehicle_model_snapshot,
   vehicle_label_snapshot
 `;
+
+const RENTALS_RETURN_SNAPSHOT_STORAGE_KEY = 'rentals_return_snapshot';
 
 const buildRentalsSelect = ({ includeAuditColumns = true, includeVehicleSnapshots = true } = {}) => `
   ${RENTALS_BASE_SELECT}
@@ -722,44 +731,6 @@ const getPackageRentalDurationUnits = (rental = {}) => {
   return null;
 };
 
-const getAmountDueResolutionMeta = (rental = {}) => {
-  const rawReason =
-    typeof rental?.amount_due_override_reason === 'string'
-      ? rental.amount_due_override_reason.trim()
-      : '';
-  if (!rawReason || !rawReason.startsWith('{')) return null;
-
-  try {
-    const parsed = JSON.parse(rawReason);
-    const paymentReceivedNow = Math.max(0, Number(parsed?.paymentReceivedNow || 0) || 0);
-    const companyDiscount = Math.max(0, Number(parsed?.companyDiscount || 0) || 0);
-    const previousAmount = Math.max(0, Number(rental?.amount_due_override_previous_amount || 0) || 0);
-    const newAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
-    const note = String(parsed?.note || '').trim();
-    const customerFacingNote = String(parsed?.customerFacingNote || '').trim();
-    const expectedNewAmount = Math.max(0, previousAmount - paymentReceivedNow - companyDiscount);
-
-    if (paymentReceivedNow <= 0 && companyDiscount <= 0 && !note && !customerFacingNote && previousAmount <= 0 && newAmount <= 0) {
-      return null;
-    }
-
-    if (previousAmount > 0 && Math.abs(expectedNewAmount - newAmount) > 1) {
-      return null;
-    }
-
-    return {
-      paymentReceivedNow,
-      companyDiscount,
-      previousAmount,
-      newAmount,
-      note,
-      customerFacingNote,
-    };
-  } catch {
-    return null;
-  }
-};
-
 const getRentalFinancialSnapshot = (rental) => {
   const quantity = getPackageRentalDurationUnits(rental) || 1;
   const baseTotal = rental?.use_package_pricing
@@ -772,8 +743,8 @@ const getRentalFinancialSnapshot = (rental) => {
   // must not re-run side calculations like fuel stripping or base-price fallbacks
   // unless the contract total has never been saved.
   const computedTotal = storedTotal > 0 ? storedTotal : baseTotal;
-  const amountDueResolutionMeta = getAmountDueResolutionMeta(rental);
-  const companyDiscount = Math.max(0, Number(amountDueResolutionMeta?.companyDiscount || 0) || 0);
+  const amountDueResolutionMeta = parseAmountDueResolutionMeta(rental);
+  const companyDiscount = getRentalCompanyDiscountAmount(rental);
   const paymentReceivedNow = Math.max(0, Number(amountDueResolutionMeta?.paymentReceivedNow || 0) || 0);
   const grossTotal = pendingRequestedTotal > 0 ? pendingRequestedTotal : computedTotal;
   const grandTotal = Math.max(0, grossTotal - companyDiscount);
@@ -822,6 +793,10 @@ const getRentalFinancialSnapshot = (rental) => {
     status,
     className,
   };
+};
+
+const getRentalCollectedAmount = (rental) => {
+  return getRentalCollectedAmountShared(rental);
 };
 
 const getApprovedExtensionHours = (rental) =>
@@ -1108,7 +1083,10 @@ const getDurationBadge = (rental) => {
     );
   }
   
-  const diffDays = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+  const storedDurationDays = getPackageRentalDurationUnits(rental);
+  const diffDays = Number.isFinite(storedDurationDays) && storedDurationDays > 0
+    ? storedDurationDays
+    : Math.max(1, Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)));
   return (
     <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-blue-50 text-blue-700 border border-blue-200">
       {diffDays}d
@@ -1409,11 +1387,11 @@ const Rentals = () => {
     let nextAnchor = new Date(base);
     if (mode === 'today') {
       nextAnchor = new Date(todayBase);
-      setDateFocusFilter('calendar-day');
+      setDateFocusFilter('day');
     } else if (mode === 'yesterday') {
       nextAnchor = new Date(todayBase);
       nextAnchor.setDate(nextAnchor.getDate() - 1);
-      setDateFocusFilter('calendar-day');
+      setDateFocusFilter('day');
     } else if (mode === 'week') {
       setDateFocusFilter('week');
     } else if (mode === 'last7') {
@@ -1421,7 +1399,7 @@ const Rentals = () => {
     } else if (mode === 'month') {
       setDateFocusFilter('month');
     } else if (mode === 'day') {
-      setDateFocusFilter('calendar-day');
+      setDateFocusFilter('day');
     }
 
     setCustomDateRange(null);
@@ -1431,8 +1409,16 @@ const Rentals = () => {
   const shiftWeek = useCallback((direction) => {
     const nextAnchor = new Date(dateFocusAnchorDate);
     nextAnchor.setDate(nextAnchor.getDate() + direction * 7);
-    applyQuickRange('week', nextAnchor);
-  }, [applyQuickRange, dateFocusAnchorDate]);
+    nextAnchor.setHours(12, 0, 0, 0);
+
+    // Keep any in-progress custom range anchor while moving the visible week.
+    // Only the week focus mode should update the active date filter here.
+    if (dateFocusFilter === 'week') {
+      setDateFocusFilter('week');
+    }
+
+    setDateFocusAnchor(toDateInputValue(nextAnchor));
+  }, [dateFocusAnchorDate, dateFocusFilter]);
 
   const clearCustomDateRange = useCallback(() => {
     lastQuickDateTapRef.current = { key: null, timestamp: 0 };
@@ -2614,9 +2600,16 @@ const Rentals = () => {
   };
 
   const handleViewRental = useCallback((rental) => {
+    const snapshot = buildRentalsReturnSnapshot();
+    if (typeof window !== 'undefined') {
+      try {
+        window.sessionStorage.setItem(RENTALS_RETURN_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
+      } catch {}
+    }
+
     navigate(`/admin/rentals/${rental.id}`, {
       state: {
-        rentalsReturnContext: buildRentalsReturnSnapshot(),
+        rentalsReturnContext: snapshot,
       },
     });
   }, [buildRentalsReturnSnapshot, navigate]);
@@ -3337,12 +3330,22 @@ const Rentals = () => {
 
   const footerSummaryRentals = summaryPeriodRentals;
   const footerSummaryRentalCount = footerSummaryRentals.length;
-  const footerSummaryRevenue = footerSummaryRentals.reduce((sum, rental) => {
-    const paymentSnapshot = getRentalFinancialSnapshot(rental);
-    const displayAmount = rental?.pending_total_request
-      ? parseFloat(rental.pending_total_request) || 0
-      : paymentSnapshot.grandTotal;
-    return sum + (Number.isFinite(displayAmount) ? displayAmount : 0);
+  const collectedSummaryWindow = useMemo(
+    () => getDateFocusWindow(
+      dateFocusFilter,
+      workspaceTab,
+      dateFocusAnchorDate,
+      dateFocusFilter === 'custom' ? customDateRange : null
+    ),
+    [customDateRange, dateFocusAnchorDate, dateFocusFilter, workspaceTab]
+  );
+  const footerSummaryCollected = footerSummaryRentals.reduce((sum, rental) => {
+    const collectedAmount = getRentalCollectedAmountInWindow(
+      rental,
+      collectedSummaryWindow?.start || null,
+      collectedSummaryWindow?.end || null
+    );
+    return sum + (Number.isFinite(collectedAmount) ? collectedAmount : 0);
   }, 0);
 
   const todayOperationalRentals = useMemo(
@@ -3509,7 +3512,10 @@ const Rentals = () => {
     }
     
     const diffMs = Math.max(0, endDate - startDate);
-    const diffDays = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+    const storedDurationDays = getPackageRentalDurationUnits(rental);
+    const diffDays = Number.isFinite(storedDurationDays) && storedDurationDays > 0
+      ? storedDurationDays
+      : Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
     return (
       <span className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-800 text-xs font-medium rounded-full border border-gray-300">
         <span className="font-bold">{diffDays}d</span>
@@ -3854,7 +3860,7 @@ const Rentals = () => {
               {tr('Maintenance', 'Maintenance')}: {vehicleAvailabilitySummary.maintenance}
             </span>
             <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
-              {tr('Cash In Today', "Entrées aujourd'hui")}: {todayCashIn.toFixed(0)} MAD
+              {tr('Collected', 'Encaissé')}: {footerSummaryCollected.toFixed(0)} MAD
             </span>
             <span className="ml-auto text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">
               {tr('Business Day: 10:00 → 03:00', 'Journée: 10:00 → 03:00')}
@@ -5055,7 +5061,7 @@ const Rentals = () => {
             {tr('Expired', 'Expirées')}: {footerSummaryRentals.filter(r => getEffectiveRentalStatus(r) === 'expired').length}
           </span>
           <span className="ml-auto rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
-            {tr('Revenue', 'Revenu')}: {footerSummaryRevenue.toFixed(0)} MAD
+            {tr('Collected', 'Encaissé')}: {footerSummaryCollected.toFixed(0)} MAD
           </span>
         </div>
       </div>

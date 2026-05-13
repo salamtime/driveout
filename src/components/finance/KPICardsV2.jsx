@@ -138,8 +138,25 @@ const KPICardsV2 = ({ filters, refreshTrigger, onOpenBreakdown, prefetchedKpiDat
         {primaryCards.map((card) => {
           const Icon = card.icon;
           const positiveTrend = card.change >= 0;
+          const breakdownType =
+            card.key === 'revenue'
+              ? 'revenue'
+              : card.key === 'expenses'
+                ? 'expenses'
+                : 'profit';
+          const isClickable = typeof onOpenBreakdown === 'function';
           return (
-            <div key={card.key} className={`w-[min(88vw,360px)] shrink-0 snap-center rounded-[1.5rem] border p-5 shadow-[0_16px_34px_rgba(15,23,42,0.06)] transition-all hover:shadow-[0_18px_38px_rgba(15,23,42,0.08)] md:w-auto md:shrink md:snap-none ${card.shellClass}`}>
+            <button
+              key={card.key}
+              type="button"
+              onClick={() => {
+                if (isClickable) {
+                  onOpenBreakdown(breakdownType);
+                }
+              }}
+              className={`w-[min(88vw,360px)] shrink-0 snap-center rounded-[1.5rem] border p-5 text-left shadow-[0_16px_34px_rgba(15,23,42,0.06)] transition-all hover:shadow-[0_18px_38px_rgba(15,23,42,0.08)] md:w-auto md:shrink md:snap-none ${card.shellClass} ${isClickable ? 'cursor-pointer hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-violet-200' : 'cursor-default'}`}
+              aria-label={`${card.title} ${tr('details', 'détails')}`}
+            >
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{card.title}</p>
@@ -159,7 +176,7 @@ const KPICardsV2 = ({ filters, refreshTrigger, onOpenBreakdown, prefetchedKpiDat
                   {periodLabel || tr('Selected period', 'Période sélectionnée')}
                 </span>
               </div>
-            </div>
+            </button>
           );
         })}
         </div>

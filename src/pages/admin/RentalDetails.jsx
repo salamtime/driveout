@@ -50,6 +50,7 @@ import { adminApiRequest } from '../../services/adminApi';
 import { deriveEffectiveRentalStatus } from '../../utils/rentalLifecycle';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../../utils/simpleRentalPricing';
+import { buildRentalBookedPackageSnapshot } from '../../utils/rentalPackageSnapshot';
 import { sendRentalDocumentsEmail } from '../../services/emailApi';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { notifyRentalTelegramEvent } from '../../services/TelegramAlertService';
@@ -68,6 +69,7 @@ const MOBILE_FOOTER_PRIMARY_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border b
 const MOBILE_FOOTER_SUCCESS_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 hover:border-emerald-700`;
 const MOBILE_FOOTER_DISABLED_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-slate-200 bg-slate-100 text-slate-400 shadow-none`;
 const LIGHT_RENTAL_ACTION_DOCK_CLASS = 'pointer-events-auto fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur lg:left-[calc(50vw+9.5rem)] lg:right-auto lg:w-[min(72rem,calc(100vw-21rem))] lg:-translate-x-1/2';
+const RENTALS_RETURN_SNAPSHOT_STORAGE_KEY = 'rentals_return_snapshot';
 const RENTAL_CANCELLATION_REASON_OPTIONS = [
   {
     value: 'customer_cancelled',
@@ -440,17 +442,21 @@ const getRentalAttentionState = (rental, vehicleReport) => {
 const getRentalKilometerPackage = (rental, packageDetails) => {
   if (!isPackagePricingEnabled(rental)) return null;
 
-  const pkg = rental?.package || packageDetails;
+  const pkg = buildRentalBookedPackageSnapshot(rental, rental?.package || packageDetails);
   if (!pkg) return null;
 
   const hasLinkedPackage = Boolean(
     rental?.package_id ||
     rental?.selected_package_id ||
-    rental?.package?.id
+    rental?.package?.id ||
+    pkg?.id ||
+    rental?.package_name ||
+    rental?.selected_package_name
   );
   const hasKmConfig =
     pkg.included_kilometers !== null && pkg.included_kilometers !== undefined ||
-    pkg.extra_km_rate !== null && pkg.extra_km_rate !== undefined;
+    pkg.extra_km_rate !== null && pkg.extra_km_rate !== undefined ||
+    pkg.total_included_kilometers_snapshot !== null && pkg.total_included_kilometers_snapshot !== undefined;
 
   return hasLinkedPackage && hasKmConfig ? pkg : null;
 };
@@ -613,6 +619,15 @@ const getConfiguredPackageTotalIncludedKilometers = (rental = {}, pkg = null) =>
   const resolvedPackage = pkg || getRentalKilometerPackage(rental);
   if (!resolvedPackage) return 0;
   if (isUnlimitedKilometerPackage(resolvedPackage)) return Number.POSITIVE_INFINITY;
+
+  const storedTotalIncludedKm = Number.parseFloat(
+    resolvedPackage?.total_included_kilometers_snapshot ??
+    rental?.package_total_included_km ??
+    rental?.selected_package_total_included_km ??
+    rental?.included_kilometers_applied ??
+    0
+  ) || 0;
+  if (storedTotalIncludedKm > 0) return storedTotalIncludedKm;
 
   const includedPerUnit = Number.parseFloat(
     resolvedPackage?.included_kilometers ??
@@ -2177,7 +2192,22 @@ export default function RentalDetails() {
   }, [location.search]);
   const financeOverviewReturn = Boolean(location.state?.financeOverviewReturn);
   const financeOverviewLabel = String(location.state?.financeOverviewLabel || '');
-  const rentalsReturnContext = location.state?.rentalsReturnContext || null;
+  const rentalsReturnContext = useMemo(() => {
+    if (location.state?.rentalsReturnContext) {
+      return location.state.rentalsReturnContext;
+    }
+
+    if (typeof window === 'undefined') return null;
+
+    try {
+      const rawSnapshot = window.sessionStorage.getItem(RENTALS_RETURN_SNAPSHOT_STORAGE_KEY);
+      if (!rawSnapshot) return null;
+      const parsed = JSON.parse(rawSnapshot);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [location.state]);
   const { userProfile } = useAuth();
   const isFrench = isFrenchLocale();
   const startWorkflowStorageKey = id ? `rental_start_workflow_${id}` : null;
@@ -2591,7 +2621,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
   }, [fleetLocations, rental?.id, rental?.return_location_id, rental?.vehicle?.location_id]);
 
   useEffect(() => {
-    if (!showReplaceVehicleDialog || !rental?.vehicle_id) {
+    if (!showReplaceVehicleDialog) {
       return;
     }
 
@@ -2604,9 +2634,18 @@ const openReplacementResumeWorkflow = useCallback(() => {
         const currentVehicleModelId =
           rental?.vehicle?.vehicle_model?.id ||
           rental?.vehicle?.vehicle_model_id ||
+          rental?.vehicle_model_id ||
           null;
 
-        const { data, error } = await supabase
+        if (!currentVehicleModelId) {
+          if (isMounted) {
+            setReplacementVehicles([]);
+            setSelectedReplacementVehicleId('');
+          }
+          return;
+        }
+
+        let query = supabase
           .from('saharax_0u4w4d_vehicles')
           .select(`
             id,
@@ -2620,8 +2659,13 @@ const openReplacementResumeWorkflow = useCallback(() => {
             vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(id, name, model)
           `)
           .eq('status', 'available')
-          .eq('vehicle_model_id', currentVehicleModelId)
-          .neq('id', currentVehicleId);
+          .eq('vehicle_model_id', currentVehicleModelId);
+
+        if (currentVehicleId) {
+          query = query.neq('id', currentVehicleId);
+        }
+
+        const { data, error } = await query;
 
         if (error) throw error;
         if (!isMounted) return;
@@ -2652,7 +2696,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
     return () => {
       isMounted = false;
     };
-  }, [showReplaceVehicleDialog, rental?.vehicle_id, rental?.vehicle?.id, rental?.vehicle?.vehicle_model?.id, rental?.vehicle?.vehicle_model_id]);
+  }, [showReplaceVehicleDialog, rental?.vehicle_id, rental?.vehicle?.id, rental?.vehicle?.vehicle_model?.id, rental?.vehicle?.vehicle_model_id, rental?.vehicle_model_id]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -2993,10 +3037,10 @@ const openReplacementResumeWorkflow = useCallback(() => {
   };
 
   const openReplaceVehicleDialog = () => {
-    setReplacementReason('breakdown');
+    setReplacementReason(rental?.vehicle_id ? 'breakdown' : 'other');
     setReplacementNote('');
     setShowReplaceVehicleDialog(true);
-    setReplacementPauseStartedAt(new Date().toISOString());
+    setReplacementPauseStartedAt(rental?.vehicle_id ? new Date().toISOString() : null);
   };
 
   const closeReplaceVehicleDialog = () => {
@@ -3008,18 +3052,24 @@ const openReplacementResumeWorkflow = useCallback(() => {
   };
 
   const handleReplaceVehicle = async () => {
-    if (!rental?.id || !rental?.vehicle_id || !selectedReplacementVehicleId) {
-      toast.error(tr('Please choose a replacement vehicle', 'Veuillez choisir un véhicule de remplacement'));
+    if (!rental?.id || !selectedReplacementVehicleId) {
+      toast.error(tr('Please choose a vehicle', 'Veuillez choisir un véhicule'));
       return;
     }
 
     const currentVehicleId = rental.vehicle_id || rental.vehicle?.id;
+    const isAssigningVehicle = !currentVehicleId;
     const replacementVehicle = replacementVehicles.find(
       (vehicle) => String(vehicle.id) === String(selectedReplacementVehicleId)
     );
 
     if (!replacementVehicle) {
-      toast.error(tr('Replacement vehicle is no longer available', 'Le véhicule de remplacement n’est plus disponible'));
+      toast.error(
+        tr(
+          isAssigningVehicle ? 'Selected vehicle is no longer available' : 'Replacement vehicle is no longer available',
+          isAssigningVehicle ? 'Le véhicule sélectionné n’est plus disponible' : 'Le véhicule de remplacement n’est plus disponible'
+        )
+      );
       return;
     }
 
@@ -3047,12 +3097,27 @@ const openReplacementResumeWorkflow = useCallback(() => {
 
       const rentalUpdatePayload = {
         vehicle_id: replacementVehicle.id,
+        vehicle_model_id: replacementVehicle.vehicle_model_id || rental?.vehicle_model_id || null,
         rental_status: isReplacingActiveRental ? 'active' : rental?.rental_status || 'scheduled',
         status: isReplacingActiveRental ? 'active' : rental?.status || rental?.rental_status || 'scheduled',
         replacement_pause_started_at: null,
         replacement_pause_reason: null,
         replacement_resume_context: null,
-        replacement_previous_vehicle_id: currentVehicleId,
+        replacement_previous_vehicle_id: isAssigningVehicle ? null : currentVehicleId,
+        selected_vehicle_name_snapshot: replacementVehicle.name || rental?.selected_vehicle_name_snapshot || null,
+        selected_vehicle_model_snapshot:
+          replacementVehicle.vehicle_model?.model ||
+          replacementVehicle.model ||
+          rental?.selected_vehicle_model_snapshot ||
+          null,
+        selected_vehicle_plate_snapshot: replacementVehicle.plate_number || null,
+        vehicle_name_snapshot: replacementVehicle.name || rental?.vehicle_name_snapshot || null,
+        vehicle_model_snapshot:
+          replacementVehicle.vehicle_model?.model ||
+          replacementVehicle.model ||
+          rental?.vehicle_model_snapshot ||
+          null,
+        vehicle_plate_number: replacementVehicle.plate_number || null,
         updated_at: new Date().toISOString(),
       };
 
@@ -3075,17 +3140,19 @@ const openReplacementResumeWorkflow = useCallback(() => {
 
       if (replacementVehicleStatusError) throw replacementVehicleStatusError;
 
-      const { error: oldVehicleStatusError } = await supabase
-        .from('saharax_0u4w4d_vehicles')
-        .update({
-          status: oldVehicleNextStatus,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', currentVehicleId);
+      if (!isAssigningVehicle) {
+        const { error: oldVehicleStatusError } = await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .update({
+            status: oldVehicleNextStatus,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', currentVehicleId);
 
-      if (oldVehicleStatusError) throw oldVehicleStatusError;
+        if (oldVehicleStatusError) throw oldVehicleStatusError;
+      }
 
-      try {
+      if (!isAssigningVehicle) try {
         const replacementStartedAt = new Date().toISOString();
         const { data: existingHistory, error: existingHistoryError } = await supabase
           .from('rental_vehicle_history')
@@ -3152,7 +3219,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
       }
 
       let maintenanceRecord = null;
-      if (shouldMoveOldVehicleToMaintenance) {
+      if (!isAssigningVehicle && shouldMoveOldVehicleToMaintenance) {
         try {
           const maintenanceResult = await MaintenanceService.createMaintenanceRecord({
             vehicle_id: currentVehicleId,
@@ -3187,24 +3254,26 @@ const openReplacementResumeWorkflow = useCallback(() => {
         await insertSharedActivityLog({
           user_id: currentUser?.id || null,
           created_by: actorName,
-          action: 'rental_vehicle_replaced',
-          description: `Replaced ${currentVehicleName} with ${replacementVehicleName} on rental ${rental.rental_id || rental.id}`,
+          action: isAssigningVehicle ? 'rental_vehicle_assigned' : 'rental_vehicle_replaced',
+          description: isAssigningVehicle
+            ? `Assigned ${replacementVehicleName} to rental ${rental.rental_id || rental.id}`
+            : `Replaced ${currentVehicleName} with ${replacementVehicleName} on rental ${rental.rental_id || rental.id}`,
           entity_type: 'rental',
           entity_id: rental.id,
-          reason: replacementReasonLabel,
+          reason: isAssigningVehicle ? tr('Vehicle assigned before pickup', 'Véhicule attribué avant départ') : replacementReasonLabel,
           details: {
             rental_id: rental.id,
             rental_reference: rental.rental_id || null,
-            old_vehicle_id: currentVehicleId,
-            old_vehicle_name: currentVehicleName,
+            old_vehicle_id: isAssigningVehicle ? null : currentVehicleId,
+            old_vehicle_name: isAssigningVehicle ? null : currentVehicleName,
             new_vehicle_id: replacementVehicle.id,
             new_vehicle_name: replacementVehicleName,
             replacement_reason: replacementReason,
-            replacement_reason_label: replacementReasonLabel,
+            replacement_reason_label: isAssigningVehicle ? tr('Vehicle assigned', 'Véhicule attribué') : replacementReasonLabel,
             replacement_note: replacementNote.trim() || null,
             pause_started_at: null,
-            replacement_mode: isReplacingActiveRental ? 'same_contract' : 'start_required',
-            old_vehicle_next_status: oldVehicleNextStatus,
+            replacement_mode: isAssigningVehicle ? 'first_assignment' : (isReplacingActiveRental ? 'same_contract' : 'start_required'),
+            old_vehicle_next_status: isAssigningVehicle ? null : oldVehicleNextStatus,
             maintenance_id: maintenanceRecord?.id || null,
             maintenance_reference: maintenanceRecord ? formatMaintenanceReference(maintenanceRecord) : null,
           },
@@ -3214,7 +3283,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
       }
 
       void dispatchRentalLifecycleTelegramEvent({
-        eventType: 'rental_vehicle_replaced',
+        eventType: isAssigningVehicle ? 'rental_vehicle_assigned' : 'rental_vehicle_replaced',
         actor: 'admin',
         rental: {
           id: rental.id,
@@ -3226,12 +3295,12 @@ const openReplacementResumeWorkflow = useCallback(() => {
           total: updatedRental?.total_amount || rental.total_amount || 0,
           amountPaid: updatedRental?.deposit_amount || rental.deposit_amount || 0,
           remaining: updatedRental?.remaining_amount || rental.remaining_amount || 0,
-          old_vehicle_id: currentVehicleId,
-          old_vehicle_name: [currentVehicleName, currentVehiclePlateDisplay].filter(Boolean).join(' • ') || currentVehicleName,
+          old_vehicle_id: isAssigningVehicle ? null : currentVehicleId,
+          old_vehicle_name: isAssigningVehicle ? null : ([currentVehicleName, currentVehiclePlateDisplay].filter(Boolean).join(' • ') || currentVehicleName),
           new_vehicle_id: replacementVehicle.id,
           new_vehicle_name: [replacementVehicleName, replacementVehiclePlateDisplay].filter(Boolean).join(' • ') || replacementVehicleName,
           replacement_reason: replacementReason,
-          replacement_reason_label: replacementReasonLabel,
+          replacement_reason_label: isAssigningVehicle ? tr('Vehicle assigned', 'Véhicule attribué') : replacementReasonLabel,
           replacement_note: replacementNote.trim() || null,
         },
       }).catch((telegramDispatchError) => {
@@ -3257,7 +3326,12 @@ const openReplacementResumeWorkflow = useCallback(() => {
       await loadRentalData(true);
 
       toast.success(
-        tr(
+        isAssigningVehicle
+          ? tr(
+              `Vehicle assigned. ${replacementVehicleName} is now reserved for this rental.`,
+              `${replacementVehicleName} est maintenant attribué à cette location.`
+            )
+          : tr(
           isReplacingActiveRental
             ? shouldMoveOldVehicleToMaintenance
               ? `Vehicle replaced. ${currentVehicleName} moved to maintenance and the rental continues on ${replacementVehicleName}.`
@@ -12047,6 +12121,11 @@ useEffect(() => {
     if (isStartingRental || startRentalInFlightRef.current) {
       return;
     }
+    if (!rental?.vehicle_id) {
+      toast.error(tr('Assign a vehicle before starting this rental.', 'Attribuez un véhicule avant de démarrer cette location.'));
+      openReplaceVehicleDialog();
+      return;
+    }
     if (!startWorkflowStepMap.customer_verification?.complete) {
       toast.error(tr('Complete customer verification before starting this rental.', 'Complétez la vérification client avant de démarrer cette location.'));
       openCustomerVerificationForm();
@@ -14616,6 +14695,7 @@ useEffect(() => {
   const displayRentalStatus = hasHistoricalImpoundStatus ? 'impounded' : operationalRentalStatus;
   const isActive = operationalRentalStatus === 'active';
   const isScheduled = operationalRentalStatus === 'scheduled';
+  const isAwaitingVehicleAssignment = isScheduled && !rental?.vehicle_id;
   const isCompleted = operationalRentalStatus === 'completed';
   const isImpounded = Boolean(rental?.is_impounded);
   const hasImpoundRecord = hasHistoricalImpoundStatus;
@@ -17294,7 +17374,9 @@ useEffect(() => {
               className="rounded-xl border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800"
             >
               <Wrench className="mr-2 h-4 w-4" />
-              {tr('Change vehicle', 'Changer de véhicule')}
+              {isAwaitingVehicleAssignment
+                ? tr('Assign vehicle', 'Attribuer un véhicule')
+                : tr('Change vehicle', 'Changer de véhicule')}
             </Button>
           )}
         </div>
@@ -17312,10 +17394,10 @@ useEffect(() => {
           </div>
         )}
         <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm text-slate-700 sm:grid-cols-2 sm:text-base">
-          <p><strong>{tr('Vehicle:', 'Véhicule :')}</strong> {rental.vehicle?.name}</p>
-          <p><strong>{tr('Model:', 'Modèle :')}</strong> {rental.vehicle?.model}</p>
-          <p><strong>{tr('Plate:', 'Plaque :')}</strong> {rental.vehicle?.plate_number}</p>
-          <p><strong>{tr('Type:', 'Type :')}</strong> {rental.vehicle?.vehicle_type}</p>
+          <p><strong>{tr('Vehicle:', 'Véhicule :')}</strong> {rental.vehicle?.name || rental?.selected_vehicle_name_snapshot || rental?.vehicle_name_snapshot || tr('Awaiting assignment', 'En attente d’attribution')}</p>
+          <p><strong>{tr('Model:', 'Modèle :')}</strong> {rental.vehicle?.model || rental?.selected_vehicle_model_snapshot || rental?.vehicle_model_snapshot || tr('Awaiting assignment', 'En attente d’attribution')}</p>
+          <p><strong>{tr('Plate:', 'Plaque :')}</strong> {rental.vehicle?.plate_number || rental?.selected_vehicle_plate_snapshot || tr('Not assigned yet', 'Pas encore attribuée')}</p>
+          <p><strong>{tr('Type:', 'Type :')}</strong> {rental.vehicle?.vehicle_type || tr('N/A', 'N/D')}</p>
           {rental.start_odometer && (
             <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
               {isEditingStartOdometer ? (
@@ -17469,6 +17551,16 @@ useEffect(() => {
             return null;
           })()}
         </div>
+        {isAwaitingVehicleAssignment && (
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p className="font-semibold">
+              {tr('This website reservation is holding the model only for now.', 'Cette réservation web retient seulement le modèle pour le moment.')}
+            </p>
+            <p className="mt-1 text-xs text-amber-800">
+              {tr('Assign the exact plate before pickup so the start workflow stays accurate.', 'Attribuez la plaque exacte avant le départ afin que le démarrage reste précis.')}
+            </p>
+          </div>
+        )}
 
         {previousVehicleHistoryEntry && (
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">
@@ -22275,7 +22367,9 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                   className="rounded-xl border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 hover:text-amber-800"
                 >
                   <Wrench className="mr-2 h-4 w-4" />
-                  {tr('Change vehicle', 'Changer de véhicule')}
+                  {isAwaitingVehicleAssignment
+                    ? tr('Assign vehicle', 'Attribuer un véhicule')
+                    : tr('Change vehicle', 'Changer de véhicule')}
                 </Button>
               )}
             </div>
@@ -22293,10 +22387,10 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm sm:text-base text-slate-700">
-              <p><strong>{tr('Vehicle:', 'Véhicule :')}</strong> {rental.vehicle?.name}</p>
-              <p><strong>{tr('Model:', 'Modèle :')}</strong> {rental.vehicle?.model}</p>
-              <p><strong>{tr('Plate:', 'Plaque :')}</strong> {rental.vehicle?.plate_number}</p>
-              <p><strong>{tr('Type:', 'Type :')}</strong> {rental.vehicle?.vehicle_type}</p>
+              <p><strong>{tr('Vehicle:', 'Véhicule :')}</strong> {rental.vehicle?.name || rental?.selected_vehicle_name_snapshot || rental?.vehicle_name_snapshot || tr('Awaiting assignment', 'En attente d’attribution')}</p>
+              <p><strong>{tr('Model:', 'Modèle :')}</strong> {rental.vehicle?.model || rental?.selected_vehicle_model_snapshot || rental?.vehicle_model_snapshot || tr('Awaiting assignment', 'En attente d’attribution')}</p>
+              <p><strong>{tr('Plate:', 'Plaque :')}</strong> {rental.vehicle?.plate_number || rental?.selected_vehicle_plate_snapshot || tr('Not assigned yet', 'Pas encore attribuée')}</p>
+              <p><strong>{tr('Type:', 'Type :')}</strong> {rental.vehicle?.vehicle_type || tr('N/A', 'N/D')}</p>
               {rental.start_odometer && (
                 <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:justify-between">
                   {isEditingStartOdometer ? (
@@ -22488,6 +22582,16 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 return null;
               })()}
             </div>
+            {isAwaitingVehicleAssignment && (
+              <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <p className="font-semibold">
+                  {tr('This website reservation is holding the model only for now.', 'Cette réservation web retient seulement le modèle pour le moment.')}
+                </p>
+                <p className="mt-1 text-xs text-amber-800">
+                  {tr('Assign the exact plate before pickup so the start workflow stays accurate.', 'Attribuez la plaque exacte avant le départ afin que le démarrage reste précis.')}
+                </p>
+              </div>
+            )}
 
             {previousVehicleHistoryEntry && (
               <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm text-amber-900">
@@ -23144,20 +23248,20 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             {Number.isFinite(displayIncludedKilometers) ? `${displayIncludedKilometers} km` : tr('Unlimited', 'Illimité')}
           </span>
         </div>
-        {packageApplication.upgraded && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
-            <div>
-              {tr(
-                `Auto-upgraded from ${getKilometerPackageName(packageApplication.originalPackage, 'original package')} to ${getKilometerPackageName(packageApplication.appliedPackage, 'upgraded package')}.`,
-                `Surclassé automatiquement de ${getKilometerPackageName(packageApplication.originalPackage, 'forfait initial')} vers ${getKilometerPackageName(packageApplication.appliedPackage, 'forfait supérieur')}.`
-              )}
-            </div>
-            <div className="mt-1 text-xs text-emerald-800">
-              {tr('Applied package price:', 'Prix du forfait appliqué :')}{' '}
-              <span className="font-extrabold">{formatCurrency(packageApplication.appliedPrice)} MAD</span>
-            </div>
-          </div>
-        )}
+            {packageApplication.upgraded && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+                <div>
+                  {tr(
+                    `Auto-upgraded from ${getKilometerPackageName(packageApplication.originalPackage, 'original package')} to ${getKilometerPackageName(packageApplication.appliedPackage, 'upgraded package')}.`,
+                    `Surclassé automatiquement de ${getKilometerPackageName(packageApplication.originalPackage, 'forfait initial')} vers ${getKilometerPackageName(packageApplication.appliedPackage, 'forfait supérieur')}.`
+                  )}
+                </div>
+                <div className="mt-1 text-xs text-emerald-800">
+                  {tr('Applied package price:', 'Prix du forfait appliqué :')}{' '}
+                  <span className="font-extrabold">{formatCurrency(packageApplication.appliedPrice)} MAD</span>
+                </div>
+              </div>
+            )}
         {extraKm > 0 ? (
           <>
             <div className="flex justify-between text-sm text-orange-600">
@@ -27413,77 +27517,96 @@ Breakdown:
           <DialogHeader className="border-b border-violet-100 px-6 py-5 text-left">
             <DialogTitle className="flex items-center gap-2 text-xl font-semibold text-slate-900">
               <Wrench className="h-5 w-5 text-amber-500" />
-              {tr('Replace vehicle', 'Remplacer le véhicule')}
+              {isAwaitingVehicleAssignment
+                ? tr('Assign vehicle', 'Attribuer un véhicule')
+                : tr('Replace vehicle', 'Remplacer le véhicule')}
             </DialogTitle>
             <DialogDescription className="pt-1 text-sm text-slate-500">
-              {tr(
-                'Pause the timer, move the current vehicle into scheduled maintenance, and continue this rental with a replacement vehicle.',
-                'Met en pause le minuteur, envoie le véhicule actuel en maintenance planifiée, puis poursuit cette location avec un véhicule de remplacement.'
-              )}
+              {isAwaitingVehicleAssignment
+                ? tr(
+                    'Choose the exact vehicle plate for this scheduled website reservation before pickup.',
+                    'Choisissez la plaque exacte pour cette réservation web planifiée avant le départ.'
+                  )
+                : tr(
+                    'Pause the timer, move the current vehicle into scheduled maintenance, and continue this rental with a replacement vehicle.',
+                    'Met en pause le minuteur, envoie le véhicule actuel en maintenance planifiée, puis poursuit cette location avec un véhicule de remplacement.'
+                  )}
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 px-6 py-5">
             <div className="rounded-2xl border border-violet-100 bg-violet-50/50 p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-violet-500">
-                {tr('Current rental', 'Location en cours')}
+                {isAwaitingVehicleAssignment
+                  ? tr('Scheduled booking', 'Réservation planifiée')
+                  : tr('Current rental', 'Location en cours')}
               </p>
               <div className="mt-2 flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-base font-semibold text-slate-900">{getVehicleDisplayName(rental?.vehicle)}</p>
+                  <p className="text-base font-semibold text-slate-900">
+                    {isAwaitingVehicleAssignment
+                      ? [rental?.selected_vehicle_name_snapshot || rental?.vehicle_name_snapshot, rental?.selected_vehicle_model_snapshot || rental?.vehicle_model_snapshot].filter(Boolean).join(' ') || tr('Model reserved', 'Modèle réservé')
+                      : getVehicleDisplayName(rental?.vehicle)}
+                  </p>
                   <p className="text-sm text-slate-500">
-                    {tr('Timer paused while this replacement is in progress.', 'Le minuteur est en pause pendant ce remplacement.')}
+                    {isAwaitingVehicleAssignment
+                      ? tr('This booking is waiting for staff to choose the exact vehicle before pickup.', 'Cette réservation attend que le personnel choisisse le véhicule exact avant le départ.')
+                      : tr('Timer paused while this replacement is in progress.', 'Le minuteur est en pause pendant ce remplacement.')}
                   </p>
                 </div>
                 <Badge className="border border-amber-200 bg-amber-100 text-amber-800">
-                  {tr('Paused', 'En pause')}
+                  {isAwaitingVehicleAssignment ? tr('Pending assignment', 'En attente d’attribution') : tr('Paused', 'En pause')}
                 </Badge>
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-slate-700">
-                {tr('Reason', 'Raison')}
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                {VEHICLE_REPLACEMENT_REASON_OPTIONS.map((option) => {
-                  const selected = replacementReason === option.key;
-                  const isBreakdown = option.tone === 'breakdown';
+            {!isAwaitingVehicleAssignment && (
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-slate-700">
+                  {tr('Reason', 'Raison')}
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {VEHICLE_REPLACEMENT_REASON_OPTIONS.map((option) => {
+                    const selected = replacementReason === option.key;
+                    const isBreakdown = option.tone === 'breakdown';
 
-                  return (
-                    <button
-                      key={option.key}
-                      type="button"
-                      onClick={() => setReplacementReason(option.key)}
-                      className={`rounded-2xl border px-3 py-3 text-left transition ${
-                        selected
-                          ? isBreakdown
-                            ? 'border-rose-300 bg-rose-50 shadow-[0_12px_30px_rgba(225,29,72,0.10)]'
-                            : 'border-violet-300 bg-violet-50 shadow-[0_12px_30px_rgba(139,92,246,0.10)]'
-                          : isBreakdown
-                            ? 'border-rose-200 bg-white hover:border-rose-300 hover:bg-rose-50/70'
-                            : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/60'
-                      }`}
-                    >
-                      <div className={`text-sm font-semibold ${
-                        selected
-                          ? isBreakdown ? 'text-rose-700' : 'text-violet-700'
-                          : 'text-slate-900'
-                      }`}>
-                        {isFrench ? option.label.fr : option.label.en}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">
-                        {isFrench ? option.description.fr : option.description.en}
-                      </div>
-                    </button>
-                  );
-                })}
+                    return (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => setReplacementReason(option.key)}
+                        className={`rounded-2xl border px-3 py-3 text-left transition ${
+                          selected
+                            ? isBreakdown
+                              ? 'border-rose-300 bg-rose-50 shadow-[0_12px_30px_rgba(225,29,72,0.10)]'
+                              : 'border-violet-300 bg-violet-50 shadow-[0_12px_30px_rgba(139,92,246,0.10)]'
+                            : isBreakdown
+                              ? 'border-rose-200 bg-white hover:border-rose-300 hover:bg-rose-50/70'
+                              : 'border-slate-200 bg-white hover:border-violet-200 hover:bg-violet-50/60'
+                        }`}
+                      >
+                        <div className={`text-sm font-semibold ${
+                          selected
+                            ? isBreakdown ? 'text-rose-700' : 'text-violet-700'
+                            : 'text-slate-900'
+                        }`}>
+                          {isFrench ? option.label.fr : option.label.en}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          {isFrench ? option.description.fr : option.description.en}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="space-y-2">
               <label className="text-sm font-semibold text-slate-700">
-                {tr('Replacement vehicle', 'Véhicule de remplacement')}
+                {isAwaitingVehicleAssignment
+                  ? tr('Assign vehicle', 'Attribuer le véhicule')
+                  : tr('Replacement vehicle', 'Véhicule de remplacement')}
               </label>
               <select
                 value={selectedReplacementVehicleId}
@@ -27528,13 +27651,17 @@ Breakdown:
 
             <div className="space-y-2">
               <label className="text-sm font-semibold text-slate-700">
-                {tr('Quick note (optional)', 'Note rapide (facultative)')}
+                {isAwaitingVehicleAssignment
+                  ? tr('Staff note (optional)', 'Note interne (facultative)')
+                  : tr('Quick note (optional)', 'Note rapide (facultative)')}
               </label>
               <textarea
                 rows={3}
                 value={replacementNote}
                 onChange={(event) => setReplacementNote(event.target.value)}
-                placeholder={tr('What happened?', 'Que s’est-il passé ?')}
+                placeholder={isAwaitingVehicleAssignment
+                  ? tr('Optional assignment note', 'Note facultative sur l’attribution')
+                  : tr('What happened?', 'Que s’est-il passé ?')}
                 className="w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200"
               />
             </div>
@@ -27542,7 +27669,12 @@ Breakdown:
             <Alert className="rounded-2xl border-amber-200 bg-amber-50 text-amber-900">
               <AlertTriangle className="h-4 w-4 text-amber-600" />
               <AlertDescription className="text-sm leading-6">
-                {replacementReason === 'breakdown'
+                {isAwaitingVehicleAssignment
+                  ? tr(
+                      'This keeps the website reservation model-based until staff intentionally chooses the real plate.',
+                      'Cela garde la réservation web basée sur le modèle jusqu’à ce que le personnel choisisse volontairement la plaque réelle.'
+                    )
+                  : replacementReason === 'breakdown'
                   ? tr(
                       'This vehicle will move to maintenance. The replacement keeps this rental moving.',
                       'Ce véhicule passera en maintenance. Le véhicule de remplacement continue cette location.'
@@ -27574,12 +27706,16 @@ Breakdown:
               {isReplacingVehicle ? (
                 <>
                   <Loader className="mr-2 h-4 w-4 animate-spin" />
-                  {tr('Replacing...', 'Remplacement...')}
+                  {isAwaitingVehicleAssignment
+                    ? tr('Assigning...', 'Attribution...')
+                    : tr('Replacing...', 'Remplacement...')}
                 </>
               ) : (
                 <>
                   <Wrench className="mr-2 h-4 w-4" />
-                  {tr('Confirm replacement', 'Confirmer le remplacement')}
+                  {isAwaitingVehicleAssignment
+                    ? tr('Confirm assignment', 'Confirmer l’attribution')
+                    : tr('Confirm replacement', 'Confirmer le remplacement')}
                 </>
               )}
             </Button>

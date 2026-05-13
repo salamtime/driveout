@@ -116,6 +116,8 @@ const pulseBreakdownShortcuts = [
   { key: 'other_costs', label: tr('Other costs', 'Autres coûts') }
 ];
 
+const metricCardButtonClass = 'rounded-2xl p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-slate-200';
+
 /**
  * Enhanced Overview Charts v2 with Modern Animated Charts
  * 
@@ -644,24 +646,40 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
         ) : (
           <div className="mt-5 space-y-5 rounded-[1.75rem] border border-violet-100/80 bg-gradient-to-br from-[#f5f3ff] via-[#fbfaff] to-[#eef2ff] p-4 shadow-[0_18px_42px_rgba(76,29,149,0.08)] sm:p-5">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/80 p-4">
+              <button
+                type="button"
+                onClick={() => onOpenBreakdown?.('incoming')}
+                className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/80 p-4 text-left transition hover:border-emerald-200 hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+              >
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">{tr('Incoming', 'Entrées')}</p>
                 <p className="mt-2 text-2xl font-bold text-emerald-700">{fmtFull(detailPage.incomingTotal)} MAD</p>
-              </div>
-              <div className="rounded-[1.5rem] border border-rose-100 bg-rose-50/80 p-4">
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenBreakdown?.('outgoing')}
+                className="rounded-[1.5rem] border border-rose-100 bg-rose-50/80 p-4 text-left transition hover:border-rose-200 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-200"
+              >
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-700">{tr('Outgoing', 'Sorties')}</p>
                 <p className="mt-2 text-2xl font-bold text-rose-700">{fmtFull(detailPage.outgoingTotal)} MAD</p>
-              </div>
-              <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/80 p-4">
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenBreakdown?.('taxes')}
+                className="rounded-[1.5rem] border border-amber-100 bg-amber-50/80 p-4 text-left transition hover:border-amber-200 hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-200"
+              >
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700">{tr('Taxes', 'Taxes')}</p>
                 <p className="mt-2 text-2xl font-bold text-amber-700">{fmtFull(detailPage.taxesTotal)} MAD</p>
-              </div>
-              <div className="rounded-[1.5rem] border border-violet-100 bg-gradient-to-r from-violet-50 via-white to-indigo-50 p-4">
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenBreakdown?.('net')}
+                className="rounded-[1.5rem] border border-violet-100 bg-gradient-to-r from-violet-50 via-white to-indigo-50 p-4 text-left transition hover:border-violet-200 focus:outline-none focus:ring-2 focus:ring-violet-200"
+              >
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-600">{tr('Net', 'Net')}</p>
                 <p className={`mt-2 text-2xl font-bold ${detailPage.netTotal >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                   {detailPage.netTotal >= 0 ? '+' : ''}{fmtFull(detailPage.netTotal)} MAD
                 </p>
-              </div>
+              </button>
             </div>
 
             <div className="rounded-[1.5rem] border border-white/90 bg-white p-5 shadow-[0_16px_34px_rgba(15,23,42,0.06)]">
@@ -870,10 +888,8 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
           {periodSummaries.map((summary, index) => {
             const periodType = index === 0 ? 'today' : index === 1 ? 'week' : 'month';
             return (
-            <button
+            <div
               key={summary.title}
-              type="button"
-              onClick={() => handleOpenDetailPage(periodType)}
               className="rounded-[24px] border border-slate-200/90 bg-white p-5 text-left shadow-[0_18px_38px_rgba(15,23,42,0.08)] transition hover:border-slate-300 hover:shadow-[0_22px_44px_rgba(15,23,42,0.10)]"
             >
               <div className="flex items-start justify-between gap-3">
@@ -892,7 +908,11 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
               </div>
 
               <div className="mt-5 grid grid-cols-3 gap-3">
-                <div className="rounded-2xl border border-emerald-100 bg-emerald-50/80 p-3 text-left">
+                <button
+                  type="button"
+                  onClick={() => onOpenBreakdown?.('incoming')}
+                  className={`${metricCardButtonClass} border border-emerald-100 bg-emerald-50/80 hover:border-emerald-200 hover:bg-emerald-50`}
+                >
                   <div className="flex min-h-[24px] items-start justify-between gap-3 text-emerald-700">
                     <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">{tr('Incoming', 'Entrées')}</span>
                     <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70">
@@ -902,9 +922,13 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
                   <p className="mt-2 text-left text-lg font-bold text-emerald-700">
                     {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${formatCompact(summary.incoming)} MAD`}
                   </p>
-                </div>
+                </button>
 
-                <div className="rounded-2xl border border-rose-100 bg-rose-50/80 p-3 text-left">
+                <button
+                  type="button"
+                  onClick={() => onOpenBreakdown?.('outgoing')}
+                  className={`${metricCardButtonClass} border border-rose-100 bg-rose-50/80 hover:border-rose-200 hover:bg-rose-50`}
+                >
                   <div className="flex min-h-[24px] items-start justify-between gap-3 text-rose-700">
                     <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">{tr('Outgoing', 'Sorties')}</span>
                     <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70">
@@ -914,9 +938,13 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
                   <p className="mt-2 text-left text-lg font-bold text-rose-700">
                     {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${formatCompact(summary.outgoing)} MAD`}
                   </p>
-                </div>
+                </button>
 
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left">
+                <button
+                  type="button"
+                  onClick={() => onOpenBreakdown?.('net')}
+                  className={`${metricCardButtonClass} border border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-slate-100/80`}
+                >
                   <div className={`flex min-h-[24px] items-start justify-between gap-3 ${summary.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                     <span className="pr-1 text-left text-[11px] font-semibold uppercase tracking-[0.14em] leading-tight">{tr('Net', 'Net')}</span>
                     <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/70">
@@ -926,18 +954,22 @@ const OverviewChartsV2 = ({ filters, refreshTrigger, prefetchedTrendData = null,
                   <p className={`mt-2 text-left text-lg font-bold ${summary.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                     {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${summary.net >= 0 ? '+' : ''}${formatCompact(summary.net)} MAD`}
                   </p>
-                </div>
+                </button>
               </div>
-              <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-4 text-sm">
+              <button
+                type="button"
+                onClick={() => handleOpenDetailPage(periodType)}
+                className="mt-4 flex w-full items-center justify-between gap-3 border-t border-slate-100 pt-4 text-sm"
+              >
                 <span className="text-slate-500">
                   {pulseLoading && pulseLedgerRows.length === 0 ? '...' : `${summary.daysCovered} ${tr('day(s)', 'jour(s)')}`}
                 </span>
                 <span className="inline-flex items-center gap-2 font-semibold text-slate-700">
-                {tr('Open full breakdown', 'Ouvrir le détail complet')}
-                <ArrowUpRight className="h-4 w-4" />
+                  {tr('Open full breakdown', 'Ouvrir le détail complet')}
+                  <ArrowUpRight className="h-4 w-4" />
                 </span>
-              </div>
-            </button>
+              </button>
+            </div>
           )})}
         </div>
 
