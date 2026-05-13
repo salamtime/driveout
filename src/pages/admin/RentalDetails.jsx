@@ -51,6 +51,7 @@ import { deriveEffectiveRentalStatus } from '../../utils/rentalLifecycle';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../../utils/simpleRentalPricing';
 import { buildRentalBookedPackageSnapshot } from '../../utils/rentalPackageSnapshot';
+import { getRentalCollectedAmount } from '../../utils/rentalFinancials';
 import { sendRentalDocumentsEmail } from '../../services/emailApi';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { notifyRentalTelegramEvent } from '../../services/TelegramAlertService';
@@ -70,6 +71,7 @@ const MOBILE_FOOTER_SUCCESS_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border b
 const MOBILE_FOOTER_DISABLED_CLASS = `${MOBILE_FOOTER_BUTTON_BASE_CLASS} border border-slate-200 bg-slate-100 text-slate-400 shadow-none`;
 const LIGHT_RENTAL_ACTION_DOCK_CLASS = 'pointer-events-auto fixed bottom-4 left-4 right-4 z-30 rounded-[26px] border border-violet-200 bg-white/95 p-3 shadow-[0_18px_44px_rgba(76,29,149,0.14)] backdrop-blur lg:left-[calc(50vw+9.5rem)] lg:right-auto lg:w-[min(72rem,calc(100vw-21rem))] lg:-translate-x-1/2';
 const RENTALS_RETURN_SNAPSHOT_STORAGE_KEY = 'rentals_return_snapshot';
+const VEHICLE_ISSUE_RESOLUTION_MARKER = '[vehicle_issue_resolution]';
 const RENTAL_CANCELLATION_REASON_OPTIONS = [
   {
     value: 'customer_cancelled',
@@ -86,10 +88,92 @@ const RENTAL_CANCELLATION_REASON_OPTIONS = [
     label: { en: 'Booking mistake', fr: 'Erreur de réservation' },
     description: { en: 'The booking was created with the wrong setup or by mistake.', fr: 'La réservation a été créée avec une mauvaise configuration ou par erreur.' },
   },
+  {
+    value: 'vehicle_issue',
+    label: { en: 'Vehicle issue', fr: 'Problème véhicule' },
+    description: { en: 'The vehicle failed or was unavailable, so the customer must be cancelled and reimbursed.', fr: 'Le véhicule est tombé en panne ou indisponible, donc la location doit être annulée et remboursée.' },
+  },
+];
+
+const VEHICLE_ISSUE_REFUND_OUTCOME_OPTIONS = [
+  { value: 'full', label: { en: 'Full refund', fr: 'Remboursement total' } },
+  { value: 'partial', label: { en: 'Partial refund', fr: 'Remboursement partiel' } },
+  { value: 'none', label: { en: 'No refund', fr: 'Aucun remboursement' } },
+];
+
+const VEHICLE_ISSUE_REFUND_STATUS_OPTIONS = [
+  { value: 'pending', label: { en: 'Refund pending', fr: 'Remboursement en attente' } },
+  { value: 'completed', label: { en: 'Refund completed', fr: 'Remboursement effectué' } },
+];
+
+const VEHICLE_ISSUE_REFUND_DESTINATION_OPTIONS = [
+  { value: 'original_payment_method', label: { en: 'Original payment method', fr: 'Moyen de paiement initial' } },
+  { value: 'cash', label: { en: 'Cash', fr: 'Espèces' } },
+  { value: 'bank_transfer', label: { en: 'Bank transfer', fr: 'Virement bancaire' } },
+  { value: 'wallet_credit', label: { en: 'Wallet / credit', fr: 'Portefeuille / avoir' } },
+];
+
+const VEHICLE_ISSUE_VEHICLE_ACTION_OPTIONS = [
+  { value: 'maintenance', label: { en: 'Move vehicle to maintenance', fr: 'Envoyer le véhicule en maintenance' } },
+  { value: 'out_of_service', label: { en: 'Mark vehicle out of service', fr: 'Mettre le véhicule hors service' } },
 ];
 
 const getRentalCancellationReasonOption = (reason) =>
   RENTAL_CANCELLATION_REASON_OPTIONS.find((option) => option.value === String(reason || '').trim().toLowerCase()) || null;
+
+const buildVehicleIssueResolutionNote = ({
+  refundOutcome,
+  refundAmount,
+  refundStatus,
+  refundDestination,
+  vehicleAction,
+  internalNote,
+  customerMessage,
+}) => {
+  const trimmedInternalNote = String(internalNote || '').trim();
+  const payload = {
+    refundOutcome: String(refundOutcome || '').trim().toLowerCase(),
+    refundAmount: Math.max(0, Number(refundAmount || 0) || 0),
+    refundStatus: String(refundStatus || '').trim().toLowerCase(),
+    refundDestination: String(refundDestination || '').trim().toLowerCase(),
+    vehicleAction: String(vehicleAction || '').trim().toLowerCase(),
+    customerMessage: String(customerMessage || '').trim(),
+  };
+
+  return `${trimmedInternalNote}\n${VEHICLE_ISSUE_RESOLUTION_MARKER}${JSON.stringify(payload)}`.trim();
+};
+
+const parseVehicleIssueResolutionNote = (value) => {
+  const text = typeof value === 'string' ? value : '';
+  const markerIndex = text.indexOf(VEHICLE_ISSUE_RESOLUTION_MARKER);
+  if (markerIndex === -1) return null;
+
+  const internalNote = text.slice(0, markerIndex).trim();
+  const rawPayload = text.slice(markerIndex + VEHICLE_ISSUE_RESOLUTION_MARKER.length).trim();
+
+  try {
+    const payload = JSON.parse(rawPayload);
+    return {
+      internalNote,
+      refundOutcome: String(payload?.refundOutcome || '').trim().toLowerCase(),
+      refundAmount: Math.max(0, Number(payload?.refundAmount || 0) || 0),
+      refundStatus: String(payload?.refundStatus || '').trim().toLowerCase(),
+      refundDestination: String(payload?.refundDestination || '').trim().toLowerCase(),
+      vehicleAction: String(payload?.vehicleAction || '').trim().toLowerCase(),
+      customerMessage: String(payload?.customerMessage || '').trim(),
+    };
+  } catch {
+    return {
+      internalNote: text.trim(),
+      refundOutcome: '',
+      refundAmount: 0,
+      refundStatus: '',
+      refundDestination: '',
+      vehicleAction: '',
+      customerMessage: '',
+    };
+  }
+};
 const scheduleBackgroundTask = (callback) => {
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
     return window.requestIdleCallback(callback, { timeout: 800 });
@@ -2208,7 +2292,7 @@ export default function RentalDetails() {
       return null;
     }
   }, [location.state]);
-  const { userProfile } = useAuth();
+  const { user, userProfile } = useAuth();
   const isFrench = isFrenchLocale();
   const startWorkflowStorageKey = id ? `rental_start_workflow_${id}` : null;
   const finishWorkflowStorageKey = id ? `rental_finish_workflow_${id}` : null;
@@ -3494,6 +3578,17 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [cancelRentalSubmitting, setCancelRentalSubmitting] = useState(false);
   const [cancelRentalReason, setCancelRentalReason] = useState('customer_cancelled');
   const [cancelRentalNote, setCancelRentalNote] = useState('');
+  const [showVehicleIssueResolutionModal, setShowVehicleIssueResolutionModal] = useState(false);
+  const [vehicleIssueSubmitting, setVehicleIssueSubmitting] = useState(false);
+  const [vehicleIssueForm, setVehicleIssueForm] = useState({
+    refundOutcome: 'full',
+    refundStatus: 'pending',
+    refundAmount: '',
+    refundDestination: 'original_payment_method',
+    vehicleAction: 'maintenance',
+    internalNote: '',
+    customerMessage: '',
+  });
   const [whatsappOptions, setWhatsappOptions] = useState({
     contract: true,
     receipt: true,
@@ -12560,6 +12655,169 @@ useEffect(() => {
     setShowCancelRentalModal(true);
   }, []);
 
+  const openVehicleIssueResolutionModal = useCallback(() => {
+    const paidAmount = Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0);
+    const refundableAmount = Math.min(
+      paidAmount,
+      Math.max(0, Number(rental?.total_amount || 0) || 0) || paidAmount
+    );
+
+    setVehicleIssueForm({
+      refundOutcome: refundableAmount > 0 ? 'full' : 'none',
+      refundStatus: refundableAmount > 0 ? 'pending' : 'completed',
+      refundAmount: refundableAmount > 0 ? String(refundableAmount) : '',
+      refundDestination: 'original_payment_method',
+      vehicleAction: 'maintenance',
+      internalNote: '',
+      customerMessage: tr(
+        'We cancelled this rental because the assigned vehicle is not operational. We will follow up with your refund immediately.',
+        "Nous avons annulé cette location parce que le véhicule assigné n'est pas opérationnel. Nous revenons vers vous immédiatement pour le remboursement."
+      ),
+    });
+    setShowVehicleIssueResolutionModal(true);
+  }, [rental, tr]);
+
+  const resolveVehicleIssueCancellation = useCallback(async () => {
+    if (!rental?.id) return;
+
+    const actingUser = resolvedCurrentUser || currentUser || userProfile || user;
+    const actorName =
+      actingUser?.full_name ||
+      actingUser?.name ||
+      actingUser?.email ||
+      user?.email ||
+      'Staff';
+    const cancelledAt = new Date().toISOString();
+    const paidAmount = Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0);
+    const refundOutcome = String(vehicleIssueForm.refundOutcome || '').trim().toLowerCase();
+    const refundStatus = String(vehicleIssueForm.refundStatus || '').trim().toLowerCase();
+    const refundDestination = String(vehicleIssueForm.refundDestination || '').trim().toLowerCase();
+    const vehicleAction = String(vehicleIssueForm.vehicleAction || '').trim().toLowerCase();
+    const internalNote = String(vehicleIssueForm.internalNote || '').trim();
+    const customerMessage = String(vehicleIssueForm.customerMessage || '').trim();
+    const requestedRefundAmount = Math.max(0, Number(vehicleIssueForm.refundAmount || 0) || 0);
+    const refundAmount = refundOutcome === 'none' ? 0 : Math.min(requestedRefundAmount, paidAmount);
+
+    if (!internalNote) {
+      toast.error(tr('Add a short internal note before resolving this cancellation.', "Ajoutez une courte note interne avant de résoudre cette annulation."));
+      return;
+    }
+
+    if (refundOutcome !== 'none' && refundAmount <= 0) {
+      toast.error(tr('Enter the refund amount to continue.', 'Saisissez le montant du remboursement pour continuer.'));
+      return;
+    }
+
+    setVehicleIssueSubmitting(true);
+    try {
+      const updatePayload = {
+        rental_status: 'cancelled',
+        status: 'cancelled',
+        cancelled_at: cancelledAt,
+        cancelled_by: actingUser?.id || null,
+        cancellation_reason: 'vehicle_issue',
+        status_changed_at: cancelledAt,
+        status_changed_by: actorName,
+        status_change_reason: buildVehicleIssueResolutionNote({
+          refundOutcome,
+          refundAmount,
+          refundStatus: refundOutcome === 'none' ? 'completed' : refundStatus,
+          refundDestination,
+          vehicleAction,
+          internalNote,
+          customerMessage,
+        }),
+        updated_at: cancelledAt,
+        remaining_amount: 0,
+        payment_status: refundOutcome === 'full' && refundStatus === 'completed'
+          ? 'refunded'
+          : rental?.payment_status,
+      };
+
+      const { error } = await supabase
+        .from('app_4c3a7a6153_rentals')
+        .update(updatePayload)
+        .eq('id', rental.id);
+
+      if (error) throw error;
+
+      if (rental.vehicle_id) {
+        const { error: vehicleError } = await supabase
+          .from('saharax_0u4w4d_vehicles')
+          .update({
+            status: vehicleAction === 'out_of_service' ? 'out_of_service' : 'maintenance',
+            updated_at: cancelledAt,
+          })
+          .eq('id', rental.vehicle_id);
+
+        if (vehicleError) throw vehicleError;
+      }
+
+      try {
+        await insertSharedActivityLog({
+          user_id: actingUser?.id || null,
+          created_by: actorName,
+          action: 'rental_cancelled_vehicle_issue',
+          description: `Cancelled rental ${rental.rental_id || rental.id} due to vehicle issue`,
+          entity_type: 'rental',
+          entity_id: rental.id,
+          details: {
+            rental_id: rental.id,
+            rental_reference: rental.rental_id || null,
+            customer_name: rental.customer_name || null,
+            vehicle_id: rental.vehicle_id || null,
+            cancelled_at: cancelledAt,
+            cancellation_reason: 'vehicle_issue',
+            refund_outcome: refundOutcome,
+            refund_amount: refundAmount,
+            refund_status: refundOutcome === 'none' ? 'completed' : refundStatus,
+            refund_destination: refundDestination,
+            vehicle_action: vehicleAction,
+            internal_note: internalNote,
+            customer_message: customerMessage || null,
+          },
+        });
+      } catch (activityError) {
+        console.warn('⚠️ Failed to record vehicle issue cancellation activity:', activityError);
+      }
+
+      void dispatchRentalLifecycleTelegramEvent({
+        eventType: 'rental_cancelled',
+        actor: 'admin',
+        rental: {
+          id: rental.id,
+          reference: rental.rental_id || '',
+          vehicle: buildRentalTelegramVehicleLabel(rental),
+          customer: rental.customer_name,
+          start: rental.rental_start_date,
+          end: rental.rental_end_date,
+          total: rental.total_amount || 0,
+          cancellationReason: `${tr('Vehicle issue', 'Problème véhicule')} — ${internalNote}`,
+        },
+      });
+
+      setShowVehicleIssueResolutionModal(false);
+      setRental((prev) => prev ? ({ ...prev, ...updatePayload }) : prev);
+      await loadRentalData(true);
+      toast.success(tr('Vehicle issue cancellation saved.', 'Annulation pour problème véhicule enregistrée.'));
+    } catch (error) {
+      console.error('❌ Error resolving vehicle issue cancellation:', error);
+      toast.error(tr('Failed to save the vehicle issue cancellation.', "Impossible d'enregistrer l'annulation pour problème véhicule."));
+    } finally {
+      setVehicleIssueSubmitting(false);
+    }
+  }, [
+    currentUser,
+    currentUserRole,
+    loadRentalData,
+    rental,
+    resolvedCurrentUser,
+    tr,
+    user,
+    userProfile,
+    vehicleIssueForm,
+  ]);
+
   const cancelRental = async (options = {}) => {
     const scheduledReasonValue = String(options.reason || '').trim().toLowerCase();
     const scheduledNote = String(options.note || '').trim();
@@ -15494,10 +15752,15 @@ useEffect(() => {
   const cancellationReasonDescription = cancellationReasonOption
     ? (isFrench ? cancellationReasonOption.description.fr : cancellationReasonOption.description.en)
     : '';
-  const cancellationNoteText = String(rental?.status_change_reason || '').trim();
+  const parsedVehicleIssueResolution = parseVehicleIssueResolutionNote(rental?.status_change_reason);
+  const cancellationNoteText = parsedVehicleIssueResolution?.internalNote || String(rental?.status_change_reason || '').trim();
   const showCancellationContextCard =
     rentalStatusLower === 'cancelled' &&
     String(rental?.cancellation_reason || '').trim().toLowerCase() !== 'no_show';
+  const showVehicleIssueResolutionCard =
+    showCancellationContextCard &&
+    String(rental?.cancellation_reason || '').trim().toLowerCase() === 'vehicle_issue' &&
+    Boolean(parsedVehicleIssueResolution);
   const hasResolvedTowingHold =
     Boolean(hasImpoundRecord && !isImpounded && rental?.released_from_impound_at);
   const canAdjustTowingFinancials =
@@ -19726,6 +19989,43 @@ useEffect(() => {
                       <span className="font-semibold">{tr('Note:', 'Note :')}</span> {cancellationNoteText}
                     </div>
                   )}
+                  {showVehicleIssueResolutionCard && (
+                    <div className="grid gap-3 rounded-2xl border border-rose-200 bg-white/85 p-3 sm:grid-cols-2">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Refund', 'Remboursement')}</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-900">
+                          {parsedVehicleIssueResolution.refundOutcome === 'none'
+                            ? tr('No refund', 'Aucun remboursement')
+                            : `${formatCurrency(parsedVehicleIssueResolution.refundAmount || 0)} MAD`}
+                        </p>
+                        <p className="mt-1 text-sm text-slate-600">
+                          {parsedVehicleIssueResolution.refundOutcome === 'none'
+                            ? tr('Customer was cancelled without a payout.', "Le client a été annulé sans remboursement.")
+                            : parsedVehicleIssueResolution.refundStatus === 'completed'
+                              ? tr('Refund already completed.', 'Remboursement déjà effectué.')
+                              : tr('Refund still pending for the customer.', 'Remboursement encore en attente pour le client.')}
+                        </p>
+                        {parsedVehicleIssueResolution.refundOutcome !== 'none' && parsedVehicleIssueResolution.refundDestination && (
+                          <p className="mt-2 text-xs font-medium text-slate-500">
+                            {tr('Method:', 'Méthode :')} {parsedVehicleIssueResolution.refundDestination.replaceAll('_', ' ')}
+                          </p>
+                        )}
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{tr('Vehicle resolution', 'Résolution véhicule')}</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-900">
+                          {parsedVehicleIssueResolution.vehicleAction === 'out_of_service'
+                            ? tr('Marked out of service', 'Mis hors service')
+                            : tr('Moved to maintenance', 'Envoyé en maintenance')}
+                        </p>
+                        {parsedVehicleIssueResolution.customerMessage && (
+                          <p className="mt-2 text-sm text-slate-600">
+                            {parsedVehicleIssueResolution.customerMessage}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -19966,6 +20266,19 @@ useEffect(() => {
                         {tr('Cancel rental', 'Annuler la location')}
                       </button>
                     )}
+                    {isActive && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMoreActionsOpen(false);
+                          openVehicleIssueResolutionModal();
+                        }}
+                        className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50"
+                      >
+                        <Wrench className="mr-2 h-4 w-4" />
+                        {tr('Cancel due to vehicle issue', 'Annuler pour problème véhicule')}
+                      </button>
+                    )}
                     {canDeleteScheduledRental && (
                       <button
                         type="button"
@@ -19984,12 +20297,12 @@ useEffect(() => {
                         type="button"
                         onClick={() => {
                           setIsMoreActionsOpen(false);
-                          cancelRental();
+                          openVehicleIssueResolutionModal();
                         }}
                         className="flex w-full items-center rounded-xl px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
                       >
                         <XCircle className="mr-2 h-4 w-4" />
-                        {tr('Cancel', 'Annuler')}
+                        {tr('Cancel active rental', 'Annuler la location active')}
                       </button>
                     )}
                     {isActive && !isImpounded && (
@@ -26803,6 +27116,199 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               className="rounded-xl border border-rose-600 bg-rose-600 px-4 py-2 font-semibold text-white shadow-sm transition-colors hover:bg-rose-700 hover:border-rose-700"
             >
               {cancelRentalSubmitting ? tr('Cancelling...', 'Annulation...') : tr('Confirm cancellation', "Confirmer l'annulation")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={showVehicleIssueResolutionModal}
+        onOpenChange={(open) => {
+          if (vehicleIssueSubmitting) return;
+          setShowVehicleIssueResolutionModal(open);
+        }}
+      >
+        <DialogContent className="mx-auto w-[calc(100vw-1.5rem)] max-w-2xl overflow-hidden rounded-[28px] border border-amber-100 bg-white p-0 shadow-[0_28px_80px_rgba(15,23,42,0.16)]">
+          <DialogHeader className="border-b border-amber-100 bg-gradient-to-r from-white via-amber-50/60 to-slate-50 px-6 py-5 text-left">
+            <DialogTitle className="flex items-center gap-2 text-xl font-semibold text-slate-900">
+              <Wrench className="h-5 w-5 text-amber-600" />
+              {tr('Cancel Due To Vehicle Issue', 'Annuler pour problème véhicule')}
+            </DialogTitle>
+            <DialogDescription className="pt-1 text-sm text-slate-500">
+              {tr(
+                'Resolve the customer cancellation, refund decision, and vehicle hold in one guided step.',
+                'Résolvez en une seule étape guidée l’annulation client, la décision de remboursement et le blocage du véhicule.'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 px-6 py-5">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-4">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">{tr('Recommended refund', 'Remboursement recommandé')}</p>
+                  <p className="mt-1 text-lg font-semibold text-amber-950">
+                    {formatCurrency(Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0))} MAD
+                  </p>
+                </div>
+                <div className="text-sm text-amber-800">
+                  {tr('Collected from customer so far', 'Déjà encaissé auprès du client')}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-5 lg:grid-cols-2">
+              <div className="space-y-3">
+                <label className="text-sm font-semibold text-slate-700">{tr('Refund outcome', 'Décision de remboursement')}</label>
+                <div className="space-y-2">
+                  {VEHICLE_ISSUE_REFUND_OUTCOME_OPTIONS.map((option) => {
+                    const isSelected = vehicleIssueForm.refundOutcome === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setVehicleIssueForm((prev) => ({
+                          ...prev,
+                          refundOutcome: option.value,
+                          refundStatus: option.value === 'none' ? 'completed' : prev.refundStatus,
+                          refundAmount: option.value === 'none'
+                            ? ''
+                            : prev.refundAmount || String(Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0)),
+                        }))}
+                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                          isSelected
+                            ? 'border-amber-300 bg-amber-50 shadow-[0_14px_32px_rgba(245,158,11,0.10)]'
+                            : 'border-slate-200 bg-white hover:border-amber-200 hover:bg-amber-50/40'
+                        }`}
+                      >
+                        <p className={`text-sm font-semibold ${isSelected ? 'text-amber-900' : 'text-slate-900'}`}>
+                          {isFrench ? option.label.fr : option.label.en}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <label className="text-sm font-semibold text-slate-700">{tr('Vehicle action', 'Action véhicule')}</label>
+                <div className="space-y-2">
+                  {VEHICLE_ISSUE_VEHICLE_ACTION_OPTIONS.map((option) => {
+                    const isSelected = vehicleIssueForm.vehicleAction === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setVehicleIssueForm((prev) => ({ ...prev, vehicleAction: option.value }))}
+                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                          isSelected
+                            ? 'border-slate-300 bg-slate-100 shadow-[0_14px_32px_rgba(15,23,42,0.08)]'
+                            : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                        }`}
+                      >
+                        <p className={`text-sm font-semibold ${isSelected ? 'text-slate-900' : 'text-slate-800'}`}>
+                          {isFrench ? option.label.fr : option.label.en}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {vehicleIssueForm.refundOutcome !== 'none' && (
+              <div className="grid gap-4 lg:grid-cols-3">
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700">{tr('Refund amount', 'Montant remboursé')}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={vehicleIssueForm.refundAmount}
+                    onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, refundAmount: event.target.value }))}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700">{tr('Refund status', 'Statut remboursement')}</label>
+                  <select
+                    value={vehicleIssueForm.refundStatus}
+                    onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, refundStatus: event.target.value }))}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                  >
+                    {VEHICLE_ISSUE_REFUND_STATUS_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {isFrench ? option.label.fr : option.label.en}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700">{tr('Destination', 'Destination')}</label>
+                  <select
+                    value={vehicleIssueForm.refundDestination}
+                    onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, refundDestination: event.target.value }))}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                  >
+                    {VEHICLE_ISSUE_REFUND_DESTINATION_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {isFrench ? option.label.fr : option.label.en}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-slate-700">
+                  {tr('Internal note', 'Note interne')} <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  value={vehicleIssueForm.internalNote}
+                  onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, internalNote: event.target.value }))}
+                  rows={4}
+                  placeholder={tr('Explain what failed on the vehicle and what the team must follow up on…', 'Expliquez ce qui a lâché sur le véhicule et ce que l’équipe doit suivre…')}
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-slate-700">
+                  {tr('Customer message preview', 'Aperçu message client')}
+                </label>
+                <textarea
+                  value={vehicleIssueForm.customerMessage}
+                  onChange={(event) => setVehicleIssueForm((prev) => ({ ...prev, customerMessage: event.target.value }))}
+                  rows={4}
+                  placeholder={tr('Optional customer-facing explanation…', 'Explication facultative côté client…')}
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col-reverse gap-3 border-t border-slate-100 px-6 py-4 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowVehicleIssueResolutionModal(false)}
+              disabled={vehicleIssueSubmitting}
+              className={SECONDARY_ACTION_BUTTON_CLASS}
+            >
+              {tr('Back', 'Retour')}
+            </Button>
+            <Button
+              type="button"
+              onClick={resolveVehicleIssueCancellation}
+              disabled={vehicleIssueSubmitting}
+              className="rounded-xl border border-amber-600 bg-amber-600 px-4 py-2 font-semibold text-white shadow-sm transition-colors hover:bg-amber-700 hover:border-amber-700"
+            >
+              {vehicleIssueSubmitting
+                ? tr('Resolving...', 'Traitement...')
+                : tr('Confirm resolution', 'Confirmer la résolution')}
             </Button>
           </div>
         </DialogContent>
