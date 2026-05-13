@@ -3728,6 +3728,19 @@ const openReplacementResumeWorkflow = useCallback(() => {
     }
   };
 
+  const readPersistedFinishWorkflowMode = () => {
+    if (typeof window === 'undefined' || !id) return 'standard';
+    try {
+      const rawState = window.localStorage.getItem(`rental_finish_workflow_${id}`);
+      if (!rawState) return 'standard';
+      const parsedState = JSON.parse(rawState);
+      return parsedState?.resolutionMode === 'vehicle_issue' ? 'vehicle_issue' : 'standard';
+    } catch (error) {
+      console.error('Failed to read persisted finish workflow mode:', error);
+      return 'standard';
+    }
+  };
+
   const [finishRentalSteps, setFinishRentalSteps] = useState(() => ({
     showWorkflow: readPersistedFinishWorkflowFlag(),
     closingVideoComplete: false,
@@ -9196,8 +9209,8 @@ const handleFuelChargeToggle = async (enabled) => {
     let newFuelCharge = 0;
     
     if (enabled) {
-      const startLevel = startFuelLevel || rental?.start_fuel_level;
-      const endLevel = endFuelLevel || rental?.end_fuel_level;
+      const startLevel = startFuelLevel ?? rental?.start_fuel_level;
+      const endLevel = endFuelLevel ?? rental?.end_fuel_level;
       
       if (startLevel !== null && endLevel !== null && endLevel < startLevel) {
         newFuelCharge = FuelPricingService.calculateFuelCharge(
@@ -9352,6 +9365,7 @@ const handleFuelChargeToggle = async (enabled) => {
       finishWorkflowStorageKey,
       JSON.stringify({
         showWorkflow: true,
+        resolutionMode: extras.resolutionMode || finishResolutionMode,
         vehicleReportDraft: nextDraft,
         returnStartedAt: extras.returnStartedAt || returnWorkflowBillingResult?.calculatedAt || null,
         billingResult: extras.billingResult || returnWorkflowBillingResult || null,
@@ -9369,7 +9383,7 @@ const handleFuelChargeToggle = async (enabled) => {
     endFuelComplete: endFuelLevel !== null || rental?.end_fuel_level !== null,
   });
 
-  const openFinishWorkflow = async () => {
+  const openFinishWorkflow = async (resolutionMode = finishResolutionMode) => {
     if (isImpounded) {
       toast.error(tr(
         'This rental is on an unresolved towing hold. Release the hold before finishing the rental.',
@@ -9419,6 +9433,7 @@ const handleFuelChargeToggle = async (enabled) => {
     persistFinishWorkflowState(vehicleReportDraft, {
       returnStartedAt,
       billingResult,
+      resolutionMode,
     });
     await broadcastRentalWorkflowUpdate('finish', 'workflow_opened', {
       showWorkflow: true,
@@ -10820,6 +10835,7 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
           prev.endEngineHoursComplete === nextSteps.endEngineHoursComplete &&
           prev.endFuelComplete === nextSteps.endFuelComplete
         ) ? prev : nextSteps);
+        setFinishResolutionMode(parsedState?.resolutionMode === 'vehicle_issue' ? 'vehicle_issue' : 'standard');
       }
 
       if (parsedState?.vehicleReportDraft && !vehicleReport?.id) {
@@ -10867,13 +10883,14 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
     const payload = {
       showWorkflow: true,
+      resolutionMode: finishResolutionMode,
       steps: finishRentalSteps,
       vehicleReportDraft,
       updatedAt: new Date().toISOString()
     };
 
     window.localStorage.setItem(finishWorkflowStorageKey, JSON.stringify(payload));
-  }, [finishWorkflowStorageKey, rental?.id, rental?.rental_status, finishRentalSteps, vehicleReportDraft]);
+  }, [finishWorkflowStorageKey, rental?.id, rental?.rental_status, finishRentalSteps, finishResolutionMode, vehicleReportDraft]);
   // ✅ OPTIMIZED: Single ref-based timer to avoid full re-renders every second.
   // Instead of a `currentTime` state (which triggered 3 state updates/sec),
   // we use one setInterval that directly computes & sets display strings.
@@ -12519,10 +12536,12 @@ useEffect(() => {
     }
 
     // Step 3: Check if ending fuel level is recorded
-    if (!endFuelLevel && !rental?.end_fuel_level) { // Fuel level required for all rental types
-      if (RENTAL_DEBUG) console.log('⛽ Fuel level not recorded, prompting...');
-      setShowEndFuelModal(true);
-      return;
+    if (endFuelLevel === null || endFuelLevel === undefined) {
+      if (rental?.end_fuel_level === null || rental?.end_fuel_level === undefined) { // Fuel level required for all rental types
+        if (RENTAL_DEBUG) console.log('⛽ Fuel level not recorded, prompting...');
+        setShowEndFuelModal(true);
+        return;
+      }
     }
 
     // Step 4: If all finish readings exist, complete the rental
@@ -12688,7 +12707,7 @@ useEffect(() => {
     initializeVehicleIssueResolutionForm();
     setFinishResolutionMode('vehicle_issue');
     if (!finishRentalSteps.showWorkflow) {
-      await openFinishWorkflow();
+      await openFinishWorkflow('vehicle_issue');
     }
   }, [finishRentalSteps.showWorkflow, initializeVehicleIssueResolutionForm, openFinishWorkflow]);
 
@@ -15713,7 +15732,7 @@ useEffect(() => {
   const finishWorkflowNextStepHint = (() => {
     switch (nextFinishWorkflowStep?.key) {
       case 'closing_inspection':
-        return tr('Review or add return media if needed before continuing.', 'Vérifiez ou ajoutez des médias de retour si nécessaire avant de continuer.');
+        return null;
       case 'end_odometer':
         return tr('Ending odometer reading is still required.', 'Le kilométrage de retour est encore requis.');
       case 'end_engine_hours':
@@ -15841,6 +15860,40 @@ useEffect(() => {
     finishRentalSteps.endEngineHoursComplete &&
     finishRentalSteps.endFuelComplete;
   const isVehicleIssueFinishFlow = finishResolutionMode === 'vehicle_issue';
+  const lightFinishReadyForAction = finishWorkflowCoreStepsComplete && !isFinishWorkflowSoftLocked;
+  const finishWorkflowTheme = isVehicleIssueFinishFlow
+    ? {
+        shell: 'border-amber-200 bg-gradient-to-br from-white via-amber-50/70 to-orange-50/70 shadow-[0_18px_45px_rgba(245,158,11,0.10)]',
+        eyebrow: 'text-amber-600',
+        badge: 'bg-white text-amber-700',
+        progressCard: 'border-amber-100 bg-white',
+        progressIcon: lightFinishReadyForAction ? 'text-amber-600' : 'text-amber-600',
+        progressValue: lightFinishReadyForAction ? 'text-amber-600' : 'text-amber-700',
+        incompleteStep: 'border-amber-200 bg-white shadow-[0_14px_34px_rgba(245,158,11,0.10)]',
+        incompleteStepIcon: 'border border-amber-200 bg-amber-50 text-amber-700',
+        incompleteStepAccent: 'text-amber-600',
+        incompleteStepButton: 'bg-amber-600 text-white',
+        hintCard: 'border-amber-100 bg-white/90 text-amber-800',
+        dockButton: lightFinishReadyForAction
+          ? 'bg-amber-600 text-white shadow-[0_14px_32px_rgba(245,158,11,0.24)] hover:bg-amber-700'
+          : 'cursor-not-allowed bg-slate-200 text-slate-500',
+      }
+    : {
+        shell: 'border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 shadow-[0_18px_45px_rgba(76,29,149,0.06)]',
+        eyebrow: 'text-violet-500',
+        badge: 'bg-white text-violet-700',
+        progressCard: 'border-violet-100 bg-white',
+        progressIcon: lightFinishReadyForAction ? 'text-emerald-600' : 'text-violet-600',
+        progressValue: lightFinishReadyForAction ? 'text-emerald-600' : 'text-violet-700',
+        incompleteStep: 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]',
+        incompleteStepIcon: 'border border-violet-200 bg-violet-50 text-violet-700',
+        incompleteStepAccent: 'text-violet-600',
+        incompleteStepButton: 'bg-violet-600 text-white',
+        hintCard: 'border-violet-100 bg-white/90 text-slate-500',
+        dockButton: lightFinishReadyForAction
+          ? 'bg-emerald-600 text-white shadow-[0_14px_32px_rgba(5,150,105,0.22)] hover:bg-emerald-700'
+          : 'cursor-not-allowed bg-slate-200 text-slate-500',
+      };
 
   useEffect(() => {
     setLightRentalInfoOpenSections({
@@ -16774,14 +16827,18 @@ useEffect(() => {
 
     return (
       <div ref={lightFinishSectionRef} className="mb-6">
-        <div className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-white via-slate-50 to-violet-50/70 p-4 shadow-[0_18px_45px_rgba(76,29,149,0.06)]">
+        <div className={`rounded-[24px] p-4 ${finishWorkflowTheme.shell}`}>
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-violet-500">
-                {tr('Ready to finish', 'Prêt à terminer')}
+              <p className={`text-[11px] font-semibold uppercase tracking-[0.2em] ${finishWorkflowTheme.eyebrow}`}>
+                {isVehicleIssueFinishFlow
+                  ? tr('Vehicle issue return', 'Retour problème véhicule')
+                  : tr('Ready to finish', 'Prêt à terminer')}
               </p>
               <h3 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-slate-900">
-                {tr('Ready to Finish Rental', 'Prêt à terminer la location')}
+                {isVehicleIssueFinishFlow
+                  ? tr('Resolve Vehicle Issue Return', 'Résoudre le retour avec problème véhicule')
+                  : tr('Ready to Finish Rental', 'Prêt à terminer la location')}
               </h3>
               <p className="mt-2 text-sm text-slate-600">
                 {nextFinishWorkflowStep
@@ -16789,20 +16846,20 @@ useEffect(() => {
                   : tr('All finish steps are complete.', 'Toutes les étapes de clôture sont terminées.')}
               </p>
             </div>
-            <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-violet-700 shadow-sm">
+            <div className={`rounded-full px-3 py-1 text-xs font-semibold shadow-sm ${finishWorkflowTheme.badge}`}>
               {finishWorkflowStepsModel.filter((step) => step.complete).length}/{finishWorkflowStepsModel.length}
             </div>
           </div>
 
           <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="rounded-[22px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)]">
+            <div className={`rounded-[22px] border p-4 shadow-[0_12px_30px_rgba(76,29,149,0.05)] ${finishWorkflowTheme.progressCard}`}>
               <div className="mb-3 flex items-center gap-2">
-                <CheckCircle className={`h-4 w-4 flex-shrink-0 ${lightFinishCanComplete ? 'text-emerald-600' : 'text-violet-600'}`} />
+                <CheckCircle className={`h-4 w-4 flex-shrink-0 ${finishWorkflowTheme.progressIcon}`} />
                 <p className="text-sm font-medium text-slate-600">
                   {tr('Checklist progress', 'Progression checklist')}
                 </p>
               </div>
-              <p className={`mt-1 block text-3xl font-extrabold leading-[0.92] tracking-[-0.05em] tabular-nums ${lightFinishCanComplete ? 'text-emerald-600' : 'text-violet-700'}`}>
+              <p className={`mt-1 block text-3xl font-extrabold leading-[0.92] tracking-[-0.05em] tabular-nums ${finishWorkflowTheme.progressValue}`}>
                 {finishWorkflowStepsModel.filter((step) => step.complete).length}/{finishWorkflowStepsModel.length}
               </p>
               <p className="mt-2 text-xs text-slate-500">
@@ -16896,12 +16953,12 @@ useEffect(() => {
                   className={`rounded-[22px] border p-4 transition-all ${
                     step.complete
                       ? 'border-emerald-200 bg-emerald-50/90'
-                      : 'border-violet-200 bg-white shadow-[0_14px_34px_rgba(76,29,149,0.08)]'
+                      : finishWorkflowTheme.incompleteStep
                   }`}
                 >
                   <div className="flex items-start gap-3">
                     <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl ${
-                      step.complete ? 'bg-emerald-500 text-white' : 'border border-violet-200 bg-violet-50 text-violet-700'
+                      step.complete ? 'bg-emerald-500 text-white' : finishWorkflowTheme.incompleteStepIcon
                     }`}>
                       {step.complete ? <CheckCircle className="h-5 w-5" /> : <span className="text-sm font-bold">{step.index}</span>}
                     </div>
@@ -16913,7 +16970,7 @@ useEffect(() => {
                             {step.description}
                           </p>
                         </div>
-                        <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${step.complete ? 'text-emerald-600' : 'text-violet-600'}`} />
+                        <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${step.complete ? 'text-emerald-600' : finishWorkflowTheme.incompleteStepAccent}`} />
                       </div>
                       {step.extra ? (
                         <p className="mt-2 text-xs font-semibold text-amber-700">
@@ -16928,7 +16985,7 @@ useEffect(() => {
                           className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold ${
                             isFinishWorkflowSoftLocked
                               ? 'cursor-not-allowed bg-slate-200 text-slate-500'
-                              : 'bg-violet-600 text-white'
+                              : finishWorkflowTheme.incompleteStepButton
                           }`}
                         >
                           {step.actionLabel}
@@ -17003,9 +17060,11 @@ useEffect(() => {
             </div>
           ) : null}
 
-          <div className="mt-4 rounded-2xl border border-violet-100 bg-white/90 px-4 py-3 text-xs text-slate-500 shadow-sm">
-            {nextFinishWorkflowStep ? finishWorkflowNextStepHint : tr('All finish steps are complete.', 'Toutes les étapes de clôture sont terminées.')}
-          </div>
+          {(finishWorkflowNextStepHint || !nextFinishWorkflowStep) && (
+            <div className={`mt-4 rounded-2xl border px-4 py-3 text-xs shadow-sm ${finishWorkflowTheme.hintCard}`}>
+              {nextFinishWorkflowStep ? finishWorkflowNextStepHint : tr('All finish steps are complete.', 'Toutes les étapes de clôture sont terminées.')}
+            </div>
+          )}
 
           {isVehicleIssueFinishFlow && (
             <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 shadow-sm">
@@ -17048,7 +17107,7 @@ useEffect(() => {
         <div className={LIGHT_RENTAL_ACTION_DOCK_CLASS}>
           {!lightFinishCanComplete && (
             <p className="mb-3 text-center text-xs font-medium text-slate-500">
-              {nextFinishWorkflowStep ? finishWorkflowNextStepHint : tr('Finish workflow is still locked.', 'Le workflow de clôture est encore verrouillé.')}
+              {finishWorkflowNextStepHint || tr('Finish workflow is still locked.', 'Le workflow de clôture est encore verrouillé.')}
             </p>
           )}
           <button
@@ -17066,9 +17125,7 @@ useEffect(() => {
             }}
             disabled={!lightFinishCanComplete}
             className={`flex w-full items-center justify-center gap-2 rounded-2xl px-5 py-4 text-base font-bold transition ${
-              lightFinishCanComplete
-                ? 'bg-emerald-600 text-white shadow-[0_14px_32px_rgba(5,150,105,0.22)] hover:bg-emerald-700'
-                : 'cursor-not-allowed bg-slate-200 text-slate-500'
+              finishWorkflowTheme.dockButton
             }`}
           >
             {isVehicleIssueFinishFlow ? <Wrench className="h-5 w-5" /> : <CheckCircle className="h-5 w-5" />}
