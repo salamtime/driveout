@@ -2,6 +2,7 @@ import { supabase } from '../lib/supabase.js';
 import MaintenanceService from './MaintenanceService.js';
 import { countRentalDocuments, dispatchRentalLifecycleTelegramEvent } from './RentalLifecycleDispatchService.js';
 import { buildInitialPaymentReceivedTelegramPayload, shouldDispatchInitialPaymentReceived } from '../utils/rentalTelegram.js';
+import { applyOrganizationMatch, applyOrganizationScope, getCurrentOrganizationId } from './OrganizationService.js';
 import {
   mergeUniqueCustomersById,
   normalizeCustomerIdentityFields,
@@ -114,6 +115,7 @@ class TransactionalRentalService {
       if (!customerData) {
         throw new Error('Customer data is required for rental creation');
       }
+      const organizationId = await getCurrentOrganizationId();
 
       // STEP 1: Check if customer already exists by ID (if provided)
       const existingCustomerIdCandidate = [
@@ -166,6 +168,7 @@ class TransactionalRentalService {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
+      const scopedCustomerData = applyOrganizationMatch(sanitizedCustomerData, organizationId);
 
       console.log('🧹 TRANSACTIONAL CUSTOMER CREATION: Sanitized customer data:', sanitizedCustomerData);
 
@@ -187,13 +190,13 @@ class TransactionalRentalService {
 
         const exactMatchGroups = await Promise.all([
           licenceNumber
-            ? runLookup(customerTable.select('*').eq('licence_number', licenceNumber).limit(10))
+            ? runLookup(applyOrganizationScope(customerTable.select('*').eq('licence_number', licenceNumber).limit(10), organizationId))
             : Promise.resolve([]),
           idNumber
-            ? runLookup(customerTable.select('*').eq('id_number', idNumber).limit(10))
+            ? runLookup(applyOrganizationScope(customerTable.select('*').eq('id_number', idNumber).limit(10), organizationId))
             : Promise.resolve([]),
           phoneNumber
-            ? runLookup(customerTable.select('*').eq('phone', phoneNumber).limit(10))
+            ? runLookup(applyOrganizationScope(customerTable.select('*').eq('phone', phoneNumber).limit(10), organizationId))
             : Promise.resolve([]),
         ]);
 
@@ -203,10 +206,13 @@ class TransactionalRentalService {
         if (exactMatch?.id) return exactMatch;
 
         if (fullName) {
-          const { data } = await customerTable
-            .select('*')
-            .ilike('full_name', fullName)
-            .limit(5);
+          const { data } = await applyOrganizationScope(
+            customerTable
+              .select('*')
+              .ilike('full_name', fullName)
+              .limit(5),
+            organizationId
+          );
           const bestMatch = pickBestExistingCustomerMatch({
             incomingCustomer: sanitizedCustomerData,
             candidates: data || [],
@@ -220,7 +226,7 @@ class TransactionalRentalService {
       // Insert customer into database
       const { data: newCustomer, error: createError } = await supabase
         .from('app_4c3a7a6153_customers')
-        .insert([sanitizedCustomerData])
+        .insert([scopedCustomerData])
         .select()
         .single();
 

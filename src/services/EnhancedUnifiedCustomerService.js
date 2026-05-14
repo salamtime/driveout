@@ -530,6 +530,7 @@ class EnhancedUnifiedCustomerService {
     });
     
     try {
+      const organizationId = await getCurrentOrganizationId();
       // Step 1: Validate input data
       if (!customerData) {
         throw new Error('Customer data is required');
@@ -607,25 +608,31 @@ class EnhancedUnifiedCustomerService {
         created_at: existingCustomer?.created_at || new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
+      const scopedFinalCustomerData = customerTableSupportsOrganizationColumn !== false
+        ? {
+            ...applyOrganizationMatch({}, organizationId),
+            ...finalCustomerData,
+          }
+        : stripOrganizationField(finalCustomerData);
 
-      console.log('🎯 SHIELDING: Final customer data with protected manual input:', finalCustomerData);
-      console.log('🖼️ SHIELDING: id_scan_url field value:', finalCustomerData.id_scan_url);
-      console.log('📞 SHIELDING: phone field value:', finalCustomerData.phone);
-      console.log('📧 SHIELDING: email field value:', finalCustomerData.email);
+      console.log('🎯 SHIELDING: Final customer data with protected manual input:', scopedFinalCustomerData);
+      console.log('🖼️ SHIELDING: id_scan_url field value:', scopedFinalCustomerData.id_scan_url);
+      console.log('📞 SHIELDING: phone field value:', scopedFinalCustomerData.phone);
+      console.log('📧 SHIELDING: email field value:', scopedFinalCustomerData.email);
 
       // Step 6: Validate required fields
-      if (!finalCustomerData.full_name) {
+      if (!scopedFinalCustomerData.full_name) {
         throw new Error('Customer full name is required');
       }
 
       // Step 7: DUPLICATE PREVENTION & CUSTOMER LOOKUP
-      if (finalCustomerData.full_name) {
+      if (scopedFinalCustomerData.full_name) {
         console.log('🔍 DUPLICATE CHECK: Checking for customer with identity:', {
-          name: finalCustomerData.full_name,
-          licence: finalCustomerData.licence_number,
-          idNumber: finalCustomerData.id_number,
-          phone: finalCustomerData.phone,
-          email: finalCustomerData.email,
+          name: scopedFinalCustomerData.full_name,
+          licence: scopedFinalCustomerData.licence_number,
+          idNumber: scopedFinalCustomerData.id_number,
+          phone: scopedFinalCustomerData.phone,
+          email: scopedFinalCustomerData.email,
         });
 
         let duplicateCustomer = null;
@@ -640,40 +647,40 @@ class EnhancedUnifiedCustomerService {
         };
 
         const exactMatchGroups = await Promise.all([
-          finalCustomerData.id_number
+          scopedFinalCustomerData.id_number
             ? runLookup(
-                supabase
+                applyOrganizationScope(supabase
                   .from('app_4c3a7a6153_customers')
                   .select('*')
-                  .eq('id_number', finalCustomerData.id_number)
-                  .limit(10)
+                  .eq('id_number', scopedFinalCustomerData.id_number)
+                  .limit(10), organizationId)
               )
             : Promise.resolve([]),
-          finalCustomerData.licence_number
+          scopedFinalCustomerData.licence_number
             ? runLookup(
-                supabase
+                applyOrganizationScope(supabase
                   .from('app_4c3a7a6153_customers')
                   .select('*')
-                  .eq('licence_number', finalCustomerData.licence_number)
-                  .limit(10)
+                  .eq('licence_number', scopedFinalCustomerData.licence_number)
+                  .limit(10), organizationId)
               )
             : Promise.resolve([]),
-          finalCustomerData.phone
+          scopedFinalCustomerData.phone
             ? runLookup(
-                supabase
+                applyOrganizationScope(supabase
                   .from('app_4c3a7a6153_customers')
                   .select('*')
-                  .eq('phone', finalCustomerData.phone)
-                  .limit(10)
+                  .eq('phone', scopedFinalCustomerData.phone)
+                  .limit(10), organizationId)
               )
             : Promise.resolve([]),
-          finalCustomerData.email
+          scopedFinalCustomerData.email
             ? runLookup(
-                supabase
+                applyOrganizationScope(supabase
                   .from('app_4c3a7a6153_customers')
                   .select('*')
-                  .eq('email', finalCustomerData.email)
-                  .limit(10)
+                  .eq('email', scopedFinalCustomerData.email)
+                  .limit(10), organizationId)
               )
             : Promise.resolve([]),
         ]);
@@ -683,11 +690,11 @@ class EnhancedUnifiedCustomerService {
         );
 
         if (!duplicateCustomer) {
-          const { data: duplicateCustomers, error: lookupError } = await supabase
+          const { data: duplicateCustomers, error: lookupError } = await applyOrganizationScope(supabase
             .from('app_4c3a7a6153_customers')
             .select('*')
-            .ilike('full_name', finalCustomerData.full_name)
-            .limit(5);
+            .ilike('full_name', scopedFinalCustomerData.full_name)
+            .limit(5), organizationId);
 
           if (lookupError) {
             console.error('❌ DUPLICATE CHECK: Error looking up customer:', lookupError);
@@ -695,7 +702,7 @@ class EnhancedUnifiedCustomerService {
           }
 
           duplicateCustomer = pickBestExistingCustomerMatch({
-            incomingCustomer: finalCustomerData,
+            incomingCustomer: scopedFinalCustomerData,
             candidates: duplicateCustomers || [],
           });
         }
@@ -707,10 +714,10 @@ class EnhancedUnifiedCustomerService {
           // incoming payload explicitly contains a real replacement value.
           const updatePayload = {
             ...duplicateCustomer,
-            ...finalCustomerData,
+            ...scopedFinalCustomerData,
             id: duplicateCustomer.id, // Keep original ID
-            email: finalCustomerData.email ?? duplicateCustomer.email ?? null,
-            phone: finalCustomerData.phone ?? duplicateCustomer.phone ?? null,
+            email: scopedFinalCustomerData.email ?? duplicateCustomer.email ?? null,
+            phone: scopedFinalCustomerData.phone ?? duplicateCustomer.phone ?? null,
             updated_at: new Date().toISOString()
           };
           
@@ -740,7 +747,7 @@ class EnhancedUnifiedCustomerService {
       // Step 8: Create or update customer
       const customerToUpsert = {
         id: customerData.id,
-        ...finalCustomerData,
+        ...scopedFinalCustomerData,
       };
 
       if (!customerToUpsert.id) {
@@ -765,35 +772,35 @@ class EnhancedUnifiedCustomerService {
 
           const exactConflictGroups = await Promise.all([
             customerToUpsert.licence_number
-              ? supabase
+              ? applyOrganizationScope(supabase
                   .from('app_4c3a7a6153_customers')
                   .select('*')
                   .eq('licence_number', customerToUpsert.licence_number)
-                  .limit(10)
+                  .limit(10), organizationId)
                   .then(({ data }) => data || [])
               : Promise.resolve([]),
             customerToUpsert.id_number
-              ? supabase
+              ? applyOrganizationScope(supabase
                   .from('app_4c3a7a6153_customers')
                   .select('*')
                   .eq('id_number', customerToUpsert.id_number)
-                  .limit(10)
+                  .limit(10), organizationId)
                   .then(({ data }) => data || [])
               : Promise.resolve([]),
             customerToUpsert.phone
-              ? supabase
+              ? applyOrganizationScope(supabase
                   .from('app_4c3a7a6153_customers')
                   .select('*')
                   .eq('phone', customerToUpsert.phone)
-                  .limit(10)
+                  .limit(10), organizationId)
                   .then(({ data }) => data || [])
               : Promise.resolve([]),
             customerToUpsert.email
-              ? supabase
+              ? applyOrganizationScope(supabase
                   .from('app_4c3a7a6153_customers')
                   .select('*')
                   .eq('email', customerToUpsert.email)
-                  .limit(10)
+                  .limit(10), organizationId)
                   .then(({ data }) => data || [])
               : Promise.resolve([]),
           ]);
@@ -803,11 +810,11 @@ class EnhancedUnifiedCustomerService {
           ) ?? null;
 
           if (!conflictingRecord && customerToUpsert.full_name) {
-            const { data } = await supabase
+            const { data } = await applyOrganizationScope(supabase
               .from('app_4c3a7a6153_customers')
               .select('*')
               .ilike('full_name', customerToUpsert.full_name)
-              .limit(5);
+              .limit(5), organizationId);
             conflictingRecord = pickBestExistingCustomerMatch({
               incomingCustomer: customerToUpsert,
               candidates: data || [],

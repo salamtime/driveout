@@ -19,6 +19,7 @@ import VehicleService from '../../services/VehicleService';
 import VehicleModelService from '../../services/VehicleModelService';
 import AppSettingsService from '../../services/AppSettingsService';
 import enhancedUnifiedCustomerService, { updateCustomerById } from '../../services/EnhancedUnifiedCustomerService';
+import { applyOrganizationMatch, getCurrentOrganizationId } from '../../services/OrganizationService';
 import { useAuth } from '../../contexts/AuthContext';
 import { canEditRentalPrice } from '../../utils/permissionHelpers';
 import { 
@@ -2927,6 +2928,7 @@ const calculateFinancials = () => {
       const submissionEmailAddress = emailToSubmit?.trim();
       const submissionCustomerName = submissionReadyFormData.customer_name?.trim();
       const submissionCustomerDob = submissionReadyFormData.customer_dob?.trim();
+      const organizationId = await getCurrentOrganizationId();
 
       const findExistingCustomerCandidatesForSubmission = async () => {
         const exactMatches = await enhancedUnifiedCustomerService.findMatchingCustomers({
@@ -3073,7 +3075,7 @@ const calculateFinancials = () => {
         
         const { data: insertedCustomer, error: insertError } = await supabase
           .from('app_4c3a7a6153_customers')
-          .insert([newCustomerData])
+          .insert([applyOrganizationMatch(newCustomerData, organizationId)])
           .select()
           .single();
         
@@ -3103,7 +3105,7 @@ const calculateFinancials = () => {
           // Customer ID was pre-generated (e.g. from ID scan) but not yet saved — create it now
           const { data: createdCustomer, error: createError } = await supabase
             .from('app_4c3a7a6153_customers')
-            .insert([{
+            .insert([applyOrganizationMatch({
               id: finalCustomerId,
               full_name: submissionReadyFormData.customer_name,
               phone: submissionReadyFormData.customer_phone,
@@ -3118,11 +3120,11 @@ const calculateFinancials = () => {
               scan_metadata: Array.isArray(formData.customer_id_scan_history) && formData.customer_id_scan_history.length > 0
                 ? {
                     id_scan_history: [...new Set(formData.customer_id_scan_history.map((url) => String(url || '').trim()).filter(Boolean))]
-                  }
+              }
                 : {},
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString()
-            }])
+            }, organizationId)])
             .select()
             .single();
 
