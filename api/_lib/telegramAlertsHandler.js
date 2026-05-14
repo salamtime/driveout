@@ -356,6 +356,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
     case 'rental_vehicle_replaced': {
       const oldVehicle = safeText(data.oldVehicle || data.old_vehicle_name || 'Unknown vehicle');
       const newVehicle = safeText(data.newVehicle || data.new_vehicle_name || vehicle);
+      const changedBy = safeText(data.changedBy || data.changed_by || data.changed_by_name || '');
       const reason = safeText(data.replacementReasonLabel || data.replacement_reason_label || data.replacementReason || '');
       const note = safeText(data.replacementNote || data.replacement_note || '');
 
@@ -365,6 +366,7 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         ...(customerLine ? [customerLine] : []),
         `From: ${oldVehicle}`,
         `To: ${newVehicle}`,
+        ...(changedBy ? [`Changed by: ${changedBy}`] : []),
         ...(reason ? [`Reason: ${reason}`] : []),
         ...(note ? [`Note: ${note}`] : []),
         ...(rentalIdentityLine ? [rentalIdentityLine] : []),
@@ -916,6 +918,7 @@ const buildTelegramEventDeduplicationKey = (eventType, payload = {}) => {
         safeText(payload?.amountPaid),
         safeText(payload?.old_vehicle_id || payload?.oldVehicle || payload?.old_vehicle_name),
         safeText(payload?.new_vehicle_id || payload?.newVehicle || payload?.new_vehicle_name),
+        safeText(payload?.changedBy || payload?.changed_by || payload?.changed_by_name),
         safeText(payload?.replacementReason || payload?.replacement_reason || payload?.replacement_reason_label),
         safeText(
           resolveDistanceValue(payload) ||

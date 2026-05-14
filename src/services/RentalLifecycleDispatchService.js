@@ -119,6 +119,7 @@ export const buildRentalLifecycleDispatchKey = (eventType, rental = {}) => {
         safeText(rental?.remaining),
         safeText(rental?.old_vehicle_id || rental?.oldVehicle || rental?.old_vehicle_name),
         safeText(rental?.new_vehicle_id || rental?.newVehicle || rental?.new_vehicle_name),
+        safeText(rental?.changedBy || rental?.changed_by || rental?.changed_by_name),
         safeText(rental?.replacementReason || rental?.replacement_reason || rental?.replacement_reason_label),
         safeText(resolveDistanceValue(rental)),
         safeText(countRentalDocuments(rental)),

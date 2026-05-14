@@ -3489,6 +3489,8 @@ const openReplacementResumeWorkflow = useCallback(() => {
           old_vehicle_name: isAssigningVehicle ? null : ([currentVehicleName, currentVehiclePlateDisplay].filter(Boolean).join(' • ') || currentVehicleName),
           new_vehicle_id: replacementVehicle.id,
           new_vehicle_name: [replacementVehicleName, replacementVehiclePlateDisplay].filter(Boolean).join(' • ') || replacementVehicleName,
+          changed_by: actorName,
+          changedBy: actorName,
           replacement_reason: replacementReason,
           replacement_reason_label: isAssigningVehicle ? tr('Vehicle assigned', 'Véhicule attribué') : replacementReasonLabel,
           replacement_note: replacementNote.trim() || null,
