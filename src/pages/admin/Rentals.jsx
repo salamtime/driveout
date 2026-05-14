@@ -30,6 +30,13 @@ import {
   getRentalCollectedAmountInWindow,
   getRentalCompanyDiscountAmount,
 } from '../../utils/rentalFinancials';
+import {
+  readRentalsSchemaCapability,
+  isMissingRentalsAuditColumnError,
+  isMissingRentalsVehicleSnapshotColumnError,
+  markRentalsAuditColumnsUnsupported as persistRentalsAuditColumnsUnsupported,
+  markRentalsVehicleSnapshotColumnsUnsupported as persistRentalsVehicleSnapshotColumnsUnsupported,
+} from '../../utils/rentalSchemaCapabilities';
 import { toast } from 'sonner';
 
 const scheduleBackgroundTask = (callback) => {
@@ -268,34 +275,6 @@ const RENTALS_OPTIONAL_VEHICLE_SNAPSHOT_SELECT = `
 `;
 
 const RENTALS_RETURN_SNAPSHOT_STORAGE_KEY = 'rentals_return_snapshot';
-const getRentalsSchemaCapabilityCacheKey = (capability) => {
-  if (typeof window === 'undefined') {
-    return `rentals-schema:${capability}`;
-  }
-
-  return `rentals-schema:${window.location.hostname}:${capability}`;
-};
-
-const readRentalsSchemaCapability = (capability) => {
-  try {
-    if (typeof window === 'undefined') return true;
-    return window.localStorage.getItem(getRentalsSchemaCapabilityCacheKey(capability)) !== 'false';
-  } catch (_error) {
-    return true;
-  }
-};
-
-const persistRentalsSchemaCapability = (capability, supported) => {
-  try {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(
-      getRentalsSchemaCapabilityCacheKey(capability),
-      supported ? 'true' : 'false'
-    );
-  } catch (_error) {
-    // Ignore localStorage access failures.
-  }
-};
 
 let rentalsAuditColumnsSupported = readRentalsSchemaCapability('audit-columns');
 let rentalsVehicleSnapshotColumnsSupported = readRentalsSchemaCapability('vehicle-snapshot-columns');
@@ -306,40 +285,14 @@ const buildRentalsSelect = ({ includeAuditColumns = true, includeVehicleSnapshot
   ${includeVehicleSnapshots ? `,${RENTALS_OPTIONAL_VEHICLE_SNAPSHOT_SELECT}` : ''}
 `;
 
-const isMissingRentalsAuditColumnError = (error) => {
-  const code = String(error?.code || '').toUpperCase();
-  const message = String(error?.message || '');
-  return (
-    (code === 'PGRST204' || code === '42703') &&
-    message.includes('amount_due_override_previous_amount')
-  );
-};
-
-const isMissingRentalsVehicleSnapshotColumnError = (error) => {
-  const code = String(error?.code || '').toUpperCase();
-  const message = String(error?.message || '');
-  return (
-    (code === 'PGRST204' || code === '42703') &&
-    (
-      message.includes('selected_vehicle_plate_snapshot') ||
-      message.includes('plate_number_snapshot') ||
-      message.includes('selected_vehicle_name_snapshot') ||
-      message.includes('selected_vehicle_model_snapshot') ||
-      message.includes('vehicle_name_snapshot') ||
-      message.includes('vehicle_model_snapshot') ||
-      message.includes('vehicle_label_snapshot')
-    )
-  );
-};
-
 const markRentalsAuditColumnsUnsupported = () => {
   rentalsAuditColumnsSupported = false;
-  persistRentalsSchemaCapability('audit-columns', false);
+  persistRentalsAuditColumnsUnsupported();
 };
 
 const markRentalsVehicleSnapshotColumnsUnsupported = () => {
   rentalsVehicleSnapshotColumnsSupported = false;
-  persistRentalsSchemaCapability('vehicle-snapshot-columns', false);
+  persistRentalsVehicleSnapshotColumnsUnsupported();
 };
 
 const formatRentalWhatsAppDate = (value) => {

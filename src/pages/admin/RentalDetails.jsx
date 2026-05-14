@@ -57,6 +57,7 @@ import {
   buildAmountDueStateForGrandTotalChange,
 } from '../../utils/rentalFinancials';
 import { mergeIdentityDocumentCollections, resolveCustomerIdentityDocuments, resolveVerificationIdentityDocuments } from '../../utils/customerDocuments';
+import { updateRentalRecordWithSchemaFallback } from '../../utils/rentalSchemaCapabilities';
 import { sendRentalDocumentsEmail } from '../../services/emailApi';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { notifyRentalTelegramEvent } from '../../services/TelegramAlertService';
@@ -3315,12 +3316,7 @@ const openReplacementResumeWorkflow = useCallback(() => {
         updated_at: new Date().toISOString(),
       };
 
-      const { data: updatedRental, error: rentalUpdateError } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .update(rentalUpdatePayload)
-        .eq('id', rental.id)
-        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float')
-        .single();
+      const { data: updatedRental, error: rentalUpdateError } = await updateRentalWithSchemaFallback(rentalUpdatePayload);
 
       if (rentalUpdateError) throw rentalUpdateError;
 
@@ -13742,49 +13738,13 @@ useEffect(() => {
     }
   };
 
-  const isRetryableSchemaError = (error) => {
-    const normalizedError = `${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
-    return (
-      normalizedError.includes('schema cache') ||
-      normalizedError.includes('could not find the') ||
-      normalizedError.includes('column') ||
-      normalizedError.includes('pgrst')
-    );
-  };
-
-  const getMissingColumnFromError = (error) => {
-    const message = `${error?.message || ''}`;
-    const match = message.match(/Could not find the '([^']+)' column/i);
-    return match?.[1] || null;
-  };
-
   const updateRentalWithSchemaFallback = async (payload) => {
-    let nextPayload = { ...payload };
-
-    while (true) {
-      const { data, error } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .update(nextPayload)
-        .eq('id', rental.id)
-        .select('*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float')
-        .single();
-
-      if (!error) {
-        return { data, error: null };
-      }
-
-      if (!isRetryableSchemaError(error)) {
-        return { data: null, error };
-      }
-
-      const missingColumn = getMissingColumnFromError(error);
-      if (!missingColumn || !(missingColumn in nextPayload)) {
-        return { data: null, error };
-      }
-
-      const { [missingColumn]: _removed, ...rest } = nextPayload;
-      nextPayload = rest;
-    }
+    return updateRentalRecordWithSchemaFallback({
+      supabase,
+      rentalId: rental.id,
+      payload,
+      selectClause: '*, vehicle:saharax_0u4w4d_vehicles!app_4c3a7a6153_rentals_vehicle_id_fkey(*, vehicle_model:saharax_0u4w4d_vehicle_models!vehicle_model_id(*)), package:app_4c3a7a6153_rental_km_packages!package_id(*), unit_price::float',
+    });
   };
 
   useEffect(() => {
