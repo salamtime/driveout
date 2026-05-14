@@ -268,6 +268,37 @@ const RENTALS_OPTIONAL_VEHICLE_SNAPSHOT_SELECT = `
 `;
 
 const RENTALS_RETURN_SNAPSHOT_STORAGE_KEY = 'rentals_return_snapshot';
+const getRentalsSchemaCapabilityCacheKey = (capability) => {
+  if (typeof window === 'undefined') {
+    return `rentals-schema:${capability}`;
+  }
+
+  return `rentals-schema:${window.location.hostname}:${capability}`;
+};
+
+const readRentalsSchemaCapability = (capability) => {
+  try {
+    if (typeof window === 'undefined') return true;
+    return window.localStorage.getItem(getRentalsSchemaCapabilityCacheKey(capability)) !== 'false';
+  } catch (_error) {
+    return true;
+  }
+};
+
+const persistRentalsSchemaCapability = (capability, supported) => {
+  try {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      getRentalsSchemaCapabilityCacheKey(capability),
+      supported ? 'true' : 'false'
+    );
+  } catch (_error) {
+    // Ignore localStorage access failures.
+  }
+};
+
+let rentalsAuditColumnsSupported = readRentalsSchemaCapability('audit-columns');
+let rentalsVehicleSnapshotColumnsSupported = readRentalsSchemaCapability('vehicle-snapshot-columns');
 
 const buildRentalsSelect = ({ includeAuditColumns = true, includeVehicleSnapshots = true } = {}) => `
   ${RENTALS_BASE_SELECT}
@@ -299,6 +330,16 @@ const isMissingRentalsVehicleSnapshotColumnError = (error) => {
       message.includes('vehicle_label_snapshot')
     )
   );
+};
+
+const markRentalsAuditColumnsUnsupported = () => {
+  rentalsAuditColumnsSupported = false;
+  persistRentalsSchemaCapability('audit-columns', false);
+};
+
+const markRentalsVehicleSnapshotColumnsUnsupported = () => {
+  rentalsVehicleSnapshotColumnsSupported = false;
+  persistRentalsSchemaCapability('vehicle-snapshot-columns', false);
 };
 
 const formatRentalWhatsAppDate = (value) => {
@@ -1234,6 +1275,41 @@ const Rentals = () => {
     return getRentalWorkspaceBucket(rental) === targetTab;
   }, [workspaceTab]);
 
+  const getRentalMaintenanceState = useCallback((rental) => {
+    const report = rentalReportMap[rental?.id];
+    const reportStatus = String(report?.status || '').toLowerCase();
+    const rentalStatus = String(rental?.rental_status || '').toLowerCase();
+    const vehicleStatus = String(rental?.vehicle?.status || '').toLowerCase();
+
+    const hasMaintenanceLink =
+      Boolean(report?.maintenance_id) ||
+      vehicleStatus === 'maintenance' ||
+      ['maintenance_created', 'maintenance_in_progress', 'maintenance_completed'].includes(reportStatus);
+
+    const isClosed = rentalStatus === 'completed' && reportStatus === 'maintenance_completed';
+
+    return {
+      report,
+      reportStatus,
+      hasMaintenanceLink,
+      isClosed,
+      isActive: hasMaintenanceLink && !isClosed,
+    };
+  }, [rentalReportMap]);
+
+  const matchesRentalStatusFilter = useCallback((rental, status = statusFilter) => {
+    const normalizedStatus = String(status || 'all').toLowerCase();
+    if (!normalizedStatus || normalizedStatus === 'all') {
+      return true;
+    }
+
+    if (normalizedStatus === 'maintenance') {
+      return getRentalMaintenanceState(rental).isActive;
+    }
+
+    return getEffectiveRentalStatus(rental) === normalizedStatus;
+  }, [getEffectiveRentalStatus, getRentalMaintenanceState, statusFilter]);
+
   const closeWhatsAppSheet = useCallback(() => {
     setWhatsAppSheetRental(null);
     setWhatsAppCustomMessage('');
@@ -1585,8 +1661,8 @@ const Rentals = () => {
           return query;
         };
 
-        let includeAuditColumns = true;
-        let includeVehicleSnapshots = true;
+        let includeAuditColumns = rentalsAuditColumnsSupported;
+        let includeVehicleSnapshots = rentalsVehicleSnapshotColumnsSupported;
         let { data, error } = await runRentalsQuery({
           includeAuditColumns,
           includeVehicleSnapshots,
@@ -1594,6 +1670,7 @@ const Rentals = () => {
 
         if (error && isMissingRentalsAuditColumnError(error)) {
           console.warn('Rentals table is missing amount_due_override_previous_amount; retrying without audit column.');
+          markRentalsAuditColumnsUnsupported();
           includeAuditColumns = false;
           ({ data, error } = await runRentalsQuery({
             includeAuditColumns,
@@ -1603,6 +1680,7 @@ const Rentals = () => {
 
         if (error && isMissingRentalsVehicleSnapshotColumnError(error)) {
           console.warn('Rentals table is missing vehicle snapshot columns; retrying without snapshot columns.');
+          markRentalsVehicleSnapshotColumnsUnsupported();
           includeVehicleSnapshots = false;
           ({ data, error } = await runRentalsQuery({
             includeAuditColumns,
@@ -1623,10 +1701,9 @@ const Rentals = () => {
 
         let nextRentals = normalizedRentals;
         const workspaceFilteredRentals = nextRentals.filter((rental) => matchesWorkspaceTab(rental));
-        const statusFilteredRentals =
-          normalizedStatusFilter && normalizedStatusFilter !== 'all'
-            ? workspaceFilteredRentals.filter((rental) => getEffectiveRentalStatus(rental) === normalizedStatusFilter)
-            : workspaceFilteredRentals;
+        const statusFilteredRentals = workspaceFilteredRentals.filter((rental) =>
+          matchesRentalStatusFilter(rental, normalizedStatusFilter)
+        );
         const sortedStatusFilteredRentals = sortRentalsForDisplay(
           statusFilteredRentals,
           getEffectiveRentalStatus
@@ -2085,12 +2162,7 @@ const Rentals = () => {
 
         return (rawRows || [])
           .map(normalizeRentalLifecycle)
-          .filter((rental) => {
-            const normalizedStatusFilter = String(currentStatusFilter || '').toLowerCase();
-            return !normalizedStatusFilter || normalizedStatusFilter === 'all'
-              ? true
-              : getEffectiveRentalStatus(rental) === normalizedStatusFilter;
-          })
+          .filter((rental) => matchesRentalStatusFilter(rental, currentStatusFilter))
           .length;
       };
 
@@ -2104,7 +2176,7 @@ const Rentals = () => {
     } catch (err) {
       console.error('❌ Error fetching day/week rental counts:', err);
     }
-  }, [getEffectiveRentalStatus, paymentStatusFilter, statusFilter]);
+  }, [matchesRentalStatusFilter, paymentStatusFilter, statusFilter]);
 
   const refreshSecondaryRentalData = () => {
     void fetchVehicles();
@@ -2124,11 +2196,11 @@ const Rentals = () => {
       ? true
       : matchesWorkspaceTab(rental, targetTab);
 
-    const matchesStatus = !status || status === 'all' || rentalStatus === String(status).toLowerCase();
+    const matchesStatus = matchesRentalStatusFilter(rental, status);
     const matchesPayment = !payment || payment === 'all' || rentalPaymentStatus === String(payment).toLowerCase();
 
     return matchesWorkspace && matchesStatus && matchesPayment;
-  }, [getEffectiveRentalStatus, matchesWorkspaceTab, paymentStatusFilter, statusFilter, workspaceTab]);
+  }, [getEffectiveRentalStatus, matchesRentalStatusFilter, matchesWorkspaceTab, paymentStatusFilter, statusFilter, workspaceTab]);
 
   const scheduleRentalRefresh = useCallback(() => {
     if (rentalRefreshTimeoutRef.current) {
@@ -2848,13 +2920,9 @@ const Rentals = () => {
   };
 
   const getRentalAttentionState = (rental) => {
-    const report = rentalReportMap[rental.id];
-    if (!report) return null;
+    const { report, reportStatus, hasMaintenanceLink, isClosed, isActive } = getRentalMaintenanceState(rental);
 
-    if (
-      rental.rental_status === 'completed' &&
-      report.status === 'maintenance_completed'
-    ) {
+    if (isClosed) {
       return {
         status: 'maintenance_closed',
         text: tr('Maintenance Closed', 'Maintenance clôturée'),
@@ -2863,11 +2931,7 @@ const Rentals = () => {
       };
     }
 
-    if (
-      report.maintenance_id ||
-      rental.vehicle?.status === 'maintenance' ||
-      ['maintenance_created', 'maintenance_in_progress', 'maintenance_completed'].includes(report.status)
-    ) {
+    if (isActive || hasMaintenanceLink) {
       return {
         status: 'under_maintenance',
         text: tr('Under Maintenance', 'En maintenance'),
@@ -2875,6 +2939,8 @@ const Rentals = () => {
         detailText: tr('Vehicle report linked to Quad Maintenance', 'Rapport véhicule lié à la maintenance du quad'),
       };
     }
+
+    if (!report) return null;
 
     const labels = {
       damage: tr('Damage Report Saved', 'Rapport de dommage enregistré'),
@@ -3001,7 +3067,7 @@ const Rentals = () => {
         const attentionState = getRentalAttentionState(rental);
 
         if (normalizedStatus === 'maintenance') {
-          if (attentionState?.text !== tr('Under Maintenance', 'En maintenance')) {
+          if (attentionState?.status !== 'under_maintenance') {
             return false;
           }
         } else if (effectiveStatus !== normalizedStatus) {
@@ -3036,7 +3102,7 @@ const Rentals = () => {
       if (counts[effectiveStatus] !== undefined) {
         counts[effectiveStatus] += 1;
       }
-      if (attentionState?.text === tr('Under Maintenance', 'En maintenance')) {
+      if (attentionState?.status === 'under_maintenance') {
         counts.maintenance += 1;
       }
     });
@@ -3869,7 +3935,7 @@ const Rentals = () => {
               {tr('Scheduled', 'Planifiées')}: {statusTabCounts.scheduled}
             </span>
             <span className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700">
-              {tr('Maintenance', 'Maintenance')}: {vehicleAvailabilitySummary.maintenance}
+              {tr('Maintenance Rentals', 'Locations maintenance')}: {statusTabCounts.maintenance}
             </span>
             <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
               {tr('Collected', 'Encaissé')}: {footerSummaryCollected.toFixed(0)} MAD

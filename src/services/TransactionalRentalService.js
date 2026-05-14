@@ -130,7 +130,7 @@ class TransactionalRentalService {
           .from('app_4c3a7a6153_customers')
           .select('*')
           .eq('id', existingCustomerIdCandidate)
-          .single();
+          .maybeSingle();
 
         if (!lookupError && existingCustomer) {
           console.log('✅ TRANSACTIONAL CUSTOMER CREATION: Existing customer validated:', existingCustomer.id);
@@ -149,6 +149,7 @@ class TransactionalRentalService {
       
       // Sanitize customer data
       const sanitizedCustomerData = {
+        ...(existingCustomerIdCandidate ? { id: existingCustomerIdCandidate } : {}),
         full_name: customerData.full_name || customerData.customer_name,
         email: customerData.email || customerData.customer_email || null,
         phone: customerData.phone || customerData.customer_phone,
@@ -740,7 +741,7 @@ class TransactionalRentalService {
       }
 
       // STEP 2: FINAL CRITICAL FIX - Validate customer_id BEFORE any processing
-      const linkedCustomerId = rentalData.customer_id;
+      let linkedCustomerId = rentalData.customer_id;
       console.log('🎯 FINAL CRITICAL FIX: Checking customer_id in payload:', linkedCustomerId);
 
       if (!linkedCustomerId) {
@@ -758,11 +759,27 @@ class TransactionalRentalService {
 
       // STEP 3: Verify customer exists in database
       console.log('🔍 FINAL CRITICAL FIX: Verifying customer exists in database...');
-      const { data: existingCustomer, error: customerError } = await supabase
+      let { data: existingCustomer, error: customerError } = await supabase
         .from('app_4c3a7a6153_customers')
-        .select('id, full_name, licence_number, id_number, phone, email, id_scan_url, customer_id_image, customer_id_scan_history, customer_uploaded_images, extra_images, scan_metadata')
+        .select('*')
         .eq('id', linkedCustomerId)
-        .single();
+        .maybeSingle();
+
+      if (!customerError && !existingCustomer) {
+        console.warn('⚠️ FINAL CRITICAL FIX: Linked customer record missing at final verification. Attempting recovery...');
+        const recoveredCustomerResult = await this.guaranteeCustomerCreation({
+          ...rentalData,
+          id: linkedCustomerId,
+          customer_id: linkedCustomerId,
+        });
+
+        if (recoveredCustomerResult?.success && recoveredCustomerResult?.data?.id) {
+          existingCustomer = recoveredCustomerResult.data;
+          linkedCustomerId = recoveredCustomerResult.data.id;
+          rentalData.customer_id = linkedCustomerId;
+          console.log('🔁 FINAL CRITICAL FIX: Customer linkage recovered before rental insert:', linkedCustomerId);
+        }
+      }
 
       if (customerError || !existingCustomer) {
         console.error('❌ FINAL CRITICAL FIX: Customer verification failed:', customerError);

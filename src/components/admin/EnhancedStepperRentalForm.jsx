@@ -331,8 +331,27 @@ const hasEditWorkflowChanges = (nextData = {}, initialData = {}) => {
   return false;
 };
 
+const isValidCustomerRecordId = (value) => {
+  if (!value || typeof value !== 'string') return false;
+  return value.startsWith('cust_');
+};
+
+const resolveCustomerSuggestionId = (customer = {}) => {
+  const directCustomerId = String(customer.customer_id || '').trim();
+  if (isValidCustomerRecordId(directCustomerId)) {
+    return directCustomerId;
+  }
+
+  const recordId = String(customer.id || '').trim();
+  if (isValidCustomerRecordId(recordId)) {
+    return recordId;
+  }
+
+  return directCustomerId || recordId || null;
+};
+
 const normalizeCustomerSuggestion = (customer = {}, source = 'database') => ({
-  id: customer.id || customer.customer_id || null,
+  id: resolveCustomerSuggestionId(customer),
   name: customer.full_name || customer.customer_name || customer.name || '',
   email: customer.email || customer.customer_email || '',
   phone: customer.phone || customer.customer_phone || '',
@@ -2917,7 +2936,11 @@ const calculateFinancials = () => {
         }
       }
 
-      let finalCustomerId = submissionReadyFormData.customer_id;
+      let finalCustomerId = String(submissionReadyFormData.customer_id || '').trim() || null;
+      if (finalCustomerId && !isValidCustomerRecordId(finalCustomerId)) {
+        console.warn('Invalid customer_id detected in rental submission; clearing stale value before customer resolution:', finalCustomerId);
+        finalCustomerId = null;
+      }
       const normalizedSubmissionIdentity = normalizeCustomerIdentityFields({
         licenceNumber: submissionReadyFormData.customer_licence_number,
         idNumber: submissionReadyFormData.customer_id_number,
@@ -3043,6 +3066,11 @@ const calculateFinancials = () => {
       const uniqueSecondIdImageUrls = [...new Set(secondIdImageUrls)];
       
       if (!finalCustomerId) {
+        const preMatchedCustomer = await findExistingCustomerForSubmission();
+        if (preMatchedCustomer?.id) {
+          finalCustomerId = preMatchedCustomer.id;
+        }
+
         const customerScanHistory = Array.isArray(formData.customer_id_scan_history)
           ? [...new Set(formData.customer_id_scan_history.map((url) => String(url || '').trim()).filter(Boolean))]
           : [];
@@ -3050,52 +3078,67 @@ const calculateFinancials = () => {
           licenceNumber: submissionReadyFormData.customer_licence_number,
           idNumber: submissionReadyFormData.customer_id_number,
         });
-        const newCustomerId = generateCustomerId();
-        const newCustomerData = {
-          id: newCustomerId,
-          full_name: submissionReadyFormData.customer_name,
-          phone: submissionReadyFormData.customer_phone,
-          secondary_phone: submissionReadyFormData.secondary_phone || null,
-          email: emailToSubmit,
-          licence_number: normalizedIdentity.licenceNumber,
-          id_number: normalizedIdentity.idNumber,
-          date_of_birth: submissionReadyFormData.customer_dob || null,
-          nationality: submissionReadyFormData.customer_nationality || null,
-          place_of_birth: submissionReadyFormData.customer_place_of_birth || null,
-          id_scan_url: submissionReadyFormData.customer_id_image || null,
-          scan_metadata: customerScanHistory.length > 0
-            ? { id_scan_history: customerScanHistory }
-            : {},
-          extra_images: (formData.customer_uploaded_images || [])
-            .map(img => img.url)
-            .filter(url => url && url.trim() !== ''),
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        };
-        
-        const { data: insertedCustomer, error: insertError } = await supabase
-          .from('app_4c3a7a6153_customers')
-          .insert([applyOrganizationMatch(newCustomerData, organizationId)])
-          .select()
-          .single();
-        
-        if (insertError) {
-          const existingCustomer = await findExistingCustomerForSubmission();
+        if (!finalCustomerId) {
+          const newCustomerId = generateCustomerId();
+          const newCustomerData = {
+            id: newCustomerId,
+            full_name: submissionReadyFormData.customer_name,
+            customer_name: submissionReadyFormData.customer_name,
+            phone: submissionReadyFormData.customer_phone,
+            customer_phone: submissionReadyFormData.customer_phone,
+            secondary_phone: submissionReadyFormData.secondary_phone || null,
+            email: emailToSubmit,
+            customer_email: emailToSubmit,
+            licence_number: normalizedIdentity.licenceNumber,
+            customer_licence_number: normalizedIdentity.licenceNumber,
+            id_number: normalizedIdentity.idNumber,
+            customer_id_number: normalizedIdentity.idNumber,
+            date_of_birth: submissionReadyFormData.customer_dob || null,
+            customer_dob: submissionReadyFormData.customer_dob || null,
+            nationality: submissionReadyFormData.customer_nationality || null,
+            customer_nationality: submissionReadyFormData.customer_nationality || null,
+            place_of_birth: submissionReadyFormData.customer_place_of_birth || null,
+            customer_place_of_birth: submissionReadyFormData.customer_place_of_birth || null,
+            id_scan_url: submissionReadyFormData.customer_id_image || null,
+            scan_metadata: customerScanHistory.length > 0
+              ? { id_scan_history: customerScanHistory }
+              : {},
+            extra_images: (formData.customer_uploaded_images || [])
+              .map(img => img.url)
+              .filter(url => url && url.trim() !== ''),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
           
-          if (existingCustomer?.id) {
-            finalCustomerId = existingCustomer.id;
+          const { data: insertedCustomer, error: insertError } = await supabase
+            .from('app_4c3a7a6153_customers')
+            .insert([applyOrganizationMatch(newCustomerData, organizationId)])
+            .select()
+            .single();
+          
+          if (insertError) {
+            const existingCustomer = await findExistingCustomerForSubmission();
+            
+            if (existingCustomer?.id) {
+              finalCustomerId = existingCustomer.id;
+            } else {
+              const recoveredCustomerResult = await enhancedUnifiedCustomerService.saveCustomer(newCustomerData);
+              if (recoveredCustomerResult?.success && recoveredCustomerResult?.data?.id) {
+                finalCustomerId = recoveredCustomerResult.data.id;
+              } else {
+                throw new Error(`${tr('Failed to create new customer:', 'Impossible de créer un nouveau client :')} ${insertError.message}`);
+              }
+            }
           } else {
-            throw new Error(`${tr('Failed to create new customer:', 'Impossible de créer un nouveau client :')} ${insertError.message}`);
+            finalCustomerId = insertedCustomer.id;
           }
-        } else {
-          finalCustomerId = insertedCustomer.id;
         }
       } else {
         const { data: existingCustomer, error: checkError } = await supabase
           .from('app_4c3a7a6153_customers')
           .select('id, id_scan_url, scan_metadata')
           .eq('id', finalCustomerId)
-          .single();
+          .maybeSingle();
 
         if (checkError || !existingCustomer) {
           const normalizedIdentity = normalizeCustomerIdentityFields({
