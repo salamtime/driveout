@@ -100,6 +100,10 @@ export default function MaintenanceDetail() {
     loadRecord();
   }, [id]);
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [id]);
+
   const handleOpenEdit = async () => {
     try {
       setLoadingEdit(true);
@@ -140,9 +144,9 @@ export default function MaintenanceDetail() {
     setEditingRecord(null);
   };
 
-  if (loading && !suppressBlockingLoader) {
+  if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-96">
+      <div className={suppressBlockingLoader ? 'max-w-4xl mx-auto px-4 py-6' : 'flex items-center justify-center min-h-96'}>
         <div className="text-center">
           <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-orange-600 mx-auto mb-3" />
           <p className="text-gray-500 text-sm">{tr('Loading maintenance record…', 'Chargement de la fiche de maintenance…')}</p>
@@ -279,7 +283,16 @@ export default function MaintenanceDetail() {
                 variant="outline"
                 size="sm"
                 className="border-orange-300 text-orange-700 hover:bg-orange-100"
-                onClick={() => navigate(`/admin/rentals/${record.linked_rental_report.rental_id}`)}
+                onClick={() => navigate(`/admin/rentals/${record.linked_rental_report.rental_id}?view=light`, {
+                  state: {
+                    maintenanceReturnMode: 'vehicle_issue',
+                    maintenanceReturnReportEnabled: false,
+                    maintenanceReturnMaintenanceId: record.id,
+                    maintenanceReturnSource: 'maintenance',
+                    maintenanceReturnInspectionComplete: true,
+                    maintenanceReturnReport: record.linked_rental_report,
+                  },
+                })}
               >
                 <ExternalLink className="w-3 h-3 mr-1.5" /> {tr('Open Rental', 'Ouvrir la location')}
               </Button>

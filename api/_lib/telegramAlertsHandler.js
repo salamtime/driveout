@@ -394,6 +394,14 @@ const buildTelegramMessage = (eventType, data, rentalUrl, recipientLayout = 'own
         ...(customerLine ? [customerLine] : []),
         ...windowLines,
         ...(safeText(data.cancellationReason) ? [`Reason: ${safeText(data.cancellationReason)}`] : []),
+        ...(safeText(formatMoney(data.refundAmount)) !== '0'
+          ? [`Refunded: ${safeText(formatMoney(data.refundAmount))} MAD`]
+          : []),
+        ...(safeText(data.refundStatus) ? [`Refund status: ${safeText(data.refundStatus).replace(/_/g, ' ')}`] : []),
+        ...(safeText(data.refundDestination) ? [`Refund method: ${safeText(data.refundDestination).replace(/_/g, ' ')}`] : []),
+        ...(safeText(formatMoney(data.depositReturnedAmount)) !== '0'
+          ? [`Deposit returned: ${safeText(formatMoney(data.depositReturnedAmount))} MAD`]
+          : []),
         ...(rentalIdentityLine ? [rentalIdentityLine] : []),
         '',
         linkLine,

@@ -51,7 +51,11 @@ import { deriveEffectiveRentalStatus } from '../../utils/rentalLifecycle';
 import { TABLE_NAMES } from '../../config/tableNames';
 import { calculateSimpleRentalPricing, isPackagePricingEnabled } from '../../utils/simpleRentalPricing';
 import { buildRentalBookedPackageSnapshot } from '../../utils/rentalPackageSnapshot';
-import { getRentalCollectedAmount } from '../../utils/rentalFinancials';
+import {
+  getRentalCollectedAmount,
+  resolveAmountDueBalanceState,
+  buildAmountDueStateForGrandTotalChange,
+} from '../../utils/rentalFinancials';
 import { sendRentalDocumentsEmail } from '../../services/emailApi';
 import { dispatchRentalLifecycleTelegramEvent } from '../../services/RentalLifecycleDispatchService';
 import { notifyRentalTelegramEvent } from '../../services/TelegramAlertService';
@@ -129,6 +133,12 @@ const buildVehicleIssueResolutionNote = ({
   vehicleAction,
   internalNote,
   customerMessage,
+  rentalRefundSelected,
+  depositRefundSelected,
+  depositRefundAmount,
+  refundSignedAt,
+  refundSignatureUrl,
+  depositRefundCompletedAt,
 }) => {
   const trimmedInternalNote = String(internalNote || '').trim();
   const payload = {
@@ -138,6 +148,12 @@ const buildVehicleIssueResolutionNote = ({
     refundDestination: String(refundDestination || '').trim().toLowerCase(),
     vehicleAction: String(vehicleAction || '').trim().toLowerCase(),
     customerMessage: String(customerMessage || '').trim(),
+    rentalRefundSelected: Boolean(rentalRefundSelected),
+    depositRefundSelected: Boolean(depositRefundSelected),
+    depositRefundAmount: Math.max(0, Number(depositRefundAmount || 0) || 0),
+    refundSignedAt: String(refundSignedAt || '').trim(),
+    refundSignatureUrl: String(refundSignatureUrl || '').trim(),
+    depositRefundCompletedAt: String(depositRefundCompletedAt || '').trim(),
   };
 
   return `${trimmedInternalNote}\n${VEHICLE_ISSUE_RESOLUTION_MARKER}${JSON.stringify(payload)}`.trim();
@@ -161,6 +177,12 @@ const parseVehicleIssueResolutionNote = (value) => {
       refundDestination: String(payload?.refundDestination || '').trim().toLowerCase(),
       vehicleAction: String(payload?.vehicleAction || '').trim().toLowerCase(),
       customerMessage: String(payload?.customerMessage || '').trim(),
+      rentalRefundSelected: payload?.rentalRefundSelected !== false,
+      depositRefundSelected: Boolean(payload?.depositRefundSelected),
+      depositRefundAmount: Math.max(0, Number(payload?.depositRefundAmount || 0) || 0),
+      refundSignedAt: String(payload?.refundSignedAt || '').trim(),
+      refundSignatureUrl: String(payload?.refundSignatureUrl || '').trim(),
+      depositRefundCompletedAt: String(payload?.depositRefundCompletedAt || '').trim(),
     };
   } catch {
     return {
@@ -171,6 +193,12 @@ const parseVehicleIssueResolutionNote = (value) => {
       refundDestination: '',
       vehicleAction: '',
       customerMessage: '',
+      rentalRefundSelected: false,
+      depositRefundSelected: false,
+      depositRefundAmount: 0,
+      refundSignedAt: '',
+      refundSignatureUrl: '',
+      depositRefundCompletedAt: '',
     };
   }
 };
@@ -1125,6 +1153,26 @@ const normalizeMoneyInputValue = (value) => {
 
   let integerPart = integerPartRaw.replace(/^0+(?=\d)/, '');
   if (integerPart === '') integerPart = '0';
+
+  if (normalized.startsWith('.')) {
+    return `0.${decimalPart}`;
+  }
+
+  return decimalPart ? `${integerPart}.${decimalPart}` : integerPart;
+};
+
+const normalizeDecimalInputValue = (value) => {
+  if (value === null || value === undefined) return '';
+
+  const normalized = String(value)
+    .replace(/,/g, '.')
+    .replace(/[^\d.]/g, '');
+
+  if (!normalized) return '';
+
+  const [integerPartRaw = '', ...decimalParts] = normalized.split('.');
+  const decimalPart = decimalParts.join('');
+  const integerPart = integerPartRaw.replace(/^0+(?=\d)/, '') || (normalized.startsWith('.') ? '0' : integerPartRaw || '0');
 
   if (normalized.startsWith('.')) {
     return `0.${decimalPart}`;
@@ -2135,7 +2183,7 @@ const DEFAULT_VEHICLE_REPORT_DRAFT = {
   affected_areas: [],
   customer_chargeable: false,
   customer_charge_amount: '',
-  send_to_maintenance: true,
+  send_to_maintenance: false,
 };
 
 const getReceiptPreviewMeta = (rentalLike = {}) => {
@@ -2274,6 +2322,10 @@ export default function RentalDetails() {
     if (rawView !== 'light' && rawView !== 'standard') return null;
     return normalizeRentalDetailsViewMode(rawView);
   }, [location.search]);
+  const maintenanceReturnMode = String(location.state?.maintenanceReturnMode || '').trim().toLowerCase();
+  const maintenanceReturnReportEnabled = Boolean(location.state?.maintenanceReturnReportEnabled);
+  const maintenanceReturnInspectionComplete = Boolean(location.state?.maintenanceReturnInspectionComplete);
+  const maintenanceReturnReport = location.state?.maintenanceReturnReport || null;
   const financeOverviewReturn = Boolean(location.state?.financeOverviewReturn);
   const financeOverviewLabel = String(location.state?.financeOverviewLabel || '');
   const rentalsReturnContext = useMemo(() => {
@@ -2296,6 +2348,7 @@ export default function RentalDetails() {
   const isFrench = isFrenchLocale();
   const startWorkflowStorageKey = id ? `rental_start_workflow_${id}` : null;
   const finishWorkflowStorageKey = id ? `rental_finish_workflow_${id}` : null;
+  const maintenanceReturnHandledRef = useRef(false);
   
   // 🔍 DEBUG: WhatsApp button click handler
   const [rental, setRental] = useState(null);
@@ -3579,13 +3632,16 @@ const openReplacementResumeWorkflow = useCallback(() => {
   const [cancelRentalReason, setCancelRentalReason] = useState('customer_cancelled');
   const [cancelRentalNote, setCancelRentalNote] = useState('');
   const [showVehicleIssueResolutionModal, setShowVehicleIssueResolutionModal] = useState(false);
+  const [showVehicleIssueRefundSignatureModal, setShowVehicleIssueRefundSignatureModal] = useState(false);
   const [vehicleIssueSubmitting, setVehicleIssueSubmitting] = useState(false);
   const [finishResolutionMode, setFinishResolutionMode] = useState('standard');
   const [vehicleIssueForm, setVehicleIssueForm] = useState({
     refundOutcome: 'full',
-    refundStatus: 'pending',
+    refundStatus: 'completed',
     refundAmount: '',
     refundDestination: 'original_payment_method',
+    refundRentalPayment: true,
+    refundDamageDeposit: false,
     vehicleAction: 'maintenance',
     internalNote: '',
     customerMessage: '',
@@ -3778,9 +3834,11 @@ const openReplacementResumeWorkflow = useCallback(() => {
 
     setVehicleIssueForm({
       refundOutcome: refundableAmount > 0 ? 'full' : 'none',
-      refundStatus: refundableAmount > 0 ? 'pending' : 'completed',
+      refundStatus: 'completed',
       refundAmount: refundableAmount > 0 ? String(refundableAmount) : '',
       refundDestination: 'original_payment_method',
+      refundRentalPayment: refundableAmount > 0,
+      refundDamageDeposit: Boolean((Number(rental?.damage_deposit || 0) || 0) > 0 && !rental?.deposit_returned_at),
       vehicleAction: 'maintenance',
       internalNote: '',
       customerMessage: tr(
@@ -5078,14 +5136,14 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
             setVehicleReport(hydratedReport);
             setRental(prev => prev ? ({ ...prev, vehicleReport: hydratedReport }) : prev);
             setVehicleReportDraft({
-              enabled: true,
+              enabled: false,
               report_type: hydratedReport.report_type || 'damage',
               severity: hydratedReport.severity || 'minor',
               description: hydratedReport.description || '',
               affected_areas: Array.isArray(hydratedReport.affected_areas) ? hydratedReport.affected_areas : [],
               customer_chargeable: Boolean(hydratedReport.customer_chargeable),
               customer_charge_amount: hydratedReport.customer_charge_amount ? String(hydratedReport.customer_charge_amount) : '',
-              send_to_maintenance: hydratedReport.send_to_maintenance !== false,
+              send_to_maintenance: false,
             });
           } else {
             setVehicleReport(null);
@@ -5149,6 +5207,7 @@ if (RENTAL_DEBUG) console.log('📅 DATE DEBUG AFTER LOAD:', {
   // ============================================
   const realtimeReloadTimerRef = useRef(null);
   const depositReturnSectionRef = useRef(null);
+  const billingReconciliationSignatureRef = useRef('');
 
   const broadcastRentalWorkflowUpdate = async (workflow, stepKey, extraPayload = {}) => {
     if (!rental?.id || !workflow || !stepKey) return;
@@ -7663,18 +7722,18 @@ Click the link above to review and approve the extension.`;
     const autoDepositReturnAmount = damageDepositHeld;
     const hasAutoDepositSeizure = false;
     const storedRemainingAmount = Math.max(0, parseFloat(rental?.remaining_amount || 0) || 0);
-    const hasManualAmountDueOverride = Boolean(amountDueAuditMeta);
-    const balanceDue = hasManualAmountDueOverride ? storedRemainingAmount : rawBalanceDue;
-    const explicitCompanyDiscountAmount = Math.max(0, Number(amountDueAuditMeta?.companyDiscount || 0) || 0);
-    const inferredCompanyDiscountAmount =
-      amountDueAuditMeta &&
-      explicitCompanyDiscountAmount <= 0 &&
-      storedRemainingAmount <= 0 &&
-      depositPaid > 0 &&
-      grandTotal - depositPaid > 0.009
-        ? Math.max(0, grandTotal - depositPaid)
-        : 0;
-    const companyDiscountAmount = Math.max(explicitCompanyDiscountAmount, inferredCompanyDiscountAmount);
+    const {
+      balanceDue,
+      hasManualAmountDueOverride,
+      explicitCompanyDiscountAmount,
+      inferredCompanyDiscountAmount,
+      companyDiscountAmount,
+    } = resolveAmountDueBalanceState({
+      amountDueMeta: amountDueAuditMeta,
+      rawBalanceDue,
+      storedRemainingAmount,
+      depositPaid,
+    });
     const balanceResolutionPreviousAmount = amountDueAuditMeta
       ? Math.max(
           0,
@@ -7753,6 +7812,17 @@ Click the link above to review and approve the extension.`;
       rental?.payment_status,
       rentalBillingSummary.balanceDue
     );
+
+    if (normalizedPaymentStatus === 'refunded') {
+      return {
+        status: 'refunded',
+        label: tr('REFUNDED', 'REMBOURSÉE'),
+        chipClass: 'bg-sky-100 text-sky-800',
+        coveredAmount,
+        isPaid: false,
+        isPartial: false,
+      };
+    }
 
     if (normalizedPaymentStatus === 'paid') {
       return {
@@ -8677,10 +8747,21 @@ const FuelChargeToggle = ({
     }
   };
 
-    // ✅ UPDATED: Handle deposit return signature with toggle support
-  const handleDepositSignatureSave = async (signatureUrl) => {
+  const persistDepositReturnSignature = useCallback(async (signatureUrl, options = {}) => {
+    const {
+      suppressToast = false,
+      suppressReload = false,
+      suppressTelegram = false,
+      suppressModalClose = false,
+    } = options;
+    const isDocumentDepositForReturn = Boolean(
+      rental?.damage_deposit_document_url ||
+      rental?.damage_deposit_document_name ||
+      String(rental?.damage_deposit_source || '').toLowerCase() === 'document'
+    ) && !(Math.max(0, Number(rental?.damage_deposit || 0)) > 0);
+
     try {
-      if (isDocumentDeposit) {
+      if (isDocumentDepositForReturn) {
         const updateData = {
           deposit_return_signature_url: signatureUrl,
           deposit_returned_at: new Date().toISOString(),
@@ -8698,11 +8779,17 @@ const FuelChargeToggle = ({
 
         if (error) throw error;
 
-        setShowDepositSignatureModal(false);
+        if (!suppressModalClose) {
+          setShowDepositSignatureModal(false);
+        }
         setDeductFromDeposit(false);
-        await loadRentalData(true);
-        toast.success('Security document returned and signed');
-        return;
+        if (!suppressReload) {
+          await loadRentalData(true);
+        }
+        if (!suppressToast) {
+          toast.success('Security document returned and signed');
+        }
+        return updateData;
       }
 
       const rentalGrandTotal = rentalBillingSummary.grandTotal;
@@ -8783,36 +8870,58 @@ const FuelChargeToggle = ({
 
       if (error) throw error;
 
-      void dispatchRentalLifecycleTelegramEvent({
-        eventType: 'deposit_returned',
-        actor: 'admin',
-        rental: {
-          id: rental.id,
-          reference: rental.rental_id || '',
-          vehicle: buildRentalTelegramVehicleLabel(rental),
-          customer: rental.customer_name,
-          start: rental.rental_start_date,
-          end: rental.rental_end_date,
-          total: rental.total_amount || 0,
-          remaining: updateData.remaining_amount ?? rental.remaining_amount ?? 0,
-          depositReturnedAmount: depositReturn,
-          depositDeductionAmount: deductionAmount,
-        },
-      });
-
-      setShowDepositSignatureModal(false);
-      setDeductFromDeposit(false);
-      await loadRentalData(true);
-      
-      if (deductionAmount > 0) {
-        toast.success(`Deposit applied — ${formatCurrency(deductionAmount)} MAD deducted, ${formatCurrency(depositReturn)} MAD returned`);
-      } else {
-        toast.success(`Full deposit returned: ${formatCurrency(depositReturn)} MAD`);
+      if (!suppressTelegram) {
+        void dispatchRentalLifecycleTelegramEvent({
+          eventType: 'deposit_returned',
+          actor: 'admin',
+          rental: {
+            id: rental.id,
+            reference: rental.rental_id || '',
+            vehicle: buildRentalTelegramVehicleLabel(rental),
+            customer: rental.customer_name,
+            start: rental.rental_start_date,
+            end: rental.rental_end_date,
+            total: rental.total_amount || 0,
+            remaining: updateData.remaining_amount ?? rental.remaining_amount ?? 0,
+            depositReturnedAmount: depositReturn,
+            depositDeductionAmount: deductionAmount,
+          },
+        });
       }
+
+      if (!suppressModalClose) {
+        setShowDepositSignatureModal(false);
+      }
+      setDeductFromDeposit(false);
+      if (!suppressReload) {
+        await loadRentalData(true);
+      }
+      
+      if (!suppressToast) {
+        if (deductionAmount > 0) {
+          toast.success(`Deposit applied — ${formatCurrency(deductionAmount)} MAD deducted, ${formatCurrency(depositReturn)} MAD returned`);
+        } else {
+          toast.success(`Full deposit returned: ${formatCurrency(depositReturn)} MAD`);
+        }
+      }
+      return updateData;
     } catch (err) {
       console.error('Error saving deposit signature:', err);
-      toast.error(`Failed to save deposit return: ${err.message}`);
+      if (!suppressToast) {
+        toast.error(`Failed to save deposit return: ${err.message}`);
+      }
+      throw err;
     }
+  }, [
+    deductFromDeposit,
+    loadRentalData,
+    rental,
+    rentalBillingSummary,
+  ]);
+
+    // ✅ UPDATED: Handle deposit return signature with toggle support
+  const handleDepositSignatureSave = async (signatureUrl) => {
+    await persistDepositReturnSignature(signatureUrl);
   };
 
   const handleEditDepositReturn = async () => {
@@ -9044,23 +9153,29 @@ const FuelChargeToggle = ({
       if (RENTAL_DEBUG) console.log('⛽ Fuel charge disabled - no charge applied');
     }
 
-    const { error } = await supabase
-      .from('app_4c3a7a6153_rentals')
-      .update({
-        end_fuel_level: fuelLevel,
-        fuel_charge: charge
-      })
-      .eq('id', id);
+    const currentFuelChargeAmount = Math.max(0, Number(rentalBillingSummary?.fuelChargeAmount || 0) || 0);
+    const currentGrandTotal = Math.max(0, Number(rentalBillingSummary?.grandTotal || 0) || 0);
+    const nextGrandTotal = Math.max(0, currentGrandTotal - currentFuelChargeAmount + charge);
+    const amountDueState = buildAmountDueStateForGrandTotalChange({
+      rentalLike: rental,
+      amountDueMeta: amountDueAuditMeta || getInlineAmountDueOverrideMeta(rental),
+      currentGrandTotal,
+      nextGrandTotal,
+    });
+
+    const { data: updatedRental, error } = await updateRentalWithSchemaFallback({
+      end_fuel_level: fuelLevel,
+      fuel_charge: charge,
+      remaining_amount: amountDueState.nextRemainingAmount,
+      payment_status: amountDueState.nextPaymentStatus,
+      updated_at: new Date().toISOString(),
+    });
 
     if (error) throw error;
 
     setEndFuelLevel(fuelLevel);
     setFuelCharge(charge);
-    setRental(prev => ({
-      ...prev,
-      end_fuel_level: fuelLevel,
-      fuel_charge: charge
-    }));
+    setRental(updatedRental);
 
     if (rental?.vehicle_id) {
       void (async () => {
@@ -9173,25 +9288,31 @@ const FuelChargeToggle = ({
   const handleEditFuelCharge = async (newCharge) => {
     try {
       if (RENTAL_DEBUG) console.log('💰 Updating fuel charge to:', newCharge);
+      const normalizedNewCharge = Math.max(0, Number(newCharge || 0) || 0);
+      const currentFuelChargeAmount = Math.max(0, Number(rentalBillingSummary?.fuelChargeAmount || 0) || 0);
+      const currentGrandTotal = Math.max(0, Number(rentalBillingSummary?.grandTotal || 0) || 0);
+      const nextGrandTotal = Math.max(0, currentGrandTotal - currentFuelChargeAmount + normalizedNewCharge);
+      const amountDueState = buildAmountDueStateForGrandTotalChange({
+        rentalLike: rental,
+        amountDueMeta: amountDueAuditMeta || getInlineAmountDueOverrideMeta(rental),
+        currentGrandTotal,
+        nextGrandTotal,
+      });
       
-      const { error } = await supabase
-        .from('app_4c3a7a6153_rentals')
-        .update({ 
-          fuel_charge: newCharge,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', rental.id);
+      const { data: updatedRental, error } = await updateRentalWithSchemaFallback({
+        fuel_charge: normalizedNewCharge,
+        remaining_amount: amountDueState.nextRemainingAmount,
+        payment_status: amountDueState.nextPaymentStatus,
+        updated_at: new Date().toISOString(),
+      });
 
       if (error) throw error;
 
       // Update local state
-      setFuelCharge(newCharge);
-      setRental(prev => ({
-        ...prev,
-        fuel_charge: newCharge
-      }));
+      setFuelCharge(normalizedNewCharge);
+      setRental(updatedRental);
 
-      toast.success(`Fuel charge updated to ${newCharge.toFixed(2)} MAD`);
+      toast.success(`Fuel charge updated to ${normalizedNewCharge.toFixed(2)} MAD`);
       
     } catch (err) {
       console.error('❌ Error updating fuel charge:', err);
@@ -9221,23 +9342,30 @@ const handleFuelChargeToggle = async (enabled) => {
         );
       }
     }
+
+    const currentFuelChargeAmount = Math.max(0, Number(rentalBillingSummary?.fuelChargeAmount || 0) || 0);
+    const currentGrandTotal = Math.max(0, Number(rentalBillingSummary?.grandTotal || 0) || 0);
+    const nextGrandTotal = Math.max(0, currentGrandTotal - currentFuelChargeAmount + newFuelCharge);
+    const amountDueState = buildAmountDueStateForGrandTotalChange({
+      rentalLike: rental,
+      amountDueMeta: amountDueAuditMeta || getInlineAmountDueOverrideMeta(rental),
+      currentGrandTotal,
+      nextGrandTotal,
+    });
     
-    const { error } = await supabase
-      .from('app_4c3a7a6153_rentals')
-      .update({ 
-        fuel_charge_enabled: enabled, // Save the enabled state
-        fuel_charge: newFuelCharge,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', rental.id);
+    const { data: updatedRental, error } = await updateRentalWithSchemaFallback({
+      fuel_charge_enabled: enabled,
+      fuel_charge: newFuelCharge,
+      remaining_amount: amountDueState.nextRemainingAmount,
+      payment_status: amountDueState.nextPaymentStatus,
+      updated_at: new Date().toISOString(),
+    });
 
     if (error) throw error;
     
     setFuelCharge(newFuelCharge);
+    setRental(updatedRental);
     toast.success(`Fuel charge ${enabled ? 'enabled' : 'disabled'}`);
-    
-    // Refresh rental data to get the updated values
-    await loadRentalData(true);
     
   } catch (err) {
     console.error('Error updating fuel charge:', err);
@@ -10891,6 +11019,58 @@ Ending odometer (${newEndOdometer} km) cannot be less than starting odometer (${
 
     window.localStorage.setItem(finishWorkflowStorageKey, JSON.stringify(payload));
   }, [finishWorkflowStorageKey, rental?.id, rental?.rental_status, finishRentalSteps, finishResolutionMode, vehicleReportDraft]);
+
+  useEffect(() => {
+    if (maintenanceReturnHandledRef.current) return;
+    if (maintenanceReturnMode !== 'vehicle_issue') return;
+    if (!rental?.id) return;
+    const workflowRental = normalizeRentalLifecycleStatus(rental, rentalTimingSettings);
+    if (!workflowRental || workflowRental.rental_status !== 'active') return;
+
+    maintenanceReturnHandledRef.current = true;
+
+    const nextDraft = {
+      ...vehicleReportDraft,
+      enabled: false,
+      send_to_maintenance: false,
+    };
+
+    if (maintenanceReturnReport && !vehicleReport?.id) {
+      setVehicleReport((prev) => prev || maintenanceReturnReport);
+      setRequiresClosingInspectionReview(false);
+    }
+
+    setVehicleReportDraft(nextDraft);
+    setFinishResolutionMode('vehicle_issue');
+
+    const baseSteps = buildFinishWorkflowState();
+    const nextSteps = {
+      ...baseSteps,
+      showWorkflow: true,
+      closingVideoComplete: maintenanceReturnInspectionComplete || baseSteps.closingVideoComplete,
+    };
+    setFinishRentalSteps(nextSteps);
+
+    persistFinishWorkflowState(nextDraft, {
+      resolutionMode: 'vehicle_issue',
+    });
+
+    if (!finishRentalSteps.showWorkflow) {
+      setFinishWorkflowTakeover(true);
+    }
+  }, [
+    buildFinishWorkflowState,
+    finishRentalSteps.showWorkflow,
+    maintenanceReturnInspectionComplete,
+    maintenanceReturnMode,
+    maintenanceReturnReportEnabled,
+    maintenanceReturnReport,
+    persistFinishWorkflowState,
+    rental,
+    rentalTimingSettings,
+    vehicleReport?.id,
+    vehicleReportDraft,
+  ]);
   // ✅ OPTIMIZED: Single ref-based timer to avoid full re-renders every second.
   // Instead of a `currentTime` state (which triggered 3 state updates/sec),
   // we use one setInterval that directly computes & sets display strings.
@@ -12705,13 +12885,60 @@ useEffect(() => {
 
   const openVehicleIssueFinishWorkflow = useCallback(async () => {
     initializeVehicleIssueResolutionForm();
+    const nextDraft = {
+      ...vehicleReportDraft,
+      enabled: false,
+      send_to_maintenance: false,
+    };
+    setVehicleReportDraft(nextDraft);
     setFinishResolutionMode('vehicle_issue');
     if (!finishRentalSteps.showWorkflow) {
       await openFinishWorkflow('vehicle_issue');
+    } else {
+      persistFinishWorkflowState(nextDraft, {
+        resolutionMode: 'vehicle_issue',
+      });
     }
-  }, [finishRentalSteps.showWorkflow, initializeVehicleIssueResolutionForm, openFinishWorkflow]);
+    if (!finishRentalSteps.showWorkflow) {
+      persistFinishWorkflowState(nextDraft, {
+        resolutionMode: 'vehicle_issue',
+      });
+    }
+  }, [finishRentalSteps.showWorkflow, initializeVehicleIssueResolutionForm, openFinishWorkflow, persistFinishWorkflowState, vehicleReportDraft]);
 
-  const resolveVehicleIssueCancellation = useCallback(async () => {
+  const shouldRefundVehicleIssueRentalPayment =
+    vehicleIssueForm.refundOutcome !== 'none' && Boolean(vehicleIssueForm.refundRentalPayment);
+  const shouldRefundVehicleIssueDeposit =
+    Boolean(vehicleIssueForm.refundDamageDeposit) &&
+    (Number(rental?.damage_deposit || 0) || 0) > 0 &&
+    !rental?.deposit_returned_at;
+  const getVehicleIssueRefundSignatureDescription = () => {
+    const lines = [];
+    const refundAmount = Math.max(0, Number(vehicleIssueForm.refundAmount || 0) || 0);
+    const depositCalc = calculateDepositReturn();
+    const hasHeldSecurityDocumentForRefund = Boolean(
+      rental?.damage_deposit_document_url ||
+      rental?.damage_deposit_document_name ||
+      String(rental?.damage_deposit_source || '').toLowerCase() === 'document'
+    );
+    const hasMonetaryDamageDepositForRefund = Math.max(0, Number(rental?.damage_deposit || 0)) > 0;
+    const isDocumentDepositForRefund = hasHeldSecurityDocumentForRefund && !hasMonetaryDamageDepositForRefund;
+    if (shouldRefundVehicleIssueRentalPayment && refundAmount > 0) {
+      lines.push(
+        `I confirm receipt of ${refundAmount.toFixed(2)} MAD as the rental refund via ${String(vehicleIssueForm.refundDestination || 'original payment method').replaceAll('_', ' ')}.`
+      );
+    }
+    if (shouldRefundVehicleIssueDeposit) {
+      lines.push(
+        isDocumentDepositForRefund
+          ? 'I confirm receipt of my security document.'
+          : `I confirm receipt of ${depositCalc.depositReturn.toFixed(2)} MAD as the damage deposit refund.`
+      );
+    }
+    return lines.join('\n\n');
+  };
+
+  const finalizeVehicleIssueCancellation = useCallback(async (signatureUrl = '') => {
     if (!rental?.id) return;
 
     const actingUser = resolvedCurrentUser || currentUser || userProfile || user;
@@ -12724,49 +12951,78 @@ useEffect(() => {
     const cancelledAt = new Date().toISOString();
     const paidAmount = Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0);
     const refundOutcome = String(vehicleIssueForm.refundOutcome || '').trim().toLowerCase();
-    const refundStatus = String(vehicleIssueForm.refundStatus || '').trim().toLowerCase();
+    const baseRefundStatus = String(vehicleIssueForm.refundStatus || '').trim().toLowerCase();
     const refundDestination = String(vehicleIssueForm.refundDestination || '').trim().toLowerCase();
     const vehicleAction = String(vehicleIssueForm.vehicleAction || '').trim().toLowerCase();
     const internalNote = String(vehicleIssueForm.internalNote || '').trim();
     const customerMessage = String(vehicleIssueForm.customerMessage || '').trim();
     const requestedRefundAmount = Math.max(0, Number(vehicleIssueForm.refundAmount || 0) || 0);
     const refundAmount = refundOutcome === 'none' ? 0 : Math.min(requestedRefundAmount, paidAmount);
+    const rentalRefundSelected = refundOutcome !== 'none' && Boolean(vehicleIssueForm.refundRentalPayment);
+    const depositRefundSelected = Boolean(vehicleIssueForm.refundDamageDeposit) && (Number(rental?.damage_deposit || 0) || 0) > 0 && !rental?.deposit_returned_at;
+    const refundStatus = refundOutcome === 'none'
+      ? 'completed'
+      : (rentalRefundSelected ? 'completed' : baseRefundStatus || 'pending');
 
-    if (!internalNote) {
-      toast.error(tr('Add a short internal note before resolving this cancellation.', "Ajoutez une courte note interne avant de résoudre cette annulation."));
-      return;
-    }
+    let depositReturnUpdate = null;
 
-    if (refundOutcome !== 'none' && refundAmount <= 0) {
-      toast.error(tr('Enter the refund amount to continue.', 'Saisissez le montant du remboursement pour continuer.'));
-      return;
-    }
+    const updatePayload = {
+      rental_status: 'cancelled',
+      status: 'cancelled',
+      cancelled_at: cancelledAt,
+      cancelled_by: actingUser?.id || null,
+      cancellation_reason: 'vehicle_issue',
+      status_changed_at: cancelledAt,
+      status_changed_by: actorName,
+      updated_at: cancelledAt,
+      remaining_amount: 0,
+      payment_status: refundOutcome === 'full' && refundStatus === 'completed'
+        ? 'refunded'
+        : rental?.payment_status,
+    };
 
-    setVehicleIssueSubmitting(true);
     try {
-      const updatePayload = {
-        rental_status: 'cancelled',
-        status: 'cancelled',
-        cancelled_at: cancelledAt,
-        cancelled_by: actingUser?.id || null,
-        cancellation_reason: 'vehicle_issue',
-        status_changed_at: cancelledAt,
-        status_changed_by: actorName,
-        status_change_reason: buildVehicleIssueResolutionNote({
-          refundOutcome,
-          refundAmount,
-          refundStatus: refundOutcome === 'none' ? 'completed' : refundStatus,
-          refundDestination,
-          vehicleAction,
-          internalNote,
-          customerMessage,
-        }),
-        updated_at: cancelledAt,
-        remaining_amount: 0,
-        payment_status: refundOutcome === 'full' && refundStatus === 'completed'
-          ? 'refunded'
-          : rental?.payment_status,
-      };
+      if (depositRefundSelected && signatureUrl) {
+        depositReturnUpdate = await persistDepositReturnSignature(signatureUrl, {
+          suppressToast: true,
+          suppressReload: true,
+          suppressTelegram: true,
+          suppressModalClose: true,
+        });
+        Object.assign(updatePayload, {
+          deposit_return_signature_url: depositReturnUpdate.deposit_return_signature_url,
+          deposit_returned_at: depositReturnUpdate.deposit_returned_at,
+          deposit_return_amount: depositReturnUpdate.deposit_return_amount,
+          deposit_deduction_amount: depositReturnUpdate.deposit_deduction_amount,
+          deposit_deduction_reason: depositReturnUpdate.deposit_deduction_reason,
+          final_deposit_return_amount: depositReturnUpdate.final_deposit_return_amount,
+        });
+        if (depositReturnUpdate.remaining_amount !== undefined) {
+          updatePayload.remaining_amount = depositReturnUpdate.remaining_amount;
+        }
+        if (depositReturnUpdate.payment_status) {
+          updatePayload.payment_status = depositReturnUpdate.payment_status;
+        }
+        if (depositReturnUpdate.deposit_amount !== undefined) {
+          updatePayload.deposit_amount = depositReturnUpdate.deposit_amount;
+        }
+      }
+
+      updatePayload.status_change_reason = buildVehicleIssueResolutionNote({
+        refundOutcome,
+        refundAmount,
+        refundStatus,
+        refundDestination,
+        vehicleAction,
+        internalNote,
+        customerMessage,
+        rentalRefundSelected,
+        depositRefundSelected,
+        depositRefundAmount: depositReturnUpdate?.deposit_return_amount || 0,
+        refundSignedAt: signatureUrl ? cancelledAt : '',
+        refundSignatureUrl: signatureUrl || '',
+        depositRefundCompletedAt: depositReturnUpdate?.deposit_returned_at || '',
+      });
 
       const { error } = await supabase
         .from('app_4c3a7a6153_rentals')
@@ -12804,8 +13060,12 @@ useEffect(() => {
             cancellation_reason: 'vehicle_issue',
             refund_outcome: refundOutcome,
             refund_amount: refundAmount,
-            refund_status: refundOutcome === 'none' ? 'completed' : refundStatus,
+            refund_status: refundStatus,
             refund_destination: refundDestination,
+            rental_refund_selected: rentalRefundSelected,
+            deposit_refund_selected: depositRefundSelected,
+            deposit_refund_amount: depositReturnUpdate?.deposit_return_amount || 0,
+            refund_signature_url: signatureUrl || null,
             vehicle_action: vehicleAction,
             internal_note: internalNote,
             customer_message: customerMessage || null,
@@ -12826,25 +13086,53 @@ useEffect(() => {
           start: rental.rental_start_date,
           end: rental.rental_end_date,
           total: rental.total_amount || 0,
+          refundAmount: rentalRefundSelected ? refundAmount : 0,
+          refundDestination,
+          refundStatus,
+          depositReturnedAmount: depositReturnUpdate?.deposit_return_amount || 0,
+          depositDeductionAmount: depositReturnUpdate?.deposit_deduction_amount || 0,
           cancellationReason: `${tr('Vehicle issue', 'Problème véhicule')} — ${internalNote}`,
         },
       });
 
+      if (depositRefundSelected && depositReturnUpdate) {
+        void dispatchRentalLifecycleTelegramEvent({
+          eventType: 'deposit_returned',
+          actor: 'admin',
+          rental: {
+            id: rental.id,
+            reference: rental.rental_id || '',
+            vehicle: buildRentalTelegramVehicleLabel(rental),
+            customer: rental.customer_name,
+            start: rental.rental_start_date,
+            end: rental.rental_end_date,
+            total: rental.total_amount || 0,
+            remaining: updatePayload.remaining_amount ?? rental.remaining_amount ?? 0,
+            depositReturnedAmount: depositReturnUpdate.deposit_return_amount,
+            depositDeductionAmount: depositReturnUpdate.deposit_deduction_amount,
+          },
+        });
+      }
+
+      setShowVehicleIssueRefundSignatureModal(false);
       setShowVehicleIssueResolutionModal(false);
       setFinishResolutionMode('standard');
       setRental((prev) => prev ? ({ ...prev, ...updatePayload }) : prev);
       await loadRentalData(true);
-      toast.success(tr('Vehicle issue cancellation saved.', 'Annulation pour problème véhicule enregistrée.'));
+      toast.success(
+        depositRefundSelected
+          ? tr('Vehicle issue cancellation, refund, and deposit return saved.', 'Annulation, remboursement et restitution de caution enregistrés.')
+          : tr('Vehicle issue cancellation saved.', 'Annulation pour problème véhicule enregistrée.')
+      );
     } catch (error) {
       console.error('❌ Error resolving vehicle issue cancellation:', error);
       toast.error(tr('Failed to save the vehicle issue cancellation.', "Impossible d'enregistrer l'annulation pour problème véhicule."));
-    } finally {
-      setVehicleIssueSubmitting(false);
+      throw error;
     }
   }, [
     currentUser,
-    currentUserRole,
     loadRentalData,
+    persistDepositReturnSignature,
     rental,
     resolvedCurrentUser,
     tr,
@@ -12852,6 +13140,127 @@ useEffect(() => {
     userProfile,
     vehicleIssueForm,
   ]);
+
+  const resolveVehicleIssueCancellation = useCallback(async () => {
+    if (!rental?.id) return;
+
+    const actingUser = resolvedCurrentUser || currentUser || userProfile || user;
+    const actorName =
+      actingUser?.full_name ||
+      actingUser?.name ||
+      actingUser?.email ||
+      user?.email ||
+      'Staff';
+    const cancelledAt = new Date().toISOString();
+    const paidAmount = Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0);
+    const refundOutcome = String(vehicleIssueForm.refundOutcome || '').trim().toLowerCase();
+    const internalNote = String(vehicleIssueForm.internalNote || '').trim();
+    const requestedRefundAmount = Math.max(0, Number(vehicleIssueForm.refundAmount || 0) || 0);
+    const refundAmount = refundOutcome === 'none' ? 0 : Math.min(requestedRefundAmount, paidAmount);
+    const needsCustomerRefundSignature =
+      (refundOutcome !== 'none' && Boolean(vehicleIssueForm.refundRentalPayment)) ||
+      (Boolean(vehicleIssueForm.refundDamageDeposit) && (Number(rental?.damage_deposit || 0) || 0) > 0 && !rental?.deposit_returned_at);
+
+    if (!internalNote) {
+      toast.error(tr('Add a short internal note before resolving this cancellation.', "Ajoutez une courte note interne avant de résoudre cette annulation."));
+      return;
+    }
+
+    if (refundOutcome !== 'none' && refundAmount <= 0) {
+      toast.error(tr('Enter the refund amount to continue.', 'Saisissez le montant du remboursement pour continuer.'));
+      return;
+    }
+
+    if (needsCustomerRefundSignature) {
+      setShowVehicleIssueRefundSignatureModal(true);
+      return;
+    }
+
+    setVehicleIssueSubmitting(true);
+    try {
+      await finalizeVehicleIssueCancellation('');
+    } catch {}
+    finally {
+      setVehicleIssueSubmitting(false);
+    }
+  }, [
+    finalizeVehicleIssueCancellation,
+    rental,
+    tr,
+    vehicleIssueForm,
+  ]);
+
+  const vehicleIssueDepositRefundAvailable =
+    (Number(rental?.damage_deposit || 0) || 0) > 0 && !rental?.deposit_returned_at;
+  const vehicleIssueResolutionNeedsSignature =
+    (vehicleIssueForm.refundOutcome !== 'none' && Boolean(vehicleIssueForm.refundRentalPayment)) ||
+    (Boolean(vehicleIssueForm.refundDamageDeposit) && vehicleIssueDepositRefundAvailable);
+  const vehicleIssueConfirmButtonLabel = vehicleIssueResolutionNeedsSignature
+    ? tr('Continue to refund signature', 'Continuer vers la signature de remboursement')
+    : tr('Confirm resolution', 'Confirmer la résolution');
+  const renderVehicleIssueRefundSelection = () => (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-semibold text-slate-900">{tr('Refund now', 'Rembourser maintenant')}</p>
+        <p className="text-xs text-slate-500">
+          {tr(
+            'Choose what the customer is receiving in this signature step. Staff can leave any item unchecked if it stays pending.',
+            'Choisissez ce que le client reçoit dans cette étape de signature. Le personnel peut laisser un élément décoché s’il reste en attente.'
+          )}
+        </p>
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <button
+          type="button"
+          disabled={vehicleIssueForm.refundOutcome === 'none'}
+          onClick={() => setVehicleIssueForm((prev) => ({
+            ...prev,
+            refundRentalPayment: prev.refundOutcome === 'none' ? false : !prev.refundRentalPayment,
+          }))}
+          className={`rounded-2xl border px-4 py-3 text-left transition ${
+            vehicleIssueForm.refundOutcome === 'none'
+              ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+              : vehicleIssueForm.refundRentalPayment
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-900 shadow-[0_12px_30px_rgba(16,185,129,0.10)]'
+                : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-200 hover:bg-emerald-50/40'
+          }`}
+          aria-pressed={vehicleIssueForm.refundRentalPayment}
+        >
+          <p className="text-sm font-semibold">{tr('Rental payment refund', 'Remboursement location')}</p>
+          <p className="mt-1 text-xs opacity-80">
+            {vehicleIssueForm.refundOutcome === 'none'
+              ? tr('No rental refund selected above.', 'Aucun remboursement de location sélectionné ci-dessus.')
+              : `${formatCurrency(Math.max(0, Number(vehicleIssueForm.refundAmount || 0) || 0))} MAD`}
+          </p>
+        </button>
+
+        <button
+          type="button"
+          disabled={!vehicleIssueDepositRefundAvailable}
+          onClick={() => setVehicleIssueForm((prev) => ({
+            ...prev,
+            refundDamageDeposit: vehicleIssueDepositRefundAvailable ? !prev.refundDamageDeposit : false,
+          }))}
+          className={`rounded-2xl border px-4 py-3 text-left transition ${
+            !vehicleIssueDepositRefundAvailable
+              ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+              : vehicleIssueForm.refundDamageDeposit
+                ? 'border-violet-300 bg-violet-50 text-violet-900 shadow-[0_12px_30px_rgba(124,58,237,0.10)]'
+                : 'border-slate-200 bg-white text-slate-700 hover:border-violet-200 hover:bg-violet-50/40'
+          }`}
+          aria-pressed={vehicleIssueForm.refundDamageDeposit}
+        >
+          <p className="text-sm font-semibold">{tr('Damage deposit return', 'Restitution de caution')}</p>
+          <p className="mt-1 text-xs opacity-80">
+            {vehicleIssueDepositRefundAvailable
+              ? `${formatCurrency(calculateDepositReturn().depositReturn || 0)} MAD`
+              : tr('Already returned or not collected.', 'Déjà restituée ou non encaissée.')}
+          </p>
+        </button>
+      </div>
+    </div>
+  );
 
   const cancelRental = async (options = {}) => {
     const scheduledReasonValue = String(options.reason || '').trim().toLowerCase();
@@ -13272,6 +13681,67 @@ useEffect(() => {
       nextPayload = rest;
     }
   };
+
+  useEffect(() => {
+    if (!rental?.id) return;
+
+    const normalizedRentalStatus = String(rental?.rental_status || rental?.status || '').toLowerCase();
+    const shouldReconcilePersistedBalance =
+      normalizedRentalStatus === 'completed' ||
+      normalizedRentalStatus === 'cancelled';
+
+    if (!shouldReconcilePersistedBalance) {
+      billingReconciliationSignatureRef.current = '';
+      return;
+    }
+
+    const computedRemainingAmount = Math.max(0, Number(rentalBillingSummary?.balanceDue || 0) || 0);
+    const persistedRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
+    const computedPaymentStatus = normalizePaymentStatus(rental?.payment_status, computedRemainingAmount);
+    const persistedPaymentStatus = normalizePaymentStatus(rental?.payment_status, persistedRemainingAmount);
+    const hasBalanceDrift = Math.abs(computedRemainingAmount - persistedRemainingAmount) > 0.009;
+    const hasPaymentStatusDrift = computedPaymentStatus !== persistedPaymentStatus;
+
+    if (!hasBalanceDrift && !hasPaymentStatusDrift) {
+      billingReconciliationSignatureRef.current = '';
+      return;
+    }
+
+    const reconciliationSignature = [
+      rental.id,
+      normalizedRentalStatus,
+      computedRemainingAmount.toFixed(2),
+      computedPaymentStatus,
+      persistedRemainingAmount.toFixed(2),
+      persistedPaymentStatus,
+    ].join(':');
+
+    if (billingReconciliationSignatureRef.current === reconciliationSignature) {
+      return;
+    }
+
+    billingReconciliationSignatureRef.current = reconciliationSignature;
+
+    void (async () => {
+      try {
+        const { data, error } = await updateRentalWithSchemaFallback({
+          remaining_amount: computedRemainingAmount,
+          payment_status: computedPaymentStatus,
+          updated_at: new Date().toISOString(),
+        });
+
+        if (error) throw error;
+
+        setRental((prev) => prev ? {
+          ...prev,
+          ...data,
+        } : data);
+      } catch (reconciliationError) {
+        console.error('❌ Error reconciling persisted rental balance:', reconciliationError);
+        billingReconciliationSignatureRef.current = '';
+      }
+    })();
+  }, [rental?.id, rental?.payment_status, rental?.remaining_amount, rental?.rental_status, rental?.status, rentalBillingSummary?.balanceDue]);
 
   const handleImpoundReceiptUpload = async (file) => {
     if (!file || !rental?.id) return;
@@ -16680,22 +17150,6 @@ useEffect(() => {
             ? (isStartingRental ? tr('Resuming...', 'Reprise...') : tr('Resume rental', 'Reprendre la location'))
             : tr('End now', 'Terminer maintenant')}
         </button>
-        {!effectiveReplacementPauseStartedAt && (
-          <button
-            type="button"
-            onClick={() => { void openVehicleIssueFinishWorkflow(); }}
-            disabled={hasUnresolvedTowingHold}
-            title={hasUnresolvedTowingHold ? towingHoldLockTitle : undefined}
-            className={`mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border px-5 py-3 text-sm font-semibold transition ${
-              hasUnresolvedTowingHold
-                ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
-                : 'border-amber-200 bg-amber-50 text-amber-800 shadow-sm hover:bg-amber-100'
-            }`}
-          >
-            <Wrench className="h-4 w-4" />
-            {tr('Return With Vehicle Issue', 'Retour avec problème véhicule')}
-          </button>
-        )}
       </div>
     </div>
   );
@@ -16727,7 +17181,20 @@ useEffect(() => {
       },
     ];
 
-    const inspectionNeedsAdvancedView = reportRequired || reportSaved || reportHasUnsavedChanges || reportWorkflowLocked;
+    const inspectionNeedsAdvancedView = false;
+    const closingEvidenceCount = closingMedia.length;
+    const selectedAffectedAreaLabels = (vehicleReportDraft.affected_areas || []).map((areaId) => (
+      VEHICLE_REPORT_AREAS.find((item) => item.id === areaId)?.label || areaId
+    ));
+    const reportSaveBlockers = [];
+    if (vehicleReportDraft.enabled) {
+      if (!hasClosingInspectionMedia) {
+        reportSaveBlockers.push(tr('Add return media first', "Ajoutez d'abord les médias de retour"));
+      }
+      if (reportNeedsAffectedAreas && !hasAffectedAreas) {
+        reportSaveBlockers.push(tr('Select an affected area', 'Sélectionnez une zone concernée'));
+      }
+    }
     const finishChecklistRows = [
       {
         key: 'inspection',
@@ -16742,7 +17209,7 @@ useEffect(() => {
         icon: Camera,
         actionLabel: inspectionNeedsAdvancedView
           ? tr('Open advanced view', 'Ouvrir la vue avancée')
-          : tr('Open inspection', "Ouvrir l'inspection"),
+          : tr('Add media', 'Ajouter des médias'),
         onAction: () => {
           if (inspectionNeedsAdvancedView) {
             handleSwitchRentalDetailsView('standard');
@@ -16750,6 +17217,289 @@ useEffect(() => {
           }
           handleOpenClosingModal();
         },
+        extraNode: isVehicleIssueFinishFlow ? (
+          <div className="mt-3 space-y-3 rounded-[18px] border border-amber-200 bg-white/90 p-3 shadow-sm">
+            <div className="flex items-center justify-between gap-3 rounded-[16px] border border-amber-200 bg-amber-50/70 px-3 py-3">
+              <span className="text-sm font-semibold text-slate-900">
+                {tr('Report', 'Rapport')}
+              </span>
+              <button
+                type="button"
+                onClick={() => setVehicleReportDraft((prev) => ({
+                  ...prev,
+                  enabled: !prev.send_to_maintenance,
+                  send_to_maintenance: !prev.send_to_maintenance,
+                }))}
+                className="inline-flex items-center"
+                aria-pressed={vehicleReportDraft.send_to_maintenance}
+              >
+                <span
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                    vehicleReportDraft.send_to_maintenance ? 'bg-amber-500' : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                      vehicleReportDraft.send_to_maintenance ? 'translate-x-5' : 'translate-x-1'
+                    }`}
+                  />
+                </span>
+              </button>
+            </div>
+
+            {vehicleReportDraft.send_to_maintenance ? (
+              <div className="rounded-[18px] border border-amber-200 bg-white/95 p-3 shadow-sm">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs font-semibold text-slate-900">
+                    {tr('Inspection report', "Rapport d'inspection")}
+                  </p>
+                  <span className={`inline-flex items-center self-start rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                    reportSaved && !reportHasUnsavedChanges
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-amber-100 text-amber-700'
+                  }`}>
+                    {reportSaved && !reportHasUnsavedChanges
+                      ? tr('Saved', 'Enregistré')
+                      : tr('Pending save', 'En attente')}
+                  </span>
+                </div>
+
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                  <Button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await persistVehicleReport();
+                        await loadRentalData(true);
+                      } catch (err) {
+                        toast.error(err.message || 'Failed to save vehicle report');
+                      }
+                    }}
+                    disabled={!canSaveVehicleReport || isFinishWorkflowSoftLocked}
+                    title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
+                    size="sm"
+                    className="rounded-full bg-gray-900 text-xs text-white hover:bg-gray-800 disabled:bg-gray-300 disabled:text-gray-500"
+                  >
+                    <FileText className="mr-1.5 h-3.5 w-3.5" />
+                    {savingVehicleReport
+                      ? tr('Saving Report...', 'Enregistrement du rapport...')
+                      : reportSaved
+                        ? tr('Update Report', 'Mettre à jour le rapport')
+                        : tr('Save Report to Continue', 'Enregistrer le rapport pour continuer')}
+                  </Button>
+
+                  {vehicleReport?.maintenance_id ? (
+                    <Button
+                      type="button"
+                      onClick={() => navigate(`/admin/maintenance/${vehicleReport.maintenance_id}`, { state: { from: 'rental' } })}
+                      size="sm"
+                      className="rounded-full bg-orange-600 text-xs text-white hover:bg-orange-700"
+                    >
+                      <Wrench className="mr-1.5 h-3.5 w-3.5" />
+                      {tr('Open in Quad Maintenance', 'Ouvrir dans la maintenance quad')}
+                    </Button>
+                  ) : null}
+                </div>
+
+                {reportSaveBlockers.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {reportSaveBlockers.map((blocker) => (
+                      <span
+                        key={blocker}
+                        className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700"
+                      >
+                        {blocker}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="mt-3 space-y-4">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-gray-700">{tr('Report Type', 'Type de rapport')}</label>
+                          <div className="grid grid-cols-3 gap-2">
+                            {[
+                              { value: 'damage', label: tr('Damage', 'Dommage') },
+                              { value: 'accident', label: tr('Accident', 'Accident') },
+                              { value: 'mechanical_issue', label: tr('Mechanical', 'Mécanique') },
+                            ].map((option) => (
+                              <button
+                                key={option.value}
+                                type="button"
+                                onClick={() => setVehicleReportDraft((prev) => ({ ...prev, report_type: option.value }))}
+                                className={`rounded-xl border px-2 py-2 text-xs font-medium transition-colors ${
+                                  vehicleReportDraft.report_type === option.value
+                                    ? 'border-blue-600 bg-blue-50 text-blue-700'
+                                    : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-gray-700">{tr('Severity', 'Gravité')}</label>
+                          <div className="grid grid-cols-3 gap-2">
+                            {[
+                              { value: 'minor', label: tr('Minor', 'Mineur') },
+                              { value: 'moderate', label: tr('Moderate', 'Modéré') },
+                              { value: 'major', label: tr('Major', 'Majeur') },
+                            ].map((option) => (
+                              <button
+                                key={option.value}
+                                type="button"
+                                onClick={() => setVehicleReportDraft((prev) => ({ ...prev, severity: option.value }))}
+                                className={`rounded-xl border px-2 py-2 text-xs font-medium transition-colors ${
+                                  vehicleReportDraft.severity === option.value
+                                    ? 'border-red-500 bg-red-50 text-red-700'
+                                    : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-700">{tr('Description', 'Description')}</label>
+                        <textarea
+                          value={vehicleReportDraft.description}
+                          onChange={(e) => setVehicleReportDraft((prev) => ({ ...prev, description: e.target.value }))}
+                          rows={3}
+                          placeholder={tr('Describe the issue found during return inspection...', "Décrivez le problème trouvé pendant l'inspection de retour...")}
+                          className="w-full resize-none rounded-xl border border-gray-300 px-3 py-2 text-sm"
+                        />
+                      </div>
+
+                      <div className="rounded-[20px] border border-gray-200 bg-gray-50 p-3">
+                        <label className="mb-2 block text-xs font-medium text-gray-700">{tr('Affected Areas', 'Zones concernées')}</label>
+                        <div className="relative mx-auto h-64 max-w-[220px]">
+                          <div className="absolute inset-x-8 bottom-6 top-6 rounded-[2rem] border-2 border-gray-300 bg-white shadow-sm">
+                            <div className="absolute inset-x-10 top-4 h-8 rounded-full border border-gray-200 bg-gray-100" />
+                            <div className="absolute inset-x-12 top-16 h-10 rounded-xl border border-gray-200 bg-gray-50" />
+                            <div className="absolute inset-x-10 bottom-4 h-8 rounded-full border border-gray-200 bg-gray-100" />
+                            <div className="absolute inset-x-8 top-[40%] h-10 -translate-y-1/2 rounded-xl border border-dashed border-gray-200 bg-gray-50" />
+                          </div>
+
+                          {VEHICLE_REPORT_AREAS.map((area) => {
+                            const selected = (vehicleReportDraft.affected_areas || []).includes(area.id);
+                            return (
+                              <button
+                                key={area.id}
+                                type="button"
+                                onClick={() => toggleAffectedArea(area.id)}
+                                className={`absolute ${area.position} rounded-full border px-2.5 py-1 text-[10px] font-medium shadow-sm transition-colors ${
+                                  selected
+                                    ? 'border-red-500 bg-red-500 text-white'
+                                    : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-100'
+                                }`}
+                              >
+                                {area.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {selectedAffectedAreaLabels.length > 0 ? (
+                            selectedAffectedAreaLabels.map((areaLabel) => (
+                              <span
+                                key={areaLabel}
+                                className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-1 text-[11px] font-medium text-red-700"
+                              >
+                                {areaLabel}
+                              </span>
+                            ))
+                          ) : (
+                            <p className="text-[11px] text-gray-500">
+                              {tr('Tap the vehicle map to mark the affected area.', 'Touchez le schéma du véhicule pour marquer la zone concernée.')}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <label className="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-3 text-xs text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={vehicleReportDraft.customer_chargeable}
+                          onChange={(e) => setVehicleReportDraft((prev) => ({ ...prev, customer_chargeable: e.target.checked }))}
+                        />
+                        {tr('Customer should be charged', 'Le client doit être facturé')}
+                      </label>
+
+                      {vehicleReportDraft.customer_chargeable ? (
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
+                            {tr('Estimated Customer Charge (MAD)', 'Montant estimé à facturer au client (MAD)')}
+                          </label>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={vehicleReportDraft.customer_charge_amount}
+                            onChange={(e) => setVehicleReportDraft((prev) => ({ ...prev, customer_charge_amount: normalizeMoneyInputValue(e.target.value) }))}
+                            className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
+                          />
+                        </div>
+                      ) : null}
+
+                      {!hasClosingInspectionMedia ? (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                          {tr('Upload the closing inspection photos or videos first, then save the report.', "Téléversez d'abord les photos ou vidéos de l'inspection de retour, puis enregistrez le rapport.")}
+                        </div>
+                      ) : null}
+
+                      {hasClosingInspectionMedia && reportNeedsAffectedAreas && !hasAffectedAreas ? (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                          {tr('Tap the vehicle map to mark the affected area before saving the report.', "Touchez le schéma du véhicule pour marquer la zone concernée avant d'enregistrer le rapport.")}
+                        </div>
+                      ) : null}
+
+                      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                        <Button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await persistVehicleReport();
+                              await loadRentalData(true);
+                            } catch (err) {
+                              toast.error(err.message || 'Failed to save vehicle report');
+                            }
+                          }}
+                          disabled={!canSaveVehicleReport || isFinishWorkflowSoftLocked}
+                          title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
+                          size="sm"
+                          className="rounded-full bg-gray-900 text-xs text-white hover:bg-gray-800 disabled:bg-gray-300 disabled:text-gray-500"
+                        >
+                          <FileText className="mr-1.5 h-3.5 w-3.5" />
+                          {savingVehicleReport
+                            ? tr('Saving Report...', 'Enregistrement du rapport...')
+                            : reportSaved
+                              ? tr('Update Report', 'Mettre à jour le rapport')
+                              : tr('Save Report to Continue', 'Enregistrer le rapport pour continuer')}
+                        </Button>
+
+                        {vehicleReport?.maintenance_id ? (
+                          <Button
+                            type="button"
+                            onClick={() => navigate(`/admin/maintenance/${vehicleReport.maintenance_id}`, { state: { from: 'rental' } })}
+                            size="sm"
+                            className="rounded-full bg-orange-600 text-xs text-white hover:bg-orange-700"
+                          >
+                            <Wrench className="mr-1.5 h-3.5 w-3.5" />
+                            {tr('Open in Quad Maintenance', 'Ouvrir dans la maintenance quad')}
+                          </Button>
+                        ) : null}
+                      </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null,
       },
       {
         key: 'odometer',
@@ -16872,6 +17622,41 @@ useEffect(() => {
             </div>
           </div>
 
+          <div className="mt-4 flex justify-start">
+            {isVehicleIssueFinishFlow ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setFinishResolutionMode('standard');
+                  setVehicleReportDraft((prev) => ({
+                    ...prev,
+                    enabled: false,
+                    send_to_maintenance: false,
+                  }));
+                }}
+                className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-white px-3 py-2 text-xs font-semibold text-amber-800 shadow-sm hover:bg-amber-100"
+              >
+                <CheckCircle className="h-3.5 w-3.5" />
+                {tr('Back to normal return', 'Retour au retour normal')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { void openVehicleIssueFinishWorkflow(); }}
+                disabled={isFinishWorkflowSoftLocked}
+                title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold shadow-sm ${
+                  isFinishWorkflowSoftLocked
+                    ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+                    : 'border-amber-200 bg-white text-amber-800 hover:bg-amber-50'
+                }`}
+              >
+                <Wrench className="h-3.5 w-3.5" />
+                {tr('Vehicle issue? Switch resolution mode', 'Problème véhicule ? Changer le mode de résolution')}
+              </button>
+            )}
+          </div>
+
           {hasUnresolvedTowingHold && (
             <div className="mt-4 rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm">
               <p className="font-bold">
@@ -16972,7 +17757,9 @@ useEffect(() => {
                         </div>
                         <StepIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${step.complete ? 'text-emerald-600' : finishWorkflowTheme.incompleteStepAccent}`} />
                       </div>
-                      {step.extra ? (
+                      {step.extraNode ? (
+                        step.extraNode
+                      ) : step.extra ? (
                         <p className="mt-2 text-xs font-semibold text-amber-700">
                           {step.extra}
                         </p>
@@ -17048,15 +17835,6 @@ useEffect(() => {
                   {tr('Quick add', 'Ajout rapide')}
                 </button>
               </div>
-            </div>
-          ) : canOpenExtensionFlow ? (
-            <div className="mt-4 rounded-2xl border border-violet-100 bg-white/90 px-4 py-3 text-xs text-slate-500 shadow-sm">
-              <p className="font-semibold text-slate-700">
-                {tr('Need more time before closing?', 'Besoin de plus de temps avant la clôture ?')}
-              </p>
-              <p className="mt-1">
-                {tr('Open Schedule to add a regular extension before finishing the rental.', 'Ouvrez Horaire pour ajouter une prolongation normale avant de terminer la location.')}
-              </p>
             </div>
           ) : null}
 
@@ -17479,7 +18257,7 @@ useEffect(() => {
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button
               type="button"
-              onClick={() => navigate(`/admin/maintenance?maintenanceId=${vehicleReport.maintenance.id}`)}
+              onClick={() => navigate(`/admin/maintenance/${vehicleReport.maintenance.id}`, { state: { from: 'rental' } })}
               className="rounded-2xl border border-slate-200 bg-white text-xs text-slate-700 shadow-sm hover:bg-slate-50 hover:text-slate-900"
             >
               <Wrench className="mr-1.5 h-3 w-3" />
@@ -20130,12 +20908,19 @@ useEffect(() => {
                           {parsedVehicleIssueResolution.refundOutcome === 'none'
                             ? tr('Customer was cancelled without a payout.', "Le client a été annulé sans remboursement.")
                             : parsedVehicleIssueResolution.refundStatus === 'completed'
-                              ? tr('Refund already completed.', 'Remboursement déjà effectué.')
+                              ? parsedVehicleIssueResolution.refundSignedAt
+                                ? tr('Refund already completed and signed by the customer.', 'Remboursement déjà effectué et signé par le client.')
+                                : tr('Refund already completed.', 'Remboursement déjà effectué.')
                               : tr('Refund still pending for the customer.', 'Remboursement encore en attente pour le client.')}
                         </p>
                         {parsedVehicleIssueResolution.refundOutcome !== 'none' && parsedVehicleIssueResolution.refundDestination && (
                           <p className="mt-2 text-xs font-medium text-slate-500">
                             {tr('Method:', 'Méthode :')} {parsedVehicleIssueResolution.refundDestination.replaceAll('_', ' ')}
+                          </p>
+                        )}
+                        {parsedVehicleIssueResolution.depositRefundSelected && parsedVehicleIssueResolution.depositRefundAmount > 0 && (
+                          <p className="mt-2 text-xs font-medium text-slate-500">
+                            {tr('Deposit refunded:', 'Caution restituée :')} {formatCurrency(parsedVehicleIssueResolution.depositRefundAmount)} MAD
                           </p>
                         )}
                       </div>
@@ -21050,13 +21835,13 @@ useEffect(() => {
                     {isEditingStartEngineHours && (isStartStepActive('start_engine_hours') || canEditStartEngineHoursBeforeSignature) && (
                       <div className="mt-2 space-y-2">
                         <input
-                          type="number"
+                          type="text"
+                          inputMode="decimal"
                           value={startEngineHours}
-                          onChange={(e) => setStartEngineHours(e.target.value)}
+                          onChange={(e) => setStartEngineHours(normalizeDecimalInputValue(e.target.value))}
                           placeholder={tr('Enter engine hours', 'Saisissez les heures moteur')}
                           className="w-full px-3 py-1.5 text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          min="0"
-                          step="0.1"
+                          pattern="[0-9]*[.,]?[0-9]*"
                           disabled={isStartWorkflowSoftLocked}
                         />
                         <div className="flex gap-1.5">
@@ -21625,18 +22410,6 @@ useEffect(() => {
                             {tr('End Now', 'Terminer maintenant')}
                           </Button>
 
-                          <Button
-                            type="button"
-                            onClick={() => { void openVehicleIssueFinishWorkflow(); }}
-                            disabled={hasUnresolvedTowingHold}
-                            title={hasUnresolvedTowingHold ? towingHoldLockTitle : undefined}
-                            variant="outline"
-                            className="min-w-0 justify-center whitespace-normal border-amber-200 bg-amber-50 px-5 py-4 text-center text-base font-semibold leading-tight text-amber-700 shadow-sm transition-all duration-200 hover:bg-amber-100 hover:text-amber-800 rounded-lg sm:py-5 sm:text-lg"
-                          >
-                            <Wrench className="w-5 h-5 sm:w-6 sm:h-6 mr-2" />
-                            {tr('Return With Vehicle Issue', 'Retour avec problème véhicule')}
-                          </Button>
-                          
                           {canOpenExtensionFlow && (
                             <Button 
                               onClick={() => openExtensionFlow(extensionActionHours)}
@@ -21676,6 +22449,32 @@ useEffect(() => {
                       {tr('Ready to Finish Rental', 'Prêt à terminer la location')}
                     </h3>
                     <p className="text-xs text-slate-500">{tr('Complete these steps to end the rental:', 'Complétez ces étapes pour terminer la location :')}</p>
+                  </div>
+
+                  <div className="mb-3 flex justify-start sm:mb-4">
+                    {isVehicleIssueFinishFlow ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setFinishResolutionMode('standard')}
+                        className="border-amber-200 bg-white text-xs text-amber-800 shadow-sm hover:bg-amber-100"
+                      >
+                        <CheckCircle className="mr-1.5 h-3.5 w-3.5" />
+                        {tr('Back to normal return', 'Retour au retour normal')}
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => { void openVehicleIssueFinishWorkflow(); }}
+                        disabled={isFinishWorkflowSoftLocked}
+                        title={isFinishWorkflowSoftLocked ? finishWorkflowLockTitle : undefined}
+                        className="border-amber-200 bg-white text-xs text-amber-800 shadow-sm hover:bg-amber-50"
+                      >
+                        <Wrench className="mr-1.5 h-3.5 w-3.5" />
+                        {tr('Vehicle issue? Switch resolution mode', 'Problème véhicule ? Changer le mode de résolution')}
+                      </Button>
+                    )}
                   </div>
 
                   {hasUnresolvedTowingHold && (
@@ -22017,7 +22816,7 @@ useEffect(() => {
                                     {vehicleReport?.maintenance_id && (
                                       <Button
                                         type="button"
-                                        onClick={() => navigate(`/admin/maintenance?maintenanceId=${vehicleReport.maintenance_id}`)}
+                                        onClick={() => navigate(`/admin/maintenance/${vehicleReport.maintenance_id}`, { state: { from: 'rental' } })}
                                         size="sm"
                                         className="bg-orange-600 hover:bg-orange-700 text-white text-xs"
                                       >
@@ -22209,13 +23008,13 @@ useEffect(() => {
                         ) : (
                           <div className="mt-2 space-y-2">
                             <input
-                              type="number"
+                              type="text"
+                              inputMode="decimal"
                               value={endEngineHoursEditValue}
-                              onChange={(e) => setEndEngineHoursEditValue(e.target.value)}
+                              onChange={(e) => setEndEngineHoursEditValue(normalizeDecimalInputValue(e.target.value))}
                               placeholder={tr('Enter ending engine hours', 'Saisissez les heures moteur de retour')}
                               className="w-full px-3 py-1.5 text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              min={rental?.start_engine_hours || 0}
-                              step="0.1"
+                              pattern="[0-9]*[.,]?[0-9]*"
                               autoFocus
                             />
                             <div className="flex gap-1.5">
@@ -22564,7 +23363,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                                         onClick={() => setVehicleIssueForm((prev) => ({
                                           ...prev,
                                           refundOutcome: option.value,
-                                          refundStatus: option.value === 'none' ? 'completed' : prev.refundStatus,
+                                          refundStatus: option.value === 'none' ? 'completed' : 'completed',
+                                          refundRentalPayment: option.value !== 'none',
                                           refundAmount: option.value === 'none'
                                             ? ''
                                             : prev.refundAmount || String(Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0)),
@@ -22656,6 +23456,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                               </div>
                             )}
 
+                            {renderVehicleIssueRefundSelection()}
+
                             <div className="grid gap-4 lg:grid-cols-2">
                               <div className="space-y-2">
                                 <label className="text-sm font-semibold text-slate-700">
@@ -22693,7 +23495,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                               <Wrench className="mr-2 h-4 w-4" />
                               {vehicleIssueSubmitting
                                 ? tr('Resolving...', 'Traitement...')
-                                : tr('Confirm vehicle issue resolution', 'Confirmer la résolution du problème véhicule')}
+                                : vehicleIssueConfirmButtonLabel}
                             </Button>
                           </div>
                         ) : (
@@ -26612,15 +27414,14 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                 {tr('Ending Engine Hours', "Heures moteur d'arrivée")}
               </label>
               <input
-                type="number"
+                type="text"
+                inputMode="decimal"
                 value={endEngineHours}
-                onChange={(e) => setEndEngineHours(e.target.value)}
+                onChange={(e) => setEndEngineHours(normalizeDecimalInputValue(e.target.value))}
                 placeholder={tr('Enter ending engine hours', "Saisissez les heures moteur d'arrivée")}
                 className={isLightRentalDetailsMode ? "mt-3 w-full rounded-[20px] border border-slate-200 bg-white px-4 py-4 text-[2rem] font-extrabold leading-none tracking-[-0.05em] text-slate-950 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-100" : "w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"}
-                min={rental?.start_engine_hours || 0}
-                step="0.1"
                 autoFocus
-                inputMode="decimal"
+                pattern="[0-9]*[.,]?[0-9]*"
               />
             </div>
 
@@ -27483,7 +28284,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
                         onClick={() => setVehicleIssueForm((prev) => ({
                           ...prev,
                           refundOutcome: option.value,
-                          refundStatus: option.value === 'none' ? 'completed' : prev.refundStatus,
+                          refundStatus: option.value === 'none' ? 'completed' : 'completed',
+                          refundRentalPayment: option.value !== 'none',
                           refundAmount: option.value === 'none'
                             ? ''
                             : prev.refundAmount || String(Math.max(0, Number(getRentalCollectedAmount(rental) || 0) || 0)),
@@ -27575,6 +28377,8 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
               </div>
             )}
 
+            {renderVehicleIssueRefundSelection()}
+
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="space-y-2">
                 <label className="text-sm font-semibold text-slate-700">
@@ -27622,7 +28426,7 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
             >
               {vehicleIssueSubmitting
                 ? tr('Resolving...', 'Traitement...')
-                : tr('Confirm resolution', 'Confirmer la résolution')}
+                : vehicleIssueConfirmButtonLabel}
             </Button>
           </div>
         </DialogContent>
@@ -28144,6 +28948,26 @@ ${deficit} lines × ${fuelPricePerLine} MAD = ${wouldBe.toFixed(2)} MAD`, '0');
         isOpen={isSigning}
         onClose={() => setIsSigning(false)}
         onSave={handleSignatureSave}
+      />
+
+      <SignaturePadModal
+        isOpen={showVehicleIssueRefundSignatureModal}
+        onClose={() => {
+          if (vehicleIssueSubmitting) return;
+          setShowVehicleIssueRefundSignatureModal(false);
+        }}
+        onSave={async (signatureUrl) => {
+          if (vehicleIssueSubmitting) return;
+          setVehicleIssueSubmitting(true);
+          try {
+            await finalizeVehicleIssueCancellation(signatureUrl);
+          } catch {}
+          finally {
+            setVehicleIssueSubmitting(false);
+          }
+        }}
+        title={tr('Refund Signature', 'Signature de remboursement')}
+        description={getVehicleIssueRefundSignatureDescription() || tr('Confirm the refund details below with the customer signature.', 'Confirmez ci-dessous les détails du remboursement avec la signature du client.')}
       />
 
       <SignaturePadModal

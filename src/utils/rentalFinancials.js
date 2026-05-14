@@ -123,3 +123,124 @@ export const getRentalCompanyDiscountAmount = (rentalLike = {}) => {
   const amountDueResolutionMeta = parseAmountDueResolutionMeta(rentalLike);
   return Math.max(0, Number(amountDueResolutionMeta?.companyDiscount || 0) || 0);
 };
+
+export const MONEY_EPSILON = 0.01;
+
+const hasAmountDueSettlementActivity = (amountDueMeta = null) => (
+  Boolean(amountDueMeta) &&
+  (
+    Math.abs(Number(amountDueMeta?.paymentReceivedNow || 0) || 0) > MONEY_EPSILON ||
+    Math.abs(Number(amountDueMeta?.companyDiscount || 0) || 0) > MONEY_EPSILON
+  )
+);
+
+export const resolveAmountDueCompanyDiscountAmount = ({
+  amountDueMeta = null,
+  rawBalanceDue = 0,
+  storedRemainingAmount = 0,
+  depositPaid = 0,
+}) => {
+  const explicitCompanyDiscountAmount = Math.max(0, Number(amountDueMeta?.companyDiscount || 0) || 0);
+  const paymentReceivedNow = Math.max(0, Number(amountDueMeta?.paymentReceivedNow || 0) || 0);
+  const inferredCompanyDiscountAmount =
+    amountDueMeta &&
+    explicitCompanyDiscountAmount <= 0 &&
+    paymentReceivedNow <= MONEY_EPSILON &&
+    storedRemainingAmount <= MONEY_EPSILON &&
+    depositPaid > 0 &&
+    rawBalanceDue > MONEY_EPSILON
+      ? Math.max(0, rawBalanceDue)
+      : 0;
+
+  return {
+    explicitCompanyDiscountAmount,
+    inferredCompanyDiscountAmount,
+    companyDiscountAmount: Math.max(explicitCompanyDiscountAmount, inferredCompanyDiscountAmount),
+  };
+};
+
+export const resolveAmountDueBalanceState = ({
+  amountDueMeta = null,
+  rawBalanceDue = 0,
+  storedRemainingAmount = 0,
+  depositPaid = 0,
+}) => {
+  const normalizedRawBalanceDue = Math.max(0, Number(rawBalanceDue || 0) || 0);
+  const normalizedStoredRemainingAmount = Math.max(0, Number(storedRemainingAmount || 0) || 0);
+  const {
+    explicitCompanyDiscountAmount,
+    inferredCompanyDiscountAmount,
+    companyDiscountAmount,
+  } = resolveAmountDueCompanyDiscountAmount({
+    amountDueMeta,
+    rawBalanceDue: normalizedRawBalanceDue,
+    storedRemainingAmount: normalizedStoredRemainingAmount,
+    depositPaid,
+  });
+  const hasManualAmountDueOverride = Boolean(amountDueMeta);
+  const hasSettlementAdjustment = hasAmountDueSettlementActivity(amountDueMeta);
+  const settlementResolvedBalanceDue = Math.max(0, normalizedRawBalanceDue - companyDiscountAmount);
+  const settlementStoredIsConsistent =
+    Math.abs(normalizedStoredRemainingAmount - settlementResolvedBalanceDue) < MONEY_EPSILON;
+
+  let balanceDue = normalizedRawBalanceDue;
+  if (hasManualAmountDueOverride) {
+    balanceDue = hasSettlementAdjustment
+      ? (settlementStoredIsConsistent ? normalizedStoredRemainingAmount : settlementResolvedBalanceDue)
+      : normalizedStoredRemainingAmount;
+  }
+
+  const manualAdjustmentOffset = Math.max(
+    -settlementResolvedBalanceDue,
+    balanceDue - settlementResolvedBalanceDue
+  );
+
+  return {
+    balanceDue,
+    hasManualAmountDueOverride,
+    hasSettlementAdjustment,
+    settlementResolvedBalanceDue,
+    settlementStoredIsConsistent,
+    manualAdjustmentOffset,
+    explicitCompanyDiscountAmount,
+    inferredCompanyDiscountAmount,
+    companyDiscountAmount,
+  };
+};
+
+export const buildAmountDueStateForGrandTotalChange = ({
+  rentalLike = {},
+  amountDueMeta = null,
+  currentGrandTotal = 0,
+  nextGrandTotal = 0,
+}) => {
+  const depositPaid = Math.max(0, Number(rentalLike?.deposit_amount || 0) || 0);
+  const storedRemainingAmount = Math.max(0, Number(rentalLike?.remaining_amount || 0) || 0);
+  const currentRawBalanceDue = Math.max(0, Number(currentGrandTotal || 0) - depositPaid);
+  const currentBalanceState = resolveAmountDueBalanceState({
+    amountDueMeta,
+    rawBalanceDue: currentRawBalanceDue,
+    storedRemainingAmount,
+    depositPaid,
+  });
+  const nextRawBalanceDue = Math.max(0, Number(nextGrandTotal || 0) - depositPaid);
+  const nextSettlementResolvedBalanceDue = Math.max(
+    0,
+    nextRawBalanceDue - currentBalanceState.companyDiscountAmount
+  );
+  const nextRemainingAmount = Math.max(
+    0,
+    nextSettlementResolvedBalanceDue + currentBalanceState.manualAdjustmentOffset
+  );
+  const nextPaymentStatus = nextRemainingAmount <= MONEY_EPSILON
+    ? 'paid'
+    : (depositPaid > 0 ? 'partial' : 'unpaid');
+
+  return {
+    nextRemainingAmount,
+    nextPaymentStatus,
+    companyDiscountAmount: currentBalanceState.companyDiscountAmount,
+    manualAdjustmentOffset: currentBalanceState.manualAdjustmentOffset,
+    balanceState: currentBalanceState,
+  };
+};

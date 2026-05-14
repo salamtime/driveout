@@ -46,13 +46,16 @@ export const normalizePaymentStatus = (status, remainingAmount = null) => {
       ? null
       : Math.max(0, Number(remainingAmount) || 0);
 
+  if (statusLower === 'refunded') {
+    return 'refunded';
+  }
+
   if (normalizedRemaining !== null && normalizedRemaining <= 0) {
     return 'paid';
   }
 
   if (normalizedRemaining !== null && normalizedRemaining > 0) {
     if (statusLower === 'overdue') return 'overdue';
-    if (statusLower === 'refunded') return 'refunded';
     if (statusLower === 'partial' || statusLower === 'paid') return 'partial';
   }
 

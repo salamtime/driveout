@@ -28,7 +28,6 @@ import {
   getRentalCollectedAmount as getRentalCollectedAmountShared,
   getRentalCollectedAmountInWindow,
   getRentalCompanyDiscountAmount,
-  parseAmountDueResolutionMeta
 } from '../../utils/rentalFinancials';
 import { toast } from 'sonner';
 
@@ -743,25 +742,16 @@ const getRentalFinancialSnapshot = (rental) => {
   // must not re-run side calculations like fuel stripping or base-price fallbacks
   // unless the contract total has never been saved.
   const computedTotal = storedTotal > 0 ? storedTotal : baseTotal;
-  const amountDueResolutionMeta = parseAmountDueResolutionMeta(rental);
   const companyDiscount = getRentalCompanyDiscountAmount(rental);
-  const paymentReceivedNow = Math.max(0, Number(amountDueResolutionMeta?.paymentReceivedNow || 0) || 0);
   const grossTotal = pendingRequestedTotal > 0 ? pendingRequestedTotal : computedTotal;
   const grandTotal = Math.max(0, grossTotal - companyDiscount);
-  const rawAmountPaid = Math.max(0, (parseFloat(rental?.deposit_amount) || 0) + paymentReceivedNow);
-  const storedRemainingAmount = rental?.remaining_amount;
+  const rawAmountPaid = Math.max(0, parseFloat(rental?.deposit_amount) || 0);
+  const storedRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
   const cappedPaidAmount = grandTotal > 0 ? Math.min(rawAmountPaid, grandTotal) : rawAmountPaid;
-  const balanceDue = Math.max(
-    0,
-    storedRemainingAmount === null || storedRemainingAmount === undefined
-      ? grandTotal - cappedPaidAmount
-      : Number(storedRemainingAmount) || 0
-  );
+  const balanceDue = storedRemainingAmount;
   const normalizedPaymentStatus = normalizePaymentStatus(
     rental?.payment_status,
-    storedRemainingAmount === null || storedRemainingAmount === undefined
-      ? balanceDue
-      : storedRemainingAmount
+    balanceDue
   );
   // Rental Details displays the saved paid amount from the contract row.
   // Keep the list consistent with that source of truth instead of inflating
