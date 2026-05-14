@@ -119,6 +119,23 @@ const buildRegistryTenantSession = (entry = null) => {
   };
 };
 
+const getWorkspaceTenantSettings = (session = null) => {
+  if (!session || typeof session !== 'object') return {};
+
+  if (session.tenantSettings && typeof session.tenantSettings === 'object') {
+    return session.tenantSettings;
+  }
+
+  if (
+    session?.tenant?.metadata?.tenant_settings &&
+    typeof session.tenant.metadata.tenant_settings === 'object'
+  ) {
+    return session.tenant.metadata.tenant_settings;
+  }
+
+  return {};
+};
+
 const normalizeStaffIdDocuments = (documents) => {
   if (!documents) return [];
   if (Array.isArray(documents)) return documents.filter(Boolean);
@@ -532,11 +549,7 @@ const ProfilePage = () => {
     [displayProfile?.preferences]
   );
   const workspaceTelegramAdminSettings = useMemo(() => {
-    const tenantSettings =
-      effectiveTenantWorkspaceSession?.tenant?.metadata?.tenant_settings &&
-      typeof effectiveTenantWorkspaceSession.tenant.metadata.tenant_settings === 'object'
-        ? effectiveTenantWorkspaceSession.tenant.metadata.tenant_settings
-        : {};
+    const tenantSettings = getWorkspaceTenantSettings(effectiveTenantWorkspaceSession);
     const workspaceEventTypes =
       tenantSettings.telegram_event_types && typeof tenantSettings.telegram_event_types === 'object'
         ? normalizeTelegramEventTypes(tenantSettings.telegram_event_types, true)
