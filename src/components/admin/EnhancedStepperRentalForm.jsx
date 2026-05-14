@@ -11343,7 +11343,7 @@ const SimplifiedRentalWizard = ({
               {tr('Customer Verification', 'Vérification client')}
             </p>
             <h2 className="mt-1 text-xl font-bold text-slate-900">
-              {tr('Capture customer ID', "Capturer l'identité du client")}
+              {tr('Customer Driver License', 'Permis de conduire du client')}
             </h2>
             <p className="mt-2 text-sm text-slate-600">
               {tr(
@@ -11400,7 +11400,7 @@ const SimplifiedRentalWizard = ({
             </div>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                 {tr('Customer', 'Client')}
@@ -11415,14 +11415,6 @@ const SimplifiedRentalWizard = ({
               </p>
               <p className={`mt-2 text-sm font-bold ${formData.customer_licence_number?.trim() ? 'text-slate-900' : 'text-amber-800'}`}>
                 {formData.customer_licence_number || tr('Missing', 'Manquant')}
-              </p>
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                {tr('Phone', 'Téléphone')}
-              </p>
-              <p className="mt-2 text-sm font-bold text-slate-900">
-                {formData.customer_phone || initialData?.customer_phone || tr('Not set', 'Non défini')}
               </p>
             </div>
           </div>
@@ -11450,7 +11442,7 @@ const SimplifiedRentalWizard = ({
                 {tr('Customer Verification', 'Vérification client')}
               </p>
               <h2 className="mt-1 text-2xl font-bold text-slate-900">
-                {tr('Capture customer ID', "Capturer l'identité du client")}
+                {tr('Customer Driver License', 'Permis de conduire du client')}
               </h2>
               <p className="mt-2 text-sm font-medium text-slate-600">
                 {tr(
@@ -11507,7 +11499,7 @@ const SimplifiedRentalWizard = ({
               </div>
             )}
 
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                   {tr('Customer', 'Client')}
@@ -11522,14 +11514,6 @@ const SimplifiedRentalWizard = ({
                 </p>
                 <p className={`mt-2 text-sm font-bold ${formData.customer_licence_number?.trim() ? 'text-slate-900' : 'text-amber-800'}`}>
                   {formData.customer_licence_number || tr('Missing', 'Manquant')}
-                </p>
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                  {tr('Phone', 'Téléphone')}
-                </p>
-                <p className="mt-2 text-sm font-bold text-slate-900">
-                  {formData.customer_phone || initialData?.customer_phone || tr('Not set', 'Non défini')}
                 </p>
               </div>
             </div>
