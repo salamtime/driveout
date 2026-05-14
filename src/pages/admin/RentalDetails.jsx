@@ -16106,9 +16106,10 @@ useEffect(() => {
   const canBypassVerificationCenter = hasLinkedVerificationCenterRecord
     && !verificationCenterStatus
     && canEditRentalContract(resolvedCurrentUser);
-  const customerVerificationStepComplete = hasLinkedVerificationCenterRecord
-    ? (hasVerifiedCustomerFromCenter || canBypassVerificationCenter)
-    : (hasVerifiedCustomerFromCenter || hasLegacyCustomerVerification);
+  const customerVerificationStepComplete =
+    hasVerifiedCustomerFromCenter ||
+    hasLegacyCustomerVerification ||
+    canBypassVerificationCenter;
   const hasCustomerVerification = customerVerificationStepComplete;
   const customerVerificationMethod = hasVerifiedCustomerFromCenter
     ? 'verification_center'
@@ -16119,6 +16120,8 @@ useEffect(() => {
       : null;
   const customerVerificationStepStatusLabel = hasVerifiedCustomerFromCenter
       ? tr('Customer verified', 'Client vérifié')
+      : hasLegacyCustomerVerification
+        ? tr('Customer Verification completed', 'Vérification client terminée')
       : hasLinkedVerificationCenterRecord
         ? canBypassVerificationCenter
           ? tr('Verification status unavailable', 'Statut de vérification indisponible')
@@ -16131,9 +16134,7 @@ useEffect(() => {
                 : verificationCenterStatus === 'expired'
                   ? tr('Verification expired', 'Vérification expirée')
                   : tr('Verification not completed', 'Vérification non terminée')
-        : hasLegacyCustomerVerification
-          ? tr('Customer Verification completed', 'Vérification client terminée')
-          : tr('Verification not completed', 'Vérification non terminée');
+        : tr('Verification not completed', 'Vérification non terminée');
   const customerVerificationMethodLabel = customerVerificationMethod === 'verification_center'
     ? tr('Verified in verification center', 'Vérifié dans le centre de vérification')
     : customerVerificationMethod === 'id_scan'
