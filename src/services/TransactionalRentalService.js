@@ -751,7 +751,7 @@ class TransactionalRentalService {
       console.log('🔍 FINAL CRITICAL FIX: Verifying customer exists in database...');
       const { data: existingCustomer, error: customerError } = await supabase
         .from('app_4c3a7a6153_customers')
-        .select('id, full_name, licence_number, id_number, phone, email')
+        .select('id, full_name, licence_number, id_number, phone, email, id_scan_url, customer_id_image, customer_id_scan_history')
         .eq('id', linkedCustomerId)
         .single();
 
@@ -1002,6 +1002,14 @@ class TransactionalRentalService {
       ]
         .filter(Boolean)
         .join(' • ') || `Vehicle #${rental.vehicle_id}`;
+      const telegramRentalPayload = {
+        ...rental,
+        id_scan_url: rental.id_scan_url || existingCustomer?.id_scan_url || null,
+        customer_id_image: rental.customer_id_image || existingCustomer?.customer_id_image || null,
+        customer_id_scan_history: Array.isArray(rental.customer_id_scan_history)
+          ? rental.customer_id_scan_history
+          : (Array.isArray(existingCustomer?.customer_id_scan_history) ? existingCustomer.customer_id_scan_history : []),
+      };
 
       dispatchRentalLifecycleTelegramEvent({
         eventType: 'rental_created',
@@ -1015,7 +1023,10 @@ class TransactionalRentalService {
           end: rental.rental_end_date || finalSanitizedData.rental_end_date,
           total: rental.total_amount ?? finalSanitizedData.total_amount ?? 0,
           createdBy: finalSanitizedData.created_by_name || rental.created_by_name || '',
-          documentCount: countRentalDocuments(rental),
+          id_scan_url: telegramRentalPayload.id_scan_url,
+          customer_id_image: telegramRentalPayload.customer_id_image,
+          customer_id_scan_history: telegramRentalPayload.customer_id_scan_history,
+          documentCount: countRentalDocuments(telegramRentalPayload),
         },
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);

@@ -268,6 +268,30 @@ class OptimizedRentalService {
       ]
         .filter(Boolean)
         .join(' • ') || `Vehicle #${rental?.vehicle_id}`;
+      let telegramRentalPayload = { ...rental };
+
+      if (rental?.customer_id) {
+        try {
+          const { data: customerRecord } = await supabase
+            .from(TBL.CUSTOMERS)
+            .select('id_scan_url, customer_id_image, customer_id_scan_history')
+            .eq('id', rental.customer_id)
+            .maybeSingle();
+
+          if (customerRecord) {
+            telegramRentalPayload = {
+              ...telegramRentalPayload,
+              id_scan_url: telegramRentalPayload.id_scan_url || customerRecord.id_scan_url || null,
+              customer_id_image: telegramRentalPayload.customer_id_image || customerRecord.customer_id_image || null,
+              customer_id_scan_history: Array.isArray(telegramRentalPayload.customer_id_scan_history)
+                ? telegramRentalPayload.customer_id_scan_history
+                : (Array.isArray(customerRecord.customer_id_scan_history) ? customerRecord.customer_id_scan_history : []),
+            };
+          }
+        } catch (customerDocumentError) {
+          console.warn('⚠️ Unable to enrich rental-created Telegram payload with customer document history:', customerDocumentError);
+        }
+      }
 
       dispatchRentalLifecycleTelegramEvent({
         eventType: 'rental_created',
@@ -281,7 +305,12 @@ class OptimizedRentalService {
           end: rental.rental_end_date || rental.end_date,
           total: rental.total_amount ?? 0,
           createdBy: rental.created_by_name || rental.created_by || '',
-          documentCount: countRentalDocuments(rental),
+          id_scan_url: telegramRentalPayload.id_scan_url || null,
+          customer_id_image: telegramRentalPayload.customer_id_image || null,
+          customer_id_scan_history: Array.isArray(telegramRentalPayload.customer_id_scan_history)
+            ? telegramRentalPayload.customer_id_scan_history
+            : [],
+          documentCount: countRentalDocuments(telegramRentalPayload),
         },
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);

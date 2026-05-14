@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { 
   X, User, Phone, Mail, Calendar, MapPin, CreditCard, FileText, 
   Camera, AlertCircle, CheckCircle, Plus, Upload, Car, Clock, Users,
-  Eye, Download, Image as ImageIcon
+  Eye, Download, Image as ImageIcon, ChevronDown, ChevronUp
 } from 'lucide-react';
 import CustomerService from '../../services/EnhancedUnifiedCustomerService';
 import { getCustomerById, getCustomerRentalHistory, getLatestRentalByCustomerId } from '../../services/EnhancedUnifiedCustomerService';
@@ -449,6 +449,8 @@ const ViewCustomerDetailsDrawer = ({
         ? tr('Secondary ID', 'Pièce secondaire')
         : tr(`Additional ID ${index}`, `Pièce supplémentaire ${index}`),
   }));
+  const primaryCustomerIdScan = customerIdScans[0] || null;
+  const secondaryCustomerIdScans = customerIdScans.slice(1);
   const secondDriverIdScans = useMemo(() => (
     secondDrivers
       .flatMap((driver, driverIndex) => {
@@ -881,12 +883,62 @@ const ViewCustomerDetailsDrawer = ({
               {!isSecondDriverOnlyView && (
               <div className={sectionCardClass}>
                 <h3 className="mb-4 flex items-center text-sm font-semibold text-slate-900"><Camera className={sectionTitleIconClass} />{tr('ID Scans', "Scans d'identité")}</h3>
-                <ImageGallery 
-                  images={customerIdScans}
-                  title={tr('ID Document', "Document d'identité")}
-                  emptyMessage={tr('No ID documents available. Please scan or import an ID to complete customer verification.', "Aucun document d'identité disponible. Veuillez scanner ou importer une pièce d'identité pour terminer la vérification du client.")}
-                  gridLayout={false}
-                />
+                {!primaryCustomerIdScan ? (
+                  <p className="text-sm text-gray-500">
+                    {tr('No ID documents available. Please scan or import an ID to complete customer verification.', "Aucun document d'identité disponible. Veuillez scanner ou importer une pièce d'identité pour terminer la vérification du client.")}
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    <ImageGallery
+                      images={[primaryCustomerIdScan]}
+                      title={tr('ID Document', "Document d'identité")}
+                      emptyMessage={tr('No ID documents available. Please scan or import an ID to complete customer verification.', "Aucun document d'identité disponible. Veuillez scanner ou importer une pièce d'identité pour terminer la vérification du client.")}
+                      gridLayout={false}
+                    />
+
+                    {secondaryCustomerIdScans.length > 0 && (
+                      <div className="rounded-2xl border border-violet-100 bg-slate-50/70 p-4">
+                        <button
+                          type="button"
+                          onClick={() => setShowAllSecondIdScans((prev) => !prev)}
+                          className="flex w-full items-center justify-between gap-3 text-left"
+                        >
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">
+                              {tr('Secondary ID', 'Pièce secondaire')}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {secondaryCustomerIdScans.length === 1
+                                ? tr('1 more ID document is available.', '1 autre document ID est disponible.')
+                                : tr(
+                                    `${secondaryCustomerIdScans.length} more ID documents are available.`,
+                                    `${secondaryCustomerIdScans.length} autres documents ID sont disponibles.`
+                                  )}
+                            </p>
+                          </div>
+                          <span className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-semibold text-violet-700">
+                            {showAllSecondIdScans ? tr('Collapse', 'Réduire') : tr('Expand', 'Développer')}
+                            {showAllSecondIdScans ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                          </span>
+                        </button>
+
+                        {showAllSecondIdScans && (
+                          <div className="mt-4">
+                            <ImageGallery
+                              images={secondaryCustomerIdScans.map((item) => ({
+                                ...item,
+                                label: tr('Secondary ID', 'Pièce secondaire'),
+                              }))}
+                              title={tr('Secondary ID', 'Pièce secondaire')}
+                              emptyMessage={tr('No secondary IDs available.', 'Aucune pièce secondaire disponible.')}
+                              gridLayout={false}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {secondDriverIdScans.length > 0 && (
                   <div className="mt-5 rounded-2xl border border-violet-100 bg-slate-50/70 p-4">
                     <div className="flex items-center justify-between gap-3">

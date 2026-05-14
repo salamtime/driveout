@@ -435,7 +435,7 @@ class EnhancedTransactionalRentalService {
 
       const { data: existingCustomer, error: customerError } = await supabase
         .from(this.customersTableName)
-        .select('id')
+        .select('id, id_scan_url, customer_id_image, customer_id_scan_history')
         .eq('id', sanitizedData.customer_id)
         .single();
 
@@ -513,6 +513,14 @@ class EnhancedTransactionalRentalService {
       ]
         .filter(Boolean)
         .join(' • ') || `Vehicle #${newRental.vehicle_id}`;
+      const telegramRentalPayload = {
+        ...newRental,
+        id_scan_url: newRental.id_scan_url || existingCustomer?.id_scan_url || null,
+        customer_id_image: newRental.customer_id_image || existingCustomer?.customer_id_image || null,
+        customer_id_scan_history: Array.isArray(newRental.customer_id_scan_history)
+          ? newRental.customer_id_scan_history
+          : (Array.isArray(existingCustomer?.customer_id_scan_history) ? existingCustomer.customer_id_scan_history : []),
+      };
 
       dispatchRentalLifecycleTelegramEvent({
         eventType: 'rental_created',
@@ -526,7 +534,10 @@ class EnhancedTransactionalRentalService {
           end: newRental.rental_end_date || finalSanitizedData.rental_end_date || sanitizedData.end_date,
           total: newRental.total_amount ?? finalSanitizedData.total_amount ?? 0,
           createdBy: finalSanitizedData.created_by_name || newRental.created_by_name || '',
-          documentCount: countRentalDocuments(newRental),
+          id_scan_url: telegramRentalPayload.id_scan_url,
+          customer_id_image: telegramRentalPayload.customer_id_image,
+          customer_id_scan_history: telegramRentalPayload.customer_id_scan_history,
+          documentCount: countRentalDocuments(telegramRentalPayload),
         },
       }).catch((telegramDispatchError) => {
         console.warn('⚠️ Rental created Telegram dispatch failed (non-blocking):', telegramDispatchError);

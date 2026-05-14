@@ -48,6 +48,8 @@ export const countRentalDocuments = (rental = {}) => {
   return [
     rental?.customer_id_image,
     rental?.id_scan_url,
+    rental?.customer_id_scan_history,
+    rental?.customer_scan_history,
     rental?.customer_uploaded_images,
     rental?.extra_images,
     rental?.second_driver_id_image,
