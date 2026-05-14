@@ -25,6 +25,51 @@ if (typeof globalThis !== 'undefined' && !globalThis[GLOBAL_AUTH_CONTEXT_KEY]) {
 }
 const PENDING_ACCOUNT_INTENT_KEY = 'saharax_pending_account_type';
 const PLATFORM_PERMISSION_MODULES = new Set(['Workspaces', 'Platform Admins']);
+const AUTH_PROFILE_BOOTSTRAP_TIMEOUT_MS = 6000;
+const AUTH_TENANT_SESSION_BOOTSTRAP_TIMEOUT_MS = 3500;
+const AUTH_PENDING_INTENT_TIMEOUT_MS = 2500;
+const AUTH_BOOTSTRAP_TIMEOUT_CODE = 'AUTH_BOOTSTRAP_TIMEOUT';
+
+const createBootstrapTimeoutError = (label, timeoutMs) => {
+  const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+  error.code = AUTH_BOOTSTRAP_TIMEOUT_CODE;
+  error.isTimeout = true;
+  return error;
+};
+
+const withBootstrapTimeout = async (promiseFactory, label, timeoutMs) => {
+  let timeoutId = null;
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => promiseFactory()),
+      new Promise((_, reject) => {
+        timeoutId = globalThis.setTimeout(() => {
+          reject(createBootstrapTimeoutError(label, timeoutMs));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== null) {
+      globalThis.clearTimeout(timeoutId);
+    }
+  }
+};
+
+const buildPlatformAccessFallback = (privilegedOwnerOverride) => (
+  privilegedOwnerOverride
+    ? {
+        role: 'platform_owner',
+        access_enabled: true,
+        is_platform_owner: true,
+        is_platform_admin: true,
+        permissions: {
+          Workspaces: true,
+          'Platform Admins': true,
+        },
+      }
+    : null
+);
 
 const getPendingAccountIntent = () => {
   if (typeof window === 'undefined') return null;
@@ -241,6 +286,7 @@ export const AuthProvider = ({ children }) => {
   const userProfileRef = useRef(null);
   const recordedAuthActivityRef = useRef(new Set());
   const syncedCustomerAccountsRef = useRef(new Set());
+  const tenantSessionLoadSequenceRef = useRef(0);
 
   const waitForActiveProfileLoad = useCallback(() => new Promise((resolve) => {
     const startedAt = Date.now();
@@ -354,12 +400,16 @@ export const AuthProvider = ({ children }) => {
     });
 
     try {
-      const { data, error } = await supabase.auth.updateUser({
-        data: {
-          ...authUser.user_metadata,
-          ...metadataPatch,
-        },
-      });
+      const { data, error } = await withBootstrapTimeout(
+        () => supabase.auth.updateUser({
+          data: {
+            ...authUser.user_metadata,
+            ...metadataPatch,
+          },
+        }),
+        'Pending account bootstrap',
+        AUTH_PENDING_INTENT_TIMEOUT_MS
+      );
 
       if (error) throw error;
       clearPendingAccountIntent();
@@ -376,6 +426,36 @@ export const AuthProvider = ({ children }) => {
     }
   }, []);
 
+  const hydrateTenantSession = useCallback(async ({ requestId, privilegedOwnerOverride }) => {
+    try {
+      const tenantResponse = await withBootstrapTimeout(
+        () => adminApiRequest('/api/tenants?resource=session'),
+        'Workspace session bootstrap',
+        AUTH_TENANT_SESSION_BOOTSTRAP_TIMEOUT_MS
+      );
+
+      if (tenantSessionLoadSequenceRef.current !== requestId) {
+        return;
+      }
+
+      const nextSession = tenantResponse?.session || null;
+      setTenantSession(nextSession);
+      setPlatformAccess(
+        nextSession?.platform_access && typeof nextSession.platform_access === 'object'
+          ? nextSession.platform_access
+          : buildPlatformAccessFallback(privilegedOwnerOverride)
+      );
+    } catch (tenantError) {
+      if (tenantSessionLoadSequenceRef.current !== requestId) {
+        return;
+      }
+
+      console.warn('Unable to load tenant session:', tenantError);
+      setTenantSession(null);
+      setPlatformAccess(buildPlatformAccessFallback(privilegedOwnerOverride));
+    }
+  }, []);
+
   const loadUserProfile = useCallback(async (authUser, session) => {
     // Prevent duplicate profile loads
     if (isLoadingProfile.current) {
@@ -384,6 +464,7 @@ export const AuthProvider = ({ children }) => {
     }
 
     if (!authUser) {
+      tenantSessionLoadSequenceRef.current += 1;
       setUserProfile(null);
       setSession(null);
       setTenantSession(null);
@@ -396,7 +477,11 @@ export const AuthProvider = ({ children }) => {
     isLoadingProfile.current = true;
 
     try {
-      const appUserRecordPromise = adminApiRequest('/api/me/profile')
+      const appUserRecordPromise = withBootstrapTimeout(
+        () => adminApiRequest('/api/me/profile'),
+        'Profile bootstrap',
+        AUTH_PROFILE_BOOTSTRAP_TIMEOUT_MS
+      )
         .then((response) => ({ data: response?.profile || null, error: null }))
         .catch((error) => ({ data: null, error }));
 
@@ -581,34 +666,16 @@ export const AuthProvider = ({ children }) => {
         });
 
       if (shouldLoadWorkspaceSession) {
-        try {
-          const tenantResponse = await adminApiRequest('/api/tenants?resource=session');
-          const nextSession = tenantResponse?.session || null;
-          setTenantSession(nextSession);
-          setPlatformAccess(
-            nextSession?.platform_access && typeof nextSession.platform_access === 'object'
-              ? nextSession.platform_access
-              : null
-          );
-        } catch (tenantError) {
-          console.warn('Unable to load tenant session:', tenantError);
-          setTenantSession(null);
-          setPlatformAccess(
-            privilegedOwnerOverride
-              ? {
-                  role: 'platform_owner',
-                  access_enabled: true,
-                  is_platform_owner: true,
-                  is_platform_admin: true,
-                  permissions: {
-                    Workspaces: true,
-                    'Platform Admins': true,
-                  },
-                }
-              : null
-          );
-        }
+        const nextTenantSessionRequestId = tenantSessionLoadSequenceRef.current + 1;
+        tenantSessionLoadSequenceRef.current = nextTenantSessionRequestId;
+        setTenantSession(null);
+        setPlatformAccess(buildPlatformAccessFallback(privilegedOwnerOverride));
+        void hydrateTenantSession({
+          requestId: nextTenantSessionRequestId,
+          privilegedOwnerOverride,
+        });
       } else {
+        tenantSessionLoadSequenceRef.current += 1;
         setTenantSession(null);
         setPlatformAccess(null);
       }
@@ -698,24 +765,12 @@ export const AuthProvider = ({ children }) => {
             organizationRole: authUser.user_metadata?.organization_role || authUser.app_metadata?.organization_role || null,
             organizationStatus: authUser.user_metadata?.organization_status || authUser.app_metadata?.organization_status || null,
             isPlatformOrganization: Boolean(authUser.user_metadata?.is_platform_organization || authUser.app_metadata?.is_platform_organization),
-          };
+      };
       setUserProfile(fallbackProfile);
       setSession(session);
+      tenantSessionLoadSequenceRef.current += 1;
       setTenantSession(null);
-      setPlatformAccess(
-        privilegedOwnerOverride
-          ? {
-              role: 'platform_owner',
-              access_enabled: true,
-              is_platform_owner: true,
-              is_platform_admin: true,
-              permissions: {
-                Workspaces: true,
-                'Platform Admins': true,
-              },
-            }
-          : null
-      );
+      setPlatformAccess(buildPlatformAccessFallback(privilegedOwnerOverride));
 
       if (shouldSyncCustomerAccount(fallbackProfile, authUser) && !syncedCustomerAccountsRef.current.has(authUser.id)) {
         syncedCustomerAccountsRef.current.add(authUser.id);
@@ -729,7 +784,7 @@ export const AuthProvider = ({ children }) => {
       setInitialized(true);
       isLoadingProfile.current = false;
     }
-  }, [waitForActiveProfileLoad]);
+  }, [hydrateTenantSession, waitForActiveProfileLoad]);
 
   const recordAuthActivity = useCallback(async (authUser, currentSession, actionType = 'user_login') => {
     if (!authUser?.id || !currentSession?.access_token) {
