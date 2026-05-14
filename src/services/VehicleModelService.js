@@ -1,5 +1,9 @@
 import { supabase } from '../lib/supabase';
 import { resolveTankCapacityLiters } from '../utils/vehicleModelSpecs';
+import {
+  getCurrentOrganizationId,
+  shouldScopeSharedTenantData,
+} from './OrganizationService';
 
 /**
  * VehicleModelService - FIXED: Enhanced error handling and connection diagnostics
@@ -13,24 +17,107 @@ class VehicleModelService {
   static cache = new Map();
   static cacheTimestamps = new Map();
   static connectionTested = false;
-  static MODEL_SELECT_COLUMNS = 'id, name, model, vehicle_type, description, image_url, power_cc_min, power_cc_max, capacity_min, capacity_max, features, tank_capacity_liters, is_active';
-  static MODEL_SELECT_COLUMNS_FALLBACK = 'id, name, model, vehicle_type, description, image_url, power_cc_min, power_cc_max, capacity_min, capacity_max, features, is_active';
-  static MODEL_SELECT_COLUMNS_MINIMAL = 'id, name, model, vehicle_type, description, power_cc_min, power_cc_max, capacity_min, capacity_max, features, is_active';
+  static MODEL_SELECT_COLUMNS = 'id, organization_id, name, model, vehicle_type, description, image_url, power_cc_min, power_cc_max, capacity_min, capacity_max, features, tank_capacity_liters, is_active';
+  static MODEL_SELECT_COLUMNS_FALLBACK = 'id, organization_id, name, model, vehicle_type, description, image_url, power_cc_min, power_cc_max, capacity_min, capacity_max, features, is_active';
+  static MODEL_SELECT_COLUMNS_MINIMAL = 'id, organization_id, name, model, vehicle_type, description, power_cc_min, power_cc_max, capacity_min, capacity_max, features, is_active';
+
+  static isMissingOrganizationColumnError(error) {
+    const message = `${error?.message || ''} ${error?.details || ''}`.toLowerCase();
+    return ['42703', 'PGRST204'].includes(String(error?.code || '').toUpperCase()) && message.includes('organization_id');
+  }
+
+  static withoutOrganizationColumn(columns) {
+    return String(columns || '')
+      .split(',')
+      .map((column) => column.trim())
+      .filter((column) => column && column !== 'organization_id')
+      .join(', ');
+  }
+
+  static async getOrganizationScope() {
+    const organizationId = await getCurrentOrganizationId();
+    const strictTenantScope = shouldScopeSharedTenantData();
+    return {
+      organizationId,
+      strictTenantScope,
+      cacheScope: strictTenantScope
+        ? `tenant:${organizationId || 'missing'}`
+        : `first-party:${organizationId || 'legacy'}`,
+    };
+  }
+
+  static getModelsFallbackForCurrentHost(error = null) {
+    if (shouldScopeSharedTenantData()) {
+      console.warn('Vehicle model fallback suppressed for shared tenant isolation.', error);
+      return [];
+    }
+
+    return this.getFallbackModels();
+  }
+
+  static applyReadScope(query, { organizationId, strictTenantScope }) {
+    if (strictTenantScope) {
+      if (!organizationId) {
+        throw new Error('Workspace organization context is required to load vehicle models.');
+      }
+      return query.eq('organization_id', organizationId);
+    }
+
+    if (organizationId) {
+      return query.or(`organization_id.is.null,organization_id.eq.${organizationId}`);
+    }
+
+    return query.is('organization_id', null);
+  }
+
+  static applyWriteScope(payload = {}, { organizationId, strictTenantScope }) {
+    if (strictTenantScope) {
+      if (!organizationId) {
+        throw new Error('Workspace organization context is required to save vehicle models.');
+      }
+      return {
+        ...payload,
+        organization_id: organizationId,
+      };
+    }
+
+    const { organization_id: _organizationId, ...legacyPayload } = payload || {};
+    return legacyPayload;
+  }
 
   static async selectVehicleModels(buildQuery, operation) {
-    let result = await this.executeWithTimeout(buildQuery(this.MODEL_SELECT_COLUMNS), operation);
+    const scope = await this.getOrganizationScope();
+    let result = await this.executeWithTimeout(buildQuery(this.MODEL_SELECT_COLUMNS, scope), operation);
     const primaryError = result?.error;
 
+    if (this.isMissingOrganizationColumnError(primaryError)) {
+      if (scope.strictTenantScope) {
+        throw new Error('Vehicle model workspace isolation is not installed yet. Apply the organization isolation migration before loading shared tenant models.');
+      }
+      result = await this.executeWithTimeout(
+        buildQuery(this.withoutOrganizationColumn(this.MODEL_SELECT_COLUMNS), { ...scope, ignoreOrganizationScope: true }),
+        operation
+      );
+    }
+
     if (primaryError && `${primaryError.message || ''}`.toLowerCase().includes('tank_capacity_liters')) {
-      result = await this.executeWithTimeout(buildQuery(this.MODEL_SELECT_COLUMNS_FALLBACK), operation);
+      result = await this.executeWithTimeout(buildQuery(this.MODEL_SELECT_COLUMNS_FALLBACK, scope), operation);
     }
 
     const secondaryError = result?.error;
     if (secondaryError && `${secondaryError.message || ''}`.toLowerCase().includes('image_url')) {
-      result = await this.executeWithTimeout(buildQuery(this.MODEL_SELECT_COLUMNS_MINIMAL), operation);
+      result = await this.executeWithTimeout(buildQuery(this.MODEL_SELECT_COLUMNS_MINIMAL, scope), operation);
     }
 
     return result;
+  }
+
+  static buildScopedModelQuery(baseQuery, scope) {
+    if (scope?.ignoreOrganizationScope) {
+      return baseQuery;
+    }
+
+    return this.applyReadScope(baseQuery, scope);
   }
 
   /**
@@ -55,10 +142,14 @@ class VehicleModelService {
       });
 
       // Simple connection test
-      const { data, error } = await supabase
+      const scope = await this.getOrganizationScope();
+      const { data, error } = await this.buildScopedModelQuery(
+        supabase
         .from('saharax_0u4w4d_vehicle_models')
         .select('count', { count: 'exact', head: true })
-        .limit(1);
+          .limit(1),
+        scope
+      );
 
       if (error) {
         console.error('❌ VehicleModelService: Connection test failed:', error);
@@ -132,7 +223,8 @@ class VehicleModelService {
    */
   static async getActiveModels() {
     try {
-      const cacheKey = 'active_models';
+      const scope = await this.getOrganizationScope();
+      const cacheKey = `${scope.cacheScope}:active_models`;
       
       if (this.isCacheValid(cacheKey)) {
         console.log('✅ VehicleModelService: Cache hit for active models');
@@ -142,13 +234,16 @@ class VehicleModelService {
       console.log('🚀 VehicleModelService: Fetching active models with enhanced error handling...');
       
       const { data, error } = await this.selectVehicleModels(
-        (columns) =>
-          supabase
+        (columns, queryScope) =>
+          this.buildScopedModelQuery(
+            supabase
             .from('saharax_0u4w4d_vehicle_models')
             .select(columns)
             .eq('is_active', true)
             .order('name', { ascending: true })
-            .limit(50),
+              .limit(50),
+            queryScope
+          ),
         'getActiveModels'
       );
 
@@ -167,7 +262,7 @@ class VehicleModelService {
       return result;
     } catch (error) {
       console.error('❌ VehicleModelService: Error in getActiveModels, using fallback:', error);
-      return this.getFallbackModels();
+      return this.getModelsFallbackForCurrentHost(error);
     }
   }
 
@@ -176,7 +271,8 @@ class VehicleModelService {
    */
   static async getAllModels() {
     try {
-      const cacheKey = 'all_models';
+      const scope = await this.getOrganizationScope();
+      const cacheKey = `${scope.cacheScope}:all_models`;
       
       if (this.isCacheValid(cacheKey)) {
         console.log('✅ VehicleModelService: Cache hit for all models');
@@ -186,12 +282,15 @@ class VehicleModelService {
       console.log('🚀 VehicleModelService: Fetching all models with enhanced error handling...');
       
       const { data, error } = await this.selectVehicleModels(
-        (columns) =>
-          supabase
+        (columns, queryScope) =>
+          this.buildScopedModelQuery(
+            supabase
             .from('saharax_0u4w4d_vehicle_models')
             .select(columns)
             .order('name', { ascending: true })
-            .limit(100),
+              .limit(100),
+            queryScope
+          ),
         'getAllModels'
       );
 
@@ -210,7 +309,7 @@ class VehicleModelService {
       return result;
     } catch (error) {
       console.error('❌ VehicleModelService: Error in getAllModels, using fallback:', error);
-      return this.getFallbackModels();
+      return this.getModelsFallbackForCurrentHost(error);
     }
   }
 
@@ -223,7 +322,7 @@ class VehicleModelService {
       return await this.getAllModels();
     } catch (error) {
       console.error('❌ VehicleModelService: Error in getAllVehicleModels, using fallback:', error);
-      return this.getFallbackModels();
+      return this.getModelsFallbackForCurrentHost(error);
     }
   }
 
@@ -235,12 +334,15 @@ class VehicleModelService {
       console.log('🚀 VehicleModelService: Fetching model by ID with enhanced error handling:', modelId);
       
       const { data, error } = await this.selectVehicleModels(
-        (columns) =>
-          supabase
+        (columns, queryScope) =>
+          this.buildScopedModelQuery(
+            supabase
             .from('saharax_0u4w4d_vehicle_models')
             .select(columns)
             .eq('id', modelId)
-            .single(),
+              .single(),
+            queryScope
+          ),
         'getModelById'
       );
 
@@ -263,8 +365,9 @@ class VehicleModelService {
   static async createModel(modelData) {
     try {
       console.log('🚀 VehicleModelService: Creating model with enhanced error handling:', modelData);
+      const scope = await this.getOrganizationScope();
 
-      const payload = {
+      const payload = this.applyWriteScope({
         ...modelData,
         tank_capacity_liters: resolveTankCapacityLiters(
           modelData.tank_capacity_liters,
@@ -274,7 +377,7 @@ class VehicleModelService {
         is_active: true,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
-      };
+      }, scope);
 
       const buildInsertPromise = ({ includeTankCapacity = true, includeImageUrl = true } = {}) => supabase
         .from('saharax_0u4w4d_vehicle_models')
@@ -330,8 +433,9 @@ class VehicleModelService {
   static async updateModel(modelId, modelData) {
     try {
       console.log('🚀 VehicleModelService: Updating model with enhanced error handling:', modelId);
+      const scope = await this.getOrganizationScope();
 
-      const payload = {
+      const payload = this.applyWriteScope({
         ...modelData,
         tank_capacity_liters: resolveTankCapacityLiters(
           modelData.tank_capacity_liters,
@@ -339,17 +443,21 @@ class VehicleModelService {
           modelData.name
         ),
         updated_at: new Date().toISOString()
-      };
+      }, scope);
 
-      const buildUpdatePromise = ({ includeTankCapacity = true, includeImageUrl = true } = {}) => supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .update({
-          ...payload,
-          ...(includeTankCapacity ? {} : { tank_capacity_liters: undefined }),
-          ...(includeImageUrl ? {} : { image_url: undefined }),
-        })
-        .eq('id', modelId)
-        .select(this.MODEL_SELECT_COLUMNS_FALLBACK);
+      const buildUpdatePromise = ({ includeTankCapacity = true, includeImageUrl = true } = {}) =>
+        this.buildScopedModelQuery(
+          supabase
+            .from('saharax_0u4w4d_vehicle_models')
+            .update({
+              ...payload,
+              ...(includeTankCapacity ? {} : { tank_capacity_liters: undefined }),
+              ...(includeImageUrl ? {} : { image_url: undefined }),
+            })
+            .eq('id', modelId)
+            .select(this.MODEL_SELECT_COLUMNS_FALLBACK),
+          scope
+        );
 
       let { data, error } = await this.executeWithTimeout(buildUpdatePromise({ includeTankCapacity: true, includeImageUrl: true }), 'updateModel');
 
@@ -389,11 +497,15 @@ class VehicleModelService {
   static async deleteModel(modelId) {
     try {
       console.log('🚀 VehicleModelService: Deleting model with enhanced error handling:', modelId);
+      const scope = await this.getOrganizationScope();
       
-      const deletePromise = supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .delete()
-        .eq('id', modelId);
+      const deletePromise = this.buildScopedModelQuery(
+        supabase
+          .from('saharax_0u4w4d_vehicle_models')
+          .delete()
+          .eq('id', modelId),
+        scope
+      );
 
       const { error } = await this.executeWithTimeout(deletePromise, 'deleteModel');
 
@@ -426,17 +538,21 @@ class VehicleModelService {
   static async toggleActiveStatus(modelId, active) {
     try {
       console.log('🚀 VehicleModelService: Toggling active status with enhanced error handling:', modelId, active);
+      const scope = await this.getOrganizationScope();
       
       const { data, error } = await this.selectVehicleModels(
-        (columns) =>
-          supabase
+        (columns, queryScope) =>
+          this.buildScopedModelQuery(
+            supabase
             .from('saharax_0u4w4d_vehicle_models')
             .update({
               is_active: active,
               updated_at: new Date().toISOString()
             })
             .eq('id', modelId)
-            .select(columns),
+              .select(columns),
+            queryScope || scope
+          ),
         'toggleActiveStatus'
       );
 
@@ -468,14 +584,17 @@ class VehicleModelService {
       console.log('🚀 VehicleModelService: Searching models with enhanced error handling:', searchTerm);
 
       const { data, error } = await this.selectVehicleModels(
-        (columns) =>
-          supabase
+        (columns, queryScope) =>
+          this.buildScopedModelQuery(
+            supabase
             .from('saharax_0u4w4d_vehicle_models')
             .select(columns)
             .eq('is_active', true)
             .or(`name.ilike.%${searchTerm}%,model.ilike.%${searchTerm}%`)
             .order('name', { ascending: true })
-            .limit(25),
+              .limit(25),
+            queryScope
+          ),
         'searchModels'
       );
 
@@ -606,10 +725,14 @@ class VehicleModelService {
       }
       
       // Test actual query
-      const queryPromise = supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('id')
-        .limit(1);
+      const scope = await this.getOrganizationScope();
+      const queryPromise = this.buildScopedModelQuery(
+        supabase
+          .from('saharax_0u4w4d_vehicle_models')
+          .select('id')
+          .limit(1),
+        scope
+      );
 
       await this.executeWithTimeout(queryPromise, 'healthCheck');
       
@@ -649,7 +772,7 @@ class VehicleModelService {
       return models;
     } catch (error) {
       console.error('❌ VehicleModelService: Force refresh failed:', error);
-      return this.getFallbackModels();
+      return this.getModelsFallbackForCurrentHost(error);
     }
   }
 }

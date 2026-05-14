@@ -26,6 +26,7 @@ import { getScopedOrganizationId, applyOrganizationScope } from '../../services/
 import { getHostContext, isFirstPartyTenantHost } from '../../utils/hostContext';
 import {
   getRentalCollectedAmount as getRentalCollectedAmountShared,
+  getRentalCustomerPaidAmount as getRentalCustomerPaidAmountShared,
   getRentalCollectedAmountInWindow,
   getRentalCompanyDiscountAmount,
 } from '../../utils/rentalFinancials';
@@ -744,19 +745,28 @@ const getRentalFinancialSnapshot = (rental) => {
   const computedTotal = storedTotal > 0 ? storedTotal : baseTotal;
   const companyDiscount = getRentalCompanyDiscountAmount(rental);
   const grossTotal = pendingRequestedTotal > 0 ? pendingRequestedTotal : computedTotal;
-  const grandTotal = Math.max(0, grossTotal - companyDiscount);
-  const rawAmountPaid = Math.max(0, parseFloat(rental?.deposit_amount) || 0);
+  const fallbackGrandTotal = Math.max(0, grossTotal - companyDiscount);
+  const customerPaidAmount = Math.max(0, Number(getRentalCustomerPaidAmountShared(rental) || 0) || 0);
   const storedRemainingAmount = Math.max(0, Number(rental?.remaining_amount || 0) || 0);
-  const cappedPaidAmount = grandTotal > 0 ? Math.min(rawAmountPaid, grandTotal) : rawAmountPaid;
+  const securityAppliedAmount = Math.max(0, Number(rental?.deposit_deduction_amount || 0) || 0);
+  const settlementGrandTotal = Math.max(0, customerPaidAmount + storedRemainingAmount + securityAppliedAmount);
   const balanceDue = storedRemainingAmount;
   const normalizedPaymentStatus = normalizePaymentStatus(
     rental?.payment_status,
     balanceDue
   );
-  // Rental Details displays the saved paid amount from the contract row.
-  // Keep the list consistent with that source of truth instead of inflating
-  // paid-in-full rows to the grand total when remaining_amount is zero.
-  const amountPaid = cappedPaidAmount;
+  const shouldTrustSettlementTotals =
+    settlementGrandTotal > 0 &&
+    (
+      customerPaidAmount > 0 ||
+      storedRemainingAmount > 0 ||
+      securityAppliedAmount > 0 ||
+      companyDiscount > 0 ||
+      Boolean(rental?.amount_due_override_reason) ||
+      ['paid', 'partial', 'refunded'].includes(normalizedPaymentStatus)
+    );
+  const grandTotal = shouldTrustSettlementTotals ? settlementGrandTotal : fallbackGrandTotal;
+  const amountPaid = customerPaidAmount;
 
   let status = 'UNPAID';
   let className = 'rounded-full bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-100';

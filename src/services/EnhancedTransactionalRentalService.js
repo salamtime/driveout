@@ -435,7 +435,7 @@ class EnhancedTransactionalRentalService {
 
       const { data: existingCustomer, error: customerError } = await supabase
         .from(this.customersTableName)
-        .select('id, id_scan_url, customer_id_image, customer_id_scan_history')
+        .select('id, id_scan_url, customer_id_image, customer_id_scan_history, customer_uploaded_images, extra_images, scan_metadata')
         .eq('id', sanitizedData.customer_id)
         .single();
 
@@ -515,11 +515,18 @@ class EnhancedTransactionalRentalService {
         .join(' • ') || `Vehicle #${newRental.vehicle_id}`;
       const telegramRentalPayload = {
         ...newRental,
+        customer: existingCustomer || null,
         id_scan_url: newRental.id_scan_url || existingCustomer?.id_scan_url || null,
         customer_id_image: newRental.customer_id_image || existingCustomer?.customer_id_image || null,
         customer_id_scan_history: Array.isArray(newRental.customer_id_scan_history)
           ? newRental.customer_id_scan_history
           : (Array.isArray(existingCustomer?.customer_id_scan_history) ? existingCustomer.customer_id_scan_history : []),
+        customer_uploaded_images: Array.isArray(newRental.customer_uploaded_images)
+          ? newRental.customer_uploaded_images
+          : (Array.isArray(existingCustomer?.customer_uploaded_images) ? existingCustomer.customer_uploaded_images : []),
+        extra_images: Array.isArray(newRental.extra_images)
+          ? newRental.extra_images
+          : (Array.isArray(existingCustomer?.extra_images) ? existingCustomer.extra_images : []),
       };
 
       dispatchRentalLifecycleTelegramEvent({

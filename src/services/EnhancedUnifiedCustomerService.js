@@ -1169,13 +1169,18 @@ class EnhancedUnifiedCustomerService {
           .from(CUSTOMER_TABLE)
           .select('*')
           .eq('id', customerId)
-          .single();
+          .maybeSingle();
 
       const { data, error } = await runCustomerReadQuery(buildQuery, organizationId);
       
       if (error) {
         console.error('❌ Error fetching customer:', error);
         throw new Error(`Failed to fetch customer: ${error.message}`);
+      }
+
+      if (!data) {
+        console.warn('⚠️ Customer not found for ID:', customerId);
+        return { success: false, error: 'Customer not found' };
       }
       
       console.log('✅ Fetched customer:', data);

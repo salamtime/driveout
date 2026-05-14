@@ -3644,7 +3644,7 @@ const calculateFinancials = () => {
           id: initialData.id
         });
       } else {
-        result = await TransactionalRentalService.createRentalWithTransaction(cleanRentalData);
+        result = await TransactionalRentalService.createRentalWithTransactionalCustomerCreation(cleanRentalData);
       }
       
       if (result && result.success) {

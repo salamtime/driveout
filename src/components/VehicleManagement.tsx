@@ -760,16 +760,10 @@ const VehicleManagement: React.FC = () => {
         const priorityVehicles = (vehiclesData || []).slice(0, PRIORITY_DOCUMENT_COUNT_LIMIT) as Vehicle[];
         const remainingVehicles = (vehiclesData || []).slice(PRIORITY_DOCUMENT_COUNT_LIMIT) as Vehicle[];
 
-        const { data: modelsData, error: modelsError } = await supabase
-          .from('saharax_0u4w4d_vehicle_models')
-          .select('*')
-          .order('name', { ascending: true });
+        const modelsData = await VehicleModelService.getAllVehicleModels();
 
-        if (modelsError) {
-          console.error('Models fetch error:', modelsError);
-          setVehicleModels([]);
-        } else if (modelsData && modelsData.length > 0) {
-          const processedModels = modelsData.map(model => ({
+        if (modelsData && modelsData.length > 0) {
+          const processedModels = modelsData.map((model: any) => ({
             ...model,
             power_cc_min: parseInt(model.power_cc_min) || 0,
             power_cc_max: parseInt(model.power_cc_max) || 0,

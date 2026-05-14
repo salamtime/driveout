@@ -1,5 +1,10 @@
 import RentalEventService from './RentalEventService.js';
 import { notifyRentalTelegramEvent } from './TelegramAlertService.js';
+import {
+  mergeIdentityDocumentCollections,
+  resolveCustomerIdentityDocuments,
+  resolveVerificationIdentityDocuments,
+} from '../utils/customerDocuments.js';
 
 const normalizeEventType = (value) => String(value || '').trim().toLowerCase();
 const safeText = (value) => String(value || '').trim();
@@ -45,14 +50,28 @@ export const countRentalDocuments = (rental = {}) => {
     return explicitDocumentCount;
   }
 
+  const verificationDocuments = resolveVerificationIdentityDocuments(
+    rental?.verificationDocuments ||
+    rental?.verification_documents ||
+    rental?.verificationRequests ||
+    rental?.verification_requests ||
+    []
+  );
+  const customerDocuments = resolveCustomerIdentityDocuments({
+    customer: rental?.customer || {},
+    rental,
+    secondDrivers: Array.isArray(rental?.secondDrivers)
+      ? rental.secondDrivers
+      : (Array.isArray(rental?.second_drivers) ? rental.second_drivers : []),
+  });
+  const identityDocuments = mergeIdentityDocumentCollections(customerDocuments, verificationDocuments);
+  const identityDocumentCount = identityDocuments.totalCount;
+
+  if (identityDocumentCount > 0) {
+    return identityDocumentCount;
+  }
+
   return [
-    rental?.customer_id_image,
-    rental?.id_scan_url,
-    rental?.customer_id_scan_history,
-    rental?.customer_scan_history,
-    rental?.customer_uploaded_images,
-    rental?.extra_images,
-    rental?.second_driver_id_image,
     rental?.damage_deposit_document_url,
   ].reduce((total, entry) => total + countStorageEntries(entry), 0);
 };

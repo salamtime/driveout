@@ -5,7 +5,9 @@ import {
   applyOrganizationMatch,
   applyOrganizationScope,
   getCurrentOrganizationId,
+  shouldScopeSharedTenantData,
 } from './OrganizationService';
+import VehicleModelService from './VehicleModelService';
 
 const PACKAGE_TABLE = 'app_4c3a7a6153_rental_km_packages';
 const PACKAGE_ORG_COLUMN_CACHE_KEY = `${PACKAGE_TABLE}:supportsOrganizationColumn`;
@@ -25,7 +27,8 @@ const isMissingFuelChargeColumnError = (error) =>
   String(error?.message || '').includes('fuel_charge_enabled');
 
 const isMissingOrganizationColumnError = (error) =>
-  error?.code === '42703' && String(error?.message || '').includes('organization_id');
+  ['42703', 'PGRST204'].includes(String(error?.code || '').toUpperCase()) &&
+  `${error?.message || ''} ${error?.details || ''}`.toLowerCase().includes('organization_id');
 
 const getMissingFuelChargeColumnMessage = () =>
   'Database schema is missing rental_km_packages.fuel_charge_enabled. Apply src/migrations/add_fuel_charge_policy_to_rental_packages.sql, then try again.';
@@ -46,14 +49,53 @@ const stripOrganizationField = (payload = {}) => {
   return rest;
 };
 
+const applyTenantAwareReadScope = (query, organizationId) => {
+  if (shouldScopeSharedTenantData()) {
+    if (!organizationId) {
+      throw new Error('Workspace organization context is required to load packages.');
+    }
+    return applyOrganizationScope(query, organizationId);
+  }
+
+  if (organizationId) {
+    return query.or(`organization_id.is.null,organization_id.eq.${organizationId}`);
+  }
+
+  return query.is('organization_id', null);
+};
+
+const applyTenantAwareWriteScope = (payload, organizationId) => {
+  if (shouldScopeSharedTenantData()) {
+    if (!organizationId) {
+      throw new Error('Workspace organization context is required to save packages.');
+    }
+    return applyOrganizationMatch(payload, organizationId);
+  }
+
+  return stripOrganizationField(payload);
+};
+
 const runPackageReadQuery = async (buildQuery, organizationId) => {
-  if (!organizationId || packageTableSupportsOrganizationColumn === false) {
+  if (packageTableSupportsOrganizationColumn === false) {
+    if (shouldScopeSharedTenantData()) {
+      throw new Error('Workspace organization context is required to load packages.');
+    }
     return buildQuery();
   }
 
-  const scopedResult = await applyOrganizationScope(buildQuery(), organizationId);
+  if (!organizationId) {
+    if (shouldScopeSharedTenantData()) {
+      throw new Error('Workspace organization context is required to load packages.');
+    }
+    return buildQuery().is('organization_id', null);
+  }
+
+  const scopedResult = await applyTenantAwareReadScope(buildQuery(), organizationId);
 
   if (organizationId && isMissingOrganizationColumnError(scopedResult.error)) {
+    if (shouldScopeSharedTenantData()) {
+      throw new Error('Package workspace isolation is not installed yet. Apply the organization isolation migration before loading shared tenant packages.');
+    }
     markPackageTableWithoutOrganizationColumn();
     console.warn('Package table has no organization_id column; retrying package read without organization filter.');
     return buildQuery();
@@ -94,7 +136,7 @@ const PackageService = {
       console.log('📦 Inserting data:', dataToInsert);
 
       const scopedPayload = packageTableSupportsOrganizationColumn !== false
-        ? applyOrganizationMatch(dataToInsert, organizationId)
+        ? applyTenantAwareWriteScope(dataToInsert, organizationId)
         : stripOrganizationField(dataToInsert);
 
       let { error } = await supabase
@@ -102,6 +144,9 @@ const PackageService = {
         .insert([scopedPayload]);
 
       if (organizationId && isMissingOrganizationColumnError(error)) {
+        if (shouldScopeSharedTenantData()) {
+          throw new Error('Package workspace isolation is not installed yet. Apply the organization isolation migration before creating shared tenant packages.');
+        }
         markPackageTableWithoutOrganizationColumn();
         console.warn('Package table has no organization_id column; retrying package create without organization field.');
         ({ error } = await supabase
@@ -156,7 +201,7 @@ const PackageService = {
       }
 
       const scopedPayload = packageTableSupportsOrganizationColumn !== false
-        ? applyOrganizationMatch(dataToUpdate, organizationId)
+        ? applyTenantAwareWriteScope(dataToUpdate, organizationId)
         : stripOrganizationField(dataToUpdate);
 
       let query = supabase
@@ -165,12 +210,15 @@ const PackageService = {
         .eq('id', id);
 
       if (organizationId && packageTableSupportsOrganizationColumn !== false) {
-        query = query.eq('organization_id', organizationId);
+        query = applyTenantAwareReadScope(query, organizationId);
       }
 
       let { error } = await query;
 
       if (organizationId && isMissingOrganizationColumnError(error)) {
+        if (shouldScopeSharedTenantData()) {
+          throw new Error('Package workspace isolation is not installed yet. Apply the organization isolation migration before updating shared tenant packages.');
+        }
         markPackageTableWithoutOrganizationColumn();
         console.warn('Package table has no organization_id column; retrying package update without organization filter.');
         ({ error } = await supabase
@@ -236,13 +284,7 @@ const PackageService = {
 
   async getVehicleModels() {
     try {
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('*')
-        .order('name');
-
-      if (error) throw error;
-      return data || [];
+      return await VehicleModelService.getAllVehicleModels();
     } catch (error) {
       console.error('Error fetching vehicle models:', error);
       throw error;
@@ -262,12 +304,15 @@ const PackageService = {
         .eq('id', id);
 
       if (organizationId && packageTableSupportsOrganizationColumn !== false) {
-        query = query.eq('organization_id', organizationId);
+        query = applyTenantAwareReadScope(query, organizationId);
       }
 
       let { error } = await query;
 
       if (organizationId && isMissingOrganizationColumnError(error)) {
+        if (shouldScopeSharedTenantData()) {
+          throw new Error('Package workspace isolation is not installed yet. Apply the organization isolation migration before deleting shared tenant packages.');
+        }
         markPackageTableWithoutOrganizationColumn();
         console.warn('Package table has no organization_id column; retrying package delete without organization filter.');
         ({ error } = await supabase

@@ -1,5 +1,5 @@
-import { supabase } from '../lib/supabase';
 import { assertTenantFeatureEnabled } from './TenantLimitService';
+import VehicleModelService from './VehicleModelService';
 
 /**
  * Service for managing vehicle models in pricing components
@@ -17,19 +17,7 @@ export class VehicleModelPricingService {
         'Your tenant plan does not include Pricing Management.'
       );
 
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('id, name, model, is_active')
-        .eq('is_active', true)
-        .order('name', { ascending: true, nullsFirst: false })
-        .order('model', { ascending: true });
-
-      if (error) {
-        console.error('Error fetching vehicle models:', error);
-        throw error;
-      }
-
-      return data || [];
+      return await VehicleModelService.getActiveModels();
     } catch (error) {
       console.error('VehicleModelPricingService.getActiveVehicleModels error:', error);
       throw error;
@@ -60,18 +48,7 @@ export class VehicleModelPricingService {
         'Your tenant plan does not include Pricing Management.'
       );
 
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('id, name, model, is_active')
-        .eq('id', modelId)
-        .single();
-
-      if (error) {
-        console.error('Error fetching vehicle model by ID:', error);
-        return null;
-      }
-
-      return data;
+      return await VehicleModelService.getModelById(modelId);
     } catch (error) {
       console.error('VehicleModelPricingService.getVehicleModelById error:', error);
       return null;

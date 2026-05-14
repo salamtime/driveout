@@ -9,10 +9,60 @@ import CustomerService from '../../services/EnhancedUnifiedCustomerService';
 import { getCustomerById, getCustomerRentalHistory, getLatestRentalByCustomerId } from '../../services/EnhancedUnifiedCustomerService';
 import { uploadCustomerDocument } from '../../utils/storageUpload';
 import i18n from '../../i18n';
-import { mergeCustomerScanHistory } from '../../utils/customerIdentity';
+import {
+  collectUniqueDocumentUrls,
+  mergeIdentityDocumentCollections,
+  normalizeDocumentUrl,
+  resolveCustomerIdentityDocuments,
+  resolveVerificationIdentityDocuments,
+} from '../../utils/customerDocuments';
 
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en, fr) => (isFrenchLocale() ? fr : en);
+
+const mergeCustomerProfilesForDrawer = (fetchedProfile, snapshotProfile) => {
+  const fetched = fetchedProfile && typeof fetchedProfile === 'object' ? fetchedProfile : null;
+  const snapshot = snapshotProfile && typeof snapshotProfile === 'object' ? snapshotProfile : null;
+  if (!fetched && !snapshot) return null;
+
+  const merged = {
+    ...(snapshot || {}),
+    ...(fetched || {}),
+  };
+
+  const snapshotScanMetadata = snapshot?.scan_metadata || {};
+  const fetchedScanMetadata = fetched?.scan_metadata || {};
+  merged.scan_metadata = {
+    ...snapshotScanMetadata,
+    ...fetchedScanMetadata,
+    id_scan_history: collectUniqueDocumentUrls(
+      Array.isArray(snapshotScanMetadata.id_scan_history) ? snapshotScanMetadata.id_scan_history : [],
+      Array.isArray(fetchedScanMetadata.id_scan_history) ? fetchedScanMetadata.id_scan_history : []
+    ),
+    second_driver_id_history: collectUniqueDocumentUrls(
+      Array.isArray(snapshotScanMetadata.second_driver_id_history) ? snapshotScanMetadata.second_driver_id_history : [],
+      Array.isArray(fetchedScanMetadata.second_driver_id_history) ? fetchedScanMetadata.second_driver_id_history : []
+    ),
+  };
+
+  merged.customer_id_scan_history = collectUniqueDocumentUrls(
+    Array.isArray(snapshot?.customer_id_scan_history) ? snapshot.customer_id_scan_history : [],
+    Array.isArray(fetched?.customer_id_scan_history) ? fetched.customer_id_scan_history : []
+  );
+  merged.customer_uploaded_images = collectUniqueDocumentUrls(
+    Array.isArray(snapshot?.customer_uploaded_images) ? snapshot.customer_uploaded_images : [],
+    Array.isArray(fetched?.customer_uploaded_images) ? fetched.customer_uploaded_images : []
+  );
+  merged.extra_images = collectUniqueDocumentUrls(
+    Array.isArray(snapshot?.extra_images) ? snapshot.extra_images : [],
+    Array.isArray(fetched?.extra_images) ? fetched.extra_images : []
+  );
+
+  merged.id_scan_url = fetched?.id_scan_url || snapshot?.id_scan_url || merged.id_scan_url;
+  merged.customer_id_image = fetched?.customer_id_image || snapshot?.customer_id_image || merged.customer_id_image;
+
+  return merged;
+};
 
 
 // ImageGallery component for displaying customer documents
@@ -114,6 +164,8 @@ const ViewCustomerDetailsDrawer = ({
   rental = null, // The rental prop is optional and might not be present
   customerId = null,
   secondDrivers = [], // Add secondDrivers prop
+  verificationDocuments = [],
+  customerProfileSnapshot = null,
   viewMode = 'customer'
 }) => {
   const [customerData, setCustomerData] = useState(null);
@@ -130,32 +182,16 @@ const ViewCustomerDetailsDrawer = ({
   const isSecondDriverOnlyView = viewMode === 'drivers';
 
   const dedupeUrls = (values = [], primaryImage = null) => {
-    const normalizeDocumentUrl = (value) => {
-      const raw = String(value || '').trim();
-      if (!raw) return '';
-      try {
-        const parsed = new URL(raw, window.location.origin);
-        return `${parsed.origin}${parsed.pathname}`;
-      } catch {
-        return raw.split('?')[0].split('#')[0].trim();
-      }
-    };
-
     const normalizedPrimary = normalizeDocumentUrl(primaryImage);
-    return mergeCustomerScanHistory(values)
-      .map((value) => ({
-        raw: String(value || '').trim(),
-        normalized: normalizeDocumentUrl(value),
-      }))
-      .filter((entry) => entry.raw && entry.normalized && entry.normalized !== normalizedPrimary)
-      .map((entry) => entry.raw);
+    return collectUniqueDocumentUrls(values)
+      .filter((value) => normalizeDocumentUrl(value) !== normalizedPrimary);
   };
 
   useEffect(() => {
     if (isOpen && (rental || customerId || isSecondDriverOnlyView)) {
       loadCustomerData();
     }
-  }, [isOpen, customerId, isSecondDriverOnlyView, rental?.id, rental?.customer_id]);
+  }, [isOpen, customerId, isSecondDriverOnlyView, rental?.id, rental?.customer_id, customerProfileSnapshot?.id]);
 
   useEffect(() => {
     if (!isSecondDriverOnlyView && customerData && customerData.id) {
@@ -218,7 +254,10 @@ const ViewCustomerDetailsDrawer = ({
         }),
       ]);
 
-      const customerProfile = customerResponse?.success ? customerResponse.data : null;
+      const customerProfile = mergeCustomerProfilesForDrawer(
+        customerResponse?.success ? customerResponse.data : null,
+        customerProfileSnapshot
+      );
 
       let dataToShow = {};
       const fallbackRental = latestRental || rental;
@@ -228,8 +267,16 @@ const ViewCustomerDetailsDrawer = ({
       if (rental) {
         const mergedScanHistory = dedupeUrls([
           ...(Array.isArray(customerProfile?.scan_metadata?.id_scan_history) ? customerProfile.scan_metadata.id_scan_history : []),
+          ...(Array.isArray(customerProfile?.customer_id_scan_history) ? customerProfile.customer_id_scan_history : []),
           ...(Array.isArray(rental?.customer_id_scan_history) ? rental.customer_id_scan_history : []),
-        ], customerProfile?.id_scan_url || rental.customer_id_image);
+          ...(Array.isArray(rental?.customer?.customer_id_scan_history) ? rental.customer.customer_id_scan_history : []),
+          ...(Array.isArray(customerProfile?.customer_uploaded_images) ? customerProfile.customer_uploaded_images : []),
+          ...(Array.isArray(rental?.customer_uploaded_images) ? rental.customer_uploaded_images : []),
+          ...(Array.isArray(rental?.customer?.customer_uploaded_images) ? rental.customer.customer_uploaded_images : []),
+          ...(Array.isArray(customerProfile?.extra_images) ? customerProfile.extra_images : []),
+          ...(Array.isArray(rental?.extra_images) ? rental.extra_images : []),
+          ...(Array.isArray(rental?.customer?.extra_images) ? rental.customer.extra_images : []),
+        ], customerProfile?.id_scan_url || rental.customer_id_image || customerProfile?.customer_id_image);
 
         dataToShow = {
           id: rental.customer_id || targetCustomerId,
@@ -247,6 +294,24 @@ const ViewCustomerDetailsDrawer = ({
           created_at: rental.created_at || new Date().toISOString(),
           customer_id_image: customerProfile?.customer_id_image || rental.customer_id_image,
           id_scan_url: customerProfile?.id_scan_url || rental.customer?.id_scan_url,
+          customer_uploaded_images: Array.isArray(customerProfile?.customer_uploaded_images)
+            ? customerProfile.customer_uploaded_images
+            : collectUniqueDocumentUrls(
+                Array.isArray(rental?.customer_uploaded_images) ? rental.customer_uploaded_images : [],
+                Array.isArray(rental?.customer?.customer_uploaded_images) ? rental.customer.customer_uploaded_images : []
+              ),
+          customer_id_scan_history: Array.isArray(customerProfile?.customer_id_scan_history)
+            ? customerProfile.customer_id_scan_history
+            : collectUniqueDocumentUrls(
+                Array.isArray(rental?.customer_id_scan_history) ? rental.customer_id_scan_history : [],
+                Array.isArray(rental?.customer?.customer_id_scan_history) ? rental.customer.customer_id_scan_history : []
+              ),
+          extra_images: Array.isArray(customerProfile?.extra_images)
+            ? customerProfile.extra_images
+            : collectUniqueDocumentUrls(
+                Array.isArray(rental?.extra_images) ? rental.extra_images : [],
+                Array.isArray(rental?.customer?.extra_images) ? rental.customer.extra_images : []
+              ),
           _source: 'rental',
           _rentalId: rental.id,
           is_banned: Boolean(customerProfile?.scan_metadata?.is_banned),
@@ -274,6 +339,15 @@ const ViewCustomerDetailsDrawer = ({
         // No rental context - use customer profile
         dataToShow = {
           ...customerProfile,
+          customer_uploaded_images: Array.isArray(customerProfile?.customer_uploaded_images)
+            ? customerProfile.customer_uploaded_images
+            : [],
+          customer_id_scan_history: Array.isArray(customerProfile?.customer_id_scan_history)
+            ? customerProfile.customer_id_scan_history
+            : [],
+          extra_images: Array.isArray(customerProfile?.extra_images)
+            ? customerProfile.extra_images
+            : [],
           isRentalBased: false,
           _source: 'profile',
           is_banned: Boolean(customerProfile?.scan_metadata?.is_banned),
@@ -295,6 +369,21 @@ const ViewCustomerDetailsDrawer = ({
           created_at: fallbackRental.created_at,
           customer_id_image: fallbackRental.customer_id_image,
           id_scan_url: fallbackRental.customer?.id_scan_url,
+          customer_uploaded_images: Array.isArray(fallbackRental?.customer_uploaded_images)
+            ? fallbackRental.customer_uploaded_images
+            : collectUniqueDocumentUrls(
+                Array.isArray(fallbackRental?.customer?.customer_uploaded_images) ? fallbackRental.customer.customer_uploaded_images : []
+              ),
+          customer_id_scan_history: Array.isArray(fallbackRental?.customer_id_scan_history)
+            ? fallbackRental.customer_id_scan_history
+            : collectUniqueDocumentUrls(
+                Array.isArray(fallbackRental?.customer?.customer_id_scan_history) ? fallbackRental.customer.customer_id_scan_history : []
+              ),
+          extra_images: Array.isArray(fallbackRental?.extra_images)
+            ? fallbackRental.extra_images
+            : collectUniqueDocumentUrls(
+                Array.isArray(fallbackRental?.customer?.extra_images) ? fallbackRental.customer.extra_images : []
+              ),
           _source: 'fallback_rental',
           is_banned: Boolean(customerProfile?.scan_metadata?.is_banned),
           ban_note: customerProfile?.scan_metadata?.ban_note || '',
@@ -429,57 +518,38 @@ const ViewCustomerDetailsDrawer = ({
     setSelectedImage({ url: imageUrl, label: title });
   };
 
-  const idScanUrl = customerData?.id_scan_url;
-  const customerIdImage = customerData?.customer_id_image;
   const extraImages = customerData?.extra_images || [];
-  const customerScanHistory = Array.isArray(customerData?.scan_metadata?.id_scan_history)
-    ? customerData.scan_metadata.id_scan_history
-    : [];
-  const customerIdScans = [
-    ...new Set(
-      [idScanUrl, customerIdImage, ...(Array.isArray(customerData?.customer_id_scan_history) ? customerData.customer_id_scan_history : []), ...customerScanHistory]
-        .filter(Boolean)
-        .map((url) => String(url).trim().split('?')[0].split('#')[0])
-    ),
-  ].map((url, index) => ({
-    url,
-    label: index === 0
-      ? tr('ID Scan', "Scan d'identité")
-      : index === 1
-        ? tr('Secondary ID', 'Pièce secondaire')
-        : tr(`Additional ID ${index}`, `Pièce supplémentaire ${index}`),
+  const identityDocuments = useMemo(() => {
+    const customerProfileIdentityDocuments = resolveCustomerIdentityDocuments({
+      customer: customerData || {},
+      rental: rental || {},
+      secondDrivers,
+      rentalHistory,
+    });
+    const verificationIdentityDocuments = resolveVerificationIdentityDocuments(verificationDocuments);
+    return mergeIdentityDocumentCollections(
+      customerProfileIdentityDocuments,
+      verificationIdentityDocuments
+    );
+  }, [customerData, rental, rentalHistory, secondDrivers, verificationDocuments]);
+  const primaryCustomerIdScan = identityDocuments.primaryCustomerDocuments[0]
+    ? {
+        url: identityDocuments.primaryCustomerDocuments[0].url,
+        label: tr('ID Scan', "Scan d'identité"),
+      }
+    : null;
+  const secondaryCustomerIdScans = [
+    ...identityDocuments.primaryCustomerDocuments.slice(1),
+    ...identityDocuments.secondaryCustomerDocuments,
+    ...identityDocuments.secondDriverDocuments,
+  ].map((document) => ({
+    url: document.url,
+    label: tr('Secondary ID', 'Pièce secondaire'),
   }));
-  const primaryCustomerIdScan = customerIdScans[0] || null;
-  const secondaryCustomerIdScans = customerIdScans.slice(1);
-  const secondDriverIdScans = useMemo(() => (
-    secondDrivers
-      .flatMap((driver, driverIndex) => {
-        const primaryUrl = String(
-          driver?.id_scan_url ||
-          driver?.customer_id_image ||
-          driver?.id_image ||
-          ''
-        ).trim();
-        const uploadedImages = Array.isArray(driver?.uploaded_images)
-          ? driver.uploaded_images
-          : [];
-        const normalizedUrls = [
-          primaryUrl,
-          ...uploadedImages.map((entry) => String(entry?.url || entry || '').trim()),
-        ].filter(Boolean);
-        const uniqueUrls = [...new Set(normalizedUrls.map((url) => url.split('?')[0].split('#')[0]))];
-
-        return uniqueUrls.map((url, imageIndex) => ({
-          url,
-          label: imageIndex === 0
-            ? `${driver?.full_name || tr('Second driver', 'Conducteur secondaire')} · ${tr('Second ID', 'Pièce secondaire')}`
-            : `${driver?.full_name || tr('Second driver', 'Conducteur secondaire')} · ${tr('Additional ID', 'Pièce supplémentaire')} ${imageIndex}`,
-          driverName: driver?.full_name || `${tr('Driver', 'Conducteur')} ${driverIndex + 1}`,
-        }));
-      })
-      .filter((entry) => entry.url)
-  ), [secondDrivers]);
-  const secondDriverIdScanPreview = secondDriverIdScans.slice(0, 1);
+  const customerIdScans = [
+    ...(primaryCustomerIdScan ? [primaryCustomerIdScan] : []),
+    ...secondaryCustomerIdScans,
+  ];
   const sectionCardClass = 'rounded-[24px] border border-violet-100 bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.05)]';
   const sectionTitleIconClass = 'h-4 w-4 mr-2 text-violet-600';
   const customerProfileRentalId = rental?.id || customerData?._rentalId || '';
@@ -937,40 +1007,6 @@ const ViewCustomerDetailsDrawer = ({
                         )}
                       </div>
                     )}
-                  </div>
-                )}
-                {secondDriverIdScans.length > 0 && (
-                  <div className="mt-5 rounded-2xl border border-violet-100 bg-slate-50/70 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">{tr('Second ID', 'Pièce secondaire')}</p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {secondDriverIdScans.length === 1
-                            ? tr('1 second driver ID is attached to this rental.', '1 pièce du conducteur secondaire est liée à cette location.')
-                            : tr(
-                                `${secondDriverIdScans.length} second driver ID files are attached to this rental.`,
-                                `${secondDriverIdScans.length} pièces du conducteur secondaire sont liées à cette location.`
-                              )}
-                        </p>
-                      </div>
-                      {secondDriverIdScans.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => setShowAllSecondIdScans((prev) => !prev)}
-                          className="rounded-full border border-violet-200 bg-white px-3 py-1.5 text-xs font-semibold text-violet-700 transition-colors hover:bg-violet-50"
-                        >
-                          {showAllSecondIdScans ? tr('Collapse', 'Réduire') : tr('View all', 'Voir tout')}
-                        </button>
-                      )}
-                    </div>
-                    <div className="mt-4">
-                      <ImageGallery
-                        images={showAllSecondIdScans ? secondDriverIdScans : secondDriverIdScanPreview}
-                        title={tr('Second ID', 'Pièce secondaire')}
-                        emptyMessage={tr('No second driver ID available.', "Aucune pièce secondaire disponible.")}
-                        gridLayout={false}
-                      />
-                    </div>
                   </div>
                 )}
               </div>

@@ -5,6 +5,12 @@ const toPositiveNumber = (value) => {
 
 export const buildRentalBookedPackageSnapshot = (rentalLike = {}, linkedPackage = null) => {
   const basePackage = linkedPackage || rentalLike?.package || null;
+  const snapshotDurationUnits =
+    basePackage?.duration_units ??
+    basePackage?.durationUnits ??
+    rentalLike?.package_duration_units ??
+    rentalLike?.selected_package_duration_units ??
+    null;
   const snapshotId =
     rentalLike?.package_id ||
     rentalLike?.selected_package_id ||
@@ -31,10 +37,20 @@ export const buildRentalBookedPackageSnapshot = (rentalLike = {}, linkedPackage 
     toPositiveNumber(basePackage?.includedKilometers) ||
     toPositiveNumber(basePackage?.included_km) ||
     toPositiveNumber(basePackage?.includedKm);
-  const snapshotTotalIncludedKm =
+  const storedBookedTotalIncludedKm =
     toPositiveNumber(rentalLike?.package_total_included_km) ||
-    toPositiveNumber(rentalLike?.selected_package_total_included_km) ||
-    toPositiveNumber(rentalLike?.included_kilometers_applied);
+    toPositiveNumber(rentalLike?.selected_package_total_included_km);
+  const expectedBookedTotalIncludedKm = snapshotIncludedKmPerUnit > 0
+    ? snapshotIncludedKmPerUnit * (toPositiveNumber(snapshotDurationUnits) || 1)
+    : 0;
+  const appliedOnlyFallback =
+    snapshotIncludedKmPerUnit <= 0 && storedBookedTotalIncludedKm <= 0
+      ? toPositiveNumber(rentalLike?.included_kilometers_applied)
+      : 0;
+  const snapshotTotalIncludedKm =
+    expectedBookedTotalIncludedKm ||
+    storedBookedTotalIncludedKm ||
+    appliedOnlyFallback;
   const snapshotExtraKmRate =
     toPositiveNumber(rentalLike?.package_extra_rate) ||
     toPositiveNumber(basePackage?.extra_km_rate) ||
@@ -65,12 +81,7 @@ export const buildRentalBookedPackageSnapshot = (rentalLike = {}, linkedPackage 
     fixed_amount: snapshotRatePerUnit || toPositiveNumber(basePackage?.fixed_amount),
     included_kilometers: snapshotIncludedKmPerUnit || toPositiveNumber(basePackage?.included_kilometers),
     extra_km_rate: snapshotExtraKmRate || toPositiveNumber(basePackage?.extra_km_rate),
-    duration_units:
-      basePackage?.duration_units ??
-      basePackage?.durationUnits ??
-      rentalLike?.package_duration_units ??
-      rentalLike?.selected_package_duration_units ??
-      null,
+    duration_units: snapshotDurationUnits,
     total_included_kilometers_snapshot: snapshotTotalIncludedKm || null,
   };
 };

@@ -102,8 +102,16 @@ export const getRentalCollectedEntries = (rentalLike = {}) => {
   return entries;
 };
 
+export const getRentalCustomerPaidEntries = (rentalLike = {}) => {
+  return getRentalCollectedEntries(rentalLike).filter((entry) => entry?.type !== 'seized_security_deposit');
+};
+
 export const getRentalCollectedAmount = (rentalLike = {}) => {
   return getRentalCollectedEntries(rentalLike).reduce((sum, entry) => sum + entry.amount, 0);
+};
+
+export const getRentalCustomerPaidAmount = (rentalLike = {}) => {
+  return getRentalCustomerPaidEntries(rentalLike).reduce((sum, entry) => sum + entry.amount, 0);
 };
 
 export const getRentalCollectedAmountInWindow = (rentalLike = {}, start = null, end = null) => {

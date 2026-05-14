@@ -9,6 +9,8 @@ import TourPackagesWorkspace from './admin/pricing/TourPackagesWorkspace';
 import AdminModuleHero from './admin/AdminModuleHero';
 import i18n from '../i18n';
 import { useAuth } from '../contexts/AuthContext';
+import VehicleModelService from '../services/VehicleModelService';
+import { getCurrentOrganizationId, shouldScopeSharedTenantData } from '../services/OrganizationService';
 
 const scheduleBackgroundTask = (callback: () => void | Promise<void>) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
@@ -23,6 +25,40 @@ const scheduleBackgroundTask = (callback: () => void | Promise<void>) => {
 };
 const isFrenchLocale = () => i18n.resolvedLanguage === 'fr';
 const tr = (en: string, fr: string) => (isFrenchLocale() ? fr : en);
+
+const applyPricingOrganizationScope = async (query: any, label: string) => {
+  const organizationId = await getCurrentOrganizationId();
+
+  if (shouldScopeSharedTenantData()) {
+    if (!organizationId) {
+      throw new Error(`Workspace organization context is required to load ${label}.`);
+    }
+    return query.eq('organization_id', organizationId);
+  }
+
+  if (organizationId) {
+    return query.or(`organization_id.is.null,organization_id.eq.${organizationId}`);
+  }
+
+  return query.is('organization_id', null);
+};
+
+const buildPricingOrganizationPayload = async (payload: Record<string, any>, label: string) => {
+  const organizationId = await getCurrentOrganizationId();
+
+  if (shouldScopeSharedTenantData()) {
+    if (!organizationId) {
+      throw new Error(`Workspace organization context is required to save ${label}.`);
+    }
+    return {
+      ...payload,
+      organization_id: organizationId,
+    };
+  }
+
+  const { organization_id: _organizationId, ...legacyPayload } = payload || {};
+  return legacyPayload;
+};
 
 interface BasePrice {
   id: string;
@@ -366,16 +402,7 @@ const DynamicPricingManagement: React.FC = () => {
   const fetchVehicleModels = async () => {
     try {
       console.log('🔄 Fetching vehicle models from database...');
-      const { data, error } = await supabase
-        .from('saharax_0u4w4d_vehicle_models')
-        .select('id, name, model, vehicle_type')
-        .eq('is_active', true)
-        .order('name', { ascending: true });
-      
-      if (error) {
-        console.error('❌ Supabase error fetching vehicle models:', error);
-        throw error;
-      }
+      const data = await VehicleModelService.getActiveModels();
       
       if (!data || data.length === 0) {
         console.warn('⚠️ No vehicle models found in database');
@@ -459,22 +486,21 @@ const DynamicPricingManagement: React.FC = () => {
     
     try {
       const [vehicleModelsResult, basePricesResult, appSettingsResult] = await Promise.allSettled([
-        supabase
-          .from('saharax_0u4w4d_vehicle_models')
-          .select('id, name, model, vehicle_type')
-          .eq('is_active', true)
-          .order('name', { ascending: true }),
-        supabase
-          .from('app_4c3a7a6153_base_prices')
-          .select(`
-            *,
-            vehicle_model:saharax_0u4w4d_vehicle_models (
-              name,
-              model,
-              vehicle_type
-            )
-          `)
-          .order('created_at', { ascending: false }),
+        VehicleModelService.getActiveModels(),
+        applyPricingOrganizationScope(
+          supabase
+            .from('app_4c3a7a6153_base_prices')
+            .select(`
+              *,
+              vehicle_model:saharax_0u4w4d_vehicle_models (
+                name,
+                model,
+                vehicle_type
+              )
+            `)
+            .order('created_at', { ascending: false }),
+          'base prices'
+        ),
         supabase
           .from('app_settings')
           .select('transport_pickup_fee, transport_dropoff_fee, damage_deposit_presets, allow_custom_deposit, tier_pricing_enabled, require_tier_for_extensions, fallback_to_hourly')
@@ -483,7 +509,7 @@ const DynamicPricingManagement: React.FC = () => {
       ]);
 
       if (vehicleModelsResult.status === 'fulfilled') {
-        setVehicleModels(vehicleModelsResult.value.data || []);
+        setVehicleModels(vehicleModelsResult.value || []);
       } else {
         console.error('❌ Error fetching vehicle models:', vehicleModelsResult.reason);
         setVehicleModels([]);
@@ -540,10 +566,13 @@ const DynamicPricingManagement: React.FC = () => {
 
       scheduleBackgroundTask(async () => {
         const [tiersResult, rulesResult] = await Promise.allSettled([
-          supabase
-            .from('pricing_tiers')
-            .select('*')
-            .order('min_hours', { ascending: true }),
+          applyPricingOrganizationScope(
+            supabase
+              .from('pricing_tiers')
+              .select('*')
+              .order('min_hours', { ascending: true }),
+            'pricing tiers'
+          ),
           supabase
             .from('rental_extension_rules')
             .select('*'),
@@ -732,10 +761,14 @@ const DynamicPricingManagement: React.FC = () => {
     if (!window.confirm('Are you sure you want to delete this price?')) return;
 
     try {
-      const { error } = await supabase
-        .from('app_4c3a7a6153_base_prices')
-        .delete()
-        .eq('id', id);
+      const deleteQuery = await applyPricingOrganizationScope(
+        supabase
+          .from('app_4c3a7a6153_base_prices')
+          .delete()
+          .eq('id', id),
+        'base price'
+      );
+      const { error } = await deleteQuery;
 
       if (error) throw error;
 
@@ -763,7 +796,7 @@ const DynamicPricingManagement: React.FC = () => {
         throw new Error('At least one price (Hourly or Daily) must be greater than 0');
       }
 
-      const priceData = {
+      const priceData = await buildPricingOrganizationPayload({
         vehicle_model_id: basePriceFormData.vehicle_model_id,
         hourly_price: parseFloat(basePriceFormData.hourly_price.toString()),
         daily_price: parseFloat(basePriceFormData.daily_price.toString()),
@@ -773,17 +806,20 @@ const DynamicPricingManagement: React.FC = () => {
         price_source: basePriceFormData.price_source,
         dynamic_pricing_enabled: basePriceFormData.dynamic_pricing_enabled,
         updated_at: new Date().toISOString()
-      };
+      }, 'base price');
 
       let result;
       
       if (editingPrice) {
-        const { data, error } = await supabase
-          .from('app_4c3a7a6153_base_prices')
-          .update(priceData)
-          .eq('id', editingPrice.id)
-          .select()
-          .single();
+        const updateQuery = await applyPricingOrganizationScope(
+          supabase
+            .from('app_4c3a7a6153_base_prices')
+            .update(priceData)
+            .eq('id', editingPrice.id)
+            .select(),
+          'base price'
+        );
+        const { data, error } = await updateQuery.single();
 
         if (error) throw error;
         result = data;
@@ -872,10 +908,14 @@ const DynamicPricingManagement: React.FC = () => {
     if (!window.confirm(tr('Are you sure you want to delete this tier?', 'Voulez-vous vraiment supprimer ce palier ?'))) return;
 
     try {
-      const { error } = await supabase
-        .from('pricing_tiers')
-        .delete()
-        .eq('id', id);
+      const deleteQuery = await applyPricingOrganizationScope(
+        supabase
+          .from('pricing_tiers')
+          .delete()
+          .eq('id', id),
+        'pricing tier'
+      );
+      const { error } = await deleteQuery;
 
       if (error) throw error;
 
@@ -894,7 +934,7 @@ const DynamicPricingManagement: React.FC = () => {
   setSubmitting(true);
 
   try {
-    const tierData = {
+    const tierData = await buildPricingOrganizationPayload({
       vehicle_model_id: tierFormData.vehicle_model_id,
       min_hours: tierFormData.duration_type === 'hours' ? parseHourTierValue(tierFormData.min_hours) : null,
       max_hours: tierFormData.duration_type === 'hours' ? parseHourTierValue(tierFormData.max_hours) : null,
@@ -914,15 +954,18 @@ const DynamicPricingManagement: React.FC = () => {
       duration_type: tierFormData.duration_type,
       is_active: tierFormData.is_active,
       updated_at: new Date().toISOString()
-    };
+    }, 'pricing tier');
 
     if (editingTier) {
-      const { data, error } = await supabase
-        .from('pricing_tiers')
-        .update(tierData)
-        .eq('id', editingTier.id)
-        .select()
-        .single();
+      const updateQuery = await applyPricingOrganizationScope(
+        supabase
+          .from('pricing_tiers')
+          .update(tierData)
+          .eq('id', editingTier.id)
+          .select(),
+        'pricing tier'
+      );
+      const { data, error } = await updateQuery.single();
 
       if (error) throw error;
       

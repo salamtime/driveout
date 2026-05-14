@@ -1650,81 +1650,78 @@ const ImageGallery = ({ images, title, emptyMessage = "No images", gridLayout = 
       
       {/* ENLARGE MODAL */}
       {selectedImage && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
+        <div className="fixed inset-0 z-50 overflow-hidden">
           <div 
             className="fixed inset-0 bg-black bg-opacity-90 transition-opacity"
             onClick={closeModal}
           ></div>
           
-          <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
-            <div className="inline-block align-bottom bg-transparent rounded-lg text-left overflow-hidden transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
-              <div className="relative">
-                <div className="bg-transparent">
-                  <div className="flex justify-end mb-2">
-                    <button
-                      type="button"
-                      className="text-white hover:text-gray-300 focus:outline-none"
-                      onClick={closeModal}
-                    >
-                      <svg className="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                  
-                <div className="bg-white rounded-lg p-1 overflow-hidden">
-                  {selectedImage.documentKind === 'pdf' ? (
-                    <iframe
-                      src={selectedImage.url}
-                      title={selectedImage.label}
-                      className="w-full h-[80vh] rounded"
-                    />
-                  ) : (
-                    <img 
-                      src={selectedImage.url} 
-                      alt={selectedImage.label}
-                      className="max-w-full max-h-[80vh] object-contain mx-auto rounded"
-                      onError={(e) => {
-                        console.error('Modal image failed to load:', selectedImage.url);
-                        e.target.onerror = null;
-                        e.target.src = CUSTOMER_DOCUMENT_FALLBACK_SVG;
-                      }}
-                    />
-                  )}
-                </div>
-                  
-                  <div className="mt-4 text-center">
-                    <p className="text-white text-sm bg-black/50 px-4 py-2 rounded-full inline-block">
-                      {selectedImage.label}
-                    </p>
-                    <div className="mt-2 flex justify-center space-x-4">
-                      <button
-                        onClick={() => window.open(selectedImage.url, '_blank')}
-                        className="text-white hover:text-blue-300 text-sm flex items-center"
-                      >
-                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                        </svg>
-                        {isFrenchLocale() ? 'Ouvrir dans un nouvel onglet' : 'Open in new tab'}
-                      </button>
-                      <button
-                        onClick={() => {
-                          const link = document.createElement('a');
-                          link.href = selectedImage.url;
-                          link.download = selectedImage.label.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.jpg';
-                          document.body.appendChild(link);
-                          link.click();
-                          document.body.removeChild(link);
-                        }}
-                        className="text-white hover:text-blue-300 text-sm flex items-center"
-                      >
-                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                        </svg>
-                        {tr('Download', 'Télécharger')}
-                      </button>
-                    </div>
-                  </div>
+          <div className="relative flex h-[100dvh] w-screen max-w-[100vw] items-center justify-center overflow-hidden px-3 py-4 text-center sm:px-6 sm:py-8">
+            <div className="flex h-full min-h-0 w-full max-w-5xl flex-col">
+              <div className="mb-2 flex justify-end">
+                <button
+                  type="button"
+                  className="rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20 hover:text-gray-200 focus:outline-none focus:ring-2 focus:ring-white/70"
+                  onClick={closeModal}
+                  aria-label={tr('Close preview', "Fermer l'aperçu")}
+                >
+                  <svg className="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-2xl bg-white p-2 shadow-2xl">
+                {selectedImage.documentKind === 'pdf' ? (
+                  <iframe
+                    src={selectedImage.url}
+                    title={selectedImage.label}
+                    className="h-full min-h-[70dvh] w-full rounded-xl"
+                  />
+                ) : (
+                  <img
+                    src={selectedImage.url}
+                    alt={selectedImage.label}
+                    className="block h-auto max-h-full w-auto max-w-full rounded-xl object-contain"
+                    onError={(e) => {
+                      console.error('Modal image failed to load:', selectedImage.url);
+                      e.target.onerror = null;
+                      e.target.src = CUSTOMER_DOCUMENT_FALLBACK_SVG;
+                    }}
+                  />
+                )}
+              </div>
+
+              <div className="mt-3 shrink-0 text-center">
+                <p className="inline-block max-w-full truncate rounded-full bg-black/50 px-4 py-2 text-sm text-white">
+                  {selectedImage.label}
+                </p>
+                <div className="mt-2 flex flex-wrap justify-center gap-4">
+                  <button
+                    onClick={() => window.open(selectedImage.url, '_blank')}
+                    className="flex items-center text-sm text-white hover:text-blue-300"
+                  >
+                    <svg className="mr-1 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                    {isFrenchLocale() ? 'Ouvrir dans un nouvel onglet' : 'Open in new tab'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      const link = document.createElement('a');
+                      link.href = selectedImage.url;
+                      link.download = selectedImage.label.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.jpg';
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                    }}
+                    className="flex items-center text-sm text-white hover:text-blue-300"
+                  >
+                    <svg className="mr-1 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    {tr('Download', 'Télécharger')}
+                  </button>
                 </div>
               </div>
             </div>

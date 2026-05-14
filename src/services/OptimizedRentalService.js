@@ -274,18 +274,25 @@ class OptimizedRentalService {
         try {
           const { data: customerRecord } = await supabase
             .from(TBL.CUSTOMERS)
-            .select('id_scan_url, customer_id_image, customer_id_scan_history')
+            .select('id_scan_url, customer_id_image, customer_id_scan_history, customer_uploaded_images, extra_images, scan_metadata')
             .eq('id', rental.customer_id)
             .maybeSingle();
 
           if (customerRecord) {
             telegramRentalPayload = {
               ...telegramRentalPayload,
+              customer: customerRecord,
               id_scan_url: telegramRentalPayload.id_scan_url || customerRecord.id_scan_url || null,
               customer_id_image: telegramRentalPayload.customer_id_image || customerRecord.customer_id_image || null,
               customer_id_scan_history: Array.isArray(telegramRentalPayload.customer_id_scan_history)
                 ? telegramRentalPayload.customer_id_scan_history
                 : (Array.isArray(customerRecord.customer_id_scan_history) ? customerRecord.customer_id_scan_history : []),
+              customer_uploaded_images: Array.isArray(telegramRentalPayload.customer_uploaded_images)
+                ? telegramRentalPayload.customer_uploaded_images
+                : (Array.isArray(customerRecord.customer_uploaded_images) ? customerRecord.customer_uploaded_images : []),
+              extra_images: Array.isArray(telegramRentalPayload.extra_images)
+                ? telegramRentalPayload.extra_images
+                : (Array.isArray(customerRecord.extra_images) ? customerRecord.extra_images : []),
             };
           }
         } catch (customerDocumentError) {

@@ -116,13 +116,18 @@ class TransactionalRentalService {
       }
 
       // STEP 1: Check if customer already exists by ID (if provided)
-      if (customerData.id && this.isValidCustomerId(customerData.id)) {
-        console.log('🔍 TRANSACTIONAL CUSTOMER CREATION: Validating existing customer ID:', customerData.id);
+      const existingCustomerIdCandidate = [
+        customerData.id,
+        customerData.customer_id,
+      ].find((value) => this.isValidCustomerId(value));
+
+      if (existingCustomerIdCandidate) {
+        console.log('🔍 TRANSACTIONAL CUSTOMER CREATION: Validating existing customer ID:', existingCustomerIdCandidate);
         
         const { data: existingCustomer, error: lookupError } = await supabase
           .from('app_4c3a7a6153_customers')
           .select('*')
-          .eq('id', customerData.id)
+          .eq('id', existingCustomerIdCandidate)
           .single();
 
         if (!lookupError && existingCustomer) {
@@ -689,10 +694,8 @@ class TransactionalRentalService {
 
       return {
         success: true,
-        data: {
-          customer: guaranteedCustomer,
-          rental: rentalCreationResult.data
-        },
+        data: rentalCreationResult.data,
+        customer: guaranteedCustomer,
         message: 'Complete rental creation with transactional customer creation successful'
       };
 
@@ -751,7 +754,7 @@ class TransactionalRentalService {
       console.log('🔍 FINAL CRITICAL FIX: Verifying customer exists in database...');
       const { data: existingCustomer, error: customerError } = await supabase
         .from('app_4c3a7a6153_customers')
-        .select('id, full_name, licence_number, id_number, phone, email, id_scan_url, customer_id_image, customer_id_scan_history')
+        .select('id, full_name, licence_number, id_number, phone, email, id_scan_url, customer_id_image, customer_id_scan_history, customer_uploaded_images, extra_images, scan_metadata')
         .eq('id', linkedCustomerId)
         .single();
 
@@ -1004,11 +1007,18 @@ class TransactionalRentalService {
         .join(' • ') || `Vehicle #${rental.vehicle_id}`;
       const telegramRentalPayload = {
         ...rental,
+        customer: existingCustomer || null,
         id_scan_url: rental.id_scan_url || existingCustomer?.id_scan_url || null,
         customer_id_image: rental.customer_id_image || existingCustomer?.customer_id_image || null,
         customer_id_scan_history: Array.isArray(rental.customer_id_scan_history)
           ? rental.customer_id_scan_history
           : (Array.isArray(existingCustomer?.customer_id_scan_history) ? existingCustomer.customer_id_scan_history : []),
+        customer_uploaded_images: Array.isArray(rental.customer_uploaded_images)
+          ? rental.customer_uploaded_images
+          : (Array.isArray(existingCustomer?.customer_uploaded_images) ? existingCustomer.customer_uploaded_images : []),
+        extra_images: Array.isArray(rental.extra_images)
+          ? rental.extra_images
+          : (Array.isArray(existingCustomer?.extra_images) ? existingCustomer.extra_images : []),
       };
 
       dispatchRentalLifecycleTelegramEvent({

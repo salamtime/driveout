@@ -19,7 +19,7 @@ export const TENANT_TABLE_SCOPE_MAP = Object.freeze({
   app_b30c02e74da644baad4668e3587d86b1_users: TENANT_DATA_SCOPES.TENANT_OWNED,
   app_b30c02e74da644baad4668e3587d86b1_user_module_access: TENANT_DATA_SCOPES.TENANT_OWNED,
 
-  saharax_0u4w4d_vehicle_models: TENANT_DATA_SCOPES.SHARED_REFERENCE,
+  saharax_0u4w4d_vehicle_models: TENANT_DATA_SCOPES.TENANT_OWNED,
   saharax_0u4w4d_locations: TENANT_DATA_SCOPES.SHARED_REFERENCE,
   rate_types: TENANT_DATA_SCOPES.SHARED_REFERENCE,
 
